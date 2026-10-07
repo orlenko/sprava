@@ -286,6 +286,7 @@ struct NowView: View {
             if page.hiddenCount > 0 {
                 Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
             }
+            HistorySection(actions: actions, folder: row.folder, reload: refresh)
         }
         .task(id: row.folder) { await actions.load(row.folder, adopted: teka.isAdopted) }
     }

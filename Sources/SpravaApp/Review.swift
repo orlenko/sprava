@@ -16,12 +16,22 @@ final class BinderActions: ObservableObject {
     }
 
     @Published var cards: [Card] = []
+    @Published var history: [Change] = []
+
+    struct Change: Identifiable {
+        let id: String
+        let line: String
+        let who: String
+        let at: Date?
+        let undoable: Bool
+        let undone: Bool
+    }
     @Published var message: String?
     @Published var busy = false
     let client = RuntimeClient()
 
     func load(_ folder: URL, adopted: Bool) async {
-        guard adopted else { cards = []; return }
+        guard adopted else { cards = []; history = []; return }
         do {
             let reply = try await client.command("proposals", binder: folder, timeout: 5)
             cards = (reply["proposals"]?.arrayValue ?? []).compactMap { p in
@@ -30,9 +40,27 @@ final class BinderActions: ObservableObject {
                             lines: p["lines"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             digest: p["digest"]?.stringValue ?? "", verified: p["verified"] == .bool(true))
             }
+            let past = try await client.command("history", binder: folder, timeout: 5)
+            history = (past["ops"]?.arrayValue ?? []).compactMap { o in
+                guard let id = o["id"]?.stringValue else { return nil }
+                let who: String
+                switch (o["actor"]?.stringValue, o["origin"]?.stringValue) {
+                case ("external", "spool-outbox"): who = "checked off on the hub"
+                case ("external", _): who = "edited outside Sprava"
+                case ("user", _): who = "you"
+                case (let kind?, _): who = kind
+                default: who = "?"
+                }
+                return Change(id: id, line: o["line"]?.stringValue ?? "", who: who, at: ISOTime.date(o["at"]?.stringValue),
+                              undoable: o["undoable"] == .bool(true), undone: o["undone"] == .bool(true))
+            }
         } catch {
             message = "\(error)"
         }
+    }
+
+    func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) {
+        run("undo", folder, [("op_id", .string(change.id))], then: reload)
     }
 
     func run(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], then reload: @escaping () -> Void) {
@@ -106,6 +134,34 @@ struct ReviewSection: View {
                         }
                     }
                     .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+}
+
+struct HistorySection: View {
+    @ObservedObject var actions: BinderActions
+    let folder: URL
+    let reload: () -> Void
+
+    var body: some View {
+        if !actions.history.isEmpty {
+            Section(header: Text("Recent changes").font(.headline)) {
+                ForEach(actions.history.prefix(10)) { change in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(change.line).strikethrough(change.undone)
+                            Text([change.who, change.at.map { $0.formatted(.relative(presentation: .named)) }].compactMap { $0 }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if change.undone {
+                            Text("undone").font(.caption).foregroundStyle(.secondary)
+                        } else if change.undoable, let at = change.at, Date().timeIntervalSince(at) < 7 * 86_400 {
+                            Button("Undo") { actions.undo(change, folder, reload: reload) }.disabled(actions.busy)
+                        }
+                    }
                 }
             }
         }
