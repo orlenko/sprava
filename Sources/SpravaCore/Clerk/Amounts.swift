@@ -34,7 +34,9 @@ public enum Amounts {
             digits = digits.replacingOccurrences(of: ",", with: "")
             if let v = Double(digits), v > 0 {
                 var value = v
-                if text.contains("thousand") || text.contains("mille") || text.contains("k ") || text.hasSuffix("k") { value *= 1000 }
+                if text.contains("million") { value *= 1_000_000 }
+                else if text.contains("thousand") || text.contains("mille") || text.firstMatch(of: /\d\s?k\b/) != nil { value *= 1000 }
+                if text.firstMatch(of: /\d\s*(cents?|¢)\b/) != nil, !text.contains("$"), !text.contains("dollar") { value /= 100 }
                 return Parsed(value: value, currency: currency)
             }
         }
@@ -54,14 +56,33 @@ public enum Amounts {
             else if seen { break }
             i += 1
         }
-        let value = total + current
-        return seen && value > 0 ? Parsed(value: Double(value), currency: currency) : nil
+        var value = Double(total + current)
+        // English "cents" is money, not a hundred: "fifty cents" is half a dollar ("deux cents" stays 200).
+        let english = words.contains { ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "twenty", "thirty",
+                                        "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand"].contains($0) }
+        if english, words.last == "cents" || words.last == "cent", !words.contains("dollars"), !words.contains("dollar") {
+            value = Double(wordsValue(words.dropLast())) / 100
+        }
+        return seen && value > 0 ? Parsed(value: value, currency: currency) : nil
+    }
+
+    /// The number named by English or French number words, as `parse` reads them.
+    static func wordsValue<S: Sequence>(_ words: S) -> Int where S.Element == String {
+        var total = 0, current = 0
+        for w in words {
+            if let u = units[w] { current += u }
+            else if let s = scales[w] {
+                if s == 100 { current = max(current, 1) * 100 } else { total += max(current, 1) * s; current = 0 }
+            }
+        }
+        return total + current
     }
 
     /// Finds an amount in a sentence by itself (digits with a currency, or number words with a currency word).
     public static func scan(_ sentence: String) -> Parsed? {
         let lower = sentence.lowercased()
-        guard currencies.contains(where: { lower.contains($0.0) }) else { return nil }
+        let words = Set(lower.split(whereSeparator: { !$0.isLetter && $0 != "$" && $0 != "€" }).map(String.init))
+        guard currencies.contains(where: { $0.0.count == 1 ? lower.contains($0.0) : words.contains($0.0) }) else { return nil }
         return parse(sentence)
     }
 }

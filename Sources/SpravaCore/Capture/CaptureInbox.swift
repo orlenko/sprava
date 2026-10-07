@@ -78,8 +78,10 @@ public struct CaptureInbox: Sendable {
         var paths: [String: String]? = [:]            // id -> device/name, for the clerk
         var cardBinder: [String: String]? = [:]       // id -> folder path of a filed Tier 0 card
         var hints: [String: String]? = [:]            // id -> the binder name a verified hint named
-        var clerk: [String: String]? = [:]            // id -> pending, done, kept, acted, poison
+        var clerk: [String: String]? = [:]            // id -> pending, retry, done, kept, acted, poison, failed, retracted, superseded
         var attempts: [String: Int]? = [:]
+        var chains: [String: [String]]? = [:]         // app|ref -> event ids, oldest first (capture-event-v0 §3.2)
+        var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
         var examined: [String: Examined] = [:]        // device/name -> last seen
         struct Examined: Codable, Equatable {
             var size: Int
@@ -147,7 +149,8 @@ public struct CaptureInbox: Sendable {
             for name in names.sorted() where name.hasSuffix(".json") && !name.hasPrefix(".") {
                 let file = device.appendingPathComponent(name)
                 let stem = String(name.dropLast(5))
-                if state.ingested[stem] != nil { continue }
+                // An id still at "ingested" crashed before its card was made: it is picked up again here.
+                if let stage = state.ingested[stem], stage != "ingested" { continue }
                 let key = deviceName + "/" + name
                 var st = stat()
                 guard lstat(file.path, &st) == 0 else { continue }
@@ -158,6 +161,16 @@ public struct CaptureInbox: Sendable {
                 if case .complete(.capture) = check, let e = event, let expected = producers[deviceName], e.app != expected {
                     check = .quarantined("source.app does not match the folder's registered producer")
                     event = nil
+                }
+                // The app sends its notice around the moment it publishes; an own-folder note without one waits a
+                // few seconds, so the binder the person chose is not lost to a sweep that ran first (architecture 8).
+                if case .complete(.capture) = check, producers[deviceName] == "sprava", let e = event, notices[e.id] == nil {
+                    let age = now.timeIntervalSince1970 - mtime
+                    if age > -60 && age < 10 {
+                        result.pending += 1
+                        state.examined[key] = .init(size: size, mtime: mtime, outcome: "pending")
+                        continue
+                    }
                 }
                 switch check {
                 case .pending:
@@ -188,30 +201,34 @@ public struct CaptureInbox: Sendable {
     func ingest(_ event: CaptureEvent, device: String, producer: String?, notice: String?, size: Int, state: inout State,
                 result: inout SweepResult, binders: [ShelfRow], commands: Commands, now: Date) {
         let id = event.id
-        if let earlier = state.dedupe[event.dedupeKey] {
-            result.duplicates += 1
-            state.ingested[id] = "duplicate"
-            journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
-            return
-        }
-        // Ingesting is one durable step, recorded before anything else happens.
-        state.ingested[id] = "ingested"
-        state.dedupe[event.dedupeKey] = id
-        state.apps[id] = event.app
-        try? save(state)
-        journal([("event", .string(id)), ("stage", .str("ingested")), ("bytes", .int(size))])
-        result.ingested += 1
+        let textHash = CaptureInbox.digest(Data(event.text.utf8))
+        // Only a registered producer's own events can change a chain (architecture 8; capture-event-v0 §3.2).
+        let registered = producer != nil && producer == event.app
+        let chainKey = event.app + "|" + (event.raw["source"]?["ref"]?.stringValue ?? "")
+        let chain = registered ? (state.chains?[chainKey] ?? []).filter { $0 != id } : []
 
-        // A later event replaces an earlier one only within the same producer's chain (capture-event-v0 §3.2).
-        var replaces: String?
-        if let earlier = event.supersedes {
-            if state.apps[earlier] == event.app { replaces = earlier } else {
-                journal([("event", .string(id)), ("stage", .str("supersede_ignored"))])
+        if state.ingested[id] == nil {
+            if let earlier = state.dedupe[event.dedupeKey] {
+                // The same capture again: only a raise of sensitivity is applied (capture-event-v0 §3.2).
+                result.duplicates += 1
+                state.ingested[id] = "duplicate"
+                if registered, event.isPrivate { raisePrivacy(chain: [earlier] + chain, binders: binders, commands: commands, now: now) }
+                journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
+                return
             }
+            // Ingesting is one durable step, recorded before anything else happens.
+            state.ingested[id] = "ingested"
+            state.dedupe[event.dedupeKey] = id
+            state.apps[id] = event.app
+            state.texts = (state.texts ?? [:]).merging([id: textHash]) { $1 }
+            if registered { state.chains = (state.chains ?? [:]).merging([chainKey: chain + [id]]) { $1 } }
+            try? save(state)
+            journal([("event", .string(id)), ("stage", .str("ingested")), ("bytes", .int(size))])
+            result.ingested += 1
         }
+
         if event.retracted {
-            // A retraction is always the person's call: the earlier card is marked, nothing is removed.
-            if let earlier = replaces, let card = state.cards[earlier] { markUnfiled(card, field: "source_retracted") }
+            if !chain.isEmpty { retract(chain: chain, retraction: id, state: &state, binders: binders, commands: commands, now: now) }
             state.ingested[id] = "retracted"
             journal([("event", .string(id)), ("stage", .str("retracted"))])
             return
@@ -220,25 +237,124 @@ public struct CaptureInbox: Sendable {
             state.ingested[id] = "nothing_to_file"
             return
         }
-        if let earlier = replaces, let card = state.cards[earlier] { markUnfiled(card, field: "source_corrected") }
+        // A later event of the chain: the same text changes only sensitivity; other text replaces what still waits.
+        var replaces: String?
+        if let earlier = chain.last {
+            if event.isPrivate { raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) }
+            if state.texts?[earlier] == textHash {
+                state.ingested[id] = "same_text"
+                journal([("event", .string(id)), ("stage", .str("same_text"))])
+                return
+            }
+            replaces = earlier
+            withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, now: now)
+        }
 
         // Verification (architecture 8): Sprava's own folder needs a matching notice; an unregistered folder is
         // unverified; a hint is honoured only from a verified note of Sprava's own.
         let own = producer == "sprava"
         let verified = own ? notice == event.digest : producer != nil
         let hint = own && verified ? event.binderHint : nil
-        let (proposalID, filedTo) = card(for: event, hint: hint, verified: verified, producer: producer ?? event.app,
-                                         replaces: replaces, binders: binders, commands: commands, now: now)
+        let made: (String, URL?)
+        do {
+            made = try card(for: event, hint: hint, verified: verified, producer: producer ?? event.app,
+                            replaces: replaces, binders: binders, commands: commands, now: now)
+        } catch {
+            // The stage stays "ingested", so the next sweep makes the card.
+            journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
+            return
+        }
+        let (proposalID, filedTo) = made
         state.cards[id] = proposalID
         if let filedTo { state.cardBinder = (state.cardBinder ?? [:]).merging([id: filedTo.path]) { $1 } }
         if let hint, filedTo != nil { state.hints = (state.hints ?? [:]).merging([id: hint]) { $1 } }
-        // The clerk reads it next, unless it was retracted or empty; private captures too, on the device.
+        // The clerk reads it next; private captures too, on the device.
         state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
         state.ingested[id] = filedTo == nil ? "unfiled" : "proposed"
         if filedTo == nil { result.unfiled += 1 } else { result.filed += 1 }
         if let end = event.endedAt { result.latencies.append(max(0, now.timeIntervalSince(end))) }
         journal([("event", .string(id)), ("stage", .str(filedTo == nil ? "unfiled" : "proposed")), ("tier", .str("0")),
                  ("verified", .bool(verified))])
+    }
+
+    /// Pending cards built from any event of a chain: unfiled ones, and proposals waiting in the binders.
+    func pendingCards(chain: [String], binders: [ShelfRow]) -> (unfiled: [Proposal], filed: [(URL, Proposal)]) {
+        let ids = Set(chain)
+        func fromChain(_ p: Proposal) -> Bool {
+            !(p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).filter(ids.contains).isEmpty
+        }
+        let unfiled = self.unfiled().filter(fromChain)
+        var filed: [(URL, Proposal)] = []
+        for row in binders where row.teka.isAdopted {
+            for (p, _) in ProposalStore.list(in: row.folder) where p.state == "proposed" && fromChain(p) { filed.append((row.folder, p)) }
+        }
+        return (unfiled, filed)
+    }
+
+    /// Withdraws what still waits from a chain, and ends the clerk's work on it.
+    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], now: Date) {
+        let (unfiled, filed) = pendingCards(chain: chain, binders: binders)
+        for p in unfiled { try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(p.id).json")) }
+        for (folder, p) in filed { try? TekaStore(folder: folder).reject(p, reason: reason, now: now) }
+        var clerk = state.clerk ?? [:]
+        for id in chain where clerk[id] != nil { clerk[id] = "superseded" }
+        state.clerk = clerk
+    }
+
+    /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items
+    /// already filed get a card that offers to drop them.
+    func retract(chain: [String], retraction: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
+        withdraw(chain: chain, reason: "the note was deleted where it was taken", state: &state, binders: binders, now: now)
+        var clerk = state.clerk ?? [:]
+        for id in chain {
+            clerk[id] = "retracted"
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent("interpretations/\(id).json"))
+        }
+        state.clerk = clerk
+        let ids = Set(chain)
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            let filed = row.teka.items.compactMap { item -> JSONObject? in
+                guard let o = item.object, let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue),
+                      events.contains(where: ids.contains), let itemID = o["id"] else { return nil }
+                return JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
+                    ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))])
+            }
+            guard !filed.isEmpty else { continue }
+            let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+            let card = Proposal.make(title: "A note was deleted where it was taken. Remove what was filed from it?", actor: actor, ops: filed,
+                                     provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))),
+                                                             (key: "retraction", value: .string(retraction)),
+                                                             (key: "remains", value: .str("the event files in the capture folder, the titles in this binder's history, and backups"))]),
+                                     now: now)
+            if (try? ProposalStore.save(card, in: row.folder)) != nil { commands.trustProposals([card.id], in: row.folder) }
+        }
+    }
+
+    /// A raise to private (capture-event-v0 §3.2, §3.3): waiting cards from the chain become private and redacted
+    /// at once; cards in binders are rewritten by Sprava and trusted again.
+    func raisePrivacy(chain: [String], binders: [ShelfRow], commands: Commands, now: Date) {
+        let (unfiled, filed) = pendingCards(chain: chain, binders: binders)
+        func privateCopy(_ p: Proposal) -> Proposal {
+            var raw = p.raw
+            var prov = raw["provenance"]?.objectValue ?? JSONObject()
+            prov.set("private", .bool(true))
+            raw.set("provenance", .object(prov))
+            raw.set("ops", .array(p.ops.map { op -> JSONValue in
+                guard op["op"] == .str("add_item"), var args = op["args"]?.objectValue, var item = args["item"]?.objectValue else { return .object(op) }
+                item.set("redact", .bool(true))
+                if item["kind"] == nil { item.set("kind", .str("other")) }
+                args.set("item", .object(item))
+                var o = op
+                o.set("args", .object(args))
+                return .object(o)
+            }))
+            return Proposal(raw: raw)
+        }
+        for p in unfiled { try? writeUnfiled(privateCopy(p).raw) }
+        for (folder, p) in filed where (try? ProposalStore.save(privateCopy(p), in: folder)) != nil {
+            commands.trustProposals([p.id], in: folder)
+        }
+        journal([("stage", .str("sensitivity_raised")), ("cards", .int(unfiled.count + filed.count))])
     }
 
     /// The words of the spans a card lists as not filed yet, read from the capture itself.
@@ -279,13 +395,15 @@ public struct CaptureInbox: Sendable {
             state.attempts = attempts
             try? save(state)
         }
-        for id in clerk.filter({ $0.value == "pending" }).keys.sorted() {
+        for id in clerk.filter({ $0.value == "pending" || $0.value == "retry" }).keys.sorted() {
             guard let card = state.cards[id], let path = state.paths?[id] else { clerk[id] = "kept"; continue }
             let binder = state.cardBinder?[id]
             if !tier0Pending(card, binder: binder) { clerk[id] = "acted"; continue }
             if attempts[id, default: 0] >= 2 {
-                clerk[id] = "poison"
-                journal([("event", .string(id)), ("stage", .str("clerk_set_aside")), ("reason", .str("crashed the clerk twice"))])
+                let failed = clerk[id] == "retry"
+                clerk[id] = failed ? "failed" : "poison"
+                journal([("event", .string(id)), ("stage", .str("clerk_set_aside")),
+                         ("reason", .str(failed ? "the clerk could not read this" : "crashed the clerk twice"))])
                 continue
             }
             let parts = path.split(separator: "/").map(String.init)
@@ -324,21 +442,41 @@ public struct CaptureInbox: Sendable {
             try? save(state)
         }
         let id = work.event.id
-        guard tier0Pending(work.tier0, binder: work.tier0Binder) else { clerk[id] = "acted"; return outcome }
+        guard ["pending", "retry"].contains(clerk[id] ?? ""), tier0Pending(work.tier0, binder: work.tier0Binder) else {
+            if clerk[id] == "pending" || clerk[id] == "retry" { clerk[id] = "acted" }
+            return outcome
+        }
         try? AtomicFile.makePrivateFolder(dir.appendingPathComponent("interpretations", isDirectory: true))
         try? AtomicFile.write(Data(JSONWriter.pretty(.object(Self.record(interp))).utf8),
                               to: dir.appendingPathComponent("interpretations/\(id).json"))
         outcome.items = interp.items.count
+        func log(_ stage: String) {
+            journal([("event", .string(id)), ("stage", .string(stage)), ("outcome", .string(interp.outcome)), ("items", .int(interp.items.count)),
+                     ("filed", .int(outcome.filed)), ("not_sure", .int(outcome.unsure)), ("dropped", .int(interp.dropped)),
+                     ("unfiled_spans", .int(interp.unfiled.count)), ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
+        }
         guard !interp.items.isEmpty else {
-            clerk[id] = "kept"   // nothing better than the code-built card
-            journal([("event", .string(id)), ("stage", .str("clerk")), ("outcome", .string(interp.outcome)), ("items", .int(0)),
-                     ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
+            // A model failure gets one more try under the background budget (architecture 3.4, 8); otherwise
+            // the code-built card is the best there is.
+            clerk[id] = interp.unfiled.contains(where: { ["invalid_output", "refused", "truncated"].contains($0.reason) }) ? "retry" : "kept"
+            log("clerk")
             return outcome
         }
         let today = Clerk.captureDay(work.event.raw["captured_at"]?.stringValue ?? "") ?? CalendarDate.today(now: now)
-        for (binder, proposal) in Clerk.proposals(interp, event: work.event, today: today, client: commands.client, now: now) {
+        let cards = Clerk.proposals(interp, event: work.event, today: today, client: commands.client, now: now)
+        guard !cards.isEmpty else {
+            // Everything the clerk read is already in the binder: the code-built card stays, saying so.
+            clerk[id] = "kept"
+            let already = interp.items.compactMap { $0.match?.relation == "same" ? $0.match?.candidate.title : nil }
+            annotateTier0(work, already: already, commands: commands)
+            log("clerk_already")
+            return outcome
+        }
+        for (binder, proposal) in cards {
             let folder = binder.flatMap { name in
-                filing.first { $0.name == name }?.folder ?? rows.first { $0.teka.isAdopted && $0.name == name }?.folder
+                filing.first { $0.name == name }?.folder ?? rows.first {
+                    $0.teka.isAdopted && $0.name == name && !$0.teka.writesBlocked && Owner.device(of: $0.folder) == commands.deviceID
+                }?.folder
             }
             if let folder, (try? ProposalStore.save(proposal, in: folder)) != nil {
                 commands.trustProposals([proposal.id], in: folder)
@@ -346,7 +484,10 @@ public struct CaptureInbox: Sendable {
             } else {
                 var raw = proposal.raw
                 raw.set("binder", .str("not sure"))
-                writeUnfiled(raw)
+                do { try writeUnfiled(raw) } catch {
+                    log("clerk_write_failed")
+                    return outcome   // the code-built card stays; nothing is lost
+                }
                 outcome.unsure += proposal.ops.count
             }
         }
@@ -361,10 +502,29 @@ public struct CaptureInbox: Sendable {
         }
         outcome.replaced = true
         clerk[id] = "done"
-        journal([("event", .string(id)), ("stage", .str("clerk")), ("outcome", .string(interp.outcome)), ("items", .int(interp.items.count)),
-                 ("filed", .int(outcome.filed)), ("not_sure", .int(outcome.unsure)), ("dropped", .int(interp.dropped)),
-                 ("unfiled_spans", .int(interp.unfiled.count)), ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
+        log("clerk")
         return outcome
+    }
+
+    /// Notes on the code-built card that the clerk found its items already in the binder.
+    func annotateTier0(_ work: ClerkWork, already: [String], commands: Commands) {
+        guard !already.isEmpty else { return }
+        func annotated(_ p: Proposal) -> Proposal {
+            var raw = p.raw
+            var prov = raw["provenance"]?.objectValue ?? JSONObject()
+            prov.set("already_in_binder", .array(already.map(JSONValue.string)))
+            raw.set("provenance", .object(prov))
+            return Proposal(raw: raw)
+        }
+        if let binder = work.tier0Binder {
+            let folder = URL(fileURLWithPath: binder, isDirectory: true)
+            if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == work.tier0 }),
+               (try? ProposalStore.save(annotated(p), in: folder)) != nil {
+                commands.trustProposals([p.id], in: folder)
+            }
+        } else if let p = unfiled().first(where: { $0.id == work.tier0 }) {
+            try? writeUnfiled(annotated(p).raw)
+        }
     }
 
     /// The interpretation as kept in Sprava's own capture store (decisions.md C3).
@@ -399,10 +559,11 @@ public struct CaptureInbox: Sendable {
     /// the binder the person named when it is adopted, owned by this Mac and not at disclosure `none`, otherwise
     /// kept unfiled with the binder "not sure". Returns the card's id and, when filed, the binder folder.
     func card(for event: CaptureEvent, hint: String?, verified: Bool, producer: String, replaces: String?,
-              binders: [ShelfRow], commands: Commands, now: Date) -> (String, URL?) {
+              binders: [ShelfRow], commands: Commands, now: Date) throws -> (String, URL?) {
         let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)),
                                 (key: "model", value: .str("none"))])
-        let lines = Self.lines(of: event.text).prefix(10)
+        let allLines = Self.lines(of: event.text)
+        let lines = allLines.prefix(10)
         var ops: [JSONObject] = []
         for (i, line) in lines.enumerated() {
             var item = JSONObject()
@@ -424,6 +585,10 @@ public struct CaptureInbox: Sendable {
                                      (key: "filed_by", value: .str("code, no model"))])
         if !verified { provenance.set("unverified_source", .bool(true)) }
         if let replaces { provenance.set("supersedes", .string(replaces)) }
+        // Lines past the tenth are kept as parts not filed yet, in the note's own words (architecture 5.2).
+        if allLines.count > 10 {
+            provenance.set("unfiled", .array(allLines.dropFirst(10).map { .obj([("start", .int($0.start)), ("end", .int($0.end)), ("reason", .str("more_lines"))]) }))
+        }
         if event.isPrivate { provenance.set("private", .bool(true)) }
         let noun = event.raw["source"]?["kind"]?.stringValue == "dictation" ? "dictation" : "note"
         var title = lines.count == 1 ? "Add from a \(noun)" : "Add \(lines.count) items from a \(noun)"
@@ -443,25 +608,21 @@ public struct CaptureInbox: Sendable {
         }
         var raw = proposal.raw
         raw.set("binder", .str("not sure"))
-        writeUnfiled(raw)
+        try writeUnfiled(raw)
         return (proposal.id, nil)
     }
 
-    func writeUnfiled(_ raw: JSONObject) {
-        guard let id = raw["id"]?.stringValue, (try? AtomicFile.makePrivateFolder(unfiledDir)) != nil else { return }
+    func writeUnfiled(_ raw: JSONObject) throws {
+        guard let id = raw["id"]?.stringValue else { throw Commands.Failure(message: "a card without an id") }
+        try AtomicFile.makePrivateFolder(unfiledDir)
         let bytes = Data(JSONWriter.pretty(.object(raw)).utf8)
-        guard (try? AtomicFile.write(bytes, to: unfiledDir.appendingPathComponent("\(id).json"))) != nil else { return }
+        // The digest is recorded first: a card whose file was written but not recorded would never be shown.
         var digests = unfiledDigests()
         digests[id] = Self.digest(bytes)
-        if let data = try? JSONEncoder().encode(digests) { try? AtomicFile.write(data, to: unfiledDigestsURL) }
+        try AtomicFile.write(try JSONEncoder().encode(digests), to: unfiledDigestsURL)
+        try AtomicFile.write(bytes, to: unfiledDir.appendingPathComponent("\(id).json"))
     }
 
-    func markUnfiled(_ id: String, field: String) {
-        guard let card = unfiled().first(where: { $0.id == id }) else { return }
-        var raw = card.raw
-        raw.set(field, .bool(true))
-        writeUnfiled(raw)
-    }
 
     func unfiledDigests() -> [String: String] {
         (try? Data(contentsOf: unfiledDigestsURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]

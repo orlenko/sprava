@@ -67,6 +67,8 @@ public struct HolosImporter: Sendable {
             return result
         }
         guard case .array(let records) = try JSONParser.parse(data).value else { throw Commands.Failure(message: "expected a JSON array") }
+        // The device id is saved before the folder is registered, so a failed first run never strands it.
+        try saveState(state)
         try inbox.registerProducer(folder: state.deviceID, app: "holos")
         let folder = root.appendingPathComponent(state.deviceID, isDirectory: true)
         try AtomicFile.makePrivateFolder(folder)
@@ -78,7 +80,7 @@ public struct HolosImporter: Sendable {
                 result.unreadable += 1
                 continue
             }
-            let revision = try Self.revision(record)
+            guard let revision = try? Self.revision(record) else { result.unreadable += 1; continue }
             let key = ref + "|" + revision
             if state.written[key] != nil { result.skipped += 1; continue }
 
@@ -126,10 +128,14 @@ public struct HolosImporter: Sendable {
             try CaptureProducer.publish(Data(JSONWriter.pretty(.object(event)).utf8), as: folder.appendingPathComponent("\(id).json"))
             state.written[key] = id
             result.written += 1
+            try saveState(state)
         }
+        return result
+    }
+
+    func saveState(_ state: State) throws {
         try AtomicFile.makePrivateFolder(stateURL.deletingLastPathComponent())
         try AtomicFile.write(try JSONEncoder().encode(state), to: stateURL)
-        return result
     }
 
     /// Second precision with the offset in force at that instant, `+00:00` never `Z`.

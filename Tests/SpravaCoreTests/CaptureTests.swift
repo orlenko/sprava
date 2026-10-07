@@ -2,6 +2,15 @@ import Foundation
 import Testing
 @testable import SpravaCore
 
+extension JSONObject {
+    /// A copy of a `source` object with another revision.
+    func merging(revision: String) -> JSONValue {
+        var o = self
+        o.set("revision", .string(revision))
+        return .object(o)
+    }
+}
+
 @Suite(.serialized) struct CaptureTests {
     let now = Date(timeIntervalSince1970: 1_791_360_000)
     let device = "0f0e0d0c-0b0a-4908-8706-050403020100"
@@ -221,28 +230,32 @@ import Testing
         #expect(s.inbox.unfiled().count == 1)
     }
 
-    @Test func aCorrectionMarksTheEarlierCardAndAnotherAppCannotSupersede() throws {
+    @Test func aCorrectionReplacesTheWaitingCardAndOnlyARegisteredProducerCanChangeAChain() throws {
         let s = try setup()
         let first = try note(s, "Call the roofer")
         _ = s.inbox.sweep(binders: rows(s), commands: s.commands, now: now)
-        // A note edited after saving: the producer writes a new event that supersedes the first.
-        let (second, _) = try s.producer.writeNote("Call the roofer on Monday", startedAt: now, savedAt: now)
+        // The same thing edited after saving: a later event of the same chain (app and ref), new revision and text.
+        let (second, digest) = try s.producer.writeNote("Call the roofer on Monday", startedAt: now, savedAt: now)
         var corrected = second
+        corrected.set("source", first["source"]!.objectValue!.merging(revision: "sha256:edited"))
         corrected.set("supersedes", first["id"]!)
         let url = s.producer.folder.appendingPathComponent("\(second["id"]!.stringValue!).json")
         try FileManager.default.removeItem(at: url)
         try write(corrected, to: url)
-        // Another device folder, unregistered, claiming to supersede the first: ignored.
+        _ = digest
+        // Another device folder, unregistered, claiming the same app and ref: it cannot change the chain.
         _ = try copy(first, into: s, device: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee") {
             $0.set("supersedes", first["id"]!)
-            $0.set("source", .obj([("app", .str("other")), ("kind", .str("text")), ("ref", .str("x")), ("revision", .str("1"))]))
+            $0.set("retracted", .bool(true))
+            $0.set("text", .str(""))
+            $0.set("source", first["source"]!.objectValue!.merging(revision: "retracted"))
         }
         _ = s.inbox.sweep(binders: rows(s), commands: s.commands, now: now)
         let cards = s.inbox.unfiled()
-        #expect(cards.count == 3)
-        #expect(cards.contains { $0.raw["source_corrected"] == .bool(true) })
-        #expect(cards.filter { $0.raw["provenance"]?["supersedes"] != nil }.count == 1)
-        #expect(cards.contains { $0.title.hasPrefix("Corrected note") })
+        #expect(cards.count == 1)
+        #expect(cards[0].title.hasPrefix("Corrected note"))
+        #expect(cards[0].raw["provenance"]?["supersedes"] == first["id"])
+        #expect(cards[0].ops.first?["args"]?["item"]?["title"] == .str("Call the roofer on Monday"))
     }
 
     @Test func anUnfiledCardCanBeFiledThroughCommandsButNotWhenTampered() throws {

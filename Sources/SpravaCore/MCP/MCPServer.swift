@@ -187,7 +187,7 @@ public final class MCPServer: @unchecked Sendable {
             // A handle is a name, never a capability: it must belong to this client (architecture 7.3).
             guard let (row, _) = binder(args), case .string(let pid)? = args["proposal_id"],
                   let (p, _) = ProposalStore.list(in: row.folder).first(where: { $0.0.id == pid }),
-                  p.actor["model"]?.stringValue == client.id else { return Self.toolError("not found") }
+                  p.actor["kind"] == .str("brain"), p.actor["model"]?.stringValue == client.id else { return Self.toolError("not found") }
             return Self.toolResult(.obj([("proposal_id", .string(p.id)), ("state", .string(p.state)),
                                          ("applied_ops", p.raw["applied_ops"] ?? .array([]))]))
 
@@ -199,15 +199,16 @@ public final class MCPServer: @unchecked Sendable {
             }
             let requestID = args["request_id"]?.stringValue
             if let requestID, let (p, _) = ProposalStore.list(in: row.folder).first(where: {
-                $0.0.actor["model"]?.stringValue == client.id && $0.0.raw["request_id"]?.stringValue == requestID }) {
+                $0.0.actor["kind"] == .str("brain") && $0.0.actor["model"]?.stringValue == client.id && $0.0.raw["request_id"]?.stringValue == requestID }) {
                 return Self.toolResult(.obj([("proposal_id", .string(p.id)), ("state", .string(p.state))]))
             }
             var bodies: [JSONObject] = []
+            guard ops.allSatisfy({ $0.objectValue != nil }) else { return Self.toolError("each op is an object with op and args") }
             for case .object(let op) in ops {
                 guard case .string(let type)? = op["op"], Self.proposable.contains(type) else {
                     return Self.toolError("op must be one of \(Self.proposable.sorted().joined(separator: ", "))")
                 }
-                if type == "add_item", let id = op["args"]?["item"]?["id"]?.stringValue, !id.hasPrefix("$new:") {
+                if type == "add_item", op["args"]?["item"]?["id"]?.stringValue?.hasPrefix("$new:") != true {
                     return Self.toolError("new items use placeholder ids such as $new:1; ids are minted on approval")
                 }
                 var body = JSONObject([(key: "op", value: .string(type)), (key: "args", value: op["args"] ?? .obj([]))])

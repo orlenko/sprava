@@ -15,7 +15,10 @@ import Testing
         let inbox = CaptureInbox(root: root, support: support)
         let device = "0f0e0d0c-0b0a-4908-8706-050403020100"
         try inbox.registerProducer(folder: device, app: "sprava")
-        _ = try CaptureProducer(root: root, deviceID: device, support: support).writeNote("Call the invented notary", startedAt: now, savedAt: now)
+        let producer = CaptureProducer(root: root, deviceID: device, support: support)
+        let note = try producer.prepareNote("Call the invented notary", startedAt: now, savedAt: now)
+        try inbox.recordNotice(event: note.id, digest: note.digest)   // as the app does, before publishing
+        try producer.publish(note)
         let rows = [ShelfRow(folder: folder, source: .picked, archived: false, teka: Teka.read(folder))]
         _ = inbox.sweep(binders: rows, commands: commands, now: now)
         // A hand edit of the catalog, absorbed on the next write.

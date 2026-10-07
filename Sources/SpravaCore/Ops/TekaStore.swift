@@ -174,7 +174,6 @@ public final class TekaStore {
     public func apply(_ bodies: [OpBody], batch: String? = nil, now: Date = Date(),
                       underLock after: (() throws -> Void)? = nil) throws -> [JSONObject] {
         try withLock {
-            createdProposals = []
             // An editor that skips the lock can change the file at any moment: each pass absorbs what it finds,
             // and a change seen while writing starts the pass again (teka-v0 §4.9 step 5).
             var attempt = 0
@@ -188,6 +187,16 @@ public final class TekaStore {
                     usleep(50_000)
                 }
             }
+        }
+    }
+
+    /// Absorbs what happened outside and finishes or aborts a write cut short, writing nothing else.
+    public func settle(now: Date = Date()) throws {
+        try withLock {
+            let (catalog, hash, _) = try readCatalog()
+            let log = try readOpLog().ops
+            guard !log.isEmpty else { return }
+            _ = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now)
         }
     }
 
@@ -274,6 +283,10 @@ public final class TekaStore {
     /// Step 4: each move is a rename that never replaces a file.
     func performMoves(_ moves: [(from: String, to: String)]) throws {
         for move in moves {
+            // Checked again right before the rename: the source is still a plain file, the way there has no link.
+            guard DocumentPaths.plainFile(move.from, in: folder), DocumentPaths.isFreeDestination(move.to, in: folder) else {
+                throw Refused(reason: "the file in intake/ or its destination changed while it was being filed")
+            }
             try DocumentPaths.makeParents(move.to, in: folder)
             let source = folder.appendingPathComponent(move.from).path
             let target = folder.appendingPathComponent(move.to).path
@@ -514,7 +527,7 @@ public final class TekaStore {
         return appended
     }
 
-    /// Proposal ids this store wrote itself during its last call, for the caller to trust.
+    /// Proposal ids this store wrote itself, for the caller to trust. A store lives for one command.
     public private(set) var createdProposals: [String] = []
 
     /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item gets a

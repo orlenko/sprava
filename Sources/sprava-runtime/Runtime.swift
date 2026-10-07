@@ -34,6 +34,7 @@ final class Runtime: @unchecked Sendable {
     var nextImport = Date()
     var nextDashboard = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
+    var runGeneration: [String: Int] = [:]
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
     let watch = WatchBox()
@@ -283,6 +284,8 @@ final class Runtime: @unchecked Sendable {
         record.start(at: Date())
         records.jobs[key] = record
         watch.started(key, at: Date())
+        runGeneration[key, default: 0] += 1
+        let generation = runGeneration[key]!
         switch key {
         case "sentinel": nextSentinel = Date().addingTimeInterval(3600)
         case "alerts": nextAlertsCheck = Date().addingTimeInterval(3600)
@@ -296,7 +299,8 @@ final class Runtime: @unchecked Sendable {
         let started = DispatchTime.now()
         let budget = Double(spec.budget.components.seconds)
         queue.asyncAfter(deadline: .now() + budget) { [weak self] in
-            guard let self, self.records.jobs[key]?.running == true, self.timeouts[key] == nil else { return }
+            // Only this run's timer counts: a timer left from an earlier run never marks a later one.
+            guard let self, self.runGeneration[key] == generation, self.records.jobs[key]?.running == true, self.timeouts[key] == nil else { return }
             self.timeouts[key] = Date()
             self.log("job=\(key) outcome=timeout budget_s=\(Int(budget))")
         }
@@ -421,7 +425,12 @@ final class Runtime: @unchecked Sendable {
     func intake() -> JobOutcome {
         guard let commands, let xpc else { return .skipped }
         let rows = shelfRows()
-        let result = xpc.queue.sync { IntakeWatcher(support: support).scan(binders: rows, commands: commands) }
+        let watcher = IntakeWatcher(support: support)
+        // Digests of large files are computed here, off the command queue.
+        var digests: [String: String] = [:]
+        for url in watcher.filesToHash(binders: rows, deviceID: commands.deviceID) { digests[url.path] = DocumentPaths.sha256(of: url) }
+        let known = digests
+        let result = xpc.queue.sync { watcher.scan(binders: rows, commands: commands, digests: known) }
         if result.carded > 0 || result.replaced > 0 {
             log("intake carded=\(result.carded) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
         }
@@ -447,8 +456,12 @@ final class Runtime: @unchecked Sendable {
         task.standardOutput = out
         task.standardError = FileHandle.nullDevice
         do { try task.run() } catch { return .error(code: "importer_not_started", culprit: nil) }
+        // A hung voiceislocal is ended after 20 seconds, long before the watchdog would end the runtime.
+        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: killer)
         let data = out.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
+        killer.cancel()
         guard task.terminationStatus == 0 else { return .error(code: "importer_failed", culprit: "exit \(task.terminationStatus)") }
         do {
             let inbox = commands.inbox

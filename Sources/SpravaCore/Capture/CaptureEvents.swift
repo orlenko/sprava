@@ -32,11 +32,17 @@ public struct CaptureProducer: Sendable {
 
     public var folder: URL { root.appendingPathComponent(deviceID, isDirectory: true) }
 
-    /// Writes one typed note. `binderHint` is the binder the person typed in, when there was one. Returns the event
-    /// and the SHA-256 of its bytes, which the app sends to the runtime as its notice (architecture 8).
-    @discardableResult
-    public func writeNote(_ text: String, binderHint: String? = nil, startedAt: Date, savedAt: Date = Date(),
-                          locale: String = Locale.current.identifier(.bcp47)) throws -> (event: JSONObject, digest: String) {
+    /// A note ready to publish: its event, bytes and digest, so the app can send its notice first.
+    public struct PreparedNote: Sendable {
+        public let event: JSONObject
+        public let bytes: Data
+        public let digest: String
+        public var id: String { event["id"]?.stringValue ?? "" }
+    }
+
+    /// Builds one typed note (capture-event-v0 §8.1). `binderHint` is the binder the person typed in, if any.
+    public func prepareNote(_ text: String, binderHint: String? = nil, startedAt: Date, savedAt: Date = Date(),
+                            locale: String = Locale.current.identifier(.bcp47)) throws -> PreparedNote {
         try AtomicFile.makePrivateFolder(folder)
         let previous = (try? Data(contentsOf: stateURL)).flatMap { try? JSONDecoder().decode(HLC.self, from: $0) }
         let hlc = HLC.next(after: previous, node: deviceID.replacingOccurrences(of: "-", with: ""), now: savedAt)
@@ -61,8 +67,21 @@ public struct CaptureProducer: Sendable {
         event.set("sensitivity", .str("unmarked"))
         if let binderHint { event.set("binder_hint", .string(binderHint)) }
         let bytes = Data(JSONWriter.pretty(.object(event)).utf8)
-        try Self.publish(bytes, as: folder.appendingPathComponent("\(id).json"))
-        return (event, "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        return PreparedNote(event: event, bytes: bytes, digest: "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+    }
+
+    /// Publishes a prepared note into Sprava's own device folder.
+    public func publish(_ note: PreparedNote) throws {
+        try Self.publish(note.bytes, as: folder.appendingPathComponent("\(note.id).json"))
+    }
+
+    /// Writes one typed note at once (the CLI and tests). Returns the event and the SHA-256 of its bytes.
+    @discardableResult
+    public func writeNote(_ text: String, binderHint: String? = nil, startedAt: Date, savedAt: Date = Date(),
+                          locale: String = Locale.current.identifier(.bcp47)) throws -> (event: JSONObject, digest: String) {
+        let note = try prepareNote(text, binderHint: binderHint, startedAt: startedAt, savedAt: savedAt, locale: locale)
+        try publish(note)
+        return (note.event, note.digest)
     }
 
     /// ISO 8601 with the numeric offset in force at that instant; `+00:00`, never `Z` (capture-event-v0 §4.3).

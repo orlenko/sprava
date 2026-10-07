@@ -204,7 +204,7 @@ func item(_ quote: String, _ title: String, _ action: String = "other", when: St
         #expect(teka["expected_by"] == .str("2026-10-20"))
         #expect(teka["follow_up_at"] == .str("2026-10-21"))
         #expect(teka["kind"] == .str("document-request"))
-        #expect(teka["no_deadline"] == nil)
+        #expect(teka["no_deadline"] == .bool(true))   // due XOR no_deadline holds for waiting items too
         #expect(cards[0].1.ops.first?["card"]?["signals"] == .array([.str("hint")]))
     }
 

@@ -57,7 +57,8 @@ public enum DateGrammar {
         while let w = words.last, ["latest", "tard"].contains(w) { words.removeLast() }
         let t = words.joined(separator: " ")
         let fr = isFrench(locale)
-        let wasThis = text.contains("this ") || text.hasPrefix("ce ")
+        let originalWords = text.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
+        let wasThis = originalWords.contains("this") || originalWords.contains("ce")
 
         // ISO date.
         if let d = CalendarDate.strict(t) { return Found(text: raw, date: d) }
@@ -122,13 +123,22 @@ public enum DateGrammar {
         return nil
     }
 
-    /// A day of the month: "15th", "fifteenth", or a bare number only after an article ("the 15", "le 15", "le quinze").
+    /// A day of the month only after an article ("the 15th", "the fifteenth", "le 15", "le quinze"): a bare
+    /// ordinal is a sequence ("First, call the bank"; "the 4th floor" is caught by its noun, see `scan`).
     static func dayOfMonth(_ t: String, article: Bool) -> Int? {
-        if let m = t.wholeMatch(of: /(\d{1,2})(st|nd|rd|th|er)?/), let d = Int(m.output.1), (1...31).contains(d),
-           article || m.output.2 != nil { return d }
+        guard article else { return nil }
+        if let m = t.wholeMatch(of: /(\d{1,2})(st|nd|rd|th|er)?/), let d = Int(m.output.1), (1...31).contains(d) { return d }
         if let d = ordinalsEN[t] { return d }
-        if article, let d = smallNumbers[t], t != "a", t != "un", t != "une" { return d }
+        if let d = smallNumbers[t], t != "a", t != "un", t != "une" { return d }
         return nil
+    }
+
+    /// A full date: ISO, or a month and day with a year. Only these resolve for an estimated capture time.
+    public static func isFullDate(_ text: String) -> Bool {
+        let t = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        if CalendarDate.strict(t) != nil { return true }
+        let words = t.split(separator: " ").map(String.init)
+        return words.contains { Int($0).map { $0 >= 1000 } ?? false } && words.contains { monthsEN.contains($0) || monthsFR.contains($0) }
     }
 
     static func nextDayOfMonth(_ day: Int, after today: CalendarDate) -> CalendarDate? {
@@ -163,6 +173,7 @@ public enum DateGrammar {
         }
         let lowerWhen = whenText.lowercased()
         if inOrder(["if", "not", "by"]) || inOrder(["if", "nothing", "by"]) || s.contains("follow up") || s.contains("relancer") { return .follow_up }
+        if inOrder(["at", "the", "latest"]) || inOrder(["au", "plus", "tard"]) || s.contains("at the latest") || s.contains("au plus tard") { return .due }
         if ["until", "within", "jusqu'à"].contains(where: { before.contains($0) || lowerWhen.hasPrefix($0) }) || inOrder(["should", "arrive"]) { return .expected }
         if ["by", "before", "d'ici", "avant"].contains(where: { before.contains($0) || lowerWhen.hasPrefix($0 + " ") }) { return .due }
         return waiting ? .expected : .due
@@ -175,6 +186,8 @@ public enum DateGrammar {
         for length in stride(from: 4, through: 1, by: -1) where words.count >= length {
             for i in 0...(words.count - length) {
                 let phrase = words[i..<(i + length)].joined(separator: " ")
+                let next = i + length < words.count ? words[i + length].lowercased() : ""
+                if ["floor", "étage", "room", "unit", "apartment", "appartement", "place", "time", "fois", "street", "rue", "avenue"].contains(next) { continue }
                 if let f = resolve(phrase, anchor: today, locale: locale), isMeaningful(phrase) { return Found(text: phrase, date: f.date) }
             }
         }

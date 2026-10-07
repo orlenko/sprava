@@ -58,15 +58,19 @@ final class InboxModel: ObservableObject {
         Task {
             defer { saving = false }
             do {
-                let (event, digest) = try producer.writeNote(text, binderHint: binderName, startedAt: startedTyping ?? Date())
+                // The notice goes first, so the runtime trusts the binder the person chose (architecture 8).
+                let note = try producer.prepareNote(text, binderHint: binderName, startedAt: startedTyping ?? Date())
+                var noticed = true
+                do {
+                    _ = try await client.global("capture_notice", [("event", .string(note.id)), ("sha256", .string(note.digest))], timeout: 5)
+                } catch {
+                    noticed = false
+                }
+                try producer.publish(note)
                 draft = ""
                 startedTyping = nil
-                do {
-                    _ = try await client.global("capture_notice", [("event", event["id"] ?? .null), ("sha256", .string(digest))], timeout: 5)
-                    message = binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment."
-                } catch {
-                    message = "Saved, but the runtime did not answer, so the card will ask for a binder."
-                }
+                message = !noticed ? "Saved, but the runtime did not answer, so the card will ask for a binder."
+                    : binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment."
                 try? await Task.sleep(for: .seconds(2))
                 await load()
             } catch {

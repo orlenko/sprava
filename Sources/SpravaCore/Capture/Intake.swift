@@ -54,20 +54,30 @@ public struct IntakeWatcher: Sendable {
     }
 
     /// One pass over the binders this Mac manages.
-    public func scan(binders: [ShelfRow], commands: Commands, now: Date = Date()) -> ScanResult {
+    public func scan(binders: [ShelfRow], commands: Commands, now: Date = Date(), digests: [String: String] = [:]) -> ScanResult {
         var result = ScanResult()
         var state = load()
-        var kept: [String: [String: Seen]] = [:]
+        // Binders not scanned this time keep their state, so a binder briefly missing is never carded again.
+        var kept = state
         for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == commands.deviceID {
             let key = row.folder.standardizedFileURL.path
             var seen = state[key] ?? [:]
             var next: [String: Seen] = [:]
+            // Cards already waiting for a file, matched by name and digest, are never made twice.
+            let waiting = ProposalStore.list(in: row.folder).map(\.0).filter { $0.state == "proposed" && $0.raw["provenance"]?["intake"] != nil }
             for file in Self.candidates(in: row.folder) {
                 var entry = seen.removeValue(forKey: file.name)
                 if let e = entry, e.size == file.size, e.mtime == file.mtime {
                     if e.card == nil {
-                        entry?.card = card(file, in: row, commands: commands, now: now)
-                        if entry?.card != nil { result.carded += 1 }
+                        let path = row.folder.appendingPathComponent("intake/" + file.name).path
+                        let sha = digests[path] ?? DocumentPaths.sha256(of: URL(fileURLWithPath: path))
+                        if let existing = waiting.first(where: { $0.raw["provenance"]?["intake"]?["name"]?.stringValue == file.name
+                            && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }) {
+                            entry?.card = existing.id
+                        } else {
+                            entry?.card = card(file, sha: sha, in: row, commands: commands, now: now)
+                            if entry?.card != nil { result.carded += 1 }
+                        }
                     } else if now.timeIntervalSince(e.firstSeen) > 7 * 86_400 {
                         result.stale += 1
                     }
@@ -86,10 +96,25 @@ public struct IntakeWatcher: Sendable {
             // Files gone from intake/ (filed, or removed by the person): cards still waiting for them are withdrawn.
             for (_, gone) in seen { if let card = gone.card { withdraw(card, in: row.folder, now: now) } }
             kept[key] = next
-            state[key] = nil
         }
         save(kept)
         return result
+    }
+
+    /// The files the next scan would card: they held still since the last scan and have no card yet. Their
+    /// digests are computed by the caller off the command queue, so a large file never stalls the app.
+    public func filesToHash(binders: [ShelfRow], deviceID: String) -> [URL] {
+        let state = load()
+        var out: [URL] = []
+        for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
+            let seen = state[row.folder.standardizedFileURL.path] ?? [:]
+            for file in Self.candidates(in: row.folder) {
+                if let e = seen[file.name], e.card == nil, e.size == file.size, e.mtime == file.mtime {
+                    out.append(row.folder.appendingPathComponent("intake/" + file.name))
+                }
+            }
+        }
+        return out
     }
 
     /// The suggested folder: where most of the binder's documents already live, else `documents`.
@@ -116,9 +141,9 @@ public struct IntakeWatcher: Sendable {
         return candidate
     }
 
-    func card(_ file: (name: String, size: Int, mtime: Double), in row: ShelfRow, commands: Commands, now: Date) -> String? {
+    func card(_ file: (name: String, size: Int, mtime: Double), sha: String?, in row: ShelfRow, commands: Commands, now: Date) -> String? {
         let from = "intake/" + file.name
-        guard let sha = DocumentPaths.sha256(of: row.folder.appendingPathComponent(from)) else { return nil }
+        guard let sha else { return nil }
         let safe = DocumentPaths.safeName(file.name)
         let path = Self.freePath(Self.suggestedFolder(row.teka.catalog), safe, in: row.folder)
         let modified = Date(timeIntervalSince1970: file.mtime)

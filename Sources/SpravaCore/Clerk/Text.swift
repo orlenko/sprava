@@ -10,6 +10,9 @@ public struct TextSpan: Equatable, Sendable {
 /// Sentences, windows and quote anchoring for the clerk (capture-event-v0 §6.4, "Windows" and check 1).
 public enum CaptureText {
     static let enders: Set<Unicode.Scalar> = [".", "!", "?", "…", "\n", "\r", "\u{2029}", "\u{2028}"]
+    /// Words whose period never ends a sentence ("Call Mr. Smith by Friday.").
+    static let abbreviations: Set<String> = ["mr", "mrs", "ms", "dr", "st", "mt", "jr", "sr", "prof", "mme", "mlle", "me", "m",
+                                             "no", "vs", "etc", "e.g", "i.e", "approx", "dept", "ave", "blvd", "rd", "ste", "inc", "ltd", "co"]
 
     /// Sentences: split after `.`, `!`, `?` or `…` followed by white space, and at line breaks. Trimmed; empty
     /// ones dropped. A period inside a number or an initial ("A. Example") does not end a sentence when the next
@@ -36,10 +39,15 @@ public enum CaptureText {
                 start = i + 1
             } else if [".", "!", "?", "…"].contains(s), i + 1 >= scalars.count || scalars[i + 1].properties.isWhitespace {
                 let initial = s == "." && i >= 1 && scalars[i - 1].properties.isUppercase && (i < 2 || !scalars[i - 2].properties.isAlphabetic)
+                var w = i
+                while w > 0, scalars[w - 1].properties.isAlphabetic || scalars[w - 1] == "." { w -= 1 }
+                var word = String.UnicodeScalarView()
+                word.append(contentsOf: scalars[w..<i])
+                let abbreviation = s == "." && abbreviations.contains(String(word).lowercased())
                 var j = i + 1
                 while j < scalars.count, scalars[j] == " " { j += 1 }
                 let nextLower = j < scalars.count && scalars[j].properties.isLowercase
-                if !(initial || (s == "." && nextLower)) {
+                if !(initial || abbreviation || (s == "." && nextLower)) {
                     flush(i + 1)
                     start = i + 1
                 }

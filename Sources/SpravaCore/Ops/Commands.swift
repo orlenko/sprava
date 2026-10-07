@@ -93,7 +93,7 @@ public struct Commands: Sendable {
                 o.set("digest", .string(digest))
                 o.set("verified", .bool(digests[key(f, p.id)] == digest))
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: catalog)) }))
-                o.set("notes", .array(p.ops.flatMap(Proposal.notes).map(JSONValue.string)))
+                o.set("notes", .array(p.cardNotes.map(JSONValue.string)))
                 // What the person may edit on the card (CardEdits).
                 o.set("editable", .array(p.ops.enumerated().compactMap { i, op -> JSONValue? in
                     guard op["op"] == .str("add_item"), let item = op["args"]?["item"] else { return nil }
@@ -186,7 +186,7 @@ public struct Commands: Sendable {
                 o.set("title", .string(p.title))
                 o.set("created_at", p.raw["created_at"] ?? .null)
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: nil)) }))
-                o.set("notes", .array(p.ops.flatMap(Proposal.notes).map(JSONValue.string)))
+                o.set("notes", .array(p.cardNotes.map(JSONValue.string)))
                 o.set("not_filed", .array(inbox.notFiled(p).map(JSONValue.string)))
                 for flag in ["source_retracted", "source_corrected"] where p.raw[flag] == .bool(true) { o.set(flag, .bool(true)) }
                 if let prov = p.raw["provenance"]?.objectValue {
@@ -285,9 +285,19 @@ public struct Commands: Sendable {
         case "revoke_client":
             guard case .string(let id)? = r["client_id"] else { throw Failure(message: "revoke_client needs client_id") }
             var clients = MCPClients.load(support)
+            let scope = clients.clients.first { $0.id == id }?.binders.keys.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? []
             clients.revoke(id: id)
             try clients.save(support)
-            return JSONObject()
+            // Its cards still waiting are withdrawn (architecture 7.5).
+            var withdrawn = 0
+            for folder in scope {
+                for (p, _) in ProposalStore.list(in: folder) where p.state == "proposed" && p.actor["kind"] == .str("brain")
+                    && p.actor["model"]?.stringValue == id {
+                    try? TekaStore(folder: folder, client: client).reject(p, reason: "the brain was disconnected", now: now)
+                    withdrawn += 1
+                }
+            }
+            return JSONObject([(key: "withdrawn", value: .int(withdrawn))])
 
         case "history":
             // Recent changes a person might undo: the last 20 ops that changed something, newest first.

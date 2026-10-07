@@ -5,6 +5,8 @@ import Foundation
 public final class LineReader {
     let fd: Int32
     var buffer: [UInt8] = []
+    /// When set, reading past this moment reports a timeout however the bytes arrive.
+    public var deadline: Date?
 
     public init(fd: Int32) { self.fd = fd }
 
@@ -18,6 +20,7 @@ public final class LineReader {
                 return .line(line)
             }
             if buffer.count > limit { return .tooLong }
+            if let deadline, Date() > deadline { return .timeout }
             var chunk = [UInt8](repeating: 0, count: 65_536)
             let n = read(fd, &chunk, chunk.count)
             if n == 0 { return .end }
@@ -143,6 +146,7 @@ public final class MCPListener: @unchecked Sendable {
         guard getpeereid(conn, &uid, &gid) == 0, uid == getuid() else { return }
         setTimeout(conn, seconds: 3)
         let reader = LineReader(fd: conn)
+        reader.deadline = Date().addingTimeInterval(5)   // the whole preamble, not each read (a peer dripping bytes)
         guard case .line(let preamble) = reader.next(limit: Self.preambleLimit),
               let value = try? JSONParser.parse(preamble).value, let auth = value["sprava_auth"],
               let clientID = auth["client_id"]?.stringValue, let token = auth["token"]?.stringValue else {
@@ -151,10 +155,12 @@ public final class MCPListener: @unchecked Sendable {
         }
         guard let client = MCPClients.load(support).authenticate(clientID: clientID, token: token) else {
             _ = writeLine(conn, #"{"sprava_auth":{"ok":false,"code":"token_refused"}}"#)
-            log("mcp client=\(clientID.prefix(41)) auth=refused")
+            // The id came from the peer: only safe characters reach the log.
+            log("mcp client=\(String(clientID.prefix(41).filter { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) })) auth=refused")
             return
         }
         _ = writeLine(conn, #"{"sprava_auth":{"ok":true}}"#)
+        reader.deadline = nil
         release()
         setTimeout(conn, seconds: 0)
         log("mcp client=\(client.id) connected")
@@ -162,6 +168,11 @@ public final class MCPListener: @unchecked Sendable {
         while true {
             switch reader.next(limit: Self.lineLimit) {
             case .line(let line):
+                // Revocation is immediate (architecture 7.5): the record is checked again before every call.
+                guard let current = MCPClients.load(support).clients.first(where: { $0.id == client.id }), !current.revoked else {
+                    log("mcp client=\(client.id) closed=revoked")
+                    return
+                }
                 let started = Date()
                 guard let reply = queue.sync(execute: { server.handle(line: line) }) else { continue }
                 if !writeLine(conn, reply) { return }

@@ -46,6 +46,20 @@ public struct Proposal: Sendable {
         return out
     }
 
+    /// Every note for a card: each op's, plus the card's own (capture-event-v0 §3.2, §6.5).
+    public var cardNotes: [String] {
+        var out = ops.flatMap(Self.notes)
+        if let already = raw["provenance"]?["already_in_binder"]?.arrayValue?.compactMap(\.stringValue), !already.isEmpty {
+            out.append("already in the binder: " + already.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", "))
+        }
+        if let left = raw["provenance"]?["left_out"]?.arrayValue?.compactMap(\.stringValue), !left.isEmpty {
+            out.append("left out, type them by hand: " + left.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", "))
+        }
+        if let remains = raw["provenance"]?["remains"]?.stringValue { out.append("still kept elsewhere: \(remains)") }
+        if raw["provenance"]?["private"] == .bool(true) { out.append("private: kept off the hub and every brain") }
+        return out
+    }
+
     /// A short plain-words line for one op, for review cards (titles stay inside the app, never in logs).
     public static func describe(_ op: JSONObject, catalog: JSONObject?) -> String {
         let args = op["args"]?.objectValue ?? JSONObject()
@@ -192,7 +206,12 @@ extension TekaStore {
         }
         let actor = proposal.actor
         // A crash after the batch was written but before the card was marked: finish marking, apply nothing twice.
-        let already = try readOpLog().ops.filter { $0["proposal"]?.stringValue == proposal.id }
+        // The binder is settled first, so a write cut short is rolled forward or aborted, and aborted lines never
+        // count as applied.
+        try settle(now: now)
+        let log = try readOpLog().ops
+        let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+        let already = log.filter { $0["proposal"]?.stringValue == proposal.id && !aborted.contains($0["id"]?.stringValue ?? "") }
         if !already.isEmpty {
             var raw = proposal.raw
             raw.set("state", .str("applied"))
