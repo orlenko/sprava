@@ -23,6 +23,8 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava clerk <text> [--locale <tag>] [--binder <name>=<description>]...
                                           developer only: run the on-device clerk on invented text and print
                                           what it read; nothing is filed
+       sprava clerk-gate <fixtures.json>   developer only: the clerk's release gate on invented fixtures:
+                                          recall, dates, amounts, binders, calls and time
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
@@ -314,6 +316,73 @@ func clerk(_ args: [String]) {
     print(JSONWriter.pretty(.object(record)), terminator: "")
 }
 
+/// The release gate (architecture 5.3): runs the clerk on each invented case and scores it against what was
+/// expected. A real item matches an expected one when all its words occur in the item's title or sentence.
+func clerkGate(_ args: [String]) {
+    guard let path = args.first, let data = FileManager.default.contents(atPath: (path as NSString).expandingTildeInPath),
+          let spec = try? JSONParser.parse(data).value else { fail(usage) }
+    let model: AppleClerkModel
+    switch AppleClerkModel.load() {
+    case .success(let m): model = m
+    case .failure(let e): fail("the clerk cannot run: \(e)", code: 1)
+    }
+    let filing = (spec["binders"]?.arrayValue ?? []).compactMap { b -> FilingBinder? in
+        guard let n = b["name"]?.stringValue, let d = b["description"]?.stringValue else { return nil }
+        return FilingBinder(name: n, description: d, folder: URL(fileURLWithPath: "/dev/null"), words: FilingBinder.significantWords(d))
+    }
+    let capturedAt = spec["captured_at"]?.stringValue ?? CaptureProducer.offsetTime(Date())
+    var totals = (expected: 0, found: 0, dates: 0, datesExpected: 0, amounts: 0, amountsExpected: 0,
+                  binderRight: 0, binderWrong: 0, notSure: 0, extra: 0, calls: 0)
+    var seconds: [Double] = []
+    for c in spec["cases"]?.arrayValue ?? [] {
+        var o = JSONObject()
+        o.set("id", .string(UUIDv7.make()))
+        o.set("source", .obj([("app", .str("sprava")), ("kind", .str("text")), ("ref", .str("gate")), ("revision", .str("gate"))]))
+        o.set("captured_at", .string(capturedAt))
+        o.set("locale", c["locale"] ?? .str("en-CA"))
+        o.set("text", c["text"] ?? .str(""))
+        o.set("sensitivity", .str("unmarked"))
+        let event = CaptureEvent(raw: o, url: URL(fileURLWithPath: "/dev/null"), digest: "")
+        let offered = filing
+        let t0 = Date()
+        let interp = runBlocking { await Clerk(model: model).read(event, filing: offered, hint: nil) }
+        seconds.append(Date().timeIntervalSince(t0))
+        totals.calls += interp.calls
+        var used = Set<Int>()
+        var line = "\(c["id"]?.stringValue ?? "?"):"
+        for e in c["expect"]?.arrayValue ?? [] {
+            totals.expected += 1
+            let words = e["words"]?.arrayValue?.compactMap(\.stringValue).map { $0.lowercased() } ?? []
+            guard let i = interp.items.indices.first(where: { i in
+                !used.contains(i) && words.allSatisfy { (interp.items[i].title + " " + interp.items[i].sentence.text).lowercased().contains($0) }
+            }) else { line += " MISS(\(words.joined(separator: " ")))"; continue }
+            used.insert(i)
+            totals.found += 1
+            let item = interp.items[i]
+            if let due = e["due"]?.stringValue {
+                totals.datesExpected += 1
+                if item.whenResolved?.description == due { totals.dates += 1 } else { line += " date(\(words[0]): \(item.whenResolved?.description ?? "none") not \(due))" }
+            }
+            if let amount = e["amount"]?.numberValue?.doubleValue {
+                totals.amountsExpected += 1
+                if item.amount?.value == amount { totals.amounts += 1 } else { line += " amount(\(words[0]))" }
+            }
+            if let binder = e["binder"]?.stringValue {
+                if item.binder == binder { totals.binderRight += 1 }
+                else if item.binder == nil { totals.notSure += 1; line += " not-sure(\(words[0]))" }
+                else { totals.binderWrong += 1; line += " WRONG-BINDER(\(words[0]): \(item.binder!))" }
+            }
+        }
+        totals.extra += interp.items.count - used.count
+        print(line + " · \(interp.items.count) items, \(interp.calls) calls, " + String(format: "%.1f s", seconds.last!))
+    }
+    func pct(_ a: Int, _ b: Int) -> String { b == 0 ? "-" : "\(a)/\(b) (\(Int((Double(a) / Double(b) * 100).rounded()))%)" }
+    print("recall \(pct(totals.found, totals.expected)) · dates \(pct(totals.dates, totals.datesExpected)) · amounts \(pct(totals.amounts, totals.amountsExpected))")
+    let binders = totals.binderRight + totals.binderWrong + totals.notSure
+    print("binders right \(pct(totals.binderRight, binders)) · wrong \(pct(totals.binderWrong, binders)) · not sure \(pct(totals.notSure, binders)) · extra items \(totals.extra)")
+    print("calls \(totals.calls) · seconds per case median " + String(format: "%.1f", seconds.sorted()[seconds.count / 2]) + " · max " + String(format: "%.1f", seconds.max() ?? 0) + " · model \(model.name)")
+}
+
 final class RunBox<T>: @unchecked Sendable { var value: T? }
 
 func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
@@ -343,6 +412,7 @@ case "dashboard":
     print(text, terminator: "")
 case "import-holos": importHolos(arguments)
 case "clerk": clerk(arguments)
+case "clerk-gate": clerkGate(arguments)
 case "-h", "--help", "help": print(usage)
 default: fail(usage)
 }

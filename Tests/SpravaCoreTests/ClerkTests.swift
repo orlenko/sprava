@@ -215,7 +215,7 @@ func item(_ quote: String, _ title: String, _ action: String = "other", when: St
         let right = JSONValue.obj([("items", .array((5...7).map { item("Call person number \($0)", "Call \($0)", "call") }))])
         let model = ScriptedModel(extractions: [six, left, right])
         let interp = await Clerk(model: model).read(event(text), filing: [], hint: nil, now: now)
-        #expect(interp.calls == 3)
+        #expect(interp.calls == 4)   // two halves, the first try, and one more reading of what was left uncovered
         #expect(interp.items.count == 7)
         #expect(interp.unfiled.map(\.span.text) == ["Call person number 8 tomorrow."])
         #expect(interp.outcome == "partial")
