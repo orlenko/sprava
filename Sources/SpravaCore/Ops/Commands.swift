@@ -93,6 +93,8 @@ public struct Commands: Sendable {
                 o.set("digest", .string(digest))
                 o.set("verified", .bool(digests[key(f, p.id)] == digest))
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: catalog)) }))
+                o.set("notes", .array(p.ops.flatMap(Proposal.notes).map(JSONValue.string)))
+                if let c = p.raw["confidence"] { o.set("confidence", c) }
                 if let intake = p.raw["provenance"]?["intake"] { o.set("intake", intake) }
                 if let folder = p.ops.first(where: { $0["op"] == .str("file_document") })?["args"]?["document"]?["path"]?.stringValue {
                     o.set("document_folder", .string((folder as NSString).deletingLastPathComponent))
@@ -175,6 +177,8 @@ public struct Commands: Sendable {
                 o.set("title", .string(p.title))
                 o.set("created_at", p.raw["created_at"] ?? .null)
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: nil)) }))
+                o.set("notes", .array(p.ops.flatMap(Proposal.notes).map(JSONValue.string)))
+                o.set("not_filed", .array(inbox.notFiled(p).map(JSONValue.string)))
                 for flag in ["source_retracted", "source_corrected"] where p.raw[flag] == .bool(true) { o.set(flag, .bool(true)) }
                 if let prov = p.raw["provenance"]?.objectValue {
                     o.set("unverified_source", .bool(prov["unverified_source"] == .bool(true)))

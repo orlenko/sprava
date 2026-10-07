@@ -16,6 +16,7 @@ final class BinderActions: ObservableObject {
         /// For a filing card: the intake file's details and the suggested folder, which the person may change.
         let intake: String?
         let folder: String?
+        let notes: [String]
     }
 
     @Published var cards: [Card] = []
@@ -32,10 +33,16 @@ final class BinderActions: ObservableObject {
     }
     @Published var message: String?
     @Published var busy = false
+    @Published var description = ""
+    @Published var filing = false
     let client = RuntimeClient()
 
     func load(_ folder: URL, adopted: Bool) async {
         guard adopted else { cards = []; history = []; return }
+        if let s = try? await client.command("binder_settings", binder: folder, timeout: 5) {
+            description = s["description"]?.stringValue ?? ""
+            filing = s["filing"] == .bool(true)
+        }
         do {
             let reply = try await client.command("proposals", binder: folder, timeout: 5)
             cards = (reply["proposals"]?.arrayValue ?? []).compactMap { p in
@@ -43,7 +50,8 @@ final class BinderActions: ObservableObject {
                 return Card(id: id, title: p["title"]?.stringValue ?? "", actor: p["actor"]?["kind"]?.stringValue ?? "?",
                             lines: p["lines"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             digest: p["digest"]?.stringValue ?? "", verified: p["verified"] == .bool(true),
-                            intake: p["intake"].map(Self.intakeLine), folder: p["document_folder"]?.stringValue)
+                            intake: p["intake"].map(Self.intakeLine), folder: p["document_folder"]?.stringValue,
+                            notes: p["notes"]?.arrayValue?.compactMap(\.stringValue) ?? [])
             }
             let past = try await client.command("history", binder: folder, timeout: 5)
             history = (past["ops"]?.arrayValue ?? []).compactMap { o in
@@ -68,6 +76,11 @@ final class BinderActions: ObservableObject {
         let bytes = v["bytes"]?.numberValue?.safeInteger.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "?"
         return [v["name"]?.stringValue, v["modified"]?.stringValue, bytes, v["sha256"]?.stringValue.map { "sha256 " + $0.prefix(16) + "…" }]
             .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// The binder's line for the clerk and whether it is on the filing list (mvp.md feature 1).
+    func saveSettings(_ folder: URL) {
+        run("binder_settings", folder, [("description", .string(description)), ("filing", .bool(filing))], then: {})
     }
 
     func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) {
@@ -136,6 +149,7 @@ struct ReviewSection: View {
                             Text("from \(card.actor)").font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(card.lines, id: \.self) { Text("• \($0)").font(.callout) }
+                        ForEach(card.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
                         if let intake = card.intake {
                             Text(intake).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
@@ -189,6 +203,27 @@ struct HistorySection: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The binder's description for the clerk and its place on the filing list.
+struct FilingSection: View {
+    @ObservedObject var actions: BinderActions
+    let folder: URL
+
+    var body: some View {
+        Section(header: Text("For the clerk").font(.headline)) {
+            TextField("One line: what this binder is about", text: $actions.description)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { actions.saveSettings(folder) }
+            Toggle("On the clerk's filing list", isOn: Binding(get: { actions.filing }, set: {
+                actions.filing = $0
+                actions.saveSettings(folder)
+            }))
+            .disabled(actions.description.trimmingCharacters(in: .whitespaces).isEmpty)
+            Text("The clerk files a note here only when it is on the list. The line stays in Sprava, never in the binder.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

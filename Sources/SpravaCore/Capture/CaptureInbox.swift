@@ -241,6 +241,24 @@ public struct CaptureInbox: Sendable {
                  ("verified", .bool(verified))])
     }
 
+    /// The words of the spans a card lists as not filed yet, read from the capture itself.
+    public func notFiled(_ proposal: Proposal) -> [String] {
+        guard let spans = proposal.raw["provenance"]?["unfiled"]?.arrayValue, !spans.isEmpty,
+              let id = proposal.raw["provenance"]?["events"]?.arrayValue?.first?.stringValue,
+              let path = loadState().paths?[id] else { return [] }
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count == 2, case .ok(let data) = SafeFile.read(root.appendingPathComponent(parts[0]).appendingPathComponent(parts[1])),
+              let text = (try? JSONParser.parse(data).value)?["text"]?.stringValue else { return [] }
+        let scalars = Array(text.unicodeScalars)
+        return spans.compactMap { span in
+            guard let a = span["start"]?.numberValue?.safeInteger, let b = span["end"]?.numberValue?.safeInteger,
+                  a >= 0, a < b, Int(b) <= scalars.count else { return nil }
+            var v = String.UnicodeScalarView()
+            v.append(contentsOf: scalars[Int(a)..<Int(b)])
+            return String(v)
+        }
+    }
+
     // MARK: - The clerk's queue (architecture 3.4, 5.3, 8)
 
     public struct ClerkWork: Sendable {

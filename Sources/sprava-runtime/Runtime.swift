@@ -547,7 +547,9 @@ final class Runtime: @unchecked Sendable {
         let model = ModelStatus.read()
         queue.async {
             self.alerts = Heartbeat.Alerts(authorized: authorized ?? false, checked_at: ISOTime.string(Date()))
-            self.model = model
+            var m = model
+            m.last_success = self.model?.last_success   // the clerk's last reading survives the hourly check
+            self.model = m
         }
         // Outside the app bundle (a development run) there is no notification identity: recorded as skipped,
         // and the heartbeat shows alerts as off.

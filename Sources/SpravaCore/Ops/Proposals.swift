@@ -30,6 +30,21 @@ public struct Proposal: Sendable {
         return Proposal(raw: p)
     }
 
+    /// What the clerk wants the person to know about one op: its flags, its guess when not sure, time words it
+    /// could not turn into a date, and why it chose the binder (capture-event-v0 §6.4 check 5).
+    public static func notes(_ op: JSONObject) -> [String] {
+        guard let card = op["card"]?.objectValue else { return [] }
+        var out = card["flags"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        if let guess = card["guess"]?.stringValue { out.append("the clerk's guess: \(guess) (not sure)") }
+        if let when = card["when_text"]?.stringValue { out.append("\u{201C}\(when)\u{201D} was not turned into a date; type one") }
+        let signals = card["signals"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let words: [String: String] = ["hint": "you chose the binder", "binder_call": "the clerk picked it",
+                                       "index_match": "the binder's words match", "neighbours": "the items around it went there"]
+        let why = signals.compactMap { words[$0] }
+        if !why.isEmpty, card["guess"] == nil { out.append("filed because " + why.joined(separator: ", ")) }
+        return out
+    }
+
     /// A short plain-words line for one op, for review cards (titles stay inside the app, never in logs).
     public static func describe(_ op: JSONObject, catalog: JSONObject?) -> String {
         let args = op["args"]?.objectValue ?? JSONObject()

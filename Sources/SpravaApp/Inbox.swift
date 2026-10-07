@@ -18,6 +18,8 @@ final class InboxModel: ObservableObject {
         let corrected: Bool
         let retracted: Bool
         let producer: String
+        let notes: [String]
+        let notFiled: [String]
     }
 
     @Published var cards: [Card] = []
@@ -37,7 +39,9 @@ final class InboxModel: ObservableObject {
                 return Card(id: id, title: c["title"]?.stringValue ?? "", lines: c["lines"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             createdAt: ISOTime.date(c["created_at"]?.stringValue), unverified: c["unverified_source"] == .bool(true),
                             isPrivate: c["private"] == .bool(true), corrected: c["source_corrected"] == .bool(true),
-                            retracted: c["source_retracted"] == .bool(true), producer: c["producer"]?.stringValue ?? "?")
+                            retracted: c["source_retracted"] == .bool(true), producer: c["producer"]?.stringValue ?? "?",
+                            notes: c["notes"]?.arrayValue?.compactMap(\.stringValue) ?? [],
+                            notFiled: c["not_filed"]?.arrayValue?.compactMap(\.stringValue) ?? [])
             }
         } catch { message = "\(error)" }
     }
@@ -151,6 +155,11 @@ struct InboxView: View {
                             .font(.caption)
                             ForEach(Array(card.lines.enumerated()), id: \.offset) { _, line in
                                 Text("• " + line).textSelection(.enabled)
+                            }
+                            ForEach(card.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
+                            if !card.notFiled.isEmpty {
+                                Text("Not filed yet, in your words:").font(.caption).bold()
+                                ForEach(card.notFiled, id: \.self) { Text("\u{201C}\($0)\u{201D}").font(.callout).italic().textSelection(.enabled) }
                             }
                             HStack {
                                 Picker("File into", selection: Binding(get: { model.target[card.id] }, set: { model.target[card.id] = $0 })) {
