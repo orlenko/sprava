@@ -1,0 +1,195 @@
+{
+  "meta": {
+    "schema_version": 2,
+    "name": "estate-example",
+    "domain": "legal",
+    "lifecycle": "finite",
+    "created": "2026-08-14",
+    "next_doc_id": 1,
+    "next_item_id": 1,
+    "profile": {},
+    "format": "teka",
+    "format_version": "0",
+    "modules": [
+      "docs-intake",
+      "timeline",
+      "ledger"
+    ],
+    "disclosure": "title",
+    "id_scheme": "teka-year-seq"
+  },
+  "documents": [
+    {
+      "id": "estate-example-doc-2026-001",
+      "title": "Will of A. Example, certified copy",
+      "path": "documents/2026-08-20_will-certified-copy.pdf",
+      "date": "2026-08-20",
+      "kind": "will",
+      "source": "intake/",
+      "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "provenance": {
+        "proposed_by": {
+          "kind": "clerk",
+          "client": "sprava/0.1",
+          "model": "apple-on-device"
+        },
+        "approved_by": "user",
+        "op": "019a1c0e-6b0e-7a2d-8b3f-0c9d1e2f3a4b"
+      }
+    },
+    {
+      "id": "estate-example-doc-2026-002",
+      "title": "Letter from the notary about the estate inventory",
+      "path": "correspondence/notary/2026-09-28_inventory-request.pdf",
+      "date": "2026-09-28",
+      "kind": "letter",
+      "source": "intake/mail"
+    }
+  ],
+  "open_items": [
+    {
+      "id": "estate-example-2026-007",
+      "title": "File the estate inventory with the notary",
+      "status": "open",
+      "priority": "high",
+      "due": "2026-10-10",
+      "kind": "filing",
+      "tags": [
+        "notary"
+      ],
+      "link": "correspondence/notary/2026-09-28_inventory-request.pdf",
+      "contexts": [
+        "@computer"
+      ],
+      "estimate_min": 90,
+      "created_at": "2026-09-29T13:05:00Z",
+      "updated_at": "2026-09-29T13:05:00Z",
+      "provenance": {
+        "events": [
+          "019a0f52-2c1a-7d5e-9f10-2a3b4c5d6e7f"
+        ],
+        "proposed_by": {
+          "kind": "clerk",
+          "client": "sprava/0.1",
+          "model": "apple-on-device"
+        },
+        "approved_by": "user",
+        "proposal": "019a0f53-0a1b-7c2d-8e3f-4a5b6c7d8e9f"
+      }
+    },
+    {
+      "id": "estate-example-2026-008",
+      "title": "Bank statement for the estate account",
+      "status": "waiting",
+      "priority": "normal",
+      "due": "2026-10-31",
+      "waiting_on": "the bank's estates desk",
+      "expected_by": "2026-10-08",
+      "follow_up_at": "2026-10-09",
+      "kind": "document-request",
+      "tags": [
+        "bank"
+      ],
+      "created_at": "2026-09-30T09:12:00Z",
+      "updated_at": "2026-10-02T16:40:00Z"
+    },
+    {
+      "id": "estate-example-2026-009",
+      "title": "Decide whether to contest the appraisal of the house",
+      "status": "open",
+      "priority": "high",
+      "due": "2026-10-15",
+      "redact": true,
+      "kind": "decision",
+      "contexts": [
+        "@anywhere"
+      ]
+    },
+    {
+      "id": "estate-example-2026-010",
+      "title": "Pay the property tax instalment on the house",
+      "status": "open",
+      "priority": "normal",
+      "due": "2026-11-14",
+      "kind": "payment",
+      "recurrence": {
+        "freq": "monthly",
+        "day": 14
+      },
+      "contexts": [
+        "@online"
+      ]
+    },
+    {
+      "id": "estate-example-2026-011",
+      "title": "Collect photos of the house for the family",
+      "status": "open",
+      "priority": "low",
+      "no_deadline": true,
+      "contexts": [
+        "@errands"
+      ],
+      "dismissed": true
+    },
+    {
+      "id": "estate-example-2026-012",
+      "title": "Ask the property manager for the last two years of maintenance invoices",
+      "status": "blocked",
+      "priority": "normal",
+      "due": "2026-10-30",
+      "waiting_on": "the property manager",
+      "follow_up_at": "2026-10-06",
+      "kind": "document-request",
+      "derived": [
+        "follow_up_at"
+      ],
+      "slice_title": "Maintenance invoices (house)"
+    }
+  ],
+  "processing_log": [
+    {
+      "id": "estate-example-2026-003",
+      "title": "Order the death certificate copies",
+      "action": "done",
+      "closed_at": "2026-08-30T18:00:00Z",
+      "source": "google-tasks-via-osavul",
+      "via": "lifeproj drain"
+    },
+    {
+      "id": "estate-example-2026-005",
+      "title": "Open the estate bank account",
+      "action": "done",
+      "at": "2026-09-12T20:11:04Z",
+      "closed_at": "2026-09-12T20:11:04Z",
+      "source": "user",
+      "via": "sprava/0.1",
+      "op_id": "019a0c20-2222-7aaa-8bbb-000000000002",
+      "final": {
+        "status": "open",
+        "priority": "normal",
+        "due": "2026-09-15",
+        "created_at": "2026-08-20T10:00:00Z",
+        "updated_at": "2026-09-01T09:00:00Z"
+      }
+    },
+    {
+      "item": "estate-example-2026-010",
+      "action": "occurrence",
+      "at": "2026-10-14T13:02:30Z",
+      "source": "user",
+      "via": "sprava/0.1",
+      "op_id": "019a0d30-3333-7aaa-8bbb-000000000003",
+      "due": "2026-10-14",
+      "next_due": "2026-11-14"
+    },
+    {
+      "document": "estate-example-doc-2026-002",
+      "action": "filed",
+      "at": "2026-09-29T13:04:10Z",
+      "source": "intake/mail",
+      "via": "sprava/0.1",
+      "op_id": "019a0d40-4444-7aaa-8bbb-000000000004"
+    }
+  ],
+  "entities": []
+}
