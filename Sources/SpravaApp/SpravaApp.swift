@@ -148,7 +148,7 @@ struct ShelfView: View {
             if model.selection == healthSelection {
                 HealthView(model: health)
             } else if let row = model.selectedRow {
-                NowView(row: row, today: model.today)
+                NowView(row: row, today: model.today, reload: { model.refresh() })
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
@@ -216,6 +216,13 @@ struct StateBadge: View {
 struct NowView: View {
     let row: ShelfRow
     let today: CalendarDate
+    let reload: () -> Void
+    @StateObject private var actions = BinderActions()
+
+    func refresh() {
+        reload()
+        Task { await actions.load(row.folder, adopted: Teka.read(row.folder).isAdopted) }
+    }
 
     var body: some View {
         let teka = row.teka
@@ -223,7 +230,15 @@ struct NowView: View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(teka.name).font(.title2.bold())
+                    HStack {
+                        Text(teka.name).font(.title2.bold())
+                        Spacer()
+                        if !teka.isAdopted, teka.state >= .needsMigration {
+                            Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
+                                .disabled(actions.busy)
+                        }
+                    }
+                    if let message = actions.message { Text(message).foregroundStyle(.orange) }
                     Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
                         .foregroundStyle(.secondary)
                     if teka.state < .needsMigration {
@@ -236,6 +251,7 @@ struct NowView: View {
                 }
                 .padding(.vertical, 4)
             }
+            ReviewSection(actions: actions, folder: row.folder, reload: refresh)
             ForEach(Bucket.allCases, id: \.self) { bucket in
                 if bucket == .recentlyClosed {
                     if !page.closed.isEmpty {
@@ -255,7 +271,15 @@ struct NowView: View {
                     Section(header: BucketHeader(bucket: bucket, count: items.count)) {
                         // Row ids are unique across sections: List reuses rows by id, and two sections that both
                         // start at 0 would show one section's row in the other.
-                        ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in ItemRow(item: item, bucket: bucket) }
+                        ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
+                            ItemRow(item: item, bucket: bucket)
+                                .contextMenu {
+                                    if teka.isAdopted, !item.hasRecurrence {
+                                        Button("Done") { actions.close(item, as: "complete", row.folder, reload: refresh) }
+                                        Button("Drop") { actions.close(item, as: "drop", row.folder, reload: refresh) }
+                                    }
+                                }
+                        }
                     }
                 }
             }
@@ -263,6 +287,7 @@ struct NowView: View {
                 Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
             }
         }
+        .task(id: row.folder) { await actions.load(row.folder, adopted: teka.isAdopted) }
     }
 }
 

@@ -52,7 +52,7 @@ public struct Item: Sendable {
         self.index = index
     }
 
-    var object: JSONObject? { raw.objectValue }
+    public var object: JSONObject? { raw.objectValue }
 
     public var id: ItemID? { ItemID(object?["id"]) }
     public var idText: String {
@@ -101,7 +101,7 @@ public struct Item: Sendable {
 public struct LogEntry: Sendable {
     public let raw: JSONValue
 
-    var object: JSONObject? { raw.objectValue }
+    public var object: JSONObject? { raw.objectValue }
 
     /// The id a closure entry closes; any entry with an `id` closes that item (teka-v0 §4.5).
     public var closedID: ItemID? { ItemID(object?["id"]) }

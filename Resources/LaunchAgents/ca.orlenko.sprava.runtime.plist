@@ -8,6 +8,11 @@
 	<string>Contents/MacOS/sprava-runtime</string>
 	<key>KeepAlive</key>
 	<true/>
+	<key>MachServices</key>
+	<dict>
+		<key>ca.orlenko.sprava.runtime.xpc</key>
+		<true/>
+	</dict>
 	<key>ProcessType</key>
 	<string>Adaptive</string>
 </dict>

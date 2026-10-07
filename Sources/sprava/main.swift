@@ -11,6 +11,9 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava now <folder> [--today YYYY-MM-DD]
                                           one binder's items in the eight buckets
        sprava check <folder>              the binder's state and rule findings (ids and counts only)
+       sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
+                                          approve <id>, reject <id>, complete <item-id>, drop <item-id>.
+                                          Refuses any folder in lifeproj's registry.
 
 The shelf lists the live tekas in lifeproj's registry ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml),
 read-only, plus folders added with `sprava shelf add`.
@@ -148,6 +151,45 @@ func check(_ args: [String]) {
     exit(teka.state <= .corrupt ? 1 : 0)
 }
 
+/// Development commands: the same `Commands` the runtime runs for the app, in-process. Never on a folder that
+/// lifeproj's registry lists, so a live binder is only ever written by the installed runtime.
+func dev(_ args: [String]) {
+    guard args.count >= 2 else { fail(usage) }
+    let folder = folderURL(args[1])
+    let registryURL = LifeprojRegistry.defaultPath()
+    if let registry = try? LifeprojRegistry.load(from: registryURL),
+       registry.entries.contains(where: { $0.workingDir.map { folderURL($0) } == folder }) {
+        fail("\(folder.path) is in lifeproj's registry; development commands work on invented copies only")
+    }
+    let support = SpravaPaths.supportDirectory()
+    let commands = Commands(support: support, deviceID: DeviceID.load(support: support), client: "sprava-dev/0.1")
+    var request = JSONObject([(key: "binder", value: .string(folder.path))])
+    switch args[0] {
+    case "adopt", "proposals":
+        request.set("command", .string(args[0]))
+    case "approve", "reject":
+        guard args.count == 3 else { fail(usage) }
+        let listed = commands.handle(JSONWriter.compact(.obj([("command", .str("proposals")), ("binder", .string(folder.path))])))
+        let digest = (try? JSONParser.parse(listed).value["proposals"]?.arrayValue?
+            .first { $0["id"]?.stringValue == args[2] }?["digest"]) ?? nil
+        request.set("command", .string(args[0]))
+        request.set("proposal", .string(args[2]))
+        request.set("digest", digest ?? .null)
+    case "complete", "drop":
+        guard args.count == 3 else { fail(usage) }
+        request.set("command", .str("apply"))
+        request.set("op", .string(args[0]))
+        request.set("args", .obj([("id", .string(args[2])), ("closed_at", .string(ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!))),
+                                  ("source", .str("user"))]))
+    default:
+        fail(usage)
+    }
+    let reply = commands.handle(JSONWriter.compact(.object(request)))
+    guard let value = try? JSONParser.parse(reply).value else { fail(reply, code: 1) }
+    print(JSONWriter.pretty(value), terminator: "")
+    if value["ok"] != .bool(true) { exit(1) }
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else { fail(usage) }
 arguments.removeFirst()
@@ -155,6 +197,7 @@ switch command {
 case "shelf": shelf(arguments)
 case "now": now(arguments)
 case "check": check(arguments)
+case "dev": dev(arguments)
 case "-h", "--help", "help": print(usage)
 default: fail(usage)
 }

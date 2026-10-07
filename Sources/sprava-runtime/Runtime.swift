@@ -31,6 +31,7 @@ final class Runtime: @unchecked Sendable {
     var nextAlertsCheck = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var timers: [DispatchSourceTimer] = []
+    var xpc: XPCService?
 
     static let specs: [String: JobSpec] = [
         "heartbeat": JobSpec(key: "heartbeat", budget: .seconds(1), expectedCadence: 30, breakerThreshold: 3),
@@ -77,6 +78,10 @@ final class Runtime: @unchecked Sendable {
         NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: nil) { [weak self] _ in
             self?.queue.async { self?.clockChanged(reason: "time_zone") }
         }
+        let commands = Commands(support: support, deviceID: DeviceID.load(support: support))
+        let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
+        service.start()
+        xpc = service
         let scheduler = DispatchSource.makeTimerSource(queue: queue)
         scheduler.schedule(deadline: .now() + 1, repeating: 15)
         scheduler.setEventHandler { [weak self] in self?.schedule() }
