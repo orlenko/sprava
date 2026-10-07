@@ -73,9 +73,9 @@ public struct NowPage: Sendable {
         let window = today.adding(days: -6)
         var dated: [ClosedEntry] = []
         for entry in log {
-            guard let id = entry.closedID, let date = entry.closingDate(timeZone: timeZone, today: today),
+            guard entry.isClosure, let date = entry.closingDate(timeZone: timeZone, today: today),
                   date >= window else { continue }
-            dated.append(ClosedEntry(title: entry.title, idText: id.description,
+            dated.append(ClosedEntry(title: entry.title, idText: entry.closedIDText,
                                      action: entry.action ?? "done", closedOn: date))
         }
         dated.sort {
@@ -83,7 +83,10 @@ public struct NowPage: Sendable {
             return Self.textLess($0.idText, $1.idText)
         }
         let undated = doneItems
-            .sorted { Self.textLess($0.title, $1.title) || ($0.title == $1.title && Self.textLess($0.idText, $1.idText)) }
+            .sorted {
+                $0.titleSortKey != $1.titleSortKey ? Self.textLess($0.titleSortKey, $1.titleSortKey)
+                    : Self.textLess($0.idText, $1.idText)
+            }
             .map { ClosedEntry(title: $0.title, idText: $0.idText, action: "done", closedOn: nil) }
         closed = dated + undated
     }
@@ -100,7 +103,7 @@ public struct NowPage: Sendable {
     static func order(for bucket: Bucket) -> (Item, Item) -> Bool {
         func tail(_ a: Item, _ b: Item) -> Bool? {
             if priorityRank(a) != priorityRank(b) { return priorityRank(a) < priorityRank(b) }
-            if a.title != b.title { return textLess(a.title, b.title) }
+            if a.titleSortKey != b.titleSortKey { return textLess(a.titleSortKey, b.titleSortKey) }
             if a.idText != b.idText { return textLess(a.idText, b.idText) }
             return nil
         }

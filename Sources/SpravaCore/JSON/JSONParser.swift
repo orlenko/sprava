@@ -26,7 +26,12 @@ public struct JSONParser {
     private var index = 0
     private var report = JSONSafetyReport()
     private var depth = 0
-    private static let maxDepth = 512
+    // Real catalogs nest about ten levels. The limit stays far below what a 512 KB secondary-thread stack (the
+    // runtime's jobs) can recurse through, so a hostile file is refused instead of crashing the process.
+    private static let maxDepth = 128
+    /// The path to the current value, as segments; the string is built only when something is reported.
+    private var segments: [String] = []
+    private var currentPath: String { "$" + segments.joined() }
 
     /// Parses UTF-8 data. Throws on invalid UTF-8 or invalid JSON; a byte-order mark is refused.
     public static func parse(_ data: Data) throws -> (value: JSONValue, safety: JSONSafetyReport) {
@@ -35,7 +40,7 @@ public struct JSONParser {
         }
         var parser = JSONParser(bytes: [UInt8](data))
         parser.skipWhitespace()
-        let value = try parser.parseValue(path: "$")
+        let value = try parser.parseValue()
         parser.skipWhitespace()
         guard parser.index == parser.bytes.count else {
             throw JSONParseError(message: "trailing content", offset: parser.index)
@@ -57,16 +62,16 @@ public struct JSONParser {
 
     private func peek() -> UInt8? { index < bytes.count ? bytes[index] : nil }
 
-    private mutating func parseValue(path: String) throws -> JSONValue {
+    private mutating func parseValue() throws -> JSONValue {
         guard let byte = peek() else { throw error("unexpected end") }
         switch byte {
-        case UInt8(ascii: "{"): return try parseObject(path: path)
-        case UInt8(ascii: "["): return try parseArray(path: path)
-        case UInt8(ascii: "\""): return .string(try parseString(path: path))
+        case UInt8(ascii: "{"): return try parseObject()
+        case UInt8(ascii: "["): return try parseArray()
+        case UInt8(ascii: "\""): return .string(try parseString())
         case UInt8(ascii: "t"): try expectLiteral("true"); return .bool(true)
         case UInt8(ascii: "f"): try expectLiteral("false"); return .bool(false)
         case UInt8(ascii: "n"): try expectLiteral("null"); return .null
-        case UInt8(ascii: "-"), UInt8(ascii: "0")...UInt8(ascii: "9"): return .number(try parseNumber(path: path))
+        case UInt8(ascii: "-"), UInt8(ascii: "0")...UInt8(ascii: "9"): return .number(try parseNumber())
         default: throw error("unexpected character")
         }
     }
@@ -83,23 +88,25 @@ public struct JSONParser {
         if depth > Self.maxDepth { throw error("nesting too deep") }
     }
 
-    private mutating func parseObject(path: String) throws -> JSONValue {
+    private mutating func parseObject() throws -> JSONValue {
         try enter(); defer { depth -= 1 }
         index += 1
         var entries: [(key: String, value: JSONValue)] = []
-        var seen = Set<String>()
+        var seen = Set<[UInt8]>()
         skipWhitespace()
         if peek() == UInt8(ascii: "}") { index += 1; return .object(JSONObject(entries)) }
         while true {
             skipWhitespace()
             guard peek() == UInt8(ascii: "\"") else { throw error("expected a member name") }
-            let key = try parseString(path: path)
-            if !seen.insert(key).inserted { report.duplicateKeys.append("\(path).\(key)") }
+            let key = try parseString()
+            if !seen.insert(Array(key.utf8)).inserted { report.duplicateKeys.append("\(currentPath).\(key)") }
             skipWhitespace()
             guard peek() == UInt8(ascii: ":") else { throw error("expected ':'") }
             index += 1
             skipWhitespace()
-            let value = try parseValue(path: "\(path).\(key)")
+            segments.append("." + key)
+            let value = try parseValue()
+            segments.removeLast()
             entries.append((key, value))
             skipWhitespace()
             switch peek() {
@@ -110,7 +117,7 @@ public struct JSONParser {
         }
     }
 
-    private mutating func parseArray(path: String) throws -> JSONValue {
+    private mutating func parseArray() throws -> JSONValue {
         try enter(); defer { depth -= 1 }
         index += 1
         var values: [JSONValue] = []
@@ -118,7 +125,9 @@ public struct JSONParser {
         if peek() == UInt8(ascii: "]") { index += 1; return .array(values) }
         while true {
             skipWhitespace()
-            values.append(try parseValue(path: "\(path)[\(values.count)]"))
+            segments.append("[\(values.count)]")
+            values.append(try parseValue())
+            segments.removeLast()
             skipWhitespace()
             switch peek() {
             case UInt8(ascii: ","): index += 1
@@ -146,7 +155,7 @@ public struct JSONParser {
         return value
     }
 
-    private mutating func parseString(path: String) throws -> String {
+    private mutating func parseString() throws -> String {
         index += 1
         var out: [UInt8] = []
         var hadLoneSurrogate = false
@@ -155,7 +164,7 @@ public struct JSONParser {
             switch byte {
             case UInt8(ascii: "\""):
                 index += 1
-                if hadLoneSurrogate { report.loneSurrogates.append(path) }
+                if hadLoneSurrogate { report.loneSurrogates.append(currentPath) }
                 return String(decoding: out, as: UTF8.self)
             case UInt8(ascii: "\\"):
                 index += 1
@@ -202,7 +211,7 @@ public struct JSONParser {
         }
     }
 
-    private mutating func parseNumber(path: String) throws -> JSONNumber {
+    private mutating func parseNumber() throws -> JSONNumber {
         let start = index
         if peek() == UInt8(ascii: "-") { index += 1 }
         guard let first = peek(), (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(first) else { throw error("bad number") }
@@ -226,9 +235,9 @@ public struct JSONParser {
         }
         let number = JSONNumber(text: String(decoding: bytes[start..<index], as: UTF8.self))
         if number.isIntegerLiteral {
-            if number.safeInteger == nil { report.unsafeNumbers.append(path) }
+            if number.safeInteger == nil { report.unsafeNumbers.append(currentPath) }
         } else if let d = number.doubleValue, !d.isFinite {
-            report.unsafeNumbers.append(path)
+            report.unsafeNumbers.append(currentPath)
         }
         return number
     }

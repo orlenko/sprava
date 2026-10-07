@@ -69,12 +69,19 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
         String(format: "%04d-%02d-%02d", year, month, day)
     }
 
-    /// The date of `date` in `timeZone`.
-    public init(_ date: Date, in timeZone: TimeZone) {
+    /// The date of `date` in `timeZone`; nil outside years 1 to 9999 of the common era.
+    public init?(_ date: Date, in timeZone: TimeZone) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        let parts = calendar.dateComponents([.year, .month, .day], from: date)
-        self = CalendarDate(year: parts.year!, month: parts.month!, day: parts.day!)!
+        let parts = calendar.dateComponents([.era, .year, .month, .day], from: date)
+        guard parts.era == 1, let y = parts.year, let m = parts.month, let d = parts.day,
+              let value = CalendarDate(year: y, month: m, day: d) else { return nil }
+        self = value
+    }
+
+    /// Today in `timeZone`. The current date is always in range.
+    public static func today(in timeZone: TimeZone = .current, now: Date = Date()) -> CalendarDate {
+        CalendarDate(now, in: timeZone) ?? CalendarDate(year: 2026, month: 1, day: 1)!
     }
 
     // MARK: - Parsing
@@ -123,7 +130,8 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
         let dec28 = CalendarDate(year: year, month: 12, day: 28)!
         let lastWeek = (dec28.dayNumber - week1Monday.dayNumber) / 7 + 1
         guard week <= lastWeek else { return nil }
-        return week1Monday.adding(days: (week - 1) * 7 + weekday - 1)
+        let result = week1Monday.adding(days: (week - 1) * 7 + weekday - 1)
+        return (1...9999).contains(result.year) ? result : nil
     }
 
     private static func digits(_ b: [UInt8], _ start: Int, _ count: Int) -> Int? {
@@ -139,10 +147,17 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
 
 /// RFC 3339 date-times, as found in `closed_at` and `at` (teka-v0 §5.2).
 public enum Timestamp {
+    /// Strict RFC 3339 `date-time`: a real date, hours 00-23, minutes and seconds 00-59 (60 for a leap second),
+    /// an optional fraction, and `Z` or `±hh:mm`. `t` and `z` may be lower case.
     public static func parse(_ text: String) -> Date? {
+        let pattern = /^(\d{4}-\d{2}-\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-](\d{2}):(\d{2}))$/
+        guard let m = text.wholeMatch(of: pattern), CalendarDate.strict(String(m.1)) != nil,
+              let h = Int(m.2), let mi = Int(m.3), let s = Int(m.4), h < 24, mi < 60, s <= 60 else { return nil }
+        if let oh = m.7.flatMap({ Int($0) }), let om = m.8.flatMap({ Int($0) }), oh > 23 || om > 59 { return nil }
+        let normalized = text.replacingOccurrences(of: "t", with: "T").replacingOccurrences(of: "z", with: "Z")
         let withFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
         let plain = Date.ISO8601FormatStyle()
-        let normalized = text.replacingOccurrences(of: "z", with: "Z")
-        return (try? withFraction.parse(normalized)) ?? (try? plain.parse(normalized))
+        let leapless = s == 60 ? normalized.replacingCharacters(in: m.4.startIndex..<m.4.endIndex, with: "59") : normalized
+        return (try? withFraction.parse(leapless)) ?? (try? plain.parse(leapless))
     }
 }

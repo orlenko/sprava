@@ -41,7 +41,7 @@ struct SpravaApp: App {
 @MainActor
 final class ShelfModel: ObservableObject {
     @Published var rows: [ShelfRow] = []
-    @Published var today = CalendarDate(Date(), in: .current)
+    @Published var today = CalendarDate.today()
     @Published var selection: URL?
     @Published var note: String?
     @Published var lastRefresh: Date?
@@ -49,7 +49,7 @@ final class ShelfModel: ObservableObject {
     private let store = ShelfStore()
 
     func refresh() {
-        today = CalendarDate(Date(), in: .current)
+        today = CalendarDate.today()
         var registry: LifeprojRegistry?
         note = nil
         let url = LifeprojRegistry.defaultPath()
@@ -58,7 +58,9 @@ final class ShelfModel: ObservableObject {
                 note = "lifeproj's registry could not be read: \(error.localizedDescription)"
             }
         }
-        rows = Shelf.rows(registry: registry, picked: store.pickedFolders())
+        var picked: [URL] = []
+        do { picked = try store.readFolders() } catch { note = "\(error)" }
+        rows = Shelf.rows(registry: registry, picked: picked)
         if selection == nil || (selection != healthSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
@@ -87,14 +89,14 @@ final class ShelfModel: ObservableObject {
                 skipped.append(url.lastPathComponent)
                 continue
             }
-            try? store.add(url)
+            do { try store.add(url) } catch { note = "Could not add \(url.lastPathComponent): \(error)" }
         }
         refresh()
         if !skipped.isEmpty { note = "Not added (no catalog.json): \(skipped.joined(separator: ", "))" }
     }
 
     func removeFromShelf(_ row: ShelfRow) {
-        try? store.remove(row.folder)
+        do { try store.remove(row.folder) } catch { note = "Could not remove it: \(error)" }
         refresh()
     }
 

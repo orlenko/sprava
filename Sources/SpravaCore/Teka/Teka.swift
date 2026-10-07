@@ -120,11 +120,43 @@ public struct Teka: Sendable {
             }
         }
 
-        // Generic unique-id rule on the core arrays (teka-v0 §4.1).
-        for key in ["documents", "processing_log"] {
-            let ids = (catalog[key]?.arrayValue ?? []).compactMap { ItemID($0["id"]) }
-            if Set(ids).count != ids.count {
-                flag(.needsMigration, "duplicate ids in \(key)")
+        // The generic rule on the core arrays (teka-v0 §4.1): every entry is an object, and among entries that
+        // carry an id, ids are unique by JSON type and value. Two ids are the same only when both match.
+        for key in ["documents", "open_items", "processing_log"] {
+            let entries = catalog[key]?.arrayValue ?? []
+            if entries.contains(where: { $0.objectValue == nil }) {
+                flag(.needsMigration, "\(key) holds entries that are not objects")
+            }
+            var seen = Set<JSONValue>()
+            var duplicate = false
+            for entry in entries {
+                guard let id = entry["id"] else { continue }
+                if !seen.insert(id).inserted { duplicate = true }
+            }
+            if duplicate { flag(.needsMigration, "duplicate ids in \(key)") }
+        }
+
+        // v0 meta (teka-v0 §4.2): name and disclosure are required once stamped, and the typed fields are checked.
+        let stamped = level == .tekaV0 || level == .tekaV0BadSchemaVersion
+        if stamped, case .object(let meta)? = catalog["meta"] {
+            if (meta["name"]?.stringValue ?? "").isEmpty { flag(.needsAttention, "stamped catalog without meta.name") }
+            switch meta["disclosure"]?.stringValue {
+            case "full"?, "title"?, "kind"?, "none"?: break
+            default: flag(.needsAttention, "stamped catalog without a valid meta.disclosure")
+            }
+            if let lifecycle = meta["lifecycle"], !["ongoing", "finite"].contains(lifecycle.stringValue ?? "") {
+                flag(.needsAttention, "meta.lifecycle is not ongoing or finite")
+            }
+            if let created = meta["created"], created.stringValue.flatMap(CalendarDate.strict) == nil {
+                flag(.needsAttention, "meta.created is not a YYYY-MM-DD date")
+            }
+            if let scheme = meta["id_scheme"], !["teka-year-seq", "opaque"].contains(scheme.stringValue ?? "") {
+                flag(.needsAttention, "meta.id_scheme is not teka-year-seq or opaque")
+            }
+            for key in ["modules", "active_chapters"] {
+                if let list = meta[key], list.arrayValue?.allSatisfy({ $0.stringValue != nil }) != true {
+                    flag(.needsAttention, "meta.\(key) is not a list of strings")
+                }
             }
         }
 
@@ -138,9 +170,9 @@ public struct Teka: Sendable {
         if level.strictItems {
             findings = ItemRules.check(items: catalog["open_items"]?.arrayValue ?? [],
                                        log: catalog["processing_log"]?.arrayValue ?? [],
-                                       v0: level == .tekaV0)
+                                       v0: stamped)
             if !findings.isEmpty {
-                flag(level == .tekaV0 && adopted ? .needsAttention : .needsMigration,
+                flag(stamped && adopted ? .needsAttention : .needsMigration,
                      "\(findings.count) rule failure(s) in open_items")
             }
         }

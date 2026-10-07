@@ -42,7 +42,7 @@ struct OutsideWatcher {
         }
 
         var notifiedOn = previous?.notified_on
-        let today = CalendarDate(Date(), in: .current).description
+        let today = CalendarDate.today().description
         let appRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "ca.orlenko.sprava").isEmpty
         if saw != "ok", !appRunning, notifiedOn != today, !UserChoice.backgroundOff(runtimeDir) {
             let when = age.map { $0 >= 3600 ? "\($0 / 3600) hours ago" : "\($0 / 60) minutes ago" } ?? "a while ago"

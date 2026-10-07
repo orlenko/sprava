@@ -25,14 +25,25 @@ public struct ShelfStore: Sendable {
         var folders: [String] = []
     }
 
-    public func pickedFolders() -> [URL] {
+    public struct Unreadable: Error, CustomStringConvertible {
+        public let path: String
+        public var description: String { "\(path) exists but cannot be read; it was left as it is" }
+    }
+
+    /// The picked folders. A missing file is an empty shelf; a file that exists but cannot be read or decoded
+    /// throws, so nothing ever saves over it (Sprava's own state, never a binder's).
+    public func readFolders() throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: file.path) else { return [] }
         guard let data = try? Data(contentsOf: file),
-              let contents = try? JSONDecoder().decode(Contents.self, from: data) else { return [] }
+              let contents = try? JSONDecoder().decode(Contents.self, from: data) else { throw Unreadable(path: file.path) }
         return contents.folders.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
+    /// The picked folders, or none when the file cannot be read (callers that write use `readFolders`).
+    public func pickedFolders() -> [URL] { (try? readFolders()) ?? [] }
+
     public func add(_ folder: URL) throws {
-        var folders = pickedFolders().map(\.path)
+        var folders = try readFolders().map(\.path)
         let path = folder.standardizedFileURL.path
         guard !folders.contains(path) else { return }
         folders.append(path)
@@ -41,7 +52,7 @@ public struct ShelfStore: Sendable {
 
     public func remove(_ folder: URL) throws {
         let path = folder.standardizedFileURL.path
-        try save(pickedFolders().map(\.path).filter { $0 != path })
+        try save(try readFolders().map(\.path).filter { $0 != path })
     }
 
     private func save(_ folders: [String]) throws {

@@ -31,7 +31,7 @@ func todayFrom(_ args: inout [String]) -> CalendarDate {
         args.removeSubrange(i...(i + 1))
         return date
     }
-    return CalendarDate(Date(), in: .current)
+    return CalendarDate.today()
 }
 
 func ago(_ date: Date?) -> String {
@@ -80,7 +80,7 @@ func shelf(_ args: [String]) {
         do { registry = try LifeprojRegistry.load(from: registryURL) } catch { note = "registry unreadable: \(error.localizedDescription)" }
     }
     let rows = Shelf.rows(registry: registry, picked: ShelfStore().pickedFolders(), includeArchived: includeArchived)
-    let today = CalendarDate(Date(), in: .current)
+    let today = CalendarDate.today()
     if rows.isEmpty {
         print("The shelf is empty. Add a binder with `sprava shelf add <folder>`.")
     }

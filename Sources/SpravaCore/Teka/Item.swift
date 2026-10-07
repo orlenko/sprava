@@ -57,13 +57,21 @@ public struct Item: Sendable {
     public var id: ItemID? { ItemID(object?["id"]) }
     public var idText: String {
         if let id { return id.description }
-        if let value = object?["id"] { return canonicalText(value) }
+        if let value = object?["id"] { return (try? Canonical.serialize(value)) ?? canonicalText(value) }
         return "(no id)"
     }
 
     public var title: String {
         if case .string(let s)? = object?["title"], !s.isEmpty { return s }
         return "(untitled)"
+    }
+
+    /// The title as the sort orders compare it (teka-v0 §5.2): the string itself, the canonical JSON text of a
+    /// value that is not a string, and "" when missing.
+    public var titleSortKey: String {
+        guard let value = object?["title"] else { return "" }
+        if case .string(let s) = value { return s }
+        return (try? Canonical.serialize(value)) ?? canonicalText(value)
     }
 
     /// The status as written, when it is one of the four lifeproj values.
@@ -97,6 +105,13 @@ public struct LogEntry: Sendable {
 
     /// The id a closure entry closes; any entry with an `id` closes that item (teka-v0 §4.5).
     public var closedID: ItemID? { ItemID(object?["id"]) }
+    /// True for every entry that carries `id`, whatever its value.
+    public var isClosure: Bool { object?["id"] != nil }
+    public var closedIDText: String {
+        guard let value = object?["id"] else { return "" }
+        if case .string(let s) = value { return s }
+        return (try? Canonical.serialize(value)) ?? canonicalText(value)
+    }
     public var title: String { object?["title"]?.stringValue ?? "" }
     public var action: String? { object?["action"]?.stringValue }
 

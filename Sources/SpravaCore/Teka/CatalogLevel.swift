@@ -31,7 +31,9 @@ public enum CatalogLevel: Sendable, Equatable {
             return .preLifeproj
         case .number(let n)?:
             if n.isIntegerLiteral {
-                guard let value = n.safeInteger else { return .unknown("schema_version out of range") }
+                guard let value = n.safeInteger else {
+                    return n.text.hasPrefix("-") ? .preLifeproj : .unknown("schema_version out of range")
+                }
                 switch value {
                 case ..<1: return .preLifeproj
                 case 1: return .lifeprojV1

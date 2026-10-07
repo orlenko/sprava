@@ -53,7 +53,7 @@ final class Runtime: @unchecked Sendable {
         // A summary missed while the Mac was asleep or the runtime down is sent on the next start that day,
         // and only once today's summary time has passed.
         let now = Date()
-        let today = CalendarDate(now, in: .current).description
+        let today = CalendarDate.today(now: now).description
         let todaysTime = nextClockTime(hour: 8, minute: 0, after: Calendar.current.startOfDay(for: now))
         if lastSummaryDate != today, now >= todaysTime { nextSummary = now }
     }
@@ -218,7 +218,7 @@ final class Runtime: @unchecked Sendable {
         if now >= nextSentinel { run("sentinel") { self.sentinel() } }
         if now >= nextAlertsCheck { run("alerts") { self.checkAlerts() } }
         if now >= nextSummary { run("summary") { self.summary() } }
-        let today = CalendarDate(now, in: .current).description
+        let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
             run("sentinel") { self.sentinel() }   // the date changed: recompute at once
         }
@@ -274,7 +274,7 @@ final class Runtime: @unchecked Sendable {
     /// The deadline sentinel: reads every binder on the shelf and records counts per opaque id. Reads only.
     func sentinel() -> JobOutcome {
         let now = Date()
-        let today = CalendarDate(now, in: .current)
+        let today = CalendarDate.today(now: now)
         let registryURL = LifeprojRegistry.defaultPath()
         let registry = FileManager.default.fileExists(atPath: registryURL.path)
             ? try? LifeprojRegistry.load(from: registryURL) : nil
@@ -297,7 +297,7 @@ final class Runtime: @unchecked Sendable {
 
     /// The daily summary: one notification with counts only, at most once per calendar day.
     func summary() -> JobOutcome {
-        let today = CalendarDate(Date(), in: .current).description
+        let today = CalendarDate.today().description
         if queue.sync(execute: { lastSummaryDate }) == today { return .skipped }
         let reportURL = runtimeDir.appendingPathComponent("sentinel.json")
         func current() -> SentinelReport? {
@@ -368,7 +368,7 @@ struct RuntimeState: Codable {
     static func load(_ dir: URL) -> RuntimeState {
         var state = (try? Data(contentsOf: url(dir))).flatMap { try? JSONDecoder().decode(RuntimeState.self, from: $0) }
             ?? RuntimeState()
-        let today = CalendarDate(Date(), in: .current).description
+        let today = CalendarDate.today().description
         if state.day != today {
             state.day = today
             state.startsToday = 0
