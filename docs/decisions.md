@@ -41,7 +41,10 @@
 - **P9 open.** First templates. Recommended: a rental property with tenancies as chapters, a
   condo-board seat, a tax year (the ones the author lives), estate executor third. v1 templates carry
   undated checklists only; no statutory deadline rules.
-- **P10 open.** UI toolkit: AppKit (as holos) or SwiftUI with AppKit where needed.
+- **P10 decided (2026-10-07, at implementation).** SwiftUI with AppKit where needed, using
+  `ObservableObject` rather than the `@Observable` and `@State` macros: the Command Line Tools ship no
+  SwiftUI macro plugin, so macro-based SwiftUI does not compile here. A hidden `--snapshot` option
+  renders the window offscreen with invented binders for layout checks.
 - **P11 recommended.** Names. "Osavul" stays a private codename: an existing AI company filed
   OSAVUL in classes 9 and 42 in the EU, the UK and the US the week of 2026-09-29. The cross-binder
   view needs another public name. "teka" stays a lowercase format and folder term, never an app name

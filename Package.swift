@@ -7,10 +7,12 @@ let package = Package(
     products: [
         .library(name: "SpravaCore", targets: ["SpravaCore"]),
         .executable(name: "sprava", targets: ["sprava"]),
+        .executable(name: "SpravaApp", targets: ["SpravaApp"]),
     ],
     targets: [
         .target(name: "SpravaCore"),
         .executableTarget(name: "sprava", dependencies: ["SpravaCore"]),
+        .executableTarget(name: "SpravaApp", dependencies: ["SpravaCore"]),
         .testTarget(
             name: "SpravaCoreTests",
             dependencies: ["SpravaCore"],
