@@ -260,7 +260,7 @@
             "note",
             "other"
           ],
-          "description": "What has to happen. Not the teka item kind; code maps it (section 6.5). Model."
+          "description": "What has to happen. Not the binder item kind; code maps it (section 6.5). Model."
         },
         "when_text": {
           "type": "string",
@@ -275,7 +275,7 @@
             "expected",
             "follow_up"
           ],
-          "description": "Which teka date when_resolved fills, from the words around when_text (by, until, if not by). Code."
+          "description": "Which binder date when_resolved fills, from the words around when_text (by, until, if not by). Code."
         },
         "when_resolved": {
           "$ref": "#/$defs/date",

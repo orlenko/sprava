@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// UUID version 7: time-ordered, as the op log and capture events use (teka-v0 §6.2). Ids made by one process
+/// UUID version 7: time-ordered, as the op log and capture events use (binder-v0 §6.2). Ids made by one process
 /// are strictly increasing even within one millisecond: the 12 `rand_a` bits carry a counter (RFC 9562 §6.2,
 /// method 1), so files named by these ids list in creation order.
 public enum UUIDv7 {
@@ -36,7 +36,7 @@ public enum UUIDv7 {
     }
 }
 
-/// The one writer of a teka (teka-v0 §4.9, §6.7, §6.9). Every change runs under the teka's `flock` lock:
+/// The one writer of a binder (binder-v0 §4.9, §6.7, §6.9). Every change runs under the binder's `flock` lock:
 /// absorb outside edits, guard the ops, write the catalog to a temporary file, append the op lines, rename the
 /// catalog into place, update the snapshot. It never writes outside `catalog.json`, `.teka.lock` and `.sprava/`.
 public final class TekaStore {
@@ -86,7 +86,7 @@ public final class TekaStore {
     }
 
     /// `catalog.json` must be a regular file and `.sprava` a real folder, never links, so no write lands outside
-    /// the binder (teka-v0 §3.6).
+    /// the binder (binder-v0 §3.6).
     func checkContainment() throws {
         var st = stat()
         if lstat(catalogURL.path, &st) == 0, st.st_mode & S_IFMT != S_IFREG {
@@ -122,7 +122,7 @@ public final class TekaStore {
     }
 
     /// The op log's complete lines. A torn last line, and a trailing batch shorter than its `batch_size`, never
-    /// took effect and are left out (teka-v0 §6.9).
+    /// took effect and are left out (binder-v0 §6.9).
     public func readOpLog() throws -> (ops: [JSONObject], torn: Bool) {
         guard let data = try? Data(contentsOf: opLogURL) else { return ([], false) }
         var text = String(decoding: data, as: UTF8.self)
@@ -175,7 +175,7 @@ public final class TekaStore {
                       underLock after: (() throws -> Void)? = nil) throws -> [JSONObject] {
         try withLock {
             // An editor that skips the lock can change the file at any moment: each pass absorbs what it finds,
-            // and a change seen while writing starts the pass again (teka-v0 §4.9 step 5).
+            // and a change seen while writing starts the pass again (binder-v0 §4.9 step 5).
             var attempt = 0
             while true {
                 attempt += 1
@@ -252,7 +252,7 @@ public final class TekaStore {
         return lines
     }
 
-    /// The files a batch files (teka-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
+    /// The files a batch files (binder-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
     /// file with the recorded digest, so a file that changed or is gone since the card was made is refused; the
     /// destination must be free and lie inside the binder. A filing without `from` needs the file in place.
     func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String, sha: String)] {
@@ -303,7 +303,7 @@ public final class TekaStore {
         }
     }
 
-    /// Steps 4 to 7 of the write protocol and steps 3 to 6 of teka-v0 §6.9.
+    /// Steps 4 to 7 of the write protocol and steps 3 to 6 of binder-v0 §6.9.
     func write(catalog: JSONObject, appending lines: [JSONObject], expectedHash: String,
                moves: [(from: String, to: String, sha: String)] = []) throws {
         let text = JSONWriter.pretty(.object(catalog))
@@ -321,7 +321,7 @@ public final class TekaStore {
         guard nowHash == expectedHash else { throw ChangedWhileWriting() }
 
         try appendLines(lines)
-        // A crash or failure from here on is rolled forward on the next read (teka-v0 §6.7 step 3, §6.9).
+        // A crash or failure from here on is rolled forward on the next read (binder-v0 §6.7 step 3, §6.9).
         try performMoves(moves)
         guard rename(temp.path, catalogURL.path) == 0 else { throw AtomicFile.Failure(step: "rename catalog", code: errno) }
         renamed = true
@@ -333,7 +333,7 @@ public final class TekaStore {
     func appendLines(_ lines: [JSONObject]) throws {
         try AtomicFile.makePrivateFolder(spravaDir)
         // A torn tail, or a trailing batch shorter than its size, is copied aside and cut before the next append
-        // (teka-v0 §6.9).
+        // (binder-v0 §6.9).
         if let data = try? Data(contentsOf: opLogURL), let cut = Self.validLength(of: data), cut < data.count {
             let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
             try AtomicFile.makePrivateFolder(tornDir)
@@ -389,7 +389,7 @@ public final class TekaStore {
         }
     }
 
-    // MARK: - Outside edits (teka-v0 §6.7)
+    // MARK: - Outside edits (binder-v0 §6.7)
 
     public enum Absorbed: Equatable {
         case none
@@ -421,7 +421,7 @@ public final class TekaStore {
             // A write was logged but never renamed into place: roll it forward. Ops are pure, so the result
             // has the same hash. A logged move is finished when the file is still in intake/ and the destination
             // is free, or taken as done when the destination holds the recorded digest; otherwise the write is
-            // aborted (teka-v0 §6.9).
+            // aborted (binder-v0 §6.9).
             var state = catalog
             for op in trailing { state = try OpApplier.apply(op, to: state) }
             guard try Canonical.hash(.object(state)) == a else { throw Refused(reason: "roll-forward did not reach the logged hash") }
@@ -519,7 +519,7 @@ public final class TekaStore {
         try appendLines(appended)
         try AtomicFile.write(Data(JSONWriter.pretty(.object(catalog)).utf8), to: snapshotURL)
         lastAbsorbed = .externalEdit(revertedLastBatch: !lostOps.isEmpty)
-        // The loss is never absorbed silently (teka-v0 §6.7 step 6): a card offers the lost ops again, as the
+        // The loss is never absorbed silently (binder-v0 §6.7 step 6): a card offers the lost ops again, as the
         // person's own new ops.
         if !lostOps.isEmpty, let card = Self.reapplyCard(lostOps, client: client, now: now) {
             try ProposalStore.save(card, in: folder)
@@ -568,7 +568,7 @@ public final class TekaStore {
     }
 
     /// Whether the outside edit put back, on every path the last batch changed, the value from before it
-    /// (teka-v0 §6.7 step 6): another program overwrote the person's change.
+    /// (binder-v0 §6.7 step 6): another program overwrote the person's change.
     static func undoes(found: JSONObject, expected: JSONObject, beforeTrailing: JSONObject?, trailing: [JSONObject]) -> Bool {
         guard let before = beforeTrailing, !trailing.isEmpty,
               trailing.allSatisfy({ ["user", "clerk", "brain"].contains($0["actor"]?["kind"]?.stringValue ?? "") }) else {
@@ -602,7 +602,7 @@ public final class TekaStore {
         return checked
     }
 
-    // MARK: - Adoption (teka-v0 §9.4 step 1)
+    // MARK: - Adoption (binder-v0 §9.4 step 1)
 
     /// Adopts the folder in place: saves byte copies of `catalog.json` and `DASHBOARD.md` under
     /// `.sprava/adopted/`, writes the owner record, and starts the op log with an `import_snapshot`. Nothing

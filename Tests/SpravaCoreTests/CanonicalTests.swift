@@ -5,7 +5,7 @@ import Testing
 @Suite struct CanonicalTests {
     func hash(_ text: String) throws -> String { try Canonical.hash(try JSONParser.parse(text).value) }
 
-    /// teka-v0 §11 check 63.
+    /// binder-v0 §11 check 63.
     @Test func specVectors() throws {
         #expect(try hash(#"{"title": "Café"}"#) == "sha256:97abf59ac9ce42d34f62d32f6b75eb18a16cedc16ef9de9c818e902a93c51e5f")
         #expect(try hash("{\"title\": \"Café\"}") == "sha256:97abf59ac9ce42d34f62d32f6b75eb18a16cedc16ef9de9c818e902a93c51e5f")
@@ -68,7 +68,7 @@ import Testing
         }
     }
 
-    /// teka-v0 §6.6: replaying the sample log reproduces every after_hash and the final catalog.
+    /// binder-v0 §6.6: replaying the sample log reproduces every after_hash and the final catalog.
     @Test func sampleLogReplaysToEveryRecordedHash() throws {
         let lines = try sampleLines()
         let final = try Replay.run(lines)

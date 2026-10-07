@@ -1,10 +1,10 @@
 import CryptoKit
 import Foundation
 
-/// Adopting an existing teka in place (teka-v0 §9): a read-only survey, the import snapshot, lossless
+/// Adopting an existing binder in place (binder-v0 §9): a read-only survey, the import snapshot, lossless
 /// mechanical fixes applied as `import` ops, and proposals for everything that changes meaning.
 public enum Adoption {
-    /// lifeproj's three copied-in checker versions, by the SHA-256 of the stamped file (teka-v0 §9.2 step 3).
+    /// lifeproj's three copied-in checker versions, by the SHA-256 of the stamped file (binder-v0 §9.2 step 3).
     public static let checkerVersions: [String: String] = [
         "cbc841229a12f0ca538f9f26af9a7e4a7f9208a185b2ab1ad1c43055bda8da24": "gen1",
         "dc19265c394fb10637238ccb4b20a68970606413741b85333c7d1471a9056cdd": "gen2",
@@ -14,7 +14,7 @@ public enum Adoption {
     static let moduleFolders = ["email-intake": "intake/mail", "docs-intake": "intake/_converted", "github-source": "sources",
                                 "timeline": "timeline.md", "ledger": "ledger", "chapters": "chapters", "entities": "entities"]
 
-    /// The survey: counts, kinds of problems and record ids only, never personal values (teka-v0 §9.2).
+    /// The survey: counts, kinds of problems and record ids only, never personal values (binder-v0 §9.2).
     public static func survey(_ folder: URL, inRegistry: Bool) -> JSONObject {
         let teka = Teka.read(folder)
         let fm = FileManager.default
@@ -109,7 +109,7 @@ public enum Adoption {
         var seenIDs: [JSONValue: Int] = [:]
         for item in items { if let id = item["id"] { seenIDs[id, default: 0] += 1 } }
 
-        // Step 3: mechanical, lossless fixes (teka-v0 §9.4).
+        // Step 3: mechanical, lossless fixes (binder-v0 §9.4).
         var bodies: [TekaStore.OpBody] = []
         for (i, item) in items.enumerated() {
             guard case .object(let o) = item, let id = o["id"], !broken.contains("open_items[\(i)]"), seenIDs[id] == 1 else { continue }
@@ -207,7 +207,7 @@ public enum Adoption {
             if let result = try? TransactionGuard.check(probe, on: trial) {
                 trial = result.catalog
                 if TransactionGuard.violations(trial).isEmpty {
-                    proposals.append(Proposal.make(title: "Stamp this binder as teka v0", actor: importActor,
+                    proposals.append(Proposal.make(title: "Stamp this binder as binder v0", actor: importActor,
                                                    ops: [stamp], now: now))
                 }
             }

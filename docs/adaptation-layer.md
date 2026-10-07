@@ -95,7 +95,7 @@ The contract is capture-event-v0, with the changes in 3.2.
 
 When the source cannot tell and the person said nothing, `channel` is `other` and the card asks once, with
 one tap per channel. The answer is kept on the capture and copied into the provenance of everything filed
-from it (teka-v0 §5.8), so a binder can always say how it learned a fact.
+from it (binder-v0 §5.8), so a binder can always say how it learned a fact.
 
 ## 4. Reading intake (P13)
 
@@ -237,13 +237,13 @@ readings, escalation, and the sources other than notes and `intake/`.
 
 ## 9. Questions for the author
 
-1. Answered 2026-10-07. Each teka that consumes email runs its own mail monitor (`imap-extract`) from
-   `scripts/` (the newer lifeproj layout), watching one mail label, and its export target is the teka's
+1. Answered 2026-10-07. Each binder that consumes email runs its own mail monitor (`imap-extract`) from
+   `scripts/` (the newer lifeproj layout), watching one mail label, and its export target is the binder's
    `intake/mail/`. So the intake watcher reads message files in `intake/mail/` as email
    (`obtained.channel: email`, filled without asking), and still never reads, files, indexes or shows a
-   `.env` or `state.json` anywhere under `intake/` (teka-v0 §3.3). Sprava never runs the monitor and never
+   `.env` or `state.json` anywhere under `intake/` (binder-v0 §3.3). Sprava never runs the monitor and never
    reads its configuration. Still open: the exact shape of an exported message (see 4).
-2. Each teka's agent watches its `intake/` today and processes what lands. Once Sprava reads intake, two
+2. Each binder's agent watches its `intake/` today and processes what lands. Once Sprava reads intake, two
    readers would file the same file twice. Should the manual addendum tell agents to leave `intake/` to Sprava
    and work from Sprava's cards (and the escalation queue) instead?
 3. A note the person enters gets `obtained.channel: note`. When the note relays something ("the manager

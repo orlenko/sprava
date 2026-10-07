@@ -1,7 +1,7 @@
 import Foundation
 
-/// A read-only reading of lifeproj's teka registry, which is cmirror's `config.toml`
-/// (lifeproj `registry.py`): live tekas under `[projects.<name>]`, archived ones under `[archived.<name>]`,
+/// A read-only reading of lifeproj's binder registry, which is cmirror's `config.toml`
+/// (lifeproj `registry.py`): live binders under `[projects.<name>]`, archived ones under `[archived.<name>]`,
 /// each with a `working_dir`. Sprava never writes this file.
 public struct LifeprojRegistry: Sendable, Equatable {
     public struct Entry: Sendable, Equatable {

@@ -34,7 +34,7 @@
   No producer is privileged and none is a dependency: the capture-event format is Sprava's own inbound
   contract, which any adapter may write, and holos is at most one adapter among many. Supersedes P6, P7
   and C4 as dependencies; the adaptation layer is drafted in `docs/adaptation-layer.md` (open).
-- **P13 decided (2026-10-07, by the author).** Intake is per teka: each binder's own `intake/` folder,
+- **P13 decided (2026-10-07, by the author).** Intake is per binder: each binder's own `intake/` folder,
   where files arrive from downloads, from an email monitor, or because the person dropped them. A file there
   is processed right away, and processing means reading it in full: OCR the whole thing, run the
   deterministic steps that simplify classification, then the local model classifies and understands it (a
@@ -52,9 +52,17 @@
 - **P17 decided as a direction (2026-10-07, by the author).** Integrations are formalized as plugins attached
   to a binder: **importers** bring material in from an outside system (mail from one label, updates from a
   work-tracking account) into the binder's `intake/`; **exporters** act on approved instructions in the
-  binder's `outbox/` (first: create an email draft the person reviews and sends). Built-in plugins first:
-  IMAP with a filter (reusing `imap-extract`), monday.com, and an IMAP draft exporter. Drafted in
-  `docs/integrations.md`; scope (MVP or after) open.
+  binder's `outgoing/` (first: create an email draft the person reviews and sends; P18 renamed the
+  folder from `outbox/`). Built-in plugins first: IMAP with a filter (reusing `imap-extract`),
+  monday.com, and an IMAP draft exporter. Drafted in `docs/integrations.md`; scope (MVP or after) open.
+- **P18 decided (2026-10-07, by the author).** One term: "binder" replaces "teka" as the name of the
+  thing, one folder per life project, in product language and in the format alike. The format is
+  "binder v0" (`docs/spec/binder-v0.md`). lifeproj and earlier drafts said "teka"; on-disk names that
+  carry the old word stay as they are for compatibility (`meta.format: "teka"`, `.teka.lock`, the
+  `rename_teka` op, the `teka-year-seq` id scheme, the `teka-dashboard` marker, the `teka` field of
+  slices and outboxes, the `urn:sprava:teka:v0:` schema ids). The binder folder for exporter
+  instructions is `outgoing/`, so it does not collide with the hub spool's `outbox/`, which keeps its
+  name. Supersedes the format-term part of P11.
 - **P6 superseded by P12.** Capture comes from holos through a versioned capture-event format. Sprava never
   links holos code and never reads holos's private file layout as its contract.
 - **P7 superseded by P12.** holos is the **producer**: it writes one immutable capture-event file per
@@ -75,12 +83,12 @@
   renders the window offscreen with invented binders for layout checks.
 - **P11 recommended.** Names. "Osavul" stays a private codename: an existing AI company filed
   OSAVUL in classes 9 and 42 in the EU, the UK and the US the week of 2026-09-29. The cross-binder
-  view needs another public name. "teka" stays a lowercase format and folder term, never an app name
-  (Teka Industrial holds the word for appliances in many countries and ships a "Teka Home" app;
-  its EU class-9 mark covers irons and vacuum cleaners, not software). "Sprava" has no live mark in
-  classes 9/42 in the US, Canada or EU, but npm `sprava`, sprava.ai, sprava.dev and two iOS apps
-  use the name; sprava.app, sprava.io and sprava.ca were free on 2026-10-06. Get a clearance opinion
-  before announcing. Not legal advice.
+  view needs another public name. "teka" is no longer a term (P18 replaced it with "binder"), and it
+  was never to be an app name (Teka Industrial holds the word for appliances in many countries and
+  ships a "Teka Home" app; its EU class-9 mark covers irons and vacuum cleaners, not software).
+  "Sprava" has no live mark in classes 9/42 in the US, Canada or EU, but npm `sprava`, sprava.ai,
+  sprava.dev and two iOS apps use the name; sprava.app, sprava.io and sprava.ca were free on
+  2026-10-06. Get a clearance opinion before announcing. Not legal advice.
 
 ## Licence
 
@@ -92,17 +100,17 @@
   contributions are expected soon (file-level copyleft, App Store-clean executables, no CLA needed).
 - **L2 recommended.** The spec is permissive: CC-BY-4.0 for prose, Apache-2.0 for JSON Schemas,
   validators and conformance tests (express patent grant, trademark exclusion; what MCP, OpenAPI and
-  CloudEvents use), with an explicit note that no trademark rights in "Sprava" or "teka" are granted.
+  CloudEvents use), with an explicit note that no trademark rights in "Sprava" are granted.
 - **L3 recommended.** Under GPL-3.0 the "must not link holos" rationale disappears, but the
   capture-event boundary stays for product reasons: holos works alone, the two ship on their own
   cycles, and a phone app or an email intake can speak the same format.
 
-## The teka format (`docs/spec/teka-v0.md`)
+## The binder format (`docs/spec/binder-v0.md`)
 
 - **F1 recommended (replaces the handoff's candidate).** `catalog.json` is the truth of **state**; the
   op log is the truth of **history**. Every op records the catalog's content hash before and after
   (RFC 8785 canonical form). A broken chain means someone else edited the catalog; the runtime then
-  records an `external_edit` op holding the diff. Sprava **adopts a teka in place**: it never imports
+  records an `external_edit` op holding the diff. Sprava **adopts a binder in place**: it never imports
   into a store, converts nothing, and owns only `.sprava/` (the op log, index, cursors), `catalog.json`
   (through ops) and the regenerated `DASHBOARD.md`. Everything else in the folder is left alone.
 - **F2 recommended.** v0 keeps lifeproj's enforced rules as the core: `id`, `title`, `status`,
@@ -112,7 +120,7 @@
   list; `redact` a boolean; `slice_title` a non-empty string. Every implementation **must preserve
   unknown fields and unknown arrays** on rewrite (schemas use `additionalProperties: true`).
 - **F3 recommended.** v0 additions to items: `follow_up_at` (date; required when waiting or blocked;
-  on import of an existing teka a missing value is derived and marked as derived), `expected_by`
+  on import of an existing binder a missing value is derived and marked as derived), `expected_by`
   (optional date the other party gave), `kind` (closed list; required when `redact` is true; optional
   otherwise), `recurrence` ({freq: monthly|yearly, day, month?}; `due` holds the next occurrence;
   completing advances it, dismissing ends it, as the hub does today), `created_at` and `updated_at`
@@ -125,15 +133,15 @@
 - **F5 recommended.** Closing is mechanical: a `complete` or `drop` op moves the item from
   `open_items[]` to `processing_log[]` with `closed_at`, `action`, `source`. The slice carries items
   closed in the last 7 days in a separate `closed[]` array so the hub learns of closures. A
-  Sprava-managed catalog never holds `status: done` in `open_items[]`; a lifeproj teka may, and import
+  Sprava-managed catalog never holds `status: done` in `open_items[]`; a lifeproj binder may, and import
   tolerates it.
 - **F6 recommended.** `meta` additions: `format: "teka"`, `format_version: "0"` (keep
   `schema_version: 2` for lifeproj), `modules[]`, `disclosure` (full|title|kind|none; what the
-  cross-binder view may show), `id_scheme`. Ids: `<teka>-<year>-<NNN>` recommended; bare ids accepted
+  cross-binder view may show), `id_scheme`. Ids: `<binder>-<year>-<NNN>` recommended; bare ids accepted
   and prefixed at the slice boundary exactly as lifeproj does. Conformance: `meta.name` equals the
   folder basename.
 - **F7 recommended.** `documents[]` minimal schema: `id`, `title`, `path` (relative, inside the
-  teka), optional `date`, `kind`, `source`, `sha256`, `provenance`. `processing_log[]` entries: `at`
+  binder), optional `date`, `kind`, `source`, `sha256`, `provenance`. `processing_log[]` entries: `at`
   (or `closed_at`) and `action`, everything else open. `entities[]`: `id`, `status`, open attributes.
   `ledger/`, `timeline.md` and `chapters/` are folder conventions in v0, described and left opaque
   (import without loss means not touching them).
@@ -144,13 +152,13 @@
   informative annex, not a contract.
 - **F9 recommended.** Not part of the format: `AGENTS.md` and `CLAUDE.md` (operating manuals,
   informative), `.claude/`, `.agents/`, `catalog_check.py`, `scripts/`, `.git/`. An implementation
-  must never execute hooks or scripts found inside a teka, and must tolerate and ignore all of these.
+  must never execute hooks or scripts found inside a binder, and must tolerate and ignore all of these.
 - **F10 recommended.** JSON conventions: UTF-8 unescaped, two-space indent, trailing newline, key
   order preserved on rewrite, canonical form (RFC 8785) only for hashing; JSON Schema 2020-12.
-- **F11 open.** A structure-only survey of the author's live tekas (keys, types, counts; never
+- **F11 open.** A structure-only survey of the author's live binders (keys, types, counts; never
   values) would confirm the `documents[]` and `processing_log[]` shapes and the checker generation
-  per teka. A script is ready; only the author should run it.
-- **F12 open.** The handoff says tekas use local git; lifeproj scaffolds none by design. v0 tolerates
+  per binder. A script is ready; only the author should run it.
+- **F12 open.** The handoff says binders use local git; lifeproj scaffolds none by design. v0 tolerates
   and ignores `.git/`. Whether git history should count as a provenance fallback is the author's call.
 
 ## Capture events (`docs/spec/capture-event-v0.md`)
@@ -229,7 +237,7 @@
 ## MVP (`docs/mvp.md`)
 
 - **M1 recommended.** The smallest release that proves "a binder that keeps itself": Shelf (adopt
-  existing teka folders in place, create one from a template) → Binder Now page, deterministic →
+  existing binder folders in place, create one from a template) → Binder Now page, deterministic →
   review queue with provenance and undo → capture inbox (text from any source; P12)
   → Tier-1 filing → two templates → slice publish and outbox drain for hub coexistence → backup via
   cmirror → health page. **Open:** include a minimal MCP surface (reads and proposals only) in the

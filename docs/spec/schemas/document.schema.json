@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:document",
-  "title": "teka v0 document record",
-  "description": "One entry of documents[] in a teka v0 catalog. The file lives at path, inside the teka folder. Single source of the document_v0 copies. Unknown fields are allowed and preserved.",
+  "title": "binder v0 document record",
+  "description": "One entry of documents[] in a binder v0 catalog. The file lives at path, inside the binder folder. Single source of the document_v0 copies. Unknown fields are allowed and preserved.",
   "type": "object",
   "required": ["id", "title", "path"],
   "properties": {
@@ -14,7 +14,7 @@
     "path": {
       "type": "string",
       "minLength": 1,
-      "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+      "$comment": "Relative to the binder folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
     },
     "date": { "$ref": "#/$defs/date" },
     "kind": { "type": "string", "minLength": 1 },

@@ -1,7 +1,7 @@
 import Foundation
 
 /// A day on the proleptic Gregorian calendar, with no time zone. Arithmetic is on day numbers, never on
-/// seconds (teka-v0 §5.2).
+/// seconds (binder-v0 §5.2).
 public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConvertible {
     public let year: Int
     public let month: Int
@@ -86,7 +86,7 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
 
     // MARK: - Parsing
 
-    /// `YYYY-MM-DD` only, naming a real date: the only form a v0 writer writes (teka-v0 §4.4).
+    /// `YYYY-MM-DD` only, naming a real date: the only form a v0 writer writes (binder-v0 §4.4).
     public static func strict(_ text: String) -> CalendarDate? {
         let b = Array(text.utf8)
         guard b.count == 10, b[4] == UInt8(ascii: "-"), b[7] == UInt8(ascii: "-"),
@@ -95,7 +95,7 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
     }
 
     /// Every form Python 3.11's `date.fromisoformat` accepts, which is what lifeproj buckets with
-    /// (teka-v0 §5.2): `YYYY-MM-DD`, `YYYYMMDD`, `YYYY-Www`, `YYYYWww`, `YYYY-Www-D`, `YYYYWwwD`.
+    /// (binder-v0 §5.2): `YYYY-MM-DD`, `YYYYMMDD`, `YYYY-Www`, `YYYYWww`, `YYYY-Www-D`, `YYYYWwwD`.
     public static func lenient(_ text: String) -> CalendarDate? {
         if let date = strict(text) { return date }
         let b = Array(text.utf8)
@@ -145,7 +145,7 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
     }
 }
 
-/// RFC 3339 date-times, as found in `closed_at` and `at` (teka-v0 §5.2).
+/// RFC 3339 date-times, as found in `closed_at` and `at` (binder-v0 §5.2).
 public enum Timestamp {
     /// Strict RFC 3339 `date-time`: a real date, hours 00-23, minutes and seconds 00-59 (60 for a leap second),
     /// an optional fraction, and `Z` or `±hh:mm`. `t` and `z` may be lower case.

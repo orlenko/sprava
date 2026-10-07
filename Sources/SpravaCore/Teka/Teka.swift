@@ -1,6 +1,6 @@
 import Foundation
 
-/// The states of teka-v0 §9.6, most restrictive first.
+/// The states of binder-v0 §9.6, most restrictive first.
 public enum TekaState: Int, Sendable, Comparable, CaseIterable {
     case notATeka, corrupt, unknownLevel, needsAttention, needsMigration, ready
 
@@ -8,7 +8,7 @@ public enum TekaState: Int, Sendable, Comparable, CaseIterable {
 
     public var label: String {
         switch self {
-        case .notATeka: "not a teka"
+        case .notATeka: "not a binder"
         case .corrupt: "corrupt"
         case .unknownLevel: "unknown level"
         case .needsAttention: "needs attention"
@@ -18,7 +18,7 @@ public enum TekaState: Int, Sendable, Comparable, CaseIterable {
     }
 }
 
-/// A teka read from disk, read-only. Reading never writes anything inside the folder.
+/// A binder read from disk, read-only. Reading never writes anything inside the folder.
 public struct Teka: Sendable {
     public let folder: URL
     /// Every state that applies; `state` is the most restrictive.
@@ -36,7 +36,7 @@ public struct Teka: Sendable {
     public var reasons: [String] { states.sorted { $0.key < $1.key }.flatMap(\.value) }
 
     /// A symlink problem, unsafe JSON or a broken stamp blocks every write until the person approves a repair;
-    /// a name mismatch also blocks publishing and draining (teka-v0 §9.6).
+    /// a name mismatch also blocks publishing and draining (binder-v0 §9.6).
     public var writesBlocked: Bool {
         state < .needsAttention || (states[.needsAttention] ?? []).contains { r in
             r.contains("symbolic link") || r.contains("is not a regular") || r.contains("unsafe JSON")
@@ -75,7 +75,7 @@ public struct Teka: Sendable {
 
         let adopted = fm.fileExists(atPath: folder.appendingPathComponent(".sprava/ops.ndjson").path)
 
-        // Containment: these must be regular files or folders, never symlinks (teka-v0 §3.6).
+        // Containment: these must be regular files or folders, never symlinks (binder-v0 §3.6).
         for (name, wantDirectory) in [("catalog.json", false), ("DASHBOARD.md", false), (".teka.lock", false), (".sprava", true)] {
             let path = folder.appendingPathComponent(name).path
             guard let attrs = try? fm.attributesOfItem(atPath: path) else { continue }
@@ -120,7 +120,7 @@ public struct Teka: Sendable {
         case .brokenStamp: flag(.needsAttention, "broken stamp: meta.format_version is missing or not digits")
         case .tekaV0BadSchemaVersion: flag(.needsAttention, "stamped catalog whose schema_version is not 2")
         case .preLifeproj: flag(.needsMigration, "pre-lifeproj catalog")
-        case .lifeprojV1, .lifeprojV2: flag(.needsMigration, "not yet stamped teka v0")
+        case .lifeprojV1, .lifeprojV2: flag(.needsMigration, "not yet stamped binder v0")
         case .tekaV0: break
         }
 
@@ -134,7 +134,7 @@ public struct Teka: Sendable {
             }
         }
 
-        // The generic rule on the core arrays (teka-v0 §4.1): every entry is an object, and among entries that
+        // The generic rule on the core arrays (binder-v0 §4.1): every entry is an object, and among entries that
         // carry an id, ids are unique by JSON type and value. Two ids are the same only when both match.
         for key in ["documents", "open_items", "processing_log"] {
             let entries = catalog[key]?.arrayValue ?? []
@@ -150,7 +150,7 @@ public struct Teka: Sendable {
             if duplicate { flag(.needsMigration, "duplicate ids in \(key)") }
         }
 
-        // v0 meta (teka-v0 §4.2): name and disclosure are required once stamped, and the typed fields are checked.
+        // v0 meta (binder-v0 §4.2): name and disclosure are required once stamped, and the typed fields are checked.
         let stamped = level == .tekaV0 || level == .tekaV0BadSchemaVersion
         if stamped, case .object(let meta)? = catalog["meta"] {
             if (meta["name"]?.stringValue ?? "").isEmpty { flag(.needsAttention, "stamped catalog without meta.name") }
@@ -174,7 +174,7 @@ public struct Teka: Sendable {
             }
         }
 
-        // Name (teka-v0 §3.1).
+        // Name (binder-v0 §3.1).
         if case .string(let name)? = catalog["meta"]?["name"],
            name.precomposedStringWithCanonicalMapping != folder.lastPathComponent.precomposedStringWithCanonicalMapping {
             flag(.needsAttention, "the folder name differs from meta.name")

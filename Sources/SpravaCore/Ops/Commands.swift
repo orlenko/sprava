@@ -84,7 +84,7 @@ public struct Commands: Sendable {
         case "proposals":
             let f = try folder(r)
             // A proposal file the runtime did not write has no recorded digest: it is shown as "not verified" and
-            // cannot be approved (teka-v0 §6.5; architecture 4.6).
+            // cannot be approved (binder-v0 §6.5; architecture 4.6).
             let listed = ProposalStore.list(in: f)
             let digests = loadDigests()
             let catalog = Teka.read(f).catalog
@@ -254,7 +254,7 @@ public struct Commands: Sendable {
             return JSONObject([(key: "binder", value: .string(created.folder.path)), (key: "proposal", value: .string(created.checklistCard))])
 
         case "switch_dashboard":
-            // The one-time switch card of teka-v0 §7.1, approved by the person.
+            // The one-time switch card of binder-v0 §7.1, approved by the person.
             let f = try folder(r)
             try DashboardKeeper(folder: f, impl: client).switchOn(today: today, now: now)
             return JSONObject()

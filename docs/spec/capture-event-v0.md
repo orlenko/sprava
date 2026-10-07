@@ -10,14 +10,14 @@ skeptic finding pulled against a recorded decision, the decision stands and the 
 section 12.
 
 Licence note: the prose of this specification is meant to be CC-BY-4.0 and the JSON Schemas, samples
-and conformance checks Apache-2.0 (decisions.md L2). No rights in the names "Sprava" or "teka" are
+and conformance checks Apache-2.0 (decisions.md L2). No rights in the name "Sprava" are
 granted by this document.
 
 ## 1. Scope and status
 
 A capture is anything a person records in the moment: a dictated note, a recorded meeting, a typed
 line, a document dropped on the app, an item shared from another app, a forwarded email. Sprava's job
-is to turn captures into filed, typed changes to a binder (a teka, one folder per life episode). This
+is to turn captures into filed, typed changes to a binder (one folder per life episode). This
 document defines the file that carries a capture from the app that made it to the app that files it.
 
 The file is open and versioned for four reasons.
@@ -41,7 +41,7 @@ holos is the first producer and the one checked here against the code (section 7
 (Sprava's own text box, document drop, share sheet, email forward, a phone inbox) differ only in the
 ways section 8 lists.
 
-Out of scope here: the binder format (`docs/spec/teka-v0.md`, a sibling draft), the op vocabulary
+Out of scope here: the binder format (`docs/spec/binder-v0.md`, a sibling draft), the op vocabulary
 that proposals use, the runtime that watches the folder (`docs/architecture.md`), and the review
 queue's screens.
 
@@ -59,7 +59,7 @@ queue's screens.
   (decisions.md P5).
 - Brain: an optional Tier-2 agent connected over MCP. It never writes capture events.
 - MCP, Model Context Protocol: the protocol a brain uses to talk to Sprava (decisions.md A4).
-- Binder, teka: one folder per life episode, the thing captures get filed into.
+- Binder: one folder per life episode, the thing captures get filed into.
 - UUID: a 128-bit identifier written as 36 characters, such as `01a11262-6445-7d4e-8a1b-2c3d4e5f6a7b`.
   Version 7 UUIDs start with the time they were made, so they sort by time.
 - HLC, hybrid logical clock: a timestamp that stays close to the wall clock. A producer's stamps never
@@ -188,7 +188,7 @@ What changes are worth reading again:
 
 Applying a raise of sensitivity. When a chain becomes `private`, the consumer marks its stored copies
 of the capture and of the chain's derived events private at once, before any approval. When the chain
-has filed items, it also builds a change proposal that sets `redact: true` and a teka `kind` on each of
+has filed items, it also builds a change proposal that sets `redact: true` and a binder `kind` on each of
 them (section 3.3). The card says that titles already published to the hub or its Google Tasks mirror
 may persist there until the next publish.
 
@@ -225,7 +225,7 @@ setting that turns sweeps into retractions too.
 
 `sensitivity` has two values in v0. `unmarked` means nothing was decided. `private` means:
 
-- every item or document filed from the capture gets `redact: true` and a teka `kind` by default
+- every item or document filed from the capture gets `redact: true` and a binder `kind` by default
   (decisions.md F3), so the cross-binder view shows at most that kind, as a binder's `disclosure`
   already allows for redacted items (decisions.md F6). The person may change that on the review card,
   and the filing event records the change;
@@ -565,8 +565,8 @@ Kinds:
   these for meetings with Apple's on-device model (section 7.4). Sprava's clerk does not produce
   summaries in v0 (decisions.md P5).
 - `proposal`: an op batch built by code from an interpretation, pointing back at it. Its `content`
-  is a teka op batch (`docs/spec/schemas/op-batch.schema.json`, from the sibling draft
-  `docs/spec/teka-v0.md`) and is opaque here. One proposal targets one binder, named in `binder`; the
+  is a binder op batch (`docs/spec/schemas/op-batch.schema.json`, from the sibling draft
+  `docs/spec/binder-v0.md`) and is opaque here. One proposal targets one binder, named in `binder`; the
   items with no binder form one not-sure proposal with no `binder` (section 6.5).
 - `filing`: the record that a proposal was approved and applied: which ops (as lines of the binder's
   `.sprava/ops.ndjson`, `docs/spec/schemas/op.schema.json`), into which binder, who approved, when. It
@@ -637,7 +637,7 @@ Capture variant, one entry per item in `items[]`:
 | Field | Filled by | Meaning |
 |---|---|---|
 | `title` | model | A short title for the item. |
-| `action` | model | `call`, `pay`, `send`, `review`, `wait`, `file`, `meet`, `decide`, `note` or `other`. Named `action` so it is never confused with the teka item `kind`, to which code maps it (section 6.5). |
+| `action` | model | `call`, `pay`, `send`, `review`, `wait`, `file`, `meet`, `decide`, `note` or `other`. Named `action` so it is never confused with the binder item `kind`, to which code maps it (section 6.5). |
 | `when_text` | model, checked by code | The time expression exactly as spoken. Never a resolved date. |
 | `when_role` | code | `due`, `expected` or `follow_up`, from the words around `when_text` (section 6.6). |
 | `when_resolved` | code | The date code resolved `when_text` to (section 6.6). Absent when it could not. |
@@ -818,7 +818,7 @@ interpretation for the items with no binder, stored as architecture.md section 4
 binder in `binder` (section 6.1). When the person moves a not-sure item into a binder, code builds a
 new proposal for that binder that supersedes the not-sure one. For an item with a binder, the ops are:
 
-| Interpretation | Teka op and fields (`docs/spec/teka-v0.md`, decisions.md F2, F3) |
+| Interpretation | Binder op and fields (`docs/spec/binder-v0.md`, decisions.md F2, F3) |
 |---|---|
 | `match.relation` `same` | No op. The card shows "already in the binder" with a link to the item. |
 | `match.relation` `done` | `complete` on the candidate. |
@@ -831,9 +831,9 @@ new proposal for that binder that supersedes the not-sure one. For an item with 
 | `when_resolved` with `when_role` `due` | `due`. |
 | `when_resolved` with `when_role` `expected` | `expected_by`. |
 | `when_resolved` with `when_role` `follow_up` | `follow_up_at` for a waiting item; `due` for an open one. |
-| a waiting item with no `follow_up_at` | `follow_up_at` by the default formula of teka-v0 §5.3, with the capture date as today: `max(today, min(base, due))`, where `base` is `expected_by` plus 1 day, else today plus 7 days (a setting), and `min` with `due` applies only when `due` is present. The field is listed in `derived` (decisions.md F3). item.schema.json requires it for a waiting item. |
+| a waiting item with no `follow_up_at` | `follow_up_at` by the default formula of binder-v0 §5.3, with the capture date as today: `max(today, min(base, due))`, where `base` is `expected_by` plus 1 day, else today plus 7 days (a setting), and `min` with `due` applies only when `due` is present. The field is listed in `derived` (decisions.md F3). item.schema.json requires it for a waiting item. |
 | an open item with no `due` | `no_deadline: true`. |
-| `action` | teka `kind`: `pay` is `payment`; `file` is `filing`; `meet` is `appointment`; `decide` is `decision`; `send` with a person is `reply-owed`; `wait` whose sentence names a document (a report, a draft, a statement) is `document-request`; everything else is `other`. The person can change it on the card. |
+| `action` | binder `kind`: `pay` is `payment`; `file` is `filing`; `meet` is `appointment`; `decide` is `decision`; `send` with a person is `reply-owed`; `wait` whose sentence names a document (a report, a draft, a statement) is `document-request`; everything else is `other`. The person can change it on the card. |
 | `amount` | the op's `note` (for example "1,200 dollars"), until section 12, question 8, is settled. |
 | capture `sensitivity` `private` | `redact: true` by default, with the `kind` above. |
 | (always) | `provenance`: the capture event id in `events`, the interpretation id in `interpretation`, `proposed_by` `{kind: clerk, model}`, the proposal id. The batch's `provenance` uses the same two fields. |
@@ -844,8 +844,8 @@ transaction guard to be rejected there (decisions.md A2).
 
 For the document variant, code first copies the document's media file into the binder's `intake/`
 folder, then proposes `file_document` with `from` set to that file (decisions.md F7: the path is inside
-the teka) and the record's `title`, `date`, `kind` and `sha256`, plus one `add_item` per deadline that
-resolved, titled with the deadline's `label`, with teka `kind` `payment` for an invoice,
+the binder) and the record's `title`, `date`, `kind` and `sha256`, plus one `add_item` per deadline that
+resolved, titled with the deadline's `label`, with binder `kind` `payment` for an invoice,
 `legal-deadline` for a court document, `filing` for a tax document, and `other` otherwise.
 
 When a superseding capture arrives:
@@ -1397,7 +1397,7 @@ removed, with `text` cut to the sentences that binder's items came from when the
 than one binder, and with `extensions.sprava.filed_from` holding the original's id and SHA-256 (the
 digest the original was checked against). Media are copied as they are, checked against `sha256`;
 media reused with `of` are followed to the event that holds them, and that file is copied too. A filed
-capture is history that cannot be rebuilt, so it does not go under `.sprava/`, where teka-v0 section
+capture is history that cannot be rebuilt, so it does not go under `.sprava/`, where binder-v0 section
 7.2 allows only the files its table lists and rebuildable ones. That is what backups cover (decisions.md
 A6). The whole capture, and the full interpretation, stay only in the app's capture store. Whether and
 when ingested files may be removed from the capture folder is an open question (section 12).
@@ -1731,7 +1731,7 @@ uvx --from check-jsonschema check-jsonschema --schemafile interpretation.schema.
     },
     "content": {
       "type": "object",
-      "description": "Depends on kind. For interpretation it validates against interpretation.schema.json. For summary it is title, summary, points, actions and language. For proposal and filing it follows the teka op schema, one binder per event."
+      "description": "Depends on kind. For interpretation it validates against interpretation.schema.json. For summary it is title, summary, points, actions and language. For proposal and filing it follows the binder op schema, one binder per event."
     },
     "supersedes": { "$ref": "capture-event.schema.json#/$defs/uuid" },
     "extensions": {
@@ -1860,9 +1860,9 @@ uvx --from check-jsonschema check-jsonschema --schemafile interpretation.schema.
       "required": ["title", "action", "people", "binder_guess", "source_span"],
       "properties": {
         "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "A short title for the item, in the capture's language. Model." },
-        "action": { "type": "string", "enum": ["call", "pay", "send", "review", "wait", "file", "meet", "decide", "note", "other"], "description": "What has to happen. Not the teka item kind; code maps it (section 6.5). Model." },
+        "action": { "type": "string", "enum": ["call", "pay", "send", "review", "wait", "file", "meet", "decide", "note", "other"], "description": "What has to happen. Not the binder item kind; code maps it (section 6.5). Model." },
         "when_text": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The time expression exactly as spoken; kept only when it occurs in the quote's sentence and matches a known time pattern. Model. Never a resolved date." },
-        "when_role": { "type": "string", "enum": ["due", "expected", "follow_up"], "description": "Which teka date when_resolved fills, from the words around when_text (by, until, if not by). Code." },
+        "when_role": { "type": "string", "enum": ["due", "expected", "follow_up"], "description": "Which binder date when_resolved fills, from the words around when_text (by, until, if not by). Code." },
         "when_resolved": { "$ref": "#/$defs/date", "description": "The date code resolved when_text to, from captured_at and locale. Never earlier than the capture date. Code." },
         "people": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "People named for this item, as spoken; a role such as the notary is fine. Each entry occurs in the capture text as whole words and is not a pronoun or an indefinite such as someone. Model, checked by code." },
         "speaker": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Meetings only: the label of the turn that holds the item's sentence. Code." },
@@ -2396,7 +2396,7 @@ Interpretation (CI):
 10. CI-10: every prompt contains content from at most one binder.
 11. CI-11: a window refused after the retries reaches the queue word for word as an unfiled span.
 12. CI-12: an actionable sentence that no item covers appears in `unfiled` and makes the outcome `partial`.
-13. CI-13: an item filed from a `private` capture has `redact: true` and a teka `kind`, unless the person changed that on the card, which the filing event records; the filed copy of a `private` capture is a document record with `redact: true`, and `read_document`, `search` and resources never return its text unless the person allowed it for that binder.
+13. CI-13: an item filed from a `private` capture has `redact: true` and a binder `kind`, unless the person changed that on the card, which the filing event records; the filed copy of a `private` capture is a document record with `redact: true`, and `read_document`, `search` and resources never return its text unless the person allowed it for that binder.
 14. CI-14: every `add_item` that code builds validates against `item.schema.json`, including a waiting item with a bare date (it gets `expected_by` and a derived `follow_up_at`).
 15. CI-15: a window whose answer was cut off keeps its complete items, lists the rest of its text in `unfiled` with reason `truncated`, counts it in `outcome_detail.truncated`, and makes the outcome `partial`.
 16. CI-16: a second private capture about an item already filed from a private capture finds it as a duplicate candidate.
@@ -2500,7 +2500,7 @@ holos producer (CH):
     a pattern the research describes ("Encrypt personal data in events by using a per-subject key.
     Delete the key to render the data unrecoverable"). It touches decisions.md A6 (per-binder keys are
     designed and deferred) and C2. Worth designing now, or with per-binder keys?
-22. Span units. Settled: this draft counts `source_span` offsets in Unicode scalar values, and teka-v0
+22. Span units. Settled: this draft counts `source_span` offsets in Unicode scalar values, and binder-v0
     section 6.5 and its `op-batch.schema.json` now count `spans` the same way, half-open.
 23. Settled in `docs/architecture.md`: its section 8, step 5, its file table in section 2.3 and its
     open question 8 now follow section 9, a per-binder copy in the visible `captures/` folder without
@@ -2517,8 +2517,8 @@ holos producer (CH):
       terminal agent's digest could file it unapproved. architecture.md 7.3 and open question 42 ask to
       hold the file in the app's capture store until approval.
     - The private marker on a filed capture. Section 3.3 and CI-13 record the filed copy as a document
-      with `redact: true`, but teka-v0 section 4.3 gives documents no `redact` field. architecture.md
-      7.3 and open question 10 ask teka-v0 for `documents[].sensitivity: private` instead. One name
+      with `redact: true`, but binder-v0 section 4.3 gives documents no `redact` field. architecture.md
+      7.3 and open question 10 ask binder-v0 for `documents[].sensitivity: private` instead. One name
       must be chosen for both drafts.
     - Audio of a capture whose items went to more than one binder. architecture.md section 8, step 5,
       keeps it in the app's capture store and copies it into no binder; section 9 here copies media

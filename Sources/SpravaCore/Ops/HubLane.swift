@@ -2,11 +2,11 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// The federation profile, narrowed for the MVP (teka-v0 §8; mvp.md feature 7): Sprava publishes an adopted
+/// The federation profile, narrowed for the MVP (binder-v0 §8; mvp.md feature 7): Sprava publishes an adopted
 /// binder's agenda slice with lifeproj's exact projection, and drains the hub's completions with lifeproj's
 /// semantics plus the safer acknowledgement of §8.3.
 public enum HubLane {
-    // MARK: - The spool (teka-v0 §8.1)
+    // MARK: - The spool (binder-v0 §8.1)
 
     /// `$OSAVUL_SPOOL`, else `$XDG_DATA_HOME/osavul`, else `~/.local/share/osavul`, as lifeproj resolves it.
     public static func spoolRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
@@ -76,7 +76,7 @@ public enum HubLane {
         return SymmetricKey(data: bytes)
     }
 
-    /// `<teka>-r-` plus 12 hex digits of HMAC-SHA-256 over the id's canonical JSON text (teka-v0 §5.6).
+    /// `<binder>-r-` plus 12 hex digits of HMAC-SHA-256 over the id's canonical JSON text (binder-v0 §5.6).
     static func alias(_ id: JSONValue, teka: String, key: SymmetricKey) -> String {
         let text = (try? Canonical.serialize(id)) ?? canonicalText(id)
         let mac = HMAC<SHA256>.authenticationCode(for: Data(text.utf8), using: key)
@@ -101,8 +101,8 @@ public enum HubLane {
         return text.hasPrefix("\(teka)-") ? text : "\(teka)-\(text)"
     }
 
-    /// The slice id: prefixed with `<teka>-` unless it already starts with it (lifeproj's plain string test), or an
-    /// alias for a redacted item whose id is not in the recommended form (teka-v0 §5.5 at level `full`).
+    /// The slice id: prefixed with `<binder>-` unless it already starts with it (lifeproj's plain string test), or an
+    /// alias for a redacted item whose id is not in the recommended form (binder-v0 §5.5 at level `full`).
     static func sliceID(_ id: JSONValue, redacted: Bool, teka: String, key: SymmetricKey) -> String {
         if redacted && !isRecommended(id, teka: teka) { return alias(id, teka: teka, key: key) }
         let text = idText(id)
@@ -110,7 +110,7 @@ public enum HubLane {
     }
 
     /// The agenda slice at disclosure level `full`: lifeproj's nine keys per item, in order, nothing else
-    /// (teka-v0 §8.2; the v1 additions stay off in the MVP).
+    /// (binder-v0 §8.2; the v1 additions stay off in the MVP).
     public static func project(catalog: JSONObject, folderName: String, closedOnce: [JSONObject],
                                key: SymmetricKey, now: Date, alsoRedact: Set<String> = []) throws -> (slice: JSONValue, ids: [String: String]) {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
@@ -172,7 +172,7 @@ public enum HubLane {
         }
     }
 
-    /// Publishes one adopted binder (teka-v0 §8.1, §8.2). Never creates the spool root; at disclosure `none` the
+    /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root; at disclosure `none` the
     /// slice is removed. Levels `title` and `kind` are not published in the MVP.
     public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false) throws -> PublishResult {
         var rootInfo = stat()
@@ -256,7 +256,7 @@ public enum HubLane {
         return .object(o)
     }
 
-    // MARK: - Drain (teka-v0 §8.3)
+    // MARK: - Drain (binder-v0 §8.3)
 
     public struct DrainResult: Equatable {
         public var applied = 0
@@ -289,7 +289,7 @@ public enum HubLane {
         let items = (catalog["open_items"]?.arrayValue ?? []).compactMap(\.objectValue)
         let log = catalog["processing_log"]?.arrayValue ?? []
 
-        /// Resolves a completion id: raw id, `<teka>-<raw>`, an alias, then the id last published.
+        /// Resolves a completion id: raw id, `<binder>-<raw>`, an alias, then the id last published.
         func resolve(_ cid: String) -> JSONObject? {
             for it in items {
                 guard let id = it["id"] else { continue }
@@ -351,7 +351,7 @@ public enum HubLane {
                 result.skipped += 1
             }
         }
-        // The binder lock is held from the write through the acknowledgement (teka-v0 §4.9).
+        // The binder lock is held from the write through the acknowledgement (binder-v0 §4.9).
         let store = TekaStore(folder: folder, client: client)
         if !bodies.isEmpty {
             var acknowledged = 0
@@ -367,7 +367,7 @@ public enum HubLane {
         return result
     }
 
-    /// Steps 1 to 4 of teka-v0 §8.3: re-read, remove only what was applied (by id and at), and rename only when the
+    /// Steps 1 to 4 of binder-v0 §8.3: re-read, remove only what was applied (by id and at), and rename only when the
     /// file did not change in between; delete the file only when nothing else is in it.
     static func acknowledge(file: URL, applied: [(String, JSONValue?)]) throws -> Int {
         for _ in 0..<5 {

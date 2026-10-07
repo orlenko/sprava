@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// The rendered `DASHBOARD.md` (teka-v0 §7.1): the same inputs give the same bytes; the Notes section is kept
+/// The rendered `DASHBOARD.md` (binder-v0 §7.1): the same inputs give the same bytes; the Notes section is kept
 /// byte for byte; a marker line hashes everything above Notes so an edit outside Notes is noticed.
 public enum Dashboard {
     public static let notesLine = "## Notes"
@@ -131,7 +131,7 @@ public enum Dashboard {
         return hash != String(m.output.1)
     }
 
-    /// The switch (teka-v0 §7.1): the old text moves into Notes with every heading demoted one level.
+    /// The switch (binder-v0 §7.1): the old text moves into Notes with every heading demoted one level.
     public static func notesFromOld(_ old: String) -> String {
         let demoted = old.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
             // `#` becomes `##` and so on; `######` stays as it is.

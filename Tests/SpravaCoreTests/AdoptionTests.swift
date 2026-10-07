@@ -16,7 +16,7 @@ import Testing
         #expect(item?.derived == ["follow_up_at"])
 
         // Two proposals: close the done item, then stamp.
-        #expect(result.proposals.map(\.title) == ["Close 1 item(s) already marked done", "Stamp this binder as teka v0"])
+        #expect(result.proposals.map(\.title) == ["Close 1 item(s) already marked done", "Stamp this binder as binder v0"])
         let store = TekaStore(folder: folder)
         #expect(Teka.read(folder).state == .needsMigration)
         // Stamping first is refused: the done item would break v0.

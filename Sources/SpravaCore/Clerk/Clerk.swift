@@ -466,7 +466,7 @@ public struct Clerk: Sendable {
                     if set.entries.isEmpty, let amount = item.amountText { op.set("note", .string(amount)) }
                     op.set("op", .str("update_item"))
                     var args = JSONObject([(key: "id", value: item.match!.candidate.id), (key: "set", value: .object(set))])
-                    // A date replaces "no deadline" (teka-v0 §4.4: due XOR no_deadline).
+                    // A date replaces "no deadline" (binder-v0 §4.4: due XOR no_deadline).
                     if set["due"] != nil, item.match!.candidate.noDeadline { args.set("unset", .array([.str("no_deadline")])) }
                     op.set("args", .object(args))
                 default:
@@ -517,7 +517,7 @@ public struct Clerk: Sendable {
         }.filter { !($0.1.ops.isEmpty && $0.1.raw["provenance"]?["unfiled"] == nil) }
     }
 
-    /// The teka item for one clerk item (capture-event-v0 §6.5).
+    /// The binder item for one clerk item (capture-event-v0 §6.5).
     static func teka(_ item: ClerkItem, number: Int, today: CalendarDate, event: CaptureEvent, actor: JSONObject, interp: Interpretation) -> JSONObject {
         var o = JSONObject()
         o.set("id", .string("$new:\(number)"))
@@ -542,7 +542,7 @@ public struct Clerk: Sendable {
             o.set("follow_up_at", .string(follow.description))
             derived.append("follow_up_at")
         }
-        if o["due"] == nil { o.set("no_deadline", .bool(true)) }   // due XOR no_deadline, waiting items too (teka-v0 §4.4)
+        if o["due"] == nil { o.set("no_deadline", .bool(true)) }   // due XOR no_deadline, waiting items too (binder-v0 §4.4)
         let kind: String
         switch item.action {
         case "pay": kind = "payment"

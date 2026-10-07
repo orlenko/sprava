@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SpravaCore
 
-/// Copies an invented fixture into a temporary folder named like a teka, so reading has a real folder.
+/// Copies an invented fixture into a temporary folder named like a binder, so reading has a real folder.
 func makeTeka(fixture: String, folderName: String? = nil, subdirectory: String? = nil,
               mutate: ((URL) throws -> Void)? = nil) throws -> URL {
     let source = try #require(Bundle.module.url(forResource: fixture, withExtension: "json",

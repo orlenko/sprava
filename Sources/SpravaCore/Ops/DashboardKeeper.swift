@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Keeps a binder's `DASHBOARD.md` once the person approved the switch (teka-v0 §7.1). Before the switch nothing
+/// Keeps a binder's `DASHBOARD.md` once the person approved the switch (binder-v0 §7.1). Before the switch nothing
 /// is written; the app shows the rendering in its own window.
 public struct DashboardKeeper: Sendable {
     public let folder: URL

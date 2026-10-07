@@ -3,7 +3,7 @@ import Foundation
 
 /// Whole-file writes that are either old or new, never torn: a same-folder temporary file created exclusively
 /// under a random dotted name, flushed with `F_FULLFSYNC`, renamed into place, then the folder flushed
-/// (teka-v0 §3.6, §4.9; architecture 3.4).
+/// (binder-v0 §3.6, §4.9; architecture 3.4).
 public enum AtomicFile {
     public struct Failure: Error, CustomStringConvertible {
         public let step: String

@@ -1,7 +1,7 @@
 import Foundation
 
 /// A rule violation, identified by the array, the record's key and the rule, never by position, so removing one
-/// item never makes another item's old violation look new (teka-v0 §6.3).
+/// item never makes another item's old violation look new (binder-v0 §6.3).
 public struct Violation: Hashable, Sendable, CustomStringConvertible {
     public let array: String
     public let recordKey: String
@@ -9,7 +9,7 @@ public struct Violation: Hashable, Sendable, CustomStringConvertible {
     public var description: String { "\(array)[\(recordKey)]: \(rule)" }
 }
 
-/// The transaction guard (decisions.md A2; teka-v0 §6.3): applies ops to a copy of the catalog and accepts them
+/// The transaction guard (decisions.md A2; binder-v0 §6.3): applies ops to a copy of the catalog and accepts them
 /// only when they add no new violation and every record they create or change is valid afterwards.
 public enum TransactionGuard {
     public struct Rejection: Error, CustomStringConvertible, Equatable {
@@ -50,7 +50,7 @@ public enum TransactionGuard {
             }
         }
 
-        // Two open items whose slice ids would be the same break publishing (teka-v0 §5.6).
+        // Two open items whose slice ids would be the same break publishing (binder-v0 §5.6).
         if case .string(let teka)? = catalog["meta"]?["name"], !teka.isEmpty {
             var projected: [String: Int] = [:]
             for item in catalog["open_items"]?.arrayValue ?? [] {
@@ -98,7 +98,7 @@ public enum TransactionGuard {
         }
     }
 
-    /// Op-level rules that do not depend on the catalog's content (teka-v0 §6.2, §6.3, §6.5).
+    /// Op-level rules that do not depend on the catalog's content (binder-v0 §6.2, §6.3, §6.5).
     static func envelopeProblems(_ op: JSONObject) -> [String] {
         var problems: [String] = []
         let type = op["op"]?.stringValue ?? "?"
@@ -117,7 +117,7 @@ public enum TransactionGuard {
             problems.append("\(type): actor.client is required, it becomes the log entry's via")
         }
         let args = op["args"]?.objectValue
-        // A filed document follows the path rules and carries its digest (teka-v0 §4.3, §6.3).
+        // A filed document follows the path rules and carries its digest (binder-v0 §4.3, §6.3).
         if type == "file_document" {
             let doc = args?["document"]?.objectValue
             if let id = doc?["id"]?.stringValue, id.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._-]*/) == nil {

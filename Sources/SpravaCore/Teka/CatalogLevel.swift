@@ -1,6 +1,6 @@
 import Foundation
 
-/// The catalog level, read from the values as written in the file (teka-v0 §9.6, the level table).
+/// The catalog level, read from the values as written in the file (binder-v0 §9.6, the level table).
 public enum CatalogLevel: Sendable, Equatable {
     case lifeprojV2
     case lifeprojV1
@@ -62,9 +62,9 @@ public enum CatalogLevel: Sendable, Equatable {
         case .lifeprojV2: "lifeproj v2"
         case .lifeprojV1: "lifeproj v1"
         case .preLifeproj: "pre-lifeproj"
-        case .tekaV0: "teka v0"
-        case .tekaV0BadSchemaVersion: "teka v0 (bad schema_version)"
-        case .brokenStamp: "teka v0 (broken stamp)"
+        case .tekaV0: "binder v0"
+        case .tekaV0BadSchemaVersion: "binder v0 (bad schema_version)"
+        case .brokenStamp: "binder v0 (broken stamp)"
         case .unknown(let why): "unknown level: \(why)"
         }
     }

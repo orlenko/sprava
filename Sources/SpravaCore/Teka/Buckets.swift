@@ -1,6 +1,6 @@
 import Foundation
 
-/// The one bucket taxonomy (decisions.md F4; teka-v0 §5.2).
+/// The one bucket taxonomy (decisions.md F4; binder-v0 §5.2).
 public enum Bucket: String, Sendable, CaseIterable {
     case overdue, today, next7, later, noDeadline, nudge, waiting, recentlyClosed
 
@@ -27,7 +27,7 @@ public struct ClosedEntry: Sendable {
     public let closedOn: CalendarDate?
 }
 
-/// The Now page of one teka: its items in buckets, computed from plain code and today's date.
+/// The Now page of one binder: its items in buckets, computed from plain code and today's date.
 public struct NowPage: Sendable {
     public var items: [Bucket: [Item]] = [:]
     public var closed: [ClosedEntry] = []
@@ -37,7 +37,7 @@ public struct NowPage: Sendable {
         bucket == .recentlyClosed ? closed.count : items[bucket]?.count ?? 0
     }
 
-    /// Which bucket an open item belongs in, or nil when hidden or done (teka-v0 §5.2 steps 1–5).
+    /// Which bucket an open item belongs in, or nil when hidden or done (binder-v0 §5.2 steps 1–5).
     public static func bucket(for item: Item, today: CalendarDate) -> Bucket? {
         if item.declaredStatus == .done { return .recentlyClosed }
         if item.isDismissed { return nil }
@@ -99,7 +99,7 @@ public struct NowPage: Sendable {
 
     static func priorityRank(_ item: Item) -> Int { item.priority?.rank ?? 3 }
 
-    /// Sort orders of teka-v0 §5.2.
+    /// Sort orders of binder-v0 §5.2.
     static func order(for bucket: Bucket) -> (Item, Item) -> Bool {
         func tail(_ a: Item, _ b: Item) -> Bool? {
             if priorityRank(a) != priorityRank(b) { return priorityRank(a) < priorityRank(b) }

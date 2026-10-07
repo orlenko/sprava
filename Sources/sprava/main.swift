@@ -28,7 +28,7 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
 
-The shelf lists the live tekas in lifeproj's registry ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml),
+The shelf lists the live binders in lifeproj's registry ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml),
 read-only, plus folders added with `sprava shelf add`.
 """
 
@@ -73,7 +73,7 @@ func shelf(_ args: [String]) {
         do {
             if sub == "add" {
                 let teka = Teka.read(folder)
-                if teka.state == .notATeka { fail("\(folder.path): no catalog.json, so not a teka") }
+                if teka.state == .notATeka { fail("\(folder.path): no catalog.json, so not a binder") }
                 try store.add(folder)
                 print("added \(teka.name) (\(teka.state.label))")
             } else {
@@ -183,7 +183,7 @@ func dev(_ args: [String]) {
     case "slice":
         // Read-only: print the slice Sprava would publish, without writing it.
         let teka = Teka.read(folder)
-        guard let catalog = teka.catalog else { fail("not a readable teka") }
+        guard let catalog = teka.catalog else { fail("not a readable binder") }
         do {
             let key = SymmetricKeyFromHex.zero
             let at = args.count == 3 ? (Timestamp.parse(args[2]) ?? Date()) : Date()

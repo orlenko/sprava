@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// A proposal: a batch of op bodies waiting for the person, stored as `.sprava/proposals/<id>.json` and
-/// rewritten on each state change (teka-v0 §6.5). The runtime records each file's digest so a proposal file
+/// rewritten on each state change (binder-v0 §6.5). The runtime records each file's digest so a proposal file
 /// rewritten by another program is noticed (architecture 4.6).
 public struct Proposal: Sendable {
     public var raw: JSONObject
@@ -89,7 +89,7 @@ public struct Proposal: Sendable {
                 let field = path.split(separator: "/").joined(separator: ".")
                 return step["value"].map { "\(field) = \(canonicalText($0).prefix(40))" } ?? field
             }
-            return "Stamp the catalog as teka v0: " + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
+            return "Stamp the catalog as binder v0: " + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
         case "set_meta": return "Set " + (args["set"]?.objectValue?.keys.joined(separator: ", ") ?? "binder settings")
         case let other?: return other.replacingOccurrences(of: "_", with: " ")
         case nil: return "?"
@@ -235,7 +235,7 @@ public enum ProposalStore {
 }
 
 extension TekaStore {
-    /// Approves a proposal and applies its ops as one batch (teka-v0 §6.5). `edited` replaces the ops when the
+    /// Approves a proposal and applies its ops as one batch (binder-v0 §6.5). `edited` replaces the ops when the
     /// person changed them on the card. A rejected batch leaves the proposal `proposed`.
     @discardableResult
     public func approve(_ proposal: Proposal, edited: [JSONObject]? = nil, approvedBy: String = "user",

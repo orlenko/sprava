@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// Writes JSON the way the format asks (teka-v0 §4.8): UTF-8 unescaped, two-space indent, one key per line,
+/// Writes JSON the way the format asks (binder-v0 §4.8): UTF-8 unescaped, two-space indent, one key per line,
 /// key order as held, numbers exactly as parsed, a trailing newline. `compact` writes one line (the op log).
 public enum JSONWriter {
     public static func pretty(_ value: JSONValue) -> String {
@@ -72,7 +72,7 @@ public enum JSONWriter {
     }
 }
 
-/// RFC 8785 (JSON Canonicalization Scheme) and the content hash `sha256:<hex>` (teka-v0 §4.8).
+/// RFC 8785 (JSON Canonicalization Scheme) and the content hash `sha256:<hex>` (binder-v0 §4.8).
 public enum Canonical {
     public enum Failure: Error { case nonFiniteNumber(String) }
 

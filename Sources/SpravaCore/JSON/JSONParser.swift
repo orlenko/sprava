@@ -1,7 +1,7 @@
 import Foundation
 
-/// Problems that make a catalog unsafe to read one way only (teka-v0 §4.8). Reading still succeeds; the
-/// teka then needs attention and nothing is written until the user approves a repair.
+/// Problems that make a catalog unsafe to read one way only (binder-v0 §4.8). Reading still succeeds; the
+/// binder then needs attention and nothing is written until the user approves a repair.
 public struct JSONSafetyReport: Sendable, Equatable {
     /// JSON paths of objects that hold the same member name twice, with that name.
     public var duplicateKeys: [String] = []
@@ -20,7 +20,7 @@ public struct JSONParseError: Error, Equatable, CustomStringConvertible {
 }
 
 /// A strict, order-preserving JSON parser (RFC 8259). It keeps key order, duplicate keys and numbers as
-/// written, which Foundation's `JSONSerialization` does not (teka-v0 §4.7).
+/// written, which Foundation's `JSONSerialization` does not (binder-v0 §4.7).
 public struct JSONParser {
     private let bytes: [UInt8]
     private var index = 0

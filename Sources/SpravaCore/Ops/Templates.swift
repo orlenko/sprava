@@ -29,8 +29,8 @@ public struct BinderTemplate: Sendable {
     public static let all = [taxYear]
 }
 
-/// Creates a binder from a template: a ready teka-v0 folder at disclosure `none`, adopted at once, whose checklist
-/// arrives as one card (mvp.md feature 6; teka-v0 §3.1, §6.9).
+/// Creates a binder from a template: a ready binder-v0 folder at disclosure `none`, adopted at once, whose checklist
+/// arrives as one card (mvp.md feature 6; binder-v0 §3.1, §6.9).
 public enum BinderCreator {
     public struct Created: Sendable {
         public let folder: URL

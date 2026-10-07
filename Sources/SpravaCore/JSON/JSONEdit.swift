@@ -1,7 +1,7 @@
 import Foundation
 
 extension JSONObject {
-    /// Sets `key`: a changed key keeps its place, a new key goes at the end (teka-v0 §4.7).
+    /// Sets `key`: a changed key keeps its place, a new key goes at the end (binder-v0 §4.7).
     public mutating func set(_ key: String, _ value: JSONValue) {
         if let i = entries.firstIndex(where: { $0.key.unicodeScalars.elementsEqual(key.unicodeScalars) }) {
             entries[i].value = value
@@ -26,7 +26,7 @@ extension JSONValue {
 }
 
 /// RFC 6901 JSON Pointer and RFC 6902 JSON Patch, limited to `add`, `remove` and `replace`, the steps the
-/// format uses (teka-v0 §6.3).
+/// format uses (binder-v0 §6.3).
 public enum JSONPatch {
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
@@ -133,7 +133,7 @@ public enum JSONPatch {
     }
 
     /// A patch that turns `from` into `to`: objects member by member, arrays element by element when they keep
-    /// their length, else replaced whole (teka-v0 §6.7).
+    /// their length, else replaced whole (binder-v0 §6.7).
     public static func diff(from: JSONValue, to: JSONValue, path: String = "") -> [JSONValue] {
         if from == to { return [] }
         switch (from, to) {

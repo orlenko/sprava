@@ -1,6 +1,6 @@
 import Foundation
 
-/// A JSON number kept as written, so `2` and `2.0` stay distinguishable (teka-v0 §4.8, §9.6).
+/// A JSON number kept as written, so `2` and `2.0` stay distinguishable (binder-v0 §4.8, §9.6).
 public struct JSONNumber: Sendable, Equatable, Hashable, CustomStringConvertible {
     /// The number exactly as it appeared in the file.
     public let text: String
@@ -73,7 +73,7 @@ public indirect enum JSONValue: Sendable, Hashable {
     public subscript(key: String) -> JSONValue? { objectValue?[key] }
 
     /// Equality by Unicode scalars, never canonical equivalence: an NFC and an NFD title are different values
-    /// and hash differently under RFC 8785, so a change between them must be seen (teka-v0 §11 check 63).
+    /// and hash differently under RFC 8785, so a change between them must be seen (binder-v0 §11 check 63).
     public static func == (lhs: JSONValue, rhs: JSONValue) -> Bool {
         switch (lhs, rhs) {
         case (.null, .null): true

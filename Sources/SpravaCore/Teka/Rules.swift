@@ -1,7 +1,7 @@
 import Foundation
 
 /// One rule failure. It names a record by index and id only, never by its text, so findings can be logged
-/// and shown in counts without leaking content (teka-v0 §9.2).
+/// and shown in counts without leaking content (binder-v0 §9.2).
 public struct RuleFinding: Sendable, Equatable, CustomStringConvertible {
     public enum Code: String, Sendable {
         case notAnObject = "not-an-object"
@@ -17,7 +17,7 @@ public struct RuleFinding: Sendable, Equatable, CustomStringConvertible {
         case tagsNotList = "tags-not-a-list"
         case redactNotBool = "redact-not-boolean"
         case badSliceTitle = "bad-slice-title"
-        // v0 additions (teka-v0 §4.4)
+        // v0 additions (binder-v0 §4.4)
         case doneInOpenItems = "done-in-open-items"
         case waitingWithoutFollowUp = "waiting-without-follow-up-at"
         case redactedWithoutKind = "redacted-without-kind"

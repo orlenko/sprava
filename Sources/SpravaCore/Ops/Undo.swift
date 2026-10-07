@@ -1,6 +1,6 @@
 import Foundation
 
-/// Minting new ids at apply time (teka-v0 §5.6): `<prefix>-<YYYY>-<NNN>`, one more than the largest number
+/// Minting new ids at apply time (binder-v0 §5.6): `<prefix>-<YYYY>-<NNN>`, one more than the largest number
 /// already used that year in `open_items[]`, closure ids and `item` values in the processing log, and the op log.
 public enum IDMint {
     /// The mint prefix: `meta.name` when it has the recommended shape, otherwise a cleaned-up form of it.
@@ -44,7 +44,7 @@ public enum IDMint {
             maxN = max(maxN, n)
         }
         // Skip a number whose slice id an open item already projects to, such as `tax-2026-001` beside a bare
-        // `2026-001` (teka-v0 §5.6).
+        // `2026-001` (binder-v0 §5.6).
         let teka = catalog["meta"]?["name"]?.stringValue ?? name
         let taken = Set((catalog["open_items"]?.arrayValue ?? []).compactMap { $0["id"] }.map { HubLane.plainSliceID($0, teka: teka) })
         let usedText = Set(used.compactMap(\.stringValue))
@@ -59,7 +59,7 @@ public enum IDMint {
     }
 }
 
-/// Undo appends a compensating op that names the op it reverses (teka-v0 §6.10). Nothing is deleted.
+/// Undo appends a compensating op that names the op it reverses (binder-v0 §6.10). Nothing is deleted.
 public enum Undo {
     public struct Unsupported: Error, CustomStringConvertible {
         public let message: String
@@ -187,7 +187,7 @@ extension TekaStore {
 }
 
 /// Placeholder ids (`"$new:1"`) in a proposal are minted when the proposal is applied, never when it is proposed,
-/// so two pending proposals never claim one number (teka-v0 §5.6). Later ops in the batch may name a placeholder.
+/// so two pending proposals never claim one number (binder-v0 §5.6). Later ops in the batch may name a placeholder.
 public enum Placeholders {
     public static func resolve(_ ops: [JSONObject], catalog: JSONObject, opLog: [JSONObject], year: Int, at: String) -> [JSONObject] {
         var minted: [String: JSONValue] = [:]

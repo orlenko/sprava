@@ -360,7 +360,7 @@ final class Runtime: @unchecked Sendable {
         return rows.isEmpty ? .skipped : .ok
     }
 
-    /// The hub lane (teka-v0 §8; mvp.md feature 7): for each adopted binder this Mac owns, drain the hub's
+    /// The hub lane (binder-v0 §8; mvp.md feature 7): for each adopted binder this Mac owns, drain the hub's
     /// completions, then publish the slice when it changed. Counts per opaque binder id only.
     func hub() -> JobOutcome {
         let root = HubLane.spoolRoot()
@@ -463,7 +463,7 @@ final class Runtime: @unchecked Sendable {
         return .ok
     }
 
-    /// Keeps each switched DASHBOARD.md current (teka-v0 §7.1): on a catalog change and once a day.
+    /// Keeps each switched DASHBOARD.md current (binder-v0 §7.1): on a catalog change and once a day.
     func dashboards() -> JobOutcome {
         guard let commands else { return .skipped }
         var rendered = 0, edited = 0, failed = 0

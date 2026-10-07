@@ -287,7 +287,7 @@ struct FilingSection: View {
     }
 }
 
-/// DASHBOARD.md and the manual addendum (teka-v0 §7.1, §9.8).
+/// DASHBOARD.md and the manual addendum (binder-v0 §7.1, §9.8).
 struct KeepingSection: View {
     @ObservedObject var actions: BinderActions
     let folder: URL

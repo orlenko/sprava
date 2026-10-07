@@ -1,6 +1,6 @@
 import Foundation
 
-/// Applies one op to a catalog: a pure function of the catalog and the op line (teka-v0 §6.3). An applied op
+/// Applies one op to a catalog: a pure function of the catalog and the op line (binder-v0 §6.3). An applied op
 /// carries every value its effect needs, so replaying a log gives the same catalogs and the same hashes on any
 /// implementation. It changes the catalog only; it never touches a file.
 public enum OpApplier {
@@ -99,7 +99,7 @@ public enum OpApplier {
             let source = args["source"] ?? actorKind
             let closedAt = args["closed_at"] ?? .string(at)
             if type == "complete", let nextDue = args["next_due"] {
-                // Advance a recurring item; it stays open (teka-v0 §5.4).
+                // Advance a recurring item; it stays open (binder-v0 §5.4).
                 var occurrenceDue: JSONValue = .null
                 try updateItem(id: id, in: &c) { item in
                     guard item["recurrence"] != nil else { throw Failure("complete: next_due on an item without recurrence") }
@@ -228,7 +228,7 @@ public enum OpApplier {
         return value
     }
 
-    /// Ids match by JSON type and value (teka-v0 §5.6).
+    /// Ids match by JSON type and value (binder-v0 §5.6).
     static func findItem(id: JSONValue, in c: JSONObject) throws -> (Int, JSONObject) {
         let items = c["open_items"]?.arrayValue ?? []
         guard let i = items.firstIndex(where: { $0["id"] == id }), case .object(let item) = items[i] else {
@@ -257,7 +257,7 @@ public enum OpApplier {
         c.set(key, .array(array))
     }
 
-    /// The `derived` rule of teka-v0 §5.3: a supplied array replaces it; otherwise every field the op set or
+    /// The `derived` rule of binder-v0 §5.3: a supplied array replaces it; otherwise every field the op set or
     /// removed leaves it; an empty array is removed.
     static func updateDerived(_ item: inout JSONObject, touched: Set<String>, supplied: JSONValue?) {
         if let supplied {
@@ -271,7 +271,7 @@ public enum OpApplier {
     }
 }
 
-/// Replays an op log (teka-v0 §6.6): state 0 is the latest `import_snapshot`'s catalog; each later op, skipping
+/// Replays an op log (binder-v0 §6.6): state 0 is the latest `import_snapshot`'s catalog; each later op, skipping
 /// aborted ones, must reproduce its `after_hash`.
 public enum Replay {
     public struct Mismatch: Error, CustomStringConvertible {

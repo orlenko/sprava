@@ -1,6 +1,6 @@
 import Foundation
 
-/// The manual addendum (teka-v0 §9.8, stricter as mvp.md question 13 asks): the person pastes it into a managed
+/// The manual addendum (binder-v0 §9.8, stricter as mvp.md question 13 asks): the person pastes it into a managed
 /// binder's `CLAUDE.md` or `AGENTS.md`. Sprava never edits the manual. The first line is the marker the doctor
 /// looks for.
 public enum ManualAddendum {

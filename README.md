@@ -2,7 +2,7 @@
 
 Life projects organized, one self-maintaining folder at a time.
 
-Sprava keeps one binder (a *teka*) per episode of a person's life and keeps it current, locally, on a Mac.
+Sprava keeps one binder per episode of a person's life and keeps it current, locally, on a Mac.
 The plan is in [docs/](docs/): start with [docs/kickoff-summary.md](docs/kickoff-summary.md), then
 [docs/mvp.md](docs/mvp.md). Decisions are logged in [docs/decisions.md](docs/decisions.md).
 
@@ -46,6 +46,6 @@ sprava dashboard <folder>                    # the DASHBOARD.md Sprava would wri
 sprava measures --days 30                    # the shadow run's measures (mvp.md 1.2)
 ```
 
-The shelf lists the live tekas in lifeproj's registry (`$CMIRROR_CONFIG` or `~/.config/cmirror/config.toml`),
+The shelf lists the live binders in lifeproj's registry (`$CMIRROR_CONFIG` or `~/.config/cmirror/config.toml`),
 read-only, plus folders added with `sprava shelf add <folder>` or File › Add Folder… in the app.
 Sprava's own state lives in `~/Library/Application Support/Sprava` (`$SPRAVA_SUPPORT_DIR` overrides it).

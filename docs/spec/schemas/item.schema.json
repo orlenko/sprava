@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:item",
-  "title": "teka v0 open item",
-  "description": "One entry of open_items[] in a teka v0 catalog. It satisfies lifeproj's schema_version 2 rules and adds the v0 fields. An id found at adoption is accepted as it is; an id minted by a v0 implementation also matches minted_id in op.schema.json. This file is the single source of the item_v0 copies in catalog.schema.json and op.schema.json. Unknown fields are allowed and preserved.",
+  "title": "binder v0 open item",
+  "description": "One entry of open_items[] in a binder v0 catalog. It satisfies lifeproj's schema_version 2 rules and adds the v0 fields. An id found at adoption is accepted as it is; an id minted by a v0 implementation also matches minted_id in op.schema.json. This file is the single source of the item_v0 copies in catalog.schema.json and op.schema.json. Unknown fields are allowed and preserved.",
   "type": "object",
   "required": ["id", "title", "status", "priority"],
   "properties": {

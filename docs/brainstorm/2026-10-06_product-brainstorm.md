@@ -12,7 +12,7 @@
 >   "strategic brain" add-on (see `docs/HANDOFF.md`).
 
 
-**Strongest recommendation:** Sell "a binder that keeps itself". Open up the *format* (the teka spine, catalog schema, slice and outbox contracts) and charge for **one supervised local runtime** with a GUI. Inside it, the agent is a clerk that proposes typed changes and the human approves them. The product is the discipline (current truth, provenance, nothing outbound without approval). The model is not the product.
+**Strongest recommendation:** Sell "a binder that keeps itself". Open up the *format* (the binder spine, catalog schema, slice and outbox contracts) and charge for **one supervised local runtime** with a GUI. Inside it, the agent is a clerk that proposes typed changes and the human approves them. The product is the discipline (current truth, provenance, nothing outbound without approval). The model is not the product.
 
 **Riskiest assumption:** that agent-maintained state can stay correct for months with no technical operator watching it. Today it works because the author is the supervisor (re-dating waiting items, notices dead monitors, reads raw 429s). A product has to replace him with machinery, or the trust story falls apart.
 
@@ -84,7 +84,7 @@
 ## 4. Agent strategy
 
 Resolve the tension in three layers:
-1. **Open format** (the teka spec: spine, catalog/op schema, slice/outbox/briefs contracts, `AGENTS.md` + Skills). Agent-neutral by standard, not by convention.
+1. **Open format** (the binder spec: spine, catalog/op schema, slice/outbox/briefs contracts, `AGENTS.md` + Skills). Agent-neutral by standard, not by convention.
 2. **The runtime as an MCP server.** Any agent that speaks MCP can maintain a binder, but only through validated ops. The runtime does scheduling, sync, reminders and deadline monitoring deterministically.
 3. **One default experience.** Ordinary users get a bundled clerk and never choose a model. "Bring your own agent" (Claude Code, Codex, multi-CLI wrappers, local models) is an advanced setting for the Operator persona.
 
@@ -185,7 +185,7 @@ Vaults store documents but don't run the case. Concierges run the case with huma
 
 - **Liability.** Position it as an *organizer and drafter, never an advisor*. AI-extracted deadlines always show source + confidence. Statutory deadlines only come from vetted, versioned rules packs per jurisdiction, never improvised. Disclaimers won't save you; the approval gate and provenance will. Carry E&O insurance.
 - **Silent wrongness beats loud wrongness.** A missed deadline is far worse than a bad draft. Run a **deterministic deadline sentinel** independent of the LLM, and a periodic **reconciliation audit** where the agent re-reads sources against the catalog and flags drift.
-- **State correctness over months.** Schema migrations across versions are already a problem today: you need `equip` to retrofit old tekas. Version the op schema from day one and make migrations ops too.
+- **State correctness over months.** Schema migrations across versions are already a problem today: you need `equip` to retrofit old binders. Version the op schema from day one and make migrations ops too.
 - **Privacy and residency.** The deep tier sends content to model providers: require zero-retention terms, per-binder "never leaves device" mode, and on-device fallback. Apple Intelligence isn't available in every region **[web]**. E2E also means you can't debug users' data, so build privacy-safe telemetry (the watcher's "hash + count, never titles" rule is the template).
 - **Litigation discoverability.** The product creates records: logs, drafts, AI summaries. It needs retention controls *and* legal-hold awareness. Never build anything that looks like evidence destruction.
 - **Onboarding cost.** People arrive in chaos. If the "dump the shoebox" import doesn't produce a correct Now page in the first session, they leave. Key management is the second onboarding cliff.

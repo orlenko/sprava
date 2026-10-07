@@ -1,7 +1,7 @@
 import Foundation
 
 /// An item id: a non-empty string or a non-zero integer. Two ids are equal only when type and value match,
-/// so `7` and `"7"` differ (teka-v0 §5.6).
+/// so `7` and `"7"` differ (binder-v0 §5.6).
 public enum ItemID: Sendable, Hashable, CustomStringConvertible {
     case string(String)
     case integer(Int64)
@@ -42,7 +42,7 @@ public enum Priority: String, Sendable, CaseIterable {
 }
 
 /// A read-only view of one entry in `open_items[]`. Nothing here rewrites the entry; unknown fields stay in
-/// `raw` (teka-v0 §4.7).
+/// `raw` (binder-v0 §4.7).
 public struct Item: Sendable {
     public let raw: JSONValue
     public let index: Int
@@ -66,7 +66,7 @@ public struct Item: Sendable {
         return "(untitled)"
     }
 
-    /// The title as the sort orders compare it (teka-v0 §5.2): the string itself, the canonical JSON text of a
+    /// The title as the sort orders compare it (binder-v0 §5.2): the string itself, the canonical JSON text of a
     /// value that is not a string, and "" when missing.
     public var titleSortKey: String {
         guard let value = object?["title"] else { return "" }
@@ -76,12 +76,12 @@ public struct Item: Sendable {
 
     /// The status as written, when it is one of the four lifeproj values.
     public var declaredStatus: ItemStatus? { object?["status"]?.stringValue.flatMap(ItemStatus.init(rawValue:)) }
-    /// A missing or unknown status counts as `open` for display (teka-v0 §5.2).
+    /// A missing or unknown status counts as `open` for display (binder-v0 §5.2).
     public var status: ItemStatus { declaredStatus ?? .open }
 
     public var priority: Priority? { object?["priority"]?.stringValue.flatMap(Priority.init(rawValue:)) }
 
-    /// `due` read with lifeproj's lenient forms, used for bucketing (teka-v0 §5.2).
+    /// `due` read with lifeproj's lenient forms, used for bucketing (binder-v0 §5.2).
     public var due: CalendarDate? { object?["due"]?.stringValue.flatMap(CalendarDate.lenient) }
     public var hasNoDeadline: Bool { object?["no_deadline"] == .bool(true) }
     public var followUpAt: CalendarDate? { object?["follow_up_at"]?.stringValue.flatMap(CalendarDate.strict) }
@@ -103,7 +103,7 @@ public struct LogEntry: Sendable {
 
     public var object: JSONObject? { raw.objectValue }
 
-    /// The id a closure entry closes; any entry with an `id` closes that item (teka-v0 §4.5).
+    /// The id a closure entry closes; any entry with an `id` closes that item (binder-v0 §4.5).
     public var closedID: ItemID? { ItemID(object?["id"]) }
     /// True for every entry that carries `id`, whatever its value.
     public var isClosure: Bool { object?["id"] != nil }
@@ -115,7 +115,7 @@ public struct LogEntry: Sendable {
     public var title: String { object?["title"]?.stringValue ?? "" }
     public var action: String? { object?["action"]?.stringValue }
 
-    /// The closing date, by the order of teka-v0 §5.2: `closed_at` as an RFC 3339 time, then as a date,
+    /// The closing date, by the order of binder-v0 §5.2: `closed_at` as an RFC 3339 time, then as a date,
     /// then `at`. A date in the future counts as today.
     public func closingDate(timeZone: TimeZone, today: CalendarDate) -> CalendarDate? {
         var date: CalendarDate?

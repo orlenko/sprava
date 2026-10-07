@@ -1,6 +1,6 @@
 # Importers and exporters
 
-Status: draft for the author, 2026-10-07 (decisions.md P17). It formalizes what tekas do ad hoc today: a mail
+Status: draft for the author, 2026-10-07 (decisions.md P17). It formalizes what binders do ad hoc today: a mail
 monitor configured in a binder's `scripts/` folder, a work-tracking service an agent remembers to check, and
 email drafts an agent writes when asked. Nothing here is built yet. Examples are invented.
 
@@ -12,7 +12,7 @@ An **integration** connects one binder to one outside system, in one direction.
   from one watched folder. It writes into the binder's `intake/`, and the adaptation layer reads what lands
   there like any other file (`docs/adaptation-layer.md`).
 - An **exporter** takes approved instructions out: create an email draft, post an update, write a calendar
-  file. It reads instructions from the binder's `outbox/` and acts on them only after the person approved
+  file. It reads instructions from the binder's `outgoing/` and acts on them only after the person approved
   them.
 
 Each integration is an instance of a **plugin**, a kind of integration Sprava knows how to run: the IMAP
@@ -26,7 +26,7 @@ same `.env`. After this design: two importers and one exporter, each visible on 
 a health line, none relying on memory or hand instructions.
 
 The hub lane is already such a pair, built in: the drain imports check-offs, the publish exports the agenda
-slice (teka-v0 §8). It can be described as built-in integrations later without changing its behaviour.
+slice (binder-v0 §8). It can be described as built-in integrations later without changing its behaviour.
 
 ## 2. Principles
 
@@ -57,7 +57,7 @@ slice (teka-v0 §8). It can be described as built-in integrations later without 
 <binder>/
   intake/                     importers write here; the adaptation layer reads it
     mail/                     the IMAP importer's files (one message: the .eml and a folder of attachments)
-  outbox/                     instructions for exporters (visible, so agents and the person can write one)
+  outgoing/                   instructions for exporters (visible, so agents and the person can write one)
     <id>.json                 an instruction waiting for approval
     done/<id>.json            an instruction carried out, with its result
   .sprava/integrations.json   which integrations this binder has, and their settings (no secrets)
@@ -82,8 +82,8 @@ Sprava's own state:
 }
 ```
 
-`outbox/` here is a binder folder. It is unrelated to the hub spool's `outbox/` (teka-v0 §8), which lives
-outside every binder; the docs will always say which one they mean.
+`outgoing/` is a binder folder. It is named so that it does not collide with the hub spool's `outbox/`
+(binder-v0 §8), which lives outside every binder and is a different thing (decisions.md P18).
 
 ## 4. Importers
 
@@ -132,19 +132,19 @@ skip duplicates after a restore.
 
 ## 5. Exporters
 
-### 5.1 The outbox
+### 5.1 The outgoing folder
 
-An instruction is a small JSON file in the binder's `outbox/`. It can come from three places:
+An instruction is a small JSON file in the binder's `outgoing/`. It can come from three places:
 
 - an approved card: the clerk classifies an email as "action needed: reply" (P13), a smarter model drafts the
   reply, and the card offers "create this draft";
 - a connected brain, through a new MCP tool that writes an instruction as a proposal;
 - the person, or an agent working in the binder, writing the file directly.
 
-Whatever its origin, an instruction in `outbox/` is a request, never an order. The runtime turns it into a
+Whatever its origin, an instruction in `outgoing/` is a request, never an order. The runtime turns it into a
 card; only when the person approves the card does the exporter run. A file an agent wrote by hand is shown as
 "not written by Sprava", as foreign proposal files are today. After the exporter runs, the instruction moves
-to `outbox/done/` with its result, and the binder's history gets one log entry ("draft created: subject").
+to `outgoing/done/` with its result, and the binder's history gets one log entry ("draft created: subject").
 
 An instruction, invented:
 
@@ -182,7 +182,7 @@ is no SMTP in Sprava. The result records the draft's UID and the folder.
   health colour, and buttons to pause or remove it; "Add connection" picks a plugin and an account and asks
   for its filter.
 - **Moving from today's setup:** the adoption survey already counts credential files in a binder
-  (teka-v0 §9.2). For a binder whose `scripts/` holds an IMAP `.env`, the Connections page offers to set up
+  (binder-v0 §9.2). For a binder whose `scripts/` holds an IMAP `.env`, the Connections page offers to set up
   the same integration; the person enters the password again into Sprava, then stops the old monitor and may
   delete the `.env`. Sprava never reads the password out of the file.
 
@@ -204,7 +204,7 @@ is no SMTP in Sprava. The result records the draft's UID and the folder.
    habits used daily; the monday.com importer replaces a habit that currently depends on an agent's memory.
 2. Should integration settings live in the binder (`.sprava/integrations.json`, travels with backups and
    restores) as proposed, or only in Sprava's own state?
-3. Is the visible `outbox/` folder the right name, given the hub spool's `outbox/`? An alternative is
-   `outgoing/`.
+3. Answered 2026-10-07: the visible folder is `outgoing/`, not `outbox/`, so it does not collide with the
+   hub spool's `outbox/` (decisions.md P18).
 4. Port `imap-extract` to Swift inside Sprava (recommended), or extend the Rust tool and run it as a
    supervised subprocess?
