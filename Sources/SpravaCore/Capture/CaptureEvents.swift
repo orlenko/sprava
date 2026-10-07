@@ -108,6 +108,13 @@ public struct CaptureEvent: Sendable {
     /// `sha256:<hex>` of the file's bytes, matched against the app's notices.
     public let digest: String
 
+    /// An event held in memory, for the clerk's developer runs and tests; files are read with `check`.
+    public init(raw: JSONObject, url: URL, digest: String) {
+        self.raw = raw
+        self.url = url
+        self.digest = digest
+    }
+
     public var id: String { raw["id"]?.stringValue ?? "" }
     public var text: String { raw["text"]?.stringValue ?? "" }
     public var binderHint: String? { raw["binder_hint"]?.stringValue }

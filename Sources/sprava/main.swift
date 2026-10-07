@@ -18,6 +18,9 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           notice its card is "unverified" and asks for a binder
        sprava import-holos [--file <json>] developer only: write holos dictations as capture events, from
                                           `voiceislocal history list --json` (or a saved copy of its output)
+       sprava clerk <text> [--locale <tag>] [--binder <name>=<description>]...
+                                          developer only: run the on-device clerk on invented text and print
+                                          what it read; nothing is filed
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
@@ -272,6 +275,56 @@ func importHolos(_ args: [String]) {
     }
 }
 
+/// The clerk on invented text, for the release-gate fixtures (architecture 5.3). Nothing is filed.
+func clerk(_ args: [String]) {
+    var args = args
+    var locale = "en-CA"
+    var filing: [FilingBinder] = []
+    while let i = args.firstIndex(where: { $0 == "--locale" || $0 == "--binder" }), i + 1 < args.count {
+        if args[i] == "--locale" { locale = args[i + 1] } else {
+            let parts = args[i + 1].split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { fail(usage) }
+            filing.append(FilingBinder(name: parts[0], description: parts[1], folder: URL(fileURLWithPath: "/dev/null"),
+                                       words: FilingBinder.significantWords(parts[1])))
+        }
+        args.removeSubrange(i...(i + 1))
+    }
+    guard !args.isEmpty else { fail(usage) }
+    let model: AppleClerkModel
+    switch AppleClerkModel.load() {
+    case .success(let m): model = m
+    case .failure(let e): fail("the clerk cannot run: \(e)", code: 1)
+    }
+    var o = JSONObject()
+    o.set("id", .string(UUIDv7.make()))
+    o.set("source", .obj([("app", .str("sprava")), ("kind", .str("text")), ("ref", .str("dev")), ("revision", .str("dev"))]))
+    o.set("captured_at", .string(CaptureProducer.offsetTime(Date())))
+    o.set("locale", .string(locale))
+    o.set("text", .string(args.joined(separator: " ")))
+    o.set("sensitivity", .str("unmarked"))
+    let event = CaptureEvent(raw: o, url: URL(fileURLWithPath: "/dev/null"), digest: "")
+    let started = Date()
+    let offered = filing
+    let interp = runBlocking { await Clerk(model: model).read(event, filing: offered, hint: nil) }
+    var record = CaptureInbox.record(interp)
+    record.set("calls", .int(interp.calls))
+    record.set("seconds", .number(JSONNumber(text: String(format: "%.2f", Date().timeIntervalSince(started)))))
+    print(JSONWriter.pretty(.object(record)), terminator: "")
+}
+
+final class RunBox<T>: @unchecked Sendable { var value: T? }
+
+func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+    let box = RunBox<T>()
+    let done = DispatchSemaphore(value: 0)
+    Task {
+        box.value = await body()
+        done.signal()
+    }
+    done.wait()
+    return box.value!
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else { fail(usage) }
 arguments.removeFirst()
@@ -282,6 +335,7 @@ case "check": check(arguments)
 case "dev": dev(arguments)
 case "note": note(arguments)
 case "import-holos": importHolos(arguments)
+case "clerk": clerk(arguments)
 case "-h", "--help", "help": print(usage)
 default: fail(usage)
 }

@@ -75,6 +75,11 @@ public struct CaptureInbox: Sendable {
         var dedupe: [String: String] = [:]            // app|ref|revision -> id
         var apps: [String: String] = [:]              // id -> source.app, for supersede chains
         var cards: [String: String] = [:]             // id -> the proposal id of its card
+        var paths: [String: String]? = [:]            // id -> device/name, for the clerk
+        var cardBinder: [String: String]? = [:]       // id -> folder path of a filed Tier 0 card
+        var hints: [String: String]? = [:]            // id -> the binder name a verified hint named
+        var clerk: [String: String]? = [:]            // id -> pending, done, kept, acted, poison
+        var attempts: [String: Int]? = [:]
         var examined: [String: Examined] = [:]        // device/name -> last seen
         struct Examined: Codable, Equatable {
             var size: Int
@@ -172,6 +177,7 @@ public struct CaptureInbox: Sendable {
                     guard let event else { continue }
                     ingest(event, device: deviceName, producer: producers[deviceName], notice: notices[stem], size: size,
                            state: &state, result: &result, binders: binders, commands: commands, now: now)
+                    state.paths = (state.paths ?? [:]).merging([stem: key]) { $1 }
                 }
             }
         }
@@ -224,11 +230,149 @@ public struct CaptureInbox: Sendable {
         let (proposalID, filedTo) = card(for: event, hint: hint, verified: verified, producer: producer ?? event.app,
                                          replaces: replaces, binders: binders, commands: commands, now: now)
         state.cards[id] = proposalID
+        if let filedTo { state.cardBinder = (state.cardBinder ?? [:]).merging([id: filedTo.path]) { $1 } }
+        if let hint, filedTo != nil { state.hints = (state.hints ?? [:]).merging([id: hint]) { $1 } }
+        // The clerk reads it next, unless it was retracted or empty; private captures too, on the device.
+        state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
         state.ingested[id] = filedTo == nil ? "unfiled" : "proposed"
         if filedTo == nil { result.unfiled += 1 } else { result.filed += 1 }
         if let end = event.endedAt { result.latencies.append(max(0, now.timeIntervalSince(end))) }
         journal([("event", .string(id)), ("stage", .str(filedTo == nil ? "unfiled" : "proposed")), ("tier", .str("0")),
                  ("verified", .bool(verified))])
+    }
+
+    // MARK: - The clerk's queue (architecture 3.4, 5.3, 8)
+
+    public struct ClerkWork: Sendable {
+        public let event: CaptureEvent
+        public let hint: String?
+        let tier0: String
+        let tier0Binder: String?
+    }
+
+    /// Picks the oldest capture waiting for the clerk whose code-built card is still untouched, and records the
+    /// attempt before any model call (the poison rule: two unfinished attempts and the capture keeps its card).
+    public func nextForClerk() -> ClerkWork? {
+        var state = loadState()
+        var clerk = state.clerk ?? [:]
+        var attempts = state.attempts ?? [:]
+        defer {
+            state.clerk = clerk
+            state.attempts = attempts
+            try? save(state)
+        }
+        for id in clerk.filter({ $0.value == "pending" }).keys.sorted() {
+            guard let card = state.cards[id], let path = state.paths?[id] else { clerk[id] = "kept"; continue }
+            let binder = state.cardBinder?[id]
+            if !tier0Pending(card, binder: binder) { clerk[id] = "acted"; continue }
+            if attempts[id, default: 0] >= 2 {
+                clerk[id] = "poison"
+                journal([("event", .string(id)), ("stage", .str("clerk_set_aside")), ("reason", .str("crashed the clerk twice"))])
+                continue
+            }
+            let parts = path.split(separator: "/").map(String.init)
+            let device = root.appendingPathComponent(parts[0], isDirectory: true)
+            guard parts.count == 2, case (.complete(.capture), let event?) = CaptureEvent.check(device.appendingPathComponent(parts[1]), deviceFolder: device)
+            else { clerk[id] = "kept"; continue }
+            attempts[id, default: 0] += 1
+            journal([("event", .string(id)), ("stage", .str("clerk_attempt")), ("n", .int(attempts[id]!))])
+            return ClerkWork(event: event, hint: state.hints?[id], tier0: card, tier0Binder: binder)
+        }
+        return nil
+    }
+
+    func tier0Pending(_ card: String, binder: String?) -> Bool {
+        if let binder {
+            return ProposalStore.list(in: URL(fileURLWithPath: binder, isDirectory: true)).contains { $0.0.id == card && $0.0.state == "proposed" }
+        }
+        return unfiled().contains { $0.id == card }
+    }
+
+    public struct ClerkOutcome: Equatable, Sendable {
+        public var items = 0
+        public var filed = 0
+        public var unsure = 0
+        public var replaced = false
+    }
+
+    /// Stores the clerk's cards and withdraws the code-built one, unless the person acted on it meanwhile.
+    public func commitClerk(_ work: ClerkWork, _ interp: Interpretation, filing: [FilingBinder], rows: [ShelfRow],
+                            commands: Commands, seconds: Double, now: Date = Date()) -> ClerkOutcome {
+        var outcome = ClerkOutcome()
+        var state = loadState()
+        var clerk = state.clerk ?? [:]
+        defer {
+            state.clerk = clerk
+            try? save(state)
+        }
+        let id = work.event.id
+        guard tier0Pending(work.tier0, binder: work.tier0Binder) else { clerk[id] = "acted"; return outcome }
+        try? AtomicFile.makePrivateFolder(dir.appendingPathComponent("interpretations", isDirectory: true))
+        try? AtomicFile.write(Data(JSONWriter.pretty(.object(Self.record(interp))).utf8),
+                              to: dir.appendingPathComponent("interpretations/\(id).json"))
+        outcome.items = interp.items.count
+        guard !interp.items.isEmpty else {
+            clerk[id] = "kept"   // nothing better than the code-built card
+            journal([("event", .string(id)), ("stage", .str("clerk")), ("outcome", .string(interp.outcome)), ("items", .int(0)),
+                     ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
+            return outcome
+        }
+        let today = Clerk.captureDay(work.event.raw["captured_at"]?.stringValue ?? "") ?? CalendarDate.today(now: now)
+        for (binder, proposal) in Clerk.proposals(interp, event: work.event, today: today, client: commands.client, now: now) {
+            let folder = binder.flatMap { name in
+                filing.first { $0.name == name }?.folder ?? rows.first { $0.teka.isAdopted && $0.name == name }?.folder
+            }
+            if let folder, (try? ProposalStore.save(proposal, in: folder)) != nil {
+                commands.trustProposals([proposal.id], in: folder)
+                outcome.filed += proposal.ops.count
+            } else {
+                var raw = proposal.raw
+                raw.set("binder", .str("not sure"))
+                writeUnfiled(raw)
+                outcome.unsure += proposal.ops.count
+            }
+        }
+        // The code-built card gives way to the clerk's reading.
+        if let binder = work.tier0Binder {
+            let folder = URL(fileURLWithPath: binder, isDirectory: true)
+            if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == work.tier0 }) {
+                try? TekaStore(folder: folder).reject(p, reason: "replaced by the clerk's reading", now: now)
+            }
+        } else {
+            try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(work.tier0).json"))
+        }
+        outcome.replaced = true
+        clerk[id] = "done"
+        journal([("event", .string(id)), ("stage", .str("clerk")), ("outcome", .string(interp.outcome)), ("items", .int(interp.items.count)),
+                 ("filed", .int(outcome.filed)), ("not_sure", .int(outcome.unsure)), ("dropped", .int(interp.dropped)),
+                 ("unfiled_spans", .int(interp.unfiled.count)), ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
+        return outcome
+    }
+
+    /// The interpretation as kept in Sprava's own capture store (decisions.md C3).
+    public static func record(_ interp: Interpretation) -> JSONObject {
+        var o = JSONObject()
+        o.set("id", .string(interp.id))
+        o.set("event", .string(interp.event))
+        o.set("model", .string(interp.model))
+        o.set("outcome", .string(interp.outcome))
+        o.set("dropped_items", .int(interp.dropped))
+        o.set("items", .array(interp.items.map { i in
+            var item = JSONObject()
+            item.set("title", .string(i.title))
+            item.set("action", .string(i.action))
+            item.set("source_span", .obj([("start", .int(i.sentence.start)), ("end", .int(i.sentence.end)), ("anchored", .bool(true))]))
+            if let w = i.whenText { item.set("when_text", .string(w)) }
+            if let r = i.whenRole { item.set("when_role", .string(r.rawValue)) }
+            if let d = i.whenResolved { item.set("when_resolved", .string(d.description)) }
+            item.set("people", .array(i.people.map(JSONValue.string)))
+            if let a = i.amount { item.set("amount", .obj([("value", .number(JSONNumber(text: String(a.value)))), ("text", .string(i.amountText ?? ""))])) }
+            item.set("binder_guess", .obj([("name", i.binder.map(JSONValue.string) ?? .null), ("signals", .array(i.signals.map(JSONValue.string))),
+                                           ("confidence_band", .string(i.band))]))
+            return .object(item)
+        }))
+        o.set("unfiled", .array(interp.unfiled.map { .obj([("start", .int($0.span.start)), ("end", .int($0.span.end)), ("reason", .string($0.reason))]) }))
+        return o
     }
 
     // MARK: - Cards

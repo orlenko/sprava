@@ -50,6 +50,7 @@ final class Runtime: @unchecked Sendable {
         "capture": JobSpec(key: "capture", budget: .seconds(10), expectedCadence: 15, breakerThreshold: 3),
         "intake": JobSpec(key: "intake", budget: .seconds(60), expectedCadence: 30, breakerThreshold: 3),
         "importer": JobSpec(key: "importer", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
+        "clerk": JobSpec(key: "clerk", budget: .seconds(120), expectedCadence: nil, breakerThreshold: 3),
     ]
 
     init(support: URL, lease: Lease) {
@@ -260,6 +261,7 @@ final class Runtime: @unchecked Sendable {
         if now >= nextSummary { run("summary") { self.summary() } }
         if now >= nextHub { run("hub") { self.hub() } }
         run("capture") { self.capture() }   // every 15 s; file events call it sooner
+        run("clerk") { self.clerk() }
         if now >= nextIntake { run("intake") { self.intake() } }
         if now >= nextImport, developerImporterPath() != nil { run("importer") { self.importHolos() } }
         let today = CalendarDate.today(now: now).description
@@ -314,7 +316,7 @@ final class Runtime: @unchecked Sendable {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
-        if !["heartbeat", "capture", "intake", "importer"].contains(key) || final != .ok {
+        if !["heartbeat", "capture", "intake", "importer", "clerk"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -453,6 +455,36 @@ final class Runtime: @unchecked Sendable {
         } catch {
             return .error(code: "importer_unreadable", culprit: nil)
         }
+    }
+
+    /// Tier 1 (architecture 5.3): reads the captures whose code-built cards are still untouched, one at a time,
+    /// for at most 45 seconds per run. Model calls never hold the command queue. Gated on the author's model
+    /// variant for the MVP (mvp.md question 7); `developer.json` `"clerk_any_model": true` lifts the gate.
+    func clerk() -> JobOutcome {
+        guard let commands, let xpc else { return .skipped }
+        let model: AppleClerkModel
+        switch AppleClerkModel.load() {
+        case .success(let m): model = m
+        case .failure: return .skipped
+        }
+        let anyModel = (try? JSONParser.parse(Data(contentsOf: support.appendingPathComponent("developer.json"))).value["clerk_any_model"]) == .bool(true)
+        guard model.contextSize >= 8192 || anyModel else { return .skipped }
+        let inbox = commands.inbox
+        let started = Date()
+        var read = 0
+        while Date().timeIntervalSince(started) < 45 {
+            guard let work = xpc.queue.sync(execute: { inbox.nextForClerk() }) else { break }
+            let rows = shelfRows()
+            let filing = FilingList(support: support).binders(rows: rows, deviceID: commands.deviceID)
+            let t0 = Date()
+            let interp = blocking { await Clerk(model: model).read(work.event, filing: filing, hint: work.hint) }
+            let seconds = Date().timeIntervalSince(t0)
+            let outcome = xpc.queue.sync { inbox.commitClerk(work, interp, filing: filing, rows: rows, commands: commands, seconds: seconds) }
+            log("clerk outcome=\(interp.outcome) items=\(outcome.items) filed=\(outcome.filed) not_sure=\(outcome.unsure) calls=\(interp.calls) ms=\(Int(seconds * 1000))")
+            read += 1
+        }
+        if read > 0 { queue.async { self.model?.last_success = ISOTime.string(Date()) } }
+        return .ok
     }
 
     func shelfRows() -> [ShelfRow] {
@@ -632,4 +664,18 @@ enum ModelStatus {
             return Heartbeat.Model(availability: name, context_size: nil, variant: nil, last_success: nil, errors_24h: nil)
         }
     }
+}
+
+/// Waits for async work from a job's thread. Jobs run on a global queue, never on the state queue.
+final class BlockingBox<T>: @unchecked Sendable { var value: T? }
+
+func blocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+    let box = BlockingBox<T>()
+    let done = DispatchSemaphore(value: 0)
+    Task {
+        box.value = await body()
+        done.signal()
+    }
+    done.wait()
+    return box.value!
 }

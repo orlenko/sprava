@@ -194,6 +194,21 @@ public struct Commands: Sendable {
             try inbox.discard(id)
             return JSONObject()
 
+        case "binder_settings":
+            // The clerk's filing list: read, or set when description or filing is given (mvp.md feature 1).
+            let f = try folder(r)
+            let list = FilingList(support: support)
+            var entry = list.load()[f.path] ?? FilingList.Entry(description: FilingList.readmeLine(f) ?? "", filing: false)
+            if r["description"] != nil || r["filing"] != nil {
+                if case .string(let d)? = r["description"] { entry.description = d }
+                if case .bool(let on)? = r["filing"] { entry.filing = on }
+                if entry.filing, entry.description.trimmingCharacters(in: .whitespaces).isEmpty {
+                    throw Failure(message: "a binder on the filing list needs a one-line description")
+                }
+                try list.set(f, entry)
+            }
+            return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
+
         case "register_client":
             // A brain client (architecture 7.5). The token is returned once and never stored, only its hash.
             guard case .string(let id)? = r["client_id"], case .object(let scope)? = r["binders"] else {
