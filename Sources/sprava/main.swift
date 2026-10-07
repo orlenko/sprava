@@ -14,6 +14,8 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava now <folder> [--today YYYY-MM-DD]
                                           one binder's items in the eight buckets
        sprava check <folder>              the binder's state and rule findings (ids and counts only)
+       sprava dashboard <folder> [--today YYYY-MM-DD]
+                                          the DASHBOARD.md Sprava would write (read-only)
        sprava note <text> [--binder <name>] write a typed note as a capture event; without the app's
                                           notice its card is "unverified" and asks for a binder
        sprava import-holos [--file <json>] developer only: write holos dictations as capture events, from
@@ -334,6 +336,11 @@ case "now": now(arguments)
 case "check": check(arguments)
 case "dev": dev(arguments)
 case "note": note(arguments)
+case "dashboard":
+    var args = arguments
+    let day = todayFrom(&args)
+    guard let path = args.first, let text = DashboardKeeper(folder: folderURL(path)).preview(today: day) else { fail(usage) }
+    print(text, terminator: "")
 case "import-holos": importHolos(arguments)
 case "clerk": clerk(arguments)
 case "-h", "--help", "help": print(usage)

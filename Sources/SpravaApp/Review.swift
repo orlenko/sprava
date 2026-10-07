@@ -35,6 +35,8 @@ final class BinderActions: ObservableObject {
     @Published var busy = false
     @Published var description = ""
     @Published var filing = false
+    @Published var showPreview = false
+    @Published var copied = false
     let client = RuntimeClient()
 
     func load(_ folder: URL, adopted: Bool) async {
@@ -224,6 +226,58 @@ struct FilingSection: View {
             .disabled(actions.description.trimmingCharacters(in: .whitespaces).isEmpty)
             Text("The clerk files a note here only when it is on the list. The line stays in Sprava, never in the binder.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// DASHBOARD.md and the manual addendum (teka-v0 §7.1, §9.8).
+struct KeepingSection: View {
+    @ObservedObject var actions: BinderActions
+    let folder: URL
+    let today: CalendarDate
+    let reload: () -> Void
+
+    var body: some View {
+        let keeper = DashboardKeeper(folder: folder)
+        let addendum = ManualAddendum.isPresent(in: folder)
+        Section(header: Text("Dashboard and manual").font(.headline)) {
+            HStack {
+                Text(keeper.isSwitched ? "Sprava keeps DASHBOARD.md. Edit only below \u{201C}## Notes\u{201D}."
+                                       : "DASHBOARD.md is kept by hand. Sprava can keep it for you; your text moves into its Notes section.")
+                Spacer()
+                Button("Preview") { actions.showPreview = true }
+                if !keeper.isSwitched {
+                    Button("Let Sprava Keep It") {
+                        let alert = NSAlert()
+                        alert.messageText = "Let Sprava keep DASHBOARD.md?"
+                        alert.informativeText = "Sprava rewrites the file from the catalog every day and after each change. The current text moves below \u{201C}## Notes\u{201D}, which Sprava never changes, and a copy is kept in the binder's .sprava folder."
+                        alert.addButton(withTitle: "Switch")
+                        alert.addButton(withTitle: "Cancel")
+                        if alert.runModal() == .alertFirstButtonReturn { actions.run("switch_dashboard", folder, [], then: reload) }
+                    }
+                    .disabled(actions.busy)
+                }
+            }
+            HStack {
+                switch addendum {
+                case true?: Text("The manual carries Sprava's addendum.").foregroundStyle(.secondary)
+                case false?: Text("Paste Sprava's addendum into CLAUDE.md or AGENTS.md, so agents propose instead of editing.").foregroundStyle(.orange)
+                case nil: Text("No CLAUDE.md or AGENTS.md here. Paste the addendum into one if an agent works in this binder.").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(actions.copied ? "Copied" : "Copy Addendum") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(ManualAddendum.text, forType: .string)
+                    actions.copied = true
+                }
+            }
+        }
+        .sheet(isPresented: $actions.showPreview) {
+            VStack(alignment: .leading) {
+                ScrollView { Text(keeper.preview(today: today) ?? "unreadable").font(.body.monospaced()).textSelection(.enabled).padding() }
+                HStack { Spacer(); Button("Close") { actions.showPreview = false }.keyboardShortcut(.defaultAction) }.padding()
+            }
+            .frame(width: 720, height: 560)
         }
     }
 }

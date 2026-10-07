@@ -32,6 +32,7 @@ final class Runtime: @unchecked Sendable {
     var nextHub = Date()
     var nextIntake = Date()
     var nextImport = Date()
+    var nextDashboard = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
@@ -51,6 +52,7 @@ final class Runtime: @unchecked Sendable {
         "intake": JobSpec(key: "intake", budget: .seconds(60), expectedCadence: 30, breakerThreshold: 3),
         "importer": JobSpec(key: "importer", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
         "clerk": JobSpec(key: "clerk", budget: .seconds(120), expectedCadence: nil, breakerThreshold: 3),
+        "dashboard": JobSpec(key: "dashboard", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
     ]
 
     init(support: URL, lease: Lease) {
@@ -262,6 +264,7 @@ final class Runtime: @unchecked Sendable {
         if now >= nextHub { run("hub") { self.hub() } }
         run("capture") { self.capture() }   // every 15 s; file events call it sooner
         run("clerk") { self.clerk() }
+        if now >= nextDashboard { run("dashboard") { self.dashboards() } }
         if now >= nextIntake { run("intake") { self.intake() } }
         if now >= nextImport, developerImporterPath() != nil { run("importer") { self.importHolos() } }
         let today = CalendarDate.today(now: now).description
@@ -287,6 +290,7 @@ final class Runtime: @unchecked Sendable {
         case "hub": nextHub = Date().addingTimeInterval(300)
         case "intake": nextIntake = Date().addingTimeInterval(30)
         case "importer": nextImport = Date().addingTimeInterval(60)
+        case "dashboard": nextDashboard = Date().addingTimeInterval(60)
         default: break
         }
         let started = DispatchTime.now()
@@ -316,7 +320,7 @@ final class Runtime: @unchecked Sendable {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
-        if !["heartbeat", "capture", "intake", "importer", "clerk"].contains(key) || final != .ok {
+        if !["heartbeat", "capture", "intake", "importer", "clerk", "dashboard"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -485,6 +489,25 @@ final class Runtime: @unchecked Sendable {
         }
         if read > 0 { queue.async { self.model?.last_success = ISOTime.string(Date()) } }
         return .ok
+    }
+
+    /// Keeps each switched DASHBOARD.md current (teka-v0 §7.1): on a catalog change and once a day.
+    func dashboards() -> JobOutcome {
+        guard let commands else { return .skipped }
+        var rendered = 0, edited = 0, failed = 0
+        for row in shelfRows() where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == commands.deviceID {
+            switch try? DashboardKeeper(folder: row.folder, impl: commands.client).refresh(today: CalendarDate.today()) {
+            case .rendered(let e)?: rendered += 1; if e { edited += 1 }
+            case nil: failed += 1
+            default: break
+            }
+        }
+        if rendered > 0 || failed > 0 { log("dashboard rendered=\(rendered) edited_outside_notes=\(edited) failed=\(failed)") }
+        if edited > 0 {
+            notify(title: "Sprava", body: "A DASHBOARD.md was edited outside its Notes section. The edited copy was saved in the binder's .sprava folder.",
+                   id: "dashboard-edited")
+        }
+        return failed > 0 ? .error(code: "dashboard_failed", culprit: "\(failed) binder(s)") : .ok
     }
 
     func shelfRows() -> [ShelfRow] {

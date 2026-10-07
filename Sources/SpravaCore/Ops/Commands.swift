@@ -59,7 +59,7 @@ public struct Commands: Sendable {
     }
 
     func run(_ command: String, _ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
-        if ["approve", "reject", "apply", "undo"].contains(command) {
+        if ["approve", "reject", "apply", "undo", "switch_dashboard", "file_card", "binder_settings"].contains(command) {
             let f = try folder(r)
             if let owner = Owner.device(of: f), owner != deviceID {
                 throw Failure(message: "this binder is managed by another Sprava (another Mac or a development build); it is read-only here")
@@ -212,6 +212,21 @@ public struct Commands: Sendable {
                 try list.set(f, entry)
             }
             return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
+
+        case "switch_dashboard":
+            // The one-time switch card of teka-v0 §7.1, approved by the person.
+            let f = try folder(r)
+            try DashboardKeeper(folder: f, impl: client).switchOn(today: today, now: now)
+            return JSONObject()
+
+        case "doctor":
+            let url = LifeprojRegistry.defaultPath()
+            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
+            let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+            let findings = Doctor.run(rows: rows, deviceID: deviceID, registry: registry, support: support)
+            return JSONObject([(key: "findings", value: .array(findings.map {
+                .obj([("level", .string($0.level.rawValue)), ("binder", $0.binder.map(JSONValue.string) ?? .null), ("text", .string($0.text))])
+            }))])
 
         case "register_client":
             // A brain client (architecture 7.5). The token is returned once and never stored, only its hash.

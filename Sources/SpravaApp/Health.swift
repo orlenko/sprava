@@ -19,6 +19,8 @@ final class HealthModel: ObservableObject {
     @Published var refusals: [String] = []
     @Published var message: String?
     @Published var now = Date()
+    @Published var findings: [Doctor.Finding] = []
+    var lastDoctor: Date?
     var lastWake: Date?
 
     let runtimeDir = SpravaPaths.supportDirectory().appendingPathComponent("runtime", isDirectory: true)
@@ -46,6 +48,15 @@ final class HealthModel: ObservableObject {
         watchRecord = (try? String(contentsOf: runtimeDir.appendingPathComponent("watch.json"), encoding: .utf8))
         let log = (try? String(contentsOf: runtimeDir.appendingPathComponent("lease-refusals.log"), encoding: .utf8)) ?? ""
         refusals = Array(log.split(separator: "\n").suffix(3).map(String.init))
+        // The doctor reads only; it runs here at most once a minute, so it works while the runtime is stopped.
+        if lastDoctor.map({ now.timeIntervalSince($0) > 60 }) ?? true {
+            lastDoctor = now
+            let support = SpravaPaths.supportDirectory()
+            let url = LifeprojRegistry.defaultPath()
+            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
+            let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+            findings = Doctor.run(rows: rows, deviceID: DeviceID.load(support: support), registry: registry, support: support)
+        }
     }
 
     /// The beat's grade; red when there is no valid heartbeat.
@@ -144,6 +155,16 @@ struct HealthView: View {
                     }
                 }
                 Section("The clerk") { clerkLine(beat) }
+                Section("Doctor") {
+                    if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
+                    ForEach(Array(model.findings.enumerated()), id: \.offset) { _, f in
+                        HStack(alignment: .top) {
+                            Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
+                                .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
+                            Text([f.binder, f.text].compactMap { $0 }.joined(separator: ": "))
+                        }
+                    }
+                }
                 Section("Alerts") { alertsLine(beat) }
             }
             if let watch = model.watchRecord {
