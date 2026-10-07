@@ -94,6 +94,12 @@ public struct Commands: Sendable {
                 o.set("verified", .bool(digests[key(f, p.id)] == digest))
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: catalog)) }))
                 o.set("notes", .array(p.ops.flatMap(Proposal.notes).map(JSONValue.string)))
+                // What the person may edit on the card (CardEdits).
+                o.set("editable", .array(p.ops.enumerated().compactMap { i, op -> JSONValue? in
+                    guard op["op"] == .str("add_item"), let item = op["args"]?["item"] else { return nil }
+                    return .obj([("index", .int(i)), ("title", item["title"] ?? .str("")), ("due", item["due"] ?? .str("")),
+                                 ("priority", item["priority"] ?? .str("normal"))])
+                }))
                 if let c = p.raw["confidence"] { o.set("confidence", c) }
                 if let intake = p.raw["provenance"]?["intake"] { o.set("intake", intake) }
                 if let folder = p.ops.first(where: { $0["op"] == .str("file_document") })?["args"]?["document"]?["path"]?.stringValue {
@@ -116,9 +122,12 @@ public struct Commands: Sendable {
             if command == "approve" {
                 // The person may pick another folder for a filing card; only the folder changes, never the file.
                 var edited: [JSONObject]?
+                if case .array(let edits)? = r["edits"], !edits.isEmpty {
+                    edited = try CardEdits.apply(edits, to: proposal.ops)
+                }
                 if case .string(let target)? = r["document_folder"] {
                     let folderPath = target.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
-                    edited = try proposal.ops.map { op in
+                    edited = try (edited ?? proposal.ops).map { op in
                         guard op["op"] == .str("file_document"), var args = op["args"]?.objectValue,
                               var doc = args["document"]?.objectValue, let path = doc["path"]?.stringValue else { return op }
                         let newPath = folderPath + "/" + (path as NSString).lastPathComponent

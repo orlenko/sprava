@@ -83,6 +83,62 @@ public struct Proposal: Sendable {
     }
 }
 
+/// The person's edits to a card before approval (mvp.md increment 3: Approve, Edit, Reject, Undo). Only the
+/// fields a person can see on the card change; an op can be left out; nothing else is accepted.
+public enum CardEdits {
+    public struct Failure: Error, CustomStringConvertible {
+        public let message: String
+        public var description: String { message }
+    }
+
+    /// `edits` is `[{index, skip?, title?, due?, priority?, folder?}]`; `due` is a date, or "" for no deadline.
+    public static func apply(_ edits: [JSONValue], to ops: [JSONObject]) throws -> [JSONObject] {
+        var out = ops
+        var skipped = Set<Int>()
+        for e in edits {
+            guard let i = e["index"]?.numberValue?.safeInteger.map(Int.init), out.indices.contains(i) else { throw Failure(message: "an edit names no op") }
+            if e["skip"] == .bool(true) { skipped.insert(i); continue }
+            guard var args = out[i]["args"]?.objectValue else { continue }
+            switch out[i]["op"]?.stringValue {
+            case "add_item":
+                guard var item = args["item"]?.objectValue else { continue }
+                if let t = e["title"]?.stringValue {
+                    let title = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty, title.count <= 200 else { throw Failure(message: "a title is one line of text") }
+                    item.set("title", .string(title))
+                }
+                if let p = e["priority"]?.stringValue {
+                    guard ["high", "normal", "low"].contains(p) else { throw Failure(message: "priority is high, normal or low") }
+                    item.set("priority", .string(p))
+                }
+                if let d = e["due"]?.stringValue {
+                    if d.isEmpty {
+                        item.remove("due")
+                        if item["status"]?.stringValue == "open" { item.set("no_deadline", .bool(true)) }
+                    } else {
+                        guard let date = CalendarDate.strict(d) else { throw Failure(message: "a date is written YYYY-MM-DD") }
+                        item.set("due", .string(date.description))
+                        item.remove("no_deadline")
+                    }
+                }
+                args.set("item", .object(item))
+            case "update_item":
+                if let d = e["due"]?.stringValue, var set = args["set"]?.objectValue {
+                    guard let date = CalendarDate.strict(d) else { throw Failure(message: "a date is written YYYY-MM-DD") }
+                    set.set("due", .string(date.description))
+                    args.set("set", .object(set))
+                }
+            default:
+                break
+            }
+            out[i].set("args", .object(args))
+        }
+        let kept = out.enumerated().filter { !skipped.contains($0.offset) }.map(\.element)
+        guard !kept.isEmpty else { throw Failure(message: "leave at least one change in, or reject the card") }
+        return kept
+    }
+}
+
 public enum ProposalStore {
     public struct Tampered: Error, CustomStringConvertible {
         public let id: String
@@ -158,6 +214,7 @@ extension TekaStore {
         raw.set("state", .str("applied"))
         raw.set("applied_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
         raw.set("applied_ops", .array(applied.compactMap { $0["id"] }))
+        if edited != nil { raw.set("edited", .bool(true)) }   // for the filing-quality measure (mvp.md 1.2)
         try ProposalStore.save(Proposal(raw: raw), in: folder)
         return applied
     }

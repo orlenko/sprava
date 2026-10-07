@@ -17,9 +17,21 @@ final class BinderActions: ObservableObject {
         let intake: String?
         let folder: String?
         let notes: [String]
+        let editable: [Editable]
+    }
+
+    /// One add_item the person may change before approving.
+    struct Editable: Identifiable, Equatable {
+        let index: Int
+        var title: String
+        var due: String
+        var priority: String
+        var include = true
+        var id: Int { index }
     }
 
     @Published var cards: [Card] = []
+    @Published var editing: [String: [Editable]] = [:]
     @Published var folders: [String: String] = [:]
     @Published var history: [Change] = []
 
@@ -53,7 +65,12 @@ final class BinderActions: ObservableObject {
                             lines: p["lines"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             digest: p["digest"]?.stringValue ?? "", verified: p["verified"] == .bool(true),
                             intake: p["intake"].map(Self.intakeLine), folder: p["document_folder"]?.stringValue,
-                            notes: p["notes"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+                            notes: p["notes"]?.arrayValue?.compactMap(\.stringValue) ?? [],
+                            editable: (p["editable"]?.arrayValue ?? []).compactMap { e in
+                                guard let i = e["index"]?.numberValue?.safeInteger else { return nil }
+                                return Editable(index: Int(i), title: e["title"]?.stringValue ?? "", due: e["due"]?.stringValue ?? "",
+                                                priority: e["priority"]?.stringValue ?? "normal")
+                            })
             }
             let past = try await client.command("history", binder: folder, timeout: 5)
             history = (past["ops"]?.arrayValue ?? []).compactMap { o in
@@ -119,6 +136,19 @@ final class BinderActions: ObservableObject {
 
     func approve(_ card: Card, _ folder: URL, reload: @escaping () -> Void) {
         var fields: [(String, JSONValue)] = [("proposal", .string(card.id)), ("digest", .string(card.digest))]
+        if let edits = editing[card.id] {
+            let changed: [JSONValue] = edits.compactMap { e in
+                guard let original = card.editable.first(where: { $0.index == e.index }) else { return nil }
+                if !e.include { return .obj([("index", .int(e.index)), ("skip", .bool(true))]) }
+                var o: [(String, JSONValue)] = [("index", .int(e.index))]
+                if e.title != original.title { o.append(("title", .string(e.title))) }
+                if e.due != original.due { o.append(("due", .string(e.due))) }
+                if e.priority != original.priority { o.append(("priority", .string(e.priority))) }
+                return o.count > 1 ? .obj(o) : nil
+            }
+            if !changed.isEmpty { fields.append(("edits", .array(changed))) }
+            editing[card.id] = nil
+        }
         if let chosen = folders[card.id], chosen != card.folder { fields.append(("document_folder", .string(chosen))) }
         run("approve", folder, fields, then: reload)
     }
@@ -167,9 +197,25 @@ struct ReviewSection: View {
                         if !card.verified {
                             Text("Not written by Sprava; it cannot be approved.").font(.caption).foregroundStyle(.orange)
                         }
+                        if let edits = actions.editing[card.id] {
+                            ForEach(edits) { e in
+                                HStack {
+                                    Toggle("", isOn: binding(card.id, e.index, \.include)).labelsHidden()
+                                    TextField("Title", text: binding(card.id, e.index, \.title)).textFieldStyle(.roundedBorder)
+                                    TextField("YYYY-MM-DD or empty", text: binding(card.id, e.index, \.due)).textFieldStyle(.roundedBorder).frame(width: 130)
+                                    Picker("", selection: binding(card.id, e.index, \.priority)) {
+                                        Text("high").tag("high"); Text("normal").tag("normal"); Text("low").tag("low")
+                                    }
+                                    .labelsHidden().frame(width: 90)
+                                }
+                            }
+                        }
                         HStack {
                             Button("Approve") { actions.approve(card, folder, reload: reload) }
                                 .disabled(!card.verified || actions.busy)
+                            if !card.editable.isEmpty, actions.editing[card.id] == nil {
+                                Button("Edit") { actions.editing[card.id] = card.editable }.disabled(!card.verified)
+                            }
                             Button("Reject") { actions.reject(card, folder, reload: reload) }
                                 .disabled(actions.busy)
                         }
@@ -178,6 +224,17 @@ struct ReviewSection: View {
                 }
             }
         }
+    }
+}
+
+extension ReviewSection {
+    /// A binding into one editable item of one card.
+    func binding<T>(_ card: String, _ index: Int, _ path: WritableKeyPath<BinderActions.Editable, T>) -> Binding<T> {
+        Binding(get: { actions.editing[card]!.first { $0.index == index }![keyPath: path] },
+                set: { value in
+                    guard let i = actions.editing[card]?.firstIndex(where: { $0.index == index }) else { return }
+                    actions.editing[card]![i][keyPath: path] = value
+                })
     }
 }
 
