@@ -25,6 +25,14 @@ if args.first == "--watch" {
     exit(OutsideWatcher(runtimeDir: runtimeDir).runOnce())
 }
 
+// The weekly fault drill, part two (mvp.md 1.2, M3 part 4): a hidden developer setting makes the runtime exit at
+// start, before its lease, so launchd keeps restarting it and the heartbeat goes stale.
+if let data = try? Data(contentsOf: support.appendingPathComponent("developer.json")),
+   (try? JSONParser.parse(data).value)?["drill_exit_at_start"] == .bool(true) {
+    AtomicFile.appendLine("\(ISOTime.string(Date())) drill exit_at_start", to: runtimeDir.appendingPathComponent("jobs.log"))
+    exit(75)
+}
+
 switch try Lease.acquire(at: runtimeDir.appendingPathComponent("lease")) {
 case .held(let pid):
     // Another runtime holds the lease (an old copy still exiting after an update, or a copy started by hand).

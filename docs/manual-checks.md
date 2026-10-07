@@ -55,3 +55,10 @@ Use an invented binder adopted in the installed app (never a live one).
    the old card is refused; within a minute a new card replaces it.
 8. **Files left alone.** `.DS_Store`, `intake/mail/`, `intake/_converted/` and links in `intake/` never get a
    card.
+
+## The weekly fault drill (mvp.md 1.2, M3 part 4)
+
+1. **Freeze.** `kill -STOP <pid>`: within five minutes Health shows red "runtime not answering"; `kill -CONT <pid>`.
+2. **Stopped.** Add `{"drill_exit_at_start": true}` to `developer.json` in Sprava's folder and press Restart on
+   Health: the runtime exits at every start before its lease, launchd keeps restarting it, and within five
+   minutes Health shows red with a rising restart count. Remove the setting afterwards.
