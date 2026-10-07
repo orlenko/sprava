@@ -20,6 +20,8 @@ final class HealthModel: ObservableObject {
     @Published var message: String?
     @Published var now = Date()
     @Published var findings: [Doctor.Finding] = []
+    /// Starts recorded today in the runtime's own state file, which rises even when no heartbeat is written.
+    @Published var startsToday = 0
     @Published var backups: [(String, Bool)] = []
     var lastDoctor: Date?
     var lastWake: Date?
@@ -49,6 +51,10 @@ final class HealthModel: ObservableObject {
         watchRecord = (try? String(contentsOf: runtimeDir.appendingPathComponent("watch.json"), encoding: .utf8))
         let log = (try? String(contentsOf: runtimeDir.appendingPathComponent("lease-refusals.log"), encoding: .utf8)) ?? ""
         refusals = Array(log.split(separator: "\n").suffix(3).map(String.init))
+        if let data = try? Data(contentsOf: runtimeDir.appendingPathComponent("state.json")),
+           let state = try? JSONParser.parse(data).value, state["day"]?.stringValue == CalendarDate.today().description {
+            startsToday = state["startsToday"]?.numberValue?.safeInteger.map(Int.init) ?? 0
+        }
         // The doctor reads only; it runs here at most once a minute, so it works while the runtime is stopped.
         if lastDoctor.map({ now.timeIntervalSince($0) > 60 }) ?? true {
             lastDoctor = now
@@ -201,7 +207,7 @@ struct HealthView: View {
             VStack(alignment: .leading) {
                 Text(statusText(grade)).font(.headline)
                 if case .success(let beat) = model.heartbeat {
-                    Text("pid \(beat.pid) · build \(beat.build) · restarts today \(beat.restarts_today ?? 0)"
+                    Text("pid \(beat.pid) · build \(beat.build) · restarts today \(max(beat.restarts_today ?? 0, model.startsToday - 1))"
                         + (beat.lease.duplicates_refused_today > 0
                             ? " · duplicate starts refused \(beat.lease.duplicates_refused_today)" : ""))
                         .font(.caption).foregroundStyle(.secondary)

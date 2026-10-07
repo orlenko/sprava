@@ -30,6 +30,7 @@ if args.first == "--watch" {
 if let data = try? Data(contentsOf: support.appendingPathComponent("developer.json")),
    (try? JSONParser.parse(data).value)?["drill_exit_at_start"] == .bool(true) {
     AtomicFile.appendLine("\(ISOTime.string(Date())) drill exit_at_start", to: runtimeDir.appendingPathComponent("jobs.log"))
+    RuntimeState.recordStart(runtimeDir)   // the restart count keeps rising while no heartbeat is written
     exit(75)
 }
 
