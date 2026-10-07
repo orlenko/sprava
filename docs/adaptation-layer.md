@@ -200,7 +200,8 @@ card or a hold, never a crash of the runtime, never a network request, never exe
 
 An outside program (a mail monitor, a scanner's software, a script) can feed Sprava in two ways:
 
-- drop files into a binder's `intake/`, as such programs do today; Sprava reads them as any other file and
+- drop files into a binder's `intake/`, as such programs do today (importers, `docs/integrations.md`, are
+  Sprava's own built-in way of doing this); Sprava reads them as any other file and
   takes `obtained.channel` from where they land: `intake/mail/`, the mail monitor's export target, implies
   `email`;
 - write capture events, with files as media, into its own device folder under the capture root
@@ -248,6 +249,8 @@ readings, escalation, and the sources other than notes and `intake/`.
 3. A note the person enters gets `obtained.channel: note`. When the note relays something ("the manager
    called: the plumber comes Thursday"), should the card ask for the channel too (`message`, a call), or is
    `note` enough there?
-4. What does `imap-extract` write for one message: a single `.eml` file, or a folder per message (body,
-   metadata, attachments as separate files)? The email adapter and the "file holds still" rule depend on it:
-   a folder must be treated as one capture once all its files have stopped changing.
+4. Answered 2026-10-07: `imap-extract` writes `<date>_<uid>_<slug>.md` (YAML front matter with subject,
+   from, date and to; the body converted from HTML) and, when there are attachments, a sibling folder
+   `<same name> attachments/`. It writes in place, so a message and its folder are read as one capture once
+   both have held still. It keeps neither the original `.eml` nor the Message-ID; the built-in IMAP importer
+   of `docs/integrations.md` keeps both.

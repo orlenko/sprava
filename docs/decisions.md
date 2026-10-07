@@ -49,6 +49,12 @@
   obtained: it came by email, the person scanned a paper letter, it was downloaded, the person told Sprava in
   a note. The person usually says so, and Sprava keeps what they say. This is the channel the information
   came through; it is not the tool the person used to produce text, which P12 leaves out.
+- **P17 decided as a direction (2026-10-07, by the author).** Integrations are formalized as plugins attached
+  to a binder: **importers** bring material in from an outside system (mail from one label, updates from a
+  work-tracking account) into the binder's `intake/`; **exporters** act on approved instructions in the
+  binder's `outbox/` (first: create an email draft the person reviews and sends). Built-in plugins first:
+  IMAP with a filter (reusing `imap-extract`), monday.com, and an IMAP draft exporter. Drafted in
+  `docs/integrations.md`; scope (MVP or after) open.
 - **P6 superseded by P12.** Capture comes from holos through a versioned capture-event format. Sprava never
   links holos code and never reads holos's private file layout as its contract.
 - **P7 superseded by P12.** holos is the **producer**: it writes one immutable capture-event file per
