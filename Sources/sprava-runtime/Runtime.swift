@@ -31,7 +31,6 @@ final class Runtime: @unchecked Sendable {
     var nextAlertsCheck = Date()
     var nextHub = Date()
     var nextIntake = Date()
-    var nextImport = Date()
     var nextDashboard = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var runGeneration: [String: Int] = [:]
@@ -51,7 +50,6 @@ final class Runtime: @unchecked Sendable {
         "hub": JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3),
         "capture": JobSpec(key: "capture", budget: .seconds(10), expectedCadence: 15, breakerThreshold: 3),
         "intake": JobSpec(key: "intake", budget: .seconds(60), expectedCadence: 30, breakerThreshold: 3),
-        "importer": JobSpec(key: "importer", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
         "clerk": JobSpec(key: "clerk", budget: .seconds(120), expectedCadence: nil, breakerThreshold: 3),
         "dashboard": JobSpec(key: "dashboard", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
     ]
@@ -267,7 +265,6 @@ final class Runtime: @unchecked Sendable {
         run("clerk") { self.clerk() }
         if now >= nextDashboard { run("dashboard") { self.dashboards() } }
         if now >= nextIntake { run("intake") { self.intake() } }
-        if now >= nextImport, developerImporterPath() != nil { run("importer") { self.importHolos() } }
         let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
             run("sentinel") { self.sentinel() }   // the date changed: recompute at once
@@ -292,7 +289,6 @@ final class Runtime: @unchecked Sendable {
         case "summary": nextSummary = nextClockTime(hour: 8, minute: 0, after: Date())
         case "hub": nextHub = Date().addingTimeInterval(300)
         case "intake": nextIntake = Date().addingTimeInterval(30)
-        case "importer": nextImport = Date().addingTimeInterval(60)
         case "dashboard": nextDashboard = Date().addingTimeInterval(60)
         default: break
         }
@@ -324,7 +320,7 @@ final class Runtime: @unchecked Sendable {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
-        if !["heartbeat", "capture", "intake", "importer", "clerk", "dashboard"].contains(key) || final != .ok {
+        if !["heartbeat", "capture", "intake", "clerk", "dashboard"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -435,43 +431,6 @@ final class Runtime: @unchecked Sendable {
             log("intake carded=\(result.carded) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
         }
         return .ok
-    }
-
-    /// The hidden developer setting (mvp.md increment 5): `developer.json` in Sprava's folder with
-    /// `{"holos_importer": "/absolute/path/to/voiceislocal"}`. A background agent has no shell search path.
-    func developerImporterPath() -> String? {
-        guard let data = try? Data(contentsOf: support.appendingPathComponent("developer.json")),
-              let path = (try? JSONParser.parse(data).value)?["holos_importer"]?.stringValue,
-              path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else { return nil }
-        return path
-    }
-
-    /// The developer importer, every minute: only the read-only `history list --json`.
-    func importHolos() -> JobOutcome {
-        guard let path = developerImporterPath(), let commands else { return .skipped }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: path)
-        task.arguments = ["history", "list", "--json"]
-        let out = Pipe()
-        task.standardOutput = out
-        task.standardError = FileHandle.nullDevice
-        do { try task.run() } catch { return .error(code: "importer_not_started", culprit: nil) }
-        // A hung voiceislocal is ended after 20 seconds, long before the watchdog would end the runtime.
-        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: killer)
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        killer.cancel()
-        guard task.terminationStatus == 0 else { return .error(code: "importer_failed", culprit: "exit \(task.terminationStatus)") }
-        do {
-            let inbox = commands.inbox
-            let r = try HolosImporter(root: inbox.root, support: support).importHistory(data, inbox: inbox)
-            if r.written > 0 || r.unreadable > 0 { log("importer written=\(r.written) unreadable=\(r.unreadable)") }
-            if r.written > 0 { queue.async { self.run("capture") { self.capture() } } }
-            return r.stoppedForGood ? .skipped : .ok
-        } catch {
-            return .error(code: "importer_unreadable", culprit: nil)
-        }
     }
 
     /// Tier 1 (architecture 5.3): reads the captures whose code-built cards are still untouched, one at a time,

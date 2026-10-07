@@ -8,8 +8,8 @@ The plan is in [docs/](docs/): start with [docs/kickoff-summary.md](docs/kickoff
 
 ## Status
 
-On branch `increment-1`, the MVP increments of docs/mvp.md section 5 are built, except increment 7, which
-belongs in the holos repository:
+On branch `increment-1`, the MVP increments of docs/mvp.md section 5 are built (increment 7 was removed by
+decisions.md P12: Sprava receives text, however it was produced):
 
 1. The Shelf and each binder's Now page, read-only.
 2. The runtime: a LaunchAgent with a heartbeat, watchdog, breakers, the deadline sentinel and the daily
@@ -17,7 +17,7 @@ belongs in the holos repository:
 3. Adoption in place, the op log with the transaction guard, review cards, undo, the hub lane, the
    DASHBOARD.md switch, the manual addendum and the doctor.
 4. Claude Code over MCP, proposing only, and the Brains screen.
-5. The capture inbox: typed notes and imported holos dictations become code-built cards within a minute;
+5. The capture inbox: notes, however their text was produced, become code-built cards within a minute;
    files in a binder's `intake/` become filing cards.
 6. The clerk: Apple's on-device model splits, dates and files notes, checked by code.
 8. A tax-year template for new binders, and the backup line.
@@ -43,7 +43,6 @@ sprava note "Call the notary by Friday"      # a typed note, as the app writes o
 sprava clerk "Pay the plumber 625 dollars next week" --binder "rental=Rental on Elm Street"
 sprava clerk-gate Tests/ClerkGate/fixtures.json   # the clerk's release gate
 sprava dashboard <folder>                    # the DASHBOARD.md Sprava would write
-sprava import-holos --file history.json      # the developer importer (capture-event-v0 7.8)
 sprava measures --days 30                    # the shadow run's measures (mvp.md 1.2)
 ```
 

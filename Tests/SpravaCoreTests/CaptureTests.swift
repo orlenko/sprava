@@ -188,7 +188,7 @@ extension JSONObject {
         var forged = event
         let forgedID = UUIDv7.make(now: now)
         forged.set("id", .string(forgedID))
-        forged.set("source", .obj([("app", .str("holos")), ("kind", .str("dictation")), ("ref", .str("r")), ("revision", .str("1"))]))
+        forged.set("source", .obj([("app", .str("other-app")), ("kind", .str("dictation")), ("ref", .str("r")), ("revision", .str("1"))]))
         try write(forged, to: s.producer.folder.appendingPathComponent("\(forgedID).json"))
         r = s.inbox.sweep(binders: rows(s), commands: s.commands, now: now)
         #expect(r.quarantined == 4 && r.ingested == 0)

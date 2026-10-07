@@ -203,11 +203,11 @@ func pEventObj(_ text: String, extra: (inout JSONObject) -> Void = { _ in }) -> 
     // 9. A new revision of the same (app, ref) replaces the waiting card, with or without supersedes.
     @Test func r08_chainsAreByAppAndRef() throws {
         let s = try pSetup()
-        let holos = "11111111-2222-4333-8444-555555555555"
-        try s.inbox.registerProducer(folder: holos, app: "holos")
-        let first = try pEvent(s, device: holos, app: "holos", ref: "A1B2", revision: "rev1", text: "Call the notary Friday")
+        let adapter = "11111111-2222-4333-8444-555555555555"
+        try s.inbox.registerProducer(folder: adapter, app: "adapter")
+        let first = try pEvent(s, device: adapter, app: "adapter", ref: "A1B2", revision: "rev1", text: "Call the notary Friday")
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
-        _ = try pEvent(s, device: holos, app: "holos", ref: "A1B2", revision: "rev2", text: "Call the notary Thursday")
+        _ = try pEvent(s, device: adapter, app: "adapter", ref: "A1B2", revision: "rev2", text: "Call the notary Thursday")
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
         let cards = s.inbox.unfiled()
         #expect(cards.count == 1)
@@ -251,11 +251,11 @@ func pEventObj(_ text: String, extra: (inout JSONObject) -> Void = { _ in }) -> 
     // 8. A raise to private on the same capture makes the waiting card private and redacted.
     @Test func r10_aSensitivityRaiseIsApplied() throws {
         let s = try pSetup()
-        let holos = "11111111-2222-4333-8444-555555555556"
-        try s.inbox.registerProducer(folder: holos, app: "holos")
-        let first = try pEvent(s, device: holos, app: "holos", ref: "R9", revision: "rev1", text: "Meet the notary about the will")
+        let adapter = "11111111-2222-4333-8444-555555555556"
+        try s.inbox.registerProducer(folder: adapter, app: "adapter")
+        let first = try pEvent(s, device: adapter, app: "adapter", ref: "R9", revision: "rev1", text: "Meet the notary about the will")
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
-        _ = try pEvent(s, device: holos, app: "holos", ref: "R9", revision: "rev1", text: "Meet the notary about the will") {
+        _ = try pEvent(s, device: adapter, app: "adapter", ref: "R9", revision: "rev1", text: "Meet the notary about the will") {
             $0.set("sensitivity", .str("private")); $0.set("supersedes", .string(first))
         }
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
@@ -278,18 +278,6 @@ func pEventObj(_ text: String, extra: (inout JSONObject) -> Void = { _ in }) -> 
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
         #expect(s.inbox.unfiled().count == 1)
         #expect(s.inbox.nextForClerk() != nil)
-    }
-
-    // 14. A failed first importer run never strands the importer.
-    @Test func r12_theImporterSurvivesABadFirstRun() throws {
-        let s = try pSetup()
-        let importer = HolosImporter(root: s.producer.root, support: s.support)
-        let bad = Data(#"[{"id":"AAAA-1","date":"2026-10-01T10:00:00Z","text":"Call the notary","words":1e999}]"#.utf8)
-        let first = try importer.importHistory(bad, inbox: s.inbox)
-        #expect(first.unreadable == 1)
-        let good = Data(#"[{"id":"AAAA-2","date":"2026-10-01T10:00:00Z","text":"Pay the plumber"}]"#.utf8)
-        let r = try importer.importHistory(good, inbox: s.inbox)
-        #expect(!r.stoppedForGood && r.written == 1)
     }
 
     // 13. A binder missing from one scan keeps its intake state; no second card.

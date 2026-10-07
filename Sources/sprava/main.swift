@@ -18,8 +18,6 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           the DASHBOARD.md Sprava would write (read-only)
        sprava note <text> [--binder <name>] write a typed note as a capture event; without the app's
                                           notice its card is "unverified" and asks for a binder
-       sprava import-holos [--file <json>] developer only: write holos dictations as capture events, from
-                                          `voiceislocal history list --json` (or a saved copy of its output)
        sprava clerk <text> [--locale <tag>] [--binder <name>=<description>]...
                                           developer only: run the on-device clerk on invented text and print
                                           what it read; nothing is filed
@@ -253,35 +251,6 @@ func note(_ args: [String]) {
     }
 }
 
-/// The developer-only importer (capture-event-v0 §7.8). It only ever runs the read-only `history list`.
-func importHolos(_ args: [String]) {
-    let data: Data
-    if let i = args.firstIndex(of: "--file"), i + 1 < args.count {
-        guard let d = FileManager.default.contents(atPath: (args[i + 1] as NSString).expandingTildeInPath) else { fail("cannot read \(args[i + 1])") }
-        data = d
-    } else {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        task.arguments = ["voiceislocal", "history", "list", "--json"]
-        let out = Pipe()
-        task.standardOutput = out
-        task.standardError = FileHandle.nullDevice   // "Note:" lines are ignored
-        do { try task.run() } catch { fail("voiceislocal is not on the PATH", code: 1) }
-        data = out.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else { fail("voiceislocal history list failed", code: 1) }
-    }
-    let support = SpravaPaths.supportDirectory()
-    let root = CaptureInbox.defaultRoot(support: support)
-    do {
-        let r = try HolosImporter(root: root, support: support).importHistory(data, inbox: CaptureInbox(root: root, support: support))
-        if r.stoppedForGood { print("holos writes its own capture events now; the importer has stopped for good") }
-        else { print("written \(r.written), already imported \(r.skipped), unreadable \(r.unreadable)") }
-    } catch {
-        fail("\(error)", code: 1)
-    }
-}
-
 /// The clerk on invented text, for the release-gate fixtures (architecture 5.3). Nothing is filed.
 func clerk(_ args: [String]) {
     var args = args
@@ -413,7 +382,6 @@ case "dashboard":
     let day = todayFrom(&args)
     guard let path = args.first, let text = DashboardKeeper(folder: folderURL(path)).preview(today: day) else { fail(usage) }
     print(text, terminator: "")
-case "import-holos": importHolos(arguments)
 case "clerk": clerk(arguments)
 case "clerk-gate": clerkGate(arguments)
 case "measures":
