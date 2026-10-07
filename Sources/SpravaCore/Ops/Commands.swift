@@ -56,6 +56,12 @@ public struct Commands: Sendable {
     }
 
     func run(_ command: String, _ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
+        if ["approve", "reject", "apply"].contains(command) {
+            let f = try folder(r)
+            if let owner = Owner.device(of: f), owner != deviceID {
+                throw Failure(message: "this binder is managed by another Sprava (another Mac or a development build); it is read-only here")
+            }
+        }
         switch command {
         case "ping":
             return JSONObject([(key: "protocol", value: .int(1))])

@@ -71,3 +71,18 @@ import Testing
         #expect(ids.allSatisfy { $0.count == 36 && $0[$0.index($0.startIndex, offsetBy: 14)] == "7" })
     }
 }
+
+@Suite struct OwnerTests {
+    @Test func anotherDevicesBinderIsReadOnly() throws {
+        let folder = try makeTeka(fixture: "lifeproj-v2-live")
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-own-\(UUID().uuidString)")
+        let mine = Commands(support: support, deviceID: "this-mac")
+        let other = Commands(support: support, deviceID: "other-mac")
+        _ = mine.handle(JSONWriter.compact(.obj([("command", .str("adopt")), ("binder", .string(folder.path))])))
+        #expect(Owner.device(of: folder) == "this-mac")
+        let r = try JSONParser.parse(other.handle(JSONWriter.compact(.obj([
+            ("command", .str("apply")), ("binder", .string(folder.path)), ("op", .str("drop")),
+            ("args", .obj([("id", .str("item-0006")), ("closed_at", .str("2026-10-07T09:00:00Z")), ("source", .str("user"))]))])))).value
+        #expect(r["ok"] == .bool(false))
+    }
+}

@@ -29,6 +29,7 @@ final class Runtime: @unchecked Sendable {
     var nextSentinel = Date()
     var nextSummary: Date
     var nextAlertsCheck = Date()
+    var nextHub = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
@@ -38,6 +39,7 @@ final class Runtime: @unchecked Sendable {
         "sentinel": JobSpec(key: "sentinel", budget: .seconds(60), expectedCadence: 3600, breakerThreshold: 3),
         "summary": JobSpec(key: "summary", budget: .seconds(5), expectedCadence: 86_400, breakerThreshold: 2),
         "alerts": JobSpec(key: "alerts", budget: .seconds(5), expectedCadence: 3600, breakerThreshold: 3),
+        "hub": JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3),
     ]
 
     init(support: URL, lease: Lease) {
@@ -223,6 +225,7 @@ final class Runtime: @unchecked Sendable {
         if now >= nextSentinel { run("sentinel") { self.sentinel() } }
         if now >= nextAlertsCheck { run("alerts") { self.checkAlerts() } }
         if now >= nextSummary { run("summary") { self.summary() } }
+        if now >= nextHub { run("hub") { self.hub() } }
         let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
             run("sentinel") { self.sentinel() }   // the date changed: recompute at once
@@ -241,6 +244,7 @@ final class Runtime: @unchecked Sendable {
         case "sentinel": nextSentinel = Date().addingTimeInterval(3600)
         case "alerts": nextAlertsCheck = Date().addingTimeInterval(3600)
         case "summary": nextSummary = nextClockTime(hour: 8, minute: 0, after: Date())
+        case "hub": nextHub = Date().addingTimeInterval(300)
         default: break
         }
         let started = DispatchTime.now()
@@ -298,6 +302,38 @@ final class Runtime: @unchecked Sendable {
         queue.async { self.lastSentinelDate = today.description; RuntimeState.update(self.runtimeDir) { $0.lastSentinelDate = today.description } }
         // A binder that cannot be read is a finding, not a failed run.
         return rows.isEmpty ? .skipped : .ok
+    }
+
+    /// The hub lane (teka-v0 §8; mvp.md feature 7): for each adopted binder this Mac owns, drain the hub's
+    /// completions, then publish the slice when it changed. Counts per opaque binder id only.
+    func hub() -> JobOutcome {
+        let root = HubLane.spoolRoot()
+        guard FileManager.default.fileExists(atPath: root.path) else { return .skipped }
+        let registryURL = LifeprojRegistry.defaultPath()
+        let registry = FileManager.default.fileExists(atPath: registryURL.path) ? try? LifeprojRegistry.load(from: registryURL) : nil
+        let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+        let device = DeviceID.load(support: support)
+        let idsURL = support.appendingPathComponent("binder-ids.json")
+        var ids = BinderIDs.load(idsURL)
+        var failures: [String] = []
+        for row in rows where row.teka.isAdopted && Owner.device(of: row.folder) == device {
+            let bid = ids.id(for: row.folder)
+            do {
+                let drained = try HubLane.drain(row.folder, root: root)
+                let published = try HubLane.publish(row.folder, root: root)
+                if drained.applied > 0 || drained.skipped > 0 || drained.waitingForYou > 0 {
+                    log("hub binder=\(bid) drained=\(drained.applied) skipped=\(drained.skipped) waiting=\(drained.waitingForYou)")
+                }
+                if case .published(let n, let overwritten) = published {
+                    log("hub binder=\(bid) published items=\(n)" + (overwritten ? " overwritten_by_other=true" : ""))
+                }
+            } catch {
+                failures.append(bid)
+                log("hub binder=\(bid) error=\(type(of: error))")
+            }
+        }
+        try? ids.save(idsURL)
+        return failures.isEmpty ? .ok : .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ","))
     }
 
     /// The daily summary: one notification with counts only, at most once per calendar day.

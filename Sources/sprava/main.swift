@@ -1,5 +1,8 @@
 import Foundation
+import CryptoKit
 import SpravaCore
+
+enum SymmetricKeyFromHex { static let zero = SymmetricKey(data: Data(count: 32)) }
 
 // `sprava`: the read-only Shelf and Now pages of MVP increment 1 (docs/mvp.md section 5).
 // Nothing here writes inside a binder. `shelf add` and `shelf remove` write only Sprava's own state.
@@ -165,6 +168,19 @@ func dev(_ args: [String]) {
     let commands = Commands(support: support, deviceID: DeviceID.load(support: support), client: "sprava-dev/0.1")
     var request = JSONObject([(key: "binder", value: .string(folder.path))])
     switch args[0] {
+    case "slice":
+        // Read-only: print the slice Sprava would publish, without writing it.
+        let teka = Teka.read(folder)
+        guard let catalog = teka.catalog else { fail("not a readable teka") }
+        do {
+            let key = SymmetricKeyFromHex.zero
+            let at = args.count == 3 ? (Timestamp.parse(args[2]) ?? Date()) : Date()
+            let (slice, _) = try HubLane.project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: [], key: key, now: at)
+            print(JSONWriter.pretty(slice), terminator: "")
+        } catch {
+            fail("\(error)", code: 1)
+        }
+        return
     case "adopt", "proposals":
         request.set("command", .string(args[0]))
     case "approve", "reject":
