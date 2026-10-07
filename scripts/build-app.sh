@@ -16,6 +16,7 @@ plutil -lint Resources/App-Info.plist
 swift build --product SpravaApp "$@"
 swift build --product sprava "$@"
 swift build --product sprava-runtime "$@"
+swift build --product sprava-mcp "$@"
 plutil -lint Resources/LaunchAgents/*.plist
 bin_dir=$(swift build --show-bin-path "$@")
 
@@ -27,6 +28,8 @@ cp LICENSE "$bundle/Contents/Resources/LICENSE.txt"
 cp "$bin_dir/SpravaApp" "$bundle/Contents/MacOS/SpravaApp"
 cp "$bin_dir/sprava" "$bundle/Contents/MacOS/sprava"
 cp "$bin_dir/sprava-runtime" "$bundle/Contents/MacOS/sprava-runtime"
+cp "$bin_dir/sprava-mcp" "$bundle/Contents/MacOS/sprava-mcp"
+codesign --force --sign - --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
 codesign --force --sign - --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
 codesign --force --sign - --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
 codesign --force --sign - --identifier ca.orlenko.sprava "$bundle"

@@ -102,7 +102,11 @@ extension TekaStore {
                         now: Date = Date()) throws -> [JSONObject] {
         guard proposal.state == "proposed" else { throw Refused(reason: "proposal is \(proposal.state), not proposed") }
         let actor = proposal.actor
-        let bodies = (edited ?? proposal.ops).map { op in
+        let catalog = try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue ?? JSONObject()
+        let resolved = Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: try readOpLog().ops,
+                                            year: Calendar(identifier: .gregorian).component(.year, from: now),
+                                            at: ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
+        let bodies = resolved.map { op in
             OpBody(op: op["op"]?.stringValue ?? "", args: op["args"]?.objectValue ?? JSONObject(), actor: actor,
                    extra: [("proposal", .string(proposal.id)), ("approved_by", .string(approvedBy))]
                        + (op["note"].map { [("note", $0)] } ?? []))

@@ -151,3 +151,59 @@ extension TekaStore {
         return try apply([.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])], now: now)
     }
 }
+
+/// Placeholder ids (`"$new:1"`) in a proposal are minted when the proposal is applied, never when it is proposed,
+/// so two pending proposals never claim one number (teka-v0 §5.6). Later ops in the batch may name a placeholder.
+public enum Placeholders {
+    public static func resolve(_ ops: [JSONObject], catalog: JSONObject, opLog: [JSONObject], year: Int, at: String) -> [JSONObject] {
+        var minted: [String: JSONValue] = [:]
+        var working = catalog
+        var out: [JSONObject] = []
+        for var op in ops {
+            guard case .object(var args)? = op["args"] else { out.append(op); continue }
+            if op["op"]?.stringValue == "add_item", case .object(var item)? = args["item"] {
+                if case .string(let id)? = item["id"], id.hasPrefix("$new:") {
+                    let real = JSONValue.string(IDMint.next(catalog: working, opLog: opLog, year: year))
+                    minted[id] = real
+                    item.set("id", real)
+                }
+                if item["created_at"] == nil { item.set("created_at", .string(at)) }
+                if item["updated_at"] == nil { item.set("updated_at", .string(at)) }
+                args.set("item", .object(item))
+                var items = working["open_items"]?.arrayValue ?? []
+                items.append(.object(item))
+                working.set("open_items", .array(items))
+            } else if case .string(let ref)? = args["id"], let real = minted[ref] {
+                args.set("id", real)
+            }
+            op.set("args", .object(args))
+            out.append(op)
+        }
+        return out
+    }
+}
+
+extension TekaStore {
+    /// Checks a batch of op bodies against the current catalog without writing anything, as a proposal would be
+    /// applied (placeholders minted, the actor's approval assumed).
+    public static func dryRun(_ bodies: [JSONObject], actor: JSONObject, folder: URL, now: Date) throws {
+        let store = TekaStore(folder: folder)
+        let (catalog, _, _) = try store.readCatalog()
+        let log = try store.readOpLog().ops
+        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        let year = Calendar(identifier: .gregorian).component(.year, from: now)
+        let resolved = Placeholders.resolve(bodies, catalog: catalog, opLog: log, year: year, at: at)
+        let lines = resolved.map { body -> JSONObject in
+            var line = JSONObject()
+            line.set("id", .string(UUIDv7.make(now: now)))
+            line.set("at", .string(at))
+            line.set("actor", .object(actor))
+            line.set("proposal", .str("dry-run"))
+            line.set("approved_by", .str("user"))
+            line.set("op", body["op"] ?? .null)
+            line.set("args", body["args"] ?? .obj([]))
+            return line
+        }
+        _ = try TransactionGuard.check(lines, on: catalog, knownIDs: Set(log.compactMap { $0["args"]?["item"]?["id"] }))
+    }
+}

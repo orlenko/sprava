@@ -33,6 +33,7 @@ final class Runtime: @unchecked Sendable {
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
+    var mcp: MCPListener?
 
     static let specs: [String: JobSpec] = [
         "heartbeat": JobSpec(key: "heartbeat", budget: .seconds(1), expectedCadence: 30, breakerThreshold: 3),
@@ -84,6 +85,18 @@ final class Runtime: @unchecked Sendable {
         let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
         service.start()
         xpc = service
+        let support = self.support
+        let listener = MCPListener(support: support, commands: commands, queue: service.queue, shelf: {
+            let url = LifeprojRegistry.defaultPath()
+            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
+            return Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+        }, log: { [weak self] line in self?.log(line) })
+        do {
+            try listener.start()
+            mcp = listener
+        } catch {
+            log("mcp_listener error=\(error)")
+        }
         let scheduler = DispatchSource.makeTimerSource(queue: queue)
         scheduler.schedule(deadline: .now() + 1, repeating: 15)
         scheduler.setEventHandler { [weak self] in self?.schedule() }

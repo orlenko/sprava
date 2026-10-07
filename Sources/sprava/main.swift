@@ -181,6 +181,18 @@ func dev(_ args: [String]) {
             fail("\(error)", code: 1)
         }
         return
+    case "brain":
+        // Register a brain client with propose access to this one binder; prints the token once.
+        guard args.count == 3 else { fail(usage) }
+        var clients = MCPClients.load(support)
+        do {
+            let token = try clients.register(id: args[2], name: args[2], binders: [folder.path: "propose"])
+            try clients.save(support)
+            print(token)
+        } catch {
+            fail("\(error)", code: 1)
+        }
+        return
     case "adopt", "proposals":
         request.set("command", .string(args[0]))
     case "approve", "reject":
