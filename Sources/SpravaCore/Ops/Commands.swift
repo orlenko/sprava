@@ -56,7 +56,7 @@ public struct Commands: Sendable {
     }
 
     func run(_ command: String, _ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
-        if ["approve", "reject", "apply"].contains(command) {
+        if ["approve", "reject", "apply", "undo"].contains(command) {
             let f = try folder(r)
             if let owner = Owner.device(of: f), owner != deviceID {
                 throw Failure(message: "this binder is managed by another Sprava (another Mac or a development build); it is read-only here")
@@ -126,6 +126,33 @@ public struct Commands: Sendable {
             if let c = r["compensates"] { extra.append(("compensates", c)) }
             let applied = try TekaStore(folder: f, client: client).apply([.init(op: op, args: args, actor: actor, extra: extra)], now: now)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
+
+        case "undo":
+            let f = try folder(r)
+            guard case .string(let opID)? = r["op_id"] else { throw Failure(message: "undo needs op_id") }
+            let applied = try TekaStore(folder: f, client: client).undo(opID: opID, now: now)
+            return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
+
+        case "history":
+            // Recent changes a person might undo: the last 20 ops that changed something, newest first.
+            let f = try folder(r)
+            let log = try TekaStore(folder: f, client: client).readOpLog().ops
+            let undone = Set(log.compactMap { $0["compensates"]?.stringValue })
+            let catalog = Teka.read(f).catalog
+            let recent = log.filter { !["import_snapshot", "abort", "expunge", "migrate"].contains($0["op"]?.stringValue ?? "") }
+                .suffix(20).reversed()
+            return JSONObject([(key: "ops", value: .array(recent.map { op in
+                var o = JSONObject()
+                o.set("id", op["id"] ?? .null)
+                o.set("at", op["at"] ?? .null)
+                o.set("actor", op["actor"]?["kind"] ?? .null)
+                o.set("origin", op["actor"]?["origin"] ?? .null)
+                o.set("line", .string(Proposal.describe(op, catalog: catalog)))
+                o.set("undone", .bool(undone.contains(op["id"]?.stringValue ?? "")))
+                o.set("undoable", .bool(!["external_edit", "add_log_entry", "reopen", "rename_teka"].contains(op["op"]?.stringValue ?? "")
+                                        && op["compensates"] == nil))
+                return .object(o)
+            }))])
 
         default:
             throw Failure(message: "unknown command \(command)")
