@@ -20,6 +20,7 @@ final class HealthModel: ObservableObject {
     @Published var message: String?
     @Published var now = Date()
     @Published var findings: [Doctor.Finding] = []
+    @Published var backups: [(String, Bool)] = []
     var lastDoctor: Date?
     var lastWake: Date?
 
@@ -56,6 +57,8 @@ final class HealthModel: ObservableObject {
             let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
             let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
             findings = Doctor.run(rows: rows, deviceID: DeviceID.load(support: support), registry: registry, support: support)
+            // Backup is observed, never driven (mvp.md feature 8): cmirror's registry says which binders it mirrors.
+            backups = rows.filter(\.teka.isAdopted).map { ($0.name, $0.source == .registry) }
         }
     }
 
@@ -155,17 +158,29 @@ struct HealthView: View {
                     }
                 }
                 Section("The clerk") { clerkLine(beat) }
-                Section("Doctor") {
-                    if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
-                    ForEach(Array(model.findings.enumerated()), id: \.offset) { _, f in
-                        HStack(alignment: .top) {
-                            Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
-                                .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
-                            Text([f.binder, f.text].compactMap { $0 }.joined(separator: ": "))
-                        }
+                Section("Alerts") { alertsLine(beat) }
+            }
+            Section("Backup") {
+                if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
+                ForEach(Array(model.backups.enumerated()), id: \.offset) { _, b in
+                    HStack {
+                        Circle().fill(b.1 ? Color.green : Color.orange).frame(width: 8, height: 8)
+                        Text(b.0)
+                        Spacer()
+                        Text(b.1 ? "mirrored by cmirror · last backup: unknown" : "no backup: register it with cmirror by hand")
+                            .foregroundStyle(.secondary)
                     }
                 }
-                Section("Alerts") { alertsLine(beat) }
+            }
+            Section("Doctor") {
+                if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
+                ForEach(Array(model.findings.enumerated()), id: \.offset) { _, f in
+                    HStack(alignment: .top) {
+                        Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
+                            .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
+                        Text([f.binder, f.text].compactMap { $0 }.joined(separator: ": "))
+                    }
+                }
             }
             if let watch = model.watchRecord {
                 Section("Outside watcher") { Text(watch).font(.caption.monospaced()).foregroundStyle(.secondary) }

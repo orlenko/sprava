@@ -28,6 +28,8 @@ struct SpravaApp: App {
         }
         .commands {
             CommandGroup(after: .newItem) {
+                Button("New Binder…") { model.newBinder() }
+                    .keyboardShortcut("n")
                 Button("Add Folder…") { model.addFolderWithPanel() }
                     .keyboardShortcut("o")
                 Button("Refresh") { model.refresh() }
@@ -93,6 +95,38 @@ final class ShelfModel: ObservableObject {
         }
         refresh()
         if !skipped.isEmpty { note = "Not added (no catalog.json): \(skipped.joined(separator: ", "))" }
+    }
+
+    /// A new binder from the tax-year template (mvp.md feature 6), created by the runtime.
+    func newBinder() {
+        let year = Calendar.current.component(.year, from: Date())
+        let alert = NSAlert()
+        alert.messageText = "New binder for a tax year"
+        alert.informativeText = "Name it with lowercase letters, digits and hyphens. Its checklist arrives as one card to approve. It is not backed up until you register it with cmirror."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = BinderTemplate.taxYear.suggestedName(year)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Choose Where…")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Create Here"
+        panel.message = "Choose the folder that will hold the new binder."
+        guard panel.runModal() == .OK, let parent = panel.url else { return }
+        let name = field.stringValue
+        Task {
+            do {
+                let r = try await RuntimeClient().global("create_binder", [("parent", .string(parent.path)), ("name", .string(name)),
+                                                                            ("template", .str("tax-year")), ("year", .int(year))])
+                refresh()
+                if let path = r["binder"]?.stringValue { selection = URL(fileURLWithPath: path).standardizedFileURL }
+            } catch {
+                note = "The binder was not created: \(error)"
+            }
+        }
     }
 
     func removeFromShelf(_ row: ShelfRow) {
@@ -181,6 +215,7 @@ struct ShelfView: View {
             }
         }
         .toolbar {
+            Button { model.newBinder() } label: { Label("New Binder", systemImage: "plus.rectangle.on.folder") }
             Button { model.addFolderWithPanel() } label: { Label("Add Folder", systemImage: "folder.badge.plus") }
             Button { model.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
         }

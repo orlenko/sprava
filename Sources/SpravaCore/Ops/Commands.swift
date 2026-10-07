@@ -213,6 +213,27 @@ public struct Commands: Sendable {
             }
             return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
 
+        case "create_binder":
+            // A new binder from a template (mvp.md feature 6): ready, stamped v0, at disclosure none, on the shelf.
+            guard case .string(let parentPath)? = r["parent"], parentPath.hasPrefix("/"), case .string(let name)? = r["name"] else {
+                throw Failure(message: "create_binder needs parent and name")
+            }
+            let template = BinderTemplate.all.first { $0.key == (r["template"]?.stringValue ?? "tax-year") } ?? .taxYear
+            let url = LifeprojRegistry.defaultPath()
+            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
+            let store = ShelfStore(supportDirectory: support)
+            let names = Shelf.rows(registry: registry, picked: store.pickedFolders(), includeArchived: true).map(\.name)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = .current
+            let year = r["year"]?.numberValue?.safeInteger.map(Int.init) ?? calendar.component(.year, from: now)
+            let created = try BinderCreator.create(parent: URL(fileURLWithPath: parentPath, isDirectory: true).standardizedFileURL, name: name,
+                                                   template: template, deviceID: deviceID, knownNames: names, year: year, today: today,
+                                                   client: client, now: now)
+            recordDigests([created.checklistCard], in: created.folder)
+            try store.add(created.folder)
+            try FilingList(support: support).set(created.folder, .init(description: template.description(year), filing: false))
+            return JSONObject([(key: "binder", value: .string(created.folder.path)), (key: "proposal", value: .string(created.checklistCard))])
+
         case "switch_dashboard":
             // The one-time switch card of teka-v0 §7.1, approved by the person.
             let f = try folder(r)

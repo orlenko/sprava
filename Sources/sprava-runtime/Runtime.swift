@@ -557,6 +557,8 @@ final class Runtime: @unchecked Sendable {
         if current() == nil { _ = sentinel() }
         guard let report = current() else { return .error(code: "sentinel_stale", culprit: nil) }
         if let text = report.summaryText {
+            // Outside the app bundle there is no notification identity: a development run skips, never fails.
+            if Bundle.main.bundleURL.pathExtension != "app" { return .skipped }
             guard notify(title: "Sprava today", body: text, id: "summary-\(today)") else {
                 return .error(code: "notification_failed", culprit: nil)
             }
