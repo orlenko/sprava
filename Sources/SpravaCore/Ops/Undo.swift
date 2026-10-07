@@ -194,6 +194,16 @@ public enum Placeholders {
                 var items = working["open_items"]?.arrayValue ?? []
                 items.append(.object(item))
                 working.set("open_items", .array(items))
+            } else if op["op"]?.stringValue == "file_document", case .object(var document)? = args["document"] {
+                if case .string(let id)? = document["id"], id.hasPrefix("$new:") {
+                    let real = JSONValue.string(IDMint.next(catalog: working, opLog: opLog, year: year, document: true))
+                    minted[id] = real
+                    document.set("id", real)
+                }
+                args.set("document", .object(document))
+                var docs = working["documents"]?.arrayValue ?? []
+                docs.append(.object(document))
+                working.set("documents", .array(docs))
             } else if case .string(let ref)? = args["id"], let real = minted[ref] {
                 args.set("id", real)
             }

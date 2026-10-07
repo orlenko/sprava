@@ -13,9 +13,13 @@ final class BinderActions: ObservableObject {
         let lines: [String]
         let digest: String
         let verified: Bool
+        /// For a filing card: the intake file's details and the suggested folder, which the person may change.
+        let intake: String?
+        let folder: String?
     }
 
     @Published var cards: [Card] = []
+    @Published var folders: [String: String] = [:]
     @Published var history: [Change] = []
 
     struct Change: Identifiable {
@@ -38,7 +42,8 @@ final class BinderActions: ObservableObject {
                 guard p["state"] == .str("proposed"), let id = p["id"]?.stringValue else { return nil }
                 return Card(id: id, title: p["title"]?.stringValue ?? "", actor: p["actor"]?["kind"]?.stringValue ?? "?",
                             lines: p["lines"]?.arrayValue?.compactMap(\.stringValue) ?? [],
-                            digest: p["digest"]?.stringValue ?? "", verified: p["verified"] == .bool(true))
+                            digest: p["digest"]?.stringValue ?? "", verified: p["verified"] == .bool(true),
+                            intake: p["intake"].map(Self.intakeLine), folder: p["document_folder"]?.stringValue)
             }
             let past = try await client.command("history", binder: folder, timeout: 5)
             history = (past["ops"]?.arrayValue ?? []).compactMap { o in
@@ -57,6 +62,12 @@ final class BinderActions: ObservableObject {
         } catch {
             message = "\(error)"
         }
+    }
+
+    static func intakeLine(_ v: JSONValue) -> String {
+        let bytes = v["bytes"]?.numberValue?.safeInteger.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "?"
+        return [v["name"]?.stringValue, v["modified"]?.stringValue, bytes, v["sha256"]?.stringValue.map { "sha256 " + $0.prefix(16) + "…" }]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) {
@@ -92,7 +103,9 @@ final class BinderActions: ObservableObject {
     }
 
     func approve(_ card: Card, _ folder: URL, reload: @escaping () -> Void) {
-        run("approve", folder, [("proposal", .string(card.id)), ("digest", .string(card.digest))], then: reload)
+        var fields: [(String, JSONValue)] = [("proposal", .string(card.id)), ("digest", .string(card.digest))]
+        if let chosen = folders[card.id], chosen != card.folder { fields.append(("document_folder", .string(chosen))) }
+        run("approve", folder, fields, then: reload)
     }
 
     func reject(_ card: Card, _ folder: URL, reload: @escaping () -> Void) {
@@ -123,6 +136,18 @@ struct ReviewSection: View {
                             Text("from \(card.actor)").font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(card.lines, id: \.self) { Text("• \($0)").font(.callout) }
+                        if let intake = card.intake {
+                            Text(intake).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        if let suggested = card.folder {
+                            HStack {
+                                Text("Folder").font(.caption)
+                                TextField(suggested, text: Binding(get: { actions.folders[card.id] ?? suggested },
+                                                                   set: { actions.folders[card.id] = $0 }))
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: 280)
+                            }
+                        }
                         if !card.verified {
                             Text("Not written by Sprava; it cannot be approved.").font(.caption).foregroundStyle(.orange)
                         }

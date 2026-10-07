@@ -238,12 +238,60 @@ public final class TekaStore {
             lines[i].set("after_hash", .string(hashes[i]))
             previous = hashes[i]
         }
-        try write(catalog: result, appending: lines, expectedHash: hash)
+        let moves = try prepareMoves(lines)
+        try write(catalog: result, appending: lines, expectedHash: hash, moves: moves)
         return lines
     }
 
+    /// The files a batch files (teka-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
+    /// file with the recorded digest, so a file that changed or is gone since the card was made is refused; the
+    /// destination must be free and lie inside the binder. A filing without `from` needs the file in place.
+    func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String)] {
+        var moves: [(String, String)] = []
+        var claimed = Set<String>()
+        for line in lines where line["op"] == .str("file_document") {
+            let args = line["args"]?.objectValue ?? JSONObject()
+            guard let path = args["document"]?["path"]?.stringValue, let sha = args["document"]?["sha256"]?.stringValue else { continue }
+            guard claimed.insert(DocumentPaths.fold(path)).inserted else { throw Refused(reason: "two documents would be filed at \(path)") }
+            if let from = args["from"]?.stringValue {
+                guard DocumentPaths.plainFile(from, in: folder),
+                      DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha else {
+                    throw Refused(reason: "the file in intake/ changed or is gone since the card was made")
+                }
+                guard DocumentPaths.isFreeDestination(path, in: folder) else {
+                    throw Refused(reason: "a file already exists at \(path), or the way there is not a plain folder")
+                }
+                moves.append((from, path))
+            } else {
+                guard DocumentPaths.plainFile(path, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(path)) == sha else {
+                    throw Refused(reason: "the document is not at \(path) with the recorded digest")
+                }
+            }
+        }
+        return moves
+    }
+
+    /// Step 4: each move is a rename that never replaces a file.
+    func performMoves(_ moves: [(from: String, to: String)]) throws {
+        for move in moves {
+            try DocumentPaths.makeParents(move.to, in: folder)
+            let source = folder.appendingPathComponent(move.from).path
+            let target = folder.appendingPathComponent(move.to).path
+            guard renamex_np(source, target, UInt32(RENAME_EXCL)) == 0 else {
+                throw AtomicFile.Failure(step: "move \(move.from)", code: errno)
+            }
+        }
+        if !moves.isEmpty {
+            for dir in Set(moves.flatMap { [($0.from as NSString).deletingLastPathComponent, ($0.to as NSString).deletingLastPathComponent] }) {
+                let fd = open(folder.appendingPathComponent(dir).path, O_RDONLY | O_CLOEXEC)
+                if fd >= 0 { fsync(fd); close(fd) }
+            }
+        }
+    }
+
     /// Steps 4 to 7 of the write protocol and steps 3 to 6 of teka-v0 §6.9.
-    func write(catalog: JSONObject, appending lines: [JSONObject], expectedHash: String) throws {
+    func write(catalog: JSONObject, appending lines: [JSONObject], expectedHash: String,
+               moves: [(from: String, to: String)] = []) throws {
         let text = JSONWriter.pretty(.object(catalog))
         let temp = folder.appendingPathComponent(".\(UUID().uuidString.lowercased()).tmp")
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
@@ -259,6 +307,8 @@ public final class TekaStore {
         guard nowHash == expectedHash else { throw ChangedWhileWriting() }
 
         try appendLines(lines)
+        // A crash or failure from here on is rolled forward on the next read (teka-v0 §6.7 step 3, §6.9).
+        try performMoves(moves)
         guard rename(temp.path, catalogURL.path) == 0 else { throw AtomicFile.Failure(step: "rename catalog", code: errno) }
         renamed = true
         let dirfd = open(folder.path, O_RDONLY | O_CLOEXEC)
@@ -331,6 +381,7 @@ public final class TekaStore {
         case none
         case snapshotRewritten
         case rolledForward(Int)
+        case aborted(Int)
         case externalEdit(revertedLastBatch: Bool)
     }
 
@@ -352,13 +403,46 @@ public final class TekaStore {
             }
             return nil
         }
-        if H == b, S == b {
+        if H == b, S == b, let b {
             // A write was logged but never renamed into place: roll it forward. Ops are pure, so the result
-            // has the same hash. (A logged file move is the capture increment's concern; none exist yet.)
+            // has the same hash. A logged move is finished when the file is still in intake/ and the destination
+            // is free, or taken as done when the destination holds the recorded digest; otherwise the write is
+            // aborted (teka-v0 §6.9).
             var state = catalog
             for op in trailing { state = try OpApplier.apply(op, to: state) }
             guard try Canonical.hash(.object(state)) == a else { throw Refused(reason: "roll-forward did not reach the logged hash") }
-            try write(catalog: state, appending: [], expectedHash: H)
+            var moves: [(from: String, to: String)] = []
+            var possible = true
+            for op in trailing where op["op"] == .str("file_document") {
+                let args = op["args"]?.objectValue ?? JSONObject()
+                guard let to = args["document"]?["path"]?.stringValue, let sha = args["document"]?["sha256"]?.stringValue else { continue }
+                let placed = DocumentPaths.plainFile(to, in: folder) && DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha
+                if let from = args["from"]?.stringValue, !placed {
+                    if DocumentPaths.plainFile(from, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha,
+                       DocumentPaths.isFreeDestination(to, in: folder) {
+                        moves.append((from, to))
+                    } else {
+                        possible = false
+                    }
+                } else if !placed {
+                    possible = false
+                }
+            }
+            guard possible else {
+                var abort = JSONObject()
+                abort.set("id", .string(UUIDv7.make(now: now)))
+                abort.set("at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
+                abort.set("actor", .obj([("kind", .str("import")), ("client", .string(client))]))
+                abort.set("before_hash", .string(b))
+                abort.set("after_hash", .string(b))
+                abort.set("op", .str("abort"))
+                abort.set("args", .obj([("ops", .array(trailing.compactMap { $0["id"] })),
+                                        ("reason", .str("a filed file is missing from both intake/ and its destination"))]))
+                try appendLines([abort])
+                lastAbsorbed = .aborted(trailing.count)
+                return [abort]
+            }
+            try write(catalog: state, appending: [], expectedHash: H, moves: moves)
             lastAbsorbed = .rolledForward(trailing.count)
             return nil
         }

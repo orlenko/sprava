@@ -362,7 +362,7 @@ enum Snapshot {
         let model = ShelfModel()
         model.refresh()
         if let pick = ProcessInfo.processInfo.environment["SPRAVA_SELECT"] {
-            model.selection = pick == "health" ? healthSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
+            model.selection = pick == "health" ? healthSelection : pick == "inbox" ? inboxSelection : pick == "brains" ? brainsSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
         }
         if let today = ProcessInfo.processInfo.environment["SPRAVA_TODAY"].flatMap(CalendarDate.strict) {
             model.today = today

@@ -93,6 +93,10 @@ public struct Commands: Sendable {
                 o.set("digest", .string(digest))
                 o.set("verified", .bool(digests[key(f, p.id)] == digest))
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: catalog)) }))
+                if let intake = p.raw["provenance"]?["intake"] { o.set("intake", intake) }
+                if let folder = p.ops.first(where: { $0["op"] == .str("file_document") })?["args"]?["document"]?["path"]?.stringValue {
+                    o.set("document_folder", .string((folder as NSString).deletingLastPathComponent))
+                }
                 return .object(o)
             }))])
 
@@ -108,7 +112,23 @@ public struct Commands: Sendable {
             let proposal = try ProposalStore.load(id, in: f, expectedDigest: recorded)
             let store = TekaStore(folder: f, client: client)
             if command == "approve" {
-                let applied = try store.approve(proposal, now: now)
+                // The person may pick another folder for a filing card; only the folder changes, never the file.
+                var edited: [JSONObject]?
+                if case .string(let target)? = r["document_folder"] {
+                    let folderPath = target.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+                    edited = try proposal.ops.map { op in
+                        guard op["op"] == .str("file_document"), var args = op["args"]?.objectValue,
+                              var doc = args["document"]?.objectValue, let path = doc["path"]?.stringValue else { return op }
+                        let newPath = folderPath + "/" + (path as NSString).lastPathComponent
+                        guard DocumentPaths.isSafe(newPath) else { throw Failure(message: "that folder cannot hold documents") }
+                        doc.set("path", .string(newPath))
+                        args.set("document", .object(doc))
+                        var changed = op
+                        changed.set("args", .object(args))
+                        return changed
+                    }
+                }
+                let applied = try store.approve(proposal, edited: edited, now: now)
                 recordDigests([id] + store.createdProposals, in: f)
                 return JSONObject([(key: "applied", value: .int(applied.count))])
             }

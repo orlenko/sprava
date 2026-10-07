@@ -116,8 +116,21 @@ public enum TransactionGuard {
            (actor?["client"]?.stringValue ?? "").isEmpty {
             problems.append("\(type): actor.client is required, it becomes the log entry's via")
         }
-        // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2).
         let args = op["args"]?.objectValue
+        // A filed document follows the path rules and carries its digest (teka-v0 §4.3, §6.3).
+        if type == "file_document" {
+            let doc = args?["document"]?.objectValue
+            if let id = doc?["id"]?.stringValue, id.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._-]*/) == nil {
+                problems.append("file_document: a minted id is ASCII")
+            }
+            if (doc?["title"]?.stringValue ?? "").isEmpty { problems.append("file_document: title is required") }
+            if !DocumentPaths.isSafe(doc?["path"]?.stringValue ?? "") { problems.append("file_document: path breaks the path rules") }
+            if (doc?["sha256"]?.stringValue ?? "").wholeMatch(of: /[0-9a-f]{64}/) == nil { problems.append("file_document: sha256 is required") }
+            if let from = args?["from"], !DocumentPaths.isIntake(from.stringValue ?? "") {
+                problems.append("file_document: from must be a file under intake/")
+            }
+        }
+        // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2).
         let written = [args?["item"]?.objectValue, args?["set"]?.objectValue].compactMap { $0 }
         if ["add_item", "update_item", "reopen"].contains(type), kind != "import",
            written.contains(where: { $0["recurrence"] != nil || $0["dismissed"] != nil }) {

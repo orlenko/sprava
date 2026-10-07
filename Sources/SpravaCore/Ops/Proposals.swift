@@ -47,6 +47,12 @@ public struct Proposal: Sendable {
         case "update_item":
             let fields = (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
             return "Change \(fields.joined(separator: ", ")) of \u{201C}\(title(of: args["id"]))\u{201D}"
+        case "file_document":
+            let doc = args["document"]
+            let path = doc?["path"]?.stringValue ?? "?"
+            let sha = doc?["sha256"]?.stringValue.map { " · sha256 " + $0.prefix(12) + "…" } ?? ""
+            let from = args["from"]?.stringValue.map { "Move \u{201C}\(($0 as NSString).lastPathComponent)\u{201D} from intake/ to " } ?? "Record "
+            return from + path + sha
         case "migrate":
             let changes = (args["patch"]?.arrayValue ?? []).compactMap { step -> String? in
                 guard let path = step["path"]?.stringValue else { return nil }

@@ -30,7 +30,9 @@ final class RuntimeClient {
         let reply: String = try await withCheckedThrowingContinuation { continuation in
             let once = Once()
             let proxy = self.proxy { error in
-                if once.claim() { continuation.resume(throwing: Failure(message: "Runtime not answering: \(error.localizedDescription)")) }
+                if once.claim() {
+                    continuation.resume(throwing: Failure(message: "Sprava's background part is not answering. Open Health to start it. (\(error.localizedDescription))"))
+                }
             }
             guard let proxy else {
                 if once.claim() { continuation.resume(throwing: Failure(message: "Runtime not reachable")) }

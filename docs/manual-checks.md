@@ -33,3 +33,25 @@ Build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`,
     minutes one notification says background work stopped. `runtime/watch.json` records each run.
 11. **Turn Off.** Health › Turn Off shows "Background work is off (your choice)", never red, and the
     outside watcher stays silent.
+
+## Increment 5: the capture inbox and the intake cards
+
+Use an invented binder adopted in the installed app (never a live one).
+
+1. **A typed note, no binder.** Inbox › type two lines › Save Note with "Not sure". Within a few seconds the
+   Inbox shows one card, "Add 2 items from a note", from sprava, with no "unverified source" mark.
+   `capture/journal.ndjson` has `ingested` and `unfiled` lines with ids only, never the text.
+2. **A typed note into a binder.** Pick the invented binder and save. The card appears on that binder's page
+   under "Waiting for your OK"; approve it and the items show in Someday (no deadline).
+3. **A note from the terminal.** `sprava note "Invented line"` with no app involved: the card lands in the
+   Inbox marked "unverified source", even with `--binder`.
+4. **File it from the Inbox.** Choose a binder on an Inbox card and press File: the card moves to that
+   binder's page.
+5. **The one-minute measure.** In `runtime/jobs.log`, each `capture` line's `slowest_s` stays under 60.
+6. **An intake file.** Copy an invented PDF into the binder's `intake/`. Within a minute a card "File … from
+   intake" shows the name, date, size and digest. Change the folder field to `letters`, approve: the file is
+   now in `letters/`, gone from `intake/`, and Recent changes lists the filing.
+7. **A file that changes.** Copy a file into `intake/`, wait for its card, then overwrite the file. Approving
+   the old card is refused; within a minute a new card replaces it.
+8. **Files left alone.** `.DS_Store`, `intake/mail/`, `intake/_converted/` and links in `intake/` never get a
+   card.

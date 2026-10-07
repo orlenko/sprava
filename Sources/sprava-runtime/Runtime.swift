@@ -30,6 +30,7 @@ final class Runtime: @unchecked Sendable {
     var nextSummary: Date
     var nextAlertsCheck = Date()
     var nextHub = Date()
+    var nextIntake = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
@@ -46,6 +47,7 @@ final class Runtime: @unchecked Sendable {
         "alerts": JobSpec(key: "alerts", budget: .seconds(5), expectedCadence: 3600, breakerThreshold: 3),
         "hub": JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3),
         "capture": JobSpec(key: "capture", budget: .seconds(10), expectedCadence: 15, breakerThreshold: 3),
+        "intake": JobSpec(key: "intake", budget: .seconds(60), expectedCadence: 30, breakerThreshold: 3),
     ]
 
     init(support: URL, lease: Lease) {
@@ -256,6 +258,7 @@ final class Runtime: @unchecked Sendable {
         if now >= nextSummary { run("summary") { self.summary() } }
         if now >= nextHub { run("hub") { self.hub() } }
         run("capture") { self.capture() }   // every 15 s; file events call it sooner
+        if now >= nextIntake { run("intake") { self.intake() } }
         let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
             run("sentinel") { self.sentinel() }   // the date changed: recompute at once
@@ -277,6 +280,7 @@ final class Runtime: @unchecked Sendable {
         case "alerts": nextAlertsCheck = Date().addingTimeInterval(3600)
         case "summary": nextSummary = nextClockTime(hour: 8, minute: 0, after: Date())
         case "hub": nextHub = Date().addingTimeInterval(300)
+        case "intake": nextIntake = Date().addingTimeInterval(30)
         default: break
         }
         let started = DispatchTime.now()
@@ -306,7 +310,7 @@ final class Runtime: @unchecked Sendable {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
-        if !["heartbeat", "capture"].contains(key) || final != .ok {
+        if !["heartbeat", "capture", "intake"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -401,6 +405,17 @@ final class Runtime: @unchecked Sendable {
         }
         if result.refusedFolders > 0 { return .error(code: "capture_folder_refused", culprit: "\(result.refusedFolders) folder(s)") }
         return .ok   // a sweep that found nothing new still did its work
+    }
+
+    /// The intake watcher (mvp.md feature 4): a card for each file that holds still in a binder's intake/.
+    func intake() -> JobOutcome {
+        guard let commands, let xpc else { return .skipped }
+        let rows = shelfRows()
+        let result = xpc.queue.sync { IntakeWatcher(support: support).scan(binders: rows, commands: commands) }
+        if result.carded > 0 || result.replaced > 0 {
+            log("intake carded=\(result.carded) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
+        }
+        return .ok
     }
 
     func shelfRows() -> [ShelfRow] {
