@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:slice",
+  "title": "agenda slice v1 (inbox/<teka>.agenda.json)",
+  "description": "What a v0 publisher writes to the spool. The six top-level keys and the nine item keys are lifeproj's frozen contract; format_version, disclosure, closed[], kind and follow_up_at are v1 additions a hub may ignore. lifeproj itself may publish dates in other ISO forms; a reader treats an unparseable due as undated. A reader must ignore unknown keys.",
+  "type": "object",
+  "required": ["teka", "lifecycle", "active_chapter", "active_chapters", "generated", "items"],
+  "properties": {
+    "teka": { "type": "string", "minLength": 1, "pattern": "^(?!\\.\\.?$)[^/]+$" },
+    "lifecycle": { "type": ["string", "null"] },
+    "active_chapter": { "type": ["string", "null"] },
+    "active_chapters": { "type": "array", "items": { "type": "string" } },
+    "generated": { "$ref": "#/$defs/timestamp" },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/slice_item" } },
+    "format_version": { "const": "1" },
+    "disclosure": {
+      "enum": ["full", "title", "kind"],
+      "$comment": "The binder's level when the slice was written, so a hub can drop anything a newer, lower level would hide."
+    },
+    "closed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "action", "closed_at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "action": { "enum": ["done", "dropped"] },
+          "closed_at": { "$ref": "#/$defs/timestamp" },
+          "kind": {
+            "enum": [
+              "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision",
+              "other"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "format": "date-time"
+    },
+    "date_or_null": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" },
+    "slice_item": {
+      "type": "object",
+      "required": ["id", "title", "status", "priority", "due", "no_deadline", "tags", "waiting_on", "link"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["open", "waiting", "blocked", "done"] },
+        "priority": { "enum": ["high", "normal", "low"] },
+        "due": { "$ref": "#/$defs/date_or_null" },
+        "no_deadline": { "type": "boolean" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "waiting_on": { "type": ["string", "null"] },
+        "link": { "type": ["string", "null"] },
+        "kind": {
+          "enum": [
+            "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision",
+            "other"
+          ]
+        },
+        "follow_up_at": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": { "required": ["due"], "properties": { "due": { "type": "string" } } },
+          "then": { "properties": { "no_deadline": { "const": false } } },
+          "else": { "properties": { "no_deadline": { "const": true } } }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["waiting", "blocked"] } } },
+          "then": { "properties": { "waiting_on": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    }
+  }
+}

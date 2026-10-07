@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:catalog",
+  "title": "teka v0 catalog.json",
+  "description": "The catalog of one teka. Three catalog levels are accepted: lifeproj v1 (loose), lifeproj v2 (lifeproj's open_items rules) and teka v0 (meta.format is \"teka\"). The generic layer checks only what lifeproj's checker needs to read a catalog. Unknown fields and unknown top-level arrays are allowed and must be preserved by every writer.",
+  "type": "object",
+  "required": ["meta"],
+  "properties": {
+    "meta": { "type": "object", "required": ["schema_version"] },
+    "documents": { "type": "array" },
+    "open_items": { "type": "array" },
+    "processing_log": { "type": "array" },
+    "entities": { "type": "array" }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "$comment": "lifeproj v2: schema_version is an integer 2 or more, so lifeproj's open_items rules apply. A digit string such as \"2\", or 2.0, is legacy for lifeproj's checker (it tests isinstance(int)); JSON Schema cannot tell 2.0 from 2, so that case is a conformance check. An integer above 2 without meta.format is an unknown level (section 9.6).",
+      "if": {
+        "properties": {
+          "meta": {
+            "required": ["schema_version"],
+            "properties": { "schema_version": { "type": "integer", "minimum": 2 } }
+          }
+        }
+      },
+      "then": { "properties": { "open_items": { "items": { "$ref": "#/$defs/item_v2" } } } }
+    },
+    {
+      "$comment": "teka v0: meta.format is \"teka\". The v0 rules then apply to meta, every open item, every document, every entity and every log entry a v0 implementation wrote.",
+      "if": { "properties": { "meta": { "required": ["format"], "properties": { "format": { "const": "teka" } } } } },
+      "then": {
+        "required": ["documents", "open_items", "processing_log"],
+        "properties": {
+          "meta": { "$ref": "#/$defs/meta_v0" },
+          "open_items": { "items": { "$ref": "#/$defs/item_v0" } },
+          "documents": { "items": { "$ref": "#/$defs/document_v0" } },
+          "processing_log": { "items": { "$ref": "#/$defs/log_entry_v0" } },
+          "entities": { "items": { "$ref": "#/$defs/entity_v0" } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "format": "date-time"
+    },
+    "meta_v0": {
+      "type": "object",
+      "required": ["schema_version", "name", "format", "format_version", "disclosure"],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "name": { "type": "string", "minLength": 1, "pattern": "^(?!\\.\\.?$)[^/]+$" },
+        "domain": { "type": "string" },
+        "lifecycle": { "enum": ["ongoing", "finite"] },
+        "created": { "$ref": "#/$defs/date" },
+        "next_doc_id": { "type": "integer" },
+        "next_item_id": { "type": "integer" },
+        "profile": { "type": "object" },
+        "active_chapters": { "type": ["array", "string"], "items": { "type": "string" } },
+        "current_chapters": { "type": ["array", "string"], "items": { "type": "string" } },
+        "active_chapter": { "type": ["string", "null"] },
+        "format": { "const": "teka" },
+        "format_version": { "const": "0" },
+        "modules": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "disclosure": { "enum": ["full", "title", "kind", "none"] },
+        "id_scheme": { "enum": ["teka-year-seq", "opaque"] },
+        "former_names": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "until"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "pattern": "^(?!\\.\\.?$)[^/]+$" },
+              "until": { "$ref": "#/$defs/date" }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "item_v2": {
+      "$comment": "lifeproj's open_items rules (osavul.validate_open_items, templates.check_open_items) as far as a schema can say them, and no stricter. 'Truthy' means present and not null, false, 0, an empty string, [] or {}. An empty or null due counts as absent. A due in any form Python's date.fromisoformat accepts passes; whether it is a real date is a conformance check.",
+      "type": "object",
+      "required": ["id", "title", "status", "priority"],
+      "properties": {
+        "id": { "not": { "enum": [null, false, 0, "", [], {}] } },
+        "title": { "not": { "enum": [null, false, 0, "", [], {}] } },
+        "status": { "enum": ["open", "waiting", "blocked", "done"] },
+        "priority": { "enum": ["high", "normal", "low"] },
+        "due": {
+          "type": ["string", "null"],
+          "pattern": "^$|^\\d{4}(?:-\\d{2}-\\d{2}|\\d{4}|-W\\d{2}(?:-\\d)?|W\\d{2}\\d?)$"
+        },
+        "tags": { "type": "array" },
+        "redact": { "type": "boolean" },
+        "slice_title": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "$comment": "due XOR no_deadline:true. Only the value true counts for no_deadline.",
+          "if": { "required": ["due"], "properties": { "due": { "type": "string", "minLength": 1 } } },
+          "then": { "not": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } } },
+          "else": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } }
+        },
+        {
+          "$comment": "A waiting or blocked item has a truthy waiting_on.",
+          "if": { "required": ["status"], "properties": { "status": { "enum": ["waiting", "blocked"] } } },
+          "then": {
+            "required": ["waiting_on"],
+            "properties": { "waiting_on": { "not": { "enum": [null, false, 0, "", [], {}] } } }
+          }
+        }
+      ]
+    },
+    "item_v0": {
+      "$comment": "Generated from item.schema.json.",
+      "type": "object",
+      "required": ["id", "title", "status", "priority"],
+      "properties": {
+        "id": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["open", "waiting", "blocked"] },
+        "priority": { "enum": ["high", "normal", "low"] },
+        "due": { "$ref": "#/$defs/date" },
+        "no_deadline": { "type": "boolean" },
+        "waiting_on": { "type": "string", "minLength": 1 },
+        "follow_up_at": { "$ref": "#/$defs/date" },
+        "expected_by": { "$ref": "#/$defs/date" },
+        "kind": {
+          "enum": [
+            "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision",
+            "other"
+          ]
+        },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "link": { "type": "string", "minLength": 1 },
+        "redact": { "type": "boolean" },
+        "slice_title": { "type": "string", "minLength": 1 },
+        "recurrence": {
+          "type": "object",
+          "required": ["freq", "day"],
+          "properties": {
+            "freq": { "enum": ["monthly", "yearly"] },
+            "day": { "type": "integer", "minimum": 1, "maximum": 31 },
+            "month": { "type": "integer", "minimum": 1, "maximum": 12, "$comment": "Ignored when freq is monthly." }
+          },
+          "additionalProperties": true,
+          "if": { "properties": { "freq": { "const": "yearly" } } },
+          "then": { "required": ["month"] }
+        },
+        "contexts": { "type": "array", "items": { "type": "string", "pattern": "^@[^\\s@]+$" }, "uniqueItems": true },
+        "estimate_min": { "type": "integer", "minimum": 0 },
+        "dismissed": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "events": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "proposed_by": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+                "client": {
+                  "type": "string",
+                  "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+                },
+                "origin": {
+                  "type": "string",
+                  "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+                },
+                "model": { "type": "string" }
+              },
+              "additionalProperties": true
+            },
+            "approved_by": { "type": ["string", "null"] },
+            "op": { "type": "string", "minLength": 1 },
+            "proposal": { "type": "string", "minLength": 1 },
+            "reopened_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            }
+          },
+          "additionalProperties": true
+        },
+        "derived": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "$comment": "due XOR no_deadline:true. A v0 item never holds a null due; it omits the key.",
+          "if": { "required": ["due"] },
+          "then": { "not": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } } },
+          "else": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } }
+        },
+        {
+          "$comment": "A waiting or blocked item names the party and the date on which to chase.",
+          "if": { "required": ["status"], "properties": { "status": { "enum": ["waiting", "blocked"] } } },
+          "then": { "required": ["waiting_on", "follow_up_at"] }
+        },
+        {
+          "$comment": "A redacted item names a non-sensitive kind.",
+          "if": { "required": ["redact"], "properties": { "redact": { "const": true } } },
+          "then": { "required": ["kind"] }
+        },
+        {
+          "$comment": "Recurrence needs a due date: due holds the next occurrence.",
+          "if": { "required": ["recurrence"] },
+          "then": { "required": ["due"] }
+        }
+      ]
+    },
+    "document_v0": {
+      "$comment": "Generated from document.schema.json.",
+      "type": "object",
+      "required": ["id", "title", "path"],
+      "properties": {
+        "id": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+        },
+        "date": { "$ref": "#/$defs/date" },
+        "kind": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "events": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "proposed_by": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+                "client": {
+                  "type": "string",
+                  "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+                },
+                "origin": {
+                  "type": "string",
+                  "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+                },
+                "model": { "type": "string" }
+              },
+              "additionalProperties": true
+            },
+            "approved_by": { "type": ["string", "null"] },
+            "op": { "type": "string", "minLength": 1 },
+            "proposal": { "type": "string", "minLength": 1 },
+            "reopened_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "log_entry_v0": {
+      "$comment": "Rules for entries a v0 implementation writes, which always carry op_id. Entries without op_id are legacy and unconstrained; lifeproj's rule that any entry with an id closes that item holds for them whatever their action.",
+      "if": { "type": "object", "required": ["op_id"] },
+      "then": {
+        "type": "object",
+        "required": ["action", "at", "via"],
+        "properties": {
+          "id": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+            "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type.",
+            "description": "Only on a closure: the closed item's id exactly as it appears in the catalog, with its JSON type, never slice-prefixed."
+          },
+          "item": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+            "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type.",
+            "description": "An item the entry is about without closing it."
+          },
+          "document": { "type": "string", "minLength": 1, "description": "A document the entry is about." },
+          "title": { "type": "string" },
+          "action": { "type": "string", "minLength": 1 },
+          "at": { "$ref": "#/$defs/timestamp" },
+          "closed_at": { "type": ["string", "null"] },
+          "source": { "type": "string" },
+          "via": { "type": "string", "minLength": 1 },
+          "op_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+          "note": { "type": "string" },
+          "kind": {
+            "enum": [
+              "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision",
+              "other"
+            ]
+          },
+          "final": { "type": "object", "description": "The closed item's other fields as they were (section 5.10)." },
+          "due": { "$ref": "#/$defs/date" },
+          "next_due": { "$ref": "#/$defs/date" },
+          "reopened_from": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+            "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+          }
+        },
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "$comment": "An entry that carries id is a closure: done or dropped, with the closing details and the item as it was.",
+            "if": { "required": ["id"] },
+            "then": {
+              "required": ["title", "closed_at", "source", "final"],
+              "properties": { "action": { "enum": ["done", "dropped"] } }
+            }
+          },
+          {
+            "$comment": "A closure of an item whose id was already closed in the processing log: no id, so no id repeats (section 6.8).",
+            "if": { "required": ["action"], "properties": { "action": { "const": "closed-duplicate" } } },
+            "then": { "required": ["item", "closed_at", "source", "final"], "not": { "required": ["id"] } }
+          }
+        ]
+      }
+    },
+    "entity_v0": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": { "not": { "enum": [null, false, 0, "", [], {}] } },
+        "status": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    }
+  }
+}

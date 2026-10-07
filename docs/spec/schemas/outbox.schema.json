@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:outbox",
+  "title": "outbox v1 (outbox/<teka>.intake.json)",
+  "description": "What a hub writes for a teka to drain. completions[] is live; items[] is a documented stub that a drain preserves untouched. teka and generated are informative; a drain ignores them.",
+  "type": "object",
+  "properties": {
+    "teka": { "type": "string" },
+    "generated": { "type": "string" },
+    "format_version": { "const": "1" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "note": { "type": "string" },
+          "due": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" },
+          "source": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "completions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "action"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The published slice id (teka-prefixed) or the raw catalog id; a drain matches either."
+          },
+          "action": { "enum": ["done", "dropped"] },
+          "at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "When the hub saw the item done. A drain copies it into closed_at; a value that is not a string is read as null."
+          },
+          "source": {
+            "type": "string",
+            "description": "Where the closing came from. A drain uses osavul when it is absent or not a string."
+          },
+          "due": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "format": "date",
+            "description": "Optional, added in v1: the due date the hub showed when the item was checked off. A drain advances a recurring item only when it equals the item's current due (section 8.3)."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

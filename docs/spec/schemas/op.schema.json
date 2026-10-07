@@ -1,0 +1,658 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:op",
+  "title": "teka v0 applied op",
+  "description": "One line of .sprava/ops.ndjson: an op that has been applied to catalog.json, with its envelope. An applied op carries every value its effect needs, so applying it is a pure function of the catalog and the op (section 6.3). The op body (op, args, note) is what a proposal carries before it is applied.",
+  "type": "object",
+  "required": ["id", "at", "actor", "op", "args", "before_hash", "after_hash"],
+  "properties": {
+    "id": { "$ref": "#/$defs/uuid" },
+    "at": { "$ref": "#/$defs/timestamp" },
+    "hlc": {
+      "type": "object",
+      "required": ["wall_ms", "counter", "node"],
+      "properties": {
+        "wall_ms": { "type": "integer", "minimum": 0 },
+        "counter": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "node": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "A random opaque id, never a computer or device name."
+        }
+      },
+      "additionalProperties": true
+    },
+    "actor": { "$ref": "#/$defs/actor" },
+    "proposal": { "$ref": "#/$defs/uuid" },
+    "batch": { "$ref": "#/$defs/uuid" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "batch_size": { "type": "integer", "minimum": 1 },
+    "approved_by": { "type": ["string", "null"] },
+    "before_hash": { "$ref": "#/$defs/hash" },
+    "after_hash": { "$ref": "#/$defs/hash" },
+    "compensates": { "$ref": "#/$defs/uuid" },
+    "op": {
+      "enum": [
+        "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
+        "file_document", "update_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
+        "external_edit", "import_snapshot", "migrate", "abort", "expunge"
+      ]
+    },
+    "args": { "type": "object" },
+    "note": { "type": "string" }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "$comment": "An op proposed by a clerk or a brain is applied only after approval.",
+      "if": { "properties": { "actor": { "properties": { "kind": { "enum": ["clerk", "brain"] } } } } },
+      "then": {
+        "required": ["approved_by", "proposal"],
+        "properties": { "approved_by": { "type": "string", "minLength": 1 } }
+      }
+    },
+    {
+      "$comment": "Ops applied together share batch; seq orders them and batch_size says how many lines the batch has (section 6.9).",
+      "if": { "required": ["batch"] },
+      "then": { "required": ["seq", "batch_size"] }
+    },
+    {
+      "$comment": "An op that writes a processing log entry names the implementation in actor.client, because the entry's via is copied from it (section 6.2).",
+      "if": { "properties": { "op": { "enum": ["complete", "drop", "reopen", "file_document", "add_log_entry"] } } },
+      "then": {
+        "properties": { "actor": { "required": ["client"], "properties": { "client": { "minLength": 1 } } } }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "add_item" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["item"],
+            "properties": {
+              "item": {
+                "allOf": [
+                  { "$ref": "#/$defs/item_v0" },
+                  {
+                    "$comment": "A record a v0 implementation creates: minted ASCII id, and created_at and updated_at equal to the op's at.",
+                    "required": ["created_at", "updated_at"],
+                    "properties": { "id": { "$ref": "#/$defs/minted_id" } }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "reopen" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "item"],
+            "properties": {
+              "id": {
+                "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+                "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type.",
+                "description": "The closed item's id, with its JSON type."
+              },
+              "item": {
+                "allOf": [
+                  { "$ref": "#/$defs/item_v0" },
+                  {
+                    "$comment": "A record a v0 implementation creates: minted ASCII id, and created_at and updated_at equal to the op's at.",
+                    "required": ["created_at", "updated_at"],
+                    "properties": { "id": { "$ref": "#/$defs/minted_id" } }
+                  },
+                  { "required": ["provenance"], "properties": { "provenance": { "required": ["reopened_from"] } } }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "update_item" } } },
+      "then": { "properties": { "args": { "$ref": "#/$defs/item_change" } } }
+    },
+    {
+      "if": { "properties": { "op": { "const": "set_status" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "status"],
+            "properties": {
+              "id": {
+                "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+                "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+              },
+              "status": { "enum": ["open", "waiting", "blocked"] },
+              "waiting_on": { "type": "string", "minLength": 1 },
+              "follow_up_at": { "$ref": "#/$defs/date" },
+              "expected_by": { "$ref": "#/$defs/date" },
+              "derived": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 },
+                "uniqueItems": true,
+                "description": "When present, replaces the item's derived array; an empty array removes it (section 5.3)."
+              }
+            },
+            "if": { "properties": { "status": { "enum": ["waiting", "blocked"] } } },
+            "then": { "required": ["waiting_on", "follow_up_at"] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "enum": ["complete", "drop"] } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "closed_at", "source"],
+            "properties": {
+              "id": {
+                "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+                "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+              },
+              "closed_at": {
+                "type": ["string", "null"],
+                "$comment": "A v0 implementation writes a timestamp; a drained completion's at is copied as it is."
+              },
+              "source": { "type": "string" },
+              "note": { "type": "string" },
+              "reason": { "type": "string" },
+              "occurrence_due": { "$ref": "#/$defs/date" },
+              "next_due": { "$ref": "#/$defs/date" }
+            },
+            "dependentRequired": { "next_due": ["occurrence_due"], "occurrence_due": ["next_due"] }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "drop never advances a recurring item; it ends it.",
+      "if": { "properties": { "op": { "const": "drop" } } },
+      "then": {
+        "properties": {
+          "args": { "not": { "anyOf": [{ "required": ["next_due"] }, { "required": ["occurrence_due"] }] } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "enum": ["dismiss", "undismiss"] } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+                "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "file_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["document"],
+            "properties": {
+              "document": {
+                "allOf": [
+                  { "$ref": "#/$defs/document_v0" },
+                  {
+                    "required": ["sha256"],
+                    "properties": { "id": { "$ref": "#/$defs/minted_id" }, "path": { "$ref": "#/$defs/safe_path" } }
+                  }
+                ]
+              },
+              "from": { "$ref": "#/$defs/intake_path" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "update_document" } } },
+      "then": { "properties": { "args": { "$ref": "#/$defs/document_change" } } }
+    },
+    {
+      "if": { "properties": { "op": { "const": "add_log_entry" } } },
+      "then": {
+        "properties": {
+          "args": { "required": ["entry"], "properties": { "entry": { "$ref": "#/$defs/log_entry_no_closure" } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "set_meta" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "properties": {
+              "set": {
+                "type": "object",
+                "propertyNames": {
+                  "not": {
+                    "enum": ["name", "schema_version", "format", "format_version", "disclosure", "former_names"]
+                  }
+                }
+              },
+              "unset": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "not": {
+                    "enum": ["name", "schema_version", "format", "format_version", "disclosure", "former_names"]
+                  }
+                }
+              }
+            },
+            "anyOf": [{ "required": ["set"] }, { "required": ["unset"] }]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "set_disclosure" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "user" } } },
+          "args": {
+            "required": ["disclosure"],
+            "properties": { "disclosure": { "enum": ["full", "title", "kind", "none"] } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "rename_teka" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "user" } } },
+          "args": {
+            "required": ["name", "former", "until"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "pattern": "^(?!\\.\\.?$)[^/]+$" },
+              "former": { "type": "string", "minLength": 1, "pattern": "^(?!\\.\\.?$)[^/]+$" },
+              "until": { "$ref": "#/$defs/date" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "external_edit" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "external" } } },
+          "args": {
+            "required": ["patch"],
+            "properties": {
+              "patch": { "$ref": "#/$defs/json_patch" },
+              "detected_at": { "$ref": "#/$defs/timestamp" },
+              "hint": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "import_snapshot" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "import" } } },
+          "args": {
+            "required": ["catalog", "survey"],
+            "properties": { "catalog": { "type": "object" }, "survey": { "type": "object" } },
+            "$comment": "The first op of every op log, and a later re-base point when a log fails replay (section 6.6). before_hash and after_hash both equal the hash of catalog."
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "migrate" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "import" } } },
+          "args": {
+            "required": ["from", "to", "patch"],
+            "properties": {
+              "from": { "type": "object" },
+              "to": { "type": "object" },
+              "patch": {
+                "allOf": [
+                  { "$ref": "#/$defs/json_patch" },
+                  { "items": { "properties": { "op": { "enum": ["add", "replace"] } } } }
+                ],
+                "$comment": "A migration never removes a key."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "abort" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "import" } } },
+          "args": {
+            "required": ["ops", "reason"],
+            "properties": {
+              "ops": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/uuid" } },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "op": { "const": "expunge" } } },
+      "then": {
+        "properties": {
+          "actor": { "properties": { "kind": { "const": "user" } } },
+          "args": {
+            "required": ["replaced", "rewrote"],
+            "properties": {
+              "replaced": {
+                "type": "object",
+                "additionalProperties": { "type": "integer", "minimum": 0 },
+                "description": "How many values were replaced in each place, for example {\"catalog.json\": 2, \"ops.ndjson\": 5}. Never the text and never a digest of it."
+              },
+              "rewrote": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/uuid" },
+                "description": "The op lines whose free text was rewritten."
+              },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "format": "date-time"
+    },
+    "actor": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+        "client": {
+          "type": "string",
+          "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+        },
+        "origin": {
+          "type": "string",
+          "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+        },
+        "model": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "minted_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "$comment": "Ids minted by a v0 implementation are ASCII (section 5.6)."
+    },
+    "safe_path": {
+      "type": "string",
+      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss]|[Cc][Hh][Aa][Pp][Tt][Ee][Rr][Ss]|[Ee][Nn][Tt][Ii][Tt][Ii][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "$comment": "Where file_document may put a file (section 4.3): relative, every segment non-empty, not starting with '.' or '~', no backslash and no Cc or Cf character; not a reserved file or folder, compared without regard to case; no agent manual name in any segment. NFC form, full Unicode case folding and containment after symlinks are conformance checks."
+    },
+    "record_path": {
+      "type": "string",
+      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "$comment": "A path update_document may record (it moves nothing): the rules of safe_path, except that it may lie under chapters/ or entities/ (section 4.3)."
+    },
+    "intake_path": {
+      "type": "string",
+      "pattern": "^intake/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "$comment": "Filing moves a file only out of intake/."
+    },
+    "item_change": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "set": {
+          "type": "object",
+          "propertyNames": { "not": { "enum": ["id", "status", "dismissed", "created_at", "updated_at"] } }
+        },
+        "unset": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "not": { "enum": ["id", "title", "status", "priority", "dismissed", "created_at", "updated_at"] }
+          }
+        }
+      },
+      "anyOf": [{ "required": ["set"] }, { "required": ["unset"] }],
+      "$comment": "A field never appears in both set and unset; that is a conformance check."
+    },
+    "document_change": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "set": {
+          "type": "object",
+          "propertyNames": { "not": { "const": "id" } },
+          "properties": { "path": { "$ref": "#/$defs/record_path" } }
+        },
+        "unset": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "not": { "enum": ["id", "title", "path"] } }
+        }
+      },
+      "anyOf": [{ "required": ["set"] }, { "required": ["unset"] }]
+    },
+    "json_patch": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["op", "path"],
+        "properties": { "op": { "enum": ["add", "remove", "replace"] }, "path": { "type": "string" } },
+        "if": { "properties": { "op": { "enum": ["add", "replace"] } } },
+        "then": { "required": ["value"] }
+      }
+    },
+    "item_v0": {
+      "$comment": "Generated from item.schema.json.",
+      "type": "object",
+      "required": ["id", "title", "status", "priority"],
+      "properties": {
+        "id": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["open", "waiting", "blocked"] },
+        "priority": { "enum": ["high", "normal", "low"] },
+        "due": { "$ref": "#/$defs/date" },
+        "no_deadline": { "type": "boolean" },
+        "waiting_on": { "type": "string", "minLength": 1 },
+        "follow_up_at": { "$ref": "#/$defs/date" },
+        "expected_by": { "$ref": "#/$defs/date" },
+        "kind": {
+          "enum": [
+            "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision",
+            "other"
+          ]
+        },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "link": { "type": "string", "minLength": 1 },
+        "redact": { "type": "boolean" },
+        "slice_title": { "type": "string", "minLength": 1 },
+        "recurrence": {
+          "type": "object",
+          "required": ["freq", "day"],
+          "properties": {
+            "freq": { "enum": ["monthly", "yearly"] },
+            "day": { "type": "integer", "minimum": 1, "maximum": 31 },
+            "month": { "type": "integer", "minimum": 1, "maximum": 12, "$comment": "Ignored when freq is monthly." }
+          },
+          "additionalProperties": true,
+          "if": { "properties": { "freq": { "const": "yearly" } } },
+          "then": { "required": ["month"] }
+        },
+        "contexts": { "type": "array", "items": { "type": "string", "pattern": "^@[^\\s@]+$" }, "uniqueItems": true },
+        "estimate_min": { "type": "integer", "minimum": 0 },
+        "dismissed": { "type": "boolean" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "events": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "proposed_by": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+                "client": {
+                  "type": "string",
+                  "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+                },
+                "origin": {
+                  "type": "string",
+                  "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+                },
+                "model": { "type": "string" }
+              },
+              "additionalProperties": true
+            },
+            "approved_by": { "type": ["string", "null"] },
+            "op": { "type": "string", "minLength": 1 },
+            "proposal": { "type": "string", "minLength": 1 },
+            "reopened_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            }
+          },
+          "additionalProperties": true
+        },
+        "derived": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "$comment": "due XOR no_deadline:true. A v0 item never holds a null due; it omits the key.",
+          "if": { "required": ["due"] },
+          "then": { "not": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } } },
+          "else": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } }
+        },
+        {
+          "$comment": "A waiting or blocked item names the party and the date on which to chase.",
+          "if": { "required": ["status"], "properties": { "status": { "enum": ["waiting", "blocked"] } } },
+          "then": { "required": ["waiting_on", "follow_up_at"] }
+        },
+        {
+          "$comment": "A redacted item names a non-sensitive kind.",
+          "if": { "required": ["redact"], "properties": { "redact": { "const": true } } },
+          "then": { "required": ["kind"] }
+        },
+        {
+          "$comment": "Recurrence needs a due date: due holds the next occurrence.",
+          "if": { "required": ["recurrence"] },
+          "then": { "required": ["due"] }
+        }
+      ]
+    },
+    "document_v0": {
+      "$comment": "Generated from document.schema.json.",
+      "type": "object",
+      "required": ["id", "title", "path"],
+      "properties": {
+        "id": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+        },
+        "date": { "$ref": "#/$defs/date" },
+        "kind": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "events": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "proposed_by": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+                "client": {
+                  "type": "string",
+                  "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+                },
+                "origin": {
+                  "type": "string",
+                  "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+                },
+                "model": { "type": "string" }
+              },
+              "additionalProperties": true
+            },
+            "approved_by": { "type": ["string", "null"] },
+            "op": { "type": "string", "minLength": 1 },
+            "proposal": { "type": "string", "minLength": 1 },
+            "reopened_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "log_entry_no_closure": {
+      "$comment": "add_log_entry never closes an item: closures go through complete and drop, so the entry must not carry id.",
+      "type": "object",
+      "required": ["action"],
+      "not": { "required": ["id"] },
+      "properties": {
+        "item": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "document": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "action": { "type": "string", "minLength": 1 },
+        "note": { "type": "string" },
+        "source": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

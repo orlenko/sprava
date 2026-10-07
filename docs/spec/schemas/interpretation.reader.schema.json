@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:capture-event-v0:interpretation-reader",
+  "title": "Tier-1 interpretation of one capture, format version 0 (reader)",
+  "description": "Generated from interpretation.schema.json by removing every additionalProperties: false and opening the closed lists that have a fallback (capture-event-v0 section 3). A reader validates with this schema so that fields and values added later in the same format version are tolerated.",
+  "type": "object",
+  "required": [
+    "variant",
+    "language"
+  ],
+  "properties": {
+    "variant": {
+      "type": "string",
+      "enum": [
+        "capture",
+        "document"
+      ],
+      "description": "Code, from the capture's source.kind and media."
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+      "description": "The capture's locale; titles are written in this language. Code."
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      },
+      "description": "Capture variant: one entry per separate thing to do, pay, send, wait for or note. May be empty."
+    },
+    "unfiled": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/unfiled_span"
+      },
+      "description": "Parts of the capture text that no accepted item covers but that look actionable, or that the model refused. Shown on the review card in the capture's own words. Code."
+    },
+    "document": {
+      "$ref": "#/$defs/document",
+      "description": "Document variant: the facts of one short document."
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "variant": {
+          "const": "capture"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "not": {
+        "required": [
+          "document"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "variant": {
+          "const": "document"
+        }
+      },
+      "required": [
+        "document"
+      ],
+      "not": {
+        "required": [
+          "items"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "binder_guess": {
+      "type": "object",
+      "required": [
+        "signals"
+      ],
+      "dependentRequired": {
+        "name": [
+          "confidence_band"
+        ]
+      },
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The binder chosen by the separate binder call from the names offered, or the binder named by binder_hint. Absent when the answer was not-sure. Model (binder call) or code (hint)."
+        },
+        "from_hint": {
+          "type": "boolean",
+          "description": "True when the name came from the capture's binder_hint and the model was not asked. Code."
+        },
+        "signals": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "hint",
+              "binder_call",
+              "index_match",
+              "neighbours"
+            ]
+          },
+          "description": "The signals that agree with name. hint: binder_hint names it. binder_call: the model picked it. index_match: a full-text match of the item's sentence in that binder's index. neighbours: the items around it went to the same binder. Empty when there is no name. Code."
+        },
+        "confidence_band": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "description": "Computed by code from signals with the fixed table in section 6.4. Never written by the model."
+        }
+      }
+    },
+    "amount": {
+      "type": "object",
+      "required": [
+        "value",
+        "text"
+      ],
+      "properties": {
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "The amount as a number, parsed by code from text. Code."
+        },
+        "currency": {
+          "type": "string",
+          "maxLength": 20,
+          "description": "As spoken or printed, such as dollars or CAD. Code, from text."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The amount exactly as spoken or printed. It occurs in the item's sentence, or for a document in the text that was read. Model, checked by code."
+        }
+      }
+    },
+    "source_span": {
+      "type": "object",
+      "required": [
+        "quote",
+        "anchored"
+      ],
+      "properties": {
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "The opening words of the capture sentence this came from, as the model copied them. Model."
+        },
+        "anchored": {
+          "type": "boolean",
+          "description": "True when code found the quote in the capture text. Code."
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Offset of the start of the sentence that holds the quote, in Unicode scalar values. Code."
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Offset just past the end of that sentence. Code."
+        }
+      }
+    },
+    "unfiled_span": {
+      "type": "object",
+      "required": [
+        "start",
+        "end",
+        "reason"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "not_covered",
+            "refused",
+            "guardrail",
+            "truncated"
+          ],
+          "description": "not_covered: no item quotes this sentence, and it holds a time expression, an amount or an action verb. refused, guardrail: the model would not read this window. truncated: the answer for this window was cut off at the response token cap."
+        }
+      }
+    },
+    "match": {
+      "type": "object",
+      "required": [
+        "candidate",
+        "relation"
+      ],
+      "properties": {
+        "candidate": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The id of one of the open items offered as candidates in this call. Model, through a per-call enum; code checks it."
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "same",
+            "done",
+            "update"
+          ],
+          "description": "same: nothing new. done: the capture says the item is finished. update: the capture changes it. Model."
+        }
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": [
+        "title",
+        "action",
+        "people",
+        "binder_guess",
+        "source_span"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "A short title for the item, in the capture's language. Model."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "call",
+            "pay",
+            "send",
+            "review",
+            "wait",
+            "file",
+            "meet",
+            "decide",
+            "note",
+            "other"
+          ],
+          "description": "What has to happen. Not the teka item kind; code maps it (section 6.5). Model."
+        },
+        "when_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The time expression exactly as spoken; kept only when it occurs in the quote's sentence and matches a known time pattern. Model. Never a resolved date."
+        },
+        "when_role": {
+          "type": "string",
+          "enum": [
+            "due",
+            "expected",
+            "follow_up"
+          ],
+          "description": "Which teka date when_resolved fills, from the words around when_text (by, until, if not by). Code."
+        },
+        "when_resolved": {
+          "$ref": "#/$defs/date",
+          "description": "The date code resolved when_text to, from captured_at and locale. Never earlier than the capture date. Code."
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": "People named for this item, as spoken; a role such as the notary is fine. Each entry occurs in the capture text as whole words and is not a pronoun or an indefinite such as someone. Model, checked by code."
+        },
+        "speaker": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Meetings only: the label of the turn that holds the item's sentence. Code."
+        },
+        "amount": {
+          "$ref": "#/$defs/amount"
+        },
+        "binder_guess": {
+          "$ref": "#/$defs/binder_guess"
+        },
+        "match": {
+          "$ref": "#/$defs/match",
+          "description": "Set when a second one-task call found that this item is an open item already in the binder. Absent otherwise."
+        },
+        "source_span": {
+          "$ref": "#/$defs/source_span"
+        }
+      }
+    },
+    "party": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "As printed; occurs in the text that was read. Model, checked by code."
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "sender, recipient, payer, payee, or another short role word. Model."
+        }
+      }
+    },
+    "deadline": {
+      "type": "object",
+      "required": [
+        "when_text",
+        "label"
+      ],
+      "properties": {
+        "when_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "As printed; occurs in the text that was read. Model, checked by code."
+        },
+        "when_resolved": {
+          "$ref": "#/$defs/date",
+          "description": "Code only."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "What the deadline is for. Model."
+        }
+      }
+    },
+    "document": {
+      "type": "object",
+      "required": [
+        "title",
+        "kind",
+        "parties",
+        "amounts",
+        "deadlines",
+        "binder_guess"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "A title for the document. Model."
+        },
+        "date_text": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The document's date as printed. Model."
+        },
+        "date": {
+          "$ref": "#/$defs/date",
+          "description": "The document's date, normalized. Code only."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "invoice",
+            "receipt",
+            "letter",
+            "notice",
+            "statement",
+            "contract",
+            "form",
+            "court",
+            "tax",
+            "other"
+          ],
+          "description": "Model."
+        },
+        "parties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/party"
+          }
+        },
+        "amounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/amount"
+          }
+        },
+        "deadlines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/deadline"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "One sentence on what the document is. Model."
+        },
+        "binder_guess": {
+          "$ref": "#/$defs/binder_guess"
+        }
+      }
+    }
+  }
+}
