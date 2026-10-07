@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:capture-event-v0:derived-event-reader",
+  "title": "Sprava derived event, format version 0 (reader)",
+  "description": "Generated from derived-event.schema.json by removing every additionalProperties: false and opening the closed lists that have a fallback (capture-event-v0 section 3). A reader validates with this schema so that fields and values added later in the same format version are tolerated.",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "id",
+    "hlc",
+    "device",
+    "kind",
+    "created_at",
+    "inputs",
+    "producer",
+    "outcome",
+    "sensitivity"
+  ],
+  "properties": {
+    "format": {
+      "const": "sprava-derived-event"
+    },
+    "format_version": {
+      "const": "0"
+    },
+    "id": {
+      "$ref": "capture-event.reader.schema.json#/$defs/uuid"
+    },
+    "hlc": {
+      "$ref": "capture-event.reader.schema.json#/$defs/hlc"
+    },
+    "device": {
+      "$ref": "capture-event.reader.schema.json#/$defs/device"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "interpretation",
+        "summary",
+        "proposal",
+        "filing"
+      ],
+      "description": "interpretation: the clerk's typed reading of one capture. summary: free-text title, summary, points and action items. proposal: an op batch built by code from an interpretation. filing: what was approved and applied."
+    },
+    "created_at": {
+      "$ref": "capture-event.reader.schema.json#/$defs/timestamp"
+    },
+    "sensitivity": {
+      "type": "string",
+      "description": "private when any input is private, or when the event names or targets a binder whose disclosure is none. Otherwise unmarked. Governs the derived event exactly as it governs a capture event. Reader: known values are unmarked, private; an unknown value is read as private.",
+      "minLength": 1
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "format"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "capture-event.reader.schema.json#/$defs/uuid"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "sprava-capture-event",
+              "sprava-derived-event"
+            ]
+          },
+          "sha256": {
+            "$ref": "capture-event.reader.schema.json#/$defs/sha256",
+            "description": "Digest of the input file's bytes, when the producer checked them."
+          }
+        }
+      },
+      "description": "The events this one was computed from."
+    },
+    "producer": {
+      "type": "object",
+      "required": [
+        "tier",
+        "app"
+      ],
+      "properties": {
+        "tier": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "0: code only, no model. 1: an on-device model. 2: a brain connected over MCP."
+        },
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$",
+          "description": "Who ran it: sprava, holos, or an MCP client's name."
+        },
+        "app_version": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200,
+          "description": "The model's name, such as apple-on-device. Null for tier 0."
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 100,
+          "description": "The model variant, such as core3 or coreAdvanced3, when known."
+        },
+        "os_build": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 50,
+          "description": "The OS build the model ran on, such as 26A428, when known."
+        },
+        "prompt_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 100,
+          "description": "The producer's version tag for its instructions and schema."
+        },
+        "context_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The model's context window in tokens at the time."
+        }
+      }
+    },
+    "outcome": {
+      "type": "string",
+      "description": "ok: content is complete. partial: some of the input was skipped. The rest name why there is no usable content. Reader: known values are ok, partial, invalid_output, context_exceeded, guardrail, unsupported_language, refused, rate_limited, concurrent, unavailable, timeout, error; an unknown value is read as error.",
+      "minLength": 1
+    },
+    "outcome_detail": {
+      "type": "object",
+      "properties": {
+        "error_code": {
+          "type": "string",
+          "maxLength": 100,
+          "pattern": "^[a-z0-9_.-]+$",
+          "description": "A short machine code for the error. Never capture text or model text."
+        },
+        "context_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "token_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reset_at": {
+          "$ref": "capture-event.reader.schema.json#/$defs/timestamp"
+        },
+        "parts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_parts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped_items": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Items the code-side checks removed, for example a quote not found in the capture."
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Windows retried after a refusal or a guardrail."
+        },
+        "truncated": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Windows whose answer was cut off at the response token cap. Their text is listed in content.unfiled with reason truncated."
+        }
+      }
+    },
+    "binder": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "For a proposal or a filing: the binder its ops target (the binder's meta.name). Absent on a not-sure proposal and on other kinds."
+    },
+    "content": {
+      "type": "object",
+      "description": "Depends on kind. For interpretation it validates against interpretation.schema.json. For summary it is title, summary, points, actions and language. For proposal and filing it follows the teka op schema, one binder per event."
+    },
+    "supersedes": {
+      "$ref": "capture-event.reader.schema.json#/$defs/uuid"
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "ok",
+              "partial"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "content"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "interpretation"
+          },
+          "outcome": {
+            "enum": [
+              "ok",
+              "partial"
+            ]
+          }
+        },
+        "required": [
+          "content"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "$ref": "interpretation.reader.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "summary"
+          },
+          "outcome": {
+            "enum": [
+              "ok",
+              "partial"
+            ]
+          }
+        },
+        "required": [
+          "content"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "$ref": "#/$defs/summary_content"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "summary_content": {
+      "type": "object",
+      "required": [
+        "title",
+        "summary",
+        "points",
+        "actions"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Plain strings. No assignee or due date structure; that is the interpretation's job."
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+        }
+      }
+    }
+  }
+}

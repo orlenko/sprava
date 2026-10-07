@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:capture-event-v0:capture-event-reader",
+  "title": "Sprava capture event, format version 0 (reader)",
+  "description": "Generated from capture-event.schema.json by removing every additionalProperties: false and opening the closed lists that have a fallback (capture-event-v0 section 3). A reader validates with this schema so that fields and values added later in the same format version are tolerated.",
+  "type": "object",
+  "required": [
+    "format",
+    "format_version",
+    "id",
+    "hlc",
+    "device",
+    "source",
+    "captured_at",
+    "locale",
+    "text",
+    "sensitivity"
+  ],
+  "properties": {
+    "format": {
+      "const": "sprava-capture-event",
+      "description": "Tells a reader what kind of file this is."
+    },
+    "format_version": {
+      "const": "0",
+      "description": "The version of this format. New optional fields do not change it; a change a reader must understand does. A reader defers a version it does not know."
+    },
+    "id": {
+      "$ref": "#/$defs/uuid",
+      "description": "The event's own identity. A UUID, version 7 recommended. Never reused."
+    },
+    "hlc": {
+      "$ref": "#/$defs/hlc"
+    },
+    "device": {
+      "$ref": "#/$defs/device"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "captured_at": {
+      "$ref": "#/$defs/timestamp",
+      "description": "When the capture started, by the producer's clock, with the UTC offset in force at that instant in the producer's time zone."
+    },
+    "captured_at_estimated": {
+      "type": "boolean",
+      "description": "True when captured_at is not when the content was recorded, for example the time a recording was imported. Relative dates are then left unresolved. Absent means false."
+    },
+    "ended_at": {
+      "$ref": "#/$defs/timestamp",
+      "description": "Optional. When the capture ended, by the producer's clock, with the UTC offset in force at that instant: for a dictation, captured_at plus its length; for a typed note, when it was saved. A reader treats a value earlier than captured_at as absent. A superseding event copies it from the first event of its chain."
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+      "description": "The language of the text as a BCP 47 tag with hyphens, such as en-CA or fr-CA, without @ keywords. Use und when unknown."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "A name the producer already had for the capture: a meeting's name, a document's file name, an email subject. Optional."
+    },
+    "text": {
+      "type": "string",
+      "description": "The capture as readable text: the dictation as recorded, the labelled transcript, the typed note, the extracted or recognized text of a document. Empty for a retraction, or for a document whose text could not be extracted."
+    },
+    "alt_text": {
+      "type": "string",
+      "description": "What was heard or seen before any fixes, when it differs from text. Optional."
+    },
+    "media": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/media"
+      },
+      "description": "Files copied beside this event, or reused from an earlier event of the same chain. Files the producer did not copy are not listed here."
+    },
+    "people_hints": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/person_hint"
+      },
+      "description": "People the producer already knows are involved, as names plus opaque ids. Never voice data or contact details."
+    },
+    "app_context": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "not": {
+            "pattern": "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+){2,}$"
+          },
+          "description": "The display name of the app the capture was made for or taken from. Never a bundle identifier; left out when only a bundle identifier is known."
+        },
+        "terminal": {
+          "type": "boolean",
+          "description": "True when the target was a terminal."
+        }
+      },
+      "description": "Where the person was when they captured. Optional."
+    },
+    "sensitivity": {
+      "type": "string",
+      "description": "unmarked: nothing decided. private: items filed from it are redacted by default, and its text is never returned over MCP unless the person allows it for the binder it is filed into. Reader: known values are unmarked, private; an unknown value is read as private.",
+      "minLength": 1
+    },
+    "binder_hint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "The binder name the producer believes this belongs to, when the person said so. A hint, not a filing."
+    },
+    "supersedes": {
+      "$ref": "#/$defs/uuid",
+      "description": "The id of an earlier event this one replaces, because the source changed after that event was written."
+    },
+    "retracted": {
+      "type": "boolean",
+      "description": "True when the person deleted the underlying thing in the producer. The event supersedes the last one for the same ref and carries no text, title, media, people, app context, binder hint or extensions."
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      },
+      "description": "Producer-specific data, keyed by producer name, for example extensions.holos. A reader ignores keys it does not know."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "retracted": {
+            "const": true
+          }
+        },
+        "required": [
+          "retracted"
+        ]
+      },
+      "then": {
+        "required": [
+          "supersedes"
+        ],
+        "properties": {
+          "text": {
+            "const": ""
+          },
+          "media": {
+            "maxItems": 0
+          },
+          "people_hints": {
+            "maxItems": 0
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "alt_text"
+              ]
+            },
+            {
+              "required": [
+                "title"
+              ]
+            },
+            {
+              "required": [
+                "extensions"
+              ]
+            },
+            {
+              "required": [
+                "app_context"
+              ]
+            },
+            {
+              "required": [
+                "binder_hint"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "A UUID in lowercase hyphenated form."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "A SHA-256 digest as 64 lowercase hex characters."
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,3})?[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00)$",
+      "not": {
+        "pattern": "-00:00$"
+      },
+      "description": "ISO 8601 date and time with a numeric UTC offset, for example 2026-10-06T14:03:05+02:00. Use +00:00 for UTC, never Z or -00:00. The pattern bounds each part; a reader also checks that the value is a real instant (no 30 February)."
+    },
+    "hlc": {
+      "type": "object",
+      "required": [
+        "wall_ms",
+        "counter",
+        "node"
+      ],
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 1000000000000,
+          "maximum": 9999999999999,
+          "description": "The clock's logical time in milliseconds since 1970-01-01T00:00:00Z, always 13 digits. Never behind the wall clock when stamped."
+        },
+        "counter": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Breaks ties between events stamped in the same millisecond by the same clock."
+        },
+        "node": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "description": "The clock's identity: the device id with hyphens removed."
+        }
+      },
+      "description": "A hybrid logical clock stamp. Its string form is wall_ms as 13 digits, a hyphen, counter as 4 hex digits, a hyphen, node."
+    },
+    "device": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Generated once per producer installation and kept. Names the folder the producer writes into."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "A display name the person chose, such as Office Mac. Never defaulted from the system device name or the account name."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "app",
+        "kind",
+        "ref",
+        "revision"
+      ],
+      "properties": {
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$",
+          "description": "The producer's name in lowercase, such as holos or sprava."
+        },
+        "kind": {
+          "type": "string",
+          "description": "What kind of capture this is. Reader: known values are dictation, meeting, text, document, share, email; an unknown value is read as text.",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The producer's version string."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "The producer's own identifier for the underlying thing, verbatim. A producer with no identifier of its own mints a UUID when the capture is made and stores it with the draft, so a retry after a crash reuses it. The same ref appears again when a later event supersedes this one."
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "The producer's version key for the underlying thing at the time of writing. Opaque: compared only for equality. For a capture that is never edited, the SHA-256 of text is enough. Two events with the same app, ref and revision are the same capture, whatever device wrote them."
+        },
+        "processing": {
+          "type": "string",
+          "description": "Where the producer turned speech or images into text. network when any network service took part. Absent means on-device. Reader: known values are on-device, network; an unknown value is read as network.",
+          "minLength": 1
+        }
+      }
+    },
+    "media": {
+      "type": "object",
+      "required": [
+        "kind",
+        "sha256"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "path",
+            "bytes"
+          ],
+          "not": {
+            "required": [
+              "of"
+            ]
+          }
+        },
+        {
+          "required": [
+            "of"
+          ],
+          "not": {
+            "required": [
+              "path"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reader: known values are audio, image, pdf, video, file; an unknown value is read as file."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z][a-z0-9]*(-[0-9]+)?\\.[A-Za-z0-9]+$",
+          "not": {
+            "pattern": "\\.(json|tmp)$"
+          },
+          "description": "A copied file's name in the same folder as the event: <event-id>.<slot>.<extension>. The slot is audio, image-<n>, file-<n>, <track>-<n> or, in a synced root, m<n>. Must start with this event's own id (checked by the reader). Never ends in .json or .tmp."
+        },
+        "of": {
+          "$ref": "#/$defs/uuid",
+          "description": "Reuse: the id of an earlier event of the same chain whose media entry with this sha256 holds the file."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Duration for audio and video."
+        },
+        "mime": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The media type, such as audio/mp4."
+        }
+      }
+    },
+    "person_hint": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "self"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The name as the producer knows it, or a role such as the notary. May be absent only for the person capturing (kind self)."
+        },
+        "external_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "An opaque id in the producer's own namespace, prefixed with the producer name, such as holos:profile:<uuid>. Never an email address or other contact detail."
+        },
+        "kind": {
+          "type": "string",
+          "description": "speaker: spoke in the capture. self: the person capturing. mention: named in the text. Reader: known values are speaker, self, mention; an unknown value is read as mention.",
+          "minLength": 1
+        },
+        "confirmed": {
+          "type": "boolean",
+          "description": "false when the name is a guess, such as an automatic voice match the person never confirmed. Absent means confirmed."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:document",
+  "title": "teka v0 document record",
+  "description": "One entry of documents[] in a teka v0 catalog. The file lives at path, inside the teka folder. Single source of the document_v0 copies. Unknown fields are allowed and preserved.",
+  "type": "object",
+  "required": ["id", "title", "path"],
+  "properties": {
+    "id": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+      "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+    },
+    "date": { "$ref": "#/$defs/date" },
+    "kind": { "type": "string", "minLength": 1 },
+    "source": { "type": "string" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "events": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "proposed_by": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+            "client": {
+              "type": "string",
+              "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+            },
+            "origin": {
+              "type": "string",
+              "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+            },
+            "model": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "approved_by": { "type": ["string", "null"] },
+        "op": { "type": "string", "minLength": 1 },
+        "proposal": { "type": "string", "minLength": 1 },
+        "reopened_from": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "format": "date-time"
+    }
+  }
+}

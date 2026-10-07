@@ -1,0 +1,26 @@
+{
+  "title": "BinderChoice",
+  "description": "Which binder one item belongs to. Choose from the list, or not-sure.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "binder"
+  ],
+  "x-order": [
+    "binder"
+  ],
+  "properties": {
+    "binder": {
+      "type": "string",
+      "enum": [
+        "estate-example",
+        "kitchen-reno",
+        "rental-elm-street",
+        "tax-2026",
+        "condo-board",
+        "not-sure"
+      ],
+      "description": "The binder this item belongs to, or not-sure."
+    }
+  }
+}

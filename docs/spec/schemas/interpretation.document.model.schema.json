@@ -1,0 +1,145 @@
+{
+  "title": "Document",
+  "description": "The facts printed at the start of one document. Copy words exactly; never work out a date or a number.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "date_text",
+    "kind",
+    "parties",
+    "amount_texts",
+    "deadlines",
+    "summary"
+  ],
+  "x-order": [
+    "title",
+    "date_text",
+    "kind",
+    "parties",
+    "amount_texts",
+    "deadlines",
+    "summary"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "description": "A short title for the document."
+    },
+    "date_text": {
+      "type": "string",
+      "maxLength": 60,
+      "description": "The document's date exactly as printed, or an empty string."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "invoice",
+        "receipt",
+        "letter",
+        "notice",
+        "statement",
+        "contract",
+        "form",
+        "court",
+        "tax",
+        "other"
+      ],
+      "description": "What sort of document it is."
+    },
+    "parties": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "People or organizations named as sender, recipient, payer or payee, exactly as printed.",
+      "items": {
+        "$ref": "#/$defs/Party"
+      }
+    },
+    "amount_texts": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "Money amounts exactly as printed.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 60
+      }
+    },
+    "deadlines": {
+      "type": "array",
+      "maxItems": 6,
+      "description": "Dates by which something must happen, exactly as printed.",
+      "items": {
+        "$ref": "#/$defs/Deadline"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "One short sentence on what the document is."
+    }
+  },
+  "$defs": {
+    "Party": {
+      "title": "Party",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "role"
+      ],
+      "x-order": [
+        "name",
+        "role"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "The name exactly as printed."
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "sender",
+            "recipient",
+            "payer",
+            "payee",
+            "other"
+          ],
+          "description": "The party's role."
+        }
+      }
+    },
+    "Deadline": {
+      "title": "Deadline",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "when_text",
+        "label"
+      ],
+      "x-order": [
+        "when_text",
+        "label"
+      ],
+      "properties": {
+        "when_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "The date or time limit exactly as printed."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "What is due by then, in a few words."
+        }
+      }
+    }
+  }
+}

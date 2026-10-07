@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:item",
+  "title": "teka v0 open item",
+  "description": "One entry of open_items[] in a teka v0 catalog. It satisfies lifeproj's schema_version 2 rules and adds the v0 fields. An id found at adoption is accepted as it is; an id minted by a v0 implementation also matches minted_id in op.schema.json. This file is the single source of the item_v0 copies in catalog.schema.json and op.schema.json. Unknown fields are allowed and preserved.",
+  "type": "object",
+  "required": ["id", "title", "status", "priority"],
+  "properties": {
+    "id": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+      "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["open", "waiting", "blocked"] },
+    "priority": { "enum": ["high", "normal", "low"] },
+    "due": { "$ref": "#/$defs/date" },
+    "no_deadline": { "type": "boolean" },
+    "waiting_on": { "type": "string", "minLength": 1 },
+    "follow_up_at": { "$ref": "#/$defs/date" },
+    "expected_by": { "$ref": "#/$defs/date" },
+    "kind": {
+      "enum": [
+        "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision", "other"
+      ]
+    },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "link": { "type": "string", "minLength": 1 },
+    "redact": { "type": "boolean" },
+    "slice_title": { "type": "string", "minLength": 1 },
+    "recurrence": {
+      "type": "object",
+      "required": ["freq", "day"],
+      "properties": {
+        "freq": { "enum": ["monthly", "yearly"] },
+        "day": { "type": "integer", "minimum": 1, "maximum": 31 },
+        "month": { "type": "integer", "minimum": 1, "maximum": 12, "$comment": "Ignored when freq is monthly." }
+      },
+      "additionalProperties": true,
+      "if": { "properties": { "freq": { "const": "yearly" } } },
+      "then": { "required": ["month"] }
+    },
+    "contexts": { "type": "array", "items": { "type": "string", "pattern": "^@[^\\s@]+$" }, "uniqueItems": true },
+    "estimate_min": { "type": "integer", "minimum": 0 },
+    "dismissed": { "type": "boolean" },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "events": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "proposed_by": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["user", "clerk", "brain", "import", "external"] },
+            "client": {
+              "type": "string",
+              "description": "program/version of the implementation that applied or proposed the op. The via of any log entry the op writes is copied from it."
+            },
+            "origin": {
+              "type": "string",
+              "description": "For kind external: where the change came from when known, for example spool-outbox, lifeproj or unknown."
+            },
+            "model": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "approved_by": { "type": ["string", "null"] },
+        "op": { "type": "string", "minLength": 1 },
+        "proposal": { "type": "string", "minLength": 1 },
+        "reopened_from": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        }
+      },
+      "additionalProperties": true
+    },
+    "derived": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "$comment": "due XOR no_deadline:true. A v0 item never holds a null due; it omits the key.",
+      "if": { "required": ["due"] },
+      "then": { "not": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } } },
+      "else": { "required": ["no_deadline"], "properties": { "no_deadline": { "const": true } } }
+    },
+    {
+      "$comment": "A waiting or blocked item names the party and the date on which to chase.",
+      "if": { "required": ["status"], "properties": { "status": { "enum": ["waiting", "blocked"] } } },
+      "then": { "required": ["waiting_on", "follow_up_at"] }
+    },
+    {
+      "$comment": "A redacted item names a non-sensitive kind.",
+      "if": { "required": ["redact"], "properties": { "redact": { "const": true } } },
+      "then": { "required": ["kind"] }
+    },
+    {
+      "$comment": "Recurrence needs a due date: due holds the next occurrence.",
+      "if": { "required": ["recurrence"] },
+      "then": { "required": ["due"] }
+    }
+  ],
+  "$defs": {
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "format": "date" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "format": "date-time"
+    }
+  }
+}

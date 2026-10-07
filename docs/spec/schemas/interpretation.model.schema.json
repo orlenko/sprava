@@ -1,0 +1,94 @@
+{
+  "title": "Interpretation",
+  "description": "The items in one capture. Copy words from the capture; never work out a date or a number.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "x-order": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "One entry per separate thing to do, pay, send, wait for, meet about, decide or note. At most six.",
+      "items": {
+        "$ref": "#/$defs/Item"
+      },
+      "maxItems": 6
+    }
+  },
+  "$defs": {
+    "Item": {
+      "title": "Item",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quote",
+        "title",
+        "action",
+        "when_text",
+        "people",
+        "amount_text"
+      ],
+      "x-order": [
+        "quote",
+        "title",
+        "action",
+        "when_text",
+        "people",
+        "amount_text"
+      ],
+      "properties": {
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The first words of the sentence of the capture this item comes from, copied exactly, at most twelve words."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "A short title for the item."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "call",
+            "pay",
+            "send",
+            "review",
+            "wait",
+            "file",
+            "meet",
+            "decide",
+            "note",
+            "other"
+          ],
+          "description": "What has to happen: call, pay, send, review, wait for someone else, file, meet, decide, note, or other."
+        },
+        "when_text": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "The time words exactly as spoken, or an empty string when there are none."
+        },
+        "people": {
+          "type": "array",
+          "description": "People named for this item, exactly as spoken. Empty when none.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "amount_text": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "The money amount exactly as spoken, or an empty string when there is none."
+        }
+      }
+    }
+  }
+}
