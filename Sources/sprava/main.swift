@@ -25,6 +25,7 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           what it read; nothing is filed
        sprava clerk-gate <fixtures.json>   developer only: the clerk's release gate on invented fixtures:
                                           recall, dates, amounts, binders, calls and time
+       sprava measures [--days N]          the shadow run's measures (mvp.md 1.2) over the last N days (30)
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
@@ -413,6 +414,14 @@ case "dashboard":
 case "import-holos": importHolos(arguments)
 case "clerk": clerk(arguments)
 case "clerk-gate": clerkGate(arguments)
+case "measures":
+    let n = arguments.firstIndex(of: "--days").flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil } ?? 30
+    let support = SpravaPaths.supportDirectory()
+    let url = LifeprojRegistry.defaultPath()
+    let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
+    let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+    let end = CalendarDate.today()
+    print(Measures.text(Measures(support: support).compute(rows: rows, from: end.adding(days: -(max(1, n) - 1)), to: end)), terminator: "")
 case "-h", "--help", "help": print(usage)
 default: fail(usage)
 }
