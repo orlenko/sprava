@@ -50,6 +50,12 @@ final class RuntimeClient {
         return o
     }
 
+    func global(_ name: String, _ fields: [(String, JSONValue)] = [], timeout: TimeInterval = 15) async throws -> JSONObject {
+        var r = JSONObject([(key: "command", value: .string(name))])
+        for (k, v) in fields { r.set(k, v) }
+        return try await send(r, timeout: timeout)
+    }
+
     func command(_ name: String, binder: URL, _ fields: [(String, JSONValue)] = [], timeout: TimeInterval = 15) async throws -> JSONObject {
         var r = JSONObject([(key: "command", value: .string(name)), (key: "binder", value: .string(binder.standardizedFileURL.path))])
         for (k, v) in fields { r.set(k, v) }

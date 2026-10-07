@@ -61,7 +61,7 @@ final class ShelfModel: ObservableObject {
         var picked: [URL] = []
         do { picked = try store.readFolders() } catch { note = "\(error)" }
         rows = Shelf.rows(registry: registry, picked: picked)
-        if selection == nil || (selection != healthSelection && !rows.contains(where: { $0.folder == selection })) {
+        if selection == nil || (selection != healthSelection && selection != brainsSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
         lastRefresh = Date()
@@ -104,10 +104,12 @@ final class ShelfModel: ObservableObject {
 }
 
 let healthSelection = URL(string: "sprava:health")!
+let brainsSelection = URL(string: "sprava:brains")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var health = HealthModel()
+    @StateObject private var brains = BrainsModel()
 
     var body: some View {
         NavigationSplitView {
@@ -118,6 +120,7 @@ struct ShelfView: View {
                         Text("Health").font(.headline)
                     }
                     .tag(healthSelection)
+                    Label("Brains", systemImage: "brain").tag(brainsSelection)
                 }
                 Section("Shelf") {
                     ForEach(model.rows, id: \.folder) { row in
@@ -147,6 +150,8 @@ struct ShelfView: View {
         } detail: {
             if model.selection == healthSelection {
                 HealthView(model: health)
+            } else if model.selection == brainsSelection {
+                BrainsView(model: brains, rows: model.rows)
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today, reload: { model.refresh() })
             } else {

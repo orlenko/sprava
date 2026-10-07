@@ -133,6 +133,37 @@ public struct Commands: Sendable {
             let applied = try TekaStore(folder: f, client: client).undo(opID: opID, now: now)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
 
+        case "register_client":
+            // A brain client (architecture 7.5). The token is returned once and never stored, only its hash.
+            guard case .string(let id)? = r["client_id"], case .object(let scope)? = r["binders"] else {
+                throw Failure(message: "register_client needs client_id and binders")
+            }
+            var binders: [String: String] = [:]
+            for e in scope.entries {
+                guard e.key.hasPrefix("/"), ["read", "propose"].contains(e.value.stringValue ?? "") else {
+                    throw Failure(message: "binders map absolute paths to read or propose")
+                }
+                binders[URL(fileURLWithPath: e.key).standardizedFileURL.path] = e.value.stringValue!
+            }
+            var clients = MCPClients.load(support)
+            let token = try clients.register(id: id, name: r["name"]?.stringValue ?? id, binders: binders, now: now)
+            try clients.save(support)
+            return JSONObject([(key: "token", value: .string(token))])
+
+        case "list_clients":
+            let clients = MCPClients.load(support).clients.filter { !$0.revoked }
+            return JSONObject([(key: "clients", value: .array(clients.map { c in
+                .obj([("id", .string(c.id)), ("name", .string(c.name)), ("created_at", .string(c.createdAt)),
+                      ("binders", .obj(c.binders.sorted { $0.key < $1.key }.map { ($0.key, .string($0.value)) }))])
+            }))])
+
+        case "revoke_client":
+            guard case .string(let id)? = r["client_id"] else { throw Failure(message: "revoke_client needs client_id") }
+            var clients = MCPClients.load(support)
+            clients.revoke(id: id)
+            try clients.save(support)
+            return JSONObject()
+
         case "history":
             // Recent changes a person might undo: the last 20 ops that changed something, newest first.
             let f = try folder(r)

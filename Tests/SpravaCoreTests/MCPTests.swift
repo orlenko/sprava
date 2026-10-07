@@ -108,3 +108,21 @@ import Testing
         #expect(clients.authenticate(clientID: "claude-code-1", token: token) == nil)
     }
 }
+
+@Suite struct ClientRegistrationTests {
+    @Test func registerListRevokeThroughCommands() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-reg-\(UUID().uuidString)")
+        let c = Commands(support: support, deviceID: "t")
+        func call(_ f: [(String, JSONValue)]) throws -> JSONValue { try JSONParser.parse(c.handle(JSONWriter.compact(.obj(f)))).value }
+        let r = try call([("command", .str("register_client")), ("client_id", .str("claude-code-1")),
+                          ("binders", .obj([("/tmp/x/estate-example", .str("propose"))]))])
+        let token = try #require(r["token"]?.stringValue)
+        #expect(!(try String(contentsOf: MCPClients.url(support), encoding: .utf8)).contains(token))   // only the hash is kept
+        #expect(try call([("command", .str("list_clients"))])["clients"]?.arrayValue?.count == 1)
+        #expect(try call([("command", .str("register_client")), ("client_id", .str("claude-code-1")), ("binders", .obj([]))])["ok"] == .bool(false))
+        #expect(try call([("command", .str("register_client")), ("client_id", .str("x")), ("binders", .obj([("relative", .str("propose"))]))])["ok"] == .bool(false))
+        _ = try call([("command", .str("revoke_client")), ("client_id", .str("claude-code-1"))])
+        #expect(try call([("command", .str("list_clients"))])["clients"]?.arrayValue?.isEmpty == true)
+        #expect(MCPClients.load(support).authenticate(clientID: "claude-code-1", token: token) == nil)
+    }
+}
