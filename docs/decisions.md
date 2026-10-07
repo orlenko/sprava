@@ -33,7 +33,7 @@
   through an adaptation layer that quickly establishes the ingestion protocol for each type of input.
   No producer is privileged and none is a dependency: the capture-event format is Sprava's own inbound
   contract, which any adapter may write, and holos is at most one adapter among many. Supersedes P6, P7
-  and C4 as dependencies; the design of the adaptation layer is open.
+  and C4 as dependencies; the adaptation layer is drafted in `docs/adaptation-layer.md` (open).
 - **P6 superseded by P12.** Capture comes from holos through a versioned capture-event format. Sprava never
   links holos code and never reads holos's private file layout as its contract.
 - **P7 superseded by P12.** holos is the **producer**: it writes one immutable capture-event file per
