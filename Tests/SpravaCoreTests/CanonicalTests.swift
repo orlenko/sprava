@@ -59,3 +59,38 @@ import Testing
         #expect(try Canonical.hash(catalog) == op["before_hash"]?.stringValue)
     }
 }
+
+@Suite struct ReplayTests {
+    func sampleLines() throws -> [JSONObject] {
+        let url = try #require(Bundle.module.url(forResource: "ops", withExtension: "ndjson", subdirectory: "Fixtures/ops"))
+        return try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map {
+            try #require(try JSONParser.parse(String($0)).value.objectValue)
+        }
+    }
+
+    /// teka-v0 §6.6: replaying the sample log reproduces every after_hash and the final catalog.
+    @Test func sampleLogReplaysToEveryRecordedHash() throws {
+        let lines = try sampleLines()
+        let final = try Replay.run(lines)
+        let url = try #require(Bundle.module.url(forResource: "final-catalog", withExtension: "json", subdirectory: "Fixtures/ops"))
+        let expected = try JSONParser.parse(try Data(contentsOf: url)).value
+        #expect(try Canonical.hash(.object(final)) == (try Canonical.hash(expected)))
+        #expect(.object(final) == expected)   // same keys in the same order, too
+    }
+
+    @Test func aTamperedLineIsReported() throws {
+        var lines = try sampleLines()
+        var args = lines[6]["args"]!.objectValue!
+        args.set("follow_up_at", .string("2026-10-14"))
+        lines[6].set("args", .object(args))
+        #expect(throws: Replay.Mismatch.self) { try Replay.run(lines) }
+    }
+
+    @Test func patchDiffRoundTrips() throws {
+        let a = try JSONParser.parse(#"{"meta":{"name":"x"},"open_items":[{"id":"1","title":"a"},{"id":"2"}],"processing_log":[]}"#).value
+        let b = try JSONParser.parse(#"{"meta":{"name":"x","format":"teka"},"open_items":[{"id":"1","title":"b"}],"processing_log":[{"id":"2"}]}"#).value
+        let patch = JSONPatch.diff(from: a, to: b)
+        #expect(try JSONPatch.apply(patch, to: a) == b)
+        #expect(JSONPatch.diff(from: a, to: a).isEmpty)
+    }
+}

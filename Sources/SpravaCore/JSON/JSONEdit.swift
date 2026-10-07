@@ -45,6 +45,20 @@ public enum JSONPatch {
         token.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1")
     }
 
+    /// The value at a pointer, or nil; `/-` names nothing.
+    public static func value(at pointer: String, in document: JSONValue) -> JSONValue? {
+        guard let toks = try? tokens(pointer) else { return nil }
+        var node = document
+        for t in toks {
+            switch node {
+            case .object(let o): guard let next = o[t] else { return nil }; node = next
+            case .array(let a): guard let i = Int(t), a.indices.contains(i) else { return nil }; node = a[i]
+            default: return nil
+            }
+        }
+        return node
+    }
+
     public static func apply(_ patch: [JSONValue], to document: JSONValue) throws -> JSONValue {
         var doc = document
         for step in patch {
