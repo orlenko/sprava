@@ -14,6 +14,8 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava now <folder> [--today YYYY-MM-DD]
                                           one binder's items in the eight buckets
        sprava check <folder>              the binder's state and rule findings (ids and counts only)
+       sprava note <text> [--binder <name>] write a typed note as a capture event; without the app's
+                                          notice its card is "unverified" and asks for a binder
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
@@ -218,6 +220,27 @@ func dev(_ args: [String]) {
     if value["ok"] != .bool(true) { exit(1) }
 }
 
+/// A typed note, written exactly as the app writes one (capture-event-v0 §8.1). The CLI cannot prove itself to
+/// the runtime, so the note's binder is shown as a hint only and the card asks for a binder.
+func note(_ args: [String]) {
+    var args = args
+    var binder: String?
+    if let i = args.firstIndex(of: "--binder") {
+        guard i + 1 < args.count else { fail(usage) }
+        binder = args[i + 1]
+        args.removeSubrange(i...(i + 1))
+    }
+    guard !args.isEmpty else { fail(usage) }
+    let support = SpravaPaths.supportDirectory()
+    let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: DeviceID.load(support: support), support: support)
+    do {
+        let (event, _) = try producer.writeNote(args.joined(separator: " "), binderHint: binder, startedAt: Date())
+        print(event["id"]?.stringValue ?? "")
+    } catch {
+        fail("\(error)", code: 1)
+    }
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else { fail(usage) }
 arguments.removeFirst()
@@ -226,6 +249,7 @@ case "shelf": shelf(arguments)
 case "now": now(arguments)
 case "check": check(arguments)
 case "dev": dev(arguments)
+case "note": note(arguments)
 case "-h", "--help", "help": print(usage)
 default: fail(usage)
 }

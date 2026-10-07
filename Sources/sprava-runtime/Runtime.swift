@@ -45,6 +45,7 @@ final class Runtime: @unchecked Sendable {
         "summary": JobSpec(key: "summary", budget: .seconds(5), expectedCadence: 86_400, breakerThreshold: 2),
         "alerts": JobSpec(key: "alerts", budget: .seconds(5), expectedCadence: 3600, breakerThreshold: 3),
         "hub": JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3),
+        "capture": JobSpec(key: "capture", budget: .seconds(10), expectedCadence: 15, breakerThreshold: 3),
     ]
 
     init(support: URL, lease: Lease) {
@@ -83,6 +84,7 @@ final class Runtime: @unchecked Sendable {
         }
         let commands = Commands(support: support, deviceID: DeviceID.load(support: support))
         self.commands = commands
+        try? commands.inbox.registerProducer(folder: commands.deviceID, app: "sprava")
         let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
         service.start()
         xpc = service
@@ -253,6 +255,7 @@ final class Runtime: @unchecked Sendable {
         if now >= nextAlertsCheck { run("alerts") { self.checkAlerts() } }
         if now >= nextSummary { run("summary") { self.summary() } }
         if now >= nextHub { run("hub") { self.hub() } }
+        run("capture") { self.capture() }   // every 15 s; file events call it sooner
         let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
             run("sentinel") { self.sentinel() }   // the date changed: recompute at once
@@ -264,6 +267,7 @@ final class Runtime: @unchecked Sendable {
     func run(_ key: String, _ body: @escaping @Sendable () -> JobOutcome) {
         guard let spec = Self.specs[key] else { return }
         var record = records.jobs[key] ?? JobRecord()
+        if record.running, key == "capture" { captureAgain = true }   // an event during a sweep: sweep once more
         guard !record.running, record.mayRun(now: Date()) else { return }
         record.start(at: Date())
         records.jobs[key] = record
@@ -290,13 +294,19 @@ final class Runtime: @unchecked Sendable {
 
     func finish(_ key: String, _ outcome: JobOutcome, started: DispatchTime) {
         watch.finished(key)
+        defer {
+            if key == "capture", captureAgain {
+                captureAgain = false
+                run("capture") { self.capture() }
+            }
+        }
         let ms = Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000)
         let threshold = Self.specs[key]?.breakerThreshold ?? 3
         let final = timeouts.removeValue(forKey: key) != nil ? JobOutcome.timeout : outcome
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
-        if key != "heartbeat" || final != .ok {
+        if !["heartbeat", "capture"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -373,6 +383,57 @@ final class Runtime: @unchecked Sendable {
             }
         }
         return failures.isEmpty ? .ok : .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ","))
+    }
+
+    /// The capture watcher (architecture 8; mvp.md feature 4): sweeps the capture root and turns each new capture
+    /// into a Tier 0 card within the sweep. Runs on the command queue, the single writer. Counts only in the log.
+    func capture() -> JobOutcome {
+        guard let commands, let xpc else { return .skipped }
+        let inbox = commands.inbox
+        try? AtomicFile.makePrivateFolder(inbox.root)
+        let rows = shelfRows()
+        let result = xpc.queue.sync { inbox.sweep(binders: rows, commands: commands) }
+        queue.async { self.watchCaptureFolders(inbox.root) }
+        let new = result.ingested + result.quarantined + result.duplicates
+        if new > 0 || result.refusedFolders > 0 {
+            let slowest = result.latencies.max().map { " slowest_s=\(Int($0))" } ?? ""
+            log("capture ingested=\(result.ingested) filed=\(result.filed) unfiled=\(result.unfiled) duplicates=\(result.duplicates) quarantined=\(result.quarantined) pending=\(result.pending) refused_folders=\(result.refusedFolders)" + slowest)
+        }
+        if result.refusedFolders > 0 { return .error(code: "capture_folder_refused", culprit: "\(result.refusedFolders) folder(s)") }
+        return .ok   // a sweep that found nothing new still did its work
+    }
+
+    func shelfRows() -> [ShelfRow] {
+        let url = LifeprojRegistry.defaultPath()
+        let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
+        return Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+    }
+
+    /// File events on the capture root and each device folder start a sweep at once; the 15-second sweep is the
+    /// guarantee when an event is missed.
+    var captureSources: [String: DispatchSourceFileSystemObject] = [:]
+    var captureAgain = false
+
+    func watchCaptureFolders(_ root: URL) {
+        var folders = [root]
+        folders += ((try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
+            .filter { SafeFile.isTrustedFolder($0) }
+        for folder in folders where captureSources[folder.path] == nil {
+            let fd = open(folder.path, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: queue)
+            source.setEventHandler { [weak self] in
+                guard let self else { return }
+                if source.data.contains(.delete) || source.data.contains(.rename) {
+                    source.cancel()
+                    self.captureSources[folder.path] = nil
+                }
+                self.run("capture") { self.capture() }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            captureSources[folder.path] = source
+        }
     }
 
     /// The daily summary: one notification with counts only, at most once per calendar day.

@@ -93,7 +93,7 @@ public struct JobRecord: Codable, Sendable, Equatable {
     public mutating func recordWatchdogExit(at now: Date) {
         running = false
         watchdogExits += 1
-        lastOutcome = "wedged"
+        lastOutcome = "error"
         lastErrorAt = now
         lastErrorCode = "wedged"
         consecutiveFailures += 1

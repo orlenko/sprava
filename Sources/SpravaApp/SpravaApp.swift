@@ -61,7 +61,7 @@ final class ShelfModel: ObservableObject {
         var picked: [URL] = []
         do { picked = try store.readFolders() } catch { note = "\(error)" }
         rows = Shelf.rows(registry: registry, picked: picked)
-        if selection == nil || (selection != healthSelection && selection != brainsSelection && !rows.contains(where: { $0.folder == selection })) {
+        if selection == nil || (selection != healthSelection && selection != brainsSelection && selection != inboxSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
         lastRefresh = Date()
@@ -105,11 +105,13 @@ final class ShelfModel: ObservableObject {
 
 let healthSelection = URL(string: "sprava:health")!
 let brainsSelection = URL(string: "sprava:brains")!
+let inboxSelection = URL(string: "sprava:inbox")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var health = HealthModel()
     @StateObject private var brains = BrainsModel()
+    @StateObject private var inbox = InboxModel()
 
     var body: some View {
         NavigationSplitView {
@@ -120,6 +122,12 @@ struct ShelfView: View {
                         Text("Health").font(.headline)
                     }
                     .tag(healthSelection)
+                    HStack {
+                        Label("Inbox", systemImage: "tray")
+                        Spacer()
+                        if !inbox.cards.isEmpty { Text("\(inbox.cards.count)").foregroundStyle(.secondary) }
+                    }
+                    .tag(inboxSelection)
                     Label("Brains", systemImage: "brain").tag(brainsSelection)
                 }
                 Section("Shelf") {
@@ -142,7 +150,7 @@ struct ShelfView: View {
                     if let note = model.note {
                         Text(note).font(.caption).foregroundStyle(.orange)
                     }
-                    Text("Read-only. Updated \(model.lastRefresh.map { $0.formatted(date: .omitted, time: .shortened) } ?? "–")")
+                    Text("Updated \(model.lastRefresh.map { $0.formatted(date: .omitted, time: .shortened) } ?? "–")")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(8)
@@ -150,6 +158,8 @@ struct ShelfView: View {
         } detail: {
             if model.selection == healthSelection {
                 HealthView(model: health)
+            } else if model.selection == inboxSelection {
+                InboxView(model: inbox, rows: model.rows)
             } else if model.selection == brainsSelection {
                 BrainsView(model: brains, rows: model.rows)
             } else if let row = model.selectedRow {
@@ -162,6 +172,12 @@ struct ShelfView: View {
                 } actions: {
                     Button("Add Folder…") { model.addFolderWithPanel() }
                 }
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                await inbox.load()
+                try? await Task.sleep(for: .seconds(30))
             }
         }
         .toolbar {
