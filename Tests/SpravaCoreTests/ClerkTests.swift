@@ -8,6 +8,7 @@ final class ScriptedModel: ClerkModel, @unchecked Sendable {
     let contextSize: Int
     var extractions: [JSONValue]
     var binders: [String: String]
+    var duplicates: [String: (String, String)] = [:]
     var prompts: [String] = []
     let lock = NSLock()
 
@@ -29,6 +30,9 @@ final class ScriptedModel: ClerkModel, @unchecked Sendable {
         case .extraction:
             guard !extractions.isEmpty else { return .obj([("items", .array([]))]) }
             return extractions.removeFirst()
+        case .duplicate(let ids):
+            let pick = duplicates.first { prompt.lowercased().contains($0.key) }?.value ?? ("none", "related")
+            return .obj([("candidate", .string(ids.contains(pick.0) ? pick.0 : "none")), ("relation", .string(pick.1))])
         case .binder(let names):
             let sentence = prompt.split(separator: "\n").first.map(String.init)?.lowercased() ?? ""
             let pick = binders.first { sentence.contains($0.key) }?.value ?? "not-sure"
@@ -320,5 +324,66 @@ func item(_ quote: String, _ title: String, _ action: String = "other", when: St
         #expect(inbox.nextForClerk() == nil)   // set aside; the code-built card stays
         #expect(inbox.unfiled().count == 1)
         #expect(try String(contentsOf: inbox.journalURL, encoding: .utf8).contains("clerk_set_aside"))
+    }
+}
+
+@Suite(.serialized) struct DuplicateCheckTests {
+    let now = Date(timeIntervalSince1970: 1_791_360_000)
+
+    func event(_ text: String) -> CaptureEvent {
+        var o = JSONObject()
+        o.set("id", .str("01a10000-0000-7000-8000-000000000002"))
+        o.set("source", .obj([("app", .str("sprava")), ("kind", .str("text")), ("ref", .str("r")), ("revision", .str("1"))]))
+        o.set("captured_at", .str("2026-10-06T09:00:00-04:00"))
+        o.set("locale", .str("en-CA"))
+        o.set("text", .string(text))
+        o.set("sensitivity", .str("unmarked"))
+        return CaptureEvent(raw: o, url: URL(fileURLWithPath: "/dev/null"), digest: "")
+    }
+
+    let binder = FilingBinder(
+        name: "rental-elm-street", description: "Rental on Elm Street", folder: URL(fileURLWithPath: "/tmp/r"),
+        words: FilingBinder.significantWords("plumber leak invoice heater repair tenant"),
+        openItems: FilingBinder.candidates(catalog: try! JSONParser.parse(Data(#"""
+        {"open_items":[
+          {"id":"r-1","title":"Fix the leak with the plumber","status":"open","priority":"normal","due":"2026-10-20"},
+          {"id":"r-2","title":"Pay the plumber invoice","status":"open","priority":"normal","no_deadline":true},
+          {"id":"r-3","title":"Heater repair","status":"open","priority":"normal","due":"2026-10-30"}]}
+        """#.utf8)).value.objectValue))
+
+    func run(_ text: String, _ items: [JSONValue], dup: [String: (String, String)]) async -> [(String?, Proposal)] {
+        let model = ScriptedModel(extractions: [.obj([("items", .array(items))])], binders: ["plumber": "rental-elm-street", "heater": "rental-elm-street"])
+        model.duplicates = dup
+        let interp = await Clerk(model: model).read(event(text), filing: [binder], hint: nil, now: now)
+        return Clerk.proposals(interp, event: event(text), today: CalendarDate(year: 2026, month: 10, day: 6)!, client: "t", now: now)
+    }
+
+    @Test func theSameItemIsNotAddedTwice() async {
+        let cards = await run("The plumber invoice still needs paying.", [item("The plumber invoice still", "Pay the plumber invoice", "pay")],
+                              dup: ["plumber": ("r-2", "same")])
+        #expect(cards.isEmpty)
+    }
+
+    @Test func doneNeedsACompletionWord() async {
+        let without = await run("The plumber invoice came in.", [item("The plumber invoice came in", "Plumber invoice", "pay")],
+                                dup: ["plumber": ("r-2", "done")])
+        #expect(without.first?.1.ops.first?["op"] == .str("add_item"))
+        #expect(Proposal.notes(without.first!.1.ops[0]).contains("possibly related to \u{201C}Pay the plumber invoice\u{201D}"))
+        let with = await run("Paid the plumber invoice today.", [item("Paid the plumber invoice", "Pay the plumber invoice", "pay")],
+                             dup: ["plumber": ("r-2", "done")])
+        #expect(with.first?.1.ops.first?["op"] == .str("complete"))
+        #expect(with.first?.1.ops.first?["args"]?["id"] == .str("r-2"))
+    }
+
+    @Test func anUpdateNeedsAChangedDateAmountOrPerson() async {
+        let moved = await run("Move the heater repair to Friday.", [item("Move the heater repair", "Heater repair", "other", when: "Friday")],
+                              dup: ["heater": ("r-3", "update")])
+        #expect(moved.first?.1.ops.first?["op"] == .str("update_item"))
+        #expect(moved.first?.1.ops.first?["args"]?["set"]?["due"] == .str("2026-10-09"))
+        // The measured failure: a new payment task matched to an old repair item must stay a new item.
+        let notAnUpdate = await run("The plumber sent his invoice, check it before paying.",
+                                    [item("The plumber sent his invoice", "Check the plumber invoice", "review")],
+                                    dup: ["plumber": ("r-1", "update")])
+        #expect(notAnUpdate.first?.1.ops.first?["op"] == .str("add_item"))
     }
 }

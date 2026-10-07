@@ -46,6 +46,12 @@ public struct AppleClerkModel: ClerkModel {
                 .init(name: "binder", description: "The binder, or not-sure.", schema: .init(name: "Binder", anyOf: names)),
             ])
             return try GenerationSchema(root: root, dependencies: [])
+        case .duplicate(let ids):
+            let root = DynamicGenerationSchema(name: "Match", description: "Whether a new item is an open item already in the binder.", properties: [
+                .init(name: "candidate", description: "The open item's id, or none.", schema: .init(name: "Candidate", anyOf: ids)),
+                .init(name: "relation", description: "same, done, update or related.", schema: .init(name: "Relation", anyOf: ["same", "done", "update", "related"])),
+            ])
+            return try GenerationSchema(root: root, dependencies: [])
         }
     }
 

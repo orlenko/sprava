@@ -36,6 +36,7 @@ public struct Proposal: Sendable {
         guard let card = op["card"]?.objectValue else { return [] }
         var out = card["flags"]?.arrayValue?.compactMap(\.stringValue) ?? []
         if let guess = card["guess"]?.stringValue { out.append("the clerk's guess: \(guess) (not sure)") }
+        if let related = card["related"]?.stringValue { out.append("possibly related to \u{201C}\(related)\u{201D}") }
         if let when = card["when_text"]?.stringValue { out.append("\u{201C}\(when)\u{201D} was not turned into a date; type one") }
         let signals = card["signals"]?.arrayValue?.compactMap(\.stringValue) ?? []
         let words: [String: String] = ["hint": "you chose the binder", "binder_call": "the clerk picked it",

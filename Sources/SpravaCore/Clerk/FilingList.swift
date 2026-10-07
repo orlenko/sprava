@@ -55,7 +55,8 @@ public struct FilingList: Sendable {
                   let entry = all[row.folder.standardizedFileURL.path], entry.filing, !entry.description.isEmpty,
                   row.name != "not-sure", seen.insert(row.name).inserted else { return nil }
             return FilingBinder(name: row.name, description: entry.description, folder: row.folder,
-                                words: FilingBinder.index(catalog: row.teka.catalog, description: entry.description))
+                                words: FilingBinder.index(catalog: row.teka.catalog, description: entry.description),
+                                openItems: FilingBinder.candidates(catalog: row.teka.catalog))
         }
     }
 }
