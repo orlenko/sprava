@@ -16,6 +16,8 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava check <folder>              the binder's state and rule findings (ids and counts only)
        sprava note <text> [--binder <name>] write a typed note as a capture event; without the app's
                                           notice its card is "unverified" and asks for a binder
+       sprava import-holos [--file <json>] developer only: write holos dictations as capture events, from
+                                          `voiceislocal history list --json` (or a saved copy of its output)
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
@@ -241,6 +243,35 @@ func note(_ args: [String]) {
     }
 }
 
+/// The developer-only importer (capture-event-v0 §7.8). It only ever runs the read-only `history list`.
+func importHolos(_ args: [String]) {
+    let data: Data
+    if let i = args.firstIndex(of: "--file"), i + 1 < args.count {
+        guard let d = FileManager.default.contents(atPath: (args[i + 1] as NSString).expandingTildeInPath) else { fail("cannot read \(args[i + 1])") }
+        data = d
+    } else {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["voiceislocal", "history", "list", "--json"]
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = FileHandle.nullDevice   // "Note:" lines are ignored
+        do { try task.run() } catch { fail("voiceislocal is not on the PATH", code: 1) }
+        data = out.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { fail("voiceislocal history list failed", code: 1) }
+    }
+    let support = SpravaPaths.supportDirectory()
+    let root = CaptureInbox.defaultRoot(support: support)
+    do {
+        let r = try HolosImporter(root: root, support: support).importHistory(data, inbox: CaptureInbox(root: root, support: support))
+        if r.stoppedForGood { print("holos writes its own capture events now; the importer has stopped for good") }
+        else { print("written \(r.written), already imported \(r.skipped), unreadable \(r.unreadable)") }
+    } catch {
+        fail("\(error)", code: 1)
+    }
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else { fail(usage) }
 arguments.removeFirst()
@@ -250,6 +281,7 @@ case "now": now(arguments)
 case "check": check(arguments)
 case "dev": dev(arguments)
 case "note": note(arguments)
+case "import-holos": importHolos(arguments)
 case "-h", "--help", "help": print(usage)
 default: fail(usage)
 }

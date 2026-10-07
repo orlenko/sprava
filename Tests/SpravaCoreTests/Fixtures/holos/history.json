@@ -1,0 +1,45 @@
+[
+  {
+    "app" : "com.example.invented-editor",
+    "audio" : {
+      "file" : "B2C3D4E5-0000-4000-8000-000000000002.m4a",
+      "seconds" : 6.5
+    },
+    "date" : "2026-10-06T14:05:09Z",
+    "fixes" : {
+      "aiChangedWords" : 0,
+      "codeSpans" : 0,
+      "corrections" : 1,
+      "fillersRemoved" : 2
+    },
+    "heard" : "um ask the invented landlord about the deposit",
+    "id" : "B2C3D4E5-0000-4000-8000-000000000002",
+    "language" : "en_CA@calendar=gregorian",
+    "outcome" : {
+      "kind" : "inserted",
+      "partial" : false,
+      "reason" : "Inserted into com.example.invented-editor"
+    },
+    "schemaVersion" : 1,
+    "seconds" : 6.5,
+    "text" : "Ask the invented landlord about the deposit",
+    "words" : 7
+  },
+  {
+    "app" : "Invented Notes",
+    "date" : "2026-10-06T09:00:00Z",
+    "id" : "A1B2C3D4-0000-4000-8000-000000000001",
+    "language" : "fr-CA-u-ca-gregory",
+    "outcome" : {
+      "kind" : "typed",
+      "partial" : true
+    },
+    "schemaVersion" : 1,
+    "seconds" : 3,
+    "terminal" : true,
+    "text" : "Appeler le notaire inventé",
+    "unwritten" : " inventé",
+    "words" : 4
+  },
+  { "id" : "broken" }
+]
