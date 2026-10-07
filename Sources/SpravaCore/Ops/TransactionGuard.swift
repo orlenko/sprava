@@ -50,6 +50,18 @@ public enum TransactionGuard {
             }
         }
 
+        // Two open items whose slice ids would be the same break publishing (teka-v0 §5.6).
+        if case .string(let teka)? = catalog["meta"]?["name"], !teka.isEmpty {
+            var projected: [String: Int] = [:]
+            for item in catalog["open_items"]?.arrayValue ?? [] {
+                guard let id = item["id"] else { continue }
+                projected[HubLane.plainSliceID(id, teka: teka), default: 0] += 1
+            }
+            for (sid, n) in projected where n > 1 {
+                result.insert(Violation(array: "open_items", recordKey: sid, rule: "slice-id-collision"))
+            }
+        }
+
         if level.strictItems {
             let items = catalog["open_items"]?.arrayValue ?? []
             let findings = ItemRules.check(items: items, log: catalog["processing_log"]?.arrayValue ?? [], v0: stamped)
@@ -103,6 +115,13 @@ public enum TransactionGuard {
         if ["complete", "drop", "reopen", "file_document", "add_log_entry"].contains(type),
            (actor?["client"]?.stringValue ?? "").isEmpty {
             problems.append("\(type): actor.client is required, it becomes the log entry's via")
+        }
+        // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2).
+        let args = op["args"]?.objectValue
+        let written = [args?["item"]?.objectValue, args?["set"]?.objectValue].compactMap { $0 }
+        if ["add_item", "update_item", "reopen"].contains(type), kind != "import",
+           written.contains(where: { $0["recurrence"] != nil || $0["dismissed"] != nil }) {
+            problems.append("\(type): recurrence and dismissed are not set in this version")
         }
         if type == "external_edit", kind != "external" { problems.append("external_edit: actor kind must be external") }
         if ["import_snapshot", "migrate", "abort"].contains(type), kind != "import" { problems.append("\(type): actor kind must be import") }

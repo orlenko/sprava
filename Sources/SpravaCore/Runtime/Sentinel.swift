@@ -89,3 +89,12 @@ public func nextClockTime(hour: Int, minute: Int, after now: Date, calendar: Cal
     let candidate = calendar.date(from: parts)!
     return candidate > now ? candidate : calendar.date(byAdding: .day, value: 1, to: candidate)!
 }
+
+/// The next daily summary: now when today's has not been sent and today's 08:00 has passed (after a time-zone
+/// change, a late start or sleep), else the next 08:00.
+public func nextSummaryTime(now: Date, lastSent: String?, calendar: Calendar = .current) -> Date {
+    let today = CalendarDate.today(in: calendar.timeZone, now: now).description
+    let todays = nextClockTime(hour: 8, minute: 0, after: calendar.startOfDay(for: now), calendar: calendar)
+    if lastSent != today, now >= todays { return now }
+    return nextClockTime(hour: 8, minute: 0, after: now, calendar: calendar)
+}

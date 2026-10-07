@@ -33,8 +33,17 @@ public enum OpApplier {
 
         case "external_edit", "migrate":
             guard case .array(let patch)? = args["patch"] else { throw Failure("\(type): patch is required") }
-            if type == "migrate", patch.contains(where: { $0["op"]?.stringValue == "remove" }) {
-                throw Failure("migrate never removes a key")
+            if type == "migrate" {
+                // A stamp sets fields of meta and adds missing top-level arrays; it never removes or replaces data.
+                for step in patch {
+                    let parts = try JSONPatch.tokens(step["path"]?.stringValue ?? "")
+                    switch step["op"]?.stringValue {
+                    case "add" where parts.count == 1 && c[parts[0]] == nil: continue
+                    case "add", "replace":
+                        guard parts.count == 2, parts[0] == "meta" else { throw Failure("migrate changes only fields of meta") }
+                    default: throw Failure("migrate only adds or replaces fields of meta")
+                    }
+                }
             }
             guard case .object(let result) = try JSONPatch.apply(patch, to: .object(c)) else {
                 throw Failure("\(type): the result is not an object")

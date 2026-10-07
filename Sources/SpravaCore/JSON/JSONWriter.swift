@@ -103,15 +103,18 @@ public enum Canonical {
         case .object(let o):
             // Keys sorted by their UTF-16 code units. A duplicate key keeps its last value, as ECMAScript does;
             // a catalog with duplicates is never written (it needs attention first).
-            var latest: [String: JSONValue] = [:]
-            for entry in o.entries { latest[entry.key] = entry.value }
-            let keys = latest.keys.sorted { Array($0.utf16).lexicographicallyPrecedes(Array($1.utf16)) }
+            // Keys are compared by their code units, never by Swift's canonical equivalence, so "é" written as
+            // one code point and as "e" plus a combining accent stay two keys.
+            var latest: [[UInt16]: (String, JSONValue)] = [:]
+            for entry in o.entries { latest[Array(entry.key.utf16)] = (entry.key, entry.value) }
+            let keys = latest.keys.sorted { $0.lexicographicallyPrecedes($1) }
             out += "{"
-            for (i, key) in keys.enumerated() {
+            for (i, units) in keys.enumerated() {
                 if i > 0 { out += "," }
+                let (key, value) = latest[units]!
                 JSONWriter.writeString(key, into: &out, asciiOnly: false)
                 out += ":"
-                try write(latest[key]!, into: &out)
+                try write(value, into: &out)
             }
             out += "}"
         }

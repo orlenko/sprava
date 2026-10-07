@@ -81,7 +81,28 @@ public final class TekaStore {
             usleep(100_000)
         }
         defer { flock(fd, LOCK_UN) }
+        try checkContainment()
         return try body()
+    }
+
+    /// `catalog.json` must be a regular file and `.sprava` a real folder, never links, so no write lands outside
+    /// the binder (teka-v0 §3.6).
+    func checkContainment() throws {
+        var st = stat()
+        if lstat(catalogURL.path, &st) == 0, st.st_mode & S_IFMT != S_IFREG {
+            throw Refused(reason: "catalog.json is not a regular file; a repair must be approved first")
+        }
+        if lstat(spravaDir.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR {
+            throw Refused(reason: ".sprava is not a regular folder; a repair must be approved first")
+        }
+        for name in ["torn", "proposals", "adopted"] {
+            let url = spravaDir.appendingPathComponent(name)
+            if lstat(url.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR { throw Refused(reason: ".sprava/\(name) is not a regular folder") }
+        }
+        for name in ["ops.ndjson", "snapshot.json", "owner.json", "cursors.json", "slice-key"] {
+            let url = spravaDir.appendingPathComponent(name)
+            if lstat(url.path, &st) == 0, st.st_mode & S_IFMT != S_IFREG { throw Refused(reason: ".sprava/\(name) is not a regular file") }
+        }
     }
 
     // MARK: - Reading
@@ -150,49 +171,75 @@ public final class TekaStore {
 
     /// Applies a batch under the lock. Outside edits are absorbed first. Returns the applied op lines.
     @discardableResult
-    public func apply(_ bodies: [OpBody], batch: String? = nil, now: Date = Date()) throws -> [JSONObject] {
+    public func apply(_ bodies: [OpBody], batch: String? = nil, now: Date = Date(),
+                      underLock after: (() throws -> Void)? = nil) throws -> [JSONObject] {
         try withLock {
-            var (catalog, hash, _) = try readCatalog()
-            var log = try readOpLog().ops
-            guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
-            if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
-                log.append(contentsOf: absorbed)
-            }
-            (catalog, hash, _) = try readCatalog()
-
-            let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
-            var lines: [JSONObject] = []
-            for (seq, body) in bodies.enumerated() {
-                var line = JSONObject()
-                line.set("id", .string(UUIDv7.make(now: now)))
-                line.set("at", .string(at))
-                var actor = body.actor
-                if actor["client"] == nil { actor.set("client", .string(client)) }
-                line.set("actor", .object(actor))
-                for (k, v) in body.extra where k != "note" { line.set(k, v) }
-                if let batch, bodies.count > 1 || body.extra.contains(where: { $0.0 == "proposal" }) {
-                    line.set("batch", .string(batch))
-                    line.set("seq", .int(seq))
-                    line.set("batch_size", .int(bodies.count))
+            createdProposals = []
+            // An editor that skips the lock can change the file at any moment: each pass absorbs what it finds,
+            // and a change seen while writing starts the pass again (teka-v0 §4.9 step 5).
+            var attempt = 0
+            while true {
+                attempt += 1
+                do {
+                    let lines = try applyOnce(bodies, batch: batch, now: now)
+                    try after?()
+                    return lines
+                } catch is ChangedWhileWriting where attempt < 5 {
+                    usleep(50_000)
                 }
-                line.set("before_hash", .null)
-                line.set("after_hash", .null)
-                line.set("op", .string(body.op))
-                line.set("args", .object(body.args))
-                if let note = body.extra.first(where: { $0.0 == "note" })?.1 { line.set("note", note) }
-                lines.append(line)
             }
-            let knownIDs = Set(log.compactMap { $0["args"]?["item"]?["id"] })
-            let (result, hashes) = try TransactionGuard.check(lines, on: catalog, knownIDs: knownIDs)
-            var previous = hash
-            for i in lines.indices {
-                lines[i].set("before_hash", .string(previous))
-                lines[i].set("after_hash", .string(hashes[i]))
-                previous = hashes[i]
-            }
-            try write(catalog: result, appending: lines, expectedHash: hash)
-            return lines
         }
+    }
+
+    struct ChangedWhileWriting: Error, CustomStringConvertible {
+        var description: String { "catalog.json keeps changing while the change is written; try again" }
+    }
+
+    func applyOnce(_ bodies: [OpBody], batch: String?, now: Date) throws -> [JSONObject] {
+        var (catalog, hash, _) = try readCatalog()
+        var log = try readOpLog().ops
+        guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
+        if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
+            log.append(contentsOf: absorbed)
+        }
+        if case .rolledForward = lastAbsorbed {
+            (catalog, hash, _) = try readCatalog()
+        }
+        // The chain must hold before anything is appended: the head of the log is the catalog found.
+        guard log.last?["after_hash"]?.stringValue == hash else { throw ChangedWhileWriting() }
+
+        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        var lines: [JSONObject] = []
+        for (seq, body) in bodies.enumerated() {
+            var line = JSONObject()
+            line.set("id", .string(UUIDv7.make(now: now)))
+            line.set("at", .string(at))
+            var actor = body.actor
+            if actor["client"] == nil { actor.set("client", .string(client)) }
+            line.set("actor", .object(actor))
+            for (k, v) in body.extra where k != "note" { line.set(k, v) }
+            if let batch, bodies.count > 1 || body.extra.contains(where: { $0.0 == "proposal" }) {
+                line.set("batch", .string(batch))
+                line.set("seq", .int(seq))
+                line.set("batch_size", .int(bodies.count))
+            }
+            line.set("before_hash", .null)
+            line.set("after_hash", .null)
+            line.set("op", .string(body.op))
+            line.set("args", .object(body.args))
+            if let note = body.extra.first(where: { $0.0 == "note" })?.1 { line.set("note", note) }
+            lines.append(line)
+        }
+        let knownIDs = Set(log.compactMap { $0["args"]?["item"]?["id"] })
+        let (result, hashes) = try TransactionGuard.check(lines, on: catalog, knownIDs: knownIDs)
+        var previous = hash
+        for i in lines.indices {
+            lines[i].set("before_hash", .string(previous))
+            lines[i].set("after_hash", .string(hashes[i]))
+            previous = hashes[i]
+        }
+        try write(catalog: result, appending: lines, expectedHash: hash)
+        return lines
     }
 
     /// Steps 4 to 7 of the write protocol and steps 3 to 6 of teka-v0 §6.9.
@@ -209,7 +256,7 @@ public final class TekaStore {
 
         // Step 5: someone changed the file without the lock; start over.
         let (_, nowHash, _) = try readCatalog()
-        guard nowHash == expectedHash else { throw Refused(reason: "catalog.json changed while the change was being written; try again") }
+        guard nowHash == expectedHash else { throw ChangedWhileWriting() }
 
         try appendLines(lines)
         guard rename(temp.path, catalogURL.path) == 0 else { throw AtomicFile.Failure(step: "rename catalog", code: errno) }
@@ -221,11 +268,11 @@ public final class TekaStore {
 
     func appendLines(_ lines: [JSONObject]) throws {
         try AtomicFile.makePrivateFolder(spravaDir)
-        // A torn tail is copied aside and cut before the next append (teka-v0 §6.9).
-        if let data = try? Data(contentsOf: opLogURL), !data.isEmpty, data.last != 0x0A {
+        // A torn tail, or a trailing batch shorter than its size, is copied aside and cut before the next append
+        // (teka-v0 §6.9).
+        if let data = try? Data(contentsOf: opLogURL), let cut = Self.validLength(of: data), cut < data.count {
             let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
             try AtomicFile.makePrivateFolder(tornDir)
-            let cut = data.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0
             let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
             try AtomicFile.write(data[cut...], to: tornDir.appendingPathComponent("\(stamp).ndjson"))
             let fd = open(opLogURL.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -237,6 +284,31 @@ public final class TekaStore {
         let text = lines.map { JSONWriter.compact(.object($0)) + "\n" }.joined()
         try writeAll(fd, Data(text.utf8))
         if fcntl(fd, F_FULLFSYNC) != 0 { fsync(fd) }
+    }
+
+    /// The byte length of the op log's part that took effect: complete lines, minus a trailing batch with fewer
+    /// lines than its `batch_size`.
+    static func validLength(of data: Data) -> Int? {
+        guard !data.isEmpty else { return nil }
+        var end = data.last == 0x0A ? data.count : (data.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0)
+        // Walk back over the last complete lines while they belong to one batch.
+        var starts: [Int] = []
+        var i = end
+        var batch: String?
+        var size: Int64?
+        while i > 0 {
+            let lineEnd = i - 1   // the newline
+            let lineStart = data[..<lineEnd].lastIndex(of: 0x0A).map { $0 + 1 } ?? 0
+            guard let v = try? JSONParser.parse(data[lineStart..<lineEnd]).value, case .string(let b)? = v["batch"] else { break }
+            if batch == nil {
+                batch = b
+                size = v["batch_size"]?.numberValue?.safeInteger
+            } else if b != batch { break }
+            starts.append(lineStart)
+            i = lineStart
+        }
+        if let size, let first = starts.last, Int64(starts.count) < size { end = first }
+        return end
     }
 
     func writeAll(_ fd: Int32, _ data: Data) throws {
@@ -291,36 +363,95 @@ public final class TekaStore {
             return nil
         }
 
-        // Someone else edited the file (or reverted our last write). The expected state is the snapshot when it
-        // matches the head; otherwise a replay of the log.
+        // Someone else edited the file (or reverted our last write). When the snapshot shows the trailing write
+        // never reached the disk (S = b), an abort names its ops first and the snapshot is the expected state;
+        // when it matches the head (S = a), the snapshot is the expected state; otherwise replay decides.
+        var appended: [JSONObject] = []
         var expected: JSONObject
-        if S == a, let data = try? Data(contentsOf: snapshotURL), case .object(let snap) = try JSONParser.parse(data).value {
+        let utc = TimeZone(identifier: "UTC")!
+        let snapshot: JSONObject? = (try? Data(contentsOf: snapshotURL)).flatMap { try? JSONParser.parse($0).value.objectValue } ?? nil
+        var effectiveLog = log
+        if S == b, S != a, let snap = snapshot, let b {
+            var abort = JSONObject()
+            abort.set("id", .string(UUIDv7.make(now: now)))
+            abort.set("at", .string(ISOTime.string(now, timeZone: utc)))
+            abort.set("actor", .obj([("kind", .str("import")), ("client", .string(client))]))
+            abort.set("before_hash", .string(b))
+            abort.set("after_hash", .string(b))
+            abort.set("op", .str("abort"))
+            abort.set("args", .obj([("ops", .array(trailing.compactMap { $0["id"] })),
+                                    ("reason", .str("the catalog was edited outside before this write reached the disk"))]))
+            appended.append(abort)
+            effectiveLog.append(abort)
+            expected = snap
+        } else if S == a, let snap = snapshot {
             expected = snap
         } else {
             expected = try Replay.run(log)
         }
         let expectedHash = try Canonical.hash(.object(expected))
         let patch = JSONPatch.diff(from: .object(expected), to: .object(catalog))
+        let ambiguous = H == b && S == nil
         let reverted = H == b && S == a
+        let lostOps: [JSONObject]
+        if appended.isEmpty, reverted || ambiguous {
+            lostOps = trailing
+        } else if appended.isEmpty, log.count > trailing.count,
+                  Self.undoes(found: catalog, expected: expected, beforeTrailing: try? Replay.run(Array(log.dropLast(trailing.count))),
+                              trailing: trailing) {
+            lostOps = trailing
+        } else {
+            lostOps = []
+        }
         var args = JSONObject()
         args.set("patch", .array(patch))
-        args.set("detected_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
-        if reverted { args.set("hint", .string("the catalog was put back as it was before the last change")) }
+        args.set("detected_at", .string(ISOTime.string(now, timeZone: utc)))
+        if reverted { args.set("hint", .str("the catalog was put back as it was before the last change")) }
+        else if !lostOps.isEmpty { args.set("hint", .str("a change of yours was overwritten by another program")) }
         else if let hint = Self.hint(for: patch) { args.set("hint", .string(hint)) }
         var line = JSONObject()
         line.set("id", .string(UUIDv7.make(now: now)))
-        line.set("at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
+        line.set("at", .string(ISOTime.string(now, timeZone: utc)))
         line.set("actor", .obj([("kind", .str("external")), ("client", .string(client)), ("origin", .str("unknown"))]))
         line.set("before_hash", .string(expectedHash))
         line.set("after_hash", .string(H))
         line.set("op", .str("external_edit"))
         line.set("args", .object(args))
-        try appendLines([line])
+        appended.append(line)
+        try appendLines(appended)
         try AtomicFile.write(Data(JSONWriter.pretty(.object(catalog)).utf8), to: snapshotURL)
-        let before = log.count > trailing.count ? try? Replay.run(Array(log.dropLast(trailing.count))) : nil
-        lastAbsorbed = .externalEdit(revertedLastBatch: reverted
-            || Self.undoes(found: catalog, expected: expected, beforeTrailing: before, trailing: trailing))
-        return [line]
+        lastAbsorbed = .externalEdit(revertedLastBatch: !lostOps.isEmpty)
+        // The loss is never absorbed silently (teka-v0 §6.7 step 6): a card offers the lost ops again, as the
+        // person's own new ops.
+        if !lostOps.isEmpty, let card = Self.reapplyCard(lostOps, client: client, now: now) {
+            try ProposalStore.save(card, in: folder)
+            createdProposals.append(card.id)
+        }
+        return appended
+    }
+
+    /// Proposal ids this store wrote itself during its last call, for the caller to trust.
+    public private(set) var createdProposals: [String] = []
+
+    /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item gets a
+    /// placeholder, because its old id was used once and is never reused.
+    static func reapplyCard(_ ops: [JSONObject], client: String, now: Date) -> Proposal? {
+        var n = 0
+        let bodies: [JSONObject] = ops.compactMap { op in
+            guard let type = op["op"]?.stringValue, ["add_item", "update_item", "set_status", "complete", "drop"].contains(type),
+                  var args = op["args"]?.objectValue else { return nil }
+            if type == "add_item", var item = args["item"]?.objectValue {
+                n += 1
+                item.set("id", .string("$new:\(n)"))
+                args.set("item", .object(item))
+            }
+            return JSONObject([(key: "op", value: .string(type)), (key: "args", value: .object(args))])
+        }
+        guard !bodies.isEmpty else { return nil }
+        let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
+        return Proposal.make(title: "A change of yours was overwritten by another program. Apply it again?", actor: actor,
+                             ops: bodies, provenance: JSONObject([(key: "overwritten_ops", value: .array(ops.compactMap { $0["id"] }))]),
+                             now: now)
     }
 
     /// The last complete batch, or the last single op.
@@ -345,11 +476,32 @@ public final class TekaStore {
               trailing.allSatisfy({ ["user", "clerk", "brain"].contains($0["actor"]?["kind"]?.stringValue ?? "") }) else {
             return false
         }
-        let changed = JSONPatch.diff(from: .object(before), to: .object(expected)).compactMap { $0["path"]?.stringValue }
-        guard !changed.isEmpty else { return false }
-        return changed.allSatisfy { path in
-            JSONPatch.value(at: path, in: .object(found)) == JSONPatch.value(at: path, in: .object(before))
+        // Records are compared by id, so an unrelated edit elsewhere in the same array does not hide the loss.
+        func record(_ catalog: JSONObject, _ id: JSONValue) -> JSONValue? {
+            for key in ["open_items", "documents"] {
+                if let r = catalog[key]?.arrayValue?.first(where: { $0["id"] == id }) { return r }
+            }
+            return nil
         }
+        var checked = false
+        for op in trailing {
+            let args = op["args"]?.objectValue ?? JSONObject()
+            let ids = [args["id"], args["item"]?["id"], args["document"]?["id"]].compactMap { $0 }
+            if ids.isEmpty {
+                // An op without a record id (set_meta and the like): its changed paths must be back as before.
+                let changed = JSONPatch.diff(from: .object(before), to: .object(expected)).compactMap { $0["path"]?.stringValue }
+                guard !changed.isEmpty, changed.allSatisfy({ JSONPatch.value(at: $0, in: .object(found)) == JSONPatch.value(at: $0, in: .object(before)) })
+                else { return false }
+                checked = true
+                continue
+            }
+            for id in ids {
+                guard record(found, id) == record(before, id) else { return false }
+                checked = true
+            }
+            if let opID = op["id"], found["processing_log"]?.arrayValue?.contains(where: { $0["op_id"] == opID }) == true { return false }
+        }
+        return checked
     }
 
     // MARK: - Adoption (teka-v0 §9.4 step 1)

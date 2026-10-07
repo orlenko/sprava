@@ -47,7 +47,13 @@ public struct Proposal: Sendable {
         case "update_item":
             let fields = (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
             return "Change \(fields.joined(separator: ", ")) of \u{201C}\(title(of: args["id"]))\u{201D}"
-        case "migrate": return "Stamp the catalog as teka v0"
+        case "migrate":
+            let changes = (args["patch"]?.arrayValue ?? []).compactMap { step -> String? in
+                guard let path = step["path"]?.stringValue else { return nil }
+                let field = path.split(separator: "/").joined(separator: ".")
+                return step["value"].map { "\(field) = \(canonicalText($0).prefix(40))" } ?? field
+            }
+            return "Stamp the catalog as teka v0: " + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
         case "set_meta": return "Set " + (args["set"]?.objectValue?.keys.joined(separator: ", ") ?? "binder settings")
         case let other?: return other.replacingOccurrences(of: "_", with: " ")
         case nil: return "?"
@@ -101,7 +107,21 @@ extension TekaStore {
     public func approve(_ proposal: Proposal, edited: [JSONObject]? = nil, approvedBy: String = "user",
                         now: Date = Date()) throws -> [JSONObject] {
         guard proposal.state == "proposed" else { throw Refused(reason: "proposal is \(proposal.state), not proposed") }
+        // Facts are recorded by Sprava itself, never approved from a card.
+        let facts: Set<String> = ["import_snapshot", "external_edit", "abort", "expunge"]
+        if let bad = (edited ?? proposal.ops).first(where: { facts.contains($0["op"]?.stringValue ?? "") }) {
+            throw Refused(reason: "\(bad["op"]?.stringValue ?? "?") is never approved from a card")
+        }
         let actor = proposal.actor
+        // A crash after the batch was written but before the card was marked: finish marking, apply nothing twice.
+        let already = try readOpLog().ops.filter { $0["proposal"]?.stringValue == proposal.id }
+        if !already.isEmpty {
+            var raw = proposal.raw
+            raw.set("state", .str("applied"))
+            raw.set("applied_ops", .array(already.compactMap { $0["id"] }))
+            try ProposalStore.save(Proposal(raw: raw), in: folder)
+            return already
+        }
         let catalog = try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue ?? JSONObject()
         let resolved = Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: try readOpLog().ops,
                                             year: Calendar(identifier: .gregorian).component(.year, from: now),

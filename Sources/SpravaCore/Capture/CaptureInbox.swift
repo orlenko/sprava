@@ -273,7 +273,7 @@ public struct CaptureInbox: Sendable {
            row.teka.catalog?["meta"]?["disclosure"]?.stringValue != "none" {
             do {
                 try ProposalStore.save(proposal, in: row.folder)
-                commands.trustProposals(in: row.folder)
+                commands.trustProposals([proposal.id], in: row.folder)
                 return (proposal.id, row.folder)
             } catch {
                 journal([("event", .string(event.id)), ("stage", .str("file_failed")), ("code", .string("\(type(of: error))"))])
@@ -363,7 +363,7 @@ public struct CaptureInbox: Sendable {
         guard Owner.device(of: folder) == commands.deviceID else { throw Commands.Failure(message: "this binder is read-only here") }
         for key in ["binder", "source_retracted", "source_corrected"] { raw.remove(key) }
         try ProposalStore.save(Proposal(raw: raw), in: folder)
-        commands.trustProposals(in: folder)
+        commands.trustProposals([proposalID], in: folder)
         try FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(proposalID).json"))
         journal([("card", .string(proposalID)), ("stage", .str("filed_by_person"))])
     }

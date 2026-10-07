@@ -35,6 +35,20 @@ public struct Teka: Sendable {
     public var state: TekaState { states.keys.min() ?? .ready }
     public var reasons: [String] { states.sorted { $0.key < $1.key }.flatMap(\.value) }
 
+    /// A symlink problem, unsafe JSON or a broken stamp blocks every write until the person approves a repair;
+    /// a name mismatch also blocks publishing and draining (teka-v0 §9.6).
+    public var writesBlocked: Bool {
+        state < .needsAttention || (states[.needsAttention] ?? []).contains { r in
+            r.contains("symbolic link") || r.contains("is not a regular") || r.contains("unsafe JSON")
+                || r.hasPrefix("broken stamp") || r == "catalog.json unreadable"
+        }
+    }
+
+    public var federationBlocked: Bool {
+        writesBlocked || (states[.needsAttention] ?? []).contains("the folder name differs from meta.name")
+            || !HubLane.isSafeSegment(name)
+    }
+
     public var name: String {
         if case .string(let n)? = catalog?["meta"]?["name"], !n.isEmpty { return n }
         return folder.lastPathComponent

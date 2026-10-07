@@ -41,7 +41,7 @@ final class RuntimeClient {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
                 if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Runtime not answering; the request was not applied"))
+                    continuation.resume(throwing: Failure(message: "Runtime not answering in time. The change may still be applied; reload to check before trying again."))
                 }
             }
         }

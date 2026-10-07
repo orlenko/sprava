@@ -36,7 +36,8 @@ public struct Commands: Sendable {
 
     /// Handles one request: `{"command": ..., ...}`. Returns `{"ok": true, ...}` or `{"ok": false, "error": ...}`.
     /// Records the digests of proposals Sprava itself just wrote (the clerk, the MCP listener, adoption).
-    public func trustProposals(in folder: URL) { recordDigests(in: folder) }
+    /// Only the ids Sprava just saved are trusted; a file another program dropped into the folder never is.
+    public func trustProposals(_ ids: [String], in folder: URL) { recordDigests(ids, in: folder) }
 
     public func handle(_ request: String, now: Date = Date(), today: CalendarDate? = nil) -> String {
         do {
@@ -72,7 +73,7 @@ public struct Commands: Sendable {
             let f = try folder(r)
             let inRegistry = r["in_registry"] == .bool(true)
             let result = try Adoption.adopt(f, inRegistry: inRegistry, deviceID: deviceID, today: today, now: now, client: client)
-            recordDigests(in: f)
+            recordDigests(result.proposals.map(\.id), in: f)
             return JSONObject([(key: "mechanical", value: .int(result.mechanical.count)),
                                (key: "proposals", value: .array(result.proposals.map { .string($0.id) }))])
 
@@ -108,11 +109,11 @@ public struct Commands: Sendable {
             let store = TekaStore(folder: f, client: client)
             if command == "approve" {
                 let applied = try store.approve(proposal, now: now)
-                recordDigests(in: f)
+                recordDigests([id] + store.createdProposals, in: f)
                 return JSONObject([(key: "applied", value: .int(applied.count))])
             }
             try store.reject(proposal, reason: r["reason"]?.stringValue, now: now)
-            recordDigests(in: f)
+            recordDigests([id], in: f)
             return JSONObject()
 
         case "apply":
@@ -126,13 +127,17 @@ public struct Commands: Sendable {
             let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
             var extra: [(String, JSONValue)] = []
             if let c = r["compensates"] { extra.append(("compensates", c)) }
-            let applied = try TekaStore(folder: f, client: client).apply([.init(op: op, args: args, actor: actor, extra: extra)], now: now)
+            let store = TekaStore(folder: f, client: client)
+            let applied = try store.apply([.init(op: op, args: args, actor: actor, extra: extra)], now: now)
+            recordDigests(store.createdProposals, in: f)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
 
         case "undo":
             let f = try folder(r)
             guard case .string(let opID)? = r["op_id"] else { throw Failure(message: "undo needs op_id") }
-            let applied = try TekaStore(folder: f, client: client).undo(opID: opID, now: now)
+            let store = TekaStore(folder: f, client: client)
+            let applied = try store.undo(opID: opID, now: now)
+            recordDigests(store.createdProposals, in: f)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
 
         case "capture_notice":
@@ -216,7 +221,7 @@ public struct Commands: Sendable {
                 o.set("origin", op["actor"]?["origin"] ?? .null)
                 o.set("line", .string(Proposal.describe(op, catalog: catalog)))
                 o.set("undone", .bool(undone.contains(op["id"]?.stringValue ?? "")))
-                o.set("undoable", .bool(!["external_edit", "add_log_entry", "reopen", "rename_teka"].contains(op["op"]?.stringValue ?? "")
+                o.set("undoable", .bool(!["external_edit", "add_log_entry", "reopen", "rename_teka", "set_meta", "set_disclosure"].contains(op["op"]?.stringValue ?? "")
                                         && op["compensates"] == nil))
                 return .object(o)
             }))])
@@ -228,9 +233,11 @@ public struct Commands: Sendable {
 
     func key(_ folder: URL, _ id: String) -> String { folder.path + "#" + id }
 
-    func recordDigests(in folder: URL) {
+    func recordDigests(_ ids: [String], in folder: URL) {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
         var digests = loadDigests()
-        for (p, d) in ProposalStore.list(in: folder) { digests[key(folder, p.id)] = d }
+        for (p, d) in ProposalStore.list(in: folder) where wanted.contains(p.id) { digests[key(folder, p.id)] = d }
         saveDigests(digests)
     }
 }

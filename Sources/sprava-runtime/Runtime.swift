@@ -33,6 +33,10 @@ final class Runtime: @unchecked Sendable {
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
+    let watch = WatchBox()
+    var commands: Commands?
+    /// Jobs run concurrently; the opaque binder id file is read, changed and written by one at a time.
+    let idsLock = NSLock()
     var mcp: MCPListener?
 
     static let specs: [String: JobSpec] = [
@@ -48,7 +52,6 @@ final class Runtime: @unchecked Sendable {
         runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
         self.lease = lease
         records = JobRecords.load(runtimeDir.appendingPathComponent("breakers.json"))
-        nextSummary = nextClockTime(hour: 8, minute: 0, after: Date())
         let state = RuntimeState.load(runtimeDir)
         refusalsToday = state.refusalsToday
         restartsToday = state.startsToday
@@ -56,10 +59,7 @@ final class Runtime: @unchecked Sendable {
         lastSentinelDate = state.lastSentinelDate
         // A summary missed while the Mac was asleep or the runtime down is sent on the next start that day,
         // and only once today's summary time has passed.
-        let now = Date()
-        let today = CalendarDate.today(now: now).description
-        let todaysTime = nextClockTime(hour: 8, minute: 0, after: Calendar.current.startOfDay(for: now))
-        if lastSummaryDate != today, now >= todaysTime { nextSummary = now }
+        nextSummary = nextSummaryTime(now: Date(), lastSent: state.lastSummaryDate)
     }
 
     func log(_ line: String) {
@@ -82,6 +82,7 @@ final class Runtime: @unchecked Sendable {
             self?.queue.async { self?.clockChanged(reason: "time_zone") }
         }
         let commands = Commands(support: support, deviceID: DeviceID.load(support: support))
+        self.commands = commands
         let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
         service.start()
         xpc = service
@@ -106,9 +107,11 @@ final class Runtime: @unchecked Sendable {
 
     func clockChanged(reason: String) {
         log("clock_changed reason=\(reason)")
-        nextSentinel = Date()
-        nextSummary = nextClockTime(hour: 8, minute: 0, after: Date())
+        let now = Date()
+        nextSentinel = now
+        nextSummary = nextSummaryTime(now: now, lastSent: lastSummaryDate)
     }
+
 
     // MARK: - Heartbeat and watchdog (architecture 3.3)
 
@@ -123,6 +126,7 @@ final class Runtime: @unchecked Sendable {
     func beat() {
         let now = Date()
         tick &+= 1
+        watch.beat(tick)
         records.jobs["heartbeat", default: JobRecord()].start(at: now)
         let started = DispatchTime.now()
         var outcome = JobOutcome.ok
@@ -163,7 +167,8 @@ final class Runtime: @unchecked Sendable {
             var lastChange = clock.now
             while let self {
                 Thread.sleep(forTimeInterval: 60)
-                let (tick, wedged) = self.queue.sync { (self.tick, self.wedgedTooLong()) }
+                // Read through the lock-protected box, never the state queue, which may be what hung.
+                let (tick, wedged) = self.watch.read()
                 if tick != lastTick {
                     lastTick = tick
                     lastChange = clock.now
@@ -173,10 +178,7 @@ final class Runtime: @unchecked Sendable {
                     exit(70)
                 }
                 if let culprit = wedged {
-                    self.queue.sync {
-                        self.records.jobs[culprit]?.watchdogExits += 1
-                        try? self.records.save(self.runtimeDir.appendingPathComponent("breakers.json"))
-                    }
+                    JobRecords.recordWatchdogExit(job: culprit, url: self.runtimeDir.appendingPathComponent("breakers.json"))
                     self.log("watchdog wedged job=\(culprit) exit=70")
                     exit(70)
                 }
@@ -186,14 +188,26 @@ final class Runtime: @unchecked Sendable {
         thread.start()
     }
 
-    func wedgedTooLong() -> String? {
-        let now = Date()
-        for (key, spec) in Self.specs {
-            guard let record = records.jobs[key], record.running, let start = record.lastStart else { continue }
-            let budget = max(Double(spec.budget.components.seconds), 1)
-            if now.timeIntervalSince(start) > 2 * budget + 600 { return key }
+    /// What the watchdog reads: the tick and when each running job started, behind a lock of their own.
+    final class WatchBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tick: UInt64 = 0
+        private var running: [String: Date] = [:]
+
+        func beat(_ t: UInt64) { lock.lock(); tick = t; lock.unlock() }
+        func started(_ key: String, at date: Date) { lock.lock(); running[key] = date; lock.unlock() }
+        func finished(_ key: String) { lock.lock(); running[key] = nil; lock.unlock() }
+
+        /// The tick, and a job running longer than twice its budget plus 10 minutes.
+        func read(now: Date = Date()) -> (UInt64, String?) {
+            lock.lock()
+            defer { lock.unlock() }
+            for (key, start) in running {
+                let budget = max(Double(Runtime.specs[key]?.budget.components.seconds ?? 1), 1)
+                if now.timeIntervalSince(start) > 2 * budget + 600 { return (tick, key) }
+            }
+            return (tick, nil)
         }
-        return nil
     }
 
     // MARK: - Sleep and wake (architecture 3.3; spike i)
@@ -253,6 +267,7 @@ final class Runtime: @unchecked Sendable {
         guard !record.running, record.mayRun(now: Date()) else { return }
         record.start(at: Date())
         records.jobs[key] = record
+        watch.started(key, at: Date())
         switch key {
         case "sentinel": nextSentinel = Date().addingTimeInterval(3600)
         case "alerts": nextAlertsCheck = Date().addingTimeInterval(3600)
@@ -274,6 +289,7 @@ final class Runtime: @unchecked Sendable {
     }
 
     func finish(_ key: String, _ outcome: JobOutcome, started: DispatchTime) {
+        watch.finished(key)
         let ms = Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000)
         let threshold = Self.specs[key]?.breakerThreshold ?? 3
         let final = timeouts.removeValue(forKey: key) != nil ? JobOutcome.timeout : outcome
@@ -302,10 +318,13 @@ final class Runtime: @unchecked Sendable {
             ? try? LifeprojRegistry.load(from: registryURL) : nil
         let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
         let idsURL = support.appendingPathComponent("binder-ids.json")
+        idsLock.lock()
         var ids = BinderIDs.load(idsURL)
         let report = SentinelReport.compute(rows: rows, ids: &ids, today: today, now: now)
+        let savedIDs = Result { try ids.save(idsURL) }
+        idsLock.unlock()
         do {
-            try ids.save(idsURL)
+            try savedIDs.get()
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try AtomicFile.write(try encoder.encode(report), to: runtimeDir.appendingPathComponent("sentinel.json"))
@@ -326,13 +345,21 @@ final class Runtime: @unchecked Sendable {
         let registry = FileManager.default.fileExists(atPath: registryURL.path) ? try? LifeprojRegistry.load(from: registryURL) : nil
         let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
         let device = DeviceID.load(support: support)
+        let mine = rows.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == device }
         let idsURL = support.appendingPathComponent("binder-ids.json")
+        idsLock.lock()
         var ids = BinderIDs.load(idsURL)
+        let bids = mine.map { ids.id(for: $0.folder) }
+        try? ids.save(idsURL)
+        idsLock.unlock()
         var failures: [String] = []
-        for row in rows where row.teka.isAdopted && Owner.device(of: row.folder) == device {
-            let bid = ids.id(for: row.folder)
+        for (row, bid) in zip(mine, bids) {
             do {
                 let drained = try HubLane.drain(row.folder, root: root)
+                if !drained.createdProposals.isEmpty, let commands, let xpc {
+                    xpc.queue.sync { commands.trustProposals(drained.createdProposals, in: row.folder) }
+                    log("hub binder=\(bid) overwritten_change_card=1")
+                }
                 let published = try HubLane.publish(row.folder, root: root)
                 if drained.applied > 0 || drained.skipped > 0 || drained.waitingForYou > 0 {
                     log("hub binder=\(bid) drained=\(drained.applied) skipped=\(drained.skipped) waiting=\(drained.waitingForYou)")
@@ -345,7 +372,6 @@ final class Runtime: @unchecked Sendable {
                 log("hub binder=\(bid) error=\(type(of: error))")
             }
         }
-        try? ids.save(idsURL)
         return failures.isEmpty ? .ok : .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ","))
     }
 

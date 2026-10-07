@@ -50,7 +50,14 @@ public enum Adoption {
         s.set("documents_missing_fields", .int(docs.filter { d in ["id", "title", "path"].contains { d[$0] == nil } }.count))
         let modules = moduleFolders.filter { fm.fileExists(atPath: folder.appendingPathComponent($0.value).path) }.map(\.key).sorted()
         s.set("modules_found", .array(modules.map(JSONValue.string)))
-        s.set("lifeproj_can_reach", .bool(inRegistry || fm.fileExists(atPath: folder.appendingPathComponent("catalog_check.py").path)))
+        // lifeproj reaches the binder when it is registered, equipped, or when the binder's agent notes tell an
+        // agent to run lifeproj's publish or drain.
+        let notes = ["CLAUDE.md", "AGENTS.md"].compactMap { try? String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8) }
+        let notesRunLifeproj = notes.contains { text in
+            text.range(of: #"lifeproj\s+(publish|drain)"#, options: .regularExpression) != nil
+        }
+        s.set("lifeproj_can_reach", .bool(inRegistry || notesRunLifeproj
+                                          || fm.fileExists(atPath: folder.appendingPathComponent("catalog_check.py").path)))
         s.set("hooks_may_send_data", .bool(((try? String(contentsOf: folder.appendingPathComponent(".claude/settings.json"), encoding: .utf8)) ?? "").contains("\"hooks\"")))
         s.set("credentials_files", .int(["scripts/mail/.env", "intake/mail/.env"].filter { fm.fileExists(atPath: folder.appendingPathComponent($0).path) }.count))
         s.set("old_email_intake_layout", .bool(fm.fileExists(atPath: folder.appendingPathComponent("intake/mail/state.json").path)))
@@ -83,6 +90,7 @@ public enum Adoption {
             throw TekaStore.Refused(reason: "cannot adopt: \(teka.state.label)")
         default: break
         }
+        if teka.writesBlocked { throw TekaStore.Refused(reason: "cannot adopt until this is repaired: " + teka.reasons.joined(separator: "; ")) }
         if syncedLocation(folder) { throw TekaStore.Refused(reason: "this folder is uploaded by a sync service") }
         let store = TekaStore(folder: folder, client: client)
         let survey = survey(folder, inRegistry: inRegistry)
@@ -97,11 +105,14 @@ public enum Adoption {
         let items = catalog["open_items"]?.arrayValue ?? []
         let log = catalog["processing_log"]?.arrayValue ?? []
         let broken = Set(teka.findings.map(\.location))
+        // An id held by two items is left for the person: a fix to one would be a fix to both.
+        var seenIDs: [JSONValue: Int] = [:]
+        for item in items { if let id = item["id"] { seenIDs[id, default: 0] += 1 } }
 
         // Step 3: mechanical, lossless fixes (teka-v0 §9.4).
         var bodies: [TekaStore.OpBody] = []
         for (i, item) in items.enumerated() {
-            guard case .object(let o) = item, let id = o["id"], !broken.contains("open_items[\(i)]") else { continue }
+            guard case .object(let o) = item, let id = o["id"], !broken.contains("open_items[\(i)]"), seenIDs[id] == 1 else { continue }
             var set = JSONObject()
             var unset: [String] = []
             var derived = o["derived"]?.arrayValue?.compactMap(\.stringValue) ?? []
@@ -135,9 +146,10 @@ public enum Adoption {
             if !notes.isEmpty { extra.append(("note", .string(notes.joined(separator: "; ")))) }
             bodies.append(.init(op: "update_item", args: args, actor: importActor, extra: extra))
         }
+        // Each fix is guarded on its own, so one the guard refuses never blocks the others or the proposals.
         var mechanical: [JSONObject] = []
-        if !bodies.isEmpty {
-            mechanical = try store.apply(bodies, batch: UUIDv7.make(now: now), now: now)
+        for body in bodies {
+            if let applied = try? store.apply([body], now: now) { mechanical += applied }
         }
 
         // Step 4: proposals for what changes meaning.

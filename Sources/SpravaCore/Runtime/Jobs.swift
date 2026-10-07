@@ -73,6 +73,7 @@ public struct JobRecord: Codable, Sendable, Equatable {
             lastOutcome = outcome == .ok ? "ok" : "skipped"
             if outcome == .ok { lastSuccess = now }
             consecutiveFailures = 0
+            watchdogExits = 0
             if breaker != "closed" {
                 breaker = "closed"
                 breakerOpenedAt = nil
@@ -84,6 +85,26 @@ public struct JobRecord: Codable, Sendable, Equatable {
         case .timeout:
             lastOutcome = "timeout"
             recordFailure(code: "timeout", culprit: nil, at: now, threshold: threshold)
+        }
+    }
+
+    /// The watchdog ended the process because this job was wedged. After 2 such exits the breaker opens, so a job
+    /// that wedges every time stops restarting the runtime (architecture 3.4).
+    public mutating func recordWatchdogExit(at now: Date) {
+        running = false
+        watchdogExits += 1
+        lastOutcome = "wedged"
+        lastErrorAt = now
+        lastErrorCode = "wedged"
+        consecutiveFailures += 1
+        if breaker == "half_open" {
+            breaker = "open"
+            breakerOpenedAt = now
+            backoffStep = min(backoffStep + 1, Self.backoff.count - 1)
+        } else if breaker == "closed", watchdogExits >= 2 {
+            breaker = "open"
+            breakerOpenedAt = now
+            backoffStep = 0
         }
     }
 
@@ -146,6 +167,13 @@ public struct JobRecords: Codable, Sendable {
         // A job recorded as running when the process died is not running now.
         for key in records.jobs.keys { records.jobs[key]?.running = false }
         return records
+    }
+
+    /// Records a watchdog exit straight to disk, without the runtime's state queue, which may be the thing that hung.
+    public static func recordWatchdogExit(job: String, url: URL, now: Date = Date()) {
+        var records = load(url)
+        records.jobs[job, default: JobRecord()].recordWatchdogExit(at: now)
+        try? records.save(url)
     }
 
     public func save(_ url: URL) throws {

@@ -17,6 +17,22 @@ public enum HubLane {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/osavul")
     }
 
+    /// A binder name usable as one file name in the spool: no separators, not a dot name, no control characters.
+    public static func isSafeSegment(_ name: String) -> Bool {
+        !name.isEmpty && name.utf8.count <= 200 && !name.hasPrefix(".") && !name.contains("/") && !name.contains(":")
+            && !name.unicodeScalars.contains { $0.properties.generalCategory == .control }
+    }
+
+    /// The spool file for a binder, refusing any name that would land outside `dir`.
+    static func spoolFile(_ dir: URL, _ name: String, _ suffix: String) throws -> URL {
+        guard isSafeSegment(name) else { throw TekaStore.Refused(reason: "the binder name cannot be used as a spool file name") }
+        let url = dir.appendingPathComponent(name + suffix)
+        guard url.deletingLastPathComponent().standardizedFileURL.path == dir.standardizedFileURL.path else {
+            throw TekaStore.Refused(reason: "the binder name cannot be used as a spool file name")
+        }
+        return url
+    }
+
     public enum PublishResult: Equatable {
         case noSpool
         case unchanged
@@ -73,6 +89,12 @@ public enum HubLane {
     static func isRecommended(_ id: JSONValue, teka: String) -> Bool {
         guard case .string(let s) = id else { return false }
         return s.wholeMatch(of: try! Regex("^\(NSRegularExpression.escapedPattern(for: teka))-\\d{4}-\\d{3,}$")) != nil
+    }
+
+    /// The slice id of an item that is not redacted.
+    public static func plainSliceID(_ id: JSONValue, teka: String) -> String {
+        let text = idText(id)
+        return text.hasPrefix("\(teka)-") ? text : "\(teka)-\(text)"
     }
 
     /// The slice id: prefixed with `<teka>-` unless it already starts with it (lifeproj's plain string test), or an
@@ -157,8 +179,9 @@ public enum HubLane {
 
         let teka = Teka.read(folder)
         guard teka.isAdopted, let catalog = teka.catalog else { return .notPublished("not adopted") }
+        guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
         var cursors = loadCursors(folder)
-        let target = inbox.appendingPathComponent("\(teka.name).agenda.json")
+        let target = try spoolFile(inbox, teka.name, ".agenda.json")
 
         // Someone else published this binder since our last write: say so, then publish over it.
         var overwritten = false
@@ -219,6 +242,8 @@ public enum HubLane {
         public var acknowledged = 0
         public var skipped = 0
         public var waitingForYou = 0
+        /// Cards Sprava wrote while absorbing an outside edit, for the caller to trust.
+        public var createdProposals: [String] = []
     }
 
     public static func drain(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), client: String = "sprava/0.1") throws -> DrainResult {
@@ -226,12 +251,12 @@ public enum HubLane {
         var rootInfo = stat()
         guard lstat(root.path, &rootInfo) == 0 else { return result }
         let teka = Teka.read(folder)
-        guard teka.isAdopted, let catalog = teka.catalog else { return result }
+        guard teka.isAdopted, let catalog = teka.catalog, !teka.federationBlocked else { return result }
         let outboxDir = root.appendingPathComponent("outbox", isDirectory: true)
         var info = stat()
         guard lstat(outboxDir.path, &info) == 0 else { return result }
         try checkFolder(outboxDir, create: false)
-        let file = outboxDir.appendingPathComponent("\(teka.name).intake.json")
+        let file = try spoolFile(outboxDir, teka.name, ".intake.json")
         guard let data = try? Data(contentsOf: file) else { return result }
         guard case .object(let outbox) = try JSONParser.parse(data).value else { throw TekaStore.Refused(reason: "outbox is not a JSON object") }
         let completions = (outbox["completions"]?.arrayValue ?? []).compactMap(\.objectValue)
@@ -265,10 +290,15 @@ public enum HubLane {
                 continue
             }
             guard let item = resolve(cid) else {
-                // Already closed by an earlier drain that could not acknowledge (same id, closed_at == at).
-                let at = c["at"]
-                if log.contains(where: { e in e["closed_at"] == at && (e["id"].map { idText($0) == cid || "\(teka_)-\(idText($0))" == cid } ?? false) }) {
-                    toAck.append((cid, at))
+                // Already closed, for example by an earlier drain whose acknowledgement was lost: an id is never
+                // reused, so a completion for a closed id is acknowledged, as lifeproj does by id.
+                if log.contains(where: { e in
+                    guard let id = e["id"], ["done", "dropped"].contains(e["action"]?.stringValue ?? "") else { return false }
+                    let text = idText(id)
+                    return text == cid || "\(teka_)-\(text)" == cid || alias(id, teka: teka_, key: key) == cid
+                        || cursors.published[(try? Canonical.serialize(id)) ?? ""] == cid
+                }) {
+                    toAck.append((cid, c["at"]))
                 } else {
                     result.skipped += 1
                 }
@@ -300,12 +330,19 @@ public enum HubLane {
                 result.skipped += 1
             }
         }
+        // The binder lock is held from the write through the acknowledgement (teka-v0 §4.9).
+        let store = TekaStore(folder: folder, client: client)
         if !bodies.isEmpty {
-            try TekaStore(folder: folder, client: client).apply(bodies, batch: UUIDv7.make(now: now), now: now)
+            var acknowledged = 0
+            try store.apply(bodies, batch: UUIDv7.make(now: now), now: now) {
+                acknowledged = try acknowledge(file: file, applied: toAck)
+            }
             result.applied = bodies.count
+            result.acknowledged = acknowledged
+            result.createdProposals = store.createdProposals
+        } else if !toAck.isEmpty {
+            result.acknowledged = try store.withLock { try acknowledge(file: file, applied: toAck) }
         }
-        guard !toAck.isEmpty else { return result }
-        result.acknowledged = try acknowledge(file: file, applied: toAck)
         return result
     }
 

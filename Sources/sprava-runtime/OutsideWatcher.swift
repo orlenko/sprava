@@ -34,10 +34,9 @@ struct OutsideWatcher {
             let beatAt = ISOTime.date(beat.beat_at) ?? .distantPast
             let since = max(beatAt, lastWake() ?? .distantPast)
             age = Int(Date().timeIntervalSince(since))
-            if !ProcessCheck.isAlive(pid: beat.pid, startedAt: ISOTime.date(beat.started_at)) {
-                saw = "pid_dead"
-            } else if (age ?? 0) > 900 {
-                saw = "stale"
+            // Only a beat older than 15 minutes is a finding; a dead pid with a fresh beat is a restart in progress.
+            if (age ?? 0) > 900 {
+                saw = ProcessCheck.isAlive(pid: beat.pid, startedAt: ISOTime.date(beat.started_at)) ? "stale" : "pid_dead"
             }
         }
 

@@ -43,7 +43,19 @@ public enum IDMint {
                   let n = Int(m.output[2].substring ?? "") else { continue }
             maxN = max(maxN, n)
         }
-        return "\(p)\(infix)-\(year)-" + String(format: "%03d", maxN + 1)
+        // Skip a number whose slice id an open item already projects to, such as `tax-2026-001` beside a bare
+        // `2026-001` (teka-v0 §5.6).
+        let teka = catalog["meta"]?["name"]?.stringValue ?? name
+        let taken = Set((catalog["open_items"]?.arrayValue ?? []).compactMap { $0["id"] }.map { HubLane.plainSliceID($0, teka: teka) })
+        let usedText = Set(used.compactMap(\.stringValue))
+        var n = maxN + 1
+        while true {
+            let candidate = "\(p)\(infix)-\(year)-" + String(format: "%03d", n)
+            if document || (!taken.contains(HubLane.plainSliceID(.string(candidate), teka: teka)) && !usedText.contains(candidate)) {
+                return candidate
+            }
+            n += 1
+        }
     }
 }
 
@@ -111,15 +123,24 @@ public enum Undo {
         case "complete", "drop":
             // Reopen under a new id: the title and kind from the closure entry, the rest from its `final`.
             guard let closedID = args["id"],
-                  let entry = catalog["processing_log"]?.arrayValue?.last(where: { $0["id"] == closedID && $0["op_id"] == target["id"] })?.objectValue
+                  let entry = catalog["processing_log"]?.arrayValue?.last(where: {
+                      ($0["id"] ?? $0["item"]) == closedID && $0["op_id"] == target["id"] })?.objectValue
             else { throw Unsupported(message: "the closure entry is not in the processing log") }
             var item = JSONObject()
             item.set("id", .string(IDMint.next(catalog: catalog, opLog: opLog, year: year)))
             item.set("title", entry["title"] ?? .str(""))
             if let kind = entry["kind"] { item.set("kind", kind) }
-            for e in entry["final"]?.objectValue?.entries ?? [] where !["provenance", "created_at", "updated_at", "derived"].contains(e.key) {
-                item.set(e.key, e.value)
+            // Nulls are dropped and compact or week dates written out, so the reopened item meets the v0 rules.
+            for e in entry["final"]?.objectValue?.entries ?? []
+            where !["provenance", "created_at", "updated_at", "derived", "dismissed", "recurrence"].contains(e.key) && e.value != .null {
+                if ["due", "follow_up_at", "expected_by"].contains(e.key), case .string(let text) = e.value {
+                    guard let date = CalendarDate.strict(text) ?? CalendarDate.lenient(text) else { continue }
+                    item.set(e.key, .string(date.description))
+                } else {
+                    item.set(e.key, e.value)
+                }
             }
+            if item["due"] == nil { item.set("no_deadline", .bool(true)) } else { item.remove("no_deadline") }
             if item["status"] == nil || item["status"] == .str("done") { item.set("status", .str("open")) }
             if item["priority"] == nil { item.set("priority", .str("normal")) }
             item.set("created_at", .string(at))

@@ -228,7 +228,7 @@ public final class MCPServer: @unchecked Sendable {
             if let requestID { proposal.raw.set("request_id", .string(requestID)) }
             do {
                 try ProposalStore.save(proposal, in: row.folder)
-                commands.trustProposals(in: row.folder)
+                commands.trustProposals([proposal.id], in: row.folder)
             } catch {
                 return Self.toolError("could not store the proposal")
             }
