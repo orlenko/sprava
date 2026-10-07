@@ -169,7 +169,20 @@ extension TekaStore {
         let (op, args) = try Undo.compensate(log[index], catalog: catalog, opLog: log, stateBefore: before,
                                              year: calendar.component(.year, from: now), now: now)
         let actor = JSONObject([(key: "kind", value: .str("user"))])
-        return try apply([.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])], now: now)
+        var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])]
+        // set_status keeps waiting fields it is not given unless the status is open, so fields the undone op
+        // introduced are removed by a second op in the same batch.
+        if op == "set_status", let id = args["id"],
+           let now_ = catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+           let was = before["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+           args["status"]?.stringValue != "open" {
+            let introduced = ["waiting_on", "follow_up_at", "expected_by"].filter { now_[$0] != nil && was[$0] == nil }
+            if !introduced.isEmpty {
+                bodies.append(.init(op: "update_item", args: JSONObject([(key: "id", value: id), (key: "unset", value: .array(introduced.map(JSONValue.string)))]),
+                                    actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
+            }
+        }
+        return try apply(bodies, batch: bodies.count > 1 ? UUIDv7.make(now: now) : nil, now: now)
     }
 }
 

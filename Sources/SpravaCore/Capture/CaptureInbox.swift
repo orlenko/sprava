@@ -82,6 +82,7 @@ public struct CaptureInbox: Sendable {
         var attempts: [String: Int]? = [:]
         var chains: [String: [String]]? = [:]         // app|ref -> event ids, oldest first (capture-event-v0 §3.2)
         var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
+        var clocks: [String: String]? = [:]           // id -> its HLC as sortable text, to find a chain's current event
         var examined: [String: Examined] = [:]        // device/name -> last seen
         struct Examined: Codable, Equatable {
             var size: Int
@@ -221,12 +222,22 @@ public struct CaptureInbox: Sendable {
             state.dedupe[event.dedupeKey] = id
             state.apps[id] = event.app
             state.texts = (state.texts ?? [:]).merging([id: textHash]) { $1 }
+            state.clocks = (state.clocks ?? [:]).merging([id: Self.clockKey(event)]) { $1 }
             if registered { state.chains = (state.chains ?? [:]).merging([chainKey: chain + [id]]) { $1 } }
             try? save(state)
             journal([("event", .string(id)), ("stage", .str("ingested")), ("bytes", .int(size))])
             result.ingested += 1
         }
 
+        // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision that
+        // arrives late but is older than what the chain already has changes nothing.
+        let clocks = state.clocks ?? [:]
+        let current = chain.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
+        if let current, (clocks[current] ?? "") > Self.clockKey(event) {
+            state.ingested[id] = "stale_revision"
+            journal([("event", .string(id)), ("stage", .str("stale_revision"))])
+            return
+        }
         if event.retracted {
             if !chain.isEmpty { retract(chain: chain, retraction: id, state: &state, binders: binders, commands: commands, now: now) }
             state.ingested[id] = "retracted"
@@ -239,7 +250,7 @@ public struct CaptureInbox: Sendable {
         }
         // A later event of the chain: the same text changes only sensitivity; other text replaces what still waits.
         var replaces: String?
-        if let earlier = chain.last {
+        if let earlier = current {
             if event.isPrivate { raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) }
             if state.texts?[earlier] == textHash {
                 state.ingested[id] = "same_text"
@@ -248,6 +259,16 @@ public struct CaptureInbox: Sendable {
             }
             replaces = earlier
             withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, now: now)
+            // Items already filed from the earlier version get a change card, never new items beside them (§6.5).
+            if let made = correctionCards(event, chain: chain, binders: binders, commands: commands, now: now), !made.isEmpty {
+                state.cards[id] = made[0].1
+                state.cardBinder = (state.cardBinder ?? [:]).merging([id: made[0].0.path]) { $1 }
+                state.clerk = (state.clerk ?? [:]).merging([id: "kept"]) { $1 }   // the clerk would add them again
+                state.ingested[id] = "proposed"
+                result.filed += 1
+                journal([("event", .string(id)), ("stage", .str("correction_proposed")), ("cards", .int(made.count))])
+                return
+            }
         }
 
         // Verification (architecture 8): Sprava's own folder needs a matching notice; an unregistered folder is
@@ -277,6 +298,13 @@ public struct CaptureInbox: Sendable {
                  ("verified", .bool(verified))])
     }
 
+    /// An event's HLC as text that sorts like the clock: wall time, counter, then the id breaks a tie.
+    static func clockKey(_ event: CaptureEvent) -> String {
+        let wall = event.raw["hlc"]?["wall_ms"]?.numberValue?.safeInteger ?? 0
+        let counter = event.raw["hlc"]?["counter"]?.numberValue?.safeInteger ?? 0
+        return String(format: "%016lld:%08lld:", wall, counter) + event.id
+    }
+
     /// Pending cards built from any event of a chain: unfiled ones, and proposals waiting in the binders.
     func pendingCards(chain: [String], binders: [ShelfRow]) -> (unfiled: [Proposal], filed: [(URL, Proposal)]) {
         let ids = Set(chain)
@@ -289,6 +317,51 @@ public struct CaptureInbox: Sendable {
             for (p, _) in ProposalStore.list(in: row.folder) where p.state == "proposed" && fromChain(p) { filed.append((row.folder, p)) }
         }
         return (unfiled, filed)
+    }
+
+    /// Change cards for a corrected note whose earlier version was already filed: per binder, the note's lines map
+    /// in order onto the items filed from the chain. A changed line updates the title, an extra line adds an item, and
+    /// an item with no line left is offered to drop. Returns (binder, card id) for each card saved.
+    func correctionCards(_ event: CaptureEvent, chain: [String], binders: [ShelfRow], commands: Commands, now: Date) -> [(URL, String)]? {
+        let ids = Set(chain)
+        let lines = Self.lines(of: event.text).prefix(10).map(\.text)
+        var made: [(URL, String)] = []
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            let filed = row.teka.items.compactMap { $0.object }.filter { o in
+                (o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).contains(where: ids.contains)
+            }
+            guard !filed.isEmpty else { continue }
+            var ops: [JSONObject] = []
+            for i in 0..<max(filed.count, lines.count) {
+                if i < filed.count, i < lines.count {
+                    guard let itemID = filed[i]["id"], filed[i]["title"]?.stringValue != lines[i] else { continue }
+                    ops.append(JSONObject([(key: "op", value: .str("update_item")),
+                                           (key: "args", value: .obj([("id", itemID), ("set", .obj([("title", .string(String(lines[i].prefix(200))))]))]))]))
+                } else if i < lines.count {
+                    var item = JSONObject()
+                    item.set("id", .string("$new:\(i + 1)"))
+                    item.set("title", .string(String(lines[i].prefix(200))))
+                    item.set("status", .str("open"))
+                    item.set("priority", .str("normal"))
+                    item.set("no_deadline", .bool(true))
+                    item.set("provenance", .obj([("events", .array([.string(event.id)]))]))
+                    ops.append(JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .object(item))]))]))
+                } else if let itemID = filed[i]["id"] {
+                    ops.append(JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
+                        ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))]))
+                }
+            }
+            guard !ops.isEmpty else { continue }
+            let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+            let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: ops,
+                                     provenance: JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "supersedes", value: .array(chain.map(JSONValue.string))),
+                                                             (key: "filed_by", value: .str("code, no model"))]), now: now)
+            if (try? ProposalStore.save(card, in: row.folder)) != nil {
+                commands.trustProposals([card.id], in: row.folder)
+                made.append((row.folder, card.id))
+            }
+        }
+        return made
     }
 
     /// Withdraws what still waits from a chain, and ends the clerk's work on it.
@@ -353,6 +426,24 @@ public struct CaptureInbox: Sendable {
         for p in unfiled { try? writeUnfiled(privateCopy(p).raw) }
         for (folder, p) in filed where (try? ProposalStore.save(privateCopy(p), in: folder)) != nil {
             commands.trustProposals([p.id], in: folder)
+        }
+        // Items already filed from the chain get a card that redacts them (capture-event-v0 §3.2, §3.3).
+        let ids = Set(chain)
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            let ops = row.teka.items.compactMap { item -> JSONObject? in
+                guard let o = item.object, o["redact"] != .bool(true), let itemID = o["id"],
+                      let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue), events.contains(where: ids.contains) else { return nil }
+                var set = JSONObject([(key: "redact", value: .bool(true))])
+                if o["kind"] == nil { set.set("kind", .str("other")) }
+                return JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(set))]))])
+            }
+            guard !ops.isEmpty else { continue }
+            let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+            let card = Proposal.make(title: "A note became private. Redact what was filed from it?", actor: actor, ops: ops,
+                                     provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))), (key: "private", value: .bool(true)),
+                                                             (key: "remains", value: .str("titles already published to the hub until the next publish"))]),
+                                     now: now)
+            if (try? ProposalStore.save(card, in: row.folder)) != nil { commands.trustProposals([card.id], in: row.folder) }
         }
         journal([("stage", .str("sensitivity_raised")), ("cards", .int(unfiled.count + filed.count))])
     }

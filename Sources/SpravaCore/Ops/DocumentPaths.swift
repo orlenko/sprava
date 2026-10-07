@@ -99,6 +99,8 @@ public enum DocumentPaths {
                 continue
             }
             guard mkdir(url.path, 0o755) == 0 || errno == EEXIST else { throw AtomicFile.Failure(step: "create folder", code: errno) }
+            // Whatever is there now must be a real folder: a link created in a race is refused.
+            guard lstat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR else { throw TekaStore.Refused(reason: "\(segment) is not a folder") }
         }
     }
 

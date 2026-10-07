@@ -194,6 +194,9 @@ public final class MCPServer: @unchecked Sendable {
         case "propose_ops":
             guard let (row, level) = binder(args) else { return Self.toolError("not found") }
             guard level == "propose" else { return Self.toolError("this client may only read this binder") }
+            guard Owner.device(of: row.folder) == commands.deviceID else {
+                return Self.toolError("this binder is managed by another Sprava; it is read-only here")
+            }
             guard case .string(let title)? = args["title"], !title.isEmpty, case .array(let ops)? = args["ops"], !ops.isEmpty else {
                 return Self.toolError("title and ops are required")
             }
@@ -215,6 +218,7 @@ public final class MCPServer: @unchecked Sendable {
                 if let note = op["note"] { body.set("note", note) }
                 bodies.append(body)
             }
+            if Proposal.hasDuplicatePlaceholders(bodies) { return Self.toolError("each new record needs its own placeholder name") }
             let actor = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .string(commands.client)),
                                     (key: "model", value: .string(client.id))])
             // Validated at once against the catalog, so the model can correct itself.

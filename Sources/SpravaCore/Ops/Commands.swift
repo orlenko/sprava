@@ -61,8 +61,12 @@ public struct Commands: Sendable {
     func run(_ command: String, _ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
         if ["approve", "reject", "apply", "undo", "switch_dashboard", "file_card", "binder_settings"].contains(command) {
             let f = try folder(r)
-            if let owner = Owner.device(of: f), owner != deviceID {
-                throw Failure(message: "this binder is managed by another Sprava (another Mac or a development build); it is read-only here")
+            // Fail closed: an adopted binder accepts writes only when its owner record names this Mac.
+            let adopted = FileManager.default.fileExists(atPath: f.appendingPathComponent(".sprava/ops.ndjson").path)
+            if adopted, Owner.device(of: f) != deviceID {
+                throw Failure(message: Owner.device(of: f) == nil
+                    ? "this binder's owner record is missing or damaged; it is read-only until it is repaired"
+                    : "this binder is managed by another Sprava (another Mac or a development build); it is read-only here")
             }
         }
         switch command {
@@ -93,7 +97,11 @@ public struct Commands: Sendable {
                 o.set("digest", .string(digest))
                 o.set("verified", .bool(digests[key(f, p.id)] == digest))
                 o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: catalog)) }))
-                o.set("notes", .array(p.cardNotes.map(JSONValue.string)))
+                var notes = p.cardNotes
+                if p.state == "proposed", case let changed = p.changedSince(catalog: catalog), !changed.isEmpty {
+                    notes.insert("needs a look: changed since this card was made: " + changed.joined(separator: ", "), at: 0)
+                }
+                o.set("notes", .array(notes.map(JSONValue.string)))
                 // What the person may edit on the card (CardEdits).
                 o.set("editable", .array(p.ops.enumerated().compactMap { i, op -> JSONValue? in
                     guard op["op"] == .str("add_item"), let item = op["args"]?["item"] else { return nil }
@@ -113,7 +121,9 @@ public struct Commands: Sendable {
             guard case .string(let id)? = r["proposal"], case .string(let seen)? = r["digest"] else {
                 throw Failure(message: "\(command) needs proposal and digest")
             }
-            guard let recorded = loadDigests()[key(f, id)] else {
+            // A card Sprava did not write is never approved, but the person may reject it, as shown.
+            let current = ProposalStore.list(in: f).first { $0.0.id == id }?.1
+            guard let recorded = loadDigests()[key(f, id)] ?? (command == "reject" ? current : nil) else {
                 throw Failure(message: "this proposal was not written by Sprava, so it cannot be approved")
             }
             guard recorded == seen else { throw Failure(message: "this card changed since it was shown; reload it") }

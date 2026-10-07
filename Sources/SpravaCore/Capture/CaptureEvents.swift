@@ -205,9 +205,17 @@ public struct CaptureEvent: Sendable {
                 return (.quarantined("missing \(key)"), nil)
             }
             guard Timestamp.parse(o["captured_at"]?.stringValue ?? "") != nil else { return (.quarantined("captured_at is not a real instant"), nil) }
-            guard o["source"]?["ref"] != nil, o["source"]?["revision"] != nil, o["source"]?["app"] != nil else {
-                return (.quarantined("source needs app, ref and revision"), nil)
+            guard o["source"]?["ref"]?.stringValue != nil, o["source"]?["revision"]?.stringValue != nil, o["source"]?["app"]?.stringValue != nil else {
+                return (.quarantined("source needs app, ref and revision as text"), nil)
             }
+            // Types, not only presence: a field of the wrong type is a malformed event, never an empty one.
+            for key in ["captured_at", "locale", "text", "sensitivity"] where o[key]?.stringValue == nil {
+                return (.quarantined("\(key) is not text"), nil)
+            }
+            for key in ["ended_at", "binder_hint", "supersedes", "title"] where o[key] != nil && o[key]?.stringValue == nil {
+                return (.quarantined("\(key) is not text"), nil)
+            }
+            if let r = o["retracted"], r != .bool(true), r != .bool(false) { return (.quarantined("retracted is not true or false"), nil) }
         }
         for media in o["media"]?.arrayValue ?? [] {
             guard let path = media["path"]?.stringValue else { continue }

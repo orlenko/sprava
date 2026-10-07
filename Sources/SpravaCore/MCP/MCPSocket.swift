@@ -169,7 +169,8 @@ public final class MCPListener: @unchecked Sendable {
             switch reader.next(limit: Self.lineLimit) {
             case .line(let line):
                 // Revocation is immediate (architecture 7.5): the record is checked again before every call.
-                guard let current = MCPClients.load(support).clients.first(where: { $0.id == client.id }), !current.revoked else {
+                guard let current = MCPClients.load(support).clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
+                      !current.revoked else {
                     log("mcp client=\(client.id) closed=revoked")
                     return
                 }

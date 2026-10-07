@@ -8,6 +8,14 @@ import Testing
 let pNow = Date(timeIntervalSince1970: 1_791_360_000)   // 2026-10-06 (Tue) in UTC-4 morning
 let pDevice = "0f0e0d0c-0b0a-4908-8706-050403020100"
 
+/// Each hand-made event gets a later clock than the one before, as a producer's HLC would.
+final class PClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func next() -> Int { lock.withLock { n += 1; return n } }
+}
+let pClock = PClock()
+
 struct PSetup {
     let commands: Commands
     let inbox: CaptureInbox
@@ -45,7 +53,7 @@ func pEvent(_ s: PSetup, device: String, app: String, ref: String, revision: Str
     o.set("format", .str("sprava-capture-event"))
     o.set("format_version", .str("0"))
     o.set("id", .string(id))
-    o.set("hlc", .obj([("wall_ms", .int(1_791_360_000_000)), ("counter", .int(0)), ("node", .string(device.replacingOccurrences(of: "-", with: "")))]))
+    o.set("hlc", .obj([("wall_ms", .int(1_791_360_000_000)), ("counter", .int(pClock.next())), ("node", .string(device.replacingOccurrences(of: "-", with: "")))]))
     o.set("device", .obj([("id", .string(device))]))
     o.set("source", .obj([("app", .string(app)), ("kind", .str("dictation")), ("ref", .string(ref)), ("revision", .string(revision))]))
     o.set("captured_at", .str("2026-10-06T09:00:00-04:00"))
@@ -326,7 +334,7 @@ func pEventObj(_ text: String, extra: (inout JSONObject) -> Void = { _ in }) -> 
         let folder = try makeTeka(fixture: "sprava-v0")
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sp3r-\(UUID().uuidString.prefix(8))")
         let commands = Commands(support: support, deviceID: "t")
-        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject(), now: pNow)
+        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("t"))]), now: pNow)
         var clients = MCPClients()
         let token = try clients.register(id: "brain-1", name: "b", binders: [folder.standardizedFileURL.path: "propose"])
         try clients.save(support)
@@ -393,7 +401,7 @@ func pEventObj(_ text: String, extra: (inout JSONObject) -> Void = { _ in }) -> 
         let folder = try makeTeka(fixture: "sprava-v0")
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sp3n-\(UUID().uuidString)")
         let commands = Commands(support: support, deviceID: "t")
-        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject(), now: pNow)
+        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("t"))]), now: pNow)
         let client = MCPClientRecord(id: "c1", name: "c", tokenSHA256: "", binders: [folder.standardizedFileURL.path: "propose"], createdAt: "", revoked: false)
         let server = MCPServer(client: client, commands: commands, shelf: { Shelf.rows(registry: nil, picked: [folder]) }, now: { pNow })
         let meta = #""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#

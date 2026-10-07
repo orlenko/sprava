@@ -77,7 +77,9 @@ public struct Measures: Sendable {
         for line in journal.split(separator: "\n") {
             guard let v = try? JSONParser.parse(String(line)).value, let event = v["event"]?.stringValue,
                   let at = v["at"]?.stringValue.flatMap(Timestamp.parse) else {
-                if let v = try? JSONParser.parse(String(line)).value, v["stage"] == .str("filed_by_person") { r.notSureFiledByPerson += 1 }
+                if let v = try? JSONParser.parse(String(line)).value, v["stage"] == .str("filed_by_person"), inWindow(v["at"]?.stringValue) {
+                    r.notSureFiledByPerson += 1
+                }
                 continue
             }
             switch v["stage"]?.stringValue {

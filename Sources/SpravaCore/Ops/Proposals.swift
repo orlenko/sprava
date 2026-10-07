@@ -97,6 +97,43 @@ public struct Proposal: Sendable {
     }
 }
 
+extension Proposal {
+    static let touchingOps: Set<String> = ["update_item", "set_status", "complete", "drop", "dismiss", "undismiss"]
+
+    /// The canonical hash of each existing item the ops touch, keyed by the id's canonical text.
+    public static func fingerprints(_ ops: [JSONObject], catalog: JSONObject?) -> JSONObject {
+        var out = JSONObject()
+        for op in ops where touchingOps.contains(op["op"]?.stringValue ?? "") {
+            guard let id = op["args"]?["id"], let key = try? Canonical.serialize(id),
+                  let item = catalog?["open_items"]?.arrayValue?.first(where: { $0["id"] == id }),
+                  let hash = try? Canonical.hash(item) else { continue }
+            out.set(key, .string(hash))
+        }
+        return out
+    }
+
+    /// Items that changed since the card was made: their titles, for "needs a look" (architecture 4.6).
+    public func changedSince(catalog: JSONObject?) -> [String] {
+        guard let expect = raw["expect"]?.objectValue else { return [] }
+        let items = catalog?["open_items"]?.arrayValue ?? []
+        return expect.entries.compactMap { e in
+            let item = items.first { (try? Canonical.serialize($0["id"] ?? .null)) == e.key }
+            guard let item else { return "\(e.key) (no longer open)" }
+            return (try? Canonical.hash(item)) == e.value.stringValue ? nil : (item["title"]?.stringValue ?? e.key)
+        }
+    }
+
+    /// Whether two new records share one placeholder name, which would make later references ambiguous.
+    public static func hasDuplicatePlaceholders(_ ops: [JSONObject]) -> Bool {
+        var seen = Set<String>()
+        for op in ops {
+            guard let id = (op["args"]?["item"]?["id"] ?? op["args"]?["document"]?["id"])?.stringValue, id.hasPrefix("$new:") else { continue }
+            if !seen.insert(id).inserted { return true }
+        }
+        return false
+    }
+}
+
 /// The person's edits to a card before approval (mvp.md increment 3: Approve, Edit, Reject, Undo). Only the
 /// fields a person can see on the card change; an op can be left out; nothing else is accepted.
 public enum CardEdits {
@@ -169,7 +206,12 @@ public enum ProposalStore {
     @discardableResult
     public static func save(_ proposal: Proposal, in folder: URL) throws -> String {
         try AtomicFile.makePrivateFolder(dir(folder))
-        let data = Data(JSONWriter.pretty(.object(proposal.raw)).utf8)
+        var raw = proposal.raw
+        // On first save, the card records what it assumed about each existing item it touches (architecture 4.6).
+        if raw["expect"] == nil, proposal.state == "proposed" {
+            raw.set("expect", .object(Proposal.fingerprints(proposal.ops, catalog: Teka.read(folder).catalog)))
+        }
+        let data = Data(JSONWriter.pretty(.object(raw)).utf8)
         try AtomicFile.write(data, to: dir(folder).appendingPathComponent("\(proposal.id).json"))
         return digest(data)
     }
@@ -205,6 +247,9 @@ extension TekaStore {
             throw Refused(reason: "\(bad["op"]?.stringValue ?? "?") is never approved from a card")
         }
         let actor = proposal.actor
+        if Proposal.hasDuplicatePlaceholders(edited ?? proposal.ops) {
+            throw Refused(reason: "two new records on this card share one placeholder name")
+        }
         // A crash after the batch was written but before the card was marked: finish marking, apply nothing twice.
         // The binder is settled first, so a write cut short is rolled forward or aborted, and aborted lines never
         // count as applied.
@@ -218,6 +263,10 @@ extension TekaStore {
             raw.set("applied_ops", .array(already.compactMap { $0["id"] }))
             try ProposalStore.save(Proposal(raw: raw), in: folder)
             return already
+        }
+        let changed = proposal.changedSince(catalog: try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue)
+        if !changed.isEmpty {
+            throw Refused(reason: "needs a look: changed since this card was made: " + changed.joined(separator: ", "))
         }
         let catalog = try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue ?? JSONObject()
         let resolved = Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: try readOpLog().ops,

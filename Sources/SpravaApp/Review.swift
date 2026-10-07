@@ -195,7 +195,7 @@ struct ReviewSection: View {
                             }
                         }
                         if !card.verified {
-                            Text("Not written by Sprava; it cannot be approved.").font(.caption).foregroundStyle(.orange)
+                            Text("Not written by Sprava; it cannot be approved. Reject it to clear it away.").font(.caption).foregroundStyle(.orange)
                         }
                         if let edits = actions.editing[card.id] {
                             ForEach(edits) { e in

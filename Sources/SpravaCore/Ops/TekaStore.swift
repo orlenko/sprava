@@ -255,8 +255,8 @@ public final class TekaStore {
     /// The files a batch files (teka-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
     /// file with the recorded digest, so a file that changed or is gone since the card was made is refused; the
     /// destination must be free and lie inside the binder. A filing without `from` needs the file in place.
-    func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String)] {
-        var moves: [(String, String)] = []
+    func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String, sha: String)] {
+        var moves: [(String, String, String)] = []
         var claimed = Set<String>()
         for line in lines where line["op"] == .str("file_document") {
             let args = line["args"]?.objectValue ?? JSONObject()
@@ -270,7 +270,7 @@ public final class TekaStore {
                 guard DocumentPaths.isFreeDestination(path, in: folder) else {
                     throw Refused(reason: "a file already exists at \(path), or the way there is not a plain folder")
                 }
-                moves.append((from, path))
+                moves.append((from, path, sha))
             } else {
                 guard DocumentPaths.plainFile(path, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(path)) == sha else {
                     throw Refused(reason: "the document is not at \(path) with the recorded digest")
@@ -281,10 +281,11 @@ public final class TekaStore {
     }
 
     /// Step 4: each move is a rename that never replaces a file.
-    func performMoves(_ moves: [(from: String, to: String)]) throws {
+    func performMoves(_ moves: [(from: String, to: String, sha: String)]) throws {
         for move in moves {
             // Checked again right before the rename: the source is still a plain file, the way there has no link.
-            guard DocumentPaths.plainFile(move.from, in: folder), DocumentPaths.isFreeDestination(move.to, in: folder) else {
+            guard DocumentPaths.plainFile(move.from, in: folder), DocumentPaths.isFreeDestination(move.to, in: folder),
+                  DocumentPaths.sha256(of: folder.appendingPathComponent(move.from)) == move.sha else {
                 throw Refused(reason: "the file in intake/ or its destination changed while it was being filed")
             }
             try DocumentPaths.makeParents(move.to, in: folder)
@@ -304,7 +305,7 @@ public final class TekaStore {
 
     /// Steps 4 to 7 of the write protocol and steps 3 to 6 of teka-v0 §6.9.
     func write(catalog: JSONObject, appending lines: [JSONObject], expectedHash: String,
-               moves: [(from: String, to: String)] = []) throws {
+               moves: [(from: String, to: String, sha: String)] = []) throws {
         let text = JSONWriter.pretty(.object(catalog))
         let temp = folder.appendingPathComponent(".\(UUID().uuidString.lowercased()).tmp")
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
@@ -424,7 +425,7 @@ public final class TekaStore {
             var state = catalog
             for op in trailing { state = try OpApplier.apply(op, to: state) }
             guard try Canonical.hash(.object(state)) == a else { throw Refused(reason: "roll-forward did not reach the logged hash") }
-            var moves: [(from: String, to: String)] = []
+            var moves: [(from: String, to: String, sha: String)] = []
             var possible = true
             for op in trailing where op["op"] == .str("file_document") {
                 let args = op["args"]?.objectValue ?? JSONObject()
@@ -433,7 +434,7 @@ public final class TekaStore {
                 if let from = args["from"]?.stringValue, !placed {
                     if DocumentPaths.plainFile(from, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha,
                        DocumentPaths.isFreeDestination(to, in: folder) {
-                        moves.append((from, to))
+                        moves.append((from, to, sha))
                     } else {
                         possible = false
                     }

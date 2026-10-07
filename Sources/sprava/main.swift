@@ -172,8 +172,10 @@ func dev(_ args: [String]) {
     guard args.count >= 2 else { fail(usage) }
     let folder = folderURL(args[1])
     let registryURL = LifeprojRegistry.defaultPath()
+    // Compared after resolving links, so a link to a live binder is refused too.
+    let real = folder.resolvingSymlinksInPath().path
     if let registry = try? LifeprojRegistry.load(from: registryURL),
-       registry.entries.contains(where: { $0.workingDir.map { folderURL($0) } == folder }) {
+       registry.entries.contains(where: { $0.workingDir.map { folderURL($0).resolvingSymlinksInPath().path } == real }) {
         fail("\(folder.path) is in lifeproj's registry; development commands work on invented copies only")
     }
     let support = SpravaPaths.supportDirectory()

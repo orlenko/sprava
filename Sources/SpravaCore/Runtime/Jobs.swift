@@ -69,9 +69,12 @@ public struct JobRecord: Codable, Sendable, Equatable {
         durationsMS.append(durationMS)
         if durationsMS.count > 20 { durationsMS.removeFirst(durationsMS.count - 20) }
         switch outcome {
-        case .ok, .skipped:
-            lastOutcome = outcome == .ok ? "ok" : "skipped"
-            if outcome == .ok { lastSuccess = now }
+        case .skipped:
+            // A run that did nothing on purpose is never a success: failures and the breaker stay as they were.
+            lastOutcome = "skipped"
+        case .ok:
+            lastOutcome = "ok"
+            lastSuccess = now
             consecutiveFailures = 0
             watchdogExits = 0
             if breaker != "closed" {

@@ -49,6 +49,10 @@ public enum HubLane {
         /// (mvp.md feature 7; architecture 13, item 35).
         var closedOnce: [String] = []
         var lastLogCount = 0
+        /// Items published redacted, by canonical id text, and the op log length at that publish: a redaction is
+        /// lifted on the hub only by the person's own op, never by an outside edit (architecture 4.5, 7.3).
+        var redacted: [String]? = []
+        var opCount: Int? = 0
     }
 
     static func cursorsURL(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/cursors.json") }
@@ -108,7 +112,7 @@ public enum HubLane {
     /// The agenda slice at disclosure level `full`: lifeproj's nine keys per item, in order, nothing else
     /// (teka-v0 §8.2; the v1 additions stay off in the MVP).
     public static func project(catalog: JSONObject, folderName: String, closedOnce: [JSONObject],
-                               key: SymmetricKey, now: Date) throws -> (slice: JSONValue, ids: [String: String]) {
+                               key: SymmetricKey, now: Date, alsoRedact: Set<String> = []) throws -> (slice: JSONValue, ids: [String: String]) {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
         let teka = meta["name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? folderName
         var chapters: [JSONValue]
@@ -130,7 +134,7 @@ public enum HubLane {
         var seen = Set<String>()
         func project(_ it: JSONObject, status: JSONValue? = nil) throws {
             let id = it["id"] ?? .null
-            let redacted = it["redact"] == .bool(true)
+            let redacted = it["redact"] == .bool(true) || alsoRedact.contains((try? Canonical.serialize(id)) ?? "")
             let sid = sliceID(id, redacted: redacted, teka: teka, key: key)
             guard seen.insert(sid).inserted else { throw TekaStore.Refused(reason: "two items project to the same slice id") }
             ids[(try? Canonical.serialize(id)) ?? idText(id)] = sid
@@ -215,9 +219,20 @@ public enum HubLane {
             return item
         }
 
+        // Items published redacted stay redacted unless the person lifted it with an op since then.
+        let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
+        var lifted = Set<String>()
+        for op in ops.dropFirst(min(cursors.opCount ?? 0, ops.count)) where op["op"] == .str("update_item")
+            && ["user"].contains(op["actor"]?["kind"]?.stringValue ?? "") {
+            let unset = op["args"]?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            if unset.contains("redact") || op["args"]?["set"]?["redact"] == .bool(false), let id = op["args"]?["id"] {
+                lifted.insert((try? Canonical.serialize(id)) ?? "")
+            }
+        }
+        let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted)
         let key = try sliceKey(folder)
         let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
-                                       key: key, now: now)
+                                       key: key, now: now, alsoRedact: keepRedacted)
         let hash = try Canonical.hash(stripGenerated(slice))
         if !force, !overwritten, hash == cursors.sliceHash { return .unchanged }
         try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
@@ -225,6 +240,12 @@ public enum HubLane {
         cursors.published.merge(ids) { _, new in new }
         cursors.closedOnce = newClosures.compactMap { $0["id"].map { (try? Canonical.serialize($0)) ?? "" } }
         cursors.lastLogCount = log.count
+        cursors.opCount = ops.count
+        let items = catalog["open_items"]?.arrayValue ?? []
+        cursors.redacted = items.compactMap { it -> String? in
+            guard let id = it["id"], let k = try? Canonical.serialize(id) else { return nil }
+            return it["redact"] == .bool(true) || keepRedacted.contains(k) ? k : nil
+        }
         try saveCursors(cursors, folder)
         return .published(items: slice["items"]?.arrayValue?.count ?? 0, overwrittenByOther: overwritten)
     }

@@ -10,7 +10,7 @@ import Testing
         let folder = try makeTeka(fixture: "sprava-v0")
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-mcp-\(UUID().uuidString)")
         let commands = Commands(support: support, deviceID: "t")
-        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
+        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("t"))]), now: now)
         // The fixture's disclosure is "title"; MCP shows it.
         let client = MCPClientRecord(id: "claude-code-1", name: "Claude Code", tokenSHA256: "", binders: [folder.standardizedFileURL.path: level],
                                      createdAt: "", revoked: false)

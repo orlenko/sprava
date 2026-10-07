@@ -23,7 +23,7 @@ public enum DateGrammar {
     ]
     static let smallNumbers: [String: Int] = [
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-        "a": 1, "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "six ": 6, "sept": 7, "huit": 8, "neuf": 9, "dix": 10,
+        "a": 1, "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "sept": 7, "huit": 8, "neuf": 9, "dix": 10,
         "quinze": 15,
     ]
 
