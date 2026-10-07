@@ -14,6 +14,8 @@ public struct Commands: Sendable {
         self.client = client
     }
 
+    public var inbox: CaptureInbox { CaptureInbox(root: CaptureInbox.defaultRoot(support: support), support: support) }
+
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
         public var description: String { message }
@@ -132,6 +134,40 @@ public struct Commands: Sendable {
             guard case .string(let opID)? = r["op_id"] else { throw Failure(message: "undo needs op_id") }
             let applied = try TekaStore(folder: f, client: client).undo(opID: opID, now: now)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
+
+        case "capture_notice":
+            // The app tells the runtime it wrote this event (architecture 8).
+            guard case .string(let event)? = r["event"], case .string(let digest)? = r["sha256"] else {
+                throw Failure(message: "capture_notice needs event and sha256")
+            }
+            try inbox.recordNotice(event: event, digest: digest, now: now)
+            return JSONObject()
+
+        case "unfiled":
+            return JSONObject([(key: "cards", value: .array(inbox.unfiled().map { p in
+                var o = JSONObject()
+                o.set("id", .string(p.id))
+                o.set("title", .string(p.title))
+                o.set("created_at", p.raw["created_at"] ?? .null)
+                o.set("lines", .array(p.ops.map { .string(Proposal.describe($0, catalog: nil)) }))
+                for flag in ["source_retracted", "source_corrected"] where p.raw[flag] == .bool(true) { o.set(flag, .bool(true)) }
+                if let prov = p.raw["provenance"]?.objectValue {
+                    o.set("unverified_source", .bool(prov["unverified_source"] == .bool(true)))
+                    o.set("private", .bool(prov["private"] == .bool(true)))
+                    o.set("producer", prov["producer"] ?? .null)
+                }
+                return .object(o)
+            }))])
+
+        case "file_card":
+            guard case .string(let id)? = r["card"] else { throw Failure(message: "file_card needs card") }
+            try inbox.file(id, into: try folder(r), commands: self)
+            return JSONObject()
+
+        case "discard_card":
+            guard case .string(let id)? = r["card"] else { throw Failure(message: "discard_card needs card") }
+            try inbox.discard(id)
+            return JSONObject()
 
         case "register_client":
             // A brain client (architecture 7.5). The token is returned once and never stored, only its hash.
