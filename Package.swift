@@ -8,11 +8,13 @@ let package = Package(
         .library(name: "SpravaCore", targets: ["SpravaCore"]),
         .executable(name: "sprava", targets: ["sprava"]),
         .executable(name: "SpravaApp", targets: ["SpravaApp"]),
+        .executable(name: "sprava-runtime", targets: ["sprava-runtime"]),
     ],
     targets: [
         .target(name: "SpravaCore"),
         .executableTarget(name: "sprava", dependencies: ["SpravaCore"]),
         .executableTarget(name: "SpravaApp", dependencies: ["SpravaCore"]),
+        .executableTarget(name: "sprava-runtime", dependencies: ["SpravaCore"]),
         .testTarget(
             name: "SpravaCoreTests",
             dependencies: ["SpravaCore"],

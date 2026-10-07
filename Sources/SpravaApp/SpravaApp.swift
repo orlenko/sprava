@@ -59,7 +59,7 @@ final class ShelfModel: ObservableObject {
             }
         }
         rows = Shelf.rows(registry: registry, picked: store.pickedFolders())
-        if selection == nil || !rows.contains(where: { $0.folder == selection }) {
+        if selection == nil || (selection != healthSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
         lastRefresh = Date()
@@ -101,12 +101,22 @@ final class ShelfModel: ObservableObject {
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
 }
 
+let healthSelection = URL(string: "sprava:health")!
+
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
+    @StateObject private var health = HealthModel()
 
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selection) {
+                Section {
+                    HStack {
+                        Circle().fill(health.beatGrade.color).frame(width: 9, height: 9)
+                        Text("Health").font(.headline)
+                    }
+                    .tag(healthSelection)
+                }
                 Section("Shelf") {
                     ForEach(model.rows, id: \.folder) { row in
                         ShelfRowView(row: row, today: model.today)
@@ -133,7 +143,9 @@ struct ShelfView: View {
                 .padding(8)
             }
         } detail: {
-            if let row = model.selectedRow {
+            if model.selection == healthSelection {
+                HealthView(model: health)
+            } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today)
             } else {
                 ContentUnavailableView {
@@ -301,7 +313,7 @@ enum Snapshot {
         let model = ShelfModel()
         model.refresh()
         if let pick = ProcessInfo.processInfo.environment["SPRAVA_SELECT"] {
-            model.selection = model.rows.first { $0.name == pick }?.folder ?? model.selection
+            model.selection = pick == "health" ? healthSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
         }
         if let today = ProcessInfo.processInfo.environment["SPRAVA_TODAY"].flatMap(CalendarDate.strict) {
             model.today = today

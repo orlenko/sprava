@@ -8,17 +8,26 @@ if pgrep -f "$bundle/Contents/MacOS/SpravaApp" >/dev/null 2>&1; then
     echo "Sprava is running from build/Sprava.app. Quit it first, then rebuild." >&2
     exit 1
 fi
+if pgrep -f "$bundle/Contents/MacOS/sprava-runtime" >/dev/null 2>&1; then
+    echo "Sprava's runtime is running from build/Sprava.app. Turn background work off in the app first." >&2
+    exit 1
+fi
 plutil -lint Resources/App-Info.plist
 swift build --product SpravaApp "$@"
 swift build --product sprava "$@"
+swift build --product sprava-runtime "$@"
+plutil -lint Resources/LaunchAgents/*.plist
 bin_dir=$(swift build --show-bin-path "$@")
 
 rm -rf "$bundle"
-mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources" "$bundle/Contents/Library/LaunchAgents"
+cp Resources/LaunchAgents/*.plist "$bundle/Contents/Library/LaunchAgents/"
 cp Resources/App-Info.plist "$bundle/Contents/Info.plist"
 cp LICENSE "$bundle/Contents/Resources/LICENSE.txt"
 cp "$bin_dir/SpravaApp" "$bundle/Contents/MacOS/SpravaApp"
 cp "$bin_dir/sprava" "$bundle/Contents/MacOS/sprava"
+cp "$bin_dir/sprava-runtime" "$bundle/Contents/MacOS/sprava-runtime"
+codesign --force --sign - --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
 codesign --force --sign - --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
 codesign --force --sign - --identifier ca.orlenko.sprava "$bundle"
 codesign --verify "$bundle"
