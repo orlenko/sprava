@@ -27,9 +27,16 @@
   duplicates against a handful of retrieved candidates, title and date a short document, draft a
   one-line nudge for a waiting item. Not Tier 1: reconciling a binder, cross-referencing documents,
   drafting letters. The honest pitch is "the clerk files; the brain thinks".
-- **P6 decided.** Capture comes from holos through a versioned capture-event format. Sprava never
+- **P12 decided (2026-10-07, by the author).** Sprava is input-agnostic. How a person turns thoughts into
+  text is not Sprava's concern: built-in accessibility dictation, the keyboard, a commercial tool such as
+  WisprFlow, holos, anything. Sprava receives text. It will also receive documents, images and videos,
+  through an adaptation layer that quickly establishes the ingestion protocol for each type of input.
+  No producer is privileged and none is a dependency: the capture-event format is Sprava's own inbound
+  contract, which any adapter may write, and holos is at most one adapter among many. Supersedes P6, P7
+  and C4 as dependencies; the design of the adaptation layer is open.
+- **P6 superseded by P12.** Capture comes from holos through a versioned capture-event format. Sprava never
   links holos code and never reads holos's private file layout as its contract.
-- **P7 recommended.** holos is the **producer**: it writes one immutable capture-event file per
+- **P7 superseded by P12.** holos is the **producer**: it writes one immutable capture-event file per
   finished dictation (and per saved meeting) into a capture folder the user chooses. Why not read
   holos's files: `dictations.jsonl` has no cursor and is rewritten in place, the retention sweep
   deletes records and audio after 7 or 30 days, a sandboxed reader would need a folder grant, and Apple
@@ -142,7 +149,7 @@
   clerk's typed **interpretation** of a capture is the Tier-1 derived event; proposals (op batches)
   are built by code from interpretations and point back at them. Outcomes include
   `context_exceeded`, `guardrail`, `unsupported_language`, `refused`, `rate_limited`.
-- **C4 recommended.** holos mapping: a dictation becomes one event (`text` as written, `alt_text` as
+- **C4 superseded by P12** (kept as one possible adapter's mapping, not a commitment). holos mapping: a dictation becomes one event (`text` as written, `alt_text` as
   heard, app name, locale, duration, audio copied before the retention sweep); a meeting becomes one
   event whose text is the labelled transcript from `exports/transcript.json`, with the summary, key
   points and action items as derived events (`producer: holos`, `model: apple-on-device`), speakers
@@ -202,7 +209,7 @@
 
 - **M1 recommended.** The smallest release that proves "a binder that keeps itself": Shelf (adopt
   existing teka folders in place, create one from a template) → Binder Now page, deterministic →
-  review queue with provenance and undo → capture inbox (holos producer, or the developer importer)
+  review queue with provenance and undo → capture inbox (text from any source; P12)
   → Tier-1 filing → two templates → slice publish and outbox drain for hub coexistence → backup via
   cmirror → health page. **Open:** include a minimal MCP surface (reads and proposals only) in the
   MVP because the author drives binders with Claude Code today.

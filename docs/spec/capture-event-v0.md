@@ -914,6 +914,10 @@ Document dates (`date_text` to `date`) use the same code, with the printed year.
 
 ## 7. Producer profile: holos
 
+> **Reframed by decisions.md P12 (2026-10-07).** Sprava is input-agnostic: it receives text, and later
+> documents, images and videos through an adaptation layer. No producer is privileged or required. This
+> section stays as one worked example of an adapter's mapping; nothing in Sprava depends on it.
+
 holos ("Voice is Local") is the author's GPL-3.0 dictation and meeting app for macOS 27. It records
 every finished dictation as one JSON line and every meeting as a portable folder, all written
 atomically with the same JSON conventions (ISO 8601 dates in UTC at one-second precision, sorted keys,

@@ -775,6 +775,11 @@ All rows: web-mcp-agents, unless noted.
 
 ## 8. The capture pipeline
 
+> **Reframed by decisions.md P12 (2026-10-07).** Sprava receives text and does not care how it was produced
+> (keyboard, built-in dictation, a commercial tool, holos). The app's note field and any adapter that writes
+> the capture-event format are producers on equal terms. Documents, images and videos will arrive through an
+> adaptation layer whose design is open. Where this section names holos as the producer, read "an adapter".
+
 This section defends boundaries 3 and 4 on the way in. Captures are the one input that arrives without the person typing it into Sprava, so each step treats the file as untrusted data.
 
 holos is the producer (decisions.md P6, P7). It writes one immutable JSON file per finished dictation or saved meeting into a folder the person chooses: `<capture-root>/<device-id>/<id>.json`, with media beside it, written atomically, never modified and never deleted by the producer (decisions.md C2). Sprava never reads holos's private files as its contract, because `dictations.jsonl` has no cursor and is rewritten in place, the retention sweep deletes records and audio after 7 or 30 days (default 30), holos offers no notification, socket or callback, only files, and Apple announced tighter Full Disk Access controls on 2026-10-02 (holos-formats; decisions.md P7). Until holos ships the hook, a developer-only importer reads `voiceislocal history list --json` and `session export --format json` and writes the same event files (decisions.md P7); it is a developer tool, run by hand and not supervised by the runtime.

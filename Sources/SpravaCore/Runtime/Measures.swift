@@ -8,7 +8,6 @@ public struct Measures: Sendable {
         public var days: [CalendarDate] = []
         public var externalEdits: [(binder: String, at: String, hint: String)] = []
         public var captures = 0
-        public var dictated = 0
         public var withinMinute = 0
         public var minuteMisses: [(event: String, seconds: Int)] = []
         public var producerLagOver60 = 0
@@ -99,10 +98,9 @@ public struct Measures: Sendable {
             let e = CaptureEvent(raw: o, url: URL(fileURLWithPath: "/"), digest: "")
             guard inWindow(o["captured_at"]?.stringValue) else { continue }
             r.captures += 1
-            if o["source"]?["kind"] == .str("dictation") { r.dictated += 1 }
             if let day = Self.day(o["captured_at"]?.stringValue) { r.capturesPerDay[day, default: 0] += 1 }
-            var end = e.endedAt ?? e.capturedAt ?? now
-            if o["ended_at"] == nil, let secs = o["extensions"]?["holos"]?["seconds"]?.numberValue?.doubleValue { end = end.addingTimeInterval(secs) }
+            // The end of the capture: ended_at, else captured_at; no producer's own extensions (decisions.md P12).
+            let end = e.endedAt ?? e.capturedAt ?? now
             if let wall = o["hlc"]?["wall_ms"]?.numberValue?.doubleValue, Date(timeIntervalSince1970: wall / 1000).timeIntervalSince(end) > 60 {
                 r.producerLagOver60 += 1
             }
@@ -147,7 +145,7 @@ public struct Measures: Sendable {
         let lowWeeks = stride(from: 0, to: max(0, days - 6), by: 1).filter { i in
             r.days[i...(i + 6)].map { r.capturesPerDay[$0.description] ?? 0 }.reduce(0, +) < 5
         }.count
-        out.append("Volume: \(r.captures) captures, \(r.dictated) dictated; 7-day stretches under 5 captures: \(lowWeeks) (bar: 40 and 20, none under 5)")
+        out.append("Volume: \(r.captures) captures; 7-day stretches under 5 captures: \(lowWeeks) (bar: 40, none under 5)")
         let base = r.shareTier01 + r.shareHand
         out.append("Self-keeping share: Tier 0 and 1 \(pct(r.shareTier01, base)) of Tier 0, 1 and hand changes (bar: half); brain \(r.shareBrain), hub \(r.shareHub)")
         let filed = r.filedKept + r.rejected + r.notSureFiledByPerson
