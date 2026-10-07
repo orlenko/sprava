@@ -110,6 +110,7 @@ Each feature names the decision it rests on and what the person sees. Terms: an 
 4. The capture inbox and the intake cards. Rests on decisions.md P12, C1 and C2.
    - Captures. The capture folder holds one immutable file per capture (capture-event-v0 §5). Sprava receives text; how the person produced it (keyboard, built-in dictation, a commercial tool, holos) is not its concern (decisions.md P12). Producers: the app itself, for notes entered in it (architecture 8), and any adapter that writes the capture-event format. No producer is privileged; the developer importer of capture-event-v0 §7.8 is one example adapter, not part of the plan. The person sees each capture turn into a card. When the clerk cannot run, the card is built by code with the binder set to "not sure" and says "filed by code, no model" (architecture 5.2). Meetings and documents dropped into the app are left for later (section 4).
    - Files in `intake/`. The runtime watches each adopted binder's `intake/` folder, top level only. It skips names that start with a dot, `_converted/`, `mail/`, and a file whose size is still changing. For each new file, code builds a Tier 0 card that proposes `file_document` in its intake form, which names a file already in the binder's `intake/` that the guard moves on approval (feature 10; architecture 4.3). The card shows the file name, the file's date, its size and its SHA-256. It reads no text, runs no helper and uses no model. The person picks or confirms the document folder and approves. On approval the guard checks the digest again and refuses a file that changed or is gone. If Claude Code proposes the same file, the person sees one card, with both sources named.
+   - Changed by decisions.md P13 (2026-10-07): intake files are read in full, OCR included, classified by code and the local model, and escalated to a smarter model when warranted; see `docs/adaptation-layer.md`. The code-only card above is what increment 5 built; increment 7 replaces it.
 
 5. Tier 1 filing by the clerk. Rests on decisions.md P2, P3, P5, A3 and C3. The clerk reads one capture in small windows of about 100 to 150 words, lists the items it hears, picks a binder from the filing list or "not sure", and checks for duplicates against a few items from that binder's search index. Plain code resolves dates and amounts and builds the proposal. The person sees better cards: split into items, dated, filed. The Health page shows whether the model is available and, if not, why in plain words ("Apple Intelligence is off in System Settings").
 
@@ -155,7 +156,7 @@ From decisions.md M2:
 Also deferred, as recommendations of this draft:
 
 - Meetings, documents, images and videos as captures. They arrive through the adaptation layer of decisions.md P12, which establishes the ingestion protocol for each type of input. Its design is open; the thesis needs only text.
-- Documents dragged into the app, with the extraction helper and OCR. They bring a sandboxed helper (architecture 2.1) and reading other people's text. Files in a binder's `intake/` are filed in the MVP by the code-built intake cards of feature 4, which read no text.
+- Documents dragged into the app. (The extraction helper and OCR are now in scope for `intake/`, increment 7; dragging is a second source for the same adapters.) They bring a sandboxed helper (architecture 2.1) and reading other people's text. Files in a binder's `intake/` are filed in the MVP by the code-built intake cards of feature 4, which read no text.
 - The per-binder copy of each filed capture in the binder's visible `captures/` folder (architecture 8, step 5; 13, item 8; capture-event-v0 §9). It would add a file and a `documents[]` entry for every approved capture, dozens a month, to catalogs that lifeproj, terminal agents and the hub all read. The thesis does not need it: each op's provenance names the capture's event id, and the capture store is backed up in its own cmirror configuration (feature 8). It can return when sync or sharing needs a binder to carry its own captures. Needs acceptance (question 9).
 - Ownership takeover after a move or a restore (architecture 13, item 45). The MVP keeps only the owner record of feature 1.
 - The cross-binder Today page: the hub's roll-up keeps working through the slices, and Today replaces it after the MVP (decisions.md A8).
@@ -267,7 +268,11 @@ The spikes by increment:
    - Main risk: recall and speed in the background, which spikes (f) and (j) measured at the start of increment 5 (architecture 5.3). The 3B Core model is not exercised on the author's Mac (section 6).
    - Drops first if it runs over: the French date grammar, so English ships first; then the duplicate check, so every item is proposed as new.
 
-7. Removed (2026-10-07, decisions.md P12). It was "holos writes dictation capture events". Sprava receives text and does not depend on any producer, so no producer work is part of the MVP.
+7. Reading intake (added 2026-10-07, decisions.md P13 to P16; it replaces the removed holos increment). Size not yet estimated.
+   - The extraction helper (architecture 2.1) and the type adapters for text, images, office documents and PDFs (`docs/adaptation-layer.md`).
+   - Every file in a binder's `intake/` is read in full: OCR, deterministic steps, then the local model classifies it (governing document, action needed, reference, other) and reads it with the document variant of capture-event-v0 §6.4. A smarter model follows up when warranted; unusual or suspect files are held for the person.
+   - How the material was obtained (email, a paper scan, a download, the person's note) is recorded with it (P16).
+   - Useful alone: the agent-and-monitor routine each teka runs today moves into Sprava, with every result a card the person approves.
 
 8. One template, and the backup line. About 1 week.
    - Useful alone: a new `tax-2026` binder starts in Sprava, ready and stamped v0. The Health page shows which binders cmirror backs up, and when it last did so if spike (l) finds a way to read it.
@@ -275,11 +280,11 @@ The spikes by increment:
    - Main risk: teka-v0 has only partial rules for creating a teka (question 3), and the choice of template is open (decisions.md P9).
    - It may ship during the window or after it, because it touches nothing the measures read.
 
-Time. The sizes add up to 2 + 3 + 7 + 2 + 3 + 4 + 1 = 22 weeks of serial work (increment 7 removed). The twelve spikes add about 3 weeks and the review passes of section 7, item 5, about 2 more. That is about 30 weeks, or 7 months, before the window starts, then 30 counted days, so about 8 months to "done" if nothing runs over.
+Time. The sizes add up to 2 + 3 + 7 + 2 + 3 + 4 + 1 = 22 weeks of serial work, plus increment 7 (reading intake), not yet estimated. The twelve spikes add about 3 weeks and the review passes of section 7, item 5, about 2 more. That is about 30 weeks, or 7 months, before the window starts, then 30 counted days, so about 8 months to "done" if nothing runs over.
 
 The 30-day window starts when all of these hold:
 
-- increments 1 to 6 have shipped;
+- increments 1 to 7 have shipped;
 - every binder the author uses daily has been surveyed and adopted;
 - only Claude Code acts on adopted binders; other agent CLIs are used read-only there.
 
@@ -288,7 +293,7 @@ During the window the build is frozen except for fixes and increment 8. A planne
 Two floors, if time runs out:
 
 - The early floor is increments 1 to 4, about 14 weeks plus spikes. The author's live binders keep their state with provenance and undo, the hub keeps working, and Claude Code proposes through the queue. It does not test the thesis.
-- The thesis floor is increments 1 to 6, about 21 weeks plus spikes, which is now also the full set the window needs.
+- The thesis floor is increments 1 to 6, about 21 weeks plus spikes. It proves the thesis on notes; intake files then get only the code-built filing cards of increment 5, without the reading of P13.
 
 If MCP has to be cut for time, the author runs Claude Code under the deny rules of feature 10 and accepts that its edits are recorded as external edits, which fail part 1 of M3.
 

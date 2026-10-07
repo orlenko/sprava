@@ -34,6 +34,21 @@
   No producer is privileged and none is a dependency: the capture-event format is Sprava's own inbound
   contract, which any adapter may write, and holos is at most one adapter among many. Supersedes P6, P7
   and C4 as dependencies; the adaptation layer is drafted in `docs/adaptation-layer.md` (open).
+- **P13 decided (2026-10-07, by the author).** Intake is per teka: each binder's own `intake/` folder,
+  where files arrive from downloads, from an email monitor, or because the person dropped them. A file there
+  is processed right away, and processing means reading it in full: OCR the whole thing, run the
+  deterministic steps that simplify classification, then the local model classifies and understands it (a
+  new governing document, something that needs an action such as a reply, reference material, or something
+  else). A smarter model follows up when that is warranted. A file that is very unusual, or that looks like an
+  error, is held for the person instead. Supersedes the MVP's code-only intake cards that read no text.
+- **P14 decided (2026-10-07, by the author).** Input types are text, images, office documents and PDFs. Audio
+  and video are not part of Sprava.
+- **P15 decided (2026-10-07, by the author).** Intake accepts files, not only text, from the person and from
+  outside programs alike.
+- **P16 decided (2026-10-07, by the author).** Sprava always records how a piece of information was
+  obtained: it came by email, the person scanned a paper letter, it was downloaded, the person told Sprava in
+  a note. The person usually says so, and Sprava keeps what they say. This is the channel the information
+  came through; it is not the tool the person used to produce text, which P12 leaves out.
 - **P6 superseded by P12.** Capture comes from holos through a versioned capture-event format. Sprava never
   links holos code and never reads holos's private file layout as its contract.
 - **P7 superseded by P12.** holos is the **producer**: it writes one immutable capture-event file per

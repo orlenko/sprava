@@ -1,181 +1,248 @@
 # The adaptation layer
 
-Status: draft for the author, 2026-10-07. It works out decisions.md P12: Sprava is input-agnostic. It
-receives text, and it will receive documents, images and videos through an adaptation layer that quickly
-establishes the ingestion protocol for each type of input. Nothing here is built yet, except the pieces
-section 6 lists as already in place.
+Status: draft, revised 2026-10-07 with the author's decisions P12 to P16 (decisions.md). Sprava is
+input-agnostic: it receives text, images, office documents and PDFs, through an adaptation layer that
+establishes the ingestion protocol for each type. Audio and video are not part of Sprava. Nothing here is
+built yet, except what section 7 lists.
 
 ## 1. What the layer is for
 
 Sprava's core does one thing with new material: it reads it, proposes changes to binders, and waits for the
-person. The core should never know where the material came from or how it was made. A note typed on the
-keyboard, a note dictated with any tool, a PDF from a bank, a photo of a letter, a screen recording: by the
-time the core sees any of them, each is the same kind of object.
+person. The core never knows which tool produced the material. A note typed or dictated with any tool, a PDF
+from a bank, a photo of a paper letter, an email saved by a mail monitor: by the time the core sees any of
+them, each is the same kind of object.
 
 The adaptation layer sits between the world and that object. It has two jobs:
 
 - turn each type of input into the one inbound contract the core reads (section 3);
 - make a new type cheap to add: a short descriptor, one extraction step if a new one is needed, and fixtures
-  (section 5).
+  (section 6).
 
-Three things are out of scope for the layer, and stay out:
+Out of scope for the layer:
 
-- How a person produces text. Dictation, accessibility features, a keyboard, a commercial tool: all of it
-  happens before Sprava and is invisible to it (P12).
-- Choosing a binder or writing to one. Adapters produce text and facts; the clerk and the review queue decide
-  (architecture 5, 6). An adapter that could file things would bypass the person.
-- Any one producer. No adapter is privileged and none is required. Removing any adapter leaves Sprava working.
+- How a person produces text (P12). The keyboard, built-in dictation, a commercial tool: invisible to Sprava.
+- Audio and video (P14).
+- Writing to a binder. Adapters and the reading pipeline produce cards; the person approves them
+  (architecture 6). Nothing is filed behind the person's back.
+- Any one producer. No adapter is privileged and none is required.
 
 ## 2. Principles
 
-1. **One contract.** Everything enters as a capture event (capture-event-v0 §3): text, optional media, a few
-   facts. The core reads nothing else, and it never reads an adapter's private `extensions`.
-2. **Two kinds of adapter, one contract.**
-   - *Type adapters* turn a kind of content into text and facts: plain text, document, image, audio, video.
-     They are built into Sprava.
-   - *Sources* are where material arrives: Sprava's note field, drag and drop, the share sheet, a binder's
-     `intake/` folder, and any outside program that writes capture events into the capture folder. A source
-     hands bytes to a type adapter, or, for an outside program, writes the event itself.
-3. **Untrusted input, parsed apart.** Documents come from other people. Every parser runs in the sandboxed
-   extraction helper of architecture 2.1: no network, no Keychain, one file at a time, a size and time cap, a
-   crash that kills only the helper. Nothing in a file is ever executed (no PDF JavaScript, no macros, no
-   embedded links followed).
-4. **Code first, model second.** An adapter gets text by code: a text layer, on-device OCR (Vision), on-device
-   speech recognition, file metadata. The clerk reads the result afterwards. A type adapter never calls the
-   language model, so every capture gets a code-built card within the minute even when the model is off
-   (architecture 5.2).
-5. **Originals are kept, unchanged.** The original file is copied beside the event as media with its SHA-256
-   (capture-event-v0 §3.5), and the extracted text points back to it. An adapter never edits, re-encodes or
-   "cleans" the original. Stripping location data from a photo produces a separate derived copy.
-6. **Private by default for other people's material.** Documents, images, audio and video default to
-   `sensitivity: private` (capture-event-v0 §3.3, §9); text the person entered defaults to `unmarked`.
-7. **Deterministic and testable.** The same file and the same adapter version give the same event, apart from
-   ids and clocks. Each adapter ships with fixtures and expected events (section 5.3).
+1. **One contract.** Everything enters as a capture event (capture-event-v0 §3): text, the original files as
+   media, and a few facts. The core never reads an adapter's private `extensions`.
+2. **Type adapters and sources.** A *type adapter* turns a kind of content into text and facts: plain text,
+   image, office document, PDF, email file. A *source* is where material arrives: a binder's `intake/` folder
+   (the main one), Sprava's note field, drag and drop, the share sheet, and any outside program that writes
+   capture events.
+3. **Read in full (P13).** A file in intake is read completely: every page through OCR when it has no text
+   layer, every part of an office document. Limits exist only for safety (a file that is enormous or that
+   hangs the parser); a file stopped by one is held for the person, never filed half-read without saying so.
+4. **Code first, then the local model, then a smarter one (P13).** Deterministic steps come first (text layer,
+   OCR, headers, dates, amounts, known senders), because they make classification easier and are always
+   right about what they find. The local model then classifies and reads. A smarter model follows up only
+   when warranted (section 4.4).
+5. **Untrusted input, parsed apart.** Files come from other people. Every parser runs in the sandboxed
+   extraction helper of architecture 2.1: no network, no Keychain, one file at a time, a time budget, a crash
+   that kills only the helper. Nothing in a file is executed: no PDF JavaScript, no macros, no links followed,
+   no remote images loaded.
+6. **Originals are kept unchanged.** The original file is copied beside the event as media with its SHA-256
+   (capture-event-v0 §3.5). Derived copies (a photo without location data, OCR text) are separate.
+7. **How it was obtained is always recorded (P16).** Every capture says how the information reached the
+   person: by email, a paper letter they scanned, a download, a note they wrote. Sources fill in what they
+   know; the person's own words win.
+8. **Private by default for other people's material.** Documents, images and email default to
+   `sensitivity: private`; a note the person wrote defaults to `unmarked` (capture-event-v0 §3.3).
 
 ## 3. The contract
 
-The contract is capture-event-v0 as it stands, read with three clarifications that P12 makes necessary.
+The contract is capture-event-v0, with the changes in 3.2.
 
 ### 3.1 What an adapter fills in
 
-| Field | Filled by the adapter | Notes |
+| Field | Filled by | Notes |
 |---|---|---|
-| `source.app` | the adapter's id, such as `sprava.note`, `sprava.pdf`, or an outside program's name | Registered per device folder (architecture 8). |
-| `source.kind` | the content type: `text`, `document`, `image`, `audio`, `video`, `email` | See 3.2. |
+| `source.app` | the adapter's id (`sprava.intake`, `sprava.note`) or an outside program's name | Registered per device folder (architecture 8). |
+| `source.kind` | the content type: `text`, `image`, `document`, `pdf`, `email` | See 3.2. |
 | `source.ref`, `source.revision` | an id for the underlying thing, and a version key | For a file: its SHA-256 is the revision. |
-| `text` | the extracted text, normalized (NFC; control and bidi characters removed; length capped) | Empty only for a retraction. |
-| `title` | the file name, or the first line for text | Optional. |
-| `media[]` | the original, and any derived copies, with `sha256`, `bytes`, `mime`, `seconds` | capture-event-v0 §3.5. |
-| `captured_at`, `ended_at` | when the material arrived, and when entering it ended | `ended_at` starts the one-minute measure. |
+| `obtained` | how the information reached the person (P16) | See 3.3. |
+| `text` | the full extracted text, normalized (NFC; control and bidi characters removed) | Empty only for a retraction. |
+| `title` | the file name, or the first line of a note | |
+| `media[]` | the original and any derived copies, with `sha256`, `bytes`, `mime` | |
+| `captured_at`, `ended_at` | when the material arrived, and when entering it ended | The minute counts from `ended_at`. |
 | `locale` | the language of `text`, detected by code when the source does not know it | `und` when unknown. |
-| `sensitivity` | `private` for documents, images, audio and video; `unmarked` for entered text | The person can raise it, never lower it silently. |
-| `extensions.<adapter>` | whatever the adapter wants to keep for itself | The core never reads it (P12). |
+| `sensitivity` | `private` for other people's material; `unmarked` for the person's own notes | Raised by the person, never lowered silently. |
+| `extensions.<adapter>` | anything the adapter keeps for itself | The core never reads it (P12). |
 
-### 3.2 Three changes P12 asks of capture-event-v0
+### 3.2 Changes to capture-event-v0
 
-1. **`source.kind` names the content, not the way it was made.** Today the enum mixes the two:
-   `dictation`, `meeting`, `text`, `document`, `share`, `email`. Proposed: `text`, `document`, `image`,
-   `audio`, `video`, `email`. Readers keep accepting `dictation` and `meeting` as `text`, and `share` as
-   whatever it carries, so existing files stay valid.
-2. **One optional fact about how the text was obtained**, for the clerk's confidence and for the card:
-   `text_from`: `entered`, `text-layer`, `ocr`, `speech`, `caption`. It says nothing about the tool. A card
-   built from OCR can say "read from a scan; check the numbers", which is useful; whether the person
-   dictated or typed is not recorded.
-3. **The holos profile becomes an example.** capture-event-v0 §7 stays as one worked mapping for an outside
-   producer, with the note already added. Nothing in the core or the plan refers to it.
+1. **`source.kind` names the content.** Today: `dictation`, `meeting`, `text`, `document`, `share`, `email`.
+   Proposed: `text`, `image`, `document` (office formats), `pdf`, `email`. Readers keep accepting the old
+   values (`dictation` and `meeting` read as `text`), so existing files stay valid.
+2. **A new `obtained` object** (3.3).
+3. **`text_from`** inside `obtained`: how the text was extracted (`entered`, `text-layer`, `ocr`, `parsed`).
+   It lets a card say "read from a scan; check the numbers".
+4. **The holos profile (§7) stays as a worked example**, with its note.
 
-## 4. The type adapters
+### 3.3 `obtained`: how the information came (P16)
 
-Each row is one ingestion protocol. "Tier 0 card" is what the person sees within the minute with no model.
+| Field | Meaning | Who fills it |
+|---|---|---|
+| `channel` | `email`, `paper` (a paper document the person scanned or photographed), `download`, `message` (a chat or text message), `note` (the person wrote it), `other` | The source when it knows (a mail monitor knows `email`), else the person. |
+| `from` | who it came from, as the person or the headers say ("the strata manager", an email sender) | Headers by code; the person's words otherwise. |
+| `received` | the date it reached the person, when it differs from the capture date (a letter that arrived last week) | The person, or a header date. |
+| `said` | the person's own words about it, kept verbatim ("came in the mail from the notary, scanned it today") | The person. |
+| `text_from` | `entered`, `text-layer`, `ocr`, `parsed` | The adapter. |
 
-| Type | Accepts (sniffed by content, not by extension) | How text is obtained (code) | What is kept | Clerk reads it as | Tier 0 card |
-|---|---|---|---|---|---|
-| Text | `text/plain`, Markdown, RTF; the note field; a shared text or URL | as given; RTF flattened; tracking parameters removed from URLs (capture-event-v0 §8.3) | the text | capture variant (items) | one item per line, binder "not sure" (built) |
-| Document | PDF; later DOCX, Pages, HTML | the PDF text layer; pages with no text layer go through Vision OCR, first N pages; DOCX and HTML by their text | the original file; page count | document variant: title, date, parties, amounts, deadlines (capture-event-v0 §6.4) | "File this document": name, date, size, digest, first lines |
-| Image | JPEG, HEIC, PNG; screenshots | Vision OCR; image metadata (date taken); no faces, no location | the original; a copy without location data | document variant when it holds text, else no reading | "File this image", with the OCR text if any |
-| Audio | M4A, MP3, WAV (a voice memo, a recorded call) | on-device speech recognition (SpeechAnalyzer), capped by duration | the original; duration | capture variant, read in windows | "File this recording", first lines of the transcript |
-| Video | MOV, MP4 (a screen recording, a clip) | the audio track as for audio; optionally OCR of a few key frames | the original; duration | capture variant on the transcript | "File this video", duration and first lines |
-| Email | `.eml`, later an inbox | headers parsed by code; body as text; attachments become their own captures linked to it | the message file | capture variant; attachments as documents | one card for the message, one per attachment |
+When the source cannot tell and the person said nothing, `channel` is `other` and the card asks once, with
+one tap per channel. The answer is kept on the capture and copied into the provenance of everything filed
+from it (teka-v0 §5.8), so a binder can always say how it learned a fact.
 
-Limits apply to every type and are part of each descriptor: a byte cap, a page or duration cap, a time
-budget in the helper, and a text cap. Material over a limit is still kept and carded; only the extraction
-stops, and the card says what was not read.
+## 4. Reading intake (P13)
 
-## 5. Making a new type cheap
+The pipeline every file in a binder's `intake/` goes through, as soon as it holds still:
 
-### 5.1 A descriptor per type
+### 4.1 Deterministic steps (code)
 
-A type adapter is mostly data. A descriptor names:
+1. **Sniff** the type from the bytes, never from the name. A mismatch (a PDF named `.jpg`) is noted.
+2. **Copy the original** into Sprava's capture store with its SHA-256. The file stays in `intake/` until the
+   person approves filing it.
+3. **Extract all the text**: the PDF text layer, OCR (Vision, on device) for every page or image without one,
+   the text of an office document, the headers and body of an email file. Attachments inside an email become
+   their own captures, linked to the message.
+4. **Facts by code**: dates and amounts (the grammar already used by the clerk), page count, sender and
+   subject from headers, known senders matched against the binder's documents and items, reference numbers
+   (invoice, account, file numbers) by pattern.
+5. **Signals for classification**: words such as "invoice", "notice", "due", "please reply", "minutes",
+   "bylaw", "amendment", "statement"; a question addressed to the person; a deadline in the text.
 
-- `id` and `version`;
-- `accepts`: content types (UTIs and MIME types) and magic bytes, checked on the bytes, never on the name;
-- `steps`: an ordered list from the step library (5.2);
-- `limits`: bytes, pages or seconds, time, text length;
-- `sensitivity` default and `clerk_variant` (capture or document);
-- `card`: which facts the Tier 0 card shows.
+### 4.2 Classification by the local model
 
-### 5.2 A small step library
+The local model answers one closed question, with code's facts in front of it: what is this?
 
-Most types reuse the same few steps, each pure and run inside the extraction helper:
+| Class | Example | What the card proposes |
+|---|---|---|
+| Governing document | bylaws, a contract, a lease, a ruling, a policy | file it as a document; add any obligations and deadlines it creates as items |
+| Action needed | an email that warrants a reply, an invoice to pay, a form to sign | file it; add the action as an item with its due date; mark `reply-owed` or `payment` |
+| Information to keep | a statement, a receipt, minutes, a confirmation | file it; note what it updates (a balance, a status) |
+| Not sure | anything else | file it as a document with the model's best reading shown |
 
-`sniff` → `copy-original` (with SHA-256) → one or more of `text-layer`, `ocr-pages`, `ocr-image`,
-`speech-to-text`, `parse-headers`, `strip-location` → `normalize-text` → `detect-locale` → `facts`
-(dates, page count, duration) → `emit`.
+Code checks the answer as it checks the clerk's today (capture-event-v0 §6.4): every quoted fact must occur
+in the text, every date is resolved by code, amounts are parsed by code.
 
-Adding a type that only combines existing steps is a descriptor and fixtures. Adding a step is code in the
-helper, reviewed as parser code.
+### 4.3 Understanding by the local model
 
-### 5.3 A conformance kit
+Then the local model reads the document with the document variant of capture-event-v0 §6.4: title, date,
+parties, amounts, deadlines, a one-sentence summary, and the binder's existing items it touches (the
+duplicate check). Long documents are read in windows, as notes are; every window is read, because the file is
+read in full.
 
-Every adapter ships invented fixtures: input files and the expected event for each, minus ids and clocks.
-The kit also feeds hostile files to every adapter: truncated, oversized, mislabelled (a PDF named `.jpg`),
-nested archives, bidi controls in names, PDFs with JavaScript, images with location data. Expected results:
-a card or a quarantine, never a crash of the runtime, never a network request, never an executed script.
+### 4.4 Escalation to a smarter model
 
-### 5.4 Outside programs
+The local model is good at filing and poor at long reasoning. A smarter model (a connected brain, such as
+Claude Code over MCP; architecture 7) follows up when one of these holds:
 
-A program outside Sprava (a phone inbox later, another person's tool, a script) does not need a type adapter.
-It writes capture events into its own device folder under the capture root (capture-event-v0 §5), and the
-person registers that folder once (architecture 8). The same trust rules apply as today: a registered
-folder's events are read as that program's; an unregistered folder's events are marked "unverified source";
-only Sprava's own folder, backed by the app's notices, can choose a binder by hint.
+- the class is "not sure", or the local model's reading failed its code checks;
+- the document is long or dense (above a page or word count to be set from fixtures);
+- it is a governing document, whose obligations are worth a careful reading;
+- it needs a reply drafted;
+- the person asks ("look at this properly").
 
-## 6. What already exists
+Today a brain proposes only when it is asked from its own side. Escalation therefore needs one new MCP
+capability: a queue of documents waiting for a careful reading, which a connected brain can list, read within
+its scope, and answer with proposals. Nothing leaves the Mac unless the person has connected a brain and put
+the binder in its scope (architecture 7.5); otherwise the card says a careful reading is recommended.
 
-- The contract reader, with type checks, quarantine, chains, retractions and sensitivity raises:
-  `SpravaCore/Capture/CaptureEvents.swift`, `CaptureInbox.swift`.
-- The text type, from the note field (`CaptureProducer`) and `sprava note`, with Tier 0 cards and the clerk's
-  capture variant (`SpravaCore/Clerk`).
-- A first document source: files in a binder's `intake/` become code-built filing cards that read no text
-  (`SpravaCore/Capture/Intake.swift`). Under this design they would become document captures, so their text
-  reaches the clerk.
-- Producer registration and the app's notices, which section 5.4 relies on.
+### 4.5 Held for the person
 
-Not built: the extraction helper, every step but text normalization, the clerk's document variant, the share
-sheet, drag and drop, and the email type.
+A file is held, with a card that says why, instead of read, when:
 
-## 7. A build order
+- it is encrypted or password-protected, or will not parse;
+- it is far outside the size or page limits;
+- its type does not match its name in a way that looks deliberate;
+- it is an executable, a script, an archive of many files, or a kind no adapter accepts;
+- the reading contradicts itself badly enough that the checks drop most of it.
 
-1. **Contract cleanup.** Rename "producer" to "adapter" in the docs and code; make `extensions` opaque to the
-   core by a test; add `text_from`; widen `source.kind` as 3.2 proposes.
-2. **The extraction helper** as its own sandboxed executable, with the step runner, the limits and the
-   conformance kit, starting with `sniff`, `copy-original`, `normalize-text`, `detect-locale`.
-3. **Documents:** PDFs with a text layer, then Vision OCR for scanned pages; `intake/` and drag and drop as
-   sources; the clerk's document variant (capture-event-v0 §6.4) and its binder call.
-4. **Images:** OCR and location stripping; the share sheet as a source.
-5. **Audio:** on-device speech for recordings that arrive as files.
-6. **Video and email**, when needed.
+## 5. The type adapters (P14)
 
-Steps 1 to 3 cover the documents that real binders receive most. Each later step is a descriptor, perhaps a
-step, and fixtures.
+| Type | Accepts (sniffed by content) | How text is obtained | Kept | Read as |
+|---|---|---|---|---|
+| Text | plain text, Markdown, RTF; notes; a shared text or URL | as given; RTF flattened; tracking parameters removed from URLs | the text | notes (capture variant) |
+| Image | JPEG, HEIC, PNG, TIFF; screenshots; photos of paper | Vision OCR; date taken; location stripped from a derived copy | original and the stripped copy | document variant when it holds text |
+| Office document | DOCX, XLSX, PPTX, Pages, Numbers, Keynote, RTF, ODF | the document's own text, tables as rows; no macros run | the original | document variant |
+| PDF | PDF | the text layer; Vision OCR for pages without one; every page | the original | document variant |
+| Email | `.eml`, `.emlx`, `.msg` | headers and body by code; HTML bodies as text with no remote content; attachments as their own captures | the message file | notes for the body; documents for attachments |
 
-## 8. Open questions
+## 6. Making a new type cheap
 
-1. Should files in `intake/` become document captures that the clerk reads, or stay as filing cards that read
-   no text, with drag and drop as the only path to the clerk? The first gives better cards; the second keeps
-   other people's documents away from the model until the person asks.
-2. OCR and speech limits: how many pages and how many minutes before a capture is "kept but not read"?
-3. Audio and video are heavy. Are they needed before the 30-day trial, or after?
-4. Should outside programs be able to send documents (media in their events), or only text?
-5. Is `text_from` worth recording at all, given P12? This draft keeps it for the card's honesty about OCR,
-   and never records the tool.
+### 6.1 A descriptor per type
+
+A type adapter is mostly data: `id` and `version`; `accepts` (content types and magic bytes, checked on the
+bytes); `steps` from the step library; safety limits; the default `sensitivity`; the default
+`obtained.channel` when the source implies one; and how it is read (notes or document variant).
+
+### 6.2 A small step library
+
+Each step is pure and runs inside the extraction helper:
+
+`sniff` → `copy-original` → one or more of `text-layer`, `ocr`, `office-text`, `parse-email`,
+`strip-location` → `normalize-text` → `detect-locale` → `facts` → `signals` → `emit`.
+
+A type that combines existing steps is a descriptor and fixtures. A new step is parser code, reviewed as such.
+
+### 6.3 A conformance kit
+
+Every adapter ships invented fixtures and the expected event for each, minus ids and clocks, plus hostile
+files: truncated, oversized, mislabelled, encrypted, nested archives, bidi characters in names, PDFs with
+JavaScript, office files with macros, HTML email with remote images and tracking pixels. Expected results: a
+card or a hold, never a crash of the runtime, never a network request, never executed content.
+
+### 6.4 Outside programs (P15)
+
+An outside program (a mail monitor, a scanner's software, a script) can feed Sprava in two ways:
+
+- drop files into a binder's `intake/`, as such programs do today; Sprava reads them as any other file and
+  takes `obtained.channel` from the program when it is registered for that folder (a mail monitor implies
+  `email`);
+- write capture events, with files as media, into its own device folder under the capture root
+  (capture-event-v0 §5), registered once by the person (architecture 8).
+
+The trust rules stay as built: an unregistered folder's events are marked "unverified source", and only
+Sprava's own notes, proven by the app's notices, can choose a binder by hint.
+
+## 7. What already exists
+
+- The contract reader, with type checks, quarantine, chains, retractions and sensitivity raises
+  (`SpravaCore/Capture/CaptureEvents.swift`, `CaptureInbox.swift`).
+- Text from the note field and `sprava note`, with code-built cards and the clerk's notes reading
+  (`SpravaCore/Clerk`).
+- The intake watcher of increment 5: it notices a file that holds still in `intake/` and builds a filing card
+  that reads no text (`SpravaCore/Capture/Intake.swift`). P13 replaces the "reads no text" part; the watcher,
+  the filing op with its digest check, and the folder choice stay.
+- Producer registration and the app's notices (section 6.4).
+
+Not built: the extraction helper, every extraction step, `obtained`, the classification and document
+readings, escalation, and the sources other than notes and `intake/`.
+
+## 8. A build order (increment 7 of the MVP)
+
+1. **Contract:** `obtained` with `text_from`; the wider `source.kind`; an "how did this reach you?" answer on
+   cards; provenance copied into filed items.
+2. **The extraction helper** as its own sandboxed executable, with the step runner, safety limits and the
+   conformance kit.
+3. **PDFs and images:** text layer and Vision OCR, every page; intake files become captures that are read.
+4. **Classification and the document reading** by the local model, with the code checks; holds.
+5. **Office documents and email files.**
+6. **Escalation:** the queue a connected brain can read and answer.
+
+## 9. Questions for the author
+
+1. Where does the mail monitor write today? The intake watcher skips `intake/mail/` on purpose, because the
+   old lifeproj layout keeps the monitor's credentials and state there (teka-v0 §3.3). If extracted emails
+   land in `intake/mail/`, the watcher must read the message files there while still never touching `.env`
+   or `state.json`.
+2. Each teka's agent watches its `intake/` today and processes what lands. Once Sprava reads intake, two
+   readers would file the same file twice. Should the manual addendum tell agents to leave `intake/` to Sprava
+   and work from Sprava's cards (and the escalation queue) instead?
+3. A note the person enters gets `obtained.channel: note`. When the note relays something ("the manager
+   called: the plumber comes Thursday"), should the card ask for the channel too (`message`, a call), or is
+   `note` enough there?
