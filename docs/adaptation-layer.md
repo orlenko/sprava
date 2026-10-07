@@ -201,8 +201,8 @@ card or a hold, never a crash of the runtime, never a network request, never exe
 An outside program (a mail monitor, a scanner's software, a script) can feed Sprava in two ways:
 
 - drop files into a binder's `intake/`, as such programs do today; Sprava reads them as any other file and
-  takes `obtained.channel` from the program when it is registered for that folder (a mail monitor implies
-  `email`);
+  takes `obtained.channel` from where they land: `intake/mail/`, the mail monitor's export target, implies
+  `email`;
 - write capture events, with files as media, into its own device folder under the capture root
   (capture-event-v0 §5), registered once by the person (architecture 8).
 
@@ -236,13 +236,18 @@ readings, escalation, and the sources other than notes and `intake/`.
 
 ## 9. Questions for the author
 
-1. Where does the mail monitor write today? The intake watcher skips `intake/mail/` on purpose, because the
-   old lifeproj layout keeps the monitor's credentials and state there (teka-v0 §3.3). If extracted emails
-   land in `intake/mail/`, the watcher must read the message files there while still never touching `.env`
-   or `state.json`.
+1. Answered 2026-10-07. Each teka that consumes email runs its own mail monitor (`imap-extract`) from
+   `scripts/` (the newer lifeproj layout), watching one mail label, and its export target is the teka's
+   `intake/mail/`. So the intake watcher reads message files in `intake/mail/` as email
+   (`obtained.channel: email`, filled without asking), and still never reads, files, indexes or shows a
+   `.env` or `state.json` anywhere under `intake/` (teka-v0 §3.3). Sprava never runs the monitor and never
+   reads its configuration. Still open: the exact shape of an exported message (see 4).
 2. Each teka's agent watches its `intake/` today and processes what lands. Once Sprava reads intake, two
    readers would file the same file twice. Should the manual addendum tell agents to leave `intake/` to Sprava
    and work from Sprava's cards (and the escalation queue) instead?
 3. A note the person enters gets `obtained.channel: note`. When the note relays something ("the manager
    called: the plumber comes Thursday"), should the card ask for the channel too (`message`, a call), or is
    `note` enough there?
+4. What does `imap-extract` write for one message: a single `.eml` file, or a folder per message (body,
+   metadata, attachments as separate files)? The email adapter and the "file holds still" rule depend on it:
+   a folder must be treated as one capture once all its files have stopped changing.
