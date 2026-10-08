@@ -351,6 +351,17 @@ import Testing
         #expect(box.runningFor("backup") == .seconds(6 * 3600 + 601))
     }
 
+    // MARK: - qcRsh: an unreadable lifeproj registry stops development commands
+
+    @Test func anUnreadableRegistryStopsDevelopmentCommands() throws {
+        let dir = try folder()
+        let binder = dir.appendingPathComponent("estate-example", isDirectory: true)
+        let registry = dir.appendingPathComponent("registry.toml")
+        #expect(DevelopmentGuard.refusal(for: binder, registryURL: registry) == nil)
+        try Data([0x5B, 0xFF, 0xFE, 0x5D]).write(to: registry)
+        #expect(DevelopmentGuard.refusal(for: binder, registryURL: registry)?.contains("cannot be read") == true)
+    }
+
     // MARK: - qfZ4n: a hand edit with no Sprava write after it still reaches the op log
 
     @Test func aHandEditIsRecordedWithoutAWrite() throws {

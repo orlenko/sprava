@@ -61,6 +61,12 @@ final class BinderActions: ObservableObject {
             description = s["description"]?.stringValue ?? ""
             filing = s["filing"] == .bool(true)
         }
+        await loadReview(folder)
+    }
+
+    /// The cards and the history only: the page's timer calls this, so it never overwrites the description being
+    /// typed. Edits in progress are kept, since they live apart from the cards, by card id.
+    func loadReview(_ folder: URL) async {
         do {
             let reply = try await client.command("proposals", binder: folder, timeout: 5)
             cards = (reply["proposals"]?.arrayValue ?? []).compactMap { p in
