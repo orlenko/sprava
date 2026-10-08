@@ -336,7 +336,7 @@ func pEventObj(_ text: String, extra: (inout JSONObject) -> Void = { _ in }) -> 
         let reader = LineReader(fd: fd)
         let meta = #""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#
         func propose(_ n: Int) -> JSONValue? {
-            let line = #"{"jsonrpc":"2.0","id":\#(n),"method":"tools/call","params":{\#(meta),"name":"propose_ops","arguments":{"binder":"estate-example","title":"t\#(n)","ops":[{"op":"add_log_entry","args":{"entry":{"title":"x","date":"2026-10-06"}}}]}}}"#
+            let line = #"{"jsonrpc":"2.0","id":\#(n),"method":"tools/call","params":{\#(meta),"name":"propose_ops","arguments":{"binder":"estate-example","title":"t\#(n)","ops":[{"op":"add_log_entry","args":{"entry":{"action":"noted","title":"x","date":"2026-10-06"}}}]}}}"#
             _ = writeLine(fd, line)
             guard case .line(let r) = reader.next(limit: 1 << 20) else { return nil }
             return try? JSONParser.parse(r).value

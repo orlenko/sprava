@@ -563,7 +563,7 @@ public struct CaptureInbox: Sendable {
             let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: cardOps,
                                      provenance: provenance, now: now)
             if (try? ProposalStore.save(card, in: folder)) != nil {
-                commands.trustProposals([card.id], in: folder)
+                try? commands.trustProposals([card.id], in: folder)
                 made.append((folder, card.id))
             }
         }
@@ -625,7 +625,7 @@ public struct CaptureInbox: Sendable {
                                                              (key: "retraction", value: .string(retraction)),
                                                              (key: "remains", value: .str("the event files in the capture folder, the titles in this binder's history, and backups"))]),
                                      now: now)
-            if (try? ProposalStore.save(card, in: row.folder)) != nil { commands.trustProposals([card.id], in: row.folder) }
+            if (try? ProposalStore.save(card, in: row.folder)) != nil { try? commands.trustProposals([card.id], in: row.folder) }
         }
     }
 
@@ -663,7 +663,8 @@ public struct CaptureInbox: Sendable {
             if (try? writeUnfiled(privateCopy(p).raw)) == nil { complete = false }
         }
         for (folder, p) in filed where p.raw["provenance"]?["private"] != .bool(true) {
-            if (try? ProposalStore.save(privateCopy(p), in: folder)) != nil { commands.trustProposals([p.id], in: folder) } else { complete = false }
+            // A rewritten card that cannot be trusted again is not approvable, so the raise is retried.
+            if (try? ProposalStore.save(privateCopy(p), in: folder)) != nil, (try? commands.trustProposals([p.id], in: folder)) != nil {} else { complete = false }
         }
         // Items already filed from the chain get a card that redacts them (capture-event-v0 §3.2, §3.3), unless a
         // card waiting from the chain already does (a retry after a partial failure).
@@ -686,7 +687,7 @@ public struct CaptureInbox: Sendable {
                                      provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))), (key: "private", value: .bool(true)),
                                                              (key: "remains", value: .str("titles already published to the hub until the next publish"))]),
                                      now: now)
-            if (try? ProposalStore.save(card, in: row.folder)) != nil { commands.trustProposals([card.id], in: row.folder) } else { complete = false }
+            if (try? ProposalStore.save(card, in: row.folder)) != nil, (try? commands.trustProposals([card.id], in: row.folder)) != nil {} else { complete = false }
         }
         journal([("stage", .str("sensitivity_raised")), ("cards", .int(unfiled.count + filed.count))])
         return complete
@@ -842,7 +843,7 @@ public struct CaptureInbox: Sendable {
         }
         for (proposal, folder) in placed.filter({ $0.1 == nil }) + placed.filter({ $0.1 != nil }) {
             if let folder, (try? ProposalStore.save(proposal, in: folder)) != nil {
-                commands.trustProposals([proposal.id], in: folder)
+                try? commands.trustProposals([proposal.id], in: folder)
                 saved.append((folder, proposal.id))
                 outcome.filed += proposal.ops.count
             } else {
@@ -888,7 +889,7 @@ public struct CaptureInbox: Sendable {
             let folder = URL(fileURLWithPath: binder, isDirectory: true)
             if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == work.tier0 }),
                (try? ProposalStore.save(annotated(p), in: folder)) != nil {
-                commands.trustProposals([p.id], in: folder)
+                try? commands.trustProposals([p.id], in: folder)
             }
         } else if let p = unfiled().first(where: { $0.id == work.tier0 }) {
             try? writeUnfiled(annotated(p).raw)
@@ -970,7 +971,7 @@ public struct CaptureInbox: Sendable {
            row.teka.catalog?["meta"]?["disclosure"]?.stringValue != "none" {
             do {
                 try ProposalStore.save(proposal, in: row.folder)
-                commands.trustProposals([proposal.id], in: row.folder)
+                try commands.trustProposals([proposal.id], in: row.folder)
                 return (proposal.id, row.folder)
             } catch {
                 journal([("event", .string(event.id)), ("stage", .str("file_failed")), ("code", .string("\(type(of: error))"))])
@@ -1068,12 +1069,13 @@ public struct CaptureInbox: Sendable {
         try saveUnfiledDigests(digests)
         do {
             try ProposalStore.save(Proposal(raw: raw), in: folder)
+            try commands.trustProposals([proposalID], in: folder)
         } catch {
+            // The Inbox keeps offering the card; a copy saved but not trusted cannot be approved in the binder.
             digests[proposalID] = digest
             try? saveUnfiledDigests(digests)
             throw error
         }
-        commands.trustProposals([proposalID], in: folder)
         try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(proposalID).json"))
         journal([("card", .string(proposalID)), ("stage", .str("filed_by_person"))])
     }

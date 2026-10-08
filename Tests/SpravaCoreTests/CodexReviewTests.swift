@@ -24,7 +24,7 @@ import Testing
         let other = Commands(support: s.support, deviceID: "another-mac")
         let server = MCPServer(client: client, commands: other, shelf: { Shelf.rows(registry: nil, picked: [s.folder]) }, now: { pNow })
         let meta = #""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#
-        let r = try JSONParser.parse(server.handle(line: #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{\#(meta),"name":"propose_ops","arguments":{"binder":"estate-example","title":"x","ops":[{"op":"add_log_entry","args":{"entry":{"title":"x","date":"2026-10-06"}}}]}}}"#)!).value
+        let r = try JSONParser.parse(server.handle(line: #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{\#(meta),"name":"propose_ops","arguments":{"binder":"estate-example","title":"x","ops":[{"op":"add_log_entry","args":{"entry":{"action":"noted","title":"x","date":"2026-10-06"}}}]}}}"#)!).value
         #expect(r["result"]?["isError"] == .bool(true))
         #expect(pOpen(s).isEmpty)
     }
@@ -150,7 +150,7 @@ import Testing
         let card = Proposal.make(title: "Close", actor: actor, ops: [JSONObject([(key: "op", value: .str("complete")), (key: "args", value: .obj([
             ("id", .str("estate-example-2026-007")), ("closed_at", .str("2026-10-06T12:00:00Z")), ("source", .str("capture"))]))])], now: pNow)
         try ProposalStore.save(card, in: s.folder)
-        s.commands.trustProposals([card.id], in: s.folder)
+        try s.commands.trustProposals([card.id], in: s.folder)
         _ = try req(s.commands, [("command", .str("apply")), ("binder", .string(s.folder.path)), ("op", .str("update_item")),
                                  ("args", .obj([("id", .str("estate-example-2026-007")), ("set", .obj([("due", .str("2026-12-01"))]))]))])
         let listed = try req(s.commands, [("command", .str("proposals")), ("binder", .string(s.folder.path))])

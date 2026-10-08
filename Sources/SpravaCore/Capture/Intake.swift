@@ -307,7 +307,7 @@ public struct IntakeWatcher: Sendable {
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
         do {
             try ProposalStore.save(proposal, in: row.folder)
-            commands.trustProposals([proposal.id], in: row.folder)
+            try commands.trustProposals([proposal.id], in: row.folder)
         } catch {
             return nil
         }

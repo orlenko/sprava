@@ -177,11 +177,12 @@ public final class MCPServer: @unchecked Sendable {
 
     // MARK: - Calls
 
-    /// The binders this client may see: in its scope, and not at disclosure `none` (architecture 7.6).
+    /// The binders this client may see: in its scope, and not at disclosure `none` as last confirmed by the person
+    /// (architecture 7.6; the privacy ratchet, 4.5).
     func visible() -> [(ShelfRow, String)] {
         shelf().compactMap { row in
             guard row.teka.isAdopted, let level = client.level(for: row.folder),
-                  row.teka.catalog?["meta"]?["disclosure"]?.stringValue != "none" else { return nil }
+                  PrivacyRatchet.disclosure(row) != "none" else { return nil }
             return (row, level)
         }
     }
@@ -248,7 +249,7 @@ public final class MCPServer: @unchecked Sendable {
         case "list_readings":
             let rows = visible().filter { args["binder"] == nil || $0.0.teka.name == args["binder"]?.stringValue }
             let names = Dictionary(rows.map { ($0.0.folder.standardizedFileURL.path, $0.0.teka.name) }, uniquingKeysWith: { a, _ in a })
-            let levels = Dictionary(rows.map { ($0.0.folder.standardizedFileURL.path, $0.0.teka.catalog?["meta"]?["disclosure"]?.stringValue ?? "full") },
+            let levels = Dictionary(rows.map { ($0.0.folder.standardizedFileURL.path, PrivacyRatchet.disclosure($0.0)) },
                                     uniquingKeysWith: { a, _ in a })
             let entries = IntakeReadings(support: commands.support).escalations(in: Set(names.keys))
             // The binder's disclosure is the ceiling (architecture 7.6): a summary at full, a title at title, the class at kind.
@@ -270,7 +271,7 @@ public final class MCPServer: @unchecked Sendable {
             guard client.readsDocuments else { return Self.toolError("the person has not allowed this client to read documents; ask them to allow it in Sprava") }
             guard let (row, _) = binder(args) else { return missing(args) }
             guard let e = reading(args, in: row) else { return Self.toolError("not found") }
-            guard (row.teka.catalog?["meta"]?["disclosure"]?.stringValue ?? "full") == "full" else {
+            guard PrivacyRatchet.disclosure(row) == "full" else {
                 return Self.toolError("this binder's disclosure is below full, so its documents are not shown to brains")
             }
             let text = Array(e.reading.text)
@@ -371,7 +372,7 @@ public final class MCPServer: @unchecked Sendable {
                     let same = p.title == title
                         && (try? Canonical.serialize(.array(p.ops.map(JSONValue.object)))) == (try? Canonical.serialize(.array(bodies.map(JSONValue.object))))
                     guard same else { return Self.toolError("a proposal with this request_id exists and differs from this request; use a new request_id") }
-                    commands.trustProposals([p.id], in: row.folder)
+                    try? commands.trustProposals([p.id], in: row.folder)
                     guard isRecorded(p.id, in: row.folder) else { return Self.toolError("the proposal could not be recorded as written by Sprava; try again") }
                 }
                 return Self.toolResult(.obj([("proposal_id", .string(p.id)), ("state", .string(p.state))]))
@@ -400,7 +401,7 @@ public final class MCPServer: @unchecked Sendable {
             if let requestID { proposal.raw.set("request_id", .string(requestID)) }
             do {
                 try ProposalStore.save(proposal, in: row.folder)
-                commands.trustProposals([proposal.id], in: row.folder)
+                try commands.trustProposals([proposal.id], in: row.folder)
             } catch {
                 return Self.toolError("could not store the proposal")
             }

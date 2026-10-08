@@ -68,7 +68,7 @@ import Testing
     }
 
     func addLogEntry(_ folder: URL, _ title: String) throws {
-        let entry = JSONObject([(key: "entry", value: .obj([("title", .string(title)), ("date", .str("2026-10-07"))]))])
+        let entry = JSONObject([(key: "entry", value: .obj([("action", .str("note")), ("title", .string(title)), ("date", .str("2026-10-07"))]))])
         try TekaStore(folder: folder).apply([.init(op: "add_log_entry", args: entry, actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
     }
 
@@ -224,7 +224,7 @@ import Testing
         b.afterSnapshot = {
             guard once.on else { return }
             once.on = false
-            let entry = JSONObject([(key: "entry", value: .obj([("title", .str("Invented write during a snapshot")), ("date", .str("2026-10-07"))]))])
+            let entry = JSONObject([(key: "entry", value: .obj([("action", .str("note")), ("title", .str("Invented write during a snapshot")), ("date", .str("2026-10-07"))]))])
             _ = try? TekaStore(folder: folder).apply([.init(op: "add_log_entry", args: entry, actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
         }
         let first = try b.backUp(e.folder, now: now)

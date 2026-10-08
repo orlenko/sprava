@@ -371,7 +371,7 @@ final class Runtime: @unchecked Sendable {
     func settleOutsideEdits(_ rows: [ShelfRow], commands: Commands) -> Int {
         let settled = OutsideEdits.settle(rows, deviceID: commands.deviceID)
         if !settled.cards.isEmpty, let xpc {
-            xpc.queue.sync { for (folder, ids) in settled.cards { commands.trustProposals(ids, in: folder) } }
+            xpc.queue.sync { for (folder, ids) in settled.cards { try? commands.trustProposals(ids, in: folder) } }
             log("outside_edit undid_changes_cards=\(settled.cards.count)")
         }
         return settled.failed.count
@@ -400,11 +400,18 @@ final class Runtime: @unchecked Sendable {
         try? ids.save(idsURL)
         idsLock.unlock()
         var failures: [String] = []
+        // Two known binders under one name would share a spool file: neither publishes nor drains (binder-v0 §3.1).
+        let colliding = HubLane.collidingFolders(rows, today: CalendarDate.today())
         for (row, bid) in zip(mine, bids) {
+            if colliding.contains(row.folder.standardizedFileURL.path) {
+                failures.append(bid)
+                log("hub binder=\(bid) name_collision=true")
+                continue
+            }
             do {
                 let drained = try HubLane.drain(row.folder, root: root)
                 if !drained.createdProposals.isEmpty, let xpc {
-                    xpc.queue.sync { commands.trustProposals(drained.createdProposals, in: row.folder) }
+                    xpc.queue.sync { try? commands.trustProposals(drained.createdProposals, in: row.folder) }
                     log("hub binder=\(bid) overwritten_change_card=1")
                 }
                 let published = try HubLane.publish(row.folder, root: root)
