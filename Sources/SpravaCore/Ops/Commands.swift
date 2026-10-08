@@ -301,7 +301,7 @@ public struct Commands: Sendable {
                 (key: "binders", value: .array(st.binders.map { b in .obj([("name", .string(names[b.id] ?? "a binder not on the Shelf")),
                                                                             ("at", b.at.map(JSONValue.string) ?? .null),
                                                                             ("error", b.error.map(JSONValue.string) ?? .null)]) })),
-                (key: "offloaded", value: .array(backup.offloaded().map { o in .obj([
+                (key: "offloaded", value: .array(try backup.offloaded().map { o in .obj([
                     ("id", .string(o.backupID)), ("name", .string(o.name)), ("bytes", .int(Int(o.bytes))), ("at", .string(o.at)),
                     ("documents", .array(o.documents.map { .obj([("title", .string($0.title)), ("path", .string($0.path))]) }))]) })),
                 (key: "requests", value: .array(BackupRequests(support: support).all().map { r in .obj([

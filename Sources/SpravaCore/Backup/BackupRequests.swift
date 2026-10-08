@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Offload, restore, a drill and "back up now" take minutes, so the app queues them and the runtime's backup job
@@ -19,6 +20,22 @@ public struct BackupRequests: Sendable {
     }
 
     var url: URL { support.appendingPathComponent("backup/requests.json") }
+    var lockURL: URL { support.appendingPathComponent("backup/requests.lock") }
+
+    static let lock = NSLock()
+
+    /// Every read-modify-write of requests.json holds this lock: the backup job and the command queue both write
+    /// it, from different threads, and a lost update could leave a request "running" for ever.
+    func locked<T>(_ body: () throws -> T) rethrows -> T {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        // Another process that writes the file takes the same file lock.
+        try? AtomicFile.makePrivateFolder(lockURL.deletingLastPathComponent())
+        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if fd >= 0 { flock(fd, LOCK_EX) }
+        defer { if fd >= 0 { flock(fd, LOCK_UN); close(fd) } }
+        return try body()
+    }
 
     public func all() -> [Request] {
         (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([Request].self, from: $0) } ?? []
@@ -35,19 +52,40 @@ public struct BackupRequests: Sendable {
 
     @discardableResult
     public func enqueue(_ r: Request) throws -> Request {
-        var list = all()
-        if let same = list.first(where: { $0.kind == r.kind && $0.binder == r.binder && $0.backupID == r.backupID
-            && ["queued", "running", "waiting_for_icloud"].contains($0.state) }) { return same }
-        list.append(r)
-        try save(list)
-        return r
+        try locked {
+            var list = all()
+            if let same = list.first(where: { $0.kind == r.kind && $0.binder == r.binder && $0.backupID == r.backupID
+                && ["queued", "running", "waiting_for_icloud"].contains($0.state) }) { return same }
+            list.append(r)
+            try save(list)
+            return r
+        }
     }
 
     public func update(_ id: String, _ change: (inout Request) -> Void) {
-        var list = all()
-        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
-        change(&list[i])
-        try? save(list)
+        locked {
+            var list = all()
+            guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+            change(&list[i])
+            try? save(list)
+        }
+    }
+
+    /// At runtime start nothing is running, so a request left "running" was cut off by a crash or a restart. It is
+    /// marked failed, not run again, so a request that brings the runtime down cannot do so in a loop; an offload
+    /// keeps its progress in the backup's state and resumes when the person asks again.
+    public func recoverInterrupted(now: Date = Date()) {
+        locked {
+            var list = all()
+            var changed = false
+            for i in list.indices where list[i].state == "running" {
+                list[i].state = "failed"
+                list[i].message = "interrupted when Sprava stopped; ask again to continue"
+                list[i].at = ISOTime.string(now)
+                changed = true
+            }
+            if changed { try? save(list) }
+        }
     }
 
     /// The next request to run: a waiting offload is retried too, since iCloud may have caught up.

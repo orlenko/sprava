@@ -93,6 +93,9 @@ final class Runtime: @unchecked Sendable {
         let commands = Commands(support: support, deviceID: DeviceID.load(support: support))
         self.commands = commands
         try? commands.inbox.registerProducer(folder: commands.deviceID, app: "sprava")
+        // No backup request runs yet, so one left "running" was cut off; peeked documents go after a day.
+        BackupRequests(support: support).recoverInterrupted()
+        Backup(support: support, key: nil).cleanPeeks()
         let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
         service.start()
         xpc = service

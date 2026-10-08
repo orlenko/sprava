@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -9,13 +10,22 @@ public struct Backup: Sendable {
     public let resticBinary: URL?
     /// How an offloaded binder leaves the Mac: the Trash, so nothing is destroyed until the person empties it.
     public let removeFolder: @Sendable (URL) throws -> Void
+    /// The hub's spool, where an offloaded binder's slice is removed.
+    public let hubSpool: URL
+    /// Whether iCloud has uploaded a repository (`uploadStatus(of:)`; tests pass their own).
+    public let uploadCheck: @Sendable (URL) -> Upload
+    /// Runs right after restic has read a binder; tests use it to land a write during a snapshot.
+    var afterSnapshot: (@Sendable () -> Void)?
 
     public init(support: URL, key: String? = BackupKey.load(), resticBinary: URL? = Restic.locate(),
-                removeFolder: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }) {
+                removeFolder: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
+                hubSpool: URL = HubLane.spoolRoot(), uploadCheck: @escaping @Sendable (URL) -> Upload = { Backup.uploadStatus(of: $0) }) {
         self.support = support
         self.key = key
         self.resticBinary = resticBinary
         self.removeFolder = removeFolder
+        self.hubSpool = hubSpool
+        self.uploadCheck = uploadCheck
     }
 
     public struct Failure: Error, CustomStringConvertible {
@@ -49,6 +59,8 @@ public struct Backup: Sendable {
         public var originalPath: String
         public var snapshot: String
         public var secondSnapshot: String?
+        /// The repository `secondSnapshot` is in, since the second backup may change later (nil in older records).
+        public var secondRepository: String?
         public var bytes: Int64
         public var at: String
         public var summary: String
@@ -59,11 +71,14 @@ public struct Backup: Sendable {
 
     struct InProgress: Codable, Equatable {
         var path: String
-        var stage: String          // snapshotted, verified, waiting_for_upload, copied
+        var stage: String          // start, snapshotted, verified, waiting_for_upload, copied, leaving
         var snapshot: String?
         var secondSnapshot: String?
+        var secondRepository: String?
         var bytes: Int64 = 0
         var openItemsConfirmed = 0
+        /// The digest of the manifest the snapshot was verified against (`digest(_:)`).
+        var manifestSHA: String?
     }
 
     struct State: Codable {
@@ -77,6 +92,8 @@ public struct Backup: Sendable {
         var offloads: [String: InProgress] = [:]
         var offloaded: [Offloaded] = []
         var restored: [String: Restored] = [:]
+        /// Restores under way, by backup id: the destination, so an interrupted restore can be resumed (§6.2).
+        var restoring: [String: String] = [:]
         struct BinderRecord: Codable, Equatable {
             var snapshot: String?
             var at: String?
@@ -86,6 +103,7 @@ public struct Backup: Sendable {
         struct Restored: Codable, Equatable {
             var snapshot: String
             var secondSnapshot: String?
+            var secondRepository: String?
             var manifest: [String: String]
         }
     }
@@ -104,8 +122,14 @@ public struct Backup: Sendable {
         try AtomicFile.write(try e.encode(s), to: settingsURL)
     }
 
-    func state() -> State {
-        (try? Data(contentsOf: stateURL)).flatMap { try? JSONDecoder().decode(State.self, from: $0) } ?? State()
+    /// The backup's records. A missing file is a fresh state; a file that exists but cannot be read or decoded
+    /// throws, so nothing ever saves over it: `offloaded` is the only way back to an offloaded binder.
+    func state() throws -> State {
+        guard FileManager.default.fileExists(atPath: stateURL.path) else { return State() }
+        guard let data = try? Data(contentsOf: stateURL), let st = try? JSONDecoder().decode(State.self, from: data) else {
+            throw Failure(message: "backup state is unreadable; nothing was changed (\(stateURL.path))")
+        }
+        return st
     }
 
     func save(_ s: State) throws {
@@ -121,11 +145,12 @@ public struct Backup: Sendable {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Sprava Backup", isDirectory: true)
     }
 
-    func engine(_ path: String?) throws -> Restic {
+    /// restic for the repository at `path`, pinned by the saved settings, or by `candidate` before they are saved.
+    func engine(_ path: String?, settings candidate: Settings? = nil) throws -> Restic {
         guard let path, let key else { throw Failure(message: "backup is not set up") }
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
         // Sprava never runs a binary it did not set up (architecture 3.5).
-        if let pinned = settings().resticSHA256, Restic.sha256(of: binary) != pinned {
+        if let pinned = (candidate ?? settings()).resticSHA256, Restic.sha256(of: binary) != pinned {
             throw Failure(message: "restic changed since backup was set up; set it up again to trust the new one")
         }
         return Restic(binary: binary, repository: URL(fileURLWithPath: path, isDirectory: true), key: key, support: support)
@@ -134,29 +159,55 @@ public struct Backup: Sendable {
     // MARK: - Setup
 
     /// Sets up the mirror at `primary` with the key Sprava holds. An existing repository must open with that key.
+    /// The settings name it only once it opens, so a failed change leaves the working mirror in place.
     public func setUp(primary: URL, iCloudKeychain: Bool) throws {
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
         var s = settings()
         s.primary = primary.standardizedFileURL.path
         s.iCloudKeychain = iCloudKeychain
         s.resticSHA256 = Restic.sha256(of: binary)
-        try save(s)
-        let r = try engine(s.primary)
+        let r = try engine(s.primary, settings: s)
         if r.isInitialized() {
             _ = try r.snapshots()   // throws when the key does not open it
         } else {
             try r.initRepository()
         }
+        try save(s)
     }
 
-    /// The second backup offloading requires: another cloud service's folder or an external disk.
+    /// The second backup offloading requires: another cloud service's folder or an external disk. It must not
+    /// share a fate with the mirror (§5): not the mirror's folder, not in or around it, and not in iCloud Drive.
     public func setSecond(_ folder: URL) throws {
         var s = settings()
+        guard let primaryPath = s.primary else { throw Failure(message: "set up backup first") }
+        try Self.refuseSharedFate(folder, primary: URL(fileURLWithPath: primaryPath, isDirectory: true))
         let primary = try engine(s.primary)
         s.second = folder.standardizedFileURL.path
-        try save(s)
-        let second = try engine(s.second)
+        let second = try engine(s.second, settings: s)
         if second.isInitialized() { _ = try second.snapshots() } else { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) }
+        try save(s)
+    }
+
+    /// A path with symbolic links resolved, also for a folder not created yet (through its nearest existing parent).
+    static func realPath(_ url: URL) -> String {
+        var existing = url.standardizedFileURL
+        var rest: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing = existing.deletingLastPathComponent()
+        }
+        return rest.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.path
+    }
+
+    static func refuseSharedFate(_ second: URL, primary: URL) throws {
+        let a = realPath(second), b = realPath(primary)
+        if a == b || a.hasPrefix(b + "/") || b.hasPrefix(a + "/") {
+            throw Failure(message: "the second backup must be a folder of its own, not the iCloud mirror or a folder in or around it")
+        }
+        let iCloud = realPath(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents", isDirectory: true))
+        if a == iCloud || a.hasPrefix(iCloud + "/") {
+            throw Failure(message: "the second backup cannot be in iCloud Drive: losing the account would lose both copies; choose an external disk or another cloud service's folder")
+        }
     }
 
     // MARK: - Snapshots
@@ -175,15 +226,25 @@ public struct Backup: Sendable {
         return id
     }
 
+    /// What every binder write changes: the op log grows and the catalog is replaced (binder-v0 §6.9).
+    static func writeMark(_ folder: URL) -> String {
+        let log = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(".sprava/ops.ndjson").path))?[.size] as? Int
+        return "\(log ?? -1) \(DocumentPaths.sha256(of: folder.appendingPathComponent("catalog.json")) ?? "-")"
+    }
+
     @discardableResult
     public func backUp(_ folder: URL, now: Date = Date()) throws -> Restic.BackupResult {
         let id = try Self.backupID(folder)
-        var st = state()
+        var st = try state()
         do {
+            let before = Self.writeMark(folder)
             let result = try engine(settings().primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
+            afterSnapshot?()
             var rec = st.binders[id] ?? State.BinderRecord()
             if let snap = result.snapshot { rec.snapshot = snap }
-            rec.at = ISOTime.string(now)
+            // restic reads one file at a time, so a write that landed during the run may be only partly in this
+            // snapshot. The binder then stays due, and the next run takes another.
+            if Self.writeMark(folder) == before { rec.at = ISOTime.string(now) }
             rec.bytes = result.bytes
             rec.error = nil
             st.binders[id] = rec
@@ -198,9 +259,9 @@ public struct Backup: Sendable {
 
     /// Sprava's own state, minus the backup's cache and run files.
     public func backUpState(now: Date = Date()) throws {
+        var st = try state()
         _ = try engine(settings().primary).backup(support, tags: ["sprava", "sprava-state"],
                                                   excludes: Self.excludes + ["backup/cache", "backup/run", "backup/verify", "backup/peek"])
-        var st = state()
         st.stateSnapshotAt = ISOTime.string(now)
         try save(st)
     }
@@ -209,17 +270,17 @@ public struct Backup: Sendable {
     public func applyRetention(now: Date = Date()) throws {
         let s = settings()
         let r = try engine(s.primary)
-        for id in state().binders.keys.sorted() {
+        var st = try state()
+        for id in st.binders.keys.sorted() {
             try r.forget(tag: "binder:\(id)", keepLast: s.keepLast, keepWithinDays: s.keepWithinDays, keepMonthly: s.keepMonthly, keepYearly: s.keepYearly)
         }
-        var st = state()
         st.lastForget = ISOTime.string(now)
         try save(st)
     }
 
     /// Weekly structure check; monthly, one twelfth of the data read back, rotating.
     public func check(readData: Bool, now: Date = Date()) throws {
-        var st = state()
+        var st = try state()
         let r = try engine(settings().primary)
         if readData {
             st.readDataPart = st.readDataPart % 12 + 1
@@ -275,6 +336,12 @@ public struct Backup: Sendable {
         return out
     }
 
+    /// One digest for a whole manifest, to tell later whether the binder still matches it.
+    static func digest(_ manifest: [String: String]) -> String {
+        let text = manifest.keys.sorted().map { "\($0)\t\(manifest[$0] ?? "")\n" }.joined()
+        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     // MARK: - Offload (docs/backup.md §6.1)
 
     public enum OffloadProgress: Equatable, Sendable {
@@ -282,29 +349,45 @@ public struct Backup: Sendable {
         case done(Offloaded)
     }
 
-    /// Offloads a finished binder. Runs every step it can now; when iCloud has not uploaded yet, it stops and
-    /// `continueOffloads` finishes later.
+    /// Offloads a finished binder. Runs every step it can now; when iCloud has not uploaded yet, it stops, and the
+    /// queued request runs it again later.
     public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, now: Date = Date()) throws -> OffloadProgress {
         let s = settings()
         guard s.primary != nil else { throw Failure(message: "set up backup first") }
         guard s.second != nil else { throw Failure(message: "offloading needs a second backup; choose one in Backup settings") }
+        // An offload that stopped after its folder went to the Trash only has its records left to finish.
+        if !FileManager.default.fileExists(atPath: folder.path),
+           let leaving = try state().offloads.first(where: { $0.value.path == folder.standardizedFileURL.path && $0.value.stage == "leaving" }) {
+            return try continueOffload(leaving.key, now: now)
+        }
         let teka = Teka.read(folder)
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
         guard !ProposalStore.list(in: folder).contains(where: { $0.0.state == "proposed" }) else {
             throw Failure(message: "cards are waiting for this binder; approve or reject them first")
         }
-        for sub in ["intake", "outgoing"] {
+        // Nothing may wait in intake/ or outgoing/. In intake/, `_converted/` is regenerable text, and `mail/` is
+        // looked into: its messages and their attachment folders wait like any file, while a mail monitor's `.env`
+        // and `state.json` are never filed (binder-v0 §3.3).
+        func waiting(_ sub: String, except: Set<String>) -> Bool {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent(sub).path)) ?? []
-            if names.contains(where: { !$0.hasPrefix(".") && !["mail", ".env", "state.json", "done"].contains($0) }) {
-                throw Failure(message: "files are waiting in \(sub)/; deal with them first")
-            }
+            return names.contains { !$0.hasPrefix(".") && !except.contains($0) }
         }
+        if waiting("intake", except: ["mail", "_converted"]) || waiting("intake/mail", except: ["state.json"]) {
+            throw Failure(message: "files are waiting in intake/; deal with them first")
+        }
+        if waiting("outgoing", except: []) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
         let open = teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }
         if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open.map(\.title)) }
 
         let id = try Self.backupID(folder)
-        var st = state()
+        var st = try state()
         var job = st.offloads[id] ?? InProgress(path: folder.standardizedFileURL.path, stage: "start")
+        // The binder stays writable while an offload waits for iCloud, which can take hours. One that changed since
+        // its snapshot was verified (or never got that far) starts over, so what leaves the Mac is what the backups hold.
+        if job.stage == "snapshotted" || (job.stage != "start" && job.manifestSHA != Self.digest(Self.manifest(folder))) {
+            if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
+            job = InProgress(path: job.path, stage: "start")
+        }
         if job.stage == "start" {
             // Nothing changed since a restore: the pinned snapshots are still the binder (§6.4), and the earlier
             // offload already recorded the person's confirmation.
@@ -319,10 +402,14 @@ public struct Backup: Sendable {
             job.openItemsConfirmed = open.count
             let primary = try engine(s.primary)
             let manifest = Self.manifest(folder)
+            job.manifestSHA = Self.digest(manifest)
             if unchanged, let restored = st.restored[id] {
                 job.snapshot = restored.snapshot
-                job.secondSnapshot = restored.secondSnapshot
-                job.stage = restored.secondSnapshot == nil ? "verified" : "copied"
+                // A copy in a second backup the person has since replaced does not count; it is copied again.
+                let copyHolds = restored.secondSnapshot != nil && restored.secondRepository == s.second
+                job.secondSnapshot = copyHolds ? restored.secondSnapshot : nil
+                job.secondRepository = copyHolds ? restored.secondRepository : nil
+                job.stage = copyHolds ? "copied" : "verified"
             } else {
                 let result = try primary.backup(folder, tags: ["sprava", "binder:\(id)", "offloaded"], excludes: Self.excludes, skipIfUnchanged: false)
                 guard let snap = result.snapshot else { throw Failure(message: "the snapshot was not written") }
@@ -353,16 +440,19 @@ public struct Backup: Sendable {
 
     func continueOffload(_ id: String, now: Date) throws -> OffloadProgress {
         let s = settings()
-        var st = state()
+        var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
+        let folder = URL(fileURLWithPath: job.path, isDirectory: true)
+        if job.stage == "leaving" { return try leave(id, folder: folder, &st) }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" {
-            if case .waiting(let n) = Self.uploadStatus(of: primary.repository) {
+            if case .waiting(let n) = uploadCheck(primary.repository) {
                 job.stage = "waiting_for_upload"
                 st.offloads[id] = job
                 try save(st)
                 return .waitingForICloud(n)
             }
+            try refuseIfChanged(id, folder: folder, job, &st)
             let second = try engine(s.second)
             if job.secondSnapshot == nil {
                 try second.copy(job.snapshot!, from: primary)
@@ -370,17 +460,18 @@ public struct Backup: Sendable {
                 guard let copy = copies.last else { throw Failure(message: "the copy to the second backup did not appear") }
                 try? second.addTag("offloaded", to: copy.id)
                 job.secondSnapshot = copy.id
+                job.secondRepository = s.second
             }
             job.stage = "copied"
             st.offloads[id] = job
             try save(st)
         }
         guard job.stage == "copied", let snap = job.snapshot else { throw Failure(message: "offload stopped at \(job.stage)") }
-        let folder = URL(fileURLWithPath: job.path, isDirectory: true)
+        try refuseIfChanged(id, folder: folder, job, &st)
         let teka = Teka.read(folder)
         let record = Offloaded(
             backupID: id, name: teka.name, originalPath: job.path, snapshot: snap, secondSnapshot: job.secondSnapshot,
-            bytes: job.bytes, at: ISOTime.string(now),
+            secondRepository: job.secondRepository ?? s.second, bytes: job.bytes, at: ISOTime.string(now),
             summary: teka.catalog?["meta"]?["description"]?.stringValue ?? "",
             documents: (teka.catalog?["documents"]?.arrayValue ?? []).compactMap { d in
                 guard let p = d["path"]?.stringValue else { return nil }
@@ -388,64 +479,119 @@ public struct Backup: Sendable {
             },
             openItemsConfirmed: job.openItemsConfirmed)
         // The hub stops showing it, as for a binder at disclosure none.
-        if HubLane.isSafeSegment(teka.name), let target = try? HubLane.spoolFile(HubLane.spoolRoot().appendingPathComponent("inbox"), teka.name, ".agenda.json") {
-            try? FileManager.default.removeItem(at: target)
-        }
-        // To the Trash, so nothing is destroyed until the person empties it.
-        try removeFolder(folder)
-        try? ShelfStore(supportDirectory: support).remove(folder)
-        st.offloads[id] = nil
-        st.restored[id] = nil
+        try removeHubSlice(teka.name)
+        // The record is kept before the folder goes, so a failure from here on can be finished, never lost.
+        job.stage = "leaving"
+        st.offloads[id] = job
         st.offloaded.removeAll { $0.backupID == id }
         st.offloaded.append(record)
         try save(st)
+        return try leave(id, folder: folder, &st)
+    }
+
+    /// The last step: the folder goes to the Trash, so nothing is destroyed until the person empties it, and the
+    /// Shelf forgets it. Runs again after an interruption, from the record kept before.
+    func leave(_ id: String, folder: URL, _ st: inout State) throws -> OffloadProgress {
+        guard var job = st.offloads[id], let record = st.offloaded.first(where: { $0.backupID == id }) else {
+            throw Failure(message: "the offload's record is missing; nothing was removed")
+        }
+        if FileManager.default.fileExists(atPath: folder.path) {
+            try refuseIfChanged(id, folder: folder, job, &st)
+            do {
+                try removeFolder(folder)
+            } catch {
+                st.offloaded.removeAll { $0.backupID == id }
+                job.stage = "copied"
+                st.offloads[id] = job
+                try? save(st)
+                throw error
+            }
+        }
+        try? ShelfStore(supportDirectory: support).remove(folder)
+        st.offloads[id] = nil
+        st.restored[id] = nil
+        try save(st)
         return .done(record)
+    }
+
+    /// Stops an offload whose binder changed after its snapshot was verified: the job starts over next time.
+    func refuseIfChanged(_ id: String, folder: URL, _ job: InProgress, _ st: inout State) throws {
+        guard job.manifestSHA != Self.digest(Self.manifest(folder)) else { return }
+        st.offloads[id] = nil
+        st.offloaded.removeAll { $0.backupID == id }
+        try save(st)
+        throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
+    }
+
+    /// Removes the binder's slice from the hub's spool. A slice that is there and cannot be removed stops the
+    /// offload, which is retried, rather than leaving it on the hub with nothing to remove it later.
+    func removeHubSlice(_ name: String) throws {
+        guard HubLane.isSafeSegment(name) else { return }
+        let target = try HubLane.spoolFile(hubSpool.appendingPathComponent("inbox"), name, ".agenda.json")
+        var st = stat()
+        guard lstat(target.path, &st) == 0 else { return }
+        do { try FileManager.default.removeItem(at: target) } catch {
+            throw Failure(message: "could not take the binder off the hub (\(error.localizedDescription)); the offload will retry")
+        }
     }
 
     /// Finishes offloads that were waiting for iCloud.
     public func continueOffloads(now: Date = Date()) -> [String: Result<OffloadProgress, Failure>] {
         var out: [String: Result<OffloadProgress, Failure>] = [:]
-        for id in state().offloads.keys.sorted() {
+        let ids: [String]
+        do { ids = try state().offloads.keys.sorted() } catch { return ["state": .failure(Failure(message: "\(error)"))] }
+        for id in ids {
             do { out[id] = .success(try continueOffload(id, now: now)) } catch { out[id] = .failure(Failure(message: "\(error)")) }
         }
         return out
     }
 
-    public func offloaded() -> [Offloaded] { state().offloaded }
+    public func offloaded() throws -> [Offloaded] { try state().offloaded }
 
-    public func pendingOffloads() -> [(path: String, stage: String)] { state().offloads.values.map { ($0.path, $0.stage) }.sorted { $0.path < $1.path } }
+    public func pendingOffloads() throws -> [(path: String, stage: String)] {
+        try state().offloads.values.map { ($0.path, $0.stage) }.sorted { $0.path < $1.path }
+    }
 
     // MARK: - Restore (§6.2) and peek (§6.3)
 
     /// Restores an offloaded binder to its original folder (or `target`), from the mirror, else the second backup.
+    /// An attempt that failed partway is resumed in the same folder: restic skips what it already restored.
     public func restore(_ backupID: String, to target: URL? = nil, now: Date = Date()) throws -> URL {
-        var st = state()
+        var st = try state()
         guard let record = st.offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
         let s = settings()
         let destination = (target ?? URL(fileURLWithPath: record.originalPath, isDirectory: true)).standardizedFileURL
         var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir),
+        if st.restoring[backupID] != destination.path, FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir),
            !((try? FileManager.default.contentsOfDirectory(atPath: destination.path))?.isEmpty ?? true) {
             throw Failure(message: "\(destination.lastPathComponent) already exists there; choose another place")
         }
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        st.restoring[backupID] = destination.path
+        try save(st)
         do {
-            try engine(s.primary).restore(record.snapshot, into: destination)
+            do {
+                try engine(s.primary).restore(record.snapshot, into: destination)
+            } catch {
+                guard let second = record.secondSnapshot else { throw error }
+                try engine(record.secondRepository ?? s.second).restore(second, into: destination)
+            }
         } catch {
-            guard let second = record.secondSnapshot else { throw error }
-            try engine(s.second).restore(second, into: destination)
+            throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
         try? FileManager.default.removeItem(at: destination.appendingPathComponent(".teka.lock"))
         try? ShelfStore(supportDirectory: support).add(destination)
-        st.restored[backupID] = State.Restored(snapshot: record.snapshot, secondSnapshot: record.secondSnapshot, manifest: Self.manifest(destination))
+        st.restored[backupID] = State.Restored(snapshot: record.snapshot, secondSnapshot: record.secondSnapshot,
+                                               secondRepository: record.secondRepository ?? s.second, manifest: Self.manifest(destination))
         st.offloaded.removeAll { $0.backupID == backupID }
+        st.restoring[backupID] = nil
         try save(st)
         return destination
     }
 
-    /// One document of an offloaded binder, into a private temporary folder.
+    /// One document of an offloaded binder, into a private temporary folder (`cleanPeeks` removes it a day later).
     public func peek(_ backupID: String, path: String) throws -> URL {
-        guard let record = state().offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
+        guard let record = try state().offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
         guard record.documents.contains(where: { $0.path == path }), DocumentPaths.isSafe(path, forFiling: false) else {
             throw Failure(message: "that document is not in the binder")
         }
@@ -455,9 +601,20 @@ public struct Backup: Sendable {
         let s = settings()
         do { try engine(s.primary).dump(record.snapshot, path: "/" + path, to: file) } catch {
             guard let second = record.secondSnapshot else { throw error }
-            try engine(s.second).dump(second, path: "/" + path, to: file)
+            try engine(record.secondRepository ?? s.second).dump(second, path: "/" + path, to: file)
         }
         return file
+    }
+
+    /// Removes peeked documents older than a day: plain copies of offloaded documents do not stay on the Mac.
+    public func cleanPeeks(now: Date = Date()) {
+        let peeks = dir.appendingPathComponent("peek", isDirectory: true)
+        let fm = FileManager.default
+        for name in (try? fm.contentsOfDirectory(atPath: peeks.path)) ?? [] {
+            let url = peeks.appendingPathComponent(name)
+            let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date ?? .distantPast
+            if now.timeIntervalSince(modified) > 86_400 { try? fm.removeItem(at: url) }
+        }
     }
 
     // MARK: - Restore drill (§8)
@@ -474,7 +631,7 @@ public struct Backup: Sendable {
         defer { try? FileManager.default.removeItem(at: target) }
         try primary.restore(snap, into: target)
         guard Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
-        var st = state()
+        var st = try state()
         st.lastDrill = ISOTime.string(now)
         try save(st)
     }
@@ -491,17 +648,25 @@ public struct Backup: Sendable {
     }
 
     /// Hourly snapshots of each live binder this Mac manages (skipped when unchanged), Sprava's state daily,
-    /// retention and a structure check weekly, a rotating read-back monthly. No binder lock is taken: every file
-    /// a binder write touches is replaced by a rename or appended, so a snapshot taken during a write is a state
-    /// the write protocol already recovers from after a crash (binder-v0 §6.9).
+    /// retention and a structure check weekly, a rotating read-back monthly. No binder lock is held through a
+    /// restic run, which would hold up approvals for minutes; a write that lands during a run leaves the binder
+    /// due, so the next run snapshots it again (`backUp`). An unreadable state stops all of it.
     public func maintain(rows: [ShelfRow], deviceID: String, now: Date = Date()) -> Maintenance {
         var m = Maintenance()
+        cleanPeeks(now: now)
         guard isConfigured else { return m }
         func older(_ iso: String?, than seconds: TimeInterval) -> Bool {
             guard let iso, let d = ISOTime.date(iso) else { return true }
             return now.timeIntervalSince(d) > seconds
         }
-        let st = state()
+        guard let st = try? state() else {
+            m.failed += 1
+            return m
+        }
+        // An offload interrupted after its record was kept is finished here, whatever became of its request.
+        for (id, job) in st.offloads where job.stage == "leaving" {
+            if (try? continueOffload(id, now: now)) == nil { m.failed += 1 }
+        }
         for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
             guard let id = try? Self.backupID(row.folder) else { continue }
             if st.offloads[id] != nil { continue }
@@ -513,10 +678,14 @@ public struct Backup: Sendable {
                 m.failed += 1
             }
         }
-        if older(state().stateSnapshotAt, than: 86_400), (try? backUpState(now: now)) != nil { m.stateSnapshot = true }
-        if older(state().lastForget, than: 7 * 86_400), (try? applyRetention(now: now)) != nil { m.retention = true }
-        if older(state().lastCheck, than: 7 * 86_400) {
-            let readData = older(state().lastReadData, than: 30 * 86_400)
+        func due(_ field: (State) -> String?, _ seconds: TimeInterval) -> Bool {
+            guard let st = try? state() else { return false }
+            return older(field(st), than: seconds)
+        }
+        if due(\.stateSnapshotAt, 86_400), (try? backUpState(now: now)) != nil { m.stateSnapshot = true }
+        if due(\.lastForget, 7 * 86_400), (try? applyRetention(now: now)) != nil { m.retention = true }
+        if due(\.lastCheck, 7 * 86_400) {
+            let readData = due(\.lastReadData, 30 * 86_400)
             if (try? check(readData: readData, now: now)) != nil { m.checked = true } else { m.failed += 1 }
         }
         return m
@@ -533,14 +702,79 @@ public struct Backup: Sendable {
         public var lastDrill: String?
         public var offloaded: Int
         public var pending: Int
+        /// Set when the backup's state cannot be read; nothing else is shown from it then.
+        public var stateError: String?
     }
 
     public func status(checkUpload: Bool = true) -> Status {
         let s = settings()
-        let st = state()
+        var st = State()
+        var stateError: String?
+        do { st = try state() } catch { stateError = "\(error)" }
         return Status(configured: s.primary != nil && key != nil, secondConfigured: s.second != nil,
                       binders: st.binders.sorted { $0.key < $1.key }.map { ($0.key, $0.value.at, $0.value.error) },
-                      upload: checkUpload ? s.primary.map { Self.uploadStatus(of: URL(fileURLWithPath: $0)) } : nil,
-                      lastCheck: st.lastCheck, lastDrill: st.lastDrill, offloaded: st.offloaded.count, pending: st.offloads.count)
+                      upload: checkUpload ? s.primary.map { uploadCheck(URL(fileURLWithPath: $0)) } : nil,
+                      lastCheck: st.lastCheck, lastDrill: st.lastDrill, offloaded: st.offloaded.count, pending: st.offloads.count,
+                      stateError: stateError)
+    }
+}
+
+// Missing keys take their defaults, so a field added later never makes an older state file unreadable.
+
+extension Backup.State {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        binders = try c.decodeIfPresent([String: BinderRecord].self, forKey: .binders) ?? [:]
+        stateSnapshotAt = try c.decodeIfPresent(String.self, forKey: .stateSnapshotAt)
+        lastForget = try c.decodeIfPresent(String.self, forKey: .lastForget)
+        lastCheck = try c.decodeIfPresent(String.self, forKey: .lastCheck)
+        lastReadData = try c.decodeIfPresent(String.self, forKey: .lastReadData)
+        readDataPart = try c.decodeIfPresent(Int.self, forKey: .readDataPart) ?? 0
+        lastDrill = try c.decodeIfPresent(String.self, forKey: .lastDrill)
+        offloads = try c.decodeIfPresent([String: Backup.InProgress].self, forKey: .offloads) ?? [:]
+        offloaded = try c.decodeIfPresent([Backup.Offloaded].self, forKey: .offloaded) ?? []
+        restored = try c.decodeIfPresent([String: Restored].self, forKey: .restored) ?? [:]
+        restoring = try c.decodeIfPresent([String: String].self, forKey: .restoring) ?? [:]
+    }
+}
+
+extension Backup.State.BinderRecord {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        snapshot = try c.decodeIfPresent(String.self, forKey: .snapshot)
+        at = try c.decodeIfPresent(String.self, forKey: .at)
+        bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+    }
+}
+
+extension Backup.InProgress {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        stage = try c.decode(String.self, forKey: .stage)
+        snapshot = try c.decodeIfPresent(String.self, forKey: .snapshot)
+        secondSnapshot = try c.decodeIfPresent(String.self, forKey: .secondSnapshot)
+        secondRepository = try c.decodeIfPresent(String.self, forKey: .secondRepository)
+        bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
+        openItemsConfirmed = try c.decodeIfPresent(Int.self, forKey: .openItemsConfirmed) ?? 0
+        manifestSHA = try c.decodeIfPresent(String.self, forKey: .manifestSHA)
+    }
+}
+
+extension Backup.Offloaded {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        backupID = try c.decode(String.self, forKey: .backupID)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        originalPath = try c.decode(String.self, forKey: .originalPath)
+        snapshot = try c.decode(String.self, forKey: .snapshot)
+        secondSnapshot = try c.decodeIfPresent(String.self, forKey: .secondSnapshot)
+        secondRepository = try c.decodeIfPresent(String.self, forKey: .secondRepository)
+        bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
+        at = try c.decodeIfPresent(String.self, forKey: .at) ?? ""
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        documents = try c.decodeIfPresent([Document].self, forKey: .documents) ?? []
+        openItemsConfirmed = try c.decodeIfPresent(Int.self, forKey: .openItemsConfirmed) ?? 0
     }
 }
