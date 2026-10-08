@@ -71,13 +71,17 @@ final class InboxModel: ObservableObject {
 
     /// Writes the note as a capture event (capture-event-v0 §8.1), then tells the runtime its id and digest, so
     /// the binder the person chose is trusted (architecture 8).
-    func save(binderName: String?) {
+    func save(binderName: String?, explanation: String? = nil) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        saving = true
         let support = SpravaPaths.supportDirectory()
-        let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: DeviceID.load(support: support),
-                                       support: support)
+        let deviceID: String
+        do { deviceID = try DeviceID.load(support: support) } catch {
+            message = "The note was not saved: \(error)"
+            return
+        }
+        saving = true
+        let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
         Task {
             defer { saving = false }
             do {
@@ -93,7 +97,8 @@ final class InboxModel: ObservableObject {
                 draft = ""
                 startedTyping = nil
                 message = !noticed ? "Saved, but the runtime did not answer, so the card will ask for a binder."
-                    : binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment."
+                    : explanation.map { "Saved. " + $0 }
+                    ?? (binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment.")
                 try? await Task.sleep(for: .seconds(2))
                 await load()
             } catch {
@@ -127,6 +132,30 @@ struct InboxView: View {
 
     var adopted: [ShelfRow] { rows.filter { $0.teka.isAdopted && !$0.teka.writesBlocked } }
 
+    static func fold(_ name: String) -> String { name.precomposedStringWithCanonicalMapping.folding(options: .caseInsensitive, locale: nil) }
+
+    /// Whether another adopted binder shares this one's name (after NFC and case folding). A note's binder hint is a
+    /// name (capture-event-v0), so such a hint could land in the other binder.
+    func sharesName(_ row: ShelfRow) -> Bool {
+        rows.filter { $0.teka.isAdopted && Self.fold($0.name) == Self.fold(row.name) }.count > 1
+    }
+
+    /// A binder's name in a picker, with its parent folder when another binder has the same name.
+    func label(_ row: ShelfRow) -> String {
+        sharesName(row) ? "\(row.name) (in \(row.folder.deletingLastPathComponent().lastPathComponent))" : row.name
+    }
+
+    /// Saves the note with the chosen binder's name as its hint. A name two binders share is not sent: the card
+    /// waits in the Inbox, where filing names the folder itself.
+    func saveNote() {
+        guard let row = adopted.first(where: { $0.folder == model.draftBinder }) else { model.save(binderName: nil); return }
+        if sharesName(row) {
+            model.save(binderName: nil, explanation: "Another binder has the same name, so the card waits below; file it into \(label(row)) there.")
+        } else {
+            model.save(binderName: row.name)
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -144,13 +173,11 @@ struct InboxView: View {
                         HStack {
                             Picker("Binder", selection: $model.draftBinder) {
                                 Text("Not sure").tag(URL?.none)
-                                ForEach(adopted, id: \.folder) { row in Text(row.name).tag(URL?.some(row.folder)) }
+                                ForEach(adopted, id: \.folder) { row in Text(label(row)).tag(URL?.some(row.folder)) }
                             }
                             .frame(maxWidth: 320)
                             Spacer()
-                            Button("Save Note") {
-                                model.save(binderName: adopted.first { $0.folder == model.draftBinder }?.name)
-                            }
+                            Button("Save Note") { saveNote() }
                             .keyboardShortcut(.return, modifiers: .command)
                             .disabled(model.saving || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
@@ -191,7 +218,7 @@ struct InboxView: View {
                             HStack {
                                 Picker("File into", selection: Binding(get: { model.target[card.id] }, set: { model.target[card.id] = $0 })) {
                                     Text("Choose a binder").tag(URL?.none)
-                                    ForEach(adopted, id: \.folder) { row in Text(row.name).tag(URL?.some(row.folder)) }
+                                    ForEach(adopted, id: \.folder) { row in Text(label(row)).tag(URL?.some(row.folder)) }
                                 }
                                 .frame(maxWidth: 320)
                                 Button("File") { model.file(card) }.disabled(model.target[card.id] == nil)

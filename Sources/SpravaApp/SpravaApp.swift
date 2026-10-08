@@ -367,7 +367,16 @@ struct NowView: View {
                                openItems: teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }.map(\.title))
             }
         }
-        .task(id: row.folder) { await actions.load(row.folder, adopted: teka.isAdopted) }
+        .task(id: row.folder) {
+            await actions.load(row.folder, adopted: teka.isAdopted)
+            // Cards that capture, intake, the clerk or a brain add show up while the binder stays open (mvp.md:
+            // "within a minute the review queue shows a card").
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if Task.isCancelled { break }
+                if Teka.read(row.folder).isAdopted { await actions.loadReview(row.folder) }
+            }
+        }
     }
 }
 

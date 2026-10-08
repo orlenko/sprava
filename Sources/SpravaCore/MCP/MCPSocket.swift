@@ -153,7 +153,8 @@ public final class MCPListener: @unchecked Sendable {
             _ = writeLine(conn, #"{"sprava_auth":{"ok":false,"code":"bad_preamble"}}"#)
             return
         }
-        guard let client = MCPClients.load(support).authenticate(clientID: clientID, token: token) else {
+        // A registry that cannot be read authenticates no one.
+        guard let client = (try? MCPClients.load(support))?.authenticate(clientID: clientID, token: token) else {
             _ = writeLine(conn, #"{"sprava_auth":{"ok":false,"code":"token_refused"}}"#)
             // The id came from the peer: only safe characters reach the log.
             log("mcp client=\(String(clientID.prefix(41).filter { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) })) auth=refused")
@@ -169,9 +170,14 @@ public final class MCPListener: @unchecked Sendable {
             switch reader.next(limit: Self.lineLimit) {
             case .line(let line):
                 // Revocation is immediate (architecture 7.5): the record is checked again before every call.
-                guard let current = MCPClients.load(support).clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
+                guard let current = (try? MCPClients.load(support))?.clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
                       !current.revoked else {
                     log("mcp client=\(client.id) closed=revoked")
+                    return
+                }
+                // So is any other change to its rights (scope, documents): the connection ends, and the next one gets the new record.
+                guard current == client else {
+                    log("mcp client=\(client.id) closed=changed")
                     return
                 }
                 let started = Date()

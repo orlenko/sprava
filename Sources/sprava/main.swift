@@ -41,6 +41,11 @@ func fail(_ message: String, code: Int32 = 2) -> Never {
     exit(code)
 }
 
+/// This Mac's device id; one that cannot be read stops the command rather than being replaced.
+func deviceID(_ support: URL) -> String {
+    do { return try DeviceID.load(support: support) } catch { fail("\(error)", code: 1) }
+}
+
 func folderURL(_ path: String) -> URL {
     URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL
 }
@@ -170,15 +175,9 @@ func check(_ args: [String]) {
 func dev(_ args: [String]) {
     guard args.count >= 2 else { fail(usage) }
     let folder = folderURL(args[1])
-    let registryURL = LifeprojRegistry.defaultPath()
-    // Compared after resolving links, so a link to a live binder is refused too.
-    let real = folder.resolvingSymlinksInPath().path
-    if let registry = try? LifeprojRegistry.load(from: registryURL),
-       registry.entries.contains(where: { $0.workingDir.map { folderURL($0).resolvingSymlinksInPath().path } == real }) {
-        fail("\(folder.path) is in lifeproj's registry; development commands work on invented copies only")
-    }
+    if let refusal = DevelopmentGuard.refusal(for: folder) { fail(refusal) }
     let support = SpravaPaths.supportDirectory()
-    let commands = Commands(support: support, deviceID: DeviceID.load(support: support), client: "sprava-dev/0.1")
+    let commands = Commands(support: support, deviceID: deviceID(support), client: "sprava-dev/0.1")
     var request = JSONObject([(key: "binder", value: .string(folder.path))])
     switch args[0] {
     case "slice":
@@ -197,8 +196,8 @@ func dev(_ args: [String]) {
     case "brain":
         // Register a brain client with propose access to this one binder; prints the token once.
         guard args.count == 3 else { fail(usage) }
-        var clients = MCPClients.load(support)
         do {
+            var clients = try MCPClients.load(support)
             let token = try clients.register(id: args[2], name: args[2], binders: [folder.path: "propose"])
             try clients.save(support)
             print(token)
@@ -243,7 +242,7 @@ func note(_ args: [String]) {
     }
     guard !args.isEmpty else { fail(usage) }
     let support = SpravaPaths.supportDirectory()
-    let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: DeviceID.load(support: support), support: support)
+    let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID(support), support: support)
     do {
         let (event, _) = try producer.writeNote(args.joined(separator: " "), binderHint: binder, startedAt: Date())
         print(event["id"]?.stringValue ?? "")

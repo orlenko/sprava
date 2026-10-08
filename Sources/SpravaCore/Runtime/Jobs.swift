@@ -20,6 +20,9 @@ public enum JobOutcome: Sendable, Equatable {
     case ok
     /// The run did nothing on purpose; never counted as a success (architecture 3.5).
     case skipped
+    /// Nothing to do because the feature is not set up here (no hub spool, an empty Shelf). Not a success either,
+    /// but a job that keeps finding nothing to do is not overdue.
+    case idle
     case error(code: String, culprit: String?)
     case timeout
 }
@@ -29,6 +32,8 @@ public enum JobOutcome: Sendable, Equatable {
 public struct JobRecord: Codable, Sendable, Equatable {
     public var lastStart: Date?
     public var lastSuccess: Date?
+    /// The last run that found nothing set up to do (`JobOutcome.idle`).
+    public var lastIdle: Date?
     public var lastOutcome = "none"
     public var lastErrorAt: Date?
     public var lastErrorCode: String?
@@ -72,6 +77,10 @@ public struct JobRecord: Codable, Sendable, Equatable {
         case .skipped:
             // A run that did nothing on purpose is never a success: failures and the breaker stay as they were.
             lastOutcome = "skipped"
+        case .idle:
+            // Shown as skipped, the heartbeat schema's word (architecture Appendix A); only the clock moves.
+            lastOutcome = "skipped"
+            lastIdle = now
         case .ok:
             lastOutcome = "ok"
             lastSuccess = now
@@ -135,11 +144,12 @@ public struct JobRecord: Codable, Sendable, Equatable {
     public func heartbeatJob(spec: JobSpec, now: Date, wedged: Bool) -> Heartbeat.Job {
         var due: Date?
         if let cadence = spec.expectedCadence {
-            due = (lastSuccess ?? lastStart).map { $0.addingTimeInterval(TimeInterval(cadence)) }
+            due = ([lastSuccess, lastIdle].compactMap { $0 }.max() ?? lastStart).map { $0.addingTimeInterval(TimeInterval(cadence)) }
         }
         return Heartbeat.Job(
             last_start: lastStart.map { ISOTime.string($0) },
             last_success: lastSuccess.map { ISOTime.string($0) },
+            last_idle: lastIdle.map { ISOTime.string($0) },
             last_outcome: running ? "running" : lastOutcome,
             last_error: lastErrorAt.map { Heartbeat.JobError(at: ISOTime.string($0), code: lastErrorCode ?? "error",
                                                              culprit: lastErrorCulprit) },
@@ -163,18 +173,40 @@ public struct JobRecords: Codable, Sendable {
     public init() {}
 
     public static func load(_ url: URL) -> JobRecords {
-        guard let data = try? Data(contentsOf: url) else { return JobRecords() }
+        (try? read(url)) ?? JobRecords()
+    }
+
+    /// The records; a missing file is none, and a file that exists but cannot be read or decoded throws.
+    static func read(_ url: URL) throws -> JobRecords {
+        guard FileManager.default.fileExists(atPath: url.path) else { return JobRecords() }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var records = (try? decoder.decode(JobRecords.self, from: data)) ?? JobRecords()
+        guard let data = try? Data(contentsOf: url), var records = try? decoder.decode(JobRecords.self, from: data) else {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path])
+        }
         // A job recorded as running when the process died is not running now.
         for key in records.jobs.keys { records.jobs[key]?.running = false }
         return records
     }
 
+    /// The runtime's start. Breakers that cannot be read are not reset to closed, which would let a job that
+    /// wedges restart the runtime again: the file is kept aside as `breakers.json.unreadable-<time>`, and every job
+    /// starts half-open, so each gets one trial run and its breaker opens again on a failure. Starting never fails,
+    /// which would bring back the launchd restart loop. Returns where the file was put, when it was.
+    public static func loadAtStart(_ url: URL, jobs: [String], now: Date = Date()) -> (JobRecords, setAside: URL?) {
+        if let records = try? read(url) { return (records, nil) }
+        let stamp = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
+        let aside = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".unreadable-" + stamp)
+        try? FileManager.default.moveItem(at: url, to: aside)
+        var records = JobRecords()
+        for key in jobs { records.jobs[key, default: JobRecord()].breaker = "half_open" }
+        return (records, aside)
+    }
+
     /// Records a watchdog exit straight to disk, without the runtime's state queue, which may be the thing that hung.
     public static func recordWatchdogExit(job: String, url: URL, now: Date = Date()) {
-        var records = load(url)
+        // An unreadable file is left for the next start to set aside, never saved over.
+        guard var records = try? read(url) else { return }
         records.jobs[job, default: JobRecord()].recordWatchdogExit(at: now)
         try? records.save(url)
     }
@@ -206,16 +238,96 @@ public enum HealthGrade: Int, Sendable, Comparable {
     }
 
     /// A job is red when its breaker is open or it is wedged, amber after a failure or when overdue by twice
-    /// its cadence, red at four times. The clock starts at the latest of its last success, the last wake and
-    /// the runtime's start, so a week with the lid closed does not paint every job red.
+    /// its cadence, red at four times. The clock starts at the latest of its last success, its last run with
+    /// nothing set up to do, the last wake and the runtime's start, so a week with the lid closed, or a Mac with no
+    /// hub, does not paint a job red.
     public static func job(_ job: Heartbeat.Job, startedAt: Date, lastWake: Date?, now: Date) -> HealthGrade {
         if job.breaker == "open" || job.wedged { return .red }
         var grade: HealthGrade = job.consecutive_failures > 0 ? .amber : .green
         if let cadence = job.expected_cadence_s {
-            let base = [ISOTime.date(job.last_success), lastWake, startedAt].compactMap { $0 }.max()!
+            let base = [ISOTime.date(job.last_success), ISOTime.date(job.last_idle), lastWake, startedAt].compactMap { $0 }.max()!
             let age = now.timeIntervalSince(base)
             if age > 4 * Double(cadence) { grade = .red } else if age > 2 * Double(cadence) { grade = max(grade, .amber) }
         }
         return grade
     }
+}
+
+// Missing keys take their defaults, so a field added later never resets every breaker.
+extension JobRecord {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lastStart = try c.decodeIfPresent(Date.self, forKey: .lastStart)
+        lastSuccess = try c.decodeIfPresent(Date.self, forKey: .lastSuccess)
+        lastIdle = try c.decodeIfPresent(Date.self, forKey: .lastIdle)
+        lastOutcome = try c.decodeIfPresent(String.self, forKey: .lastOutcome) ?? "none"
+        lastErrorAt = try c.decodeIfPresent(Date.self, forKey: .lastErrorAt)
+        lastErrorCode = try c.decodeIfPresent(String.self, forKey: .lastErrorCode)
+        lastErrorCulprit = try c.decodeIfPresent(String.self, forKey: .lastErrorCulprit)
+        consecutiveFailures = try c.decodeIfPresent(Int.self, forKey: .consecutiveFailures) ?? 0
+        breaker = try c.decodeIfPresent(String.self, forKey: .breaker) ?? "closed"
+        breakerOpenedAt = try c.decodeIfPresent(Date.self, forKey: .breakerOpenedAt)
+        backoffStep = try c.decodeIfPresent(Int.self, forKey: .backoffStep) ?? 0
+        watchdogExits = try c.decodeIfPresent(Int.self, forKey: .watchdogExits) ?? 0
+        durationsMS = try c.decodeIfPresent([Int].self, forKey: .durationsMS) ?? []
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+    }
+}
+
+/// What the watchdog reads: the tick and when each running job started, behind a lock of its own. Start times
+/// are on a clock that stops while the Mac sleeps, so a job the Mac slept through is not counted as wedged.
+public final class WatchBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tick: UInt64 = 0
+    private var running: [String: Duration] = [:]
+    private let budgets: [String: Duration]
+    /// Awake time since an arbitrary origin (tests pass their own).
+    private let awake: @Sendable () -> Duration
+
+    public static let origin = SuspendingClock.now
+
+    public init(budgets: [String: Duration], awake: @escaping @Sendable () -> Duration = { WatchBox.origin.duration(to: SuspendingClock.now) }) {
+        self.budgets = budgets
+        self.awake = awake
+    }
+
+    public func beat(_ t: UInt64) { lock.lock(); tick = t; lock.unlock() }
+    public func started(_ key: String) { let now = awake(); lock.lock(); running[key] = now; lock.unlock() }
+    public func finished(_ key: String) { lock.lock(); running[key] = nil; lock.unlock() }
+
+    /// How long a running job has been running, in awake time.
+    public func runningFor(_ key: String) -> Duration? {
+        let now = awake()
+        lock.lock()
+        defer { lock.unlock() }
+        return running[key].map { now - $0 }
+    }
+
+    /// The tick, and a job running longer than twice its budget plus 10 minutes of awake time.
+    public func read() -> (UInt64, String?) {
+        let now = awake()
+        lock.lock()
+        defer { lock.unlock() }
+        for (key, start) in running {
+            let budget = max(budgets[key] ?? .seconds(1), .seconds(1))
+            if now - start > budget * 2 + .seconds(600) { return (tick, key) }
+        }
+        return (tick, nil)
+    }
+}
+
+/// When the interval jobs run next. Wall-clock dates, so after the clock is set back every one of them is due at
+/// once, instead of waiting out the jump.
+public struct JobDeadlines: Sendable, Equatable {
+    public var sentinel: Date
+    public var alerts: Date
+    public var hub: Date
+    public var intake: Date
+    public var dashboard: Date
+
+    public init(now: Date = Date()) {
+        sentinel = now; alerts = now; hub = now; intake = now; dashboard = now
+    }
+
+    public mutating func clockChanged(now: Date) { self = JobDeadlines(now: now) }
 }

@@ -49,7 +49,7 @@ public struct Heartbeat: Codable, Sendable, Equatable {
 
     public struct Job: Codable, Sendable, Equatable {
         enum CodingKeys: String, CodingKey {
-            case last_start, last_success, last_outcome, last_error, consecutive_failures, breaker
+            case last_start, last_success, last_idle, last_outcome, last_error, consecutive_failures, breaker
             case breaker_opened_at, expected_cadence_s, due_since, wedged, watchdog_exits, median_ms
             case slowest_of_twenty_ms
         }
@@ -59,6 +59,7 @@ public struct Heartbeat: Codable, Sendable, Equatable {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(last_start, forKey: .last_start)
             try c.encode(last_success, forKey: .last_success)
+            try c.encodeIfPresent(last_idle, forKey: .last_idle)
             try c.encode(last_outcome, forKey: .last_outcome)
             try c.encode(last_error, forKey: .last_error)
             try c.encode(consecutive_failures, forKey: .consecutive_failures)
@@ -74,6 +75,9 @@ public struct Heartbeat: Codable, Sendable, Equatable {
 
         public var last_start: String?
         public var last_success: String?
+        /// The last run with nothing set up to do (no hub, an empty Shelf); not in Appendix A's schema, which
+        /// allows unknown fields.
+        public var last_idle: String?
         public var last_outcome: String
         public var last_error: JobError?
         public var consecutive_failures: Int
@@ -86,13 +90,14 @@ public struct Heartbeat: Codable, Sendable, Equatable {
         public var median_ms: Int?
         public var slowest_of_twenty_ms: Int?
 
-        public init(last_start: String? = nil, last_success: String? = nil, last_outcome: String = "none",
+        public init(last_start: String? = nil, last_success: String? = nil, last_idle: String? = nil, last_outcome: String = "none",
                     last_error: JobError? = nil, consecutive_failures: Int = 0, breaker: String = "closed",
                     breaker_opened_at: String? = nil, expected_cadence_s: Int? = nil, due_since: String? = nil,
                     wedged: Bool = false, watchdog_exits: Int? = nil, median_ms: Int? = nil,
                     slowest_of_twenty_ms: Int? = nil) {
             self.last_start = last_start
             self.last_success = last_success
+            self.last_idle = last_idle
             self.last_outcome = last_outcome
             self.last_error = last_error
             self.consecutive_failures = consecutive_failures

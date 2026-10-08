@@ -103,3 +103,25 @@ public enum Doctor {
         return out
     }
 }
+
+/// The development CLI's safety check: its commands never touch a folder lifeproj's registry lists. A registry
+/// that exists but cannot be read refuses everything, since it might list the folder; only an absent one allows.
+public enum DevelopmentGuard {
+    /// Why development commands refuse `folder`, or nil when they may run.
+    public static func refusal(for folder: URL, registryURL: URL = LifeprojRegistry.defaultPath()) -> String? {
+        guard FileManager.default.fileExists(atPath: registryURL.path) else { return nil }
+        let registry: LifeprojRegistry
+        do { registry = try LifeprojRegistry.load(from: registryURL) } catch {
+            return "lifeproj's registry exists but cannot be read; development commands refuse to run"
+        }
+        // Compared after resolving links, so a link to a live binder is refused too.
+        func real(_ path: String) -> String {
+            URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        let target = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        if registry.entries.contains(where: { $0.workingDir.map(real) == target }) {
+            return "\(folder.path) is in lifeproj's registry; development commands work on invented copies only"
+        }
+        return nil
+    }
+}

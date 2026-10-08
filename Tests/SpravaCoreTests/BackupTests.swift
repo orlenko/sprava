@@ -66,7 +66,7 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: s.folder.path))
         #expect(record.secondSnapshot != nil)
         #expect(record.documents.contains { $0.path == "correspondence/notary/letter.pdf" })
-        #expect(s.backup.offloaded().count == 1)
+        #expect(try s.backup.offloaded().count == 1)
 
         // Peek at one document without restoring the binder.
         let file = try s.backup.peek(record.backupID, path: "correspondence/notary/letter.pdf")
@@ -79,7 +79,7 @@ import Testing
         let after = Backup.manifest(restored)
         #expect(after["correspondence/notary/letter.pdf"] == before["correspondence/notary/letter.pdf"])
         #expect(Teka.read(restored).catalog?["processing_log"]?.arrayValue?.contains { ($0["title"]?.stringValue ?? "").hasPrefix("Offloaded with") } == true)
-        #expect(s.backup.offloaded().isEmpty)
+        #expect(try s.backup.offloaded().isEmpty)
 
         // Offload again with nothing changed: the pinned snapshots are reused.
         let again = try s.backup.offload(restored, deviceID: "dev", confirmOpenItems: true, now: now)
