@@ -89,7 +89,7 @@ import Testing
         let id = UUID().uuidString.lowercased()
         var o = JSONObject()
         o.set("format", .str("sprava-capture-event")); o.set("format_version", .str("0")); o.set("id", .string(id))
-        o.set("hlc", .obj([("wall_ms", .int(1_000)), ("counter", .int(0)), ("node", .string(adapter.replacingOccurrences(of: "-", with: "")))]))
+        o.set("hlc", .obj([("wall_ms", .int(1_000_000_000_000)), ("counter", .int(0)), ("node", .string(adapter.replacingOccurrences(of: "-", with: "")))]))
         o.set("device", .obj([("id", .string(adapter))]))
         o.set("source", .obj([("app", .str("adapter")), ("kind", .str("dictation")), ("ref", .str("L1")), ("revision", .str("rev1"))]))
         o.set("captured_at", .str("2026-10-06T09:00:00-04:00")); o.set("locale", .str("en-CA")); o.set("text", .str("Call the notary Friday"))

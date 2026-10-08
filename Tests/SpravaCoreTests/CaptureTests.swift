@@ -65,7 +65,7 @@ extension JSONObject {
         let id = UUIDv7.make(now: now)
         c.set("id", .string(id))
         c.set("device", .obj([("id", .string(other))]))
-        c.set("hlc", .obj([("wall_ms", .int(1)), ("counter", .int(0)), ("node", .string(other.replacingOccurrences(of: "-", with: "")))]))
+        c.set("hlc", .obj([("wall_ms", .int(1_000_000_000_000)), ("counter", .int(0)), ("node", .string(other.replacingOccurrences(of: "-", with: "")))]))
         change(&c)
         let url = folder.appendingPathComponent("\(id).json")
         try write(c, to: url)

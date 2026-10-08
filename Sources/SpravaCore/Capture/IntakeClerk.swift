@@ -96,7 +96,7 @@ extension IntakeWatcher {
             s.card = proposal.id
             seen[e.name] = s
             state[key] = seen
-            save(state)
+            try? save(state)
         }
         e.card = proposal.id
         e.state = "read"

@@ -69,14 +69,14 @@ public struct ShelfStore: Sendable {
     public func add(_ folder: URL) throws {
         var folders = try readFolders().map(\.path)
         let path = folder.standardizedFileURL.path
-        guard !folders.contains(path) else { return }
+        guard !folders.contains(where: { Shelf.identity($0) == Shelf.identity(path) }) else { return }
         folders.append(path)
         try save(folders)
     }
 
     public func remove(_ folder: URL) throws {
         let path = folder.standardizedFileURL.path
-        try save(try readFolders().map(\.path).filter { $0 != path })
+        try save(try readFolders().map(\.path).filter { Shelf.identity($0) != Shelf.identity(path) })
     }
 
     private func save(_ folders: [String]) throws {
@@ -112,18 +112,24 @@ public struct ShelfRow: Sendable {
 }
 
 public enum Shelf {
+    /// What makes two paths one folder: the path with its symbolic links resolved. Rows keep the spelling they
+    /// were given, since Sprava's own state is keyed by it.
+    static func identity(_ path: String) -> String {
+        URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     /// Every binder the shelf knows: the registry's live entries (archived ones too, marked), then picked folders,
-    /// each folder once. Reading never writes inside any binder.
+    /// each folder once, even when reached through a link. Reading never writes inside any binder.
     public static func rows(registry: LifeprojRegistry?, picked: [URL], includeArchived: Bool = false) -> [ShelfRow] {
         var seen = Set<String>()
         var rows: [ShelfRow] = []
         for entry in registry?.entries ?? [] where includeArchived || !entry.archived {
             guard let dir = entry.workingDir else { continue }
             let url = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL
-            guard seen.insert(url.path).inserted else { continue }
+            guard seen.insert(identity(url.path)).inserted else { continue }
             rows.append(ShelfRow(folder: url, source: .registry, archived: entry.archived, teka: Teka.read(url)))
         }
-        for url in picked.map(\.standardizedFileURL) where seen.insert(url.path).inserted {
+        for url in picked.map(\.standardizedFileURL) where seen.insert(identity(url.path)).inserted {
             rows.append(ShelfRow(folder: url, source: .picked, archived: false, teka: Teka.read(url)))
         }
         return rows

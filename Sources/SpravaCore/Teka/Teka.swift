@@ -66,6 +66,23 @@ public struct Teka: Sendable {
         NowPage(items: items, log: log, today: today, timeZone: timeZone)
     }
 
+    /// Adopted once the op log holds a whole line (binder-v0 §6.9): a log a crash during adoption left empty or torn
+    /// is not, so Adopt is offered again (adoption reads such a log as empty and cuts the torn tail).
+    static func hasCompleteLine(_ url: URL) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: url.path) else { return false }
+        defer { try? handle.close() }
+        let chunk: UInt64 = 64 * 1024
+        guard let size = try? handle.seekToEnd(), size > 0 else { return false }
+        // The tail first: one read for any log whose last line is short.
+        if (try? handle.seek(toOffset: size > chunk ? size - chunk : 0)) != nil,
+           let tail = try? handle.read(upToCount: Int(chunk)), tail.contains(0x0A) { return true }
+        guard size > chunk, (try? handle.seek(toOffset: 0)) != nil else { return false }
+        while let data = try? handle.read(upToCount: Int(chunk)), !data.isEmpty {
+            if data.contains(0x0A) { return true }
+        }
+        return false
+    }
+
     /// Reads the folder. Never throws: a problem becomes a state.
     public static func read(_ folder: URL) -> Teka {
         let fm = FileManager.default
@@ -73,7 +90,7 @@ public struct Teka: Sendable {
         var states: [TekaState: [String]] = [:]
         func flag(_ state: TekaState, _ reason: String) { states[state, default: []].append(reason) }
 
-        let adopted = fm.fileExists(atPath: folder.appendingPathComponent(".sprava/ops.ndjson").path)
+        let adopted = hasCompleteLine(folder.appendingPathComponent(".sprava/ops.ndjson"))
 
         // Containment: these must be regular files or folders, never symlinks (binder-v0 §3.6).
         for (name, wantDirectory) in [("catalog.json", false), ("DASHBOARD.md", false), (".teka.lock", false), (".sprava", true)] {

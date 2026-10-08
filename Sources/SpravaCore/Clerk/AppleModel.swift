@@ -65,6 +65,10 @@ public struct AppleClerkModel: ClerkModel {
         }
     }
 
+    public func supports(locale: String) -> Bool {
+        SystemLanguageModel.default.supportsLocale(Locale(identifier: locale))
+    }
+
     public func tokens(instructions: String, prompt: String, task: ClerkTask) async -> Int? {
         let model = SystemLanguageModel.default
         guard let schema = try? Self.schema(task),
