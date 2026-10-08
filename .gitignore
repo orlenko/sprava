@@ -3,3 +3,6 @@
 build/
 *.xcodeproj/
 .DS_Store
+
+# Agent worktrees
+.claude/
