@@ -35,12 +35,15 @@ public struct CaptureInbox: Sendable {
     // MARK: - Producers and notices (architecture 8)
 
     /// Device folder name -> the `source.app` expected there.
-    public func producers() -> [String: String] {
-        (try? Data(contentsOf: producersURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+    public func producers() -> [String: String] { (try? readProducers()) ?? [:] }
+
+    /// The registry, or a throw when `producers.json` exists but cannot be read; writers use this.
+    func readProducers() throws -> [String: String] {
+        try OwnState.read([String: String].self, from: producersURL) ?? [:]
     }
 
     public func registerProducer(folder: String, app: String) throws {
-        var p = producers()
+        var p = try readProducers()
         guard p[folder] != app else { return }
         p[folder] = app
         try AtomicFile.makePrivateFolder(dir)
@@ -49,12 +52,29 @@ public struct CaptureInbox: Sendable {
         try AtomicFile.write(try encoder.encode(p), to: producersURL)
     }
 
-    /// Records that the app wrote this event, so its binder hint can be trusted.
+    /// Records that the app wrote this event, so its binder hint can be trusted. Throws when the line is not on
+    /// disk, so the app knows the binder the person chose would be lost (architecture 8).
     public func recordNotice(event: String, digest: String, now: Date = Date()) throws {
         guard CaptureEvent.isUUIDText(event), digest.hasPrefix("sha256:") else { throw Commands.Failure(message: "bad notice") }
         try AtomicFile.makePrivateFolder(dir)
-        AtomicFile.appendLine(JSONWriter.compact(.obj([("at", .string(ISOTime.string(now))), ("event", .string(event)),
-                                                       ("sha256", .string(digest))])), to: noticesURL)
+        try Self.appendDurably(JSONWriter.compact(.obj([("at", .string(ISOTime.string(now))), ("event", .string(event)),
+                                                        ("sha256", .string(digest))])), to: noticesURL)
+    }
+
+    /// Appends one whole line and flushes it, or throws.
+    static func appendDurably(_ line: String, to url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw AtomicFile.Failure(step: "open \(url.lastPathComponent)", code: errno) }
+        defer { close(fd) }
+        try Data((line + "\n").utf8).withUnsafeBytes { b in
+            var off = 0
+            while off < b.count {
+                let n = write(fd, b.baseAddress! + off, b.count - off)
+                if n < 0 { if errno == EINTR { continue }; throw AtomicFile.Failure(step: "write \(url.lastPathComponent)", code: errno) }
+                off += n
+            }
+        }
+        if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 { throw AtomicFile.Failure(step: "fsync \(url.lastPathComponent)", code: errno) }
     }
 
     func notices() -> [String: String] {
@@ -83,6 +103,7 @@ public struct CaptureInbox: Sendable {
         var chains: [String: [String]]? = [:]         // app|ref -> event ids, oldest first (capture-event-v0 §3.2)
         var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
         var clocks: [String: String]? = [:]           // id -> its HLC as sortable text, to find a chain's current event
+        var raises: [String: [String]]? = [:]         // id -> a chain whose raise to private failed, retried each sweep
         var examined: [String: Examined] = [:]        // device/name -> last seen
         struct Examined: Codable, Equatable {
             var size: Int
@@ -91,8 +112,13 @@ public struct CaptureInbox: Sendable {
         }
     }
 
-    func loadState() -> State {
-        (try? Data(contentsOf: stateURL)).flatMap { try? JSONDecoder().decode(State.self, from: $0) } ?? State()
+    /// The cursor, for readers: empty when it cannot be read.
+    func loadState() -> State { (try? readState()) ?? State() }
+
+    /// The cursor, for writers: a fresh one only when `state.json` does not exist. One that cannot be read throws,
+    /// so it is never rebuilt over and no capture gets a second card (capture-event-v0 §5.3).
+    func readState() throws -> State {
+        try OwnState.read(State.self, from: stateURL) ?? State()
     }
 
     func save(_ s: State) throws {
@@ -124,6 +150,8 @@ public struct CaptureInbox: Sendable {
         public var refusedFolders = 0
         /// Seconds from each new capture's end to its card, for the one-minute measure (decisions.md M3).
         public var latencies: [Double] = []
+        /// A state file that exists but cannot be read: nothing was swept, and nothing was written over it.
+        public var unreadable: String?
     }
 
     // MARK: - Sweep
@@ -135,10 +163,25 @@ public struct CaptureInbox: Sendable {
             if FileManager.default.fileExists(atPath: root.path) { result.refusedFolders += 1 }
             return result
         }
-        var state = loadState()
-        let producers = producers()
+        // A cursor, registry or digest list that cannot be read stops the sweep: rebuilt, it would card every
+        // capture again and save over what is there (capture-event-v0 §5.3).
+        var state: State
+        let producers: [String: String]
+        do {
+            state = try readState()
+            producers = try readProducers()
+            _ = try unfiledDigests()
+        } catch {
+            result.unreadable = (error as? ShelfStore.Unreadable).map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "capture state"
+            journal([("stage", .str("state_unreadable"))])
+            return result
+        }
         let notices = notices()
         let fm = FileManager.default
+        // Raises to private that could not be written last time are tried again first.
+        for (id, chain) in (state.raises ?? [:]).sorted(by: { $0.key < $1.key }) where raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) {
+            state.raises?[id] = nil
+        }
         guard let devices = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return result }
         for device in devices.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where !device.lastPathComponent.hasPrefix(".") {
             let deviceName = device.lastPathComponent
@@ -189,9 +232,9 @@ public struct CaptureInbox: Sendable {
                     state.ingested[stem] = "derived"
                 case .complete(.capture):
                     guard let event else { continue }
+                    state.paths = (state.paths ?? [:]).merging([stem: key]) { $1 }
                     ingest(event, device: deviceName, producer: producers[deviceName], notice: notices[stem], size: size,
                            state: &state, result: &result, binders: binders, commands: commands, now: now)
-                    state.paths = (state.paths ?? [:]).merging([stem: key]) { $1 }
                 }
             }
         }
@@ -213,7 +256,7 @@ public struct CaptureInbox: Sendable {
                 // The same capture again: only a raise of sensitivity is applied (capture-event-v0 §3.2).
                 result.duplicates += 1
                 state.ingested[id] = "duplicate"
-                if registered, event.isPrivate { raisePrivacy(chain: [earlier] + chain, binders: binders, commands: commands, now: now) }
+                if registered, event.isPrivate { raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
                 journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
                 return
             }
@@ -251,7 +294,7 @@ public struct CaptureInbox: Sendable {
         // A later event of the chain: the same text changes only sensitivity; other text replaces what still waits.
         var replaces: String?
         if let earlier = current {
-            if event.isPrivate { raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) }
+            if event.isPrivate { raise(chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
             if state.texts?[earlier] == textHash {
                 state.ingested[id] = "same_text"
                 journal([("event", .string(id)), ("stage", .str("same_text"))])
@@ -278,8 +321,16 @@ public struct CaptureInbox: Sendable {
         let hint = own && verified ? event.binderHint : nil
         let made: (String, URL?)
         do {
-            made = try card(for: event, hint: hint, verified: verified, producer: producer ?? event.app,
-                            replaces: replaces, binders: binders, commands: commands, now: now)
+            // A card made before a crash, whose id never reached the cursor, is kept, never made twice (§5.3).
+            let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders)
+            if let p = waitingUnfiled.first {
+                made = (p.id, nil)
+            } else if let (folder, p) = waitingFiled.first {
+                made = (p.id, folder)
+            } else {
+                made = try card(for: event, hint: hint, verified: verified, producer: producer ?? event.app,
+                                replaces: replaces, binders: binders, commands: commands, now: now)
+            }
         } catch {
             // The stage stays "ingested", so the next sweep makes the card.
             journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
@@ -292,6 +343,7 @@ public struct CaptureInbox: Sendable {
         // The clerk reads it next; private captures too, on the device.
         state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
         state.ingested[id] = filedTo == nil ? "unfiled" : "proposed"
+        try? save(state)   // the card's id reaches the cursor now, not at the end of the sweep
         if filedTo == nil { result.unfiled += 1 } else { result.filed += 1 }
         if let end = event.endedAt { result.latencies.append(max(0, now.timeIntervalSince(end))) }
         journal([("event", .string(id)), ("stage", .str(filedTo == nil ? "unfiled" : "proposed")), ("tier", .str("0")),
@@ -414,9 +466,19 @@ public struct CaptureInbox: Sendable {
         }
     }
 
+    /// Applies a raise to private for event `id`; one that could not be written is kept in the cursor and tried
+    /// again by every sweep until it is, so an unredacted card never stays approvable.
+    func raise(_ chain: [String], for id: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
+        guard !raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) else { return }
+        state.raises = (state.raises ?? [:]).merging([id: chain]) { $1 }
+        journal([("event", .string(id)), ("stage", .str("privacy_raise_failed"))])
+    }
+
     /// A raise to private (capture-event-v0 §3.2, §3.3): waiting cards from the chain become private and redacted
-    /// at once; cards in binders are rewritten by Sprava and trusted again.
-    func raisePrivacy(chain: [String], binders: [ShelfRow], commands: Commands, now: Date) {
+    /// at once; cards in binders are rewritten by Sprava and trusted again. Returns false when any rewrite or
+    /// redaction card could not be saved.
+    func raisePrivacy(chain: [String], binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
+        var complete = true
         let (unfiled, filed) = pendingCards(chain: chain, binders: binders)
         func privateCopy(_ p: Proposal) -> Proposal {
             var raw = p.raw
@@ -434,15 +496,22 @@ public struct CaptureInbox: Sendable {
             }))
             return Proposal(raw: raw)
         }
-        for p in unfiled { try? writeUnfiled(privateCopy(p).raw) }
-        for (folder, p) in filed where (try? ProposalStore.save(privateCopy(p), in: folder)) != nil {
-            commands.trustProposals([p.id], in: folder)
+        for p in unfiled where p.raw["provenance"]?["private"] != .bool(true) {
+            if (try? writeUnfiled(privateCopy(p).raw)) == nil { complete = false }
         }
-        // Items already filed from the chain get a card that redacts them (capture-event-v0 §3.2, §3.3).
+        for (folder, p) in filed where p.raw["provenance"]?["private"] != .bool(true) {
+            if (try? ProposalStore.save(privateCopy(p), in: folder)) != nil { commands.trustProposals([p.id], in: folder) } else { complete = false }
+        }
+        // Items already filed from the chain get a card that redacts them (capture-event-v0 §3.2, §3.3), unless a
+        // card waiting from the chain already does (a retry after a partial failure).
         let ids = Set(chain)
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            let covered = Set(filed.filter { $0.0.standardizedFileURL == row.folder.standardizedFileURL }.flatMap { $0.1.ops }.compactMap { op -> String? in
+                guard op["op"] == .str("update_item"), op["args"]?["set"]?["redact"] == .bool(true), let id = op["args"]?["id"] else { return nil }
+                return canonicalText(id)
+            })
             let ops = row.teka.items.compactMap { item -> JSONObject? in
-                guard let o = item.object, o["redact"] != .bool(true), let itemID = o["id"],
+                guard let o = item.object, o["redact"] != .bool(true), let itemID = o["id"], !covered.contains(canonicalText(itemID)),
                       let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue), events.contains(where: ids.contains) else { return nil }
                 var set = JSONObject([(key: "redact", value: .bool(true))])
                 if o["kind"] == nil { set.set("kind", .str("other")) }
@@ -454,9 +523,10 @@ public struct CaptureInbox: Sendable {
                                      provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))), (key: "private", value: .bool(true)),
                                                              (key: "remains", value: .str("titles already published to the hub until the next publish"))]),
                                      now: now)
-            if (try? ProposalStore.save(card, in: row.folder)) != nil { commands.trustProposals([card.id], in: row.folder) }
+            if (try? ProposalStore.save(card, in: row.folder)) != nil { commands.trustProposals([card.id], in: row.folder) } else { complete = false }
         }
         journal([("stage", .str("sensitivity_raised")), ("cards", .int(unfiled.count + filed.count))])
+        return complete
     }
 
     /// The words of the spans a card lists as not filed yet, read from the capture itself.
@@ -489,7 +559,7 @@ public struct CaptureInbox: Sendable {
     /// Picks the oldest capture waiting for the clerk whose code-built card is still untouched, and records the
     /// attempt before any model call (the poison rule: two unfinished attempts and the capture keeps its card).
     public func nextForClerk() -> ClerkWork? {
-        var state = loadState()
+        guard var state = try? readState() else { return nil }
         var clerk = state.clerk ?? [:]
         var attempts = state.attempts ?? [:]
         defer {
@@ -513,6 +583,10 @@ public struct CaptureInbox: Sendable {
             guard parts.count == 2, case (.complete(.capture), let event?) = CaptureEvent.check(device.appendingPathComponent(parts[1]), deviceFolder: device)
             else { clerk[id] = "kept"; continue }
             attempts[id, default: 0] += 1
+            // The attempt is on disk before any model call, or there is no call this run (the poison rule).
+            state.clerk = clerk
+            state.attempts = attempts
+            guard (try? save(state)) != nil else { return nil }
             journal([("event", .string(id)), ("stage", .str("clerk_attempt")), ("n", .int(attempts[id]!))])
             return ClerkWork(event: event, hint: state.hints?[id], tier0: card, tier0Binder: binder)
         }
@@ -537,7 +611,8 @@ public struct CaptureInbox: Sendable {
     public func commitClerk(_ work: ClerkWork, _ interp: Interpretation, filing: [FilingBinder], rows: [ShelfRow],
                             commands: Commands, seconds: Double, now: Date = Date()) -> ClerkOutcome {
         var outcome = ClerkOutcome()
-        var state = loadState()
+        // A cursor that cannot be read is never saved over: nothing to do this time.
+        guard var state = try? readState() else { return outcome }
         var clerk = state.clerk ?? [:]
         defer {
             state.clerk = clerk
@@ -548,15 +623,23 @@ public struct CaptureInbox: Sendable {
             if clerk[id] == "pending" || clerk[id] == "retry" { clerk[id] = "acted" }
             return outcome
         }
-        try? AtomicFile.makePrivateFolder(dir.appendingPathComponent("interpretations", isDirectory: true))
-        try? AtomicFile.write(Data(JSONWriter.pretty(.object(Self.record(interp))).utf8),
-                              to: dir.appendingPathComponent("interpretations/\(id).json"))
-        outcome.items = interp.items.count
         func log(_ stage: String) {
             journal([("event", .string(id)), ("stage", .string(stage)), ("outcome", .string(interp.outcome)), ("items", .int(interp.items.count)),
                      ("filed", .int(outcome.filed)), ("not_sure", .int(outcome.unsure)), ("dropped", .int(interp.dropped)),
                      ("unfiled_spans", .int(interp.unfiled.count)), ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
         }
+        // The interpretation the cards will name is on disk first (decisions.md C3); if it cannot be written, the
+        // code-built card stays and the reading is tried again.
+        do {
+            try AtomicFile.makePrivateFolder(dir.appendingPathComponent("interpretations", isDirectory: true))
+            try AtomicFile.write(Data(JSONWriter.pretty(.object(Self.record(interp))).utf8),
+                                 to: dir.appendingPathComponent("interpretations/\(id).json"))
+        } catch {
+            clerk[id] = "retry"
+            log("clerk_write_failed")
+            return outcome
+        }
+        outcome.items = interp.items.count
         guard !interp.items.isEmpty else {
             // A model failure gets one more try under the background budget (architecture 3.4, 8); otherwise
             // the code-built card is the best there is.
@@ -574,22 +657,45 @@ public struct CaptureInbox: Sendable {
             log("clerk_already")
             return outcome
         }
-        for (binder, proposal) in cards {
-            let folder = binder.flatMap { name in
+        // A binder name resolves through the filing list (where a disclosure-none binder has only its label), else
+        // to an adopted binder this Mac manages that is not at disclosure none.
+        let placed = cards.map { binder, proposal in
+            (proposal, binder.flatMap { name in
                 filing.first { $0.name == name }?.folder ?? rows.first {
                     $0.teka.isAdopted && $0.name == name && !$0.teka.writesBlocked && Owner.device(of: $0.folder) == commands.deviceID
+                        && $0.teka.catalog?["meta"]?["disclosure"]?.stringValue != "none"
                 }?.folder
+            })
+        }
+        // The "not sure" cards are written first, then the binders'; when any save fails, the cards already saved
+        // are taken back, so the clerk's cards never wait beside the code-built one, and the reading is not retried
+        // into duplicates.
+        var saved: [(URL?, String)] = []
+        func takeBack() {
+            for (folder, pid) in saved {
+                if let folder, let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == pid }) {
+                    try? TekaStore(folder: folder).reject(p, reason: "the clerk's cards could not all be saved", now: now)
+                } else if folder == nil {
+                    try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(pid).json"))
+                }
             }
+        }
+        for (proposal, folder) in placed.filter({ $0.1 == nil }) + placed.filter({ $0.1 != nil }) {
             if let folder, (try? ProposalStore.save(proposal, in: folder)) != nil {
                 commands.trustProposals([proposal.id], in: folder)
+                saved.append((folder, proposal.id))
                 outcome.filed += proposal.ops.count
             } else {
                 var raw = proposal.raw
                 raw.set("binder", .str("not sure"))
                 do { try writeUnfiled(raw) } catch {
+                    takeBack()
+                    outcome = ClerkOutcome(items: outcome.items)
+                    clerk[id] = "kept"
                     log("clerk_write_failed")
                     return outcome   // the code-built card stays; nothing is lost
                 }
+                saved.append((nil, proposal.id))
                 outcome.unsure += proposal.ops.count
             }
         }
@@ -719,15 +825,21 @@ public struct CaptureInbox: Sendable {
         try AtomicFile.makePrivateFolder(unfiledDir)
         let bytes = Data(JSONWriter.pretty(.object(raw)).utf8)
         // The digest is recorded first: a card whose file was written but not recorded would never be shown.
-        var digests = unfiledDigests()
+        var digests = try unfiledDigests()
         digests[id] = Self.digest(bytes)
-        try AtomicFile.write(try JSONEncoder().encode(digests), to: unfiledDigestsURL)
+        try saveUnfiledDigests(digests)
         try AtomicFile.write(bytes, to: unfiledDir.appendingPathComponent("\(id).json"))
     }
 
+    /// Card id -> digest of the file the inbox wrote. Throws when the list exists but cannot be read, so it is
+    /// never saved over with one entry.
+    func unfiledDigests() throws -> [String: String] {
+        try OwnState.read([String: String].self, from: unfiledDigestsURL) ?? [:]
+    }
 
-    func unfiledDigests() -> [String: String] {
-        (try? Data(contentsOf: unfiledDigestsURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+    func saveUnfiledDigests(_ digests: [String: String]) throws {
+        try AtomicFile.makePrivateFolder(dir)
+        try AtomicFile.write(try JSONEncoder().encode(digests), to: unfiledDigestsURL)
     }
 
     static func digest(_ data: Data) -> String { "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
@@ -766,10 +878,10 @@ public struct CaptureInbox: Sendable {
     // MARK: - Unfiled cards
 
     /// Unfiled cards waiting for the person to pick a binder. A card whose file changed since the inbox wrote it is
-    /// left out.
+    /// left out, and none is shown while the digest list cannot be read (the sweep reports that).
     public func unfiled() -> [Proposal] {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: unfiledDir.path) else { return [] }
-        let digests = unfiledDigests()
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: unfiledDir.path),
+              let digests = try? unfiledDigests() else { return [] }
         return names.filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.sorted().compactMap { name in
             guard case .ok(let data) = SafeFile.read(unfiledDir.appendingPathComponent(name)),
                   digests[String(name.dropLast(5))] == Self.digest(data),
@@ -778,7 +890,9 @@ public struct CaptureInbox: Sendable {
         }
     }
 
-    /// Moves an unfiled card into the binder the person picked, as a proposal there; the unfiled file is removed.
+    /// Moves an unfiled card into the binder the person picked, as a proposal there. The card leaves the Inbox
+    /// (its digest is dropped) before it is saved in the binder, so it can never be approvable in two places; the
+    /// leftover file, never shown without its digest, is removed last.
     public func file(_ proposalID: String, into folder: URL, commands: Commands) throws {
         guard var raw = unfiled().first(where: { $0.id == proposalID })?.raw else {
             throw Commands.Failure(message: "this card is gone or changed since Sprava wrote it")
@@ -787,9 +901,18 @@ public struct CaptureInbox: Sendable {
         guard teka.isAdopted else { throw Commands.Failure(message: "this binder is not adopted yet") }
         guard Owner.device(of: folder) == commands.deviceID else { throw Commands.Failure(message: "this binder is read-only here") }
         for key in ["binder", "source_retracted", "source_corrected"] { raw.remove(key) }
-        try ProposalStore.save(Proposal(raw: raw), in: folder)
+        var digests = try unfiledDigests()
+        let digest = digests.removeValue(forKey: proposalID)
+        try saveUnfiledDigests(digests)
+        do {
+            try ProposalStore.save(Proposal(raw: raw), in: folder)
+        } catch {
+            digests[proposalID] = digest
+            try? saveUnfiledDigests(digests)
+            throw error
+        }
         commands.trustProposals([proposalID], in: folder)
-        try FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(proposalID).json"))
+        try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(proposalID).json"))
         journal([("card", .string(proposalID)), ("stage", .str("filed_by_person"))])
     }
 

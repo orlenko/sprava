@@ -25,11 +25,11 @@ public struct IntakeWatcher: Sendable {
         return (try? Data(contentsOf: stateURL)).flatMap { try? decoder.decode([String: [String: Seen]].self, from: $0) } ?? [:]
     }
 
-    func save(_ s: [String: [String: Seen]]) {
+    func save(_ s: [String: [String: Seen]]) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        try? AtomicFile.makePrivateFolder(stateURL.deletingLastPathComponent())
-        if let data = try? encoder.encode(s) { try? AtomicFile.write(data, to: stateURL) }
+        try AtomicFile.makePrivateFolder(stateURL.deletingLastPathComponent())
+        try AtomicFile.write(try encoder.encode(s), to: stateURL)
     }
 
     public struct ScanResult: Equatable, Sendable {
@@ -39,6 +39,8 @@ public struct IntakeWatcher: Sendable {
         public var held = 0
         /// Files that sat in some intake/ for more than 7 days without being filed (mvp.md 1.2, currency).
         public var stale = 0
+        /// The cursor could not be written: every file would look new on every scan, so the job reports it.
+        public var cursorUnsaved = false
     }
 
     /// One thing in `intake/` worth a card: a file, or a message with the files of its attachments folder.
@@ -177,7 +179,7 @@ public struct IntakeWatcher: Sendable {
             for (_, gone) in seen { if let card = gone.card { withdraw(card, in: row.folder, now: now) } }
             kept[key] = next
         }
-        save(kept)
+        if (try? save(kept)) == nil { result.cursorUnsaved = true }
         IntakeReadings(support: support).prune(now: now)
         return result
     }

@@ -19,12 +19,17 @@ public struct FilingList: Sendable {
 
     var url: URL { support.appendingPathComponent("binders.json") }
 
-    public func load() -> [String: Entry] {
-        (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:]
+    /// The list, for readers: empty when it cannot be read.
+    public func load() -> [String: Entry] { (try? read()) ?? [:] }
+
+    /// The list, for writers: empty only when `binders.json` does not exist; one that cannot be read throws, so
+    /// one binder's setting never saves over every other's.
+    public func read() throws -> [String: Entry] {
+        try OwnState.read([String: Entry].self, from: url) ?? [:]
     }
 
     public func set(_ folder: URL, _ entry: Entry) throws {
-        var all = load()
+        var all = try read()
         all[folder.standardizedFileURL.path] = Entry(description: String(entry.description.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)),
                                                      filing: entry.filing)
         try AtomicFile.makePrivateFolder(support)

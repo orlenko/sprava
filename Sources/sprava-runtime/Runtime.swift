@@ -409,6 +409,7 @@ final class Runtime: @unchecked Sendable {
             let slowest = result.latencies.max().map { " slowest_s=\(Int($0))" } ?? ""
             log("capture ingested=\(result.ingested) filed=\(result.filed) unfiled=\(result.unfiled) duplicates=\(result.duplicates) quarantined=\(result.quarantined) pending=\(result.pending) refused_folders=\(result.refusedFolders)" + slowest)
         }
+        if let file = result.unreadable { return .error(code: "capture_state_unreadable", culprit: file) }
         if result.refusedFolders > 0 { return .error(code: "capture_folder_refused", culprit: "\(result.refusedFolders) folder(s)") }
         return .ok   // a sweep that found nothing new still did its work
     }
@@ -425,6 +426,7 @@ final class Runtime: @unchecked Sendable {
         if result.carded > 0 || result.replaced > 0 {
             log("intake carded=\(result.carded) held=\(result.held) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
         }
+        if result.cursorUnsaved { return .error(code: "intake_state_unwritable", culprit: "capture/intake.json") }
         return .ok
     }
 
