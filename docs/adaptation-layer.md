@@ -212,17 +212,38 @@ Sprava's own notes, proven by the app's notices, can choose a binder by hint.
 
 ## 7. What already exists
 
-- The contract reader, with type checks, quarantine, chains, retractions and sensitivity raises
-  (`SpravaCore/Capture/CaptureEvents.swift`, `CaptureInbox.swift`).
-- Text from the note field and `sprava note`, with code-built cards and the clerk's notes reading
-  (`SpravaCore/Clerk`).
-- The intake watcher of increment 5: it notices a file that holds still in `intake/` and builds a filing card
-  that reads no text (`SpravaCore/Capture/Intake.swift`). P13 replaces the "reads no text" part; the watcher,
-  the filing op with its digest check, and the folder choice stay.
-- Producer registration and the app's notices (section 6.4).
+Built in increment 7 (2026-10-08), on top of the contract reader, the clerk and the intake watcher:
 
-Not built: the extraction helper, every extraction step, `obtained`, the classification and document
-readings, escalation, and the sources other than notes and `intake/`.
+- `sprava-extract` (`Sources/sprava-extract`, `SpravaCore/Extract`): the sandboxed helper. Bytes in on
+  standard input, JSON out; no file or network access. Sniffing by content, PDF text layer, Vision OCR,
+  images, Office XML formats, RTF, HTML, `.eml` and mail-monitor Markdown. Old binary Office and Outlook
+  files are held.
+- `IntakeWatcher` (`SpravaCore/Capture/Intake.swift`): `intake/` and `intake/mail/` (a message with its
+  `<name> attachments/` folder is one capture, `obtained.channel: email`). The runtime reads files off the
+  command queue before carding them; a file the helper cannot read gets a "Held" card that says why.
+- `IntakeReading`, `IntakeFacts`, `IntakeReadings` (`SpravaCore/Capture/IntakeReading.swift`): the text,
+  code's facts and signals, and Sprava's store of readings in `capture/readings/`. One change from 4.1 step 2:
+  Sprava keeps the extracted text, not a second copy of the original; the original stays in `intake/` until
+  the person files it, and the card's digest pins it.
+- The clerk's document reading (`SpravaCore/Clerk/DocumentReading.swift`): one classification call, then
+  items window by window (at most 24 windows of 200 words), code's checks, and the duplicate check. Code
+  overrules "governing" when no governing word is found or the document looks like a record. A due date in
+  the sentence after a payment is taken, flagged. Items from a record ("information") need a date. Dated
+  sentences that ask something and that no item covers get one more reading; a document that asks for a
+  reply gets a reply item from code when the model gave none.
+- Apple's on-device guardrail refuses the word "syndicate" in any case, which is the legal name of a
+  Québec co-ownership. The classification call is retried once with such words neutralised (dates and items
+  still come from the original text), and if the model still refuses, code classifies from its signal words.
+- Escalation (4.4): the reasons are decided by code; the Inbox lists the waiting readings, and over MCP a
+  brain sees them with `list_readings` (within scope and disclosure), reads the text with `read_document`
+  only when the person allowed that client to read documents and the binder's disclosure is `full`, and
+  answers with `propose_ops` plus `reading_id`, or `finish_reading`.
+- `obtained` is recorded on the card and copied into every document filed from it; the person answers
+  "How did it reach you?" on approval when the source could not tell.
+
+Measured with the real on-device model on six invented documents (English and French letters, minutes, a
+by-law, and a scanned PDF read by OCR in the sandboxed helper): two to four calls and 3 to 15 seconds per
+one-page document; class, title, date and dated items right on all six.
 
 ## 8. A build order (increment 7 of the MVP)
 

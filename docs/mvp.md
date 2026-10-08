@@ -268,11 +268,13 @@ The spikes by increment:
    - Main risk: recall and speed in the background, which spikes (f) and (j) measured at the start of increment 5 (architecture 5.3). The 3B Core model is not exercised on the author's Mac (section 6).
    - Drops first if it runs over: the French date grammar, so English ships first; then the duplicate check, so every item is proposed as new.
 
-7. Reading intake (added 2026-10-07, decisions.md P13 to P16; it replaces the removed holos increment). Size not yet estimated.
+7. Reading intake (added 2026-10-07, decisions.md P13 to P16; it replaces the removed holos increment). Built, except as listed below.
    - The extraction helper (architecture 2.1) and the type adapters for text, images, office documents and PDFs (`docs/adaptation-layer.md`).
    - Every file in a binder's `intake/` is read in full: OCR, deterministic steps, then the local model classifies it (governing document, action needed, reference, other) and reads it with the document variant of capture-event-v0 §6.4. A smarter model follows up when warranted; unusual or suspect files are held for the person.
    - How the material was obtained (email, a paper scan, a download, the person's note) is recorded with it (P16).
    - Useful alone: the agent-and-monitor routine each binder runs today moves into Sprava, with every result a card the person approves.
+   - Built (2026-10-08): the sandboxed `sprava-extract` helper with PDF text layer and Vision OCR, images, DOCX/XLSX/PPTX/ODF, RTF, HTML and email files; mail-monitor messages in `intake/mail/` read as one capture with their attachments folder; a card that shows what code found (the start of the text, dates, amounts, reference numbers, how it came) or says why the file is held; "How did it reach you?" on approval; the clerk's document reading (class, title, date, summary, items with dates, the duplicate check), which replaces the code-built card; the careful-reading queue, which the Inbox lists and a connected brain reads and answers over MCP (`list_readings`, `read_document` with the person's per-client permission, `propose_ops` with `reading_id`, `finish_reading`).
+   - Not built yet: "look at this properly" from a card; old Office and Outlook formats (`.doc`, `.xls`, `.msg`), which are held; a size or page threshold set from real fixtures (today: 3,000 words or 10 pages); per-client MCP rate limits.
 
 8. One template, and backup with offload. Built.
    - Useful alone: a new `tax-2026` binder starts in Sprava, ready and stamped. Every binder is backed up to an encrypted restic mirror in iCloud Drive, and a finished binder is offloaded and restored with one click (`docs/backup.md`; decisions.md A11, A12). Built: the template, backup with retention and checks, offload, restore, peek, the restore drill, and the Backup page.

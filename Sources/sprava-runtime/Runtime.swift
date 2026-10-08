@@ -49,8 +49,8 @@ final class Runtime: @unchecked Sendable {
         "alerts": JobSpec(key: "alerts", budget: .seconds(5), expectedCadence: 3600, breakerThreshold: 3),
         "hub": JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3),
         "capture": JobSpec(key: "capture", budget: .seconds(10), expectedCadence: 15, breakerThreshold: 3),
-        "intake": JobSpec(key: "intake", budget: .seconds(60), expectedCadence: 30, breakerThreshold: 3),
-        "clerk": JobSpec(key: "clerk", budget: .seconds(120), expectedCadence: nil, breakerThreshold: 3),
+        "intake": JobSpec(key: "intake", budget: .seconds(600), expectedCadence: 30, breakerThreshold: 3),
+        "clerk": JobSpec(key: "clerk", budget: .seconds(300), expectedCadence: nil, breakerThreshold: 3),
         "dashboard": JobSpec(key: "dashboard", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
         // A first backup of a large binder takes long; the job is never killed for that (docs/backup.md §3.3).
         "backup": JobSpec(key: "backup", budget: .seconds(3 * 3600), expectedCadence: nil, breakerThreshold: 3),
@@ -420,18 +420,17 @@ final class Runtime: @unchecked Sendable {
         return .ok   // a sweep that found nothing new still did its work
     }
 
-    /// The intake watcher (mvp.md feature 4): a card for each file that holds still in a binder's intake/.
+    /// The intake watcher (mvp.md feature 4; adaptation-layer §4): a card for each file that holds still in a
+    /// binder's intake/, after the sandboxed helper has read it. Digests and reading happen here, off the command
+    /// queue; at most four minutes of reading per run, the rest on the next.
     func intake() -> JobOutcome {
         guard let commands, let xpc else { return .skipped }
         let rows = shelfRows()
         let watcher = IntakeWatcher(support: support)
-        // Digests of large files are computed here, off the command queue.
-        var digests: [String: String] = [:]
-        for url in watcher.filesToHash(binders: rows, deviceID: commands.deviceID) { digests[url.path] = DocumentPaths.sha256(of: url) }
-        let known = digests
-        let result = xpc.queue.sync { watcher.scan(binders: rows, commands: commands, digests: known) }
+        let prepared = watcher.prepare(binders: rows, deviceID: commands.deviceID)
+        let result = xpc.queue.sync { watcher.scan(binders: rows, commands: commands, prepared: prepared, requireReading: true) }
         if result.carded > 0 || result.replaced > 0 {
-            log("intake carded=\(result.carded) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
+            log("intake carded=\(result.carded) held=\(result.held) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
         }
         return .ok
     }
@@ -460,6 +459,29 @@ final class Runtime: @unchecked Sendable {
             let seconds = Date().timeIntervalSince(t0)
             let outcome = xpc.queue.sync { inbox.commitClerk(work, interp, filing: filing, rows: rows, commands: commands, seconds: seconds) }
             log("clerk outcome=\(interp.outcome) items=\(outcome.items) filed=\(outcome.filed) not_sure=\(outcome.unsure) calls=\(interp.calls) ms=\(Int(seconds * 1000))")
+            read += 1
+        }
+        // Then intake documents (adaptation-layer §4.2, §4.3), one at a time, started within the same 45 seconds.
+        let watcher = IntakeWatcher(support: support)
+        while Date().timeIntervalSince(started) < 45 {
+            guard let entry = xpc.queue.sync(execute: { watcher.nextForReading() }) else { break }
+            let folder = URL(fileURLWithPath: entry.binder, isDirectory: true)
+            let rows = shelfRows()
+            let binder = FilingList(support: support).binders(rows: rows, deviceID: commands.deviceID).first { $0.folder.standardizedFileURL.path == entry.binder }
+                ?? rows.first { $0.folder.standardizedFileURL.path == entry.binder }.map { row in
+                    FilingBinder(name: row.name, description: "", folder: folder, openItems: FilingBinder.candidates(catalog: row.teka.catalog))
+                }
+            let t0 = Date()
+            let locale = IntakeReading.language(of: entry.reading.text)
+            let doc = blocking { await Clerk(model: model).readDocument(entry.reading, name: entry.name, binder: binder, locale: locale) }
+            let seconds = Date().timeIntervalSince(t0)
+            if doc.title == nil && doc.summary == nil && doc.items.isEmpty {
+                xpc.queue.sync { watcher.failReading(entry) }
+                log("clerk document outcome=failed calls=\(doc.calls) ms=\(Int(seconds * 1000))")
+            } else {
+                let outcome = xpc.queue.sync { watcher.commitReading(entry, doc, commands: commands) }
+                log("clerk document outcome=\(doc.outcome) class=\(doc.documentClass) items=\(outcome.items) escalated=\(outcome.escalated) calls=\(doc.calls) ms=\(Int(seconds * 1000))")
+            }
             read += 1
         }
         if read > 0 { queue.async { self.model?.last_success = ISOTime.string(Date()) } }

@@ -21,6 +21,10 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava clerk <text> [--locale <tag>] [--binder <name>=<description>]...
                                           developer only: run the on-device clerk on invented text and print
                                           what it read; nothing is filed
+       sprava read-document <file> [--locale <tag>]
+                                          developer only: read an invented file as intake would (the sandboxed
+                                          helper when built beside this tool, else in process), then the
+                                          clerk's document reading; prints facts, the reading and its items
        sprava clerk-gate <fixtures.json>   developer only: the clerk's release gate on invented fixtures:
                                           recall, dates, amounts, binders, calls and time
        sprava measures [--days N]          the shadow run's measures (mvp.md 1.2) over the last N days (30)
@@ -288,6 +292,40 @@ func clerk(_ args: [String]) {
     print(JSONWriter.pretty(.object(record)), terminator: "")
 }
 
+/// A developer run of intake reading on one invented file (docs/adaptation-layer.md §4).
+func readDocument(_ args: [String]) {
+    var args = args
+    var given: String?
+    if let i = args.firstIndex(of: "--locale"), i + 1 < args.count { given = args[i + 1]; args.removeSubrange(i...(i + 1)) }
+    guard let path = args.first else { fail(usage) }
+    let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    let model: AppleClerkModel
+    switch AppleClerkModel.load() {
+    case .success(let m): model = m
+    case .failure(let e): fail("the clerk cannot run: \(e)", code: 1)
+    }
+    let started = Date()
+    let reading = IntakeReading.read(url, channel: "other")
+    let read = Date().timeIntervalSince(started)
+    let locale = given ?? IntakeReading.language(of: reading.text)
+    let facts = IntakeFacts.of(reading, anchor: IntakeReading.day(ofHeader: reading.date) ?? CalendarDate.today(), locale: locale)
+    let tag = locale
+    let doc = runBlocking { await Clerk(model: model).readDocument(reading, name: url.lastPathComponent, binder: nil, locale: tag) }
+    var o = doc.json
+    o.set("kind", .string(reading.kind))
+    o.set("text_from", .string(reading.textFrom))
+    if let held = reading.held { o.set("held", .string(held)) }
+    o.set("facts", facts.json)
+    o.set("escalate", .array(doc.escalate.map(JSONValue.string)))
+    o.set("items", .array(doc.items.map { i -> JSONValue in
+        .obj([("title", .string(i.title)), ("action", .string(i.action)), ("due", i.whenResolved.map { .string($0.description) } ?? .null),
+              ("amount", i.amountText.map(JSONValue.string) ?? .null)])
+    }))
+    o.set("read_seconds", .number(JSONNumber(text: String(format: "%.2f", read))))
+    o.set("seconds", .number(JSONNumber(text: String(format: "%.2f", Date().timeIntervalSince(started)))))
+    print(JSONWriter.pretty(.object(o)), terminator: "")
+}
+
 /// The release gate (architecture 5.3): runs the clerk on each invented case and scores it against what was
 /// expected. A real item matches an expected one when all its words occur in the item's title or sentence.
 func clerkGate(_ args: [String]) {
@@ -384,6 +422,7 @@ case "dashboard":
     print(text, terminator: "")
 case "clerk": clerk(arguments)
 case "clerk-gate": clerkGate(arguments)
+case "read-document": readDocument(arguments)
 case "measures":
     let n = arguments.firstIndex(of: "--days").flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil } ?? 30
     let support = SpravaPaths.supportDirectory()

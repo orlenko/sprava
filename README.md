@@ -8,8 +8,7 @@ The plan is in [docs/](docs/): start with [docs/kickoff-summary.md](docs/kickoff
 
 ## Status
 
-On branch `increment-1`, the MVP increments of docs/mvp.md section 5 are built (increment 7 was removed by
-decisions.md P12: Sprava receives text, however it was produced):
+On branch `increment-1`, the MVP increments of docs/mvp.md section 5 are built:
 
 1. The Shelf and each binder's Now page, read-only.
 2. The runtime: a LaunchAgent with a heartbeat, watchdog, breakers, the deadline sentinel and the daily
@@ -20,7 +19,10 @@ decisions.md P12: Sprava receives text, however it was produced):
 5. The capture inbox: notes, however their text was produced, become code-built cards within a minute;
    files in a binder's `intake/` become filing cards.
 6. The clerk: Apple's on-device model splits, dates and files notes, checked by code.
-8. A tax-year template for new binders, and the backup line.
+7. Reading intake: every file in a binder's `intake/`, and every message a mail monitor writes to
+   `intake/mail/`, is read in a sandboxed helper (OCR included), then by the clerk; documents worth a careful
+   reading wait for a connected brain (docs/adaptation-layer.md).
+8. Templates for new binders (blank, tax year), and encrypted backup with offload (docs/backup.md).
 
 Nothing touches a live binder until you adopt it in the app.
 

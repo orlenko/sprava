@@ -7,7 +7,7 @@ import SwiftUI
 /// exact registration once, and run it for the person with no shell. Revoke is one click.
 @MainActor
 final class BrainsModel: ObservableObject {
-    struct Client: Identifiable { let id: String; let name: String; let binders: [String: String] }
+    struct Client: Identifiable { let id: String; let name: String; let binders: [String: String]; let documents: Bool }
 
     @Published var clients: [Client] = []
     @Published var chosen: Set<URL> = []
@@ -25,7 +25,7 @@ final class BrainsModel: ObservableObject {
                 guard let id = c["id"]?.stringValue else { return nil }
                 var b: [String: String] = [:]
                 for e in c["binders"]?.objectValue?.entries ?? [] { b[e.key] = e.value.stringValue }
-                return Client(id: id, name: c["name"]?.stringValue ?? id, binders: b)
+                return Client(id: id, name: c["name"]?.stringValue ?? id, binders: b, documents: c["documents"] == .bool(true))
             }
         } catch { message = "\(error)" }
     }
@@ -71,6 +71,14 @@ final class BrainsModel: ObservableObject {
         } catch { message = "\(error)" }
     }
 
+    /// Whether this brain may read the text of documents waiting for a careful reading.
+    func setDocuments(_ c: Client, _ allowed: Bool) {
+        Task {
+            do { _ = try await client.global("client_documents", [("client_id", .string(c.id)), ("documents", .bool(allowed))]) } catch { message = "\(error)" }
+            await load()
+        }
+    }
+
     func revoke(_ c: Client) {
         Task {
             do { _ = try await client.global("revoke_client", [("client_id", .string(c.id))]) } catch { message = "\(error)" }
@@ -102,6 +110,8 @@ struct BrainsView: View {
                             Text("\(c.binders.count) binder(s)").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Toggle("May read documents", isOn: Binding(get: { c.documents }, set: { model.setDocuments(c, $0) }))
+                            .help("Lets this brain read the text of intake documents the clerk recommends a careful reading of, in its binders.")
                         Button("Revoke") { model.revoke(c) }
                     }
                 }

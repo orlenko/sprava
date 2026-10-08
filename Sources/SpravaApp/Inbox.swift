@@ -22,7 +22,17 @@ final class InboxModel: ObservableObject {
         let notFiled: [String]
     }
 
+    /// An intake document the clerk recommends a careful reading of (adaptation-layer §4.4).
+    struct Reading: Identifiable {
+        let id: String
+        let binder: String
+        let title: String
+        let summary: String?
+        let reasons: [String]
+    }
+
     @Published var cards: [Card] = []
+    @Published var readings: [Reading] = []
     @Published var draft = ""
     @Published var draftBinder: URL?
     @Published var target: [String: URL] = [:]
@@ -43,7 +53,20 @@ final class InboxModel: ObservableObject {
                             notes: c["notes"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             notFiled: c["not_filed"]?.arrayValue?.compactMap(\.stringValue) ?? [])
             }
+            let rs = try await client.global("readings", timeout: 5)
+            readings = (rs["readings"]?.arrayValue ?? []).compactMap { r in
+                guard let id = r["id"]?.stringValue else { return nil }
+                return Reading(id: id, binder: r["binder"]?.stringValue ?? "", title: r["title"]?.stringValue ?? "",
+                               summary: r["summary"]?.stringValue, reasons: r["reasons"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+            }
         } catch { message = "\(error)" }
+    }
+
+    func dismiss(_ reading: Reading) {
+        Task {
+            do { _ = try await client.global("dismiss_reading", [("reading", .string(reading.id))]) } catch { message = "\(error)" }
+            await load()
+        }
     }
 
     /// Writes the note as a capture event (capture-event-v0 §8.1), then tells the runtime its id and digest, so
@@ -177,6 +200,29 @@ struct InboxView: View {
                             }
                         }
                         .padding(4)
+                    }
+                }
+                if !model.readings.isEmpty {
+                    Text("Worth a careful reading (\(model.readings.count))").font(.headline)
+                    Text("Documents from intake that the on-device clerk could not read well enough alone. A connected brain sees them with list_readings; its answer arrives as a card on the binder's page.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.readings) { r in
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(r.title).font(.headline)
+                                    Spacer()
+                                    Text(rows.first { $0.folder.standardizedFileURL.path == r.binder }?.name ?? "").foregroundStyle(.secondary)
+                                }
+                                if let s = r.summary { Text(s).font(.callout) }
+                                Text(r.reasons.joined(separator: "; ")).font(.caption).foregroundStyle(.orange)
+                                HStack {
+                                    Spacer()
+                                    Button("Not Needed") { model.dismiss(r) }
+                                }
+                            }
+                            .padding(4)
+                        }
                     }
                 }
             }

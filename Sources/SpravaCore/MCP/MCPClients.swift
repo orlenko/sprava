@@ -11,6 +11,10 @@ public struct MCPClientRecord: Codable, Sendable, Equatable {
     public var binders: [String: String]
     public var createdAt: String
     public var revoked: Bool
+    /// May read the full text of intake documents waiting for a careful reading (adaptation-layer §4.4).
+    public var documents: Bool?
+
+    public var readsDocuments: Bool { documents == true }
 
     public func level(for folder: URL) -> String? { binders[folder.standardizedFileURL.path] }
 }
@@ -45,12 +49,12 @@ public struct MCPClients: Codable, Sendable {
     }
 
     /// Registers a client and returns its token, shown once.
-    public mutating func register(id: String, name: String, binders: [String: String], now: Date = Date()) throws -> String {
+    public mutating func register(id: String, name: String, binders: [String: String], documents: Bool = false, now: Date = Date()) throws -> String {
         guard id.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,40}$/) != nil else { throw Commands.Failure(message: "client id: lowercase letters, digits and hyphens") }
         guard !clients.contains(where: { $0.id == id && !$0.revoked }) else { throw Commands.Failure(message: "client \(id) exists") }
         let token = Self.newToken()
         clients.append(MCPClientRecord(id: id, name: name, tokenSHA256: Self.hash(token), binders: binders,
-                                       createdAt: ISOTime.string(now), revoked: false))
+                                       createdAt: ISOTime.string(now), revoked: false, documents: documents ? true : nil))
         return token
     }
 

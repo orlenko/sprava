@@ -1,9 +1,10 @@
 import Darwin
 import Foundation
 
-/// The intake watcher (mvp.md feature 4): each adopted binder's `intake/` folder, top level only. A file that
-/// holds still between two scans becomes a Tier 0 card proposing `file_document` in its intake form. Code reads
-/// the file's name, date, size and digest and nothing else: no text, no helper, no model.
+/// The intake watcher (mvp.md feature 4; docs/adaptation-layer.md §4): each adopted binder's `intake/` folder,
+/// top level, plus the messages a mail monitor writes to `intake/mail/`. A file that holds still between two scans
+/// is read in the sandboxed helper (off the command queue, by `prepare`) and becomes a Tier 0 card proposing
+/// `file_document`, with what code found in it; the clerk's document reading may then replace the card.
 public struct IntakeWatcher: Sendable {
     public let support: URL
 
@@ -35,26 +36,100 @@ public struct IntakeWatcher: Sendable {
         public var carded = 0
         public var waiting = 0
         public var replaced = 0
+        public var held = 0
         /// Files that sat in some intake/ for more than 7 days without being filed (mvp.md 1.2, currency).
         public var stale = 0
     }
 
-    /// The files of `intake/` worth a card: plain files of this user, not dot names, not `_converted/` or `mail/`.
-    public static func candidates(in folder: URL) -> [(name: String, size: Int, mtime: Double)] {
-        let intake = folder.appendingPathComponent("intake")
-        var st = stat()
-        guard lstat(intake.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR,
-              let names = try? FileManager.default.contentsOfDirectory(atPath: intake.path) else { return [] }
-        return names.sorted().compactMap { name in
-            guard !name.hasPrefix("."), !["_converted", "mail"].contains(name), DocumentPaths.isIntake("intake/" + name) else { return nil }
-            var s = stat()
-            guard lstat(intake.appendingPathComponent(name).path, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid() else { return nil }
-            return (name, Int(s.st_size), Double(s.st_mtimespec.tv_sec) + Double(s.st_mtimespec.tv_nsec) / 1e9)
-        }
+    /// One thing in `intake/` worth a card: a file, or a message with the files of its attachments folder.
+    public struct Candidate: Sendable, Equatable {
+        public var name: String              // relative to intake/
+        public var size: Int                 // all its files together
+        public var mtime: Double             // the latest of them
+        public var attachments: [String] = []   // relative to intake/
+        public var channel = "other"
     }
 
-    /// One pass over the binders this Mac manages.
-    public func scan(binders: [ShelfRow], commands: Commands, now: Date = Date(), digests: [String: String] = [:]) -> ScanResult {
+    static func plainFile(_ url: URL) -> (size: Int, mtime: Double)? {
+        var s = stat()
+        guard lstat(url.path, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid() else { return nil }
+        return (Int(s.st_size), Double(s.st_mtimespec.tv_sec) + Double(s.st_mtimespec.tv_nsec) / 1e9)
+    }
+
+    static func folderTime(_ url: URL) -> Double? {
+        var s = stat()
+        guard lstat(url.path, &s) == 0, s.st_mode & S_IFMT == S_IFDIR, s.st_uid == getuid() else { return nil }
+        return Double(s.st_mtimespec.tv_sec) + Double(s.st_mtimespec.tv_nsec) / 1e9
+    }
+
+    /// The files of `intake/` worth a card: plain files of this user, not dot names, not `_converted/`; and in
+    /// `mail/`, each message (`.md` from a mail monitor, or `.eml`) with its `<name> attachments/` folder.
+    /// A mail monitor's `.env` and `state.json` are never read (binder-v0 §3.3).
+    public static func candidates(in folder: URL) -> [Candidate] {
+        let intake = folder.appendingPathComponent("intake")
+        guard folderTime(intake) != nil, let names = try? FileManager.default.contentsOfDirectory(atPath: intake.path) else { return [] }
+        var out: [Candidate] = names.sorted().compactMap { name in
+            guard !name.hasPrefix("."), !["_converted", "mail"].contains(name), DocumentPaths.isIntake("intake/" + name),
+                  let f = plainFile(intake.appendingPathComponent(name)) else { return nil }
+            return Candidate(name: name, size: f.size, mtime: f.mtime)
+        }
+        let mail = intake.appendingPathComponent("mail")
+        guard folderTime(mail) != nil, let messages = try? FileManager.default.contentsOfDirectory(atPath: mail.path) else { return out }
+        for name in messages.sorted() {
+            let ext = (name as NSString).pathExtension.lowercased()
+            guard ["md", "eml"].contains(ext), !name.hasPrefix("."), DocumentPaths.isIntake("intake/mail/" + name),
+                  let f = plainFile(mail.appendingPathComponent(name)) else { continue }
+            var c = Candidate(name: "mail/" + name, size: f.size, mtime: f.mtime, channel: "email")
+            let stem = (name as NSString).deletingPathExtension
+            for folderName in [stem + " attachments", name + " attachments"] {
+                let dir = mail.appendingPathComponent(folderName)
+                guard let t = folderTime(dir), let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
+                c.mtime = max(c.mtime, t)
+                for file in files.sorted() where !file.hasPrefix(".") && DocumentPaths.isIntake("intake/mail/\(folderName)/\(file)") {
+                    guard let a = plainFile(dir.appendingPathComponent(file)) else { continue }
+                    c.size += a.size
+                    c.mtime = max(c.mtime, a.mtime)
+                    c.attachments.append("mail/\(folderName)/\(file)")
+                }
+                break
+            }
+            out.append(c)
+        }
+        return out
+    }
+
+    /// What `scan` needs that is slow: digests of every file and the readings, computed off the command queue.
+    public struct Prepared: Sendable {
+        public var digests: [String: String] = [:]
+        public var readings: [String: IntakeReading] = [:]
+        public init() {}
+    }
+
+    /// Reads the files the next scan would card: they held still since the last scan and have no card yet. At
+    /// most `budget` seconds of reading per call; the rest wait for the next one.
+    public func prepare(binders: [ShelfRow], deviceID: String, helper: URL? = ExtractHelper.locate(), read: Bool = true,
+                        budget: TimeInterval = 240) -> Prepared {
+        let state = load()
+        let started = Date()
+        var out = Prepared()
+        for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
+            let seen = state[row.folder.standardizedFileURL.path] ?? [:]
+            for c in Self.candidates(in: row.folder) {
+                guard let e = seen[c.name], e.card == nil, e.size == c.size, e.mtime == c.mtime else { continue }
+                if read && Date().timeIntervalSince(started) > budget { return out }
+                let file = row.folder.appendingPathComponent("intake/" + c.name)
+                let attachments = c.attachments.map { row.folder.appendingPathComponent("intake/" + $0) }
+                for url in [file] + attachments { out.digests[url.path] = DocumentPaths.sha256(of: url) }
+                if read { out.readings[file.path] = IntakeReading.read(file, attachments: attachments, channel: c.channel, helper: helper) }
+            }
+        }
+        return out
+    }
+
+    /// One pass over the binders this Mac manages. With `requireReading`, a file is carded only once `prepare`
+    /// has read it, so every card shows what the file says.
+    public func scan(binders: [ShelfRow], commands: Commands, now: Date = Date(), prepared: Prepared = Prepared(),
+                     requireReading: Bool = false) -> ScanResult {
         var result = ScanResult()
         var state = load()
         // Binders not scanned this time keep their state, so a binder briefly missing is never carded again.
@@ -70,13 +145,18 @@ public struct IntakeWatcher: Sendable {
                 if let e = entry, e.size == file.size, e.mtime == file.mtime {
                     if e.card == nil {
                         let path = row.folder.appendingPathComponent("intake/" + file.name).path
-                        let sha = digests[path] ?? DocumentPaths.sha256(of: URL(fileURLWithPath: path))
+                        let reading = prepared.readings[path]
+                        if requireReading && reading == nil { result.waiting += 1; next[file.name] = entry; continue }
+                        let sha = prepared.digests[path] ?? DocumentPaths.sha256(of: URL(fileURLWithPath: path))
                         if let existing = waiting.first(where: { $0.raw["provenance"]?["intake"]?["name"]?.stringValue == file.name
                             && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }) {
                             entry?.card = existing.id
                         } else {
-                            entry?.card = card(file, sha: sha, in: row, commands: commands, now: now)
-                            if entry?.card != nil { result.carded += 1 }
+                            entry?.card = card(file, sha: sha, reading: reading, digests: prepared.digests, in: row, commands: commands, now: now)
+                            if entry?.card != nil {
+                                result.carded += 1
+                                if reading?.held != nil { result.held += 1 }
+                            }
                         }
                     } else if now.timeIntervalSince(e.firstSeen) > 7 * 86_400 {
                         result.stale += 1
@@ -98,23 +178,8 @@ public struct IntakeWatcher: Sendable {
             kept[key] = next
         }
         save(kept)
+        IntakeReadings(support: support).prune(now: now)
         return result
-    }
-
-    /// The files the next scan would card: they held still since the last scan and have no card yet. Their
-    /// digests are computed by the caller off the command queue, so a large file never stalls the app.
-    public func filesToHash(binders: [ShelfRow], deviceID: String) -> [URL] {
-        let state = load()
-        var out: [URL] = []
-        for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
-            let seen = state[row.folder.standardizedFileURL.path] ?? [:]
-            for file in Self.candidates(in: row.folder) {
-                if let e = seen[file.name], e.card == nil, e.size == file.size, e.mtime == file.mtime {
-                    out.append(row.folder.appendingPathComponent("intake/" + file.name))
-                }
-            }
-        }
-        return out
     }
 
     /// The suggested folder: where most of the binder's documents already live, else `documents`.
@@ -141,42 +206,125 @@ public struct IntakeWatcher: Sendable {
         return candidate
     }
 
-    func card(_ file: (name: String, size: Int, mtime: Double), sha: String?, in row: ShelfRow, commands: Commands, now: Date) -> String? {
-        let from = "intake/" + file.name
-        guard let sha else { return nil }
-        let safe = DocumentPaths.safeName(file.name)
-        let path = Self.freePath(Self.suggestedFolder(row.teka.catalog), safe, in: row.folder)
-        let modified = Date(timeIntervalSince1970: file.mtime)
+    static func day(_ time: Double) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        let day = calendar.dateComponents([.year, .month, .day], from: modified)
-        var document = JSONObject()
-        document.set("id", .str("$new:1"))
-        document.set("title", .string((safe as NSString).deletingPathExtension.isEmpty ? safe : (safe as NSString).deletingPathExtension))
-        document.set("path", .string(path))
-        document.set("sha256", .string(sha))
-        document.set("source", .str("intake/"))
+        let day = calendar.dateComponents([.year, .month, .day], from: Date(timeIntervalSince1970: time))
+        return String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
+    }
+
+    /// A one-line title from a message subject, or the file name without its extension.
+    static func title(_ name: String, subject: String?) -> String {
+        let s = (subject ?? "").replacingOccurrences(of: #"^((re|fwd?|tr)\s*:\s*)+"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .components(separatedBy: .newlines).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        if !s.isEmpty { return Clerk.shorten(s, to: 120) }
+        let safe = DocumentPaths.safeName((name as NSString).lastPathComponent)
+        let stem = (safe as NSString).deletingPathExtension
+        return stem.isEmpty ? safe : stem
+    }
+
+    /// The first words of a reading, for the card.
+    static func preview(_ text: String) -> String {
+        let flat = text.split(whereSeparator: { $0.isWhitespace }).prefix(40).joined(separator: " ")
+        return flat.count > 240 ? String(flat.prefix(240)) + "\u{2026}" : flat
+    }
+
+    func card(_ file: Candidate, sha: String?, reading: IntakeReading?, digests: [String: String], in row: ShelfRow,
+              commands: Commands, now: Date) -> String? {
+        guard let sha else { return nil }
+        let folder = Self.suggestedFolder(row.teka.catalog)
+        let isMail = file.name.hasPrefix("mail/")
+        var used = Set<String>()
+        func destination(_ name: String) -> String {
+            var path = Self.freePath(folder, DocumentPaths.safeName((name as NSString).lastPathComponent), in: row.folder)
+            var n = 2
+            while used.contains(DocumentPaths.fold(path)) && n < 1000 {
+                let base = DocumentPaths.safeName((name as NSString).lastPathComponent)
+                let ext = (base as NSString).pathExtension
+                path = Self.freePath(folder, (base as NSString).deletingPathExtension + " (\(n))" + (ext.isEmpty ? "" : ".\(ext)"), in: row.folder)
+                n += 1
+            }
+            used.insert(DocumentPaths.fold(path))
+            return path
+        }
+        // How it came (docs/adaptation-layer.md §3.3): copied into every document filed from it.
+        var obtained = JSONObject([(key: "channel", value: .string(reading?.channel ?? file.channel))])
+        if let from = reading?.from { obtained.set("from", .string(Clerk.shorten(from, to: 200))) }
+        if let received = IntakeReading.day(ofHeader: reading?.date) { obtained.set("received", .string(received.description)) }
+        if let r = reading { obtained.set("text_from", .string(r.textFrom)) }
+
+        var ops: [JSONObject] = []
+        var number = 0
+        for (index, name) in ([file.name] + file.attachments).enumerated() {
+            let fileSHA = index == 0 ? sha : (digests[row.folder.appendingPathComponent("intake/" + name).path]
+                ?? DocumentPaths.sha256(of: row.folder.appendingPathComponent("intake/" + name)))
+            guard let fileSHA else { return nil }
+            number += 1
+            var document = JSONObject()
+            document.set("id", .string("$new:\(number)"))
+            document.set("title", .string(index == 0 ? Self.title(name, subject: reading?.subject) : Self.title(name, subject: nil)))
+            document.set("path", .string(destination(name)))
+            document.set("sha256", .string(fileSHA))
+            if index == 0, let r = reading {
+                if r.kind == "email" { document.set("kind", .str("email")) }
+                else if r.textFrom == "ocr" { document.set("kind", .str("scan")) }
+                if let d = IntakeReading.day(ofHeader: r.date) { document.set("date", .string(d.description)) }
+            } else if index > 0 {
+                document.set("kind", .str("attachment"))
+            }
+            document.set("source", .string(isMail ? "intake/mail" : "intake/"))
+            document.set("provenance", .obj([("obtained", .object(obtained))]))
+            ops.append(JSONObject([(key: "op", value: .str("file_document")),
+                                   (key: "args", value: .obj([("document", .object(document)), ("from", .string("intake/" + name))]))]))
+        }
         let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)),
                                 (key: "model", value: .str("none"))])
-        let op = JSONObject([(key: "op", value: .str("file_document")),
-                             (key: "args", value: .obj([("document", .object(document)), ("from", .string(from))]))])
-        let provenance = JSONObject([
-            (key: "intake", value: .obj([("name", .string(file.name)), ("bytes", .int(file.size)),
-                                         ("modified", .string(String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0))),
-                                         ("sha256", .string(sha))])),
-            (key: "filed_by", value: .str("code, no model")),
-        ])
-        let proposal = Proposal.make(title: "File \u{201C}\(safe)\u{201D} from intake", actor: actor, ops: [op], provenance: provenance, now: now)
+        var intake = JSONObject([(key: "name", value: .string(file.name)), (key: "bytes", value: .int(file.size)),
+                                 (key: "modified", value: .string(Self.day(file.mtime))), (key: "sha256", value: .string(sha))])
+        if !file.attachments.isEmpty { intake.set("attachments", .int(file.attachments.count)) }
+        intake.set("obtained", .object(obtained))
+        if let r = reading {
+            intake.set("kind", .string(r.kind))
+            intake.set("text_from", .string(r.textFrom))
+            if let pages = r.pages { intake.set("pages", .int(pages)) }
+            if let held = r.held { intake.set("held", .string(held)) }
+            if !r.notes.isEmpty { intake.set("notes", .array(r.notes.map(JSONValue.string))) }
+            if r.mismatch { intake.set("mismatch", .bool(true)) }
+            if r.held == nil, !r.text.isEmpty {
+                intake.set("preview", .string(Self.preview(r.text)))
+                let anchor = IntakeReading.day(ofHeader: r.date) ?? CalendarDate.today(now: now)
+                intake.set("facts", IntakeFacts.of(r, anchor: anchor).json)
+            }
+        }
+        let provenance = JSONObject([(key: "intake", value: .object(intake)), (key: "filed_by", value: .str("code, no model"))])
+        let shown = Self.title(file.name, subject: reading?.subject)
+        let title: String
+        if reading?.held != nil { title = "Held: \u{201C}\(shown)\u{201D} was not read" }
+        else if isMail { title = "File the email \u{201C}\(shown)\u{201D}" + (file.attachments.isEmpty ? "" : " and \(file.attachments.count) attachment(s)") }
+        else { title = "File \u{201C}\(DocumentPaths.safeName(file.name))\u{201D} from intake" }
+        let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
         do {
             try ProposalStore.save(proposal, in: row.folder)
             commands.trustProposals([proposal.id], in: row.folder)
-            return proposal.id
         } catch {
             return nil
         }
+        // A reading with text waits for the clerk's document reading (§4.2, §4.3).
+        if let r = reading, r.held == nil, !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let entry = IntakeReadings.Entry(id: UUIDv7.make(now: now), binder: row.folder.standardizedFileURL.path, name: file.name,
+                                             sha256: sha, card: proposal.id, reading: r, now: now)
+            IntakeReadings(support: support).save(entry)
+        }
+        return proposal.id
     }
 
     func withdraw(_ id: String, in folder: URL, now: Date) {
+        let readings = IntakeReadings(support: support)
+        if var e = readings.forCard(id), e.state != "read" {
+            e.state = "gone"
+            if e.escalation == "waiting" { e.escalation = nil }
+            readings.save(e)
+        }
         guard let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" else { return }
         try? TekaStore(folder: folder).reject(proposal, reason: "the file in intake/ changed or is gone", now: now)
     }

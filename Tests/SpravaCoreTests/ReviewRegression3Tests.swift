@@ -85,6 +85,7 @@ final class RecordingModel: ClerkModel, @unchecked Sendable {
             case .duplicate(let ids):
                 guard let d = dup else { return .obj([("candidate", .str("none")), ("relation", .str("related"))]) }
                 return .obj([("candidate", .string(ids.contains(d.0) ? d.0 : ids.first!)), ("relation", .string(d.1))])
+            case .document: return .obj([("class", .str("unsure"))])
             }
         }
     }

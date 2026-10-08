@@ -17,13 +17,18 @@ public enum ExtractHelper {
 
     public static func run(_ file: URL, helper: URL? = locate(), timeout: TimeInterval = 180) throws -> Extractor.Result {
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { throw Failure(message: "the file cannot be read") }
+        return try run(data, name: file.lastPathComponent, helper: helper, timeout: timeout)
+    }
+
+    /// The same for bytes already in memory, such as an attachment inside an email file.
+    public static func run(_ data: Data, name: String, helper: URL? = locate(), timeout: TimeInterval = 180) throws -> Extractor.Result {
         guard let helper else {
             // No helper (a test run): extract in process.
-            return Extractor.extract(data, name: file.lastPathComponent)
+            return Extractor.extract(data, name: name)
         }
         let task = Process()
         task.executableURL = helper
-        task.arguments = [file.lastPathComponent]
+        task.arguments = [name]
         task.environment = [:]
         let input = Pipe(), output = Pipe()
         task.standardInput = input

@@ -26,7 +26,7 @@ import Testing
         let d = try call(s, #"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{\#(meta)}}"#)
         #expect(d["result"]?["supportedVersions"]?.arrayValue?.first == .str("2026-07-28"))
         let tools = try call(s, #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{\#(meta)}}"#)
-        #expect(tools["result"]?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue } == ["list_binders", "propose_ops", "get_proposal"])
+        #expect(tools["result"]?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue } == ["list_binders", "propose_ops", "get_proposal", "list_readings", "read_document", "finish_reading"])
         #expect(tools["result"]?["resultType"] == .str("complete"))
         let bare = try call(s, #"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#)
         #expect(bare["error"]?["code"] == .int(-32602))
@@ -38,7 +38,7 @@ import Testing
         #expect(i["result"]?["protocolVersion"] == .str("2025-06-18"))
         #expect(s.handle(line: #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#) == nil)
         let t = try call(s, #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
-        #expect(t["result"]?["tools"]?.arrayValue?.count == 3)
+        #expect(t["result"]?["tools"]?.arrayValue?.count == 6)
         #expect(t["result"]?["resultType"] == nil)
     }
 

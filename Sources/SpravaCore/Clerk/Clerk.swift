@@ -8,6 +8,8 @@ public enum ClerkTask: Sendable, Equatable {
     case binder(names: [String])
     /// Step 3: `{candidate: <one of ids or none>, relation: same|done|update|related}`.
     case duplicate(ids: [String])
+    /// docs/adaptation-layer.md §4.2: `{class: governing|action|information|unsure, title, date_text, summary, reply_needed}`.
+    case document
 }
 
 public enum ClerkModelError: Error, Equatable {
@@ -179,39 +181,7 @@ public struct Clerk: Sendable {
         let sentences = CaptureText.sentences(text)
         let instructions = instructions(today: today, locale: locale)
 
-        var raw: [(JSONValue, TextSpan)] = []
-        var queue = CaptureText.windows(text, words: windowWords).map { ($0, true) }   // (window, may split)
-        while !queue.isEmpty {
-            let (window, maySplit) = queue.removeFirst()
-            let reserve = 6 * 110 + 64
-            if let used = await model.tokens(instructions: instructions, prompt: window.text, task: .extraction),
-               used + reserve > model.contextSize {
-                if let halves = Self.halves(window, in: text), maySplit { queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0) }
-                else { interp.unfiled.append((window, "too_long")) }
-                continue
-            }
-            do {
-                interp.calls += 1
-                let answer = try await model.respond(instructions: instructions, prompt: window.text, task: .extraction, maxTokens: reserve)
-                let items = answer["items"]?.arrayValue ?? []
-                // Six is a ceiling, not a count: a full window is read again in halves, once.
-                if items.count >= 6, maySplit, let halves = Self.halves(window, in: text) {
-                    queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0)
-                    continue
-                }
-                if items.count >= 6 { interp.outcome = "partial" }   // a window that cannot be split may hide more
-                raw += items.map { ($0, window) }
-            } catch ClerkModelError.contextSizeExceeded {
-                if maySplit, let halves = Self.halves(window, in: text) { queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0) }
-                else { interp.unfiled.append((window, "truncated")); interp.truncatedWindows += 1; interp.outcome = "partial" }
-            } catch ClerkModelError.refused {
-                interp.unfiled.append((window, "refused"))
-                interp.outcome = "partial"
-            } catch {
-                interp.unfiled.append((window, "invalid_output"))
-                interp.outcome = "partial"
-            }
-        }
+        let raw = await extractWindows(text, instructions: instructions, words: windowWords, into: &interp)
 
         // Checks 1 to 4 and 6.
         for (value, _) in raw {
@@ -254,6 +224,50 @@ public struct Clerk: Sendable {
         await checkDuplicates(&interp, filing: filing, today: today, locale: locale)
         if interp.items.isEmpty && interp.unfiled.isEmpty { interp.outcome = "invalid_output" }
         return interp
+    }
+
+    /// Asks for items window by window (capture-event-v0 §6.4 step 1): a window too long for the model, or a full
+    /// one, is read again in halves, once. With `maxWindows`, the windows after it are left unread and listed.
+    func extractWindows(_ text: String, instructions: String, words: Int, maxWindows: Int? = nil,
+                        into interp: inout Interpretation) async -> [(JSONValue, TextSpan)] {
+        var raw: [(JSONValue, TextSpan)] = []
+        var queue = CaptureText.windows(text, words: words).map { ($0, true) }   // (window, may split)
+        if let maxWindows, queue.count > maxWindows {
+            for (w, _) in queue[maxWindows...] { interp.unfiled.append((w, "not_read")) }
+            queue = Array(queue.prefix(maxWindows))
+        }
+        while !queue.isEmpty {
+            let (window, maySplit) = queue.removeFirst()
+            let reserve = 6 * 110 + 64
+            if let used = await model.tokens(instructions: instructions, prompt: window.text, task: .extraction),
+               used + reserve > model.contextSize {
+                if let halves = Self.halves(window, in: text), maySplit { queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0) }
+                else { interp.unfiled.append((window, "too_long")) }
+                continue
+            }
+            do {
+                interp.calls += 1
+                let answer = try await model.respond(instructions: instructions, prompt: window.text, task: .extraction, maxTokens: reserve)
+                let items = answer["items"]?.arrayValue ?? []
+                // Six is a ceiling, not a count: a full window is read again in halves, once.
+                if items.count >= 6, maySplit, let halves = Self.halves(window, in: text) {
+                    queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0)
+                    continue
+                }
+                if items.count >= 6 { interp.outcome = "partial" }   // a window that cannot be split may hide more
+                raw += items.map { ($0, window) }
+            } catch ClerkModelError.contextSizeExceeded {
+                if maySplit, let halves = Self.halves(window, in: text) { queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0) }
+                else { interp.unfiled.append((window, "truncated")); interp.truncatedWindows += 1; interp.outcome = "partial" }
+            } catch ClerkModelError.refused {
+                interp.unfiled.append((window, "refused"))
+                interp.outcome = "partial"
+            } catch {
+                interp.unfiled.append((window, "invalid_output"))
+                interp.outcome = "partial"
+            }
+        }
+        return raw
     }
 
     static func halves(_ window: TextSpan, in text: String) -> (TextSpan, TextSpan)? {
@@ -445,57 +459,7 @@ public struct Clerk: Sendable {
         let noun = event.raw["source"]?["kind"]?.stringValue == "dictation" ? "dictation" : "note"
         return order.map { binder in
             let items = groups[binder] ?? []
-            var ops: [JSONObject] = []
-            var already: [String] = []
-            var rejectedItems: [String] = []
-            var number = 0
-            for item in items {
-                var op = JSONObject()
-                switch item.match?.relation {
-                case "same":
-                    already.append(item.match!.candidate.title)
-                    continue
-                case "done":
-                    op.set("op", .str("complete"))
-                    op.set("args", .obj([("id", item.match!.candidate.id), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))),
-                                         ("source", .str("capture"))]))
-                case "update":
-                    var set = JSONObject()
-                    let t = teka(item, number: 0, today: today, event: event, actor: actor, interp: interp)
-                    for key in ["due", "expected_by", "follow_up_at", "waiting_on"] where t[key] != nil { set.set(key, t[key]!) }
-                    if set.entries.isEmpty, let amount = item.amountText { op.set("note", .string(amount)) }
-                    op.set("op", .str("update_item"))
-                    var args = JSONObject([(key: "id", value: item.match!.candidate.id), (key: "set", value: .object(set))])
-                    // A date replaces "no deadline" (binder-v0 §4.4: due XOR no_deadline).
-                    if set["due"] != nil, item.match!.candidate.noDeadline { args.set("unset", .array([.str("no_deadline")])) }
-                    op.set("args", .object(args))
-                default:
-                    let built = teka(item, number: number + 1, today: today, event: event, actor: actor, interp: interp)
-                    // Every built item is checked against the v0 rules before the card is stored (CI-14).
-                    var probe = built
-                    probe.set("id", .str("probe-1"))
-                    let problems = ItemRules.check(items: [.object(probe)], log: [], v0: true)
-                    if !problems.isEmpty {
-                        rejectedItems.append(item.title)
-                        continue
-                    }
-                    number += 1
-                    op.set("op", .str("add_item"))
-                    op.set("args", .obj([("item", .object(built))]))
-                }
-                if let amount = item.amountText { op.set("note", .string(amount)) }
-                op.set("confidence", .number(JSONNumber(text: String(format: "%.2f", confidence[item.band] ?? 0.5))))
-                op.set("spans", .array([.obj([("event", .string(event.id)), ("start", .int(item.sentence.start)), ("end", .int(item.sentence.end))])]))
-                var card = JSONObject()
-                if let m = item.match, m.relation == "related" { card.set("related", .string(m.candidate.title)) }
-                card.set("signals", .array(item.signals.map(JSONValue.string)))
-                card.set("band", .string(item.band))
-                if let g = item.guess, item.binder == nil { card.set("guess", .string(g)) }
-                if !item.flags.isEmpty { card.set("flags", .array(item.flags.map(JSONValue.string))) }
-                if let w = item.whenText, item.whenResolved == nil { card.set("when_text", .string(w)) }
-                op.set("card", .object(card))
-                ops.append(op)
-            }
+            let (ops, already, rejectedItems) = itemOps(items, event: event, today: today, actor: actor, interp: interp, now: now)
             var provenance = JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "interpretation", value: .string(interp.id)),
                                          (key: "producer", value: .string(event.app)), (key: "tier", value: .str("1"))])
             if binder == nil, !interp.unfiled.isEmpty {
@@ -515,6 +479,64 @@ public struct Clerk: Sendable {
             else { title = ops.count == 1 ? "A change from a \(noun)" : "\(ops.count) changes from a \(noun)" }
             return (binder, Proposal.make(title: title, actor: actor, ops: ops, confidence: band, provenance: provenance, now: now))
         }.filter { !($0.1.ops.isEmpty && $0.1.raw["provenance"]?["unfiled"] == nil) }
+    }
+
+    /// The ops for a group of checked items: new items, completions and changes; items already in the binder and
+    /// items the v0 rules refuse are returned by title. New items are numbered from `firstNumber`.
+    static func itemOps(_ items: [ClerkItem], event: CaptureEvent, today: CalendarDate, actor: JSONObject, interp: Interpretation,
+                        now: Date, firstNumber: Int = 1) -> (ops: [JSONObject], already: [String], rejected: [String]) {
+        var ops: [JSONObject] = []
+        var already: [String] = []
+        var rejectedItems: [String] = []
+        var number = firstNumber - 1
+        for item in items {
+            var op = JSONObject()
+            switch item.match?.relation {
+            case "same":
+                already.append(item.match!.candidate.title)
+                continue
+            case "done":
+                op.set("op", .str("complete"))
+                op.set("args", .obj([("id", item.match!.candidate.id), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))),
+                                     ("source", .str("capture"))]))
+            case "update":
+                var set = JSONObject()
+                let t = teka(item, number: 0, today: today, event: event, actor: actor, interp: interp)
+                for key in ["due", "expected_by", "follow_up_at", "waiting_on"] where t[key] != nil { set.set(key, t[key]!) }
+                if set.entries.isEmpty, let amount = item.amountText { op.set("note", .string(amount)) }
+                op.set("op", .str("update_item"))
+                var args = JSONObject([(key: "id", value: item.match!.candidate.id), (key: "set", value: .object(set))])
+                // A date replaces "no deadline" (binder-v0 §4.4: due XOR no_deadline).
+                if set["due"] != nil, item.match!.candidate.noDeadline { args.set("unset", .array([.str("no_deadline")])) }
+                op.set("args", .object(args))
+            default:
+                let built = teka(item, number: number + 1, today: today, event: event, actor: actor, interp: interp)
+                // Every built item is checked against the v0 rules before the card is stored (CI-14).
+                var probe = built
+                probe.set("id", .str("probe-1"))
+                let problems = ItemRules.check(items: [.object(probe)], log: [], v0: true)
+                if !problems.isEmpty {
+                    rejectedItems.append(item.title)
+                    continue
+                }
+                number += 1
+                op.set("op", .str("add_item"))
+                op.set("args", .obj([("item", .object(built))]))
+            }
+            if let amount = item.amountText { op.set("note", .string(amount)) }
+            op.set("confidence", .number(JSONNumber(text: String(format: "%.2f", confidence[item.band] ?? 0.5))))
+            op.set("spans", .array([.obj([("event", .string(event.id)), ("start", .int(item.sentence.start)), ("end", .int(item.sentence.end))])]))
+            var card = JSONObject()
+            if let m = item.match, m.relation == "related" { card.set("related", .string(m.candidate.title)) }
+            card.set("signals", .array(item.signals.map(JSONValue.string)))
+            card.set("band", .string(item.band))
+            if let g = item.guess, item.binder == nil { card.set("guess", .string(g)) }
+            if !item.flags.isEmpty { card.set("flags", .array(item.flags.map(JSONValue.string))) }
+            if let w = item.whenText, item.whenResolved == nil { card.set("when_text", .string(w)) }
+            op.set("card", .object(card))
+            ops.append(op)
+        }
+        return (ops, already, rejectedItems)
     }
 
     /// The binder item for one clerk item (capture-event-v0 §6.5).

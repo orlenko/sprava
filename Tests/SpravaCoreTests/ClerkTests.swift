@@ -9,6 +9,8 @@ final class ScriptedModel: ClerkModel, @unchecked Sendable {
     var extractions: [JSONValue]
     var binders: [String: String]
     var duplicates: [String: (String, String)] = [:]
+    var document: JSONValue = .obj([("class", .str("unsure")), ("title", .str("")), ("date_text", .str("")),
+                                    ("summary", .str("")), ("reply_needed", .bool(false))])
     var prompts: [String] = []
     let lock = NSLock()
 
@@ -37,6 +39,8 @@ final class ScriptedModel: ClerkModel, @unchecked Sendable {
             let sentence = prompt.split(separator: "\n").first.map(String.init)?.lowercased() ?? ""
             let pick = binders.first { sentence.contains($0.key) }?.value ?? "not-sure"
             return .obj([("binder", .string(names.contains(pick) ? pick : "not-sure"))])
+        case .document:
+            return document
         }
     }
 }

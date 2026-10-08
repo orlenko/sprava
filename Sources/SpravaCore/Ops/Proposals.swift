@@ -56,7 +56,41 @@ public struct Proposal: Sendable {
             out.append("left out, type them by hand: " + left.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", "))
         }
         if let remains = raw["provenance"]?["remains"]?.stringValue { out.append("still kept elsewhere: \(remains)") }
+        out += intakeNotes
         if raw["provenance"]?["private"] == .bool(true) { out.append("private: kept off the hub and every brain") }
+        return out
+    }
+
+    /// What code and the clerk found in an intake file (docs/adaptation-layer.md §4), in plain words.
+    public var intakeNotes: [String] {
+        guard let intake = raw["provenance"]?["intake"] else { return [] }
+        var out: [String] = []
+        if let held = intake["held"]?.stringValue { out.append("held, not read: \(held). File it as it is, or take it out of intake/") }
+        if let reading = raw["provenance"]?["reading"] {
+            let classes = ["governing": "a document that sets rules or obligations", "action": "asks you to do something",
+                           "information": "a record to keep", "unsure": "the clerk is not sure what it is"]
+            if let c = reading["class"]?.stringValue, let words = classes[c] { out.append("the clerk reads it as \(words)") }
+            if let s = reading["summary"]?.stringValue { out.append("the clerk\u{2019}s summary, in its own words: \(s)") }
+            if reading["reply_needed"] == .bool(true) { out.append("a reply may be needed") }
+            if let n = reading["unread_windows"]?.numberValue?.safeInteger, n > 0 { out.append("the clerk read only part of it") }
+        }
+        if let preview = intake["preview"]?.stringValue { out.append("begins: \u{201C}\(preview)\u{201D}") }
+        if intake["text_from"] == .str("ocr") { out.append("read from a scan: check names and numbers against the file") }
+        if let facts = intake["facts"] {
+            var found: [String] = []
+            if let d = facts["dates"]?.arrayValue?.compactMap(\.stringValue), !d.isEmpty { found.append("dates " + d.joined(separator: ", ")) }
+            if let a = facts["amounts"]?.arrayValue?.compactMap(\.stringValue), !a.isEmpty { found.append("amounts " + a.joined(separator: ", ")) }
+            if let r = facts["references"]?.arrayValue?.compactMap(\.stringValue), !r.isEmpty { found.append("references " + r.joined(separator: ", ")) }
+            if !found.isEmpty { out.append("found in it: " + found.joined(separator: "; ")) }
+        }
+        for n in intake["notes"]?.arrayValue?.compactMap(\.stringValue) ?? [] { out.append(n) }
+        if intake["mismatch"] == .bool(true) { out.append("its name says one kind of file and its contents another") }
+        let obtained = intake["obtained"]
+        if let from = obtained?["from"]?.stringValue { out.append("from \(from)") }
+        if obtained?["channel"]?.stringValue == "other" { out.append("how did this reach you? Say so when you approve") }
+        if let why = raw["provenance"]?["escalate"]?.arrayValue?.compactMap(\.stringValue), !why.isEmpty {
+            out.append("a careful reading is recommended: " + why.joined(separator: "; "))
+        }
         return out
     }
 

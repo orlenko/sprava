@@ -7,6 +7,8 @@ public struct Commands: Sendable {
     public let support: URL
     public let deviceID: String
     public let client: String
+    /// How information reached the person (docs/adaptation-layer.md §3.3).
+    public static let channels: Set<String> = ["email", "paper", "download", "message", "note", "other"]
 
     public init(support: URL, deviceID: String, client: String = "sprava/0.1") {
         self.support = support
@@ -143,6 +145,26 @@ public struct Commands: Sendable {
                         let newPath = folderPath + "/" + (path as NSString).lastPathComponent
                         guard DocumentPaths.isSafe(newPath) else { throw Failure(message: "that folder cannot hold documents") }
                         doc.set("path", .string(newPath))
+                        args.set("document", .object(doc))
+                        var changed = op
+                        changed.set("args", .object(args))
+                        return changed
+                    }
+                }
+                // How a filed document reached the person, when the source could not tell (adaptation-layer §3.3).
+                if case .object(let answer)? = r["obtained"] {
+                    let channel = answer["channel"]?.stringValue ?? ""
+                    guard Self.channels.contains(channel) else { throw Failure(message: "channel must be one of \(Self.channels.sorted().joined(separator: ", "))") }
+                    let said = answer["said"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    edited = (edited ?? proposal.ops).map { op in
+                        guard op["op"] == .str("file_document"), var args = op["args"]?.objectValue,
+                              var doc = args["document"]?.objectValue else { return op }
+                        var prov = doc["provenance"]?.objectValue ?? JSONObject()
+                        var obtained = prov["obtained"]?.objectValue ?? JSONObject()
+                        obtained.set("channel", .string(channel))
+                        if let said, !said.isEmpty { obtained.set("said", .string(String(said.prefix(500)))) }
+                        prov.set("obtained", .object(obtained))
+                        doc.set("provenance", .object(prov))
                         args.set("document", .object(doc))
                         var changed = op
                         changed.set("args", .object(args))
@@ -368,7 +390,8 @@ public struct Commands: Sendable {
                 binders[URL(fileURLWithPath: e.key).standardizedFileURL.path] = e.value.stringValue!
             }
             var clients = MCPClients.load(support)
-            let token = try clients.register(id: id, name: r["name"]?.stringValue ?? id, binders: binders, now: now)
+            let token = try clients.register(id: id, name: r["name"]?.stringValue ?? id, binders: binders,
+                                             documents: r["documents"] == .bool(true), now: now)
             try clients.save(support)
             return JSONObject([(key: "token", value: .string(token))])
 
@@ -376,8 +399,37 @@ public struct Commands: Sendable {
             let clients = MCPClients.load(support).clients.filter { !$0.revoked }
             return JSONObject([(key: "clients", value: .array(clients.map { c in
                 .obj([("id", .string(c.id)), ("name", .string(c.name)), ("created_at", .string(c.createdAt)),
-                      ("binders", .obj(c.binders.sorted { $0.key < $1.key }.map { ($0.key, .string($0.value)) }))])
+                      ("binders", .obj(c.binders.sorted { $0.key < $1.key }.map { ($0.key, .string($0.value)) })),
+                      ("documents", .bool(c.readsDocuments))])
             }))])
+
+        case "client_documents":
+            // Whether a brain may read the full text of documents waiting for a careful reading.
+            guard case .string(let id)? = r["client_id"], case .bool(let allowed)? = r["documents"] else {
+                throw Failure(message: "client_documents needs client_id and documents")
+            }
+            var clients = MCPClients.load(support)
+            guard let i = clients.clients.firstIndex(where: { $0.id == id && !$0.revoked }) else { throw Failure(message: "no client \(id)") }
+            clients.clients[i].documents = allowed ? true : nil
+            try clients.save(support)
+            return JSONObject()
+
+        case "readings":
+            // Intake documents and the clerk's reading of them, for the app's careful-reading list.
+            let readings = IntakeReadings(support: support).escalations()
+            return JSONObject([(key: "readings", value: .array(readings.map { e in
+                .obj([("id", .string(e.id)), ("binder", .string(e.binder)), ("name", .string(e.name)), ("card", .string(e.card)),
+                      ("title", e.result?["title"] ?? .string(e.reading.subject ?? e.name)), ("class", e.result?["class"] ?? .null),
+                      ("summary", e.result?["summary"] ?? .null), ("reasons", .array(e.escalate.map(JSONValue.string)))])
+            }))])
+
+        case "dismiss_reading":
+            guard case .string(let id)? = r["reading"] else { throw Failure(message: "dismiss_reading needs reading") }
+            let store = IntakeReadings(support: support)
+            guard var e = store.load(id) else { throw Failure(message: "no such reading") }
+            e.escalation = "dismissed"
+            store.save(e)
+            return JSONObject()
 
         case "revoke_client":
             guard case .string(let id)? = r["client_id"] else { throw Failure(message: "revoke_client needs client_id") }

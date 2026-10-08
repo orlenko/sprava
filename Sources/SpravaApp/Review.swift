@@ -18,6 +18,8 @@ final class BinderActions: ObservableObject {
         let folder: String?
         let notes: [String]
         let editable: [Editable]
+        /// A filing card whose source could not tell how the document reached the person (adaptation-layer §3.3).
+        var asksChannel = false
     }
 
     /// One add_item the person may change before approving.
@@ -33,6 +35,8 @@ final class BinderActions: ObservableObject {
     @Published var cards: [Card] = []
     @Published var editing: [String: [Editable]] = [:]
     @Published var folders: [String: String] = [:]
+    @Published var channels: [String: String] = [:]
+    @Published var said: [String: String] = [:]
     @Published var history: [Change] = []
 
     struct Change: Identifiable {
@@ -61,7 +65,7 @@ final class BinderActions: ObservableObject {
             let reply = try await client.command("proposals", binder: folder, timeout: 5)
             cards = (reply["proposals"]?.arrayValue ?? []).compactMap { p in
                 guard p["state"] == .str("proposed"), let id = p["id"]?.stringValue else { return nil }
-                return Card(id: id, title: p["title"]?.stringValue ?? "", actor: p["actor"]?["kind"]?.stringValue ?? "?",
+                var card = Card(id: id, title: p["title"]?.stringValue ?? "", actor: p["actor"]?["kind"]?.stringValue ?? "?",
                             lines: p["lines"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             digest: p["digest"]?.stringValue ?? "", verified: p["verified"] == .bool(true),
                             intake: p["intake"].map(Self.intakeLine), folder: p["document_folder"]?.stringValue,
@@ -71,6 +75,8 @@ final class BinderActions: ObservableObject {
                                 return Editable(index: Int(i), title: e["title"]?.stringValue ?? "", due: e["due"]?.stringValue ?? "",
                                                 priority: e["priority"]?.stringValue ?? "normal")
                             })
+                card.asksChannel = p["intake"]?["obtained"]?["channel"] == .str("other")
+                return card
             }
             let past = try await client.command("history", binder: folder, timeout: 5)
             history = (past["ops"]?.arrayValue ?? []).compactMap { o in
@@ -150,6 +156,11 @@ final class BinderActions: ObservableObject {
             editing[card.id] = nil
         }
         if let chosen = folders[card.id], chosen != card.folder { fields.append(("document_folder", .string(chosen))) }
+        if let channel = channels[card.id] {
+            fields.append(("obtained", .obj([("channel", .string(channel)), ("said", .string(said[card.id] ?? ""))])))
+            channels[card.id] = nil
+            said[card.id] = nil
+        }
         run("approve", folder, fields, then: reload)
     }
 
@@ -193,6 +204,24 @@ struct ReviewSection: View {
                                     .textFieldStyle(.roundedBorder)
                                     .frame(maxWidth: 280)
                             }
+                        }
+                        if card.asksChannel {
+                            HStack {
+                                Picker("How did it reach you?", selection: Binding(get: { actions.channels[card.id] ?? "other" },
+                                                                                  set: { actions.channels[card.id] = $0 })) {
+                                    Text("not saying").tag("other")
+                                    Text("by email").tag("email")
+                                    Text("on paper, scanned").tag("paper")
+                                    Text("downloaded").tag("download")
+                                    Text("in a message").tag("message")
+                                    Text("I wrote it").tag("note")
+                                }
+                                .frame(maxWidth: 320)
+                                TextField("in your words (optional)", text: Binding(get: { actions.said[card.id] ?? "" },
+                                                                                    set: { actions.said[card.id] = $0 }))
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                            .font(.caption)
                         }
                         if !card.verified {
                             Text("Not written by Sprava; it cannot be approved. Reject it to clear it away.").font(.caption).foregroundStyle(.orange)

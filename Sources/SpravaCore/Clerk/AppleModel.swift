@@ -52,6 +52,16 @@ public struct AppleClerkModel: ClerkModel {
                 .init(name: "relation", description: "same, done, update or related.", schema: .init(name: "Relation", anyOf: ["same", "done", "update", "related"])),
             ])
             return try GenerationSchema(root: root, dependencies: [])
+        case .document:
+            let root = DynamicGenerationSchema(name: "Document", description: "What one document is. Copy words; never work out a date.", properties: [
+                .init(name: "class", description: "governing, action, information or unsure.",
+                      schema: .init(name: "Class", anyOf: ["governing", "action", "information", "unsure"])),
+                .init(name: "title", description: "A short title naming the document.", schema: .init(type: String.self)),
+                .init(name: "date_text", description: "The document's own date exactly as written, or an empty string.", schema: .init(type: String.self)),
+                .init(name: "summary", description: "One plain sentence: what it is and what it asks of the person.", schema: .init(type: String.self)),
+                .init(name: "reply_needed", description: "True only when it asks the person to reply.", schema: .init(type: Bool.self)),
+            ])
+            return try GenerationSchema(root: root, dependencies: [])
         }
     }
 

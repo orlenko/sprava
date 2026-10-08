@@ -53,8 +53,32 @@ Use an invented binder adopted in the installed app (never a live one).
    now in `letters/`, gone from `intake/`, and Recent changes lists the filing.
 7. **A file that changes.** Copy a file into `intake/`, wait for its card, then overwrite the file. Approving
    the old card is refused; within a minute a new card replaces it.
-8. **Files left alone.** `.DS_Store`, `intake/mail/`, `intake/_converted/` and links in `intake/` never get a
-   card.
+8. **Files left alone.** `.DS_Store`, `intake/_converted/`, links in `intake/`, and a mail monitor's
+   `intake/mail/.env` and `state.json` never get a card.
+
+## Increment 7: reading intake
+
+Use an invented binder adopted in the installed app, with invented documents only.
+
+1. **A letter is read.** Copy an invented one-page PDF notice into `intake/`. Within a minute or two its card
+   shows "begins: …", the dates and amounts code found, and "How did it reach you?". Within a few more
+   minutes (the clerk runs in the background) the card is replaced by "File “<title>” and add N items",
+   with the clerk's summary and dated items.
+2. **A scan.** Photograph an invented printed page and drop the JPEG in `intake/`: the card says "read from a
+   scan" and shows the text's first words.
+3. **An email from a mail monitor.** Write `intake/mail/2026-10-01_1_test.md` with front matter (`subject`,
+   `from`, `date`) and a body, plus `intake/mail/2026-10-01_1_test attachments/` with an invented PDF. One
+   card files both; it does not ask how the message came.
+4. **A file that cannot be read.** Drop a file of random bytes named `x.pdf`: a card "Held: … was not read"
+   says why.
+5. **The channel answer.** Approve a card with "on paper, scanned" picked: the document in `catalog.json` has
+   `provenance.obtained.channel: paper`.
+6. **A careful reading.** An invented by-law appears under Inbox › "Worth a careful reading". With a brain
+   connected to that binder, "May read documents" on and the binder's disclosure at full, ask it to look at
+   the documents waiting: it calls `list_readings` and `read_document`, and its proposal arrives as a card.
+   With "May read documents" off, `read_document` is refused.
+7. **Logs.** `runtime/jobs.log` has `intake carded=… held=…` and `clerk document outcome=… class=…` lines
+   with counts only: no names, titles or text.
 
 ## The weekly fault drill (mvp.md 1.2, M3 part 4)
 
