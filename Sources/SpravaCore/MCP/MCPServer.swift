@@ -150,6 +150,18 @@ public final class MCPServer: @unchecked Sendable {
         }
     }
 
+    /// The methods this server answers or accepts; a log line names only these (architecture 3.7, 7.5).
+    static let knownMethods: Set<String> = ["initialize", "server/discover", "ping", "tools/list", "tools/call",
+                                            "notifications/initialized", "notifications/cancelled"]
+
+    /// The method of a request line as a log may show it: a known name, else `unknown_method`, never the client's text.
+    public static func loggedMethod(_ line: String) -> String {
+        guard let method = (try? JSONParser.parse(line).value)?["method"]?.stringValue, knownMethods.contains(method) else {
+            return "unknown_method"
+        }
+        return method
+    }
+
     static let instructions = "Sprava keeps one binder per life episode. Read with list_binders; change things only with propose_ops, which puts a card in the person's review queue. Never say a change was made until get_proposal reports it applied. list_readings shows documents that arrived and deserve a careful reading."
 
     static func result(id: JSONValue, _ value: JSONValue, modern: Bool) -> String {
@@ -235,13 +247,13 @@ public final class MCPServer: @unchecked Sendable {
     }
 
     /// Whether Sprava recorded this proposal's digest, which approval requires (architecture 4.6).
-    func isRecorded(_ id: String, in folder: URL) -> Bool { commands.loadDigests()[commands.key(folder, id)] != nil }
+    func isRecorded(_ id: String, in folder: URL) -> Bool { (try? commands.loadDigests())?[commands.key(folder, id)] != nil }
 
-    /// A reading waiting for a careful reading, in a binder this client may see (adaptation-layer §4.4).
+    /// A reading waiting for a careful reading, in a binder this client may see, whose card the person has not
+    /// rejected: exactly what list_readings offers (adaptation-layer §4.4).
     func reading(_ args: JSONObject, in row: ShelfRow) -> IntakeReadings.Entry? {
-        guard case .string(let id)? = args["reading_id"], let e = IntakeReadings(support: commands.support).load(id),
-              e.binder == row.folder.standardizedFileURL.path, e.escalation == "waiting" else { return nil }
-        return e
+        guard case .string(let id)? = args["reading_id"] else { return nil }
+        return IntakeReadings(support: commands.support).escalation(id, in: row.folder.standardizedFileURL.path)
     }
 
     func call(_ name: String, _ args: JSONObject) -> JSONValue {

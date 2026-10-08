@@ -497,10 +497,14 @@ public struct Backup: Sendable {
             throw Failure(message: "the offload's record is missing; nothing was removed")
         }
         if FileManager.default.fileExists(atPath: folder.path) {
-            try refuseIfChanged(id, folder: folder, job, &st)
-            do {
-                try removeFolder(folder)
-            } catch {
+            // The last comparison and the move to the Trash run under the binder's write lock, so no approval can
+            // land between them and leave with the folder while neither backup holds it.
+            var removal: Error?
+            try TekaStore(folder: folder).withLock {
+                try refuseIfChanged(id, folder: folder, job, &st)
+                do { try removeFolder(folder) } catch { removal = error }
+            }
+            if let error = removal {
                 st.offloaded.removeAll { $0.backupID == id }
                 job.stage = "copied"
                 st.offloads[id] = job

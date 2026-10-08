@@ -38,7 +38,7 @@ import Testing
     /// Two scans with a reading between them, as the runtime does.
     func card(_ s: Setup) -> IntakeWatcher.ScanResult {
         _ = s.watcher.scan(binders: rows(s), commands: s.commands, now: now, requireReading: true)
-        let prepared = s.watcher.prepare(binders: rows(s), deviceID: "dev", helper: nil)
+        let prepared = s.watcher.prepare(binders: rows(s), deviceID: "dev", reader: .inProcess)
         return s.watcher.scan(binders: rows(s), commands: s.commands, now: now, prepared: prepared, requireReading: true)
     }
 
@@ -103,7 +103,7 @@ import Testing
         // Without a reading the file waits.
         _ = s.watcher.scan(binders: rows(s), commands: s.commands, now: now, requireReading: true)
         #expect(s.watcher.scan(binders: rows(s), commands: s.commands, now: now, requireReading: true).carded == 0)
-        let prepared = s.watcher.prepare(binders: rows(s), deviceID: "dev", helper: nil)
+        let prepared = s.watcher.prepare(binders: rows(s), deviceID: "dev", reader: .inProcess)
         #expect(s.watcher.scan(binders: rows(s), commands: s.commands, now: now, prepared: prepared, requireReading: true).carded == 1)
         let card = try #require(open(s).first)
         let intake = try #require(card.raw["provenance"]?["intake"])

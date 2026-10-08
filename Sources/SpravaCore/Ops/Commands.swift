@@ -27,8 +27,12 @@ public struct Commands: Sendable {
     /// person saw (architecture 4.6). Kept in Sprava's own state.
     var digestsURL: URL { support.appendingPathComponent("runtime/proposal-digests.json") }
 
-    func loadDigests() -> [String: String] {
-        (try? Data(contentsOf: digestsURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+    /// Empty only when the file does not exist. One that exists but cannot be read or decoded throws, so it is never
+    /// saved over with a few entries, which would leave every other waiting card unapprovable.
+    func loadDigests() throws -> [String: String] {
+        do { return try OwnState.read([String: String].self, from: digestsURL) ?? [:] } catch {
+            throw Failure(message: "Sprava's record of the cards it wrote cannot be read; it was left as it is")
+        }
     }
 
     /// Fails loudly: a card whose digest was not kept cannot be approved, so its source must not be marked handled.
@@ -94,7 +98,7 @@ public struct Commands: Sendable {
             // A proposal file the runtime did not write has no recorded digest: it is shown as "not verified" and
             // cannot be approved (binder-v0 §6.5; architecture 4.6).
             let listed = ProposalStore.list(in: f)
-            let digests = loadDigests()
+            let digests = try loadDigests()
             let catalog = Teka.read(f).catalog
             return JSONObject([(key: "proposals", value: .array(listed.map { p, digest in
                 var o = JSONObject()
@@ -138,7 +142,7 @@ public struct Commands: Sendable {
             }
             // A card Sprava did not write is never approved, but the person may reject it, as shown.
             let current = ProposalStore.list(in: f).first { $0.0.id == id }?.1
-            guard let recorded = loadDigests()[key(f, id)] ?? (command == "reject" ? current : nil) else {
+            guard let recorded = try loadDigests()[key(f, id)] ?? (command == "reject" ? current : nil) else {
                 throw Failure(message: "this proposal was not written by Sprava, so it cannot be approved")
             }
             guard recorded == seen else { throw Failure(message: "this card changed since it was shown; reload it") }
@@ -495,7 +499,7 @@ public struct Commands: Sendable {
     func recordDigests(_ ids: [String], in folder: URL) throws {
         guard !ids.isEmpty else { return }
         let wanted = Set(ids)
-        var digests = loadDigests()
+        var digests = try loadDigests()
         for (p, d) in ProposalStore.list(in: folder) where wanted.contains(p.id) { digests[key(folder, p.id)] = d }
         try saveDigests(digests)
     }

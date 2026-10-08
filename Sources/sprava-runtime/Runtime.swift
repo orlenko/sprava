@@ -456,11 +456,13 @@ final class Runtime: @unchecked Sendable {
         guard let commands, let xpc else { return noCommands }
         guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         let watcher = IntakeWatcher(support: support)
-        let prepared = watcher.prepare(binders: rows, deviceID: commands.deviceID)
+        // The sandboxed helper reads every file; without it, each file gets a Held card saying the reader is missing.
+        let prepared = watcher.prepare(binders: rows, deviceID: commands.deviceID, reader: .located())
         let result = xpc.queue.sync { watcher.scan(binders: rows, commands: commands, prepared: prepared, requireReading: true) }
         if result.carded > 0 || result.replaced > 0 {
             log("intake carded=\(result.carded) held=\(result.held) replaced=\(result.replaced) waiting=\(result.waiting) stale=\(result.stale)")
         }
+        if result.cursorUnreadable { return .error(code: "intake_state_unreadable", culprit: "capture/intake.json") }
         if result.cursorUnsaved { return .error(code: "intake_state_unwritable", culprit: "capture/intake.json") }
         return .ok
     }

@@ -19,10 +19,12 @@ public struct IntakeWatcher: Sendable {
         var firstSeen: Date
     }
 
-    func load() -> [String: [String: Seen]] {
+    /// The cursor: empty only when `intake.json` does not exist. One that cannot be read or decoded throws, so it is
+    /// never saved over: rebuilt, it would card again every file the person already rejected (capture-event-v0 §5.3).
+    func load() throws -> [String: [String: Seen]] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? Data(contentsOf: stateURL)).flatMap { try? decoder.decode([String: [String: Seen]].self, from: $0) } ?? [:]
+        return try OwnState.read([String: [String: Seen]].self, from: stateURL, decoder: decoder) ?? [:]
     }
 
     func save(_ s: [String: [String: Seen]]) throws {
@@ -41,6 +43,8 @@ public struct IntakeWatcher: Sendable {
         public var stale = 0
         /// The cursor could not be written: every file would look new on every scan, so the job reports it.
         public var cursorUnsaved = false
+        /// The cursor exists but cannot be read: nothing was scanned, and nothing was written over it.
+        public var cursorUnreadable = false
     }
 
     /// One thing in `intake/` worth a card: a file, or a message with the files of its attachments folder.
@@ -108,10 +112,12 @@ public struct IntakeWatcher: Sendable {
     }
 
     /// Reads the files the next scan would card: they held still since the last scan and have no card yet. At
-    /// most `budget` seconds of reading per call; the rest wait for the next one.
-    public func prepare(binders: [ShelfRow], deviceID: String, helper: URL? = ExtractHelper.locate(), read: Bool = true,
+    /// most `budget` seconds of reading per call; the rest wait for the next one. The runtime passes the located
+    /// helper; a missing one holds each file with a card that says so.
+    public func prepare(binders: [ShelfRow], deviceID: String, reader: ExtractHelper.Reader, read: Bool = true,
                         budget: TimeInterval = 240) -> Prepared {
-        let state = load()
+        // A cursor that cannot be read names no file as held still: nothing is read (scan reports it).
+        guard let state = try? load() else { return Prepared() }
         let started = Date()
         var out = Prepared()
         for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
@@ -122,7 +128,7 @@ public struct IntakeWatcher: Sendable {
                 let file = row.folder.appendingPathComponent("intake/" + c.name)
                 let attachments = c.attachments.map { row.folder.appendingPathComponent("intake/" + $0) }
                 for url in [file] + attachments { out.digests[url.path] = DocumentPaths.sha256(of: url) }
-                if read { out.readings[file.path] = IntakeReading.read(file, attachments: attachments, channel: c.channel, helper: helper) }
+                if read { out.readings[file.path] = IntakeReading.read(file, attachments: attachments, channel: c.channel, reader: reader) }
             }
         }
         return out
@@ -133,7 +139,10 @@ public struct IntakeWatcher: Sendable {
     public func scan(binders: [ShelfRow], commands: Commands, now: Date = Date(), prepared: Prepared = Prepared(),
                      requireReading: Bool = false) -> ScanResult {
         var result = ScanResult()
-        var state = load()
+        guard let state = try? load() else {
+            result.cursorUnreadable = true
+            return result
+        }
         // Binders not scanned this time keep their state, so a binder briefly missing is never carded again.
         var kept = state
         for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == commands.deviceID {

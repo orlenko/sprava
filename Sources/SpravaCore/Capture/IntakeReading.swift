@@ -25,10 +25,11 @@ public struct IntakeReading: Sendable, Equatable {
         self.kind = kind; self.textFrom = textFrom; self.pages = pages; self.text = text; self.held = held; self.channel = channel
     }
 
-    /// Reads a file and, for a message, the files of its attachments folder, each in the sandboxed helper.
-    public static func read(_ file: URL, attachments: [URL] = [], channel: String, helper: URL? = ExtractHelper.locate()) -> IntakeReading {
+    /// Reads a file and, for a message, the files of its attachments folder, each in the sandboxed helper. Without
+    /// the helper the file is held, saying the reader is missing.
+    public static func read(_ file: URL, attachments: [URL] = [], channel: String, reader: ExtractHelper.Reader) -> IntakeReading {
         let result: Extractor.Result
-        do { result = try ExtractHelper.run(file, helper: helper) } catch {
+        do { result = try ExtractHelper.run(file, reader: reader) } catch {
             return IntakeReading(kind: "unknown", textFrom: "parsed", text: "", held: "\(error)", channel: channel)
         }
         var r = IntakeReading(kind: result.email != nil ? "email" : result.kind, textFrom: result.textFrom, pages: result.pages,
@@ -38,8 +39,8 @@ public struct IntakeReading: Sendable, Equatable {
             r.subject = e.subject; r.from = e.from; r.to = e.to; r.date = e.date
         }
         var parts: [(String, Result<Extractor.Result, Error>)] = []
-        for a in result.email?.attachments ?? [] { parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, helper: helper) })) }
-        for url in attachments { parts.append((url.lastPathComponent, Result { try ExtractHelper.run(url, helper: helper) })) }
+        for a in result.email?.attachments ?? [] { parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, reader: reader) })) }
+        for url in attachments { parts.append((url.lastPathComponent, Result { try ExtractHelper.run(url, reader: reader) })) }
         for (name, outcome) in parts {
             r.attachments.append(name)
             switch outcome {
@@ -266,11 +267,25 @@ public struct IntakeReadings: Sendable {
         var states: [String: [String: String]] = [:]
         return all().filter { e in
             guard e.escalation == "waiting", folders?.contains(e.binder) ?? true else { return false }
-            if states[e.binder] == nil {
-                states[e.binder] = Dictionary(ProposalStore.list(in: URL(fileURLWithPath: e.binder, isDirectory: true)).map { ($0.0.id, $0.0.state) },
-                                              uniquingKeysWith: { a, _ in a })
-            }
-            return ["proposed", "applied"].contains(states[e.binder]?[e.card] ?? "")
+            if states[e.binder] == nil { states[e.binder] = Self.cardStates(e.binder) }
+            return Self.cardStands(states[e.binder]?[e.card])
         }
     }
+
+    /// One careful reading a brain names by id, under the same rules as `escalations`: waiting, in `binder`, and
+    /// its card not rejected. Every lookup by id goes through here, so a remembered id opens nothing more.
+    public func escalation(_ id: String, in binder: String) -> Entry? {
+        guard let e = load(id), e.binder == binder, e.escalation == "waiting",
+              Self.cardStands(Self.cardStates(binder)[e.card]) else { return nil }
+        return e
+    }
+
+    /// Proposal id -> state, for the cards in one binder.
+    static func cardStates(_ binder: String) -> [String: String] {
+        Dictionary(ProposalStore.list(in: URL(fileURLWithPath: binder, isDirectory: true)).map { ($0.0.id, $0.0.state) },
+                   uniquingKeysWith: { a, _ in a })
+    }
+
+    /// A reading is offered while its filing card waits or was approved; never once the person rejected it.
+    static func cardStands(_ state: String?) -> Bool { ["proposed", "applied"].contains(state ?? "") }
 }

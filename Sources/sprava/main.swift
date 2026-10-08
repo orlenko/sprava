@@ -301,7 +301,8 @@ func readDocument(_ args: [String]) {
     case .failure(let e): fail("the clerk cannot run: \(e)", code: 1)
     }
     let started = Date()
-    let reading = IntakeReading.read(url, channel: "other")
+    // The same sandboxed helper as the runtime's; without it the file is held, never parsed in this process.
+    let reading = IntakeReading.read(url, channel: "other", reader: .located())
     let read = Date().timeIntervalSince(started)
     let locale = given ?? IntakeReading.language(of: reading.text)
     let facts = IntakeFacts.of(reading, anchor: IntakeReading.day(ofHeader: reading.date) ?? CalendarDate.today(), locale: locale)
