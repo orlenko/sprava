@@ -298,6 +298,9 @@ public struct Commands: Sendable {
 
         case "backup_status":
             let backup = Backup(support: support)
+            // Settings that cannot be read are reported, never shown as "not set up": the setup offered then would
+            // save over them.
+            let s = try backup.settings()
             let st = backup.status()
             let rows = ShelfStore(supportDirectory: support).rows()
             let names = Dictionary(rows.compactMap { row -> (String, String)? in
@@ -311,7 +314,6 @@ public struct Commands: Sendable {
             case .notInICloud?: upload = .str("not in iCloud")
             case nil: break
             }
-            let s = backup.settings()
             return JSONObject([
                 (key: "configured", value: .bool(st.configured)), (key: "second", value: .bool(st.secondConfigured)),
                 (key: "primary", value: s.primary.map(JSONValue.string) ?? .null), (key: "second_path", value: s.second.map(JSONValue.string) ?? .null),

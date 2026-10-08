@@ -54,6 +54,17 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
 
     public func adding(days: Int) -> CalendarDate { CalendarDate(dayNumber: dayNumber + days) }
 
+    /// `days` later (earlier when negative) for a count read from untrusted text: nil when the sum overflows or
+    /// the date leaves years 1 to 9999, never a trap.
+    public func checkedAdding(days: Int) -> CalendarDate? {
+        let (sum, overflow) = dayNumber.addingReportingOverflow(days)
+        guard !overflow, (0...CalendarDate.lastDayNumber).contains(sum) else { return nil }
+        return CalendarDate(dayNumber: sum)
+    }
+
+    /// The day number of 9999-12-31, the last date a binder holds.
+    static let lastDayNumber = CalendarDate(year: 9999, month: 12, day: 31)!.dayNumber
+
     /// Calendar days from `self` to `other`; negative when `other` is earlier.
     public func days(to other: CalendarDate) -> Int { other.dayNumber - dayNumber }
 

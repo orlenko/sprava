@@ -308,7 +308,7 @@ import Testing
         var s = Backup.Settings()
         s.primary = temp("mirror").path
         try b.save(s)
-        #expect(b.isConfigured)
+        #expect(try b.isConfigured)
         let m = b.maintain(rows: [], deviceID: "dev", now: now)
         #expect(!m.stateSnapshot && !m.retention && !m.checked)
         #expect(m.failed == 3)

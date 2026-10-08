@@ -37,7 +37,8 @@ public enum Amounts {
                 if text.contains("million") { value *= 1_000_000 }
                 else if text.contains("thousand") || text.contains("mille") || text.firstMatch(of: /\d\s?k\b/) != nil { value *= 1000 }
                 if text.firstMatch(of: /\d\s*(cents?|¢)\b/) != nil, !text.contains("$"), !text.contains("dollar") { value /= 100 }
-                return Parsed(value: value, currency: currency)
+                // A number too large for a Double is no amount.
+                return value.isFinite ? Parsed(value: value, currency: currency) : nil
             }
         }
         // Words: "twelve hundred", "two thousand five hundred", "quatre mille deux cents", "quatre-vingt-dix".
@@ -46,36 +47,58 @@ public enum Amounts {
         var i = 0
         while i < words.count {
             let w = words[i]
-            if w == "quatre", i + 1 < words.count, words[i + 1].hasPrefix("vingt") { current += 80; seen = true; i += 2; continue }
-            if let u = units[w] { current += u; seen = true }
-            else if let s = scales[w] {
+            if w == "quatre", i + 1 < words.count, words[i + 1].hasPrefix("vingt") {
+                guard add(80, &current) else { return nil }
+                seen = true; i += 2; continue
+            }
+            if let u = units[w] {
+                guard add(u, &current) else { return nil }
                 seen = true
-                if s == 100 { current = max(current, 1) * 100 }
-                else { total += max(current, 1) * s; current = 0 }
+            } else if let s = scales[w] {
+                seen = true
+                guard scale(s, &total, &current) else { return nil }
             } else if ["and", "et"].contains(w) { }
             else if seen { break }
             i += 1
         }
-        var value = Double(total + current)
+        guard add(current, &total) else { return nil }
+        var value = Double(total)
         // English "cents" is money, not a hundred: "fifty cents" is half a dollar ("deux cents" stays 200).
         let english = words.contains { ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "twenty", "thirty",
                                         "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand"].contains($0) }
         if english, words.last == "cents" || words.last == "cent", !words.contains("dollars"), !words.contains("dollar") {
-            value = Double(wordsValue(words.dropLast())) / 100
+            guard let whole = wordsValue(words.dropLast()) else { return nil }
+            value = Double(whole) / 100
         }
         return seen && value > 0 ? Parsed(value: value, currency: currency) : nil
     }
 
-    /// The number named by English or French number words, as `parse` reads them.
-    static func wordsValue<S: Sequence>(_ words: S) -> Int where S.Element == String {
+    /// The number named by English or French number words, as `parse` reads them; nil when it does not fit an `Int`.
+    static func wordsValue<S: Sequence>(_ words: S) -> Int? where S.Element == String {
         var total = 0, current = 0
         for w in words {
-            if let u = units[w] { current += u }
-            else if let s = scales[w] {
-                if s == 100 { current = max(current, 1) * 100 } else { total += max(current, 1) * s; current = 0 }
-            }
+            if let u = units[w] { guard add(u, &current) else { return nil } }
+            else if let s = scales[w] { guard scale(s, &total, &current) else { return nil } }
         }
-        return total + current
+        return add(current, &total) ? total : nil
+    }
+
+    // Number words are untrusted text ("a hundred hundred hundred..."): every step is checked, and a number that
+    // does not fit an `Int` is no amount rather than a trap.
+
+    static func add(_ n: Int, _ into: inout Int) -> Bool {
+        let (sum, overflow) = into.addingReportingOverflow(n)
+        if !overflow { into = sum }
+        return !overflow
+    }
+
+    /// "hundred" multiplies the current group; a larger scale closes the group into the total.
+    static func scale(_ s: Int, _ total: inout Int, _ current: inout Int) -> Bool {
+        let (product, overflow) = max(current, 1).multipliedReportingOverflow(by: s)
+        guard !overflow else { return false }
+        if s == 100 { current = product; return true }
+        current = 0
+        return add(product, &total)
     }
 
     /// Finds an amount in a sentence by itself (digits with a currency, or number words with a currency word).

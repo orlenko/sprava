@@ -112,8 +112,19 @@ public struct Backup: Sendable {
     var settingsURL: URL { dir.appendingPathComponent("settings.json") }
     var stateURL: URL { dir.appendingPathComponent("state.json") }
 
-    public func settings() -> Settings {
-        (try? Data(contentsOf: settingsURL)).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) } ?? Settings()
+    /// The backup settings. Only a missing file is "not set up"; a file that exists but cannot be read or decoded
+    /// throws, so backups never stop in silence and nothing saves over the person's choices (the second backup,
+    /// retention).
+    public func settings() throws -> Settings {
+        var info = stat()
+        if lstat(settingsURL.path, &info) != 0 {
+            guard errno == ENOENT else { throw Failure(message: "backup settings cannot be read; nothing was changed (\(settingsURL.path))") }
+            return Settings()
+        }
+        guard let data = try? Data(contentsOf: settingsURL), let s = try? JSONDecoder().decode(Settings.self, from: data) else {
+            throw Failure(message: "backup settings are unreadable; nothing was changed (\(settingsURL.path))")
+        }
+        return s
     }
 
     func save(_ s: Settings) throws {
@@ -138,7 +149,8 @@ public struct Backup: Sendable {
         try AtomicFile.write(try e.encode(s), to: stateURL)
     }
 
-    public var isConfigured: Bool { settings().primary != nil && key != nil }
+    /// Throws when the settings cannot be read (`settings()`), which is not the same as not set up.
+    public var isConfigured: Bool { get throws { try settings().primary != nil && key != nil } }
 
     /// The default mirror: a folder in the person's iCloud Drive.
     public static var defaultPrimary: URL {
@@ -150,7 +162,7 @@ public struct Backup: Sendable {
         guard let path, let key else { throw Failure(message: "backup is not set up") }
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
         // Sprava never runs a binary it did not set up (architecture 3.5).
-        if let pinned = (candidate ?? settings()).resticSHA256, Restic.sha256(of: binary) != pinned {
+        if let pinned = try (candidate ?? settings()).resticSHA256, Restic.sha256(of: binary) != pinned {
             throw Failure(message: "restic changed since backup was set up; set it up again to trust the new one")
         }
         return Restic(binary: binary, repository: URL(fileURLWithPath: path, isDirectory: true), key: key, support: support)
@@ -159,10 +171,11 @@ public struct Backup: Sendable {
     // MARK: - Setup
 
     /// Sets up the mirror at `primary` with the key Sprava holds. An existing repository must open with that key.
-    /// The settings name it only once it opens, so a failed change leaves the working mirror in place.
+    /// The settings name it only once it opens, so a failed change leaves the working mirror in place. Settings that
+    /// cannot be read are never saved over.
     public func setUp(primary: URL, iCloudKeychain: Bool) throws {
+        var s = try settings()
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
-        var s = settings()
         s.primary = primary.standardizedFileURL.path
         s.iCloudKeychain = iCloudKeychain
         s.resticSHA256 = Restic.sha256(of: binary)
@@ -178,7 +191,7 @@ public struct Backup: Sendable {
     /// The second backup offloading requires: another cloud service's folder or an external disk. It must not
     /// share a fate with the mirror (§5): not the mirror's folder, not in or around it, and not in iCloud Drive.
     public func setSecond(_ folder: URL) throws {
-        var s = settings()
+        var s = try settings()
         guard let primaryPath = s.primary else { throw Failure(message: "set up backup first") }
         try Self.refuseSharedFate(folder, primary: URL(fileURLWithPath: primaryPath, isDirectory: true))
         let primary = try engine(s.primary)
@@ -268,7 +281,7 @@ public struct Backup: Sendable {
 
     /// Weekly forget and prune per binder, by the retention rule; offloaded snapshots are always kept.
     public func applyRetention(now: Date = Date()) throws {
-        let s = settings()
+        let s = try settings()
         let r = try engine(s.primary)
         var st = try state()
         for id in st.binders.keys.sorted() {
@@ -352,7 +365,7 @@ public struct Backup: Sendable {
     /// Offloads a finished binder. Runs every step it can now; when iCloud has not uploaded yet, it stops, and the
     /// queued request runs it again later.
     public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, now: Date = Date()) throws -> OffloadProgress {
-        let s = settings()
+        let s = try settings()
         guard s.primary != nil else { throw Failure(message: "set up backup first") }
         guard s.second != nil else { throw Failure(message: "offloading needs a second backup; choose one in Backup settings") }
         // An offload that stopped after its folder went to the Trash only has its records left to finish.
@@ -440,7 +453,7 @@ public struct Backup: Sendable {
     }
 
     func continueOffload(_ id: String, now: Date) throws -> OffloadProgress {
-        let s = settings()
+        let s = try settings()
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
@@ -564,7 +577,7 @@ public struct Backup: Sendable {
     public func restore(_ backupID: String, to target: URL? = nil, now: Date = Date()) throws -> URL {
         var st = try state()
         guard let record = st.offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
-        let s = settings()
+        let s = try settings()
         let destination = (target ?? URL(fileURLWithPath: record.originalPath, isDirectory: true)).standardizedFileURL
         var isDir: ObjCBool = false
         if st.restoring[backupID] != destination.path, FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir),
@@ -603,7 +616,7 @@ public struct Backup: Sendable {
         let folder = dir.appendingPathComponent("peek/\(UUID().uuidString.prefix(8))", isDirectory: true)
         try AtomicFile.makePrivateFolder(folder)
         let file = folder.appendingPathComponent((path as NSString).lastPathComponent)
-        let s = settings()
+        let s = try settings()
         do { try engine(s.primary).dump(record.snapshot, path: "/" + path, to: file) } catch {
             guard let second = record.secondSnapshot else { throw error }
             try engine(record.secondRepository ?? s.second).dump(second, path: "/" + path, to: file)
@@ -650,19 +663,18 @@ public struct Backup: Sendable {
         public var stateSnapshot = false
         public var retention = false
         public var checked = false
-        /// What failed apart from the binders, by name (`backup_state` unreadable, `state_snapshot`, `retention`,
-        /// `check`, `offload`): each also counts in `failed` and stays due, so the next run tries it again.
+        /// What failed apart from the binders, by name (`backup_settings` or `backup_state` unreadable,
+        /// `state_snapshot`, `retention`, `check`, `offload`): each also counts in `failed` and stays due, so the next run tries it again.
         public var failedParts: [String] = []
     }
 
     /// Hourly snapshots of each live binder this Mac manages (skipped when unchanged), Sprava's state daily,
     /// retention and a structure check weekly, a rotating read-back monthly. No binder lock is held through a
     /// restic run, which would hold up approvals for minutes; a write that lands during a run leaves the binder
-    /// due, so the next run snapshots it again (`backUp`). An unreadable state stops all of it.
+    /// due, so the next run snapshots it again (`backUp`). Unreadable settings or state stop all of it, as a failure.
     public func maintain(rows: [ShelfRow], deviceID: String, now: Date = Date()) -> Maintenance {
         var m = Maintenance()
         cleanPeeks(now: now)
-        guard isConfigured else { return m }
         func older(_ iso: String?, than seconds: TimeInterval) -> Bool {
             guard let iso, let d = ISOTime.date(iso) else { return true }
             return now.timeIntervalSince(d) > seconds
@@ -671,6 +683,11 @@ public struct Backup: Sendable {
             m.failed += 1
             if !m.failedParts.contains(part) { m.failedParts.append(part) }
         }
+        guard let configured = try? isConfigured else {
+            fail("backup_settings")
+            return m
+        }
+        guard configured else { return m }
         guard let st = try? state() else {
             fail("backup_state")
             return m
@@ -722,10 +739,14 @@ public struct Backup: Sendable {
         public var pending: Int
         /// Set when the backup's state cannot be read; nothing else is shown from it then.
         public var stateError: String?
+        /// Set when the backup settings cannot be read: backup then counts as neither set up nor ready for setup.
+        public var settingsError: String?
     }
 
     public func status(checkUpload: Bool = true) -> Status {
-        let s = settings()
+        var s = Settings()
+        var settingsError: String?
+        do { s = try settings() } catch { settingsError = "\(error)" }
         var st = State()
         var stateError: String?
         do { st = try state() } catch { stateError = "\(error)" }
@@ -733,11 +754,25 @@ public struct Backup: Sendable {
                       binders: st.binders.sorted { $0.key < $1.key }.map { ($0.key, $0.value.at, $0.value.error) },
                       upload: checkUpload ? s.primary.map { uploadCheck(URL(fileURLWithPath: $0)) } : nil,
                       lastCheck: st.lastCheck, lastDrill: st.lastDrill, offloaded: st.offloaded.count, pending: st.offloads.count,
-                      stateError: stateError)
+                      stateError: stateError, settingsError: settingsError)
     }
 }
 
-// Missing keys take their defaults, so a field added later never makes an older state file unreadable.
+// Missing keys take their defaults, so a field added later never makes an older state or settings file unreadable.
+
+extension Backup.Settings {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        primary = try c.decodeIfPresent(String.self, forKey: .primary)
+        second = try c.decodeIfPresent(String.self, forKey: .second)
+        iCloudKeychain = try c.decodeIfPresent(Bool.self, forKey: .iCloudKeychain) ?? false
+        resticSHA256 = try c.decodeIfPresent(String.self, forKey: .resticSHA256)
+        keepLast = try c.decodeIfPresent(Int.self, forKey: .keepLast) ?? 30
+        keepWithinDays = try c.decodeIfPresent(Int.self, forKey: .keepWithinDays) ?? 90
+        keepMonthly = try c.decodeIfPresent(Int.self, forKey: .keepMonthly) ?? 24
+        keepYearly = try c.decodeIfPresent(Int.self, forKey: .keepYearly) ?? 10
+    }
+}
 
 extension Backup.State {
     init(from decoder: Decoder) throws {

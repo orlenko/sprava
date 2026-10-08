@@ -547,7 +547,13 @@ final class Runtime: @unchecked Sendable {
     func backup() -> JobOutcome {
         guard let commands else { return noCommands }
         let backup = Backup(support: support)
-        guard backup.isConfigured else { return .skipped }
+        // Settings that cannot be read are a failure Health shows, never "not set up".
+        let configured: Bool
+        do { configured = try backup.isConfigured } catch {
+            log("backup settings_unreadable")
+            return .error(code: "backup_settings_unreadable", culprit: "backup/settings.json")
+        }
+        guard configured else { return .skipped }
         let requests = BackupRequests(support: support)
         var requestOutcome = JobOutcome.ok
         do {
