@@ -160,7 +160,9 @@ A file is held, with a card that says why, instead of read, when:
 - it is far outside the size or page limits;
 - its type does not match its name in a way that looks deliberate;
 - it is an executable, a script, an archive of many files, or a kind no adapter accepts;
-- the reading contradicts itself badly enough that the checks drop most of it.
+- the reading contradicts itself badly enough that the checks drop most of it;
+- its name, or the name of a file in its message's attachments folder, is a key or credential file's (binder-v0
+  §3.3); such a file is never opened. An attachment with such a name inside an email file is skipped with a note.
 
 ## 5. The type adapters (P14)
 

@@ -455,7 +455,7 @@ import Testing
         try TekaStore(folder: folder).settle(now: now)
         let catalog = try #require(Teka.read(folder).catalog)
         let log = try TekaStore(folder: folder).readOpLog().ops
-        #expect(IDMint.next(catalog: catalog, opLog: log, year: 2026) == "estate-example-2026-013")
+        #expect(try IDMint.next(catalog: catalog, opLog: log, year: 2026) == "estate-example-2026-013")
     }
 
     @Test func aFilingIsNotOfferedForUndo() throws {   // qIe10

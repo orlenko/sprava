@@ -42,6 +42,17 @@ public enum DocumentPaths {
         return true
     }
 
+    /// A key or credential file by its name (binder-v0 §3.3): `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
+    /// `id_ecdsa*`, `id_ed25519*`, `*.age`, `age-identity*`, `.netrc`, `credentials*`, `token*.json`, `*.keychain*`,
+    /// and a mail puller's `.env` or `.env.*`. Such a file is never read, whatever names it; case is ignored.
+    public static func isKeyFile(_ name: String) -> Bool {
+        let n = fold((name as NSString).lastPathComponent)
+        if [".pem", ".key", ".p12", ".pfx", ".age"].contains(where: n.hasSuffix) { return true }
+        if ["id_rsa", "id_ecdsa", "id_ed25519", "age-identity", "credentials", ".env."].contains(where: n.hasPrefix) { return true }
+        if n == ".netrc" || n == ".env" || n.contains(".keychain") { return true }
+        return n.hasPrefix("token") && n.hasSuffix(".json")
+    }
+
     /// A file name made safe as one segment: unsafe characters become `_`, a leading dot or tilde is dropped.
     public static func safeName(_ name: String) -> String {
         var out = String.UnicodeScalarView()

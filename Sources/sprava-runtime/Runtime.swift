@@ -408,23 +408,22 @@ final class Runtime: @unchecked Sendable {
                 log("hub binder=\(bid) name_collision=true")
                 continue
             }
-            do {
-                let drained = try HubLane.drain(row.folder, root: root)
+            // A drain that fails never holds back the publish, so a narrowing or withdrawal still reaches the hub.
+            let synced = HubLane.sync(row.folder, root: root) { drained in
                 if !drained.createdProposals.isEmpty, let xpc {
                     xpc.queue.sync { try? commands.trustProposals(drained.createdProposals, in: row.folder) }
                     log("hub binder=\(bid) overwritten_change_card=1")
                 }
-                let published = try HubLane.publish(row.folder, root: root)
-                if drained.applied > 0 || drained.skipped > 0 || drained.waitingForYou > 0 {
-                    log("hub binder=\(bid) drained=\(drained.applied) skipped=\(drained.skipped) waiting=\(drained.waitingForYou)")
-                }
-                if case .published(let n, let overwritten) = published {
-                    log("hub binder=\(bid) published items=\(n)" + (overwritten ? " overwritten_by_other=true" : ""))
-                }
-            } catch {
-                failures.append(bid)
-                log("hub binder=\(bid) error=\(type(of: error))")
             }
+            if let drained = synced.drained, drained.applied > 0 || drained.skipped > 0 || drained.waitingForYou > 0 {
+                log("hub binder=\(bid) drained=\(drained.applied) skipped=\(drained.skipped) waiting=\(drained.waitingForYou)")
+            }
+            if case .published(let n, let overwritten)? = synced.published {
+                log("hub binder=\(bid) published items=\(n)" + (overwritten ? " overwritten_by_other=true" : ""))
+            }
+            if let error = synced.drainError { log("hub binder=\(bid) drain_error=\(type(of: error))") }
+            if let error = synced.publishError { log("hub binder=\(bid) error=\(type(of: error))") }
+            if synced.failed { failures.append(bid) }
         }
         if unsettled > 0 { failures.append("\(unsettled) unsettled") }
         return failures.isEmpty ? .ok : .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ","))

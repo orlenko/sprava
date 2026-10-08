@@ -412,7 +412,7 @@ extension TekaStore {
             if !changed.isEmpty {
                 throw Refused(reason: "needs a look: changed since this card was made: " + changed.joined(separator: ", "))
             }
-            let resolved = Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: log,
+            let resolved = try Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: log,
                                                 year: Calendar(identifier: .gregorian).component(.year, from: now),
                                                 at: ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
             return resolved.map { op in
