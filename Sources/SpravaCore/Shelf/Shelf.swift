@@ -129,3 +129,43 @@ public enum Shelf {
         return rows
     }
 }
+
+/// When the person last opened each binder in the app, for the Shelf's order: the binder used last is on top,
+/// and binders left alone sink. Sprava's own state (`recent.json`), never a binder's.
+public struct RecentBinders: Sendable {
+    public let file: URL
+
+    public init(supportDirectory: URL = SpravaPaths.supportDirectory()) {
+        file = supportDirectory.appendingPathComponent("recent.json")
+    }
+
+    public func opened() -> [String: Date] {
+        guard let data = try? Data(contentsOf: file), case .object(let o)? = try? JSONParser.parse(data).value else { return [:] }
+        var out: [String: Date] = [:]
+        for e in o.entries { if let d = e.value.stringValue.flatMap(ISOTime.date) { out[e.key] = d } }
+        return out
+    }
+
+    public func touch(_ folder: URL, now: Date = Date()) {
+        var all = opened()
+        all[folder.standardizedFileURL.path] = now
+        let o = JSONObject(all.sorted { $0.key < $1.key }.map { (key: $0.key, value: JSONValue.string(ISOTime.string($0.value))) })
+        try? AtomicFile.makePrivateFolder(file.deletingLastPathComponent())
+        try? AtomicFile.write(Data(JSONWriter.pretty(.object(o)).utf8), to: file)
+    }
+
+    /// Opened binders first, most recent on top; then the others, most recently changed first.
+    public static func order(_ rows: [ShelfRow], opened: [String: Date]) -> [ShelfRow] {
+        rows.enumerated().sorted { a, b in
+            let x = opened[a.element.folder.standardizedFileURL.path], y = opened[b.element.folder.standardizedFileURL.path]
+            switch (x, y) {
+            case let (x?, y?): return x != y ? x > y : a.offset < b.offset
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil):
+                let m = a.element.teka.modified ?? .distantPast, n = b.element.teka.modified ?? .distantPast
+                return m != n ? m > n : a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+}

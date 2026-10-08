@@ -44,7 +44,13 @@ struct SpravaApp: App {
 final class ShelfModel: ObservableObject {
     @Published var rows: [ShelfRow] = []
     @Published var today = CalendarDate.today()
-    @Published var selection: URL?
+    /// The binder opened is recorded at once; the Shelf reorders on its next refresh, so the row never jumps
+    /// away under the pointer.
+    @Published var selection: URL? {
+        didSet {
+            if let s = selection, s.isFileURL, s != oldValue { RecentBinders().touch(s) }
+        }
+    }
     @Published var note: String?
     @Published var lastRefresh: Date?
 
@@ -60,7 +66,7 @@ final class ShelfModel: ObservableObject {
         }
         var picked: [URL] = []
         do { picked = try store.readFolders() } catch { note = "\(error)" }
-        rows = Shelf.rows(registry: registry, picked: picked)
+        rows = RecentBinders.order(Shelf.rows(registry: registry, picked: picked), opened: RecentBinders().opened())
         if selection == nil || (selection != healthSelection && selection != brainsSelection && selection != inboxSelection && selection != backupSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
