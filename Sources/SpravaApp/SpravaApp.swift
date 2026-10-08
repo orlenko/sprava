@@ -63,7 +63,7 @@ final class ShelfModel: ObservableObject {
         var picked: [URL] = []
         do { picked = try store.readFolders() } catch { note = "\(error)" }
         rows = Shelf.rows(registry: registry, picked: picked)
-        if selection == nil || (selection != healthSelection && selection != brainsSelection && selection != inboxSelection && !rows.contains(where: { $0.folder == selection })) {
+        if selection == nil || (selection != healthSelection && selection != brainsSelection && selection != inboxSelection && selection != backupSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
         lastRefresh = Date()
@@ -147,12 +147,14 @@ final class ShelfModel: ObservableObject {
 let healthSelection = URL(string: "sprava:health")!
 let brainsSelection = URL(string: "sprava:brains")!
 let inboxSelection = URL(string: "sprava:inbox")!
+let backupSelection = URL(string: "sprava:backup")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var health = HealthModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var inbox = InboxModel()
+    @StateObject private var backup = BackupModel()
 
     var body: some View {
         NavigationSplitView {
@@ -170,6 +172,7 @@ struct ShelfView: View {
                     }
                     .tag(inboxSelection)
                     Label("Brains", systemImage: "brain").tag(brainsSelection)
+                    Label("Backup", systemImage: "externaldrive.badge.icloud").tag(backupSelection)
                 }
                 Section("Shelf") {
                     ForEach(model.rows, id: \.folder) { row in
@@ -199,12 +202,14 @@ struct ShelfView: View {
         } detail: {
             if model.selection == healthSelection {
                 HealthView(model: health)
+            } else if model.selection == backupSelection {
+                BackupView(model: backup)
             } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
             } else if model.selection == brainsSelection {
                 BrainsView(model: brains, rows: model.rows)
             } else if let row = model.selectedRow {
-                NowView(row: row, today: model.today, reload: { model.refresh() })
+                NowView(row: row, today: model.today, backup: backup, reload: { model.refresh() })
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
@@ -279,6 +284,7 @@ struct StateBadge: View {
 struct NowView: View {
     let row: ShelfRow
     let today: CalendarDate
+    @ObservedObject var backup: BackupModel
     let reload: () -> Void
     @StateObject private var actions = BinderActions()
 
@@ -353,6 +359,8 @@ struct NowView: View {
             if teka.isAdopted {
                 FilingSection(actions: actions, folder: row.folder)
                 KeepingSection(actions: actions, folder: row.folder, today: today, reload: refresh)
+                OffloadSection(backup: backup, folder: row.folder,
+                               openItems: teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }.map(\.title))
             }
         }
         .task(id: row.folder) { await actions.load(row.folder, adopted: teka.isAdopted) }
@@ -408,7 +416,8 @@ enum Snapshot {
         let model = ShelfModel()
         model.refresh()
         if let pick = ProcessInfo.processInfo.environment["SPRAVA_SELECT"] {
-            model.selection = pick == "health" ? healthSelection : pick == "inbox" ? inboxSelection : pick == "brains" ? brainsSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
+            model.selection = pick == "health" ? healthSelection : pick == "inbox" ? inboxSelection : pick == "brains" ? brainsSelection
+                : pick == "backup" ? backupSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
         }
         if let today = ProcessInfo.processInfo.environment["SPRAVA_TODAY"].flatMap(CalendarDate.strict) {
             model.today = today

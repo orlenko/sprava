@@ -22,7 +22,8 @@ final class HealthModel: ObservableObject {
     @Published var findings: [Doctor.Finding] = []
     /// Starts recorded today in the runtime's own state file, which rises even when no heartbeat is written.
     @Published var startsToday = 0
-    @Published var backups: [(String, Bool)] = []
+    @Published var backups: [(name: String, at: Date?, error: String?)] = []
+    @Published var backupConfigured = false
     var lastDoctor: Date?
     var lastWake: Date?
 
@@ -63,8 +64,16 @@ final class HealthModel: ObservableObject {
             let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
             let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
             findings = Doctor.run(rows: rows, deviceID: DeviceID.load(support: support), registry: registry, support: support)
-            // Backup is observed, never driven (mvp.md feature 8): cmirror's registry says which binders it mirrors.
-            backups = rows.filter(\.teka.isAdopted).map { ($0.name, $0.source == .registry) }
+            // The app reads the backup's records only; the key stays with the runtime (docs/backup.md §7).
+            let backup = Backup(support: support, key: nil)
+            backupConfigured = backup.settings().primary != nil
+            let records = Dictionary(backup.status(checkUpload: false).binders.map { ($0.id, ($0.at, $0.error)) }, uniquingKeysWith: { a, _ in a })
+            backups = rows.filter(\.teka.isAdopted).map { row in
+                let id = (try? String(contentsOf: row.folder.appendingPathComponent(".sprava/backup-id"), encoding: .utf8))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let rec = id.flatMap { records[$0] }
+                return (row.name, rec?.0.flatMap { ISOTime.date($0) }, rec?.1)
+            }
         }
     }
 
@@ -167,14 +176,18 @@ struct HealthView: View {
                 Section("Alerts") { alertsLine(beat) }
             }
             Section("Backup") {
-                if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
+                if !model.backupConfigured { Text("Backup is not set up. Open Backup in the sidebar.").foregroundStyle(.orange) }
+                else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                 ForEach(Array(model.backups.enumerated()), id: \.offset) { _, b in
+                    let age = b.at.map { model.now.timeIntervalSince($0) } ?? .infinity
                     HStack {
-                        Circle().fill(b.1 ? Color.green : Color.orange).frame(width: 8, height: 8)
-                        Text(b.0)
+                        // Amber after 48 hours without a backup, red after 7 days (architecture 3.4).
+                        Circle().fill(b.error != nil || age > 7 * 86_400 ? Color.red : age > 48 * 3600 ? Color.orange : Color.green)
+                            .frame(width: 8, height: 8)
+                        Text(b.name)
                         Spacer()
-                        Text(b.1 ? "mirrored by cmirror · last backup: unknown" : "no backup: register it with cmirror by hand")
-                            .foregroundStyle(.secondary)
+                        Text(b.error ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
+                            .foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             }

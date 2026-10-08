@@ -9,7 +9,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 SPRAVA_SUPPORT_DIR="$test_root/Support"
 CMIRROR_CONFIG="$test_root/no-registry.toml"
-export SPRAVA_SUPPORT_DIR CMIRROR_CONFIG
+# The backup key goes to a file, never to the person's Keychain.
+SPRAVA_BACKUP_KEY_FILE="$test_root/backup-key"
+export SPRAVA_SUPPORT_DIR CMIRROR_CONFIG SPRAVA_BACKUP_KEY_FILE
 
 # Apple's Command Line Tools can import Testing but swiftbuild does not always find the TestingMacros
 # plugin; pass it explicitly (the same workaround as holos, docs/toolchain.md there).

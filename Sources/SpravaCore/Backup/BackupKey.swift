@@ -46,6 +46,29 @@ public enum BackupKey {
         return nil
     }
 
+    static let pendingAccount = "repository-key-pending"
+
+    /// A key shown to the person and not yet typed back. Kept on this device only, until confirmed.
+    public static func storePending(_ key: String) throws {
+        if let file = fileOverride { try AtomicFile.write(Data(key.utf8), to: file.appendingPathExtension("pending")); return }
+        try put(key, account: pendingAccount, synchronizable: false)
+    }
+
+    public static func loadPending() -> String? {
+        if let file = fileOverride { return try? String(contentsOf: file.appendingPathExtension("pending"), encoding: .utf8) }
+        var out: CFTypeRef?
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: pendingAccount, kSecReturnData as String: true]
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    public static func clearPending() {
+        if let file = fileOverride { try? FileManager.default.removeItem(at: file.appendingPathExtension("pending")); return }
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                       kSecAttrAccount as String: pendingAccount] as CFDictionary)
+    }
+
     /// Stores the key on this device, and in iCloud Keychain when the person chose that.
     public static func store(_ key: String, inICloudKeychain: Bool) throws {
         if let file = fileOverride {

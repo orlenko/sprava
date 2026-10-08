@@ -479,6 +479,49 @@ public struct Backup: Sendable {
         try save(st)
     }
 
+    // MARK: - Scheduled work (docs/backup.md §3.3)
+
+    public struct Maintenance: Sendable, Equatable {
+        public var snapshots = 0
+        public var unchanged = 0
+        public var failed = 0
+        public var stateSnapshot = false
+        public var retention = false
+        public var checked = false
+    }
+
+    /// Hourly snapshots of each live binder this Mac manages (skipped when unchanged), Sprava's state daily,
+    /// retention and a structure check weekly, a rotating read-back monthly. No binder lock is taken: every file
+    /// a binder write touches is replaced by a rename or appended, so a snapshot taken during a write is a state
+    /// the write protocol already recovers from after a crash (binder-v0 §6.9).
+    public func maintain(rows: [ShelfRow], deviceID: String, now: Date = Date()) -> Maintenance {
+        var m = Maintenance()
+        guard isConfigured else { return m }
+        func older(_ iso: String?, than seconds: TimeInterval) -> Bool {
+            guard let iso, let d = ISOTime.date(iso) else { return true }
+            return now.timeIntervalSince(d) > seconds
+        }
+        let st = state()
+        for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
+            guard let id = try? Self.backupID(row.folder) else { continue }
+            if st.offloads[id] != nil { continue }
+            guard older(st.binders[id]?.at, than: 3600) else { continue }
+            do {
+                let r = try backUp(row.folder, now: now)
+                if r.snapshot == nil { m.unchanged += 1 } else { m.snapshots += 1 }
+            } catch {
+                m.failed += 1
+            }
+        }
+        if older(state().stateSnapshotAt, than: 86_400), (try? backUpState(now: now)) != nil { m.stateSnapshot = true }
+        if older(state().lastForget, than: 7 * 86_400), (try? applyRetention(now: now)) != nil { m.retention = true }
+        if older(state().lastCheck, than: 7 * 86_400) {
+            let readData = older(state().lastReadData, than: 30 * 86_400)
+            if (try? check(readData: readData, now: now)) != nil { m.checked = true } else { m.failed += 1 }
+        }
+        return m
+    }
+
     // MARK: - Health
 
     public struct Status: Sendable {

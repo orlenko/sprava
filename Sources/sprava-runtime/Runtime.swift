@@ -52,6 +52,8 @@ final class Runtime: @unchecked Sendable {
         "intake": JobSpec(key: "intake", budget: .seconds(60), expectedCadence: 30, breakerThreshold: 3),
         "clerk": JobSpec(key: "clerk", budget: .seconds(120), expectedCadence: nil, breakerThreshold: 3),
         "dashboard": JobSpec(key: "dashboard", budget: .seconds(30), expectedCadence: 60, breakerThreshold: 3),
+        // A first backup of a large binder takes long; the job is never killed for that (docs/backup.md §3.3).
+        "backup": JobSpec(key: "backup", budget: .seconds(3 * 3600), expectedCadence: nil, breakerThreshold: 3),
     ]
 
     init(support: URL, lease: Lease) {
@@ -264,6 +266,7 @@ final class Runtime: @unchecked Sendable {
         run("capture") { self.capture() }   // every 15 s; file events call it sooner
         run("clerk") { self.clerk() }
         if now >= nextDashboard { run("dashboard") { self.dashboards() } }
+        run("backup") { self.backup() }
         if now >= nextIntake { run("intake") { self.intake() } }
         let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
@@ -320,7 +323,7 @@ final class Runtime: @unchecked Sendable {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
-        if !["heartbeat", "capture", "intake", "clerk", "dashboard"].contains(key) || final != .ok {
+        if !["heartbeat", "capture", "intake", "clerk", "dashboard", "backup"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -480,6 +483,28 @@ final class Runtime: @unchecked Sendable {
                    id: "dashboard-edited")
         }
         return failed > 0 ? .error(code: "dashboard_failed", culprit: "\(failed) binder(s)") : .ok
+    }
+
+    /// Backup (docs/backup.md): first any request the app queued (offload, restore, drill, back up now), then the
+    /// scheduled work, which itself does nothing until something is due.
+    func backup() -> JobOutcome {
+        guard let commands else { return .skipped }
+        let backup = Backup(support: support)
+        guard backup.isConfigured else { return .skipped }
+        let requests = BackupRequests(support: support)
+        if let request = requests.next() {
+            requests.run(request, backup: backup, deviceID: commands.deviceID)
+            let state = requests.all().first { $0.id == request.id }?.state ?? "?"
+            log("backup request=\(request.kind) state=\(state)")
+            if state == "done" { notify(title: "Sprava", body: "Backup: \(request.kind.replacingOccurrences(of: "_", with: " ")) finished.", id: "backup-\(request.id)") }
+            if state == "failed" { return .error(code: "backup_request_failed", culprit: request.kind) }
+            return .ok
+        }
+        let m = backup.maintain(rows: shelfRows(), deviceID: commands.deviceID)
+        if m.snapshots > 0 || m.failed > 0 || m.retention || m.checked {
+            log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
+        }
+        return m.failed > 0 ? .error(code: "backup_failed", culprit: "\(m.failed) binder(s) or check") : .ok
     }
 
     func shelfRows() -> [ShelfRow] {

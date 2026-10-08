@@ -29,6 +29,16 @@ cp "$bin_dir/SpravaApp" "$bundle/Contents/MacOS/SpravaApp"
 cp "$bin_dir/sprava" "$bundle/Contents/MacOS/sprava"
 cp "$bin_dir/sprava-runtime" "$bundle/Contents/MacOS/sprava-runtime"
 cp "$bin_dir/sprava-mcp" "$bundle/Contents/MacOS/sprava-mcp"
+# restic, the backup engine (docs/backup.md section 10): a pinned release, signed with the app.
+restic_bin="${SPRAVA_RESTIC:-$(command -v restic || true)}"
+if [ -z "$restic_bin" ]; then
+    echo "restic not found: install it (brew install restic) or set SPRAVA_RESTIC to its path" >&2
+    exit 1
+fi
+cp "$(realpath "$restic_bin")" "$bundle/Contents/MacOS/restic"
+restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
+[ -f "$restic_license" ] && cp "$restic_license" "$bundle/Contents/Resources/restic-LICENSE.txt"
+codesign --force --sign - --identifier ca.orlenko.sprava.restic "$bundle/Contents/MacOS/restic"
 codesign --force --sign - --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
 codesign --force --sign - --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
 codesign --force --sign - --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
