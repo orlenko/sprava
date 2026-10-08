@@ -198,6 +198,11 @@ public struct CaptureEvent: Sendable {
         guard o["hlc"]?["node"]?.stringValue == deviceFolder.lastPathComponent.replacingOccurrences(of: "-", with: "") else {
             return (.quarantined("hlc.node differs from the device id"), nil)
         }
+        // The whole stamp, as the reader schema has it: a malformed one would sort as stale and be dropped unseen.
+        guard let wall = o["hlc"]?["wall_ms"]?.numberValue?.safeInteger, (1_000_000_000_000...9_999_999_999_999).contains(wall),
+              let counter = o["hlc"]?["counter"]?.numberValue?.safeInteger, (0...65_535).contains(counter) else {
+            return (.quarantined("hlc is not a valid clock stamp"), nil)
+        }
         if o["supersedes"]?.stringValue == stem { return (.quarantined("supersedes itself"), nil) }
         let kind: Kind = format == "sprava-derived-event" ? .derived : .capture
         if kind == .capture {
@@ -222,11 +227,14 @@ public struct CaptureEvent: Sendable {
             guard path.hasPrefix("\(stem)."), !path.hasSuffix(".tmp"), !path.contains("/") else {
                 return (.quarantined("media path does not belong to the event"), nil)
             }
+            // A copied media entry names its size (the reader schema); until the file has it, it is still arriving.
+            guard let expected = media["bytes"]?.numberValue?.safeInteger, expected >= 0 else {
+                return (.quarantined("media bytes missing or not an integer"), nil)
+            }
             var st = stat()
             guard lstat(deviceFolder.appendingPathComponent(path).path, &st) == 0 else { return (.pending, nil) }
             guard st.st_mode & S_IFMT == S_IFREG, st.st_uid == getuid() else { return (.quarantined("media is not a plain file of this user"), nil) }
-            let size: Int? = Int(st.st_size)
-            if size == nil || (media["bytes"]?.numberValue?.safeInteger.map { Int($0) != size } ?? false) { return (.pending, nil) }
+            if Int(expected) != Int(st.st_size) { return (.pending, nil) }
         }
         let digest = "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return (.complete(kind), CaptureEvent(raw: o, url: url, digest: digest))

@@ -301,7 +301,7 @@ public struct CaptureInbox: Sendable {
                 return
             }
             replaces = earlier
-            let withdrawn = withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, now: now)
+            let withdrawn = withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, deviceID: commands.deviceID, now: now)
             // Items already filed from the earlier version get a change card, never new items beside them (§6.5).
             if let made = correctionCards(event, chain: chain, current: earlier, withdrawn: withdrawn, paths: state.paths ?? [:],
                                           binders: binders, commands: commands, now: now) {
@@ -325,7 +325,7 @@ public struct CaptureInbox: Sendable {
         let made: (String, URL?)
         do {
             // A card made before a crash, whose id never reached the cursor, is kept, never made twice (§5.3).
-            let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders)
+            let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders, deviceID: commands.deviceID)
             if let p = waitingUnfiled.first {
                 made = (p.id, nil)
             } else if let (folder, p) = waitingFiled.first {
@@ -360,15 +360,16 @@ public struct CaptureInbox: Sendable {
         return String(format: "%016lld:%08lld:", wall, counter) + event.id
     }
 
-    /// Pending cards built from any event of a chain: unfiled ones, and proposals waiting in the binders.
-    func pendingCards(chain: [String], binders: [ShelfRow]) -> (unfiled: [Proposal], filed: [(URL, Proposal)]) {
+    /// Pending cards built from any event of a chain: unfiled ones, and proposals waiting in the binders this Mac
+    /// manages (a binder another Mac owns is read-only here, mvp.md feature 1).
+    func pendingCards(chain: [String], binders: [ShelfRow], deviceID: String) -> (unfiled: [Proposal], filed: [(URL, Proposal)]) {
         let ids = Set(chain)
         func fromChain(_ p: Proposal) -> Bool {
             !(p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).filter(ids.contains).isEmpty
         }
         let unfiled = self.unfiled().filter(fromChain)
         var filed: [(URL, Proposal)] = []
-        for row in binders where row.teka.isAdopted {
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == deviceID {
             for (p, _) in ProposalStore.list(in: row.folder) where p.state == "proposed" && fromChain(p) { filed.append((row.folder, p)) }
         }
         return (unfiled, filed)
@@ -579,8 +580,8 @@ public struct CaptureInbox: Sendable {
     /// Withdraws what still waits from a chain, and ends the clerk's work on it. A card that only redacts stays: a
     /// raise to private holds whatever comes after it. Returns the cards withdrawn (binder, or nil when unfiled).
     @discardableResult
-    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], now: Date) -> [(URL?, Proposal)] {
-        let (unfiled, filed) = pendingCards(chain: chain, binders: binders)
+    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], deviceID: String, now: Date) -> [(URL?, Proposal)] {
+        let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: deviceID)
         func onlyRedacts(_ p: Proposal) -> Bool {
             !p.ops.isEmpty && p.ops.allSatisfy { $0["op"] == .str("update_item") && $0["args"]?["set"]?["redact"] == .bool(true) }
         }
@@ -602,7 +603,7 @@ public struct CaptureInbox: Sendable {
     /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items
     /// already filed get a card that offers to drop them.
     func retract(chain: [String], retraction: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
-        withdraw(chain: chain, reason: "the note was deleted where it was taken", state: &state, binders: binders, now: now)
+        withdraw(chain: chain, reason: "the note was deleted where it was taken", state: &state, binders: binders, deviceID: commands.deviceID, now: now)
         var clerk = state.clerk ?? [:]
         for id in chain {
             clerk[id] = "retracted"
@@ -641,7 +642,7 @@ public struct CaptureInbox: Sendable {
     /// redaction card could not be saved.
     func raisePrivacy(chain: [String], binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
         var complete = true
-        let (unfiled, filed) = pendingCards(chain: chain, binders: binders)
+        let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: commands.deviceID)
         func privateCopy(_ p: Proposal) -> Proposal {
             var raw = p.raw
             var prov = raw["provenance"]?.objectValue ?? JSONObject()

@@ -461,6 +461,120 @@ func bFileAndApprove(_ s: PSetup) throws {
         #expect(d.added == [4])
         #expect(CaptureInbox.diffLines(["a", "b"], ["b"]).fates == [.removed, .same(0)])
     }
+
+    // MARK: - Validation and the rest
+
+    /// Checks one hand-made event of `device`.
+    func check(_ s: PSetup, device: String, _ change: @escaping (inout JSONObject) -> Void) throws -> CaptureEvent.Check {
+        let id = try pEvent(s, device: device, app: "adapter", ref: UUID().uuidString, revision: "1", text: "Invented note", extra: change)
+        let folder = s.producer.root.appendingPathComponent(device)
+        return CaptureEvent.check(folder.appendingPathComponent("\(id).json"), deviceFolder: folder).0
+    }
+
+    // p8-Qc: the whole clock stamp is checked.
+    @Test func p8Qc_aMalformedClockIsQuarantined() throws {
+        let s = try pSetup()
+        let device = "11111111-2222-4333-8444-5555555555d1"
+        let node = JSONValue.string(device.replacingOccurrences(of: "-", with: ""))
+        let bad: [JSONValue] = [
+            .obj([("counter", .int(0)), ("node", node)]),
+            .obj([("wall_ms", .str("1791360000000")), ("counter", .int(0)), ("node", node)]),
+            .obj([("wall_ms", .int(179_136_000_000)), ("counter", .int(0)), ("node", node)]),
+            .obj([("wall_ms", .int(1_791_360_000_000)), ("counter", .int(-1)), ("node", node)]),
+            .obj([("wall_ms", .int(1_791_360_000_000)), ("counter", .int(70_000)), ("node", node)]),
+        ]
+        for hlc in bad {
+            #expect(try check(s, device: device) { $0.set("hlc", hlc) } == .quarantined("hlc is not a valid clock stamp"))
+        }
+        #expect(try check(s, device: device) { _ in } == .complete(.capture))
+    }
+
+    // qHLuA: a copied media entry needs its byte count.
+    @Test func qHLuA_mediaNeedsItsByteCount() throws {
+        let s = try pSetup()
+        let device = "11111111-2222-4333-8444-5555555555d2"
+        let folder = s.producer.root.appendingPathComponent(device)
+        func media(_ bytes: JSONValue?) throws -> CaptureEvent.Check {
+            let id = try pEvent(s, device: device, app: "adapter", ref: UUID().uuidString, revision: "1", text: "Invented note") { o in
+                var m = JSONObject([(key: "path", value: .string("\(o["id"]!.stringValue!).m4a"))])
+                if let bytes { m.set("bytes", bytes) }
+                o.set("media", .array([.object(m)]))
+            }
+            try Data(repeating: 7, count: 12).write(to: folder.appendingPathComponent("\(id).m4a"))
+            return CaptureEvent.check(folder.appendingPathComponent("\(id).json"), deviceFolder: folder).0
+        }
+        #expect(try media(nil) == .quarantined("media bytes missing or not an integer"))
+        #expect(try media(.str("12")) == .quarantined("media bytes missing or not an integer"))
+        #expect(try media(.int(12)) == .complete(.capture))
+        #expect(try media(.int(13)) == .pending)
+    }
+
+    // qBssX: an item title is a string.
+    @Test func qBssX_aTitleThatIsNotTextIsRefused() throws {
+        let url = try #require(Bundle.module.url(forResource: "sprava-v0", withExtension: "json", subdirectory: "Fixtures"))
+        let catalog = try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+        let user = JSONValue.obj([("kind", .str("user")), ("client", .str("sprava/0.1"))])
+        func op(_ type: String, _ args: [(String, JSONValue)]) -> JSONObject {
+            JSONObject([(key: "id", value: .str(UUID().uuidString.lowercased())), (key: "at", value: .str("2026-10-07T09:00:00Z")),
+                        (key: "actor", value: user), (key: "op", value: .string(type)), (key: "args", value: .obj(args))])
+        }
+        func item(_ title: JSONValue) -> JSONValue {
+            .obj([("id", .str("estate-example-2026-030")), ("title", title), ("status", .str("open")), ("priority", .str("normal")),
+                  ("no_deadline", .bool(true))])
+        }
+        for title: JSONValue in [.int(42), .array([.str("x")]), .obj([("a", .int(1))])] {
+            #expect(throws: TransactionGuard.Rejection.self) { try TransactionGuard.check([op("add_item", [("item", item(title))])], on: catalog) }
+        }
+        #expect(throws: TransactionGuard.Rejection.self) {
+            try TransactionGuard.check([op("update_item", [("id", .str("estate-example-2026-007")), ("set", .obj([("title", .int(42))]))])], on: catalog)
+        }
+        _ = try TransactionGuard.check([op("add_item", [("item", item(.str("Invented task")))])], on: catalog)
+    }
+
+    // qcRtE: an op log left empty or torn by adoption is not adopted, and adoption can run again.
+    @Test func qcRtE_anEmptyOrTornOpLogIsNotAdopted() throws {
+        for contents in ["", #"{"id":"0199"#] {
+            let folder = try makeTeka(fixture: "sprava-v0")
+            try AtomicFile.makePrivateFolder(folder.appendingPathComponent(".sprava"))
+            try Data(contents.utf8).write(to: folder.appendingPathComponent(".sprava/ops.ndjson"))
+            #expect(!Teka.read(folder).isAdopted)
+            try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("t"))]), now: pNow)
+            #expect(Teka.read(folder).isAdopted)
+        }
+    }
+
+    // p8-RW: a binder reached through a link is one row.
+    @Test func p8RW_aLinkedBinderIsOneRow() throws {
+        let folder = try makeTeka(fixture: "sprava-v0")
+        let link = folder.deletingLastPathComponent().appendingPathComponent("linked-binder")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+        #expect(Shelf.rows(registry: nil, picked: [link, folder]).count == 1)
+        let store = ShelfStore(supportDirectory: folder.deletingLastPathComponent().appendingPathComponent("support"))
+        try store.add(folder)
+        try store.add(link)
+        #expect(try store.readFolders().count == 1)
+        try store.remove(link)
+        #expect(try store.readFolders().isEmpty)
+    }
+
+    // p8-Qe: a waiting card in a binder another Mac owns is never rewritten or withdrawn here.
+    @Test func p8Qe_cardsInAnotherMacsBinderAreLeftAlone() throws {
+        let s = try pSetup()
+        let adapter = "11111111-2222-4333-8444-5555555555d3"
+        try s.inbox.registerProducer(folder: adapter, app: "adapter")
+        _ = try pEvent(s, device: adapter, app: "adapter", ref: "E1", revision: "rev1", text: "Call the invented roofer")
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        let card = try #require(s.inbox.unfiled().first)
+        try s.inbox.file(card.id, into: s.folder, commands: s.commands)
+        try Data(#"{"device": "another-mac"}"#.utf8).write(to: s.folder.appendingPathComponent(".sprava/owner.json"))
+        let file = s.folder.appendingPathComponent(".sprava/proposals/\(card.id).json")
+        let before = try Data(contentsOf: file)
+        _ = try pEvent(s, device: adapter, app: "adapter", ref: "E1", revision: "rev2", text: "Call the invented roofer on Monday") {
+            $0.set("sensitivity", .str("private"))
+        }
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        #expect(try Data(contentsOf: file) == before)
+    }
 }
 
 /// A model that records every instruction, prompt and closed list it is given; answers extraction calls from a

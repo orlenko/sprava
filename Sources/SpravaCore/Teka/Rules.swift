@@ -25,6 +25,7 @@ public struct RuleFinding: Sendable, Equatable, CustomStringConvertible {
         case badDate = "bad-date"
         case nullValue = "null-value"
         case badID = "bad-id"
+        case badTitle = "bad-title"
     }
 
     public let code: Code
@@ -90,6 +91,8 @@ public enum ItemRules {
             if let st = o["slice_title"], (st.stringValue ?? "").isEmpty { add(.badSliceTitle, "slice_title") }
 
             guard v0 else { continue }
+            // A title is a non-empty string (item.schema.json); a truthy number, list or object is not one.
+            if isTruthy(o["title"]), (o["title"]?.stringValue ?? "").isEmpty { add(.badTitle, "title") }
             if status == "done" { add(.doneInOpenItems, "status") }
             if waiting && o["follow_up_at"] == nil { add(.waitingWithoutFollowUp, "follow_up_at") }
             if o["redact"] == .bool(true) && o["kind"] == nil { add(.redactedWithoutKind, "kind") }
