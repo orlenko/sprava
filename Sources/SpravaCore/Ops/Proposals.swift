@@ -109,8 +109,27 @@ public struct Proposal: Sendable {
         case "drop": return "Drop: \u{201C}\(title(of: args["id"]))\u{201D}"
         case "set_status": return "Set \u{201C}\(title(of: args["id"]))\u{201D} to \(args["status"]?.stringValue ?? "?")" + (args["waiting_on"]?.stringValue.map { ", waiting on \($0)" } ?? "")
         case "update_item":
-            let fields = (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-            return "Change \(fields.joined(separator: ", ")) of \u{201C}\(title(of: args["id"]))\u{201D}"
+            // Every value the op would write is shown before approval, old and new (architecture 4.6).
+            let item = args["id"].flatMap { id in catalog?["open_items"]?.arrayValue?.first { $0["id"] == id } }?.objectValue
+            func short(_ v: JSONValue) -> String { String(canonicalText(v).prefix(60)) }
+            var parts: [String] = []
+            for e in args["set"]?.objectValue?.entries ?? [] {
+                if let old = item?[e.key], old != e.value { parts.append("\(e.key): \(short(old)) -> \(short(e.value))") }
+                else { parts.append("\(e.key): \(short(e.value))") }
+            }
+            for field in args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [] {
+                parts.append("remove \(field)" + (item?[field].map { " (was \(short($0)))" } ?? ""))
+            }
+            let line = "Change \u{201C}\(title(of: args["id"]))\u{201D}: " + parts.joined(separator: "; ")
+            return loosens(args, item: item) ? line + " \u{2014} a privacy change: the hub may receive more" : line
+        case "set_disclosure":
+            let level = args["disclosure"]?.stringValue ?? "?"
+            // Not lower than the catalog's level: a raise, or a privacy card confirming a raise made outside.
+            let current = PrivacyRatchet.level(catalog?["meta"]?["disclosure"])
+            let wider = level != "none" && PrivacyRatchet.narrower(current, level) == current
+            return "Set disclosure to \(level)" + (wider
+                ? " \u{2014} a privacy change: the hub may receive more" : "")
+                + " (what the hub already received is not recalled)"
         case "file_document":
             let doc = args["document"]
             let path = doc?["path"]?.stringValue ?? "?"
@@ -128,6 +147,19 @@ public struct Proposal: Sendable {
         case let other?: return other.replacingOccurrences(of: "_", with: " ")
         case nil: return "?"
         }
+    }
+
+    /// Whether an `update_item` loosens what the hub may receive (binder-v0 §5.5): `redact` cleared, `slice_title`
+    /// removed or changed, or, on a redacted item, a tag added or the kind removed.
+    static func loosens(_ args: JSONObject, item: JSONObject?) -> Bool {
+        let set = args["set"]?.objectValue ?? JSONObject()
+        let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        if unset.contains("redact") || (set["redact"].map { $0 != .bool(true) } ?? false) { return true }
+        if unset.contains("slice_title") || set["slice_title"] != nil { return true }
+        guard item?["redact"] == .bool(true) else { return false }
+        if unset.contains("kind") { return true }
+        let before = Set(item?["tags"]?.arrayValue ?? [])
+        return set["tags"]?.arrayValue.map { !Set($0).isSubset(of: before) } ?? false
     }
 }
 

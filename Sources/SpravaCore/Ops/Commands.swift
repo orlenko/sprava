@@ -85,6 +85,10 @@ public struct Commands: Sendable {
 
         case "proposals":
             let f = try folder(r)
+            // A widening made outside Sprava waits for the person's privacy card (architecture 4.5).
+            if Owner.device(of: f) == deviceID, let card = try PrivacyRatchet.ensureCard(folder: f, client: client, now: now) {
+                recordDigests([card], in: f)
+            }
             // A proposal file the runtime did not write has no recorded digest: it is shown as "not verified" and
             // cannot be approved (binder-v0 §6.5; architecture 4.6).
             let listed = ProposalStore.list(in: f)

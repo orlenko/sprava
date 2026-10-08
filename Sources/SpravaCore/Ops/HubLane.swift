@@ -194,7 +194,9 @@ public enum HubLane {
             overwritten = true
         }
 
-        let disclosure = catalog["meta"]?["disclosure"]?.stringValue ?? "full"   // a lifeproj catalog publishes at full
+        // The narrower of the catalog's level and the one the person confirmed (the privacy ratchet, architecture 4.5).
+        let privacy = PrivacyRatchet.view(folder: folder, catalog: catalog)
+        let disclosure = privacy.disclosure
         if disclosure == "none" {
             try? FileManager.default.removeItem(at: target)
             cursors.sliceHash = nil
@@ -219,7 +221,8 @@ public enum HubLane {
             return item
         }
 
-        // Items published redacted stay redacted unless the person lifted it with an op since then.
+        // Items published redacted stay redacted unless the person lifted it with an op since then; a redaction an
+        // outside edit removed stays until the person approves the privacy card (architecture 4.5).
         let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
         var lifted = Set<String>()
         for op in ops.dropFirst(min(cursors.opCount ?? 0, ops.count)) where op["op"] == .str("update_item")
@@ -229,7 +232,7 @@ public enum HubLane {
                 lifted.insert((try? Canonical.serialize(id)) ?? "")
             }
         }
-        let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted)
+        let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted)
         let key = try sliceKey(folder)
         let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
                                        key: key, now: now, alsoRedact: keepRedacted)
