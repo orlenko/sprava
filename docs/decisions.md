@@ -230,7 +230,9 @@
 - **A12 decided (2026-10-07, by the author).** The mirror lives in iCloud Drive (Mac-only tool; other
   destinations later). No git as a versioning mechanism: restic snapshots are the versions. A live binder stays
   entirely local; a finished binder is offloaded whole and restored with one click when needed. Offloading
-  requires a second, independent backup.
+  requires a second, independent backup: another cloud service's folder or an external disk, whatever the
+  person has. Open items in a binder being offloaded produce a warning the person may confirm. The MVP builds
+  backup and offload (2026-10-08).
 - **A7 recommended.** An explicit inventory of what leaves the Mac, kept in the docs and the app:
   nothing by default; backup ciphertext; Tier 2 MCP clients, per binder and opt-in; the existing hub's
   Google Tasks mirror during the transition. Sprava ignores `.claude/settings.json` and the lifeproj

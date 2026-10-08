@@ -115,8 +115,9 @@ offloaded, a second, independent copy must exist:
   binder;
 - checked the same way as the mirror (section 3.3), and, for an external disk, whenever it is connected.
 
-A second repository in the same iCloud account would not count: losing the account would lose both. Where
-the second copy lives is the person's choice (question 1).
+A second repository in the same iCloud account would not count: losing the account would lose both. The
+person picks whatever they have: another cloud service's synced folder, or an external disk (decided
+2026-10-08).
 
 ## 6. Offload and restore
 
@@ -125,8 +126,9 @@ the second copy lives is the person's choice (question 1).
 "Offload this binder" is one button on a binder's page. The steps, each shown with progress:
 
 1. **Ready?** The binder belongs to this Mac, no card is waiting, and nothing is in `intake/` or `outgoing/`.
-   If open items with future dates remain (a "keep these records until 2033" reminder), the card lists them
-   and asks whether to keep them as reminders in Sprava's own state (question 2).
+   If open items remain, the card lists them with a warning: once offloaded, they no longer show on the
+   Shelf, in the daily summary or on the hub. The person may close them first, or confirm and offload anyway
+   (decided 2026-10-08). The confirmation is recorded in the binder's history before the snapshot.
 2. **Snapshot** the binder into the mirror, tagged `offloaded`.
 3. **Verify** the snapshot: restore it into a temporary folder on this Mac (`restic restore --verify`) and
    compare every file's SHA-256 with the live binder. This reads the whole binder back once; for gigabytes it
@@ -211,13 +213,12 @@ too, or lifeproj will look for a folder that is gone.
 - decisions.md: A6 superseded by A11 and A12.
 - architecture §9.1 to §9.3 (age blobs, cmirror calls, the root identity file): replaced by this document.
   §9.2's other rows (MCP tokens, the runtime key, the device id) stay.
-- mvp.md feature 8 ("backup status from cmirror", observe only) and spike (l): replaced. The MVP keeps the
-  backup line on the Health page; whether the MVP builds backup itself or only its line is question 3.
+- mvp.md feature 8 ("backup status from cmirror", observe only) and spike (l): replaced. The MVP builds backup
+  and offload (decided 2026-10-08).
 
-## 12. Questions for the author
+## 12. Decided 2026-10-08
 
-1. Where should the second backup live by default: an external disk, or a second cloud service's folder
-   (Dropbox, Google Drive)?
-2. Open items with future dates in a binder being offloaded: keep them as reminders in Sprava's own state, or
-   require them to be closed first?
-3. Does the MVP build backup and offload, or only the Health line, with backup the first feature after it?
+1. The second backup goes to another cloud service's folder or an external disk, whichever the person has.
+2. Open items in a binder being offloaded: a warning that lists them; the person may close them or confirm
+   and offload anyway.
+3. The MVP builds backup and offload.
