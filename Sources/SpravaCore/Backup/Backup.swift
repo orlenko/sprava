@@ -587,20 +587,34 @@ public struct Backup: Sendable {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         st.restoring[backupID] = destination.path
         try save(st)
+        let held: Set<String>?
         do {
             do {
-                try engine(s.primary).restore(record.snapshot, into: destination)
+                let primary = try engine(s.primary)
+                try primary.restore(record.snapshot, into: destination)
+                held = try? primary.files(record.snapshot)
             } catch {
                 guard let second = record.secondSnapshot else { throw error }
-                try engine(record.secondRepository ?? s.second).restore(second, into: destination)
+                let secondary = try engine(record.secondRepository ?? s.second)
+                try secondary.restore(second, into: destination)
+                held = try? secondary.files(second)
             }
         } catch {
             throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
         try? FileManager.default.removeItem(at: destination.appendingPathComponent(".teka.lock"))
         try? ShelfStore(supportDirectory: support).add(destination)
-        st.restored[backupID] = State.Restored(snapshot: record.snapshot, secondSnapshot: record.secondSnapshot,
-                                               secondRepository: record.secondRepository ?? s.second, manifest: Self.manifest(destination))
+        // The baseline a later offload compares with (§6.4) is the snapshot's own files, as restic restored and
+        // verified them, never the whole folder: a resumed restore keeps whatever was added to the folder in the
+        // meantime, and no snapshot holds that, so the binder no longer counts as unchanged. Without the
+        // snapshot's listing there is no baseline, and the next offload takes a new snapshot.
+        if let held {
+            let manifest = Self.manifest(destination).filter { held.contains($0.key) }
+            st.restored[backupID] = State.Restored(snapshot: record.snapshot, secondSnapshot: record.secondSnapshot,
+                                                   secondRepository: record.secondRepository ?? s.second, manifest: manifest)
+        } else {
+            st.restored[backupID] = nil
+        }
         st.offloaded.removeAll { $0.backupID == backupID }
         st.restoring[backupID] = nil
         try save(st)

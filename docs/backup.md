@@ -153,7 +153,8 @@ person picks whatever they have: another cloud service's synced folder, or an ex
    card of architecture 2.3 appears first.
 
 An interrupted restore can be resumed: restic skips files already restored correctly
-(`--overwrite if-changed`).
+(`--overwrite if-changed`). Anything added to the folder in between is kept but is in no snapshot, so the
+baseline 6.4 compares with is the snapshot's own files (`restic ls`), never the whole folder.
 
 ### 6.3 Peek at one document
 

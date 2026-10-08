@@ -58,6 +58,22 @@ public enum CaptureText {
         return out
     }
 
+    /// Decimal digits of any script ("１５", "١٥", "१५") as ASCII, so the clerk's numeric patterns, which match
+    /// `[0-9]` only, and `Int(_:)` read the same digits. Everything else is kept as it is.
+    public static func asciiDigits(_ text: String) -> String {
+        func foreign(_ s: Unicode.Scalar) -> Bool { !s.isASCII && s.properties.numericType == .decimal }
+        guard text.unicodeScalars.contains(where: foreign) else { return text }
+        var out = String.UnicodeScalarView()
+        for s in text.unicodeScalars {
+            if foreign(s), let v = s.properties.numericValue, (0...9).contains(v) {
+                out.append(Unicode.Scalar(UInt8(48 + Int(v))))
+            } else {
+                out.append(s)
+            }
+        }
+        return String(out)
+    }
+
     static func wordCount(_ s: String) -> Int { s.split(whereSeparator: { $0.isWhitespace }).count }
 
     /// Windows of about `words` words at paragraph boundaries; a long paragraph is cut at sentence boundaries.

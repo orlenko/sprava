@@ -171,6 +171,18 @@ public struct Restic: Sendable {
         try checked(["restore", snapshot, "--target", target.path, "--verify", "--overwrite", "if-changed", "-q"])
     }
 
+    /// The regular files a snapshot holds, by their path inside the binder ("documents/deed.pdf").
+    public func files(_ snapshot: String) throws -> Set<String> {
+        let o = try checked(["ls", snapshot, "--json"])
+        var out: Set<String> = []
+        for line in o.stdout.split(separator: 0x0A) {
+            guard let v = try? JSONParser.parse(Data(line)).value, v["struct_type"] == .str("node"), v["type"] == .str("file"),
+                  let path = v["path"]?.stringValue, path.hasPrefix("/") else { continue }
+            out.insert(String(path.dropFirst()))
+        }
+        return out
+    }
+
     /// One file of a snapshot, by its path inside the binder ("/documents/deed.pdf").
     public func dump(_ snapshot: String, path: String, to file: URL) throws {
         let o = try checked(["dump", snapshot, path])
