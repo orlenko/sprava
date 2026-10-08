@@ -41,6 +41,9 @@ public enum DateGrammar {
         return c.range(of: .day, in: .month, for: date)!.count
     }
 
+    /// The longest relative interval resolved, in days: a hundred years.
+    static let longestInterval = 36_525
+
     static func isFrench(_ locale: String) -> Bool { locale.lowercased().hasPrefix("fr") }
 
     /// Resolves one time expression. `nil` date means "a time expression, left unresolved".
@@ -72,12 +75,12 @@ public enum DateGrammar {
         }
         switch t {
         case "today", "tonight", "aujourd'hui", "ce soir": return Found(text: raw, date: today)
-        case "tomorrow", "demain": return Found(text: raw, date: today.adding(days: 1))
-        case "day after tomorrow", "après-demain": return Found(text: raw, date: today.adding(days: 2))
+        case "tomorrow", "demain": return Found(text: raw, date: today.checkedAdding(days: 1))
+        case "day after tomorrow", "après-demain": return Found(text: raw, date: today.checkedAdding(days: 2))
         case "next week", "semaine prochaine":
             let wd = weekday(today)
             let toMonday = (8 - wd) % 7 == 0 ? 7 : (8 - wd) % 7
-            return Found(text: raw, date: today.adding(days: toMonday))
+            return Found(text: raw, date: today.checkedAdding(days: toMonday))
         case "end of the month", "end of month", "fin du mois", "fin de mois":
             return Found(text: raw, date: CalendarDate(year: today.year, month: today.month, day: daysIn(today.year, today.month)))
         case "end of the year", "end of year", "fin de l'année", "fin d'année":
@@ -88,12 +91,14 @@ public enum DateGrammar {
             return Found(text: raw, date: nil)   // before the capture: never a due date
         default: break
         }
-        // "in three days", "dans deux semaines"
+        // "in three days", "dans deux semaines". The count is untrusted text: past a hundred years it is no date.
         if let m = t.wholeMatch(of: /(?:in|within|dans) (\w+) (days?|weeks?|jours?|semaines?)/) {
             let n = Int(m.output.1) ?? smallNumbers[String(m.output.1)]
             guard let n else { return Found(text: raw, date: nil) }
             let unit = String(m.output.2)
-            return Found(text: raw, date: today.adding(days: unit.hasPrefix("w") || unit.hasPrefix("s") ? n * 7 : n))
+            let (days, overflow) = unit.hasPrefix("w") || unit.hasPrefix("s") ? n.multipliedReportingOverflow(by: 7) : (n, false)
+            guard !overflow, (0...longestInterval).contains(days) else { return Found(text: raw, date: nil) }
+            return Found(text: raw, date: today.checkedAdding(days: days))
         }
         // Weekdays: "friday", "next thursday" (unresolved), "jeudi prochain" (unresolved).
         let weekdays = fr ? weekdaysFR : weekdaysEN
@@ -101,7 +106,7 @@ public enum DateGrammar {
             let wd = weekday(today)
             var delta = (i - wd + 7) % 7
             if delta == 0 { delta = wasThis ? 0 : 7 }
-            return Found(text: raw, date: today.adding(days: delta))
+            return Found(text: raw, date: today.checkedAdding(days: delta))
         }
         if let m = t.wholeMatch(of: /next (\w+)|(\w+) prochain/) {
             let w = String(m.output.1 ?? m.output.2 ?? "")

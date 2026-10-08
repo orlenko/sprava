@@ -342,6 +342,33 @@ public enum Extractor {
         return v
     }
 
+    /// A file name parameter in any form a mail program writes: plain (`name="a.txt"`), RFC 2231 extended
+    /// (`name*=utf-8''a.txt`) or continued (`name*0=`, `name*1*=`). Every form names the part.
+    static func fileParam(_ header: String?, _ name: String) -> String? {
+        guard let header else { return nil }
+        var plain: String?
+        var pieces: [(Int, String)] = []
+        for field in header.split(separator: ";").dropFirst() {
+            guard let eq = field.firstIndex(of: "=") else { continue }
+            let key = field[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+            var value = field[field.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if value.hasPrefix("\"") { value = String(value.dropFirst().prefix { $0 != "\"" }) }
+            if key == name { plain = plain ?? value; continue }
+            guard key.hasPrefix(name + "*") else { continue }
+            var rest = key.dropFirst(name.count + 1)
+            let extended = rest.hasSuffix("*") || rest.isEmpty
+            if rest.hasSuffix("*") { rest = rest.dropLast() }
+            guard let index = rest.isEmpty ? 0 : Int(rest), (0..<100).contains(index) else { continue }
+            if extended, index == 0, let quote = value.firstIndex(of: "'"),
+               let second = value[value.index(after: quote)...].firstIndex(of: "'") {
+                value = String(value[value.index(after: second)...])   // drop charset'language'
+            }
+            pieces.append((index, extended ? (value.removingPercentEncoding ?? value) : value))
+        }
+        if !pieces.isEmpty { return pieces.sorted { $0.0 < $1.0 }.map(\.1).joined() }
+        return plain
+    }
+
     static func walk(headers: [String: String], body: String, plain: inout String?, html: inout String?,
                      attachments: inout [Email.Attachment], depth: Int) {
         guard depth < 6 else { return }
@@ -362,9 +389,14 @@ public enum Extractor {
         default: bytes = Data(body.utf8)
         }
         let disposition = headers["content-disposition"]?.lowercased() ?? ""
-        let filename = param(headers["content-disposition"], "filename") ?? param(headers["content-type"], "name")
-        if disposition.hasPrefix("attachment") || (filename != nil && !type.hasPrefix("text/")) {
-            attachments.append(Email.Attachment(name: DocumentPaths.safeName(decodeWords(filename ?? "attachment")), data: bytes))
+        let filename = (fileParam(headers["content-disposition"], "filename") ?? fileParam(headers["content-type"], "name")).map(decodeWords)
+        // A part named like a key or credential file (binder-v0 §3.3) is an attachment whatever its type or
+        // disposition, inline included: it never becomes the body. Its bytes stay here, and its name is reduced to
+        // the last path component, so the intake reading still knows it and skips it with a note.
+        if let filename, DocumentPaths.isKeyFile(filename) {
+            attachments.append(Email.Attachment(name: DocumentPaths.safeName((filename as NSString).lastPathComponent), data: Data()))
+        } else if disposition.hasPrefix("attachment") || (filename != nil && !type.hasPrefix("text/")) {
+            attachments.append(Email.Attachment(name: DocumentPaths.safeName(filename ?? "attachment"), data: bytes))
         } else if type.hasPrefix("text/plain"), plain == nil {
             plain = String(decoding: bytes, as: UTF8.self)
         } else if type.hasPrefix("text/html"), html == nil {

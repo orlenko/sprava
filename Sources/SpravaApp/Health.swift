@@ -24,6 +24,8 @@ final class HealthModel: ObservableObject {
     @Published var startsToday = 0
     @Published var backups: [(name: String, at: Date?, error: String?)] = []
     @Published var backupConfigured = false
+    /// Why the backup settings cannot be read, if they cannot: not the same as backup not set up.
+    @Published var backupSettingsError: String?
     var lastDoctor: Date?
     var lastWake: Date?
     /// When the person last turned background work on or restarted it: launchd can take several seconds to
@@ -89,7 +91,13 @@ final class HealthModel: ObservableObject {
             findings = (try? DeviceID.load(support: support)).map { Doctor.run(rows: rows, deviceID: $0, registry: registry, support: support) } ?? []
             // The app reads the backup's records only; the key stays with the runtime (docs/backup.md §7).
             let backup = Backup(support: support, key: nil)
-            backupConfigured = backup.settings().primary != nil
+            do {
+                backupConfigured = try backup.settings().primary != nil
+                backupSettingsError = nil
+            } catch {
+                backupConfigured = false
+                backupSettingsError = "\(error)"
+            }
             let records = Dictionary(backup.status(checkUpload: false).binders.map { ($0.id, ($0.at, $0.error)) }, uniquingKeysWith: { a, _ in a })
             backups = rows.filter(\.teka.isAdopted).map { row in
                 let id = (try? String(contentsOf: row.folder.appendingPathComponent(".sprava/backup-id"), encoding: .utf8))?
@@ -202,7 +210,8 @@ struct HealthView: View {
                 Section("Alerts") { alertsLine(beat) }
             }
             Section("Backup") {
-                if !model.backupConfigured { Text("Backup is not set up. Open Backup in the sidebar.").foregroundStyle(.orange) }
+                if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(.red) }
+                else if !model.backupConfigured { Text("Backup is not set up. Open Backup in the sidebar.").foregroundStyle(.orange) }
                 else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                 ForEach(Array(model.backups.enumerated()), id: \.offset) { _, b in
                     let age = b.at.map { model.now.timeIntervalSince($0) } ?? .infinity

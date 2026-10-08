@@ -75,6 +75,8 @@ public enum HubLane {
         /// lifted on the hub only by the person's own op, never by an outside edit (architecture 4.5, 7.3).
         var redacted: [String]? = []
         var opCount: Int? = 0
+        /// The binder name the slice was last written under, so a withdrawal finds it without trusting the catalog.
+        var sliceName: String?
     }
 
     static func cursorsURL(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/cursors.json") }
@@ -227,10 +229,49 @@ public enum HubLane {
         }
     }
 
+    /// The cursors only when they are this binder's own: `.sprava` a real folder and `cursors.json` a regular file
+    /// in it, never reached through a link to another binder's.
+    static func ownCursors(_ folder: URL) -> Cursors? {
+        var info = stat()
+        guard lstat(folder.appendingPathComponent(".sprava").path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              lstat(cursorsURL(folder).path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        return try? readCursors(folder)
+    }
+
+    /// The disclosure the person last confirmed, for a binder whose catalog cannot be read. An op log that cannot
+    /// be read fails closed (`none`), as in `PrivacyRatchet.view`.
+    static func confirmedDisclosure(_ folder: URL) -> String {
+        guard let ops = try? TekaStore(folder: folder).readOpLog().ops else { return "none" }
+        return PrivacyRatchet.confirmed(opLog: ops)?.disclosure ?? "full"
+    }
+
+    /// Withdraws a binder's slice, whatever else is wrong with the binder. The spool file is never named by the
+    /// catalog alone: a binder that passes every check publishes under its own name, which is also its folder's;
+    /// one that does not (an outside edit may have renamed it to another binder) withdraws only the slice Sprava
+    /// recorded writing for it in its own cursors. Returns false when no slice can be identified that safely.
+    static func withdraw(_ teka: Teka, inbox: URL) throws -> Bool {
+        let own = ownCursors(teka.folder)
+        let name: String
+        if !teka.federationBlocked {
+            name = teka.name
+        } else if let own, own.sliceHash != nil {
+            // Cursors written before the name was recorded: a slice is published only under the folder's name.
+            name = own.sliceName ?? teka.folder.lastPathComponent
+        } else {
+            return false
+        }
+        try removeSlice(try spoolFile(inbox, name, ".agenda.json"))
+        guard var cursors = teka.federationBlocked ? own : try readCursors(teka.folder) else { return true }
+        cursors.sliceHash = nil
+        cursors.sliceName = nil
+        try saveCursors(cursors, teka.folder)
+        return true
+    }
+
     /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root. The level used is the
     /// narrower of the catalog's and the one the person confirmed (the privacy ratchet, architecture 4.5). At
     /// disclosure `none` the slice is removed; levels `title` and `kind` are not published in the MVP, so their
-    /// slice is withdrawn too.
+    /// slice is withdrawn too. A withdrawal comes before the checks that only publishing needs (`withdraw`).
     public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false) throws -> PublishResult {
         var rootInfo = stat()
         guard lstat(root.path, &rootInfo) == 0 else { return .noSpool }
@@ -239,21 +280,20 @@ public enum HubLane {
         try checkFolder(inbox, create: true)
 
         let teka = Teka.read(folder)
-        guard teka.isAdopted, let catalog = teka.catalog else { return .notPublished("not adopted") }
-        guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
-        let target = try spoolFile(inbox, teka.name, ".agenda.json")
+        guard teka.isAdopted else { return .notPublished("not adopted") }
 
-        let privacy = PrivacyRatchet.view(folder: folder, catalog: catalog)
-        let disclosure = privacy.disclosure
+        // A narrowing takes effect at once: the slice goes before any check that refuses publishing (a broken
+        // stamp, a linked DASHBOARD.md, an unreadable catalog) can keep it on the hub.
+        let disclosure = teka.catalog.map { PrivacyRatchet.view(folder: folder, catalog: $0).disclosure } ?? confirmedDisclosure(folder)
         if disclosure != "full" {
-            // A narrowing takes effect at once: the slice goes before anything else can fail.
-            try removeSlice(target)
-            var cursors = try readCursors(folder)
-            cursors.sliceHash = nil
-            try saveCursors(cursors, folder)
+            guard try withdraw(teka, inbox: inbox) else { return .notPublished("the binder needs attention") }
             return disclosure == "none" ? .removed
                 : .notPublished("disclosure \(disclosure) is not published in this version; the slice was withdrawn")
         }
+        guard let catalog = teka.catalog else { return .notPublished("not adopted") }
+        guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
+        let target = try spoolFile(inbox, teka.name, ".agenda.json")
+        let privacy = PrivacyRatchet.view(folder: folder, catalog: catalog)
         var cursors = try readCursors(folder)
 
         // Someone else published this binder since our last write, or removed or damaged the slice: say so, then
@@ -316,6 +356,7 @@ public enum HubLane {
         if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
         try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
         cursors.sliceHash = hash
+        cursors.sliceName = teka.name
         cursors.published.merge(ids) { _, new in new }
         cursors.closedOnce = newClosures.map { (try? Canonical.serialize($0.id)) ?? "" }
         cursors.lastLogCount = log.count

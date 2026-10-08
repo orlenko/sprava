@@ -183,7 +183,7 @@ import Testing
         for folder in [e.primary, e.primary.appendingPathComponent("sub"), e.primary.deletingLastPathComponent(), iCloud] {
             #expect(throws: Backup.Failure.self) { try b.setSecond(folder) }
         }
-        #expect(b.settings().second == nil)
+        #expect(try b.settings().second == nil)
         #expect(!FileManager.default.fileExists(atPath: iCloud.path))
     }
 
@@ -246,7 +246,7 @@ import Testing
         try Backup(support: e.base.appendingPathComponent("support2"), key: "OTHER-KEY-CCCCC").setUp(primary: other, iCloudKeychain: false)
         let wrong = backup(e, key: "WRONG-KEY-DDDDD")
         #expect(throws: (any Error).self) { try wrong.setUp(primary: other, iCloudKeychain: false) }
-        #expect(b.settings().primary == e.primary.standardizedFileURL.path)
+        #expect(try b.settings().primary == e.primary.standardizedFileURL.path)
     }
 
     // MARK: - qfZ4b: a hub slice that cannot be removed stops the offload

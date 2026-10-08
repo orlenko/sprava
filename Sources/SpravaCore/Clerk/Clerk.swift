@@ -604,7 +604,7 @@ public struct Clerk: Sendable {
             }
         }
         if waiting, o["follow_up_at"] == nil {
-            let base = o["expected_by"]?.stringValue.flatMap(CalendarDate.strict).map { $0.adding(days: 1) } ?? today.adding(days: 7)
+            let base = o["expected_by"]?.stringValue.flatMap(CalendarDate.strict).map { $0.checkedAdding(days: 1) ?? $0 } ?? today.adding(days: 7)
             var follow = base
             if let due = o["due"]?.stringValue.flatMap(CalendarDate.strict), due < follow { follow = due }
             if follow < today { follow = today }
