@@ -183,9 +183,9 @@ public final class MCPListener: @unchecked Sendable {
                 let started = Date()
                 guard let reply = queue.sync(execute: { server.handle(line: line) }) else { continue }
                 if !writeLine(conn, reply) { return }
-                let method = (try? JSONParser.parse(line).value["method"]?.stringValue) ?? nil
-                // Names, sizes and durations only, never content (architecture 3.7, 7.5).
-                log("mcp client=\(client.id) method=\(method ?? "?") bytes=\(reply.utf8.count) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+                // Names, sizes and durations only, never content (architecture 3.7, 7.5): a method name the server
+                // does not know is logged as unknown_method, so no text a client chose reaches the log.
+                log("mcp client=\(client.id) method=\(MCPServer.loggedMethod(line)) bytes=\(reply.utf8.count) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
             case .tooLong:
                 log("mcp client=\(client.id) closed=line_too_long")
                 return

@@ -10,21 +10,37 @@ public enum ExtractHelper {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
+    /// What reads a document. Untrusted bytes are parsed only in the helper; a helper that cannot be found holds
+    /// every file instead of reading it here. Reading in this process is for tests, and is asked for by name.
+    public enum Reader: Sendable, Equatable {
+        case helper(URL)
+        case missing
+        case inProcess
+
+        /// The helper beside the running executable, or `missing`.
+        public static func located() -> Reader { locate().map(Reader.helper) ?? .missing }
+    }
+
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
         public var description: String { message }
     }
 
-    public static func run(_ file: URL, helper: URL? = locate(), timeout: TimeInterval = 180) throws -> Extractor.Result {
+    public static func run(_ file: URL, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
+        if reader == .missing { throw Self.missing }
         guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { throw Failure(message: "the file cannot be read") }
-        return try run(data, name: file.lastPathComponent, helper: helper, timeout: timeout)
+        return try run(data, name: file.lastPathComponent, reader: reader, timeout: timeout)
     }
 
+    static let missing = Failure(message: "Sprava's document reader (sprava-extract) is missing, so the file was not opened; reinstall Sprava")
+
     /// The same for bytes already in memory, such as an attachment inside an email file.
-    public static func run(_ data: Data, name: String, helper: URL? = locate(), timeout: TimeInterval = 180) throws -> Extractor.Result {
-        guard let helper else {
-            // No helper (a test run): extract in process.
-            return Extractor.extract(data, name: name)
+    public static func run(_ data: Data, name: String, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
+        let helper: URL
+        switch reader {
+        case .helper(let url): helper = url
+        case .missing: throw Self.missing
+        case .inProcess: return Extractor.extract(data, name: name)
         }
         let task = Process()
         task.executableURL = helper

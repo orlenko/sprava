@@ -296,6 +296,22 @@ public enum ProposalStore {
 
     static func dir(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/proposals", isDirectory: true) }
 
+    /// A proposal id as `Proposal.make` writes it: a UUID in lowercase hex. Only such an id names a card's file,
+    /// so no id read from a card can reach outside the proposals folder (binder-v0 §3.6).
+    public static func isValidID(_ id: String) -> Bool {
+        let bytes = Array(id.utf8)
+        guard bytes.count == 36 else { return false }
+        for (i, b) in bytes.enumerated() {
+            if [8, 13, 18, 23].contains(i) { if b != UInt8(ascii: "-") { return false }; continue }
+            guard (b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x66) else { return false }
+        }
+        return true
+    }
+
+    struct BadID: Error, CustomStringConvertible {
+        var description: String { "a proposal's id is not one Sprava makes" }
+    }
+
     /// `.sprava` and `.sprava/proposals` as real folders, never links, so no card is written or read outside the
     /// binder (binder-v0 §3.6). Missing ones are made 0700 when `create` is set, one level at a time.
     static func checkedDir(_ folder: URL, create: Bool) throws -> URL {
@@ -320,6 +336,7 @@ public enum ProposalStore {
     /// Writes the proposal and returns the file's digest, which the caller records in its own state.
     @discardableResult
     public static func save(_ proposal: Proposal, in folder: URL) throws -> String {
+        guard isValidID(proposal.id) else { throw BadID() }
         let target = try checkedDir(folder, create: true)
         var raw = proposal.raw
         // On first save, the card records what it assumed about each existing item it touches (architecture 4.6).
@@ -331,21 +348,24 @@ public enum ProposalStore {
         return digest(data)
     }
 
-    /// Every proposal in the binder, with its file digest. Unreadable files are skipped; a linked folder lists nothing.
+    /// Every proposal in the binder, with its file digest. Unreadable files are skipped, and so is a file whose
+    /// name is not `<id>.json` for the id inside it; a linked folder lists nothing.
     public static func list(in folder: URL) -> [(Proposal, String)] {
         guard let dir = try? checkedDir(folder, create: false),
               let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
-        return names.filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.sorted().compactMap { name in
+        return names.filter { $0.hasSuffix(".json") && isValidID(String($0.dropLast(5))) }.sorted().compactMap { name in
             guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
-                  case .object(let o)? = try? JSONParser.parse(data).value else { return nil }
+                  case .object(let o)? = try? JSONParser.parse(data).value,
+                  o["id"]?.stringValue == String(name.dropLast(5)) else { return nil }
             return (Proposal(raw: o), digest(data))
         }
     }
 
     public static func load(_ id: String, in folder: URL, expectedDigest: String?) throws -> Proposal {
+        guard isValidID(id) else { throw BadID() }
         let data = try Data(contentsOf: try checkedDir(folder, create: false).appendingPathComponent("\(id).json"))
         if let expectedDigest, digest(data) != expectedDigest { throw Tampered(id: id) }
-        guard case .object(let o) = try JSONParser.parse(data).value else { throw Tampered(id: id) }
+        guard case .object(let o) = try JSONParser.parse(data).value, o["id"]?.stringValue == id else { throw Tampered(id: id) }
         return Proposal(raw: o)
     }
 }

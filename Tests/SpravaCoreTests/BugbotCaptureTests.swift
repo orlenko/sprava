@@ -281,9 +281,12 @@ func bFileAndApprove(_ s: PSetup) throws {
     @Test func qIlEc_anUnwritableIntakeCursorIsReported() throws {
         let s = try pSetup()
         let watcher = IntakeWatcher(support: s.support)
-        try FileManager.default.createDirectory(at: watcher.stateURL, withIntermediateDirectories: true)
+        // A folder that takes no new file: the cursor is missing (so read as empty) and cannot be written.
+        let dir = watcher.stateURL.deletingLastPathComponent()
+        try AtomicFile.makePrivateFolder(dir)
+        chmod(dir.path, 0o500)
         #expect(watcher.scan(binders: pRows(s), commands: s.commands, now: pNow).cursorUnsaved)
-        try FileManager.default.removeItem(at: watcher.stateURL)
+        chmod(dir.path, 0o700)
         #expect(!watcher.scan(binders: pRows(s), commands: s.commands, now: pNow).cursorUnsaved)
     }
 

@@ -89,10 +89,10 @@ extension IntakeWatcher {
             return outcome
         }
         try? TekaStore(folder: folder).reject(tier0, reason: "replaced by the clerk's reading", now: now)
-        // The watcher follows the new card, so a file that changes or goes withdraws it.
-        var state = load()
+        // The watcher follows the new card, so a file that changes or goes withdraws it. A cursor that cannot be
+        // read is left as it is; the intake job reports it.
         let key = folder.standardizedFileURL.path
-        if var seen = state[key], var s = seen[e.name], s.card == tier0.id {
+        if var state = try? load(), var seen = state[key], var s = seen[e.name], s.card == tier0.id {
             s.card = proposal.id
             seen[e.name] = s
             state[key] = seen

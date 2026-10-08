@@ -32,6 +32,11 @@ public struct CaptureInbox: Sendable {
     var unfiledDigestsURL: URL { dir.appendingPathComponent("unfiled-digests.json") }
     public var unfiledDir: URL { support.appendingPathComponent("unfiled", isDirectory: true) }
 
+    /// The file of an unfiled card, or nil for an id Sprava never makes, so no id reaches outside the folder.
+    func unfiledFile(_ id: String) -> URL? {
+        ProposalStore.isValidID(id) ? unfiledDir.appendingPathComponent("\(id).json") : nil
+    }
+
     // MARK: - Producers and notices (architecture 8)
 
     /// Device folder name -> the `source.app` expected there.
@@ -178,6 +183,8 @@ public struct CaptureInbox: Sendable {
         }
         let notices = notices()
         let fm = FileManager.default
+        // A card the person filed just before a crash leaves its Inbox copy behind; it goes now.
+        dropFiled(binders: binders, commands: commands)
         // Raises to private that could not be written last time are tried again first.
         for (id, chain) in (state.raises ?? [:]).sorted(by: { $0.key < $1.key }) where raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) {
             state.raises?[id] = nil
@@ -587,7 +594,7 @@ public struct CaptureInbox: Sendable {
         }
         var out: [(URL?, Proposal)] = []
         for p in unfiled {
-            try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(p.id).json"))
+            if let file = unfiledFile(p.id) { try? FileManager.default.removeItem(at: file) }
             out.append((nil, p))
         }
         for (folder, p) in filed where !onlyRedacts(p) {
@@ -643,34 +650,22 @@ public struct CaptureInbox: Sendable {
     func raisePrivacy(chain: [String], binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
         var complete = true
         let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: commands.deviceID)
-        func privateCopy(_ p: Proposal) -> Proposal {
-            var raw = p.raw
-            var prov = raw["provenance"]?.objectValue ?? JSONObject()
-            prov.set("private", .bool(true))
-            raw.set("provenance", .object(prov))
-            raw.set("ops", .array(p.ops.map { op -> JSONValue in
-                guard op["op"] == .str("add_item"), var args = op["args"]?.objectValue, var item = args["item"]?.objectValue else { return .object(op) }
-                item.set("redact", .bool(true))
-                if item["kind"] == nil { item.set("kind", .str("other")) }
-                args.set("item", .object(item))
-                var o = op
-                o.set("args", .object(args))
-                return .object(o)
-            }))
-            return Proposal(raw: raw)
-        }
         for p in unfiled where p.raw["provenance"]?["private"] != .bool(true) {
-            if (try? writeUnfiled(privateCopy(p).raw)) == nil { complete = false }
+            if (try? writeUnfiled(Self.privateCopy(p, catalog: nil).raw)) == nil { complete = false }
         }
         for (folder, p) in filed where p.raw["provenance"]?["private"] != .bool(true) {
             // A rewritten card that cannot be trusted again is not approvable, so the raise is retried.
-            if (try? ProposalStore.save(privateCopy(p), in: folder)) != nil, (try? commands.trustProposals([p.id], in: folder)) != nil {} else { complete = false }
+            if (try? ProposalStore.save(Self.privateCopy(p, catalog: Teka.read(folder).catalog), in: folder)) != nil,
+               (try? commands.trustProposals([p.id], in: folder)) != nil {} else { complete = false }
         }
         // Items already filed from the chain get a card that redacts them (capture-event-v0 §3.2, §3.3), unless a
         // card waiting from the chain already does (a retry after a partial failure).
         let ids = Set(chain)
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
-            let covered = Set(filed.filter { $0.0.standardizedFileURL == row.folder.standardizedFileURL }.flatMap { $0.1.ops }.compactMap { op -> String? in
+            let waiting = filed.filter { $0.0.standardizedFileURL == row.folder.standardizedFileURL }.map { _, p in
+                p.raw["provenance"]?["private"] == .bool(true) ? p : Self.privateCopy(p, catalog: row.teka.catalog)
+            }
+            let covered = Set(waiting.flatMap(\.ops).compactMap { op -> String? in
                 guard op["op"] == .str("update_item"), op["args"]?["set"]?["redact"] == .bool(true), let id = op["args"]?["id"] else { return nil }
                 return canonicalText(id)
             })
@@ -691,6 +686,59 @@ public struct CaptureInbox: Sendable {
         }
         journal([("stage", .str("sensitivity_raised")), ("cards", .int(unfiled.count + filed.count))])
         return complete
+    }
+
+    /// A card made private (capture-event-v0 §3.3): every item it writes to is redacted in the same batch. A new
+    /// item is redacted as it lands; an `update_item` sets `redact` with its other changes; a status change,
+    /// completion or drop is preceded by an `update_item` that redacts the item, unless the card or the item
+    /// already does. A redaction needs a kind, so an item without one gets `other`, as the clerk does for a
+    /// private update; without the catalog (an unfiled card), the kind is left to the guard to ask for.
+    static func privateCopy(_ p: Proposal, catalog: JSONObject?) -> Proposal {
+        var raw = p.raw
+        var prov = raw["provenance"]?.objectValue ?? JSONObject()
+        prov.set("private", .bool(true))
+        raw.set("provenance", .object(prov))
+        let items = catalog?["open_items"]?.arrayValue ?? []
+        func item(_ id: JSONValue) -> JSONValue? { items.first { $0["id"] == id } }
+        func needsKind(_ id: JSONValue) -> Bool { catalog != nil && id.stringValue?.hasPrefix("$new:") != true && item(id)?["kind"] == nil }
+        var redacted = Set<String>()   // items this card already redacts or adds, by the id's canonical text
+        var ops: [JSONValue] = []
+        for op in p.ops {
+            guard var args = op["args"]?.objectValue else { ops.append(.object(op)); continue }
+            var o = op
+            switch op["op"]?.stringValue {
+            case "add_item":
+                guard var new = args["item"]?.objectValue else { break }
+                new.set("redact", .bool(true))
+                if new["kind"] == nil { new.set("kind", .str("other")) }
+                if let id = new["id"] { redacted.insert(canonicalText(id)) }
+                args.set("item", .object(new))
+                o.set("args", .object(args))
+            case "update_item":
+                guard let id = args["id"] else { break }
+                var set = args["set"]?.objectValue ?? JSONObject()
+                set.set("redact", .bool(true))
+                if set["kind"] == nil, needsKind(id) { set.set("kind", .str("other")) }
+                args.set("set", .object(set))
+                // Nothing this card writes takes the redaction or its kind away again.
+                if let unset = args["unset"]?.arrayValue?.filter({ !["redact", "kind"].contains($0.stringValue ?? "") }) {
+                    if unset.isEmpty { args.remove("unset") } else { args.set("unset", .array(unset)) }
+                }
+                o.set("args", .object(args))
+                redacted.insert(canonicalText(id))
+            case "set_status", "complete", "drop":
+                guard let id = args["id"], !redacted.contains(canonicalText(id)), item(id)?["redact"] != .bool(true) else { break }
+                var set = JSONObject([(key: "redact", value: .bool(true))])
+                if needsKind(id) { set.set("kind", .str("other")) }
+                ops.append(.obj([("op", .str("update_item")), ("args", .obj([("id", id), ("set", .object(set))]))]))
+                redacted.insert(canonicalText(id))
+            default:
+                break
+            }
+            ops.append(.object(o))
+        }
+        raw.set("ops", .array(ops))
+        return Proposal(raw: raw)
     }
 
     /// The words of the spans a card lists as not filed yet, read from the capture itself.
@@ -836,15 +884,23 @@ public struct CaptureInbox: Sendable {
             for (folder, pid) in saved {
                 if let folder, let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == pid }) {
                     try? TekaStore(folder: folder).reject(p, reason: "the clerk's cards could not all be saved", now: now)
-                } else if folder == nil {
-                    try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(pid).json"))
+                } else if folder == nil, let file = unfiledFile(pid) {
+                    try? FileManager.default.removeItem(at: file)
                 }
             }
         }
         for (proposal, folder) in placed.filter({ $0.1 == nil }) + placed.filter({ $0.1 != nil }) {
             if let folder, (try? ProposalStore.save(proposal, in: folder)) != nil {
-                try? commands.trustProposals([proposal.id], in: folder)
                 saved.append((folder, proposal.id))
+                // A card counts as made only once it is trusted: an untrusted one could never be approved, so
+                // everything saved is taken back and the code-built card stays; the reading is tried again.
+                guard (try? commands.trustProposals([proposal.id], in: folder)) != nil else {
+                    takeBack()
+                    outcome = ClerkOutcome(items: outcome.items)
+                    clerk[id] = (state.attempts?[id] ?? 0) >= 2 ? "kept" : "retry"
+                    log("clerk_trust_failed")
+                    return outcome
+                }
                 outcome.filed += proposal.ops.count
             } else {
                 var raw = proposal.raw
@@ -866,8 +922,8 @@ public struct CaptureInbox: Sendable {
             if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == work.tier0 }) {
                 try? TekaStore(folder: folder).reject(p, reason: "replaced by the clerk's reading", now: now)
             }
-        } else {
-            try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(work.tier0).json"))
+        } else if let file = unfiledFile(work.tier0) {
+            try? FileManager.default.removeItem(at: file)
         }
         outcome.replaced = true
         clerk[id] = "done"
@@ -984,14 +1040,14 @@ public struct CaptureInbox: Sendable {
     }
 
     func writeUnfiled(_ raw: JSONObject) throws {
-        guard let id = raw["id"]?.stringValue else { throw Commands.Failure(message: "a card without an id") }
+        guard let id = raw["id"]?.stringValue, let file = unfiledFile(id) else { throw Commands.Failure(message: "a card without a valid id") }
         try AtomicFile.makePrivateFolder(unfiledDir)
         let bytes = Data(JSONWriter.pretty(.object(raw)).utf8)
         // The digest is recorded first: a card whose file was written but not recorded would never be shown.
         var digests = try unfiledDigests()
         digests[id] = Self.digest(bytes)
         try saveUnfiledDigests(digests)
-        try AtomicFile.write(bytes, to: unfiledDir.appendingPathComponent("\(id).json"))
+        try AtomicFile.write(bytes, to: file)
     }
 
     /// Card id -> digest of the file the inbox wrote. Throws when the list exists but cannot be read, so it is
@@ -1041,48 +1097,83 @@ public struct CaptureInbox: Sendable {
     // MARK: - Unfiled cards
 
     /// Unfiled cards waiting for the person to pick a binder. A card whose file changed since the inbox wrote it is
-    /// left out, and none is shown while the digest list cannot be read (the sweep reports that).
+    /// left out, and so is one whose name is not `<id>.json` for the id inside it; none is shown while the digest
+    /// list cannot be read (the sweep reports that).
     public func unfiled() -> [Proposal] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: unfiledDir.path),
               let digests = try? unfiledDigests() else { return [] }
-        return names.filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.sorted().compactMap { name in
+        return names.filter { $0.hasSuffix(".json") && ProposalStore.isValidID(String($0.dropLast(5))) }.sorted().compactMap { name in
+            let id = String(name.dropLast(5))
             guard case .ok(let data) = SafeFile.read(unfiledDir.appendingPathComponent(name)),
-                  digests[String(name.dropLast(5))] == Self.digest(data),
-                  case .object(let o)? = try? JSONParser.parse(data).value else { return nil }
+                  digests[id] == Self.digest(data),
+                  case .object(let o)? = try? JSONParser.parse(data).value, o["id"]?.stringValue == id else { return nil }
             return Proposal(raw: o)
         }
     }
 
-    /// Moves an unfiled card into the binder the person picked, as a proposal there. The card leaves the Inbox
-    /// (its digest is dropped) before it is saved in the binder, so it can never be approvable in two places; the
-    /// leftover file, never shown without its digest, is removed last.
+    /// Moves an unfiled card into the binder the person picked, as a proposal there under the same id. The binder's
+    /// copy is saved and trusted first; only then does the Inbox let go of the card, its digest and then its file.
+    /// A crash in between leaves the card in both places, never in neither, and the next sweep drops the Inbox copy
+    /// of a card already trusted in a binder (`dropFiled`). An Inbox card can only be filed, never approved, so the
+    /// two copies are never both approvable.
     public func file(_ proposalID: String, into folder: URL, commands: Commands) throws {
-        guard var raw = unfiled().first(where: { $0.id == proposalID })?.raw else {
+        guard ProposalStore.isValidID(proposalID), var raw = unfiled().first(where: { $0.id == proposalID })?.raw else {
             throw Commands.Failure(message: "this card is gone or changed since Sprava wrote it")
         }
         let teka = Teka.read(folder)
         guard teka.isAdopted else { throw Commands.Failure(message: "this binder is not adopted yet") }
         guard Owner.device(of: folder) == commands.deviceID else { throw Commands.Failure(message: "this binder is read-only here") }
-        for key in ["binder", "source_retracted", "source_corrected"] { raw.remove(key) }
-        var digests = try unfiledDigests()
-        let digest = digests.removeValue(forKey: proposalID)
-        try saveUnfiledDigests(digests)
-        do {
+        // Filed before a crash: only the Inbox's copy is left to remove.
+        if !isTrusted(proposalID, in: folder, commands: commands) {
+            // Filed into another binder before a crash: never a second approvable copy.
+            if (try? commands.loadDigests())?.keys.contains(where: { $0.hasSuffix("#" + proposalID) }) == true {
+                throw Commands.Failure(message: "this card was already filed into another binder; it leaves the Inbox shortly")
+            }
+            for key in ["binder", "source_retracted", "source_corrected"] { raw.remove(key) }
             try ProposalStore.save(Proposal(raw: raw), in: folder)
-            try commands.trustProposals([proposalID], in: folder)
-        } catch {
-            // The Inbox keeps offering the card; a copy saved but not trusted cannot be approved in the binder.
-            digests[proposalID] = digest
-            try? saveUnfiledDigests(digests)
-            throw error
+            do { try commands.trustProposals([proposalID], in: folder) } catch {
+                // A copy saved but not trusted cannot be approved; it is taken back, and the Inbox keeps the card.
+                if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == proposalID }) {
+                    try? TekaStore(folder: folder).reject(p, reason: "it could not be moved from the Inbox")
+                }
+                throw error
+            }
         }
-        try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(proposalID).json"))
+        // The card is in the binder now; a leftover the Inbox could not let go of is dropped by the next sweep.
+        try? letGo(proposalID)
         journal([("card", .string(proposalID)), ("stage", .str("filed_by_person"))])
     }
 
+    /// Whether the binder holds this proposal as Sprava last wrote it.
+    func isTrusted(_ id: String, in folder: URL, commands: Commands) -> Bool {
+        guard let trusted = try? commands.loadDigests(),
+              let (_, digest) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }) else { return false }
+        return [folder, folder.standardizedFileURL].contains { trusted[commands.key($0, id)] == digest }
+    }
+
+    /// The Inbox lets go of a card: its digest first, so the leftover file is never shown, then the file.
+    func letGo(_ id: String) throws {
+        var digests = try unfiledDigests()
+        if digests.removeValue(forKey: id) != nil { try saveUnfiledDigests(digests) }
+        if let file = unfiledFile(id) { try? FileManager.default.removeItem(at: file) }
+    }
+
+    /// Drops from the Inbox every card already filed: a trusted proposal with its id waits in a binder this Mac
+    /// manages. That is what a filing cut short by a crash leaves behind (`file`).
+    func dropFiled(binders: [ShelfRow], commands: Commands) {
+        let waiting = Set(unfiled().map(\.id))
+        guard !waiting.isEmpty else { return }
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            for (p, _) in ProposalStore.list(in: row.folder) where waiting.contains(p.id) && isTrusted(p.id, in: row.folder, commands: commands) {
+                guard (try? letGo(p.id)) != nil else { continue }
+                journal([("card", .string(p.id)), ("stage", .str("filed_by_person_finished"))])
+            }
+        }
+    }
+
     public func discard(_ proposalID: String) throws {
-        guard CaptureEvent.isUUIDText(proposalID) else { throw Commands.Failure(message: "bad card id") }
-        try FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(proposalID).json"))
+        guard let file = unfiledFile(proposalID) else { throw Commands.Failure(message: "bad card id") }
+        try FileManager.default.removeItem(at: file)
         journal([("card", .string(proposalID)), ("stage", .str("discarded"))])
     }
 
