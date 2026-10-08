@@ -94,8 +94,9 @@ public struct IntakeReading: Sendable, Equatable {
             if let date = f.date(from: text) {
                 // The day as the sender wrote it, in the sender's own offset.
                 var offset = 0
-                if let m = text.firstMatch(of: /([+-])(\d{2})(\d{2})$/) {
-                    offset = (Int(m.output.2)! * 3600 + Int(m.output.3)! * 60) * (m.output.1 == "-" ? -1 : 1)
+                // ASCII digits only, converted checked: a header is untrusted text.
+                if let m = text.firstMatch(of: /([+-])([0-9]{2})([0-9]{2})$/), let h = Int(m.output.2), let mi = Int(m.output.3) {
+                    offset = (h * 3600 + mi * 60) * (m.output.1 == "-" ? -1 : 1)
                 }
                 return CalendarDate(date, in: TimeZone(secondsFromGMT: offset) ?? .gmt)
             }
@@ -164,7 +165,7 @@ public struct IntakeFacts: Sendable, Equatable {
         for s in CaptureText.sentences(String(text.prefix(200_000))).prefix(2000) {
             // Only written dates count, never "Thursday": a full date, or one whose year is written in the sentence.
             if f.dates.count < 6, let found = DateGrammar.scan(s.text, anchor: anchor, locale: locale), let d = found.date,
-               DateGrammar.isFullDate(found.text) || s.text.contains(String(d.year)), !f.dates.contains(d.description) {
+               DateGrammar.isFullDate(found.text) || CaptureText.asciiDigits(s.text).contains(String(d.year)), !f.dates.contains(d.description) {
                 f.dates.append(d.description)
             }
             if f.amounts.count < 6, let a = Amounts.scan(s.text), a.value > 0 {

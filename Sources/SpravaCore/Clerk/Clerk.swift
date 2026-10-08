@@ -156,8 +156,8 @@ public struct Clerk: Sendable {
     public static func captureDay(_ capturedAt: String) -> CalendarDate? {
         guard let instant = Timestamp.parse(capturedAt) else { return nil }
         var seconds = 0
-        if let m = capturedAt.firstMatch(of: /([+-])(\d{2}):(\d{2})$/) {
-            seconds = (Int(m.output.2)! * 3600 + Int(m.output.3)! * 60) * (m.output.1 == "-" ? -1 : 1)
+        if let m = capturedAt.firstMatch(of: /([+-])([0-9]{2}):([0-9]{2})$/), let h = Int(m.output.2), let mi = Int(m.output.3) {
+            seconds = (h * 3600 + mi * 60) * (m.output.1 == "-" ? -1 : 1)
         }
         return CalendarDate(instant, in: TimeZone(secondsFromGMT: seconds) ?? .gmt)
     }

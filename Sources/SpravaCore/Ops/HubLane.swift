@@ -248,11 +248,14 @@ public enum HubLane {
     /// Withdraws a binder's slice, whatever else is wrong with the binder. The spool file is never named by the
     /// catalog alone: a binder that passes every check publishes under its own name, which is also its folder's;
     /// one that does not (an outside edit may have renamed it to another binder) withdraws only the slice Sprava
-    /// recorded writing for it in its own cursors. Returns false when no slice can be identified that safely.
-    static func withdraw(_ teka: Teka, inbox: URL) throws -> Bool {
+    /// recorded writing for it in its own cursors. So does one whose name collides with another binder's
+    /// (`recordedOnly`): the shared name may be the other's slice. Returns false when no slice can be identified
+    /// that safely.
+    static func withdraw(_ teka: Teka, inbox: URL, recordedOnly: Bool = false) throws -> Bool {
         let own = ownCursors(teka.folder)
+        let byRecord = recordedOnly || teka.federationBlocked
         let name: String
-        if !teka.federationBlocked {
+        if !byRecord {
             name = teka.name
         } else if let own, own.sliceHash != nil {
             // Cursors written before the name was recorded: a slice is published only under the folder's name.
@@ -261,7 +264,7 @@ public enum HubLane {
             return false
         }
         try removeSlice(try spoolFile(inbox, name, ".agenda.json"))
-        guard var cursors = teka.federationBlocked ? own : try readCursors(teka.folder) else { return true }
+        guard var cursors = byRecord ? own : try readCursors(teka.folder) else { return true }
         cursors.sliceHash = nil
         cursors.sliceName = nil
         try saveCursors(cursors, teka.folder)
@@ -271,8 +274,11 @@ public enum HubLane {
     /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root. The level used is the
     /// narrower of the catalog's and the one the person confirmed (the privacy ratchet, architecture 4.5). At
     /// disclosure `none` the slice is removed; levels `title` and `kind` are not published in the MVP, so their
-    /// slice is withdrawn too. A withdrawal comes before the checks that only publishing needs (`withdraw`).
-    public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false) throws -> PublishResult {
+    /// slice is withdrawn too. A withdrawal comes before the checks that only publishing needs (`withdraw`). A
+    /// binder whose name collides with another's (`nameCollides`, from `collidingFolders`) never publishes, but its
+    /// withdrawal still runs, by the slice its own cursors recorded.
+    public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false,
+                               nameCollides: Bool = false) throws -> PublishResult {
         var rootInfo = stat()
         guard lstat(root.path, &rootInfo) == 0 else { return .noSpool }
         try checkFolder(root, create: false)
@@ -286,12 +292,13 @@ public enum HubLane {
         // stamp, a linked DASHBOARD.md, an unreadable catalog) can keep it on the hub.
         let disclosure = teka.catalog.map { PrivacyRatchet.view(folder: folder, catalog: $0).disclosure } ?? confirmedDisclosure(folder)
         if disclosure != "full" {
-            guard try withdraw(teka, inbox: inbox) else { return .notPublished("the binder needs attention") }
+            guard try withdraw(teka, inbox: inbox, recordedOnly: nameCollides) else { return .notPublished("the binder needs attention") }
             return disclosure == "none" ? .removed
                 : .notPublished("disclosure \(disclosure) is not published in this version; the slice was withdrawn")
         }
         guard let catalog = teka.catalog else { return .notPublished("not adopted") }
         guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
+        guard !nameCollides else { return .notPublished("another binder has the same name") }
         let target = try spoolFile(inbox, teka.name, ".agenda.json")
         let privacy = PrivacyRatchet.view(folder: folder, catalog: catalog)
         var cursors = try readCursors(folder)
@@ -376,23 +383,30 @@ public enum HubLane {
         public var drainError: Error?
         public var published: PublishResult?
         public var publishError: Error?
-        public var failed: Bool { drainError != nil || publishError != nil }
+        /// The binder's name collides with another's: it neither drained nor published, which is a failure.
+        public var nameCollides = false
+        public var failed: Bool { drainError != nil || publishError != nil || nameCollides }
     }
 
     /// Drains, then publishes. Publishing never waits on the drain: an outbox that cannot be drained must not keep
     /// a slice the person narrowed or withdrew on the hub, and the projection reads only the binder, never the
     /// outbox. A drain failure is reported beside whatever the publish did. `afterDrain` sees a drain that worked.
-    public static func sync(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(),
+    /// Two binders under one name would share a spool file (binder-v0 §3.1): one that collides (`nameCollides`)
+    /// neither drains nor publishes, yet a narrowing still withdraws the slice it recorded writing (`publish`).
+    public static func sync(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), nameCollides: Bool = false,
                             afterDrain: (DrainResult) -> Void = { _ in }) -> SyncResult {
         var out = SyncResult()
-        do {
-            let drained = try drain(folder, root: root, now: now)
-            out.drained = drained
-            afterDrain(drained)
-        } catch {
-            out.drainError = error
+        out.nameCollides = nameCollides
+        if !nameCollides {
+            do {
+                let drained = try drain(folder, root: root, now: now)
+                out.drained = drained
+                afterDrain(drained)
+            } catch {
+                out.drainError = error
+            }
         }
-        do { out.published = try publish(folder, root: root, now: now) } catch { out.publishError = error }
+        do { out.published = try publish(folder, root: root, now: now, nameCollides: nameCollides) } catch { out.publishError = error }
         return out
     }
 

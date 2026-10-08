@@ -49,7 +49,10 @@ public enum DateGrammar {
     /// Resolves one time expression. `nil` date means "a time expression, left unresolved".
     /// Returns `nil` when the text is not a time expression at all.
     public static func resolve(_ raw: String, anchor today: CalendarDate, locale: String) -> Found? {
-        let text = raw.lowercased().replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        // Digits of other scripts read as ASCII; every numeric pattern below matches [0-9] only, and every number
+        // is converted with a checked `Int(_:)`: untrusted text never traps.
+        let text = CaptureText.asciiDigits(raw.lowercased()).replacingOccurrences(of: "’", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         guard !text.isEmpty else { return nil }
         var words = text.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
         // Strip prefixes and hedges.
@@ -65,10 +68,11 @@ public enum DateGrammar {
 
         // ISO date.
         if let d = CalendarDate.strict(t) { return Found(text: raw, date: d) }
-        if t.wholeMatch(of: /\d{1,4}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?/) != nil {
+        if t.wholeMatch(of: /[0-9]{1,4}[\/.\-][0-9]{1,2}([\/.\-][0-9]{2,4})?/) != nil {
             // Day-first for fr-FR only; every other numeric form stays unresolved.
-            if locale.lowercased() == "fr-fr", let m = t.wholeMatch(of: /(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})/),
-               let d = CalendarDate(year: Int(m.output.3)!, month: Int(m.output.2)!, day: Int(m.output.1)!) {
+            if locale.lowercased() == "fr-fr", let m = t.wholeMatch(of: /([0-9]{1,2})[\/.]([0-9]{1,2})[\/.]([0-9]{4})/),
+               let year = Int(m.output.3), let month = Int(m.output.2), let day = Int(m.output.1),
+               let d = CalendarDate(year: year, month: month, day: day) {
                 return Found(text: raw, date: d)
             }
             return Found(text: raw, date: nil)
@@ -132,7 +136,7 @@ public enum DateGrammar {
     /// ordinal is a sequence ("First, call the bank"; "the 4th floor" is caught by its noun, see `scan`).
     static func dayOfMonth(_ t: String, article: Bool) -> Int? {
         guard article else { return nil }
-        if let m = t.wholeMatch(of: /(\d{1,2})(st|nd|rd|th|er)?/), let d = Int(m.output.1), (1...31).contains(d) { return d }
+        if let m = t.wholeMatch(of: /([0-9]{1,2})(st|nd|rd|th|er)?/), let d = Int(m.output.1), (1...31).contains(d) { return d }
         if let d = ordinalsEN[t] { return d }
         if let d = smallNumbers[t], t != "a", t != "un", t != "une" { return d }
         return nil
@@ -140,7 +144,7 @@ public enum DateGrammar {
 
     /// A full date: ISO, or a month and day with a year. Only these resolve for an estimated capture time.
     public static func isFullDate(_ text: String) -> Bool {
-        let t = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        let t = CaptureText.asciiDigits(text.lowercased()).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         if CalendarDate.strict(t) != nil { return true }
         let words = t.split(separator: " ").map(String.init)
         return words.contains { Int($0).map { $0 >= 1000 } ?? false } && words.contains { monthsEN.contains($0) || monthsFR.contains($0) }
@@ -201,8 +205,8 @@ public enum DateGrammar {
 
     /// Single small words such as "a" or "one" are numbers, not dates, when they stand alone.
     static func isMeaningful(_ phrase: String) -> Bool {
-        let p = phrase.lowercased()
-        if smallNumbers[p] != nil || p.wholeMatch(of: /\d{1,2}/) != nil { return false }
+        let p = CaptureText.asciiDigits(phrase.lowercased())
+        if smallNumbers[p] != nil || p.wholeMatch(of: /[0-9]{1,2}/) != nil { return false }
         return true
     }
 }

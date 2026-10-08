@@ -400,16 +400,14 @@ final class Runtime: @unchecked Sendable {
         try? ids.save(idsURL)
         idsLock.unlock()
         var failures: [String] = []
-        // Two known binders under one name would share a spool file: neither publishes nor drains (binder-v0 §3.1).
+        // Two known binders under one name would share a spool file: neither publishes nor drains, but a narrowing
+        // still withdraws the slice each recorded writing (binder-v0 §3.1; `HubLane.sync`).
         let colliding = HubLane.collidingFolders(rows, today: CalendarDate.today())
         for (row, bid) in zip(mine, bids) {
-            if colliding.contains(row.folder.standardizedFileURL.path) {
-                failures.append(bid)
-                log("hub binder=\(bid) name_collision=true")
-                continue
-            }
+            let collides = colliding.contains(row.folder.standardizedFileURL.path)
+            if collides { log("hub binder=\(bid) name_collision=true") }
             // A drain that fails never holds back the publish, so a narrowing or withdrawal still reaches the hub.
-            let synced = HubLane.sync(row.folder, root: root) { drained in
+            let synced = HubLane.sync(row.folder, root: root, nameCollides: collides) { drained in
                 if !drained.createdProposals.isEmpty, let xpc {
                     xpc.queue.sync { try? commands.trustProposals(drained.createdProposals, in: row.folder) }
                     log("hub binder=\(bid) overwritten_change_card=1")

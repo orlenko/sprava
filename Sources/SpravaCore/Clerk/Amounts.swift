@@ -22,10 +22,12 @@ public enum Amounts {
                                                  ("euros", "EUR"), ("euro", "EUR"), ("usd", "USD"), ("cad", "CAD"), ("eur", "EUR")]
 
     public static func parse(_ raw: String) -> Parsed? {
-        let text = raw.lowercased().replacingOccurrences(of: "\u{00A0}", with: " ").replacingOccurrences(of: "\u{202F}", with: " ")
+        // Digits of other scripts read as ASCII (`CaptureText.asciiDigits`); the patterns match [0-9] only.
+        let text = CaptureText.asciiDigits(raw.lowercased()).replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "\u{202F}", with: " ")
         let currency = currencies.first { text.contains($0.0) }?.1
         // Digits: "1,200", "1 200", "625.50", "4 200,75".
-        if let m = text.firstMatch(of: /\d[\d ,.]*/) {
+        if let m = text.firstMatch(of: /[0-9][0-9 ,.]*/) {
             var digits = String(m.output).trimmingCharacters(in: CharacterSet(charactersIn: " ,."))
             digits = digits.replacingOccurrences(of: " ", with: "")
             if let comma = digits.lastIndex(of: ","), digits.distance(from: comma, to: digits.endIndex) == 3, !digits.contains(".") {
@@ -35,8 +37,8 @@ public enum Amounts {
             if let v = Double(digits), v > 0 {
                 var value = v
                 if text.contains("million") { value *= 1_000_000 }
-                else if text.contains("thousand") || text.contains("mille") || text.firstMatch(of: /\d\s?k\b/) != nil { value *= 1000 }
-                if text.firstMatch(of: /\d\s*(cents?|¢)\b/) != nil, !text.contains("$"), !text.contains("dollar") { value /= 100 }
+                else if text.contains("thousand") || text.contains("mille") || text.firstMatch(of: /[0-9]\s?k\b/) != nil { value *= 1000 }
+                if text.firstMatch(of: /[0-9]\s*(cents?|¢)\b/) != nil, !text.contains("$"), !text.contains("dollar") { value /= 100 }
                 // A number too large for a Double is no amount.
                 return value.isFinite ? Parsed(value: value, currency: currency) : nil
             }
