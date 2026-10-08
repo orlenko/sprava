@@ -16,5 +16,9 @@ let package = Package(
         // Layer 1: reading a binder.
         .target(name: "BinderFormat", dependencies: ["SpravaKit"]),
         .testTarget(name: "BinderFormatTests", dependencies: ["BinderFormat", "SpravaTestSupport", "SpravaKit"]),
+
+        // Layer 2: writing a binder.
+        .target(name: "BinderStore", dependencies: ["BinderFormat", "SpravaKit"]),
+        .testTarget(name: "BinderStoreTests", dependencies: ["BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
     ]
 )
