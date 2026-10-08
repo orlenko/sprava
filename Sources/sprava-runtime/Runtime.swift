@@ -98,9 +98,7 @@ final class Runtime: @unchecked Sendable {
         xpc = service
         let support = self.support
         let listener = MCPListener(support: support, commands: commands, queue: service.queue, shelf: {
-            let url = LifeprojRegistry.defaultPath()
-            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-            return Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+            return ShelfStore(supportDirectory: support).rows()
         }, log: { [weak self] line in self?.log(line) })
         do {
             try listener.start()
@@ -340,10 +338,7 @@ final class Runtime: @unchecked Sendable {
     func sentinel() -> JobOutcome {
         let now = Date()
         let today = CalendarDate.today(now: now)
-        let registryURL = LifeprojRegistry.defaultPath()
-        let registry = FileManager.default.fileExists(atPath: registryURL.path)
-            ? try? LifeprojRegistry.load(from: registryURL) : nil
-        let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+        let rows = ShelfStore(supportDirectory: support).rows()
         let idsURL = support.appendingPathComponent("binder-ids.json")
         idsLock.lock()
         var ids = BinderIDs.load(idsURL)
@@ -368,9 +363,7 @@ final class Runtime: @unchecked Sendable {
     func hub() -> JobOutcome {
         let root = HubLane.spoolRoot()
         guard FileManager.default.fileExists(atPath: root.path) else { return .skipped }
-        let registryURL = LifeprojRegistry.defaultPath()
-        let registry = FileManager.default.fileExists(atPath: registryURL.path) ? try? LifeprojRegistry.load(from: registryURL) : nil
-        let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+        let rows = ShelfStore(supportDirectory: support).rows()
         let device = DeviceID.load(support: support)
         let mine = rows.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == device }
         let idsURL = support.appendingPathComponent("binder-ids.json")
@@ -530,9 +523,7 @@ final class Runtime: @unchecked Sendable {
     }
 
     func shelfRows() -> [ShelfRow] {
-        let url = LifeprojRegistry.defaultPath()
-        let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-        return Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+        return ShelfStore(supportDirectory: support).rows()
     }
 
     /// File events on the capture root and each device folder start a sweep at once; the 15-second sweep is the

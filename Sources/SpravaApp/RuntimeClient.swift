@@ -31,7 +31,7 @@ final class RuntimeClient {
             let once = Once()
             let proxy = self.proxy { error in
                 if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Sprava's background part is not answering. Open Health to start it. (\(error.localizedDescription))"))
+                    continuation.resume(throwing: Failure(message: "Sprava's background part is not running. Turn it on under Health, at the top of the sidebar. (\(error.localizedDescription))"))
                 }
             }
             guard let proxy else {

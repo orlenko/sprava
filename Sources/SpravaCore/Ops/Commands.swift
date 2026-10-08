@@ -279,9 +279,7 @@ public struct Commands: Sendable {
         case "backup_status":
             let backup = Backup(support: support)
             let st = backup.status()
-            let url = LifeprojRegistry.defaultPath()
-            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-            let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+            let rows = ShelfStore(supportDirectory: support).rows()
             let names = Dictionary(rows.compactMap { row -> (String, String)? in
                 guard let id = try? String(contentsOf: row.folder.appendingPathComponent(".sprava/backup-id"), encoding: .utf8) else { return nil }
                 return (id.trimmingCharacters(in: .whitespacesAndNewlines), row.name)
@@ -371,7 +369,7 @@ public struct Commands: Sendable {
         case "doctor":
             let url = LifeprojRegistry.defaultPath()
             let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-            let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+            let rows = ShelfStore(supportDirectory: support).rows()
             let findings = Doctor.run(rows: rows, deviceID: deviceID, registry: registry, support: support)
             return JSONObject([(key: "findings", value: .array(findings.map {
                 .obj([("level", .string($0.level.rawValue)), ("binder", $0.binder.map(JSONValue.string) ?? .null), ("text", .string($0.text))])

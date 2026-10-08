@@ -23,6 +23,30 @@ public struct ShelfStore: Sendable {
     struct Contents: Codable {
         var schemaVersion = 1
         var folders: [String] = []
+        /// Whether lifeproj's registry is on the Shelf. Off unless set: older binders come in one at a time,
+        /// with Add Folder (author's call, 2026-10-08).
+        var showRegistry: Bool?
+    }
+
+    func contents() -> Contents? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(Contents.self, from: data)
+    }
+
+    /// Whether the Shelf lists lifeproj's registry (`"showRegistry": true` in shelf.json).
+    public var showsRegistry: Bool { contents()?.showRegistry == true }
+
+    /// lifeproj's registry when the Shelf shows it, else nil. Throws only when it is shown and unreadable.
+    public func registryForShelf() throws -> LifeprojRegistry? {
+        guard showsRegistry else { return nil }
+        let url = LifeprojRegistry.defaultPath()
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try LifeprojRegistry.load(from: url)
+    }
+
+    /// The Shelf: picked folders, plus lifeproj's registry when it is shown.
+    public func rows(includeArchived: Bool = false) -> [ShelfRow] {
+        Shelf.rows(registry: try? registryForShelf(), picked: pickedFolders(), includeArchived: includeArchived)
     }
 
     public struct Unreadable: Error, CustomStringConvertible {
@@ -60,7 +84,9 @@ public struct ShelfStore: Sendable {
                                                 attributes: [.posixPermissions: 0o700])
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(Contents(folders: folders)).write(to: file, options: [.atomic])
+        var c = contents() ?? Contents()
+        c.folders = folders
+        try encoder.encode(c).write(to: file, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

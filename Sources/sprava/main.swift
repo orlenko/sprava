@@ -32,8 +32,8 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
                                           Refuses any folder in lifeproj's registry.
 
-The shelf lists the live binders in lifeproj's registry ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml),
-read-only, plus folders added with `sprava shelf add`.
+The shelf lists new binders and folders added with `sprava shelf add`. lifeproj's registry
+($CMIRROR_CONFIG or ~/.config/cmirror/config.toml) is listed only with "showRegistry": true in shelf.json.
 """
 
 func fail(_ message: String, code: Int32 = 2) -> Never {
@@ -93,12 +93,9 @@ func shelf(_ args: [String]) {
     args.removeAll { $0 == "--archived" }
     guard args.isEmpty else { fail(usage) }
 
-    let registryURL = LifeprojRegistry.defaultPath()
     var registry: LifeprojRegistry?
     var note: String?
-    if FileManager.default.fileExists(atPath: registryURL.path) {
-        do { registry = try LifeprojRegistry.load(from: registryURL) } catch { note = "registry unreadable: \(error.localizedDescription)" }
-    }
+    do { registry = try ShelfStore().registryForShelf() } catch { note = "registry unreadable: \(error.localizedDescription)" }
     let rows = Shelf.rows(registry: registry, picked: ShelfStore().pickedFolders(), includeArchived: includeArchived)
     let today = CalendarDate.today()
     if rows.isEmpty {
@@ -426,9 +423,7 @@ case "read-document": readDocument(arguments)
 case "measures":
     let n = arguments.firstIndex(of: "--days").flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil } ?? 30
     let support = SpravaPaths.supportDirectory()
-    let url = LifeprojRegistry.defaultPath()
-    let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-    let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+    let rows = ShelfStore(supportDirectory: support).rows()
     let end = CalendarDate.today()
     print(Measures.text(Measures(support: support).compute(rows: rows, from: end.adding(days: -(max(1, n) - 1)), to: end)), terminator: "")
 case "-h", "--help", "help": print(usage)

@@ -234,4 +234,18 @@ func ids(_ page: NowPage, _ bucket: Bucket) -> [String] { page.items[bucket, def
         try store.remove(folder)
         #expect(store.pickedFolders().isEmpty)
     }
+
+    /// lifeproj's registry stays off the Shelf unless the person turns it on; adding a folder keeps the choice.
+    @Test func theRegistryIsOffTheShelfUnlessTurnedOn() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-support-\(UUID().uuidString)")
+        let store = ShelfStore(supportDirectory: support)
+        let folder = try makeTeka(fixture: "sprava-v0")
+        try store.add(folder)
+        #expect(!store.showsRegistry)
+        #expect(try store.registryForShelf() == nil)
+        #expect(store.rows().map(\.source) == [.picked])
+        try Data(#"{"schemaVersion":1,"folders":[],"showRegistry":true}"#.utf8).write(to: store.file)
+        try store.add(folder)
+        #expect(store.showsRegistry)
+    }
 }

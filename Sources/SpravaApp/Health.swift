@@ -26,6 +26,28 @@ final class HealthModel: ObservableObject {
     @Published var backupConfigured = false
     var lastDoctor: Date?
     var lastWake: Date?
+    /// When the person last turned background work on or restarted it: launchd can take several seconds to
+    /// start the runtime, and that wait is shown as "starting", not as a failure.
+    @Published var startRequested: Date?
+
+    /// Within a minute of a start request and with no heartbeat newer than it.
+    var starting: Bool {
+        guard let asked = startRequested, now.timeIntervalSince(asked) < 60 else { return false }
+        if case .success(let beat) = heartbeat, let at = ISOTime.date(beat.beat_at), at > asked { return false }
+        return true
+    }
+
+    /// Re-reads every two seconds for half a minute after a start request, so the page follows the start.
+    func followStart() {
+        startRequested = Date()
+        Task {
+            for _ in 0..<15 {
+                try? await Task.sleep(for: .seconds(2))
+                refresh()
+                if !starting { break }
+            }
+        }
+    }
 
     let runtimeDir = SpravaPaths.supportDirectory().appendingPathComponent("runtime", isDirectory: true)
     private var observers: [Any] = []
@@ -62,7 +84,7 @@ final class HealthModel: ObservableObject {
             let support = SpravaPaths.supportDirectory()
             let url = LifeprojRegistry.defaultPath()
             let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-            let rows = Shelf.rows(registry: registry, picked: ShelfStore(supportDirectory: support).pickedFolders())
+            let rows = ShelfStore(supportDirectory: support).rows()
             findings = Doctor.run(rows: rows, deviceID: DeviceID.load(support: support), registry: registry, support: support)
             // The app reads the backup's records only; the key stays with the runtime (docs/backup.md §7).
             let backup = Backup(support: support, key: nil)
@@ -79,6 +101,7 @@ final class HealthModel: ObservableObject {
 
     /// The beat's grade; red when there is no valid heartbeat.
     var beatGrade: HealthGrade {
+        if starting { return .unknown }
         guard case .success(let beat) = heartbeat, let beatAt = ISOTime.date(beat.beat_at) else {
             return runtimeStatus == .enabled ? .red : .unknown
         }
@@ -108,6 +131,7 @@ final class HealthModel: ObservableObject {
             try runtime.register()
             try watcher.register()
             message = nil
+            followStart()
         } catch {
             message = "Could not turn on background work: \(error.localizedDescription)"
         }
@@ -130,6 +154,7 @@ final class HealthModel: ObservableObject {
     /// Restart a stuck runtime. `launchctl kickstart -k` restarts the job in place; how `register()` behaves on
     /// an enabled but stuck job is spike b (architecture 3.3), so kickstart is tried first.
     func restart() {
+        followStart()
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(Self.runtimeLabel)"]
@@ -248,6 +273,7 @@ struct HealthView: View {
         @unknown default:
             break
         }
+        if model.starting { return "Starting… (launchd can take up to a minute)" }
         guard case .success(let beat) = model.heartbeat, let beatAt = ISOTime.date(beat.beat_at) else {
             if case .failure(.invalid) = model.heartbeat { return "Health data unreadable" }
             return "Runtime has not started yet"
@@ -269,7 +295,7 @@ struct HealthView: View {
     @ViewBuilder func buttons(_ grade: HealthGrade) -> some View {
         switch model.runtimeStatus {
         case .enabled:
-            if grade == .red || grade == .amber { Button("Restart") { model.restart() } }
+            if (grade == .red || grade == .amber) && !model.starting { Button("Restart") { model.restart() } }
             Button("Turn Off") { model.turnOff() }
         case .requiresApproval:
             Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }

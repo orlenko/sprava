@@ -48,6 +48,8 @@ sprava dashboard <folder>                    # the DASHBOARD.md Sprava would wri
 sprava measures --days 30                    # the shadow run's measures (mvp.md 1.2)
 ```
 
-The shelf lists the live binders in lifeproj's registry (`$CMIRROR_CONFIG` or `~/.config/cmirror/config.toml`),
-read-only, plus folders added with `sprava shelf add <folder>` or File › Add Folder… in the app.
+The shelf lists binders made with New Binder and folders added with `sprava shelf add <folder>` or
+File › Add Folder… in the app. Older binders come in one at a time that way. lifeproj's registry
+(`$CMIRROR_CONFIG` or `~/.config/cmirror/config.toml`) is listed too, read-only, only when
+`"showRegistry": true` is set in Sprava's `shelf.json`.
 Sprava's own state lives in `~/Library/Application Support/Sprava` (`$SPRAVA_SUPPORT_DIR` overrides it).

@@ -54,11 +54,9 @@ final class ShelfModel: ObservableObject {
         today = CalendarDate.today()
         var registry: LifeprojRegistry?
         note = nil
-        let url = LifeprojRegistry.defaultPath()
-        if FileManager.default.fileExists(atPath: url.path) {
-            do { registry = try LifeprojRegistry.load(from: url) } catch {
-                note = "lifeproj's registry could not be read: \(error.localizedDescription)"
-            }
+        // lifeproj's registry is on the Shelf only when the person turned it on (shelf.json "showRegistry").
+        do { registry = try store.registryForShelf() } catch {
+            note = "lifeproj's registry could not be read: \(error.localizedDescription)"
         }
         var picked: [URL] = []
         do { picked = try store.readFolders() } catch { note = "\(error)" }
@@ -214,7 +212,7 @@ struct ShelfView: View {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
                 } description: {
-                    Text("Add a binder folder with File › Add Folder…, or register it with lifeproj.")
+                    Text("Create one with New Binder, or add an existing folder with File › Add Folder….")
                 } actions: {
                     Button("Add Folder…") { model.addFolderWithPanel() }
                 }
