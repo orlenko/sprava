@@ -44,6 +44,8 @@ public struct FilingBinder: Sendable, Equatable {
         public var waitingOn: String?
         public var words: Set<String>
         public var noDeadline = false
+        /// The item's `kind`, if any: a redaction needs one (binder-v0 §4.4).
+        public var kind: String?
         public var key: String { HubLane.idText(id) }
     }
 
@@ -60,7 +62,8 @@ public struct FilingBinder: Sendable, Equatable {
             guard let id = item["id"], let title = item["title"]?.stringValue, item["dismissed"] != .bool(true) else { return nil }
             let waiting = item["waiting_on"]?.stringValue
             return Candidate(id: id, title: title, due: item["due"]?.stringValue, waitingOn: waiting,
-                             words: significantWords(title + " " + (waiting ?? "")), noDeadline: item["no_deadline"] == .bool(true))
+                             words: significantWords(title + " " + (waiting ?? "")), noDeadline: item["no_deadline"] == .bool(true),
+                             kind: item["kind"]?.stringValue)
         }
     }
 
@@ -504,6 +507,11 @@ public struct Clerk: Sendable {
                 let t = teka(item, number: 0, today: today, event: event, actor: actor, interp: interp)
                 for key in ["due", "expected_by", "follow_up_at", "waiting_on"] where t[key] != nil { set.set(key, t[key]!) }
                 if set.entries.isEmpty, let amount = item.amountText { op.set("note", .string(amount)) }
+                // What a private capture writes into an existing item is redacted with it (capture-event-v0 §3.3).
+                if event.isPrivate {
+                    set.set("redact", .bool(true))
+                    if item.match!.candidate.kind == nil { set.set("kind", .str("other")) }
+                }
                 op.set("op", .str("update_item"))
                 var args = JSONObject([(key: "id", value: item.match!.candidate.id), (key: "set", value: .object(set))])
                 // A date replaces "no deadline" (binder-v0 §4.4: due XOR no_deadline).

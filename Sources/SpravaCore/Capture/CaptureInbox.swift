@@ -335,8 +335,13 @@ public struct CaptureInbox: Sendable {
             for i in 0..<max(filed.count, lines.count) {
                 if i < filed.count, i < lines.count {
                     guard let itemID = filed[i]["id"], filed[i]["title"]?.stringValue != lines[i] else { continue }
-                    ops.append(JSONObject([(key: "op", value: .str("update_item")),
-                                           (key: "args", value: .obj([("id", itemID), ("set", .obj([("title", .string(String(lines[i].prefix(200))))]))]))]))
+                    var set = JSONObject([(key: "title", value: .string(String(lines[i].prefix(200))))])
+                    // A private correction's words are redacted as they land (capture-event-v0 §3.3).
+                    if event.isPrivate {
+                        set.set("redact", .bool(true))
+                        if filed[i]["kind"] == nil { set.set("kind", .str("other")) }
+                    }
+                    ops.append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(set))]))]))
                 } else if i < lines.count {
                     var item = JSONObject()
                     item.set("id", .string("$new:\(i + 1)"))
@@ -344,6 +349,10 @@ public struct CaptureInbox: Sendable {
                     item.set("status", .str("open"))
                     item.set("priority", .str("normal"))
                     item.set("no_deadline", .bool(true))
+                    if event.isPrivate {
+                        item.set("redact", .bool(true))
+                        item.set("kind", .str("other"))
+                    }
                     item.set("provenance", .obj([("events", .array([.string(event.id)]))]))
                     ops.append(JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .object(item))]))]))
                 } else if let itemID = filed[i]["id"] {
@@ -353,9 +362,11 @@ public struct CaptureInbox: Sendable {
             }
             guard !ops.isEmpty else { continue }
             let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+            var provenance = JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "supersedes", value: .array(chain.map(JSONValue.string))),
+                                         (key: "filed_by", value: .str("code, no model"))])
+            if event.isPrivate { provenance.set("private", .bool(true)) }
             let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: ops,
-                                     provenance: JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "supersedes", value: .array(chain.map(JSONValue.string))),
-                                                             (key: "filed_by", value: .str("code, no model"))]), now: now)
+                                     provenance: provenance, now: now)
             if (try? ProposalStore.save(card, in: row.folder)) != nil {
                 commands.trustProposals([card.id], in: row.folder)
                 made.append((row.folder, card.id))
