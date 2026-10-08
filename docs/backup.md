@@ -99,7 +99,8 @@ The person chooses how it is kept:
   typing. Less private: anyone who reaches the iCloud account reaches both the backup and its key.
 
 Either way the runtime holds a copy in the local Keychain, this device only, so backups run unattended. restic
-receives it through `--password-command`, never through an environment variable or a file in a binder.
+receives it through a short-lived file, readable by the person's user only, in Sprava's own folder and deleted when
+the command ends; never through an environment variable or a file in a binder.
 
 On a new Mac, a restore starts with "paste your backup key" (or nothing, with iCloud Keychain). The restore
 drill (section 8) walks the same path, so the person learns it before they need it.
@@ -204,7 +205,7 @@ too, or lifeproj will look for a folder that is gone.
 
 - A pinned restic release (BSD-2-Clause licence), signed with the app, its SHA-256 checked before each run
   (the rule of architecture 3.5 for any binary Sprava runs).
-- Run as a subprocess by the runtime with an explicit environment, `--json`, `--password-command`, the cache in
+- Run as a subprocess by the runtime with an explicit environment, `--json`, the key in a short-lived private file, the cache in
   Sprava's own folder, and no shell.
 - Upgrading restic is a release of Sprava. The repository format is restic's stable version 2.
 
