@@ -95,17 +95,21 @@ public final class MCPListener: @unchecked Sendable {
     /// Binds the socket. A stale socket file from a crash is removed first; the caller holds the runtime lease.
     public func start() throws {
         try AtomicFile.makePrivateFolder(socketURL.deletingLastPathComponent())
-        chmod(socketURL.deletingLastPathComponent().path, 0o700)
+        guard chmod(socketURL.deletingLastPathComponent().path, 0o700) == 0 else { throw Failure(message: "chmod: \(errno)") }
         guard var addr = unixAddress(socketURL.path) else { throw Failure(message: "socket path longer than 103 bytes") }
         unlink(socketURL.path)
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw Failure(message: "socket: \(errno)") }
-        let old = umask(0o177)
+        // No umask here (it is process-wide): the 0700 folder keeps others out until the socket is chmod 0600 below.
         let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
             bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
-        umask(old)
         guard bound == 0 else { close(fd); throw Failure(message: "bind: \(errno)") }
-        chmod(socketURL.path, 0o600)
+        guard chmod(socketURL.path, 0o600) == 0 else {
+            let code = errno
+            close(fd)
+            unlink(socketURL.path)
+            throw Failure(message: "chmod: \(code)")
+        }
         guard listen(fd, 16) == 0 else { close(fd); throw Failure(message: "listen: \(errno)") }
         let thread = Thread { [weak self] in self?.acceptLoop() }
         thread.name = "sprava.mcp.accept"

@@ -18,8 +18,8 @@ import Testing
     @Test func mintsTheNextNumberForTheYear() throws {
         let (folder, store) = try adopted()
         let c = Teka.read(folder).catalog!
-        #expect(IDMint.next(catalog: c, opLog: try store.readOpLog().ops, year: 2026) == "estate-example-2026-013")
-        #expect(IDMint.next(catalog: c, opLog: [], year: 2027) == "estate-example-2027-001")
+        #expect(try IDMint.next(catalog: c, opLog: try store.readOpLog().ops, year: 2026) == "estate-example-2026-013")
+        #expect(try IDMint.next(catalog: c, opLog: [], year: 2027) == "estate-example-2027-001")
         #expect(IDMint.prefix(for: "Estate of A. Example") == "estate-of-a-example")
         #expect(IDMint.prefix(for: "Ψ") == "item")
     }

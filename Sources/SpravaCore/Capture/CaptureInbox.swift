@@ -310,10 +310,20 @@ public struct CaptureInbox: Sendable {
                 return
             }
             replaces = earlier
-            let withdrawn = withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, deviceID: commands.deviceID, now: now)
-            // Items already filed from the earlier version get a change card, never new items beside them (§6.5).
-            if let made = correctionCards(event, chain: chain, current: earlier, withdrawn: withdrawn, paths: state.paths ?? [:],
-                                          binders: binders, commands: commands, now: now) {
+            // Items already filed from the earlier version get a change card, never new items beside them (§6.5). What
+            // waits from the chain is withdrawn only once those cards are kept: when one cannot be saved or trusted,
+            // nothing changed, the stage stays "ingested", and the next sweep tries again from the same place.
+            let withdrawing = withdrawable(chain: chain, binders: binders, deviceID: commands.deviceID)
+            let corrections: [(URL?, String)]?
+            do {
+                corrections = try correctionCards(event, chain: chain, current: earlier, withdrawn: withdrawing, paths: state.paths ?? [:],
+                                                  binders: binders, commands: commands, now: now)
+            } catch {
+                journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
+                return
+            }
+            withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, deviceID: commands.deviceID, now: now)
+            if let made = corrections {
                 if let (folder, card) = made.first {
                     state.cards[id] = card
                     if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
@@ -432,8 +442,9 @@ public struct CaptureInbox: Sendable {
     /// alone. New lines, and lines whose waiting card this correction withdrew, are proposed once: in the binder of
     /// the item filed from the nearest line, else unfiled. A private correction redacts every item it touches.
     /// Returns (binder or nil for unfiled, card id) for each card saved; nil when nothing was filed from the chain.
+    /// Throws when a card cannot be saved or trusted; the cards already made are found again on the retry.
     func correctionCards(_ event: CaptureEvent, chain: [String], current: String, withdrawn: [(URL?, Proposal)], paths: [String: String],
-                         binders: [ShelfRow], commands: Commands, now: Date) -> [(URL?, String)]? {
+                         binders: [ShelfRow], commands: Commands, now: Date) throws -> [(URL?, String)]? {
         let ids = Set(chain)
         let newLines = Self.lines(of: event.text)
         typealias Lines = [(text: String, start: Int, end: Int)]
@@ -507,6 +518,14 @@ public struct CaptureInbox: Sendable {
                     }
                 }
                 if drop {
+                    // A private correction closes nothing in the clear: the closure keeps the item's title, and the hub
+                    // shows it once more, so the redaction goes first in the same batch (capture-event-v0 §3.3).
+                    if event.isPrivate, o["redact"] != .bool(true) {
+                        var redact = JSONObject([(key: "redact", value: .bool(true))])
+                        if o["kind"] == nil { redact.set("kind", .str("other")) }
+                        ops[folder, default: []].append(JSONObject([(key: "op", value: .str("update_item")),
+                                                                   (key: "args", value: .obj([("id", itemID), ("set", .object(redact))]))]))
+                    }
                     ops[folder, default: []].append(JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
                         ("id", itemID), ("closed_at", closedAt), ("source", .str("capture"))]))]))
                     continue
@@ -569,44 +588,80 @@ public struct CaptureInbox: Sendable {
         for folder in rows.map(\.folder) where ops[folder] != nil || adds[folder] != nil {
             let cardOps = (ops[folder] ?? []) + (adds[folder] ?? [])
             guard !cardOps.isEmpty else { continue }
+            // A retry after a partial failure keeps the card this correction already made here, never a second one.
+            if let kept = madeCorrection(event.id, in: folder, commands: commands) {
+                made.append((folder, kept))
+                continue
+            }
             let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: cardOps,
                                      provenance: provenance, now: now)
-            if (try? ProposalStore.save(card, in: folder)) != nil {
-                try? commands.trustProposals([card.id], in: folder)
-                made.append((folder, card.id))
+            try ProposalStore.save(card, in: folder)
+            do {
+                try commands.trustProposals([card.id], in: folder)
+            } catch {
+                // A card whose digest was not kept could never be approved: it goes, and the correction is tried again.
+                let written = ProposalStore.dir(folder).appendingPathComponent("\(card.id).json")
+                if (try? FileManager.default.removeItem(at: written)) == nil {
+                    try? TekaStore(folder: folder).reject(card, reason: "its digest could not be kept", now: now)
+                }
+                throw error
             }
+            made.append((folder, card.id))
         }
         if let unfiledOps = adds[nil] {
-            let noun = event.raw["source"]?["kind"]?.stringValue == "dictation" ? "dictation" : "note"
-            var card = Proposal.make(title: "Corrected \(noun): add \(unfiledOps.count == 1 ? "a new line" : "\(unfiledOps.count) new lines")",
-                                     actor: actor, ops: unfiledOps, provenance: provenance, now: now).raw
-            card.set("binder", .str("not sure"))
-            if (try? writeUnfiled(card)) != nil { made.append((nil, card["id"]?.stringValue ?? "")) }
+            if let kept = unfiled().first(where: { Self.isCorrection($0, of: event.id) }) {
+                made.append((nil, kept.id))
+            } else {
+                let noun = event.raw["source"]?["kind"]?.stringValue == "dictation" ? "dictation" : "note"
+                var card = Proposal.make(title: "Corrected \(noun): add \(unfiledOps.count == 1 ? "a new line" : "\(unfiledOps.count) new lines")",
+                                         actor: actor, ops: unfiledOps, provenance: provenance, now: now).raw
+                card.set("binder", .str("not sure"))
+                try writeUnfiled(card)
+                made.append((nil, card["id"]?.stringValue ?? ""))
+            }
         }
         return made
+    }
+
+    /// A correction card of `event`: its only event, and it names what it supersedes.
+    static func isCorrection(_ p: Proposal, of event: String) -> Bool {
+        p.raw["provenance"]?["events"] == .array([.string(event)]) && p.raw["provenance"]?["supersedes"] != nil
+    }
+
+    /// The correction card `event` already has in `folder`: one waiting as Sprava wrote it, or one the person
+    /// approved; nil when there is none.
+    func madeCorrection(_ event: String, in folder: URL, commands: Commands) -> String? {
+        ProposalStore.list(in: folder).map(\.0).first { p in
+            Self.isCorrection(p, of: event) && (p.state == "applied" || (p.state == "proposed" && commands.isTrusted(p.id, in: folder)))
+        }?.id
     }
 
     /// Withdraws what still waits from a chain, and ends the clerk's work on it. A card that only redacts stays: a
     /// raise to private holds whatever comes after it. Returns the cards withdrawn (binder, or nil when unfiled).
     @discardableResult
     func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], deviceID: String, now: Date) -> [(URL?, Proposal)] {
-        let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: deviceID)
-        func onlyRedacts(_ p: Proposal) -> Bool {
-            !p.ops.isEmpty && p.ops.allSatisfy { $0["op"] == .str("update_item") && $0["args"]?["set"]?["redact"] == .bool(true) }
-        }
-        var out: [(URL?, Proposal)] = []
-        for p in unfiled {
-            if let file = unfiledFile(p.id) { try? FileManager.default.removeItem(at: file) }
-            out.append((nil, p))
-        }
-        for (folder, p) in filed where !onlyRedacts(p) {
-            try? TekaStore(folder: folder).reject(p, reason: reason, now: now)
-            out.append((folder, p))
+        let out = withdrawable(chain: chain, binders: binders, deviceID: deviceID)
+        for (folder, p) in out {
+            if let folder {
+                try? TekaStore(folder: folder).reject(p, reason: reason, now: now)
+            } else if let file = unfiledFile(p.id) {
+                try? FileManager.default.removeItem(at: file)
+            }
         }
         var clerk = state.clerk ?? [:]
         for id in chain where clerk[id] != nil { clerk[id] = "superseded" }
         state.clerk = clerk
         return out
+    }
+
+    /// The cards `withdraw` would take from a chain, without touching them: every unfiled one, and each one waiting
+    /// in a binder unless it only redacts.
+    func withdrawable(chain: [String], binders: [ShelfRow], deviceID: String) -> [(URL?, Proposal)] {
+        let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: deviceID)
+        func onlyRedacts(_ p: Proposal) -> Bool {
+            !p.ops.isEmpty && p.ops.allSatisfy { $0["op"] == .str("update_item") && $0["args"]?["set"]?["redact"] == .bool(true) }
+        }
+        return unfiled.map { (nil, $0) } + filed.filter { !onlyRedacts($0.1) }.map { ($0.0, $0.1) }
     }
 
     /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items

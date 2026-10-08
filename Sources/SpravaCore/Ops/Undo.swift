@@ -54,7 +54,9 @@ public enum IDMint {
         return out
     }
 
-    public static func next(catalog: JSONObject, opLog: [JSONObject], year: Int, document: Bool = false) -> String {
+    /// The next id, or a refusal when the year's sequence is used up: an imported id such as
+    /// `<prefix>-2026-9223372036854775807` leaves no larger number, and that is an error, never a crash.
+    public static func next(catalog: JSONObject, opLog: [JSONObject], year: Int, document: Bool = false) throws -> String {
         let name = catalog["meta"]?["name"]?.stringValue ?? "item"
         let p = prefix(for: name)
         let infix = document ? "-doc" : ""
@@ -77,13 +79,17 @@ public enum IDMint {
         let teka = catalog["meta"]?["name"]?.stringValue ?? name
         let taken = Set((catalog["open_items"]?.arrayValue ?? []).compactMap { $0["id"] }.map { HubLane.plainSliceID($0, teka: teka) })
         let usedText = Set(used.compactMap(\.stringValue))
-        var n = maxN + 1
+        var n = maxN
         while true {
-            let candidate = "\(p)\(infix)-\(year)-" + String(format: "%03d", n)
+            let (following, overflow) = n.addingReportingOverflow(1)
+            guard !overflow else { throw TekaStore.Refused(reason: "the id sequence \(p)\(infix)-\(year) is used up; no new id can be minted this year") }
+            n = following
+            // Written out with at least three digits; a 64-bit number never goes through a 32-bit `%d`.
+            let digits = String(n)
+            let candidate = "\(p)\(infix)-\(year)-" + String(repeating: "0", count: max(0, 3 - digits.count)) + digits
             if document || (!taken.contains(HubLane.plainSliceID(.string(candidate), teka: teka)) && !usedText.contains(candidate)) {
                 return candidate
             }
-            n += 1
         }
     }
 }
@@ -173,7 +179,7 @@ public enum Undo {
                       ($0["id"] ?? $0["item"]) == closedID && $0["op_id"] == target["id"] })?.objectValue
             else { throw Unsupported(message: "the closure entry is not in the processing log") }
             var item = JSONObject()
-            item.set("id", .string(IDMint.next(catalog: catalog, opLog: opLog, year: year)))
+            item.set("id", .string(try IDMint.next(catalog: catalog, opLog: opLog, year: year)))
             item.set("title", entry["title"] ?? .str(""))
             if let kind = entry["kind"] { item.set("kind", kind) }
             // Nulls are dropped and compact or week dates written out, so the reopened item meets the v0 rules.
@@ -238,7 +244,7 @@ extension TekaStore {
 /// Placeholder ids (`"$new:1"`) in a proposal are minted when the proposal is applied, never when it is proposed,
 /// so two pending proposals never claim one number (binder-v0 §5.6). Later ops in the batch may name a placeholder.
 public enum Placeholders {
-    public static func resolve(_ ops: [JSONObject], catalog: JSONObject, opLog: [JSONObject], year: Int, at: String) -> [JSONObject] {
+    public static func resolve(_ ops: [JSONObject], catalog: JSONObject, opLog: [JSONObject], year: Int, at: String) throws -> [JSONObject] {
         var minted: [String: JSONValue] = [:]
         var working = catalog
         var out: [JSONObject] = []
@@ -246,7 +252,7 @@ public enum Placeholders {
             guard case .object(var args)? = op["args"] else { out.append(op); continue }
             if op["op"]?.stringValue == "add_item", case .object(var item)? = args["item"] {
                 if case .string(let id)? = item["id"], id.hasPrefix("$new:") {
-                    let real = JSONValue.string(IDMint.next(catalog: working, opLog: opLog, year: year))
+                    let real = JSONValue.string(try IDMint.next(catalog: working, opLog: opLog, year: year))
                     minted[id] = real
                     item.set("id", real)
                 }
@@ -258,7 +264,7 @@ public enum Placeholders {
                 working.set("open_items", .array(items))
             } else if op["op"]?.stringValue == "file_document", case .object(var document)? = args["document"] {
                 if case .string(let id)? = document["id"], id.hasPrefix("$new:") {
-                    let real = JSONValue.string(IDMint.next(catalog: working, opLog: opLog, year: year, document: true))
+                    let real = JSONValue.string(try IDMint.next(catalog: working, opLog: opLog, year: year, document: true))
                     minted[id] = real
                     document.set("id", real)
                 }
@@ -285,7 +291,7 @@ extension TekaStore {
         let log = try store.readOpLog().ops
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         let year = Calendar(identifier: .gregorian).component(.year, from: now)
-        let resolved = Placeholders.resolve(bodies, catalog: catalog, opLog: log, year: year, at: at)
+        let resolved = try Placeholders.resolve(bodies, catalog: catalog, opLog: log, year: year, at: at)
         let lines = resolved.map { body -> JSONObject in
             var line = JSONObject()
             line.set("id", .string(UUIDv7.make(now: now)))

@@ -329,6 +329,32 @@ public enum HubLane {
         return .published(items: slice["items"]?.arrayValue?.count ?? 0, overwrittenByOther: overwritten)
     }
 
+    /// One binder's hub pass, as the runtime runs it: drain, then publish.
+    public struct SyncResult {
+        public var drained: DrainResult?
+        public var drainError: Error?
+        public var published: PublishResult?
+        public var publishError: Error?
+        public var failed: Bool { drainError != nil || publishError != nil }
+    }
+
+    /// Drains, then publishes. Publishing never waits on the drain: an outbox that cannot be drained must not keep
+    /// a slice the person narrowed or withdrew on the hub, and the projection reads only the binder, never the
+    /// outbox. A drain failure is reported beside whatever the publish did. `afterDrain` sees a drain that worked.
+    public static func sync(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(),
+                            afterDrain: (DrainResult) -> Void = { _ in }) -> SyncResult {
+        var out = SyncResult()
+        do {
+            let drained = try drain(folder, root: root, now: now)
+            out.drained = drained
+            afterDrain(drained)
+        } catch {
+            out.drainError = error
+        }
+        do { out.published = try publish(folder, root: root, now: now) } catch { out.publishError = error }
+        return out
+    }
+
     static func stripGenerated(_ slice: JSONValue) -> JSONValue {
         guard case .object(var o) = slice else { return slice }
         o.remove("generated")

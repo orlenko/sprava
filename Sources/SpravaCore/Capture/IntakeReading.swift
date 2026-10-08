@@ -26,8 +26,14 @@ public struct IntakeReading: Sendable, Equatable {
     }
 
     /// Reads a file and, for a message, the files of its attachments folder, each in the sandboxed helper. Without
-    /// the helper the file is held, saying the reader is missing.
+    /// the helper the file is held, saying the reader is missing. A key or credential file (binder-v0 §3.3), alone or
+    /// in the attachments folder, is never opened: the whole card is held, and the person can still file it.
     public static func read(_ file: URL, attachments: [URL] = [], channel: String, reader: ExtractHelper.Reader) -> IntakeReading {
+        if let key = ([file] + attachments).first(where: { DocumentPaths.isKeyFile($0.lastPathComponent) }) {
+            return IntakeReading(kind: "unknown", textFrom: "parsed", text: "",
+                                 held: "\u{201C}\(DocumentPaths.safeName(key.lastPathComponent))\u{201D} looks like a key or credential file and is not read",
+                                 channel: channel)
+        }
         let result: Extractor.Result
         do { result = try ExtractHelper.run(file, reader: reader) } catch {
             return IntakeReading(kind: "unknown", textFrom: "parsed", text: "", held: "\(error)", channel: channel)
@@ -39,7 +45,15 @@ public struct IntakeReading: Sendable, Equatable {
             r.subject = e.subject; r.from = e.from; r.to = e.to; r.date = e.date
         }
         var parts: [(String, Result<Extractor.Result, Error>)] = []
-        for a in result.email?.attachments ?? [] { parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, reader: reader) })) }
+        for a in result.email?.attachments ?? [] {
+            // The helper drops a leading dot from an attachment's name, so `.netrc` arrives as `netrc`.
+            if DocumentPaths.isKeyFile(a.name) || DocumentPaths.isKeyFile("." + a.name) {
+                r.attachments.append(a.name)
+                r.notes.append("attachment \u{201C}\(a.name)\u{201D} looks like a key or credential file and was not read")
+                continue
+            }
+            parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, reader: reader) }))
+        }
         for url in attachments { parts.append((url.lastPathComponent, Result { try ExtractHelper.run(url, reader: reader) })) }
         for (name, outcome) in parts {
             r.attachments.append(name)

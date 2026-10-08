@@ -122,9 +122,17 @@ public final class TekaStore {
     }
 
     /// The op log's complete lines. A torn last line, and a trailing batch shorter than its `batch_size`, never
-    /// took effect and are left out (binder-v0 §6.9).
+    /// took effect and are left out (binder-v0 §6.9). Only a missing log is empty; one that exists but cannot be
+    /// read throws, so nothing mistakes the binder for one never adopted.
     public func readOpLog() throws -> (ops: [JSONObject], torn: Bool) {
-        guard let data = try? Data(contentsOf: opLogURL) else { return ([], false) }
+        let data: Data
+        do {
+            data = try Data(contentsOf: opLogURL)
+        } catch {
+            var st = stat()
+            if lstat(opLogURL.path, &st) != 0, errno == ENOENT { return ([], false) }
+            throw Refused(reason: ".sprava/ops.ndjson cannot be read; it was left as it is")
+        }
         var text = String(decoding: data, as: UTF8.self)
         var torn = false
         if !text.isEmpty, !text.hasSuffix("\n") {
