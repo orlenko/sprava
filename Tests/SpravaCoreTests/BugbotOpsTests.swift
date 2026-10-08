@@ -141,4 +141,120 @@ import Testing
         let quiet = try #require(try JSONParser.parse(#"{"op":"update_item","args":{"id":"x-1","set":{"priority":"high"}}}"#).value.objectValue)
         #expect(!Proposal.describe(quiet, catalog: catalog).contains("privacy"))
     }
+
+    // MARK: - Hub lane
+
+    @Test func narrowingToTitleWithdrawsTheFullSlice() throws {   // p8-QK
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        _ = try apply(c, folder, "set_disclosure", .obj([("disclosure", .str("title"))]))
+        guard case .notPublished = try HubLane.publish(folder, root: spool, now: now) else { Issue.record("expected notPublished"); return }
+        #expect(!FileManager.default.fileExists(atPath: sliceURL(spool, "rental-elm-street").path))
+        #expect(HubLane.loadCursors(folder).sliceHash == nil)
+    }
+
+    @Test func unreadableCursorsStopPublishing() throws {   // qIe1n
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        _ = try apply(c, folder, "update_item", .obj([("id", .str("item-0006")), ("set", .obj([("redact", .bool(true)), ("kind", .str("payment"))]))]))
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        let before = try Data(contentsOf: sliceURL(spool, "rental-elm-street"))
+        try outsideEdit(folder, updateItem("item-0006") { $0.remove("redact") })
+        try Data("{".utf8).write(to: folder.appendingPathComponent(".sprava/cursors.json"))
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(folder, root: spool, now: now) }
+        #expect(try Data(contentsOf: sliceURL(spool, "rental-elm-street")) == before)
+        #expect(String(decoding: before, as: UTF8.self).contains("[redacted]"))
+    }
+
+    @Test func aFailedSliceRemovalIsReported() throws {   // qHLt7
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        let hash = HubLane.loadCursors(folder).sliceHash
+        let inbox = spool.appendingPathComponent("inbox")
+        chmod(inbox.path, 0o500)
+        defer { chmod(inbox.path, 0o700) }
+        _ = try apply(c, folder, "set_disclosure", .obj([("disclosure", .str("none"))]))
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(folder, root: spool, now: now) }
+        #expect(HubLane.loadCursors(folder).sliceHash == hash)
+    }
+
+    @Test func anUnreadableOutboxIsAFailure() throws {   // qHLuC
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        #expect(try HubLane.drain(folder, root: spool, now: now) == HubLane.DrainResult())
+        let outbox = spool.appendingPathComponent("outbox")
+        try FileManager.default.createDirectory(at: outbox, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        #expect(try HubLane.drain(folder, root: spool, now: now) == HubLane.DrainResult())
+        let file = outbox.appendingPathComponent("rental-elm-street.intake.json")
+        try Data(#"{"completions":[{"id":"item-0003","action":"done","at":"2026-10-07T08:00:00Z"}]}"#.utf8).write(to: file)
+        chmod(file.path, 0o000)
+        defer { chmod(file.path, 0o600) }
+        #expect(throws: TekaStore.Refused.self) { try HubLane.drain(folder, root: spool, now: now) }
+    }
+
+    @Test func aDeletedSliceIsPublishedAgain() throws {   // qIlEJ
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        try FileManager.default.removeItem(at: sliceURL(spool, "rental-elm-street"))
+        guard case .published = try HubLane.publish(folder, root: spool, now: now) else { Issue.record("expected published"); return }
+        #expect(FileManager.default.fileExists(atPath: sliceURL(spool, "rental-elm-street").path))
+        #expect(try HubLane.publish(folder, root: spool, now: now) == .unchanged)
+    }
+
+    @Test func aDamagedSliceKeyIsNeverReplaced() throws {   // qI0_M
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        let keyURL = folder.appendingPathComponent(".sprava/slice-key")
+        let short = Data(repeating: 7, count: 10)
+        try short.write(to: keyURL)
+        _ = try apply(c, folder, "update_item", .obj([("id", .str("item-0006")), ("set", .obj([("priority", .str("high"))]))]))
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(folder, root: spool, now: now) }
+        #expect(try Data(contentsOf: keyURL) == short)
+    }
+
+    @Test func aClosedDuplicateShowsOnceAsDone() throws {   // p8-RS
+        let c = commands()
+        let (folder, spool) = try readyBinder(c)
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        // A hand-written closure with another action leaves the item open with a closed id.
+        try outsideEdit(folder) { cat in
+            var log = cat["processing_log"]?.arrayValue ?? []
+            log.append(.obj([("id", .str("item-0006")), ("action", .str("completed")), ("at", .str("2026-10-07"))]))
+            cat.set("processing_log", .array(log))
+        }
+        let r = try apply(c, folder, "complete", .obj([("id", .str("item-0006"))]))
+        #expect(r["ok"] == .bool(true), "\(r)")
+        _ = try HubLane.publish(folder, root: spool, now: now)
+        let items = try JSONParser.parse(try Data(contentsOf: sliceURL(spool, "rental-elm-street"))).value["items"]?.arrayValue ?? []
+        let shown = items.filter { $0["id"] == .str("rental-elm-street-item-0006") }
+        #expect(shown.count == 1 && shown.first?["status"] == .str("done"))
+    }
+
+    @Test func collidingBinderNamesAreFound() throws {   // qewBo
+        let a = try makeTeka(fixture: "lifeproj-v1-legacy", folderName: "tax-2026")
+        let b = try makeTeka(fixture: "lifeproj-v1-legacy", folderName: "Tax-2026") { f in
+            let url = f.appendingPathComponent("catalog.json")
+            let text = try String(contentsOf: url, encoding: .utf8).replacingOccurrences(of: "\"tax-2026\"", with: "\"Tax-2026\"")
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        let other = try makeTeka(fixture: "lifeproj-v2-live")
+        let rows = Shelf.rows(registry: nil, picked: [a, b, other])
+        let colliding = HubLane.collidingFolders(rows, today: today)
+        #expect(colliding == [a.standardizedFileURL.path, b.standardizedFileURL.path])
+        // A former name another binder still drains under counts too.
+        let renamed = try makeTeka(fixture: "lifeproj-v2-fresh", folderName: "estate-renamed") { f in
+            let url = f.appendingPathComponent("catalog.json")
+            var cat = try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+            var meta = cat["meta"]?.objectValue ?? JSONObject()
+            meta.set("name", .str("estate-renamed"))
+            meta.set("former_names", .array([.obj([("name", .str("Rental-Elm-Street")), ("until", .str("2027-01-01"))])]))
+            cat.set("meta", .object(meta))
+            try Data(JSONWriter.pretty(.object(cat)).utf8).write(to: url)
+        }
+        #expect(HubLane.collidingFolders(Shelf.rows(registry: nil, picked: [other, renamed]), today: today).count == 2)
+    }
 }

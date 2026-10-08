@@ -50,12 +50,16 @@ public enum Doctor {
         let registered = Set((registry?.entries ?? []).compactMap { $0.workingDir }.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL.path
         })
+        let colliding = HubLane.collidingFolders(rows, today: CalendarDate.today())
         for row in rows where row.teka.isAdopted {
             let name = row.name
             let teka = row.teka
             if Owner.device(of: row.folder) != deviceID {
                 out.append(Finding(level: .note, binder: name, text: "managed by another Mac or a development build; read-only here"))
                 continue
+            }
+            if colliding.contains(row.folder.standardizedFileURL.path) {
+                out.append(Finding(level: .fix, binder: name, text: "another binder on the Shelf has the same name; neither publishes to nor drains from the hub until one is renamed"))
             }
             switch ManualAddendum.isPresent(in: row.folder) {
             case false?: out.append(Finding(level: .fix, binder: name, text: "the manual lacks Sprava's addendum; paste it from the binder's page"))

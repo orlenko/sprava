@@ -373,7 +373,14 @@ final class Runtime: @unchecked Sendable {
         try? ids.save(idsURL)
         idsLock.unlock()
         var failures: [String] = []
+        // Two known binders under one name would share a spool file: neither publishes nor drains (binder-v0 §3.1).
+        let colliding = HubLane.collidingFolders(rows, today: CalendarDate.today())
         for (row, bid) in zip(mine, bids) {
+            if colliding.contains(row.folder.standardizedFileURL.path) {
+                failures.append(bid)
+                log("hub binder=\(bid) name_collision=true")
+                continue
+            }
             do {
                 let drained = try HubLane.drain(row.folder, root: root)
                 if !drained.createdProposals.isEmpty, let commands, let xpc {

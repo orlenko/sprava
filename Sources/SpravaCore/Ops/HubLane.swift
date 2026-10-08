@@ -33,6 +33,28 @@ public enum HubLane {
         return url
     }
 
+    /// A binder name as the spool compares it: NFC, then case folded (APFS is case-insensitive by default).
+    static func foldedName(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive], locale: nil)
+    }
+
+    /// The folders whose binder names collide with another known binder's, after case folding and NFC, unexpired
+    /// former names included (binder-v0 §3.1). None of them publishes or drains: they would share one spool file.
+    /// A former name without a readable `until` counts as unexpired.
+    public static func collidingFolders(_ rows: [ShelfRow], today: CalendarDate) -> Set<String> {
+        var byName: [String: Set<String>] = [:]
+        for row in rows where row.teka.catalog != nil {
+            var names = [row.teka.name]
+            for former in row.teka.catalog?["meta"]?["former_names"]?.arrayValue ?? [] {
+                guard let name = former["name"]?.stringValue else { continue }
+                if let until = former["until"]?.stringValue.flatMap({ CalendarDate.strict(String($0.prefix(10))) }), until < today { continue }
+                names.append(name)
+            }
+            for name in Set(names.map(foldedName)) { byName[name, default: []].insert(row.folder.standardizedFileURL.path) }
+        }
+        return Set(byName.values.filter { $0.count > 1 }.flatMap { $0 })
+    }
+
     public enum PublishResult: Equatable {
         case noSpool
         case unchanged
@@ -57,8 +79,22 @@ public enum HubLane {
 
     static func cursorsURL(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/cursors.json") }
 
-    static func loadCursors(_ folder: URL) -> Cursors {
-        (try? Data(contentsOf: cursorsURL(folder))).flatMap { try? JSONDecoder().decode(Cursors.self, from: $0) } ?? Cursors()
+    /// The cursors, for read-only callers such as the doctor: empty when they cannot be read.
+    static func loadCursors(_ folder: URL) -> Cursors { (try? readCursors(folder)) ?? Cursors() }
+
+    /// The cursors for publish and drain. Only a missing file is a fresh start; one that cannot be read or decoded
+    /// stops the lane for this binder, because its `redacted` list keeps redactions an outside edit removed.
+    static func readCursors(_ folder: URL) throws -> Cursors {
+        let url = cursorsURL(folder)
+        var info = stat()
+        if lstat(url.path, &info) != 0 {
+            guard errno == ENOENT else { throw TekaStore.Refused(reason: ".sprava/cursors.json cannot be read") }
+            return Cursors()
+        }
+        guard let data = try? Data(contentsOf: url), let c = try? JSONDecoder().decode(Cursors.self, from: data) else {
+            throw TekaStore.Refused(reason: ".sprava/cursors.json cannot be read; it was left as it is")
+        }
+        return c
     }
 
     static func saveCursors(_ c: Cursors, _ folder: URL) throws {
@@ -69,7 +105,15 @@ public enum HubLane {
 
     static func sliceKey(_ folder: URL) throws -> SymmetricKey {
         let url = folder.appendingPathComponent(".sprava/slice-key")
-        if let data = try? Data(contentsOf: url), data.count == 32 { return SymmetricKey(data: data) }
+        // A key is made only when there is none: rotating it would change every alias the hub knows (binder-v0 §5.6).
+        var info = stat()
+        if lstat(url.path, &info) == 0 {
+            guard let data = try? Data(contentsOf: url), data.count == 32 else {
+                throw TekaStore.Refused(reason: ".sprava/slice-key cannot be read or is damaged; it was left as it is")
+            }
+            return SymmetricKey(data: data)
+        }
+        guard errno == ENOENT else { throw TekaStore.Refused(reason: ".sprava/slice-key cannot be read") }
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
         try AtomicFile.write(Data(bytes), to: url)
@@ -172,8 +216,18 @@ public enum HubLane {
         }
     }
 
-    /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root; at disclosure `none` the
-    /// slice is removed. Levels `title` and `kind` are not published in the MVP.
+    /// Removes a slice from the spool. Only a slice that is already gone is fine; any other failure is reported,
+    /// so a slice the person withdrew never stays on the hub unnoticed.
+    static func removeSlice(_ target: URL) throws {
+        guard unlink(target.path) == 0 || errno == ENOENT else {
+            throw TekaStore.Refused(reason: "the slice on the spool could not be removed")
+        }
+    }
+
+    /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root. The level used is the
+    /// narrower of the catalog's and the one the person confirmed (the privacy ratchet, architecture 4.5). At
+    /// disclosure `none` the slice is removed; levels `title` and `kind` are not published in the MVP, so their
+    /// slice is withdrawn too.
     public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false) throws -> PublishResult {
         var rootInfo = stat()
         guard lstat(root.path, &rootInfo) == 0 else { return .noSpool }
@@ -184,35 +238,53 @@ public enum HubLane {
         let teka = Teka.read(folder)
         guard teka.isAdopted, let catalog = teka.catalog else { return .notPublished("not adopted") }
         guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
-        var cursors = loadCursors(folder)
         let target = try spoolFile(inbox, teka.name, ".agenda.json")
 
-        // Someone else published this binder since our last write: say so, then publish over it.
-        var overwritten = false
-        if let data = try? Data(contentsOf: target), let last = cursors.sliceHash,
-           let value = try? JSONParser.parse(data).value, let hash = try? Canonical.hash(stripGenerated(value)), hash != last {
-            overwritten = true
-        }
-
-        // The narrower of the catalog's level and the one the person confirmed (the privacy ratchet, architecture 4.5).
         let privacy = PrivacyRatchet.view(folder: folder, catalog: catalog)
         let disclosure = privacy.disclosure
-        if disclosure == "none" {
-            try? FileManager.default.removeItem(at: target)
+        if disclosure != "full" {
+            // A narrowing takes effect at once: the slice goes before anything else can fail.
+            try removeSlice(target)
+            var cursors = try readCursors(folder)
             cursors.sliceHash = nil
             try saveCursors(cursors, folder)
-            return .removed
+            return disclosure == "none" ? .removed
+                : .notPublished("disclosure \(disclosure) is not published in this version; the slice was withdrawn")
         }
-        guard disclosure == "full" else { return .notPublished("disclosure \(disclosure) is not published in this version") }
+        var cursors = try readCursors(folder)
+
+        // Someone else published this binder since our last write, or removed or damaged the slice: say so, then
+        // publish over it.
+        var targetCurrent = false
+        var overwritten = false
+        if let last = cursors.sliceHash {
+            if let data = try? Data(contentsOf: target), let value = try? JSONParser.parse(data).value,
+               let hash = try? Canonical.hash(stripGenerated(value)) {
+                targetCurrent = hash == last
+                overwritten = hash != last
+            } else {
+                overwritten = true
+            }
+        }
 
         // Items closed since the last publish are shown once more with status done, so the hub drops them; the
-        // next publish leaves them out. The first publish takes the log as found as its baseline.
+        // next publish leaves them out. The first publish takes the log as found as its baseline. A
+        // `closed-duplicate` entry closes its `item` (binder-v0 §6.8); each id shows once.
         let log = catalog["processing_log"]?.arrayValue ?? []
         if cursors.sliceHash == nil && cursors.lastLogCount == 0 { cursors.lastLogCount = log.count }
-        let newClosures = log.dropFirst(min(cursors.lastLogCount, log.count))
-            .filter { $0["id"] != nil && ["done", "dropped"].contains($0["action"]?.stringValue ?? "") }
-        let closedOnce: [JSONObject] = newClosures.compactMap { entry in
-            guard let id = entry["id"], case .object(let e) = entry else { return nil }
+        var closedKeys = Set<String>()
+        let newClosures: [(id: JSONValue, entry: JSONObject)] = log.dropFirst(min(cursors.lastLogCount, log.count)).compactMap { entry in
+            guard case .object(let e) = entry else { return nil }
+            let id: JSONValue?
+            switch e["action"]?.stringValue {
+            case "done"?, "dropped"?: id = e["id"]
+            case "closed-duplicate"?: id = e["item"]
+            default: id = nil
+            }
+            guard let id, closedKeys.insert((try? Canonical.serialize(id)) ?? idText(id)).inserted else { return nil }
+            return (id, e)
+        }
+        let closedOnce: [JSONObject] = newClosures.map { id, e in
             var item = e["final"]?.objectValue ?? JSONObject()
             item.set("id", id)
             item.set("title", e["title"] ?? .str(""))
@@ -237,11 +309,11 @@ public enum HubLane {
         let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
                                        key: key, now: now, alsoRedact: keepRedacted)
         let hash = try Canonical.hash(stripGenerated(slice))
-        if !force, !overwritten, hash == cursors.sliceHash { return .unchanged }
+        if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
         try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
         cursors.sliceHash = hash
         cursors.published.merge(ids) { _, new in new }
-        cursors.closedOnce = newClosures.compactMap { $0["id"].map { (try? Canonical.serialize($0)) ?? "" } }
+        cursors.closedOnce = newClosures.map { (try? Canonical.serialize($0.id)) ?? "" }
         cursors.lastLogCount = log.count
         cursors.opCount = ops.count
         let items = catalog["open_items"]?.arrayValue ?? []
@@ -281,14 +353,20 @@ public enum HubLane {
         guard lstat(outboxDir.path, &info) == 0 else { return result }
         try checkFolder(outboxDir, create: false)
         let file = try spoolFile(outboxDir, teka.name, ".intake.json")
-        guard let data = try? Data(contentsOf: file) else { return result }
+        // No outbox is nothing to do; an outbox that cannot be read is a failure, so the breaker sees it.
+        var fileInfo = stat()
+        if lstat(file.path, &fileInfo) != 0 {
+            guard errno == ENOENT else { throw TekaStore.Refused(reason: "the outbox cannot be read") }
+            return result
+        }
+        guard let data = try? Data(contentsOf: file) else { throw TekaStore.Refused(reason: "the outbox cannot be read") }
         guard case .object(let outbox) = try JSONParser.parse(data).value else { throw TekaStore.Refused(reason: "outbox is not a JSON object") }
         let completions = (outbox["completions"]?.arrayValue ?? []).compactMap(\.objectValue)
         guard !completions.isEmpty else { return result }
 
         let teka_ = teka.name
         let key = try sliceKey(folder)
-        let cursors = loadCursors(folder)
+        let cursors = try readCursors(folder)
         let items = (catalog["open_items"]?.arrayValue ?? []).compactMap(\.objectValue)
         let log = catalog["processing_log"]?.arrayValue ?? []
 
