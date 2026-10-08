@@ -387,14 +387,14 @@ public struct Commands: Sendable {
                 }
                 binders[URL(fileURLWithPath: e.key).standardizedFileURL.path] = e.value.stringValue!
             }
-            var clients = MCPClients.load(support)
+            var clients = try MCPClients.load(support)
             let token = try clients.register(id: id, name: r["name"]?.stringValue ?? id, binders: binders,
                                              documents: r["documents"] == .bool(true), now: now)
             try clients.save(support)
             return JSONObject([(key: "token", value: .string(token))])
 
         case "list_clients":
-            let clients = MCPClients.load(support).clients.filter { !$0.revoked }
+            let clients = try MCPClients.load(support).clients.filter { !$0.revoked }
             return JSONObject([(key: "clients", value: .array(clients.map { c in
                 .obj([("id", .string(c.id)), ("name", .string(c.name)), ("created_at", .string(c.createdAt)),
                       ("binders", .obj(c.binders.sorted { $0.key < $1.key }.map { ($0.key, .string($0.value)) })),
@@ -406,7 +406,7 @@ public struct Commands: Sendable {
             guard case .string(let id)? = r["client_id"], case .bool(let allowed)? = r["documents"] else {
                 throw Failure(message: "client_documents needs client_id and documents")
             }
-            var clients = MCPClients.load(support)
+            var clients = try MCPClients.load(support)
             guard let i = clients.clients.firstIndex(where: { $0.id == id && !$0.revoked }) else { throw Failure(message: "no client \(id)") }
             clients.clients[i].documents = allowed ? true : nil
             try clients.save(support)
@@ -431,7 +431,7 @@ public struct Commands: Sendable {
 
         case "revoke_client":
             guard case .string(let id)? = r["client_id"] else { throw Failure(message: "revoke_client needs client_id") }
-            var clients = MCPClients.load(support)
+            var clients = try MCPClients.load(support)
             let scope = clients.clients.first { $0.id == id }?.binders.keys.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? []
             clients.revoke(id: id)
             try clients.save(support)

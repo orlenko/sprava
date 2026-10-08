@@ -123,6 +123,6 @@ import Testing
         #expect(try call([("command", .str("register_client")), ("client_id", .str("x")), ("binders", .obj([("relative", .str("propose"))]))])["ok"] == .bool(false))
         _ = try call([("command", .str("revoke_client")), ("client_id", .str("claude-code-1"))])
         #expect(try call([("command", .str("list_clients"))])["clients"]?.arrayValue?.isEmpty == true)
-        #expect(MCPClients.load(support).authenticate(clientID: "claude-code-1", token: token) == nil)
+        #expect(try MCPClients.load(support).authenticate(clientID: "claude-code-1", token: token) == nil)
     }
 }

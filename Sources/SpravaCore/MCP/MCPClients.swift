@@ -26,8 +26,20 @@ public struct MCPClients: Codable, Sendable {
 
     public static func url(_ support: URL) -> URL { support.appendingPathComponent("mcp/clients.json") }
 
-    public static func load(_ support: URL) -> MCPClients {
-        (try? Data(contentsOf: url(support))).flatMap { try? JSONDecoder().decode(MCPClients.self, from: $0) } ?? MCPClients()
+    public struct Unreadable: Error, CustomStringConvertible {
+        public let path: String
+        public var description: String { "\(path) exists but cannot be read; it was left as it is" }
+    }
+
+    /// The registry. A missing file is an empty registry; a file that exists but cannot be read or decoded throws,
+    /// so a command never saves over the other clients' records.
+    public static func load(_ support: URL) throws -> MCPClients {
+        let file = url(support)
+        guard FileManager.default.fileExists(atPath: file.path) else { return MCPClients() }
+        guard let data = try? Data(contentsOf: file), let clients = try? JSONDecoder().decode(MCPClients.self, from: data) else {
+            throw Unreadable(path: file.path)
+        }
+        return clients
     }
 
     public func save(_ support: URL) throws {
