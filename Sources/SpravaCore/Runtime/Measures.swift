@@ -43,7 +43,7 @@ public struct Measures: Sendable {
         // M3 part 1 and the self-keeping share: the op logs.
         for row in rows where row.teka.isAdopted {
             let ops = (try? TekaStore(folder: row.folder).readOpLog().ops) ?? []
-            let bid = BinderIDs.load(support.appendingPathComponent("binder-ids.json")).byPath[row.folder.standardizedFileURL.path] ?? "?"
+            let bid = (try? BinderIDs.load(support.appendingPathComponent("binder-ids.json")))?.byPath[row.folder.standardizedFileURL.path] ?? "?"
             for op in ops where inWindow(op["at"]?.stringValue) {
                 let type = op["op"]?.stringValue ?? ""
                 let kind = op["actor"]?["kind"]?.stringValue ?? ""

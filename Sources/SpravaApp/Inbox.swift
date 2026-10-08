@@ -74,10 +74,14 @@ final class InboxModel: ObservableObject {
     func save(binderName: String?) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        saving = true
         let support = SpravaPaths.supportDirectory()
-        let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: DeviceID.load(support: support),
-                                       support: support)
+        let deviceID: String
+        do { deviceID = try DeviceID.load(support: support) } catch {
+            message = "The note was not saved: \(error)"
+            return
+        }
+        saving = true
+        let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
         Task {
             defer { saving = false }
             do {

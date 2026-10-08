@@ -85,7 +85,8 @@ final class HealthModel: ObservableObject {
             let url = LifeprojRegistry.defaultPath()
             let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
             let rows = ShelfStore(supportDirectory: support).rows()
-            findings = Doctor.run(rows: rows, deviceID: DeviceID.load(support: support), registry: registry, support: support)
+            // Without a readable device id there is no telling which binders are this Mac's; the runtime's jobs say why.
+            findings = (try? DeviceID.load(support: support)).map { Doctor.run(rows: rows, deviceID: $0, registry: registry, support: support) } ?? []
             // The app reads the backup's records only; the key stays with the runtime (docs/backup.md §7).
             let backup = Backup(support: support, key: nil)
             backupConfigured = backup.settings().primary != nil

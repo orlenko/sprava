@@ -8,8 +8,19 @@ public struct BinderIDs: Codable, Sendable {
 
     public init() {}
 
-    public static func load(_ url: URL) -> BinderIDs {
-        (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(BinderIDs.self, from: $0) } ?? BinderIDs()
+    public struct Unreadable: Error, CustomStringConvertible {
+        public let path: String
+        public var description: String { "\(path) exists but cannot be read; it was left as it is" }
+    }
+
+    /// The ids. A missing file is a fresh mapping; one that exists but cannot be read or decoded throws, so new
+    /// ids are never handed out over the old ones (b1 must keep naming the same binder).
+    public static func load(_ url: URL) throws -> BinderIDs {
+        guard FileManager.default.fileExists(atPath: url.path) else { return BinderIDs() }
+        guard let data = try? Data(contentsOf: url), let ids = try? JSONDecoder().decode(BinderIDs.self, from: data) else {
+            throw Unreadable(path: url.path)
+        }
+        return ids
     }
 
     public mutating func id(for folder: URL) -> String {
@@ -97,4 +108,46 @@ public func nextSummaryTime(now: Date, lastSent: String?, calendar: Calendar = .
     let todays = nextClockTime(hour: 8, minute: 0, after: calendar.startOfDay(for: now), calendar: calendar)
     if lastSent != today, now >= todays { return now }
     return nextClockTime(hour: 8, minute: 0, after: now, calendar: calendar)
+}
+
+/// What the daily summary does when today's sentinel report is missing: compute it itself, unless the
+/// sentinel's breaker is open, which a direct call would get around (and a wedge there would be blamed on the
+/// summary).
+public enum SummaryFallback: Equatable, Sendable {
+    case useReport, runSentinel, stale
+
+    public static func decide(reportFresh: Bool, sentinelBreaker: String?) -> SummaryFallback {
+        if reportFresh { return .useReport }
+        return sentinelBreaker == "open" ? .stale : .runSentinel
+    }
+}
+
+extension ShelfStore {
+    /// The Shelf as a job reads it: a shelf.json, or a registry the Shelf shows, that exists but cannot be read
+    /// throws, so a job fails instead of reporting an empty Shelf as all done (the app's display path keeps `rows`).
+    public func rowsForJobs() throws -> [ShelfRow] {
+        let picked = try readFolders()
+        return Shelf.rows(registry: try registryForShelf(), picked: picked)
+    }
+}
+
+/// Outside edits reach the op log when a background reader sees them, not only on Sprava's next write
+/// (architecture 4.5): a hand edit followed by no write still becomes an `external_edit`.
+public enum OutsideEdits {
+    /// Settles each adopted binder this Mac owns. Returns the cards absorbing wrote ("an outside edit undid N
+    /// changes"), by folder, for the caller to trust, and the folders that could not be settled.
+    public static func settle(_ rows: [ShelfRow], deviceID: String, now: Date = Date()) -> (cards: [(URL, [String])], failed: [URL]) {
+        var cards: [(URL, [String])] = []
+        var failed: [URL] = []
+        for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
+            let store = TekaStore(folder: row.folder)
+            do {
+                try store.settle(now: now)
+                if !store.createdProposals.isEmpty { cards.append((row.folder, store.createdProposals)) }
+            } catch {
+                failed.append(row.folder)
+            }
+        }
+        return (cards, failed)
+    }
 }

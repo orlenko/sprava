@@ -26,18 +26,16 @@ final class Runtime: @unchecked Sendable {
     var restartsToday = 0
     var lastSentinelDate: String?
     var lastSummaryDate: String?
-    var nextSentinel = Date()
+    var deadlines = JobDeadlines()
     var nextSummary: Date
-    var nextAlertsCheck = Date()
-    var nextHub = Date()
-    var nextIntake = Date()
-    var nextDashboard = Date()
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var runGeneration: [String: Int] = [:]
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
-    let watch = WatchBox()
+    let watch = WatchBox(budgets: Runtime.specs.mapValues(\.budget))
     var commands: Commands?
+    /// Set when this Mac's device id cannot be read: nothing is written until it is repaired.
+    var deviceIDError: String?
     /// Jobs run concurrently; the opaque binder id file is read, changed and written by one at a time.
     let idsLock = NSLock()
     var mcp: MCPListener?
@@ -60,7 +58,8 @@ final class Runtime: @unchecked Sendable {
         self.support = support
         runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
         self.lease = lease
-        records = JobRecords.load(runtimeDir.appendingPathComponent("breakers.json"))
+        let (loaded, setAside) = JobRecords.loadAtStart(runtimeDir.appendingPathComponent("breakers.json"), jobs: Array(Self.specs.keys))
+        records = loaded
         let state = RuntimeState.load(runtimeDir)
         refusalsToday = state.refusalsToday
         restartsToday = state.startsToday
@@ -69,6 +68,7 @@ final class Runtime: @unchecked Sendable {
         // A summary missed while the Mac was asleep or the runtime down is sent on the next start that day,
         // and only once today's summary time has passed.
         nextSummary = nextSummaryTime(now: Date(), lastSent: state.lastSummaryDate)
+        if let setAside { log("breakers_unreadable kept_as=\(setAside.lastPathComponent) breakers=half_open") }
     }
 
     func log(_ line: String) {
@@ -90,7 +90,18 @@ final class Runtime: @unchecked Sendable {
         NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: nil) { [weak self] _ in
             self?.queue.async { self?.clockChanged(reason: "time_zone") }
         }
-        let commands = Commands(support: support, deviceID: DeviceID.load(support: support))
+        // The device id is read once. One that cannot be read is never replaced: every binder this Mac owns names
+        // it. Without it there are no commands, so nothing is written, and the jobs that write report the error.
+        let deviceID: String
+        do {
+            deviceID = try DeviceID.load(support: support)
+        } catch {
+            deviceIDError = "\(error)"
+            log("device_id_unreadable writes=off")
+            startScheduler()
+            return
+        }
+        let commands = Commands(support: support, deviceID: deviceID)
         self.commands = commands
         try? commands.inbox.registerProducer(folder: commands.deviceID, app: "sprava")
         // No backup request runs yet, so one left "running" was cut off; peeked documents go after a day.
@@ -109,6 +120,10 @@ final class Runtime: @unchecked Sendable {
         } catch {
             log("mcp_listener error=\(error)")
         }
+        startScheduler()
+    }
+
+    func startScheduler() {
         let scheduler = DispatchSource.makeTimerSource(queue: queue)
         scheduler.schedule(deadline: .now() + 1, repeating: 15)
         scheduler.setEventHandler { [weak self] in self?.schedule() }
@@ -116,10 +131,16 @@ final class Runtime: @unchecked Sendable {
         timers.append(scheduler)
     }
 
+    /// A job that writes, when there are no commands: idle before start, an error when the device id is unreadable.
+    var noCommands: JobOutcome {
+        queue.sync { deviceIDError } != nil ? .error(code: "device_id_unreadable", culprit: nil) : .skipped
+    }
+
     func clockChanged(reason: String) {
         log("clock_changed reason=\(reason)")
         let now = Date()
-        nextSentinel = now
+        // Every wall-clock deadline: after a jump back, none of them waits out the jump.
+        deadlines.clockChanged(now: now)
         nextSummary = nextSummaryTime(now: now, lastSent: lastSummaryDate)
     }
 
@@ -154,10 +175,10 @@ final class Runtime: @unchecked Sendable {
         for (key, spec) in Self.specs {
             var record = records.jobs[key] ?? JobRecord()
             if key == "heartbeat" { record.running = false }   // this beat is the one being written
+            // Awake time, as the watchdog counts it: a job the Mac slept through is not wedged.
             var wedged = false
-            if record.running, let start = record.lastStart {
-                let budget = Double(spec.budget.components.seconds)
-                wedged = now.timeIntervalSince(start) > 2 * max(budget, 1)
+            if record.running, let running = watch.runningFor(key) {
+                wedged = running > max(spec.budget, .seconds(1)) * 2
             }
             jobs[key] = record.heartbeatJob(spec: spec, now: now, wedged: wedged)
         }
@@ -199,28 +220,6 @@ final class Runtime: @unchecked Sendable {
         thread.start()
     }
 
-    /// What the watchdog reads: the tick and when each running job started, behind a lock of their own.
-    final class WatchBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var tick: UInt64 = 0
-        private var running: [String: Date] = [:]
-
-        func beat(_ t: UInt64) { lock.lock(); tick = t; lock.unlock() }
-        func started(_ key: String, at date: Date) { lock.lock(); running[key] = date; lock.unlock() }
-        func finished(_ key: String) { lock.lock(); running[key] = nil; lock.unlock() }
-
-        /// The tick, and a job running longer than twice its budget plus 10 minutes.
-        func read(now: Date = Date()) -> (UInt64, String?) {
-            lock.lock()
-            defer { lock.unlock() }
-            for (key, start) in running {
-                let budget = max(Double(Runtime.specs[key]?.budget.components.seconds ?? 1), 1)
-                if now.timeIntervalSince(start) > 2 * budget + 600 { return (tick, key) }
-            }
-            return (tick, nil)
-        }
-    }
-
     // MARK: - Sleep and wake (architecture 3.3; spike i)
 
     var powerPort: IONotificationPortRef?
@@ -252,7 +251,7 @@ final class Runtime: @unchecked Sendable {
         lastWake = Date()
         log("wake")
         beat()
-        nextSentinel = Date()
+        deadlines.sentinel = Date()
         if nextSummary < Date() { nextSummary = Date() }
     }
 
@@ -260,15 +259,15 @@ final class Runtime: @unchecked Sendable {
 
     func schedule() {
         let now = Date()
-        if now >= nextSentinel { run("sentinel") { self.sentinel() } }
-        if now >= nextAlertsCheck { run("alerts") { self.checkAlerts() } }
+        if now >= deadlines.sentinel { run("sentinel") { self.sentinel() } }
+        if now >= deadlines.alerts { run("alerts") { self.checkAlerts() } }
         if now >= nextSummary { run("summary") { self.summary() } }
-        if now >= nextHub { run("hub") { self.hub() } }
+        if now >= deadlines.hub { run("hub") { self.hub() } }
         run("capture") { self.capture() }   // every 15 s; file events call it sooner
         run("clerk") { self.clerk() }
-        if now >= nextDashboard { run("dashboard") { self.dashboards() } }
+        if now >= deadlines.dashboard { run("dashboard") { self.dashboards() } }
         run("backup") { self.backup() }
-        if now >= nextIntake { run("intake") { self.intake() } }
+        if now >= deadlines.intake { run("intake") { self.intake() } }
         let today = CalendarDate.today(now: now).description
         if lastSentinelDate != nil, lastSentinelDate != today, records.jobs["sentinel"]?.running != true {
             run("sentinel") { self.sentinel() }   // the date changed: recompute at once
@@ -284,16 +283,16 @@ final class Runtime: @unchecked Sendable {
         guard !record.running, record.mayRun(now: Date()) else { return }
         record.start(at: Date())
         records.jobs[key] = record
-        watch.started(key, at: Date())
+        watch.started(key)
         runGeneration[key, default: 0] += 1
         let generation = runGeneration[key]!
         switch key {
-        case "sentinel": nextSentinel = Date().addingTimeInterval(3600)
-        case "alerts": nextAlertsCheck = Date().addingTimeInterval(3600)
+        case "sentinel": deadlines.sentinel = Date().addingTimeInterval(3600)
+        case "alerts": deadlines.alerts = Date().addingTimeInterval(3600)
         case "summary": nextSummary = nextClockTime(hour: 8, minute: 0, after: Date())
-        case "hub": nextHub = Date().addingTimeInterval(300)
-        case "intake": nextIntake = Date().addingTimeInterval(30)
-        case "dashboard": nextDashboard = Date().addingTimeInterval(60)
+        case "hub": deadlines.hub = Date().addingTimeInterval(300)
+        case "intake": deadlines.intake = Date().addingTimeInterval(30)
+        case "dashboard": deadlines.dashboard = Date().addingTimeInterval(60)
         default: break
         }
         let started = DispatchTime.now()
@@ -341,10 +340,14 @@ final class Runtime: @unchecked Sendable {
     func sentinel() -> JobOutcome {
         let now = Date()
         let today = CalendarDate.today(now: now)
-        let rows = ShelfStore(supportDirectory: support).rows()
+        let rows: [ShelfRow]
+        do { rows = try shelfRows() } catch { return Self.shelfUnreadable }
         let idsURL = support.appendingPathComponent("binder-ids.json")
         idsLock.lock()
-        var ids = BinderIDs.load(idsURL)
+        guard var ids = try? BinderIDs.load(idsURL) else {
+            idsLock.unlock()
+            return .error(code: "binder_ids_unreadable", culprit: nil)
+        }
         let report = SentinelReport.compute(rows: rows, ids: &ids, today: today, now: now)
         let savedIDs = Result { try ids.save(idsURL) }
         idsLock.unlock()
@@ -357,21 +360,42 @@ final class Runtime: @unchecked Sendable {
             return .error(code: "write_failed", culprit: "\(error)")
         }
         queue.async { self.lastSentinelDate = today.description; RuntimeState.update(self.runtimeDir) { $0.lastSentinelDate = today.description } }
-        // A binder that cannot be read is a finding, not a failed run.
-        return rows.isEmpty ? .skipped : .ok
+        // A binder that cannot be read is a finding, not a failed run; an empty Shelf has nothing to watch yet.
+        return rows.isEmpty ? .idle : .ok
+    }
+
+    static let shelfUnreadable = JobOutcome.error(code: "shelf_unreadable", culprit: nil)
+
+    /// Settles outside edits in each binder this Mac owns before it is read for others (architecture 4.5), and
+    /// trusts the cards that writes. Returns how many binders could not be settled.
+    func settleOutsideEdits(_ rows: [ShelfRow], commands: Commands) -> Int {
+        let settled = OutsideEdits.settle(rows, deviceID: commands.deviceID)
+        if !settled.cards.isEmpty, let xpc {
+            xpc.queue.sync { for (folder, ids) in settled.cards { commands.trustProposals(ids, in: folder) } }
+            log("outside_edit undid_changes_cards=\(settled.cards.count)")
+        }
+        return settled.failed.count
     }
 
     /// The hub lane (binder-v0 §8; mvp.md feature 7): for each adopted binder this Mac owns, drain the hub's
     /// completions, then publish the slice when it changed. Counts per opaque binder id only.
     func hub() -> JobOutcome {
+        guard let commands else { return noCommands }
+        let rows: [ShelfRow]
+        do { rows = try shelfRows() } catch { return Self.shelfUnreadable }
+        // Before anything is published, and also without a spool, so a hand edit becomes an external_edit.
+        let unsettled = settleOutsideEdits(rows, commands: commands)
         let root = HubLane.spoolRoot()
-        guard FileManager.default.fileExists(atPath: root.path) else { return .skipped }
-        let rows = ShelfStore(supportDirectory: support).rows()
-        let device = DeviceID.load(support: support)
-        let mine = rows.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == device }
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return unsettled > 0 ? .error(code: "settle_failed", culprit: "\(unsettled) binder(s)") : .idle
+        }
+        let mine = rows.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == commands.deviceID }
         let idsURL = support.appendingPathComponent("binder-ids.json")
         idsLock.lock()
-        var ids = BinderIDs.load(idsURL)
+        guard var ids = try? BinderIDs.load(idsURL) else {
+            idsLock.unlock()
+            return .error(code: "binder_ids_unreadable", culprit: nil)
+        }
         let bids = mine.map { ids.id(for: $0.folder) }
         try? ids.save(idsURL)
         idsLock.unlock()
@@ -379,7 +403,7 @@ final class Runtime: @unchecked Sendable {
         for (row, bid) in zip(mine, bids) {
             do {
                 let drained = try HubLane.drain(row.folder, root: root)
-                if !drained.createdProposals.isEmpty, let commands, let xpc {
+                if !drained.createdProposals.isEmpty, let xpc {
                     xpc.queue.sync { commands.trustProposals(drained.createdProposals, in: row.folder) }
                     log("hub binder=\(bid) overwritten_change_card=1")
                 }
@@ -395,16 +419,17 @@ final class Runtime: @unchecked Sendable {
                 log("hub binder=\(bid) error=\(type(of: error))")
             }
         }
+        if unsettled > 0 { failures.append("\(unsettled) unsettled") }
         return failures.isEmpty ? .ok : .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ","))
     }
 
     /// The capture watcher (architecture 8; mvp.md feature 4): sweeps the capture root and turns each new capture
     /// into a Tier 0 card within the sweep. Runs on the command queue, the single writer. Counts only in the log.
     func capture() -> JobOutcome {
-        guard let commands, let xpc else { return .skipped }
+        guard let commands, let xpc else { return noCommands }
         let inbox = commands.inbox
         try? AtomicFile.makePrivateFolder(inbox.root)
-        let rows = shelfRows()
+        guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         let result = xpc.queue.sync { inbox.sweep(binders: rows, commands: commands) }
         queue.async { self.watchCaptureFolders(inbox.root) }
         let new = result.ingested + result.quarantined + result.duplicates
@@ -420,8 +445,8 @@ final class Runtime: @unchecked Sendable {
     /// binder's intake/, after the sandboxed helper has read it. Digests and reading happen here, off the command
     /// queue; at most four minutes of reading per run, the rest on the next.
     func intake() -> JobOutcome {
-        guard let commands, let xpc else { return .skipped }
-        let rows = shelfRows()
+        guard let commands, let xpc else { return noCommands }
+        guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         let watcher = IntakeWatcher(support: support)
         let prepared = watcher.prepare(binders: rows, deviceID: commands.deviceID)
         let result = xpc.queue.sync { watcher.scan(binders: rows, commands: commands, prepared: prepared, requireReading: true) }
@@ -435,7 +460,7 @@ final class Runtime: @unchecked Sendable {
     /// for at most 45 seconds per run. Model calls never hold the command queue. Gated on the author's model
     /// variant for the MVP (mvp.md question 7); `developer.json` `"clerk_any_model": true` lifts the gate.
     func clerk() -> JobOutcome {
-        guard let commands, let xpc else { return .skipped }
+        guard let commands, let xpc else { return noCommands }
         let model: AppleClerkModel
         switch AppleClerkModel.load() {
         case .success(let m): model = m
@@ -448,7 +473,7 @@ final class Runtime: @unchecked Sendable {
         var read = 0
         while Date().timeIntervalSince(started) < 45 {
             guard let work = xpc.queue.sync(execute: { inbox.nextForClerk() }) else { break }
-            let rows = shelfRows()
+            guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
             let filing = FilingList(support: support).binders(rows: rows, deviceID: commands.deviceID)
             let t0 = Date()
             let interp = blocking { await Clerk(model: model).read(work.event, filing: filing, hint: work.hint) }
@@ -462,7 +487,7 @@ final class Runtime: @unchecked Sendable {
         while Date().timeIntervalSince(started) < 45 {
             guard let entry = xpc.queue.sync(execute: { watcher.nextForReading() }) else { break }
             let folder = URL(fileURLWithPath: entry.binder, isDirectory: true)
-            let rows = shelfRows()
+            guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
             let binder = FilingList(support: support).binders(rows: rows, deviceID: commands.deviceID).first { $0.folder.standardizedFileURL.path == entry.binder }
                 ?? rows.first { $0.folder.standardizedFileURL.path == entry.binder }.map { row in
                     FilingBinder(name: row.name, description: "", folder: folder, openItems: FilingBinder.candidates(catalog: row.teka.catalog))
@@ -486,9 +511,12 @@ final class Runtime: @unchecked Sendable {
 
     /// Keeps each switched DASHBOARD.md current (binder-v0 §7.1): on a catalog change and once a day.
     func dashboards() -> JobOutcome {
-        guard let commands else { return .skipped }
-        var rendered = 0, edited = 0, failed = 0
-        for row in shelfRows() where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == commands.deviceID {
+        guard let commands else { return noCommands }
+        guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
+        // A hand edit is absorbed before the dashboard is rendered from the catalog (the first run is at start).
+        var failed = settleOutsideEdits(rows, commands: commands)
+        var rendered = 0, edited = 0
+        for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == commands.deviceID {
             switch try? DashboardKeeper(folder: row.folder, impl: commands.client).refresh(today: CalendarDate.today()) {
             case .rendered(let e)?: rendered += 1; if e { edited += 1 }
             case nil: failed += 1
@@ -506,7 +534,7 @@ final class Runtime: @unchecked Sendable {
     /// Backup (docs/backup.md): first any request the app queued (offload, restore, drill, back up now), then the
     /// scheduled work, which itself does nothing until something is due.
     func backup() -> JobOutcome {
-        guard let commands else { return .skipped }
+        guard let commands else { return noCommands }
         let backup = Backup(support: support)
         guard backup.isConfigured else { return .skipped }
         let requests = BackupRequests(support: support)
@@ -518,15 +546,17 @@ final class Runtime: @unchecked Sendable {
             if state == "failed" { return .error(code: "backup_request_failed", culprit: request.kind) }
             return .ok
         }
-        let m = backup.maintain(rows: shelfRows(), deviceID: commands.deviceID)
+        guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
+        let m = backup.maintain(rows: rows, deviceID: commands.deviceID)
         if m.snapshots > 0 || m.failed > 0 || m.retention || m.checked {
             log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
         }
         return m.failed > 0 ? .error(code: "backup_failed", culprit: "\(m.failed) binder(s) or check") : .ok
     }
 
-    func shelfRows() -> [ShelfRow] {
-        return ShelfStore(supportDirectory: support).rows()
+    /// The Shelf for a job: one that cannot be read fails the job, never reads as an empty Shelf.
+    func shelfRows() throws -> [ShelfRow] {
+        try ShelfStore(supportDirectory: support).rowsForJobs()
     }
 
     /// File events on the capture root and each device folder start a sweep at once; the 15-second sweep is the
@@ -566,8 +596,14 @@ final class Runtime: @unchecked Sendable {
                   let report = try? JSONDecoder().decode(SentinelReport.self, from: data), report.date == today else { return nil }
             return report
         }
-        // The sentinel may not have run yet today (a start just after midnight, or the first run): compute it now.
-        if current() == nil { _ = sentinel() }
+        // The sentinel may not have run yet today (a start just after midnight, or the first run): compute it now,
+        // unless its breaker is open, which this call must not get around.
+        let breaker = queue.sync { records.jobs["sentinel"]?.breaker }
+        switch SummaryFallback.decide(reportFresh: current() != nil, sentinelBreaker: breaker) {
+        case .useReport: break
+        case .runSentinel: _ = sentinel()
+        case .stale: return .error(code: "sentinel_stale", culprit: "sentinel breaker open")
+        }
         guard let report = current() else { return .error(code: "sentinel_stale", culprit: nil) }
         if let text = report.summaryText {
             // Outside the app bundle there is no notification identity: a development run skips, never fails.

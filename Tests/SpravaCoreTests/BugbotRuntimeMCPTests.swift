@@ -221,3 +221,153 @@ import Testing
         guard case .end = reader.next(limit: MCPListener.lineLimit) else { Issue.record("the connection stayed open"); return }
     }
 }
+
+@Suite(.serialized) struct BugbotRuntimeTests {
+    let now = Date(timeIntervalSince1970: 1_791_360_000)
+
+    func folder() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-bugbot-runtime-\(UUID().uuidString)")
+        try AtomicFile.makePrivateFolder(dir)
+        return dir
+    }
+
+    // MARK: - p8-Rb: jobs fail on a Shelf that cannot be read
+
+    @Test func jobsSeeAnUnreadableShelf() throws {
+        let support = try folder()
+        let store = ShelfStore(supportDirectory: support)
+        #expect(try store.rowsForJobs().isEmpty)
+        try Data("{ not json".utf8).write(to: store.file)
+        #expect(throws: ShelfStore.Unreadable.self) { _ = try store.rowsForJobs() }
+    }
+
+    // MARK: - qBssn: a job with nothing set up is not overdue
+
+    @Test func idleRunsKeepAJobGreenAndSkippedRunsDoNot() {
+        let spec = JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3)
+        let started = now
+        var idle = JobRecord(), skipped = JobRecord()
+        for i in 0...10 {
+            let t = started.addingTimeInterval(Double(i) * 300)
+            idle.start(at: t); idle.finish(.idle, at: t, durationMS: 1, threshold: 3)
+            skipped.start(at: t); skipped.finish(.skipped, at: t, durationMS: 1, threshold: 3)
+        }
+        let at = started.addingTimeInterval(10 * 300 + 10)
+        #expect(idle.lastSuccess == nil)
+        #expect(HealthGrade.job(idle.heartbeatJob(spec: spec, now: at, wedged: false), startedAt: started, lastWake: nil, now: at) == .green)
+        #expect(HealthGrade.job(skipped.heartbeatJob(spec: spec, now: at, wedged: false), startedAt: started, lastWake: nil, now: at) == .red)
+        // The heartbeat still says "skipped", the schema's word.
+        #expect(idle.heartbeatJob(spec: spec, now: at, wedged: false).last_outcome == "skipped")
+    }
+
+    // MARK: - qHLuK, qfZ21: one device id, never replaced
+
+    @Test func concurrentFirstLoadsAgreeOnOneDeviceID() throws {
+        let support = try folder()
+        final class Box: @unchecked Sendable { let lock = NSLock(); var ids: [String] = [] }
+        let box = Box()
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            let id = try? DeviceID.load(support: support)
+            box.lock.lock(); box.ids.append(id ?? "failed"); box.lock.unlock()
+        }
+        #expect(Set(box.ids).count == 1)
+        let stored = try String(contentsOf: support.appendingPathComponent("device-id"), encoding: .utf8)
+        #expect(stored.trimmingCharacters(in: .whitespacesAndNewlines) == box.ids.first)
+    }
+
+    @Test func anUnreadableDeviceIDIsNeverReplaced() throws {
+        let support = try folder()
+        let url = support.appendingPathComponent("device-id")
+        let bad = Data([0xFF, 0xFE, 0x00, 0x41])
+        try bad.write(to: url)
+        #expect(throws: DeviceID.Unreadable.self) { _ = try DeviceID.load(support: support) }
+        #expect(try Data(contentsOf: url) == bad)
+        // A folder where the id cannot be written: no id is made up.
+        let locked = try folder()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path) }
+        #expect(throws: (any Error).self) { _ = try DeviceID.load(support: locked) }
+    }
+
+    // MARK: - qHLug: opaque binder ids are never reassigned over an unreadable file
+
+    @Test func unreadableBinderIDsThrow() throws {
+        let dir = try folder()
+        let url = dir.appendingPathComponent("binder-ids.json")
+        #expect(try BinderIDs.load(url).byPath.isEmpty)
+        try Data("{\"byPath\": ".utf8).write(to: url)
+        #expect(throws: BinderIDs.Unreadable.self) { _ = try BinderIDs.load(url) }
+    }
+
+    // MARK: - qIlEU: unreadable breakers are kept and every job starts half-open
+
+    @Test func unreadableBreakersAreSetAsideAndHalfOpen() throws {
+        let dir = try folder()
+        let url = dir.appendingPathComponent("breakers.json")
+        let bad = Data("{\"jobs\": {".utf8)
+        try bad.write(to: url)
+        let (records, aside) = JobRecords.loadAtStart(url, jobs: ["hub", "sentinel"], now: now)
+        let kept = try #require(aside)
+        #expect(try Data(contentsOf: kept) == bad)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(records.jobs["hub"]?.breaker == "half_open" && records.jobs["sentinel"]?.breaker == "half_open")
+
+        // An older file without newer fields keeps its values.
+        try Data(#"{"jobs": {"hub": {"breaker": "open", "breakerOpenedAt": "2026-10-01T10:00:00Z", "consecutiveFailures": 4}}}"#.utf8).write(to: url)
+        let (old, none) = JobRecords.loadAtStart(url, jobs: ["hub"], now: now)
+        #expect(none == nil)
+        #expect(old.jobs["hub"]?.breaker == "open" && old.jobs["hub"]?.consecutiveFailures == 4)
+    }
+
+    // MARK: - qJwV5: a clock set back leaves no job waiting out the jump
+
+    @Test func aClockChangeMakesEveryIntervalJobDue() {
+        let later = now.addingTimeInterval(3 * 3600)
+        var d = JobDeadlines(now: later)
+        d.clockChanged(now: now)
+        for date in [d.sentinel, d.alerts, d.hub, d.intake, d.dashboard] { #expect(date <= now) }
+    }
+
+    // MARK: - qJwV8: the summary never runs the sentinel past its open breaker
+
+    @Test func theSummaryRespectsTheSentinelBreaker() {
+        #expect(SummaryFallback.decide(reportFresh: true, sentinelBreaker: "open") == .useReport)
+        #expect(SummaryFallback.decide(reportFresh: false, sentinelBreaker: "open") == .stale)
+        #expect(SummaryFallback.decide(reportFresh: false, sentinelBreaker: "half_open") == .runSentinel)
+        #expect(SummaryFallback.decide(reportFresh: false, sentinelBreaker: nil) == .runSentinel)
+    }
+
+    // MARK: - qgXOh: time asleep does not make a job wedged
+
+    @Test func sleepDoesNotCountTowardsAWedge() {
+        final class Clock: @unchecked Sendable { let lock = NSLock(); var awake: Duration = .zero }
+        let clock = Clock()
+        let box = WatchBox(budgets: ["backup": .seconds(3 * 3600)], awake: { clock.lock.lock(); defer { clock.lock.unlock() }; return clock.awake })
+        box.started("backup")
+        // A night asleep moves the wall clock, not this one.
+        #expect(box.read().1 == nil)
+        clock.lock.lock(); clock.awake = .seconds(6 * 3600 + 601); clock.lock.unlock()
+        #expect(box.read().1 == "backup")
+        #expect(box.runningFor("backup") == .seconds(6 * 3600 + 601))
+    }
+
+    // MARK: - qfZ4n: a hand edit with no Sprava write after it still reaches the op log
+
+    @Test func aHandEditIsRecordedWithoutAWrite() throws {
+        let folder = try makeTeka(fixture: "sprava-v0")
+        _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("t"))]), now: now)
+        let url = folder.appendingPathComponent("catalog.json")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        try text.replacingOccurrences(of: "\"estate-example-2026-007\"", with: "\"estate-example-2026-007\", \"note\": \"edited by hand\"")
+            .write(to: url, atomically: true, encoding: .utf8)
+        let at = Date()
+        let rows = Shelf.rows(registry: nil, picked: [folder])
+        #expect(OutsideEdits.settle(rows, deviceID: "t", now: at).failed.isEmpty)
+        #expect(try TekaStore(folder: folder).readOpLog().ops.last?["op"] == .str("external_edit"))
+        let day = CalendarDate.today(now: at)
+        #expect(Measures(support: try self.folder()).compute(rows: rows, from: day, to: day, now: at).externalEdits.count == 1)
+        // Settling again finds nothing new.
+        _ = OutsideEdits.settle(rows, deviceID: "t", now: at)
+        #expect(try TekaStore(folder: folder).readOpLog().ops.filter { $0["op"] == .str("external_edit") }.count == 1)
+    }
+}

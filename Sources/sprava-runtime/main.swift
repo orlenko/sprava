@@ -34,6 +34,13 @@ if let data = try? Data(contentsOf: support.appendingPathComponent("developer.js
     exit(75)
 }
 
+// Only the LaunchAgent's copy takes the production lease. A copy started by hand cannot receive XPC (the Mach
+// service is registered for launchd's job), and holding the lease it would keep the LaunchAgent's copy out.
+if !dev, ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] != "ca.orlenko.sprava.runtime", getppid() != 1 {
+    FileHandle.standardError.write(Data("sprava-runtime: run with --dev, or let launchd start it\n".utf8))
+    exit(64)
+}
+
 switch try Lease.acquire(at: runtimeDir.appendingPathComponent("lease")) {
 case .held(let pid):
     // Another runtime holds the lease (an old copy still exiting after an update, or a copy started by hand).
