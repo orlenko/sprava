@@ -17,6 +17,9 @@ public struct IntakeWatcher: Sendable {
         var mtime: Double
         var card: String?
         var firstSeen: Date
+        /// The file has a card but its reading could not be written: `prepare` reads it again and `scan` keeps
+        /// the reading then, so the document still reaches the clerk (adaptation-layer §4.2).
+        var readingMissing: Bool?
     }
 
     /// The cursor: empty only when `intake.json` does not exist. One that cannot be read or decoded throws, so it is
@@ -111,8 +114,9 @@ public struct IntakeWatcher: Sendable {
         public init() {}
     }
 
-    /// Reads the files the next scan would card: they held still since the last scan and have no card yet. At
-    /// most `budget` seconds of reading per call; the rest wait for the next one. The runtime passes the located
+    /// Reads the files the next scan would card: they held still since the last scan and have no card yet, or
+    /// their card's reading could not be kept (read again once per call). At most `budget` seconds of reading per
+    /// call; the rest wait for the next one. The runtime passes the located
     /// helper; a missing one holds each file with a card that says so.
     public func prepare(binders: [ShelfRow], deviceID: String, reader: ExtractHelper.Reader, read: Bool = true,
                         budget: TimeInterval = 240) -> Prepared {
@@ -123,7 +127,7 @@ public struct IntakeWatcher: Sendable {
         for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
             let seen = state[row.folder.standardizedFileURL.path] ?? [:]
             for c in Self.candidates(in: row.folder) {
-                guard let e = seen[c.name], e.card == nil, e.size == c.size, e.mtime == c.mtime else { continue }
+                guard let e = seen[c.name], e.card == nil || e.readingMissing == true, e.size == c.size, e.mtime == c.mtime else { continue }
                 if read && Date().timeIntervalSince(started) > budget { return out }
                 let file = row.folder.appendingPathComponent("intake/" + c.name)
                 let attachments = c.attachments.map { row.folder.appendingPathComponent("intake/" + $0) }
@@ -163,21 +167,27 @@ public struct IntakeWatcher: Sendable {
                             && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }
                         // Only a card Sprava recorded is taken over, with its reading made sure of; one it cannot
                         // vouch for could never be approved, so it is withdrawn and the file carded again.
-                        if let existing = matching.first(where: { Self.isTrusted($0.id, in: row.folder, commands: commands) }) {
+                        if let existing = matching.first(where: { commands.isTrusted($0.id, in: row.folder) }) {
                             entry?.card = existing.id
                             if let sha, IntakeReadings(support: support).forCard(existing.id) == nil {
-                                saveReading(reading, file: file, sha: sha, card: existing.id, in: row, now: now)
+                                entry?.readingMissing = saveReading(reading, file: file, sha: sha, card: existing.id, in: row, now: now) ? nil : true
                             }
                         } else {
                             for stranded in matching { withdraw(stranded.id, in: row.folder, now: now) }
                             entry?.card = card(file, sha: sha, reading: reading, digests: prepared.digests, in: row, commands: commands, now: now)
-                            if entry?.card != nil {
+                            if let made = entry?.card, let sha {
                                 result.carded += 1
                                 if reading?.held != nil { result.held += 1 }
+                                // The card stands even when its reading cannot be written: the person can still file
+                                // the document. The reading is tried again from the next `prepare`.
+                                entry?.readingMissing = saveReading(reading, file: file, sha: sha, card: made, in: row, now: now) ? nil : true
                             }
                         }
-                    } else if now.timeIntervalSince(e.firstSeen) > 7 * 86_400 {
-                        result.stale += 1
+                    } else {
+                        if e.readingMissing == true, let card = e.card {
+                            entry?.readingMissing = retryReading(prepared, file: file, card: card, in: row, commands: commands, now: now) ? nil : true
+                        }
+                        if now.timeIntervalSince(e.firstSeen) > 7 * 86_400 { result.stale += 1 }
                     }
                 } else {
                     // New, or still being written, or changed after its card: wait for it to hold still. A card for
@@ -335,23 +345,29 @@ public struct IntakeWatcher: Sendable {
             if (try? FileManager.default.removeItem(at: written)) == nil { withdraw(proposal.id, in: row.folder, now: now) }
             return nil
         }
-        saveReading(reading, file: file, sha: sha, card: proposal.id, in: row, now: now)
         return proposal.id
     }
 
-    /// A reading with text waits for the clerk's document reading (§4.2, §4.3).
-    func saveReading(_ reading: IntakeReading?, file: Candidate, sha: String, card: String, in row: ShelfRow, now: Date) {
-        guard let r = reading, r.held == nil, !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// A reading with text waits for the clerk's document reading (§4.2, §4.3). Returns false when it had to be
+    /// kept and could not be written.
+    func saveReading(_ reading: IntakeReading?, file: Candidate, sha: String, card: String, in row: ShelfRow, now: Date) -> Bool {
+        guard let r = reading, r.held == nil, !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
         let entry = IntakeReadings.Entry(id: UUIDv7.make(now: now), binder: row.folder.standardizedFileURL.path, name: file.name,
                                          sha256: sha, card: card, reading: r, now: now)
-        IntakeReadings(support: support).save(entry)
+        return (try? IntakeReadings(support: support).save(entry)) != nil
     }
 
-    /// Whether the binder holds this card as Sprava last wrote it (its recorded digest matches).
-    static func isTrusted(_ id: String, in folder: URL, commands: Commands) -> Bool {
-        guard let trusted = try? commands.loadDigests(),
-              let (_, digest) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }) else { return false }
-        return [folder, folder.standardizedFileURL].contains { trusted[commands.key($0, id)] == digest }
+    /// Keeps the reading of a carded file whose reading could not be written before, from what `prepare` read
+    /// this time. Returns true once nothing is missing any more: the reading is kept, or its card no longer waits
+    /// for the person or is not the one Sprava wrote, so nothing would follow from a reading.
+    func retryReading(_ prepared: Prepared, file: Candidate, card: String, in row: ShelfRow, commands: Commands, now: Date) -> Bool {
+        guard let p = try? commands.loadTrusted(card, in: row.folder), p.state == "proposed" else { return true }
+        if IntakeReadings(support: support).forCard(card) != nil { return true }
+        let path = row.folder.appendingPathComponent("intake/" + file.name).path
+        // The bytes read now must be the ones the card files.
+        guard let reading = prepared.readings[path], let sha = prepared.digests[path],
+              sha == p.raw["provenance"]?["intake"]?["sha256"]?.stringValue else { return false }
+        return saveReading(reading, file: file, sha: sha, card: card, in: row, now: now)
     }
 
     func withdraw(_ id: String, in folder: URL, now: Date) {
@@ -359,7 +375,7 @@ public struct IntakeWatcher: Sendable {
         if var e = readings.forCard(id), e.state != "read" {
             e.state = "gone"
             if e.escalation == "waiting" { e.escalation = nil }
-            readings.save(e)
+            try? readings.save(e)
         }
         guard let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" else { return }
         try? TekaStore(folder: folder).reject(proposal, reason: "the file in intake/ changed or is gone", now: now)

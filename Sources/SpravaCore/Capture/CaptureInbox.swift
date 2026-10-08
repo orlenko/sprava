@@ -200,6 +200,8 @@ public struct CaptureInbox: Sendable {
             for name in names.sorted() where name.hasSuffix(".json") && !name.hasPrefix(".") {
                 let file = device.appendingPathComponent(name)
                 let stem = String(name.dropLast(5))
+                // The journal names an event only by a valid id; any other file name may be the person's words.
+                let logged: JSONValue = CaptureEvent.isUUIDText(stem) ? .string(stem) : .str("invalid-name")
                 // An id still at "ingested" crashed before its card was made: it is picked up again here.
                 if let stage = state.ingested[stem], stage != "ingested" { continue }
                 let key = deviceName + "/" + name
@@ -229,12 +231,12 @@ public struct CaptureInbox: Sendable {
                     state.examined[key] = .init(size: size, mtime: mtime, outcome: "pending")
                 case .deferred:
                     state.examined[key] = .init(size: size, mtime: mtime, outcome: "deferred")
-                    journal([("event", .string(stem)), ("stage", .str("newer_format"))])
+                    journal([("event", logged), ("stage", .str("newer_format"))])
                 case .quarantined(let why):
                     result.quarantined += 1
                     state.examined[key] = .init(size: size, mtime: mtime, outcome: "quarantined")
                     quarantine(file, device: deviceName, reason: why)
-                    journal([("event", .string(stem)), ("stage", .str("quarantined")), ("reason", .string(why))])
+                    journal([("event", logged), ("stage", .str("quarantined")), ("reason", .string(why))])
                 case .complete(.derived):
                     state.ingested[stem] = "derived"
                 case .complete(.capture):
@@ -653,16 +655,23 @@ public struct CaptureInbox: Sendable {
         for p in unfiled where p.raw["provenance"]?["private"] != .bool(true) {
             if (try? writeUnfiled(Self.privateCopy(p, catalog: nil).raw)) == nil { complete = false }
         }
+        // Only a card still as Sprava wrote it is rewritten and trusted again; one another program changed stays
+        // unverified, so it can never be approved, and covers nothing below.
+        var changed = Set<String>()
         for (folder, p) in filed where p.raw["provenance"]?["private"] != .bool(true) {
             // A rewritten card that cannot be trusted again is not approvable, so the raise is retried.
-            if (try? ProposalStore.save(Self.privateCopy(p, catalog: Teka.read(folder).catalog), in: folder)) != nil,
-               (try? commands.trustProposals([p.id], in: folder)) != nil {} else { complete = false }
+            do { try commands.rewriteTrusted(p.id, in: folder) { Self.privateCopy($0, catalog: Teka.read(folder).catalog) } }
+            catch is ProposalStore.Tampered { changed.insert(p.id) }
+            catch { complete = false }
         }
+        if !changed.isEmpty { journal([("stage", .str("card_changed_outside")), ("cards", .int(changed.count))]) }
         // Items already filed from the chain get a card that redacts them (capture-event-v0 §3.2, §3.3), unless a
         // card waiting from the chain already does (a retry after a partial failure).
         let ids = Set(chain)
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
-            let waiting = filed.filter { $0.0.standardizedFileURL == row.folder.standardizedFileURL }.map { _, p in
+            let waiting = filed.filter { folder, p in
+                folder.standardizedFileURL == row.folder.standardizedFileURL && commands.isTrusted(p.id, in: folder)
+            }.map { _, p in
                 p.raw["provenance"]?["private"] == .bool(true) ? p : Self.privateCopy(p, catalog: row.teka.catalog)
             }
             let covered = Set(waiting.flatMap(\.ops).compactMap { op -> String? in
@@ -867,12 +876,12 @@ public struct CaptureInbox: Sendable {
             return outcome
         }
         // A binder name resolves through the filing list (where a disclosure-none binder has only its label), else
-        // to an adopted binder this Mac manages that is not at disclosure none.
+        // to an adopted binder this Mac manages that is not at disclosure none, as the privacy ratchet reads it.
         let placed = cards.map { binder, proposal in
             (proposal, binder.flatMap { name in
                 filing.first { $0.name == name }?.folder ?? rows.first {
                     $0.teka.isAdopted && $0.name == name && !$0.teka.writesBlocked && Owner.device(of: $0.folder) == commands.deviceID
-                        && $0.teka.catalog?["meta"]?["disclosure"]?.stringValue != "none"
+                        && PrivacyRatchet.disclosure($0) != "none"
                 }?.folder
             })
         }
@@ -942,11 +951,10 @@ public struct CaptureInbox: Sendable {
             return Proposal(raw: raw)
         }
         if let binder = work.tier0Binder {
-            let folder = URL(fileURLWithPath: binder, isDirectory: true)
-            if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == work.tier0 }),
-               (try? ProposalStore.save(annotated(p), in: folder)) != nil {
-                try? commands.trustProposals([p.id], in: folder)
-            }
+            // A card another program changed since Sprava wrote it is left as it is, unverified (architecture 4.6).
+            do { try commands.rewriteTrusted(work.tier0, in: URL(fileURLWithPath: binder, isDirectory: true), transform: annotated) }
+            catch is ProposalStore.Tampered { journal([("event", .string(work.event.id)), ("stage", .str("card_changed_outside"))]) }
+            catch {}
         } else if let p = unfiled().first(where: { $0.id == work.tier0 }) {
             try? writeUnfiled(annotated(p).raw)
         }
@@ -1024,7 +1032,7 @@ public struct CaptureInbox: Sendable {
 
         if let hint, let row = binders.first(where: { $0.teka.isAdopted && $0.teka.name == hint }),
            Owner.device(of: row.folder) == commands.deviceID,
-           row.teka.catalog?["meta"]?["disclosure"]?.stringValue != "none" {
+           PrivacyRatchet.disclosure(row) != "none" {
             do {
                 try ProposalStore.save(proposal, in: row.folder)
                 try commands.trustProposals([proposal.id], in: row.folder)
@@ -1124,7 +1132,7 @@ public struct CaptureInbox: Sendable {
         guard teka.isAdopted else { throw Commands.Failure(message: "this binder is not adopted yet") }
         guard Owner.device(of: folder) == commands.deviceID else { throw Commands.Failure(message: "this binder is read-only here") }
         // Filed before a crash: only the Inbox's copy is left to remove.
-        if !isTrusted(proposalID, in: folder, commands: commands) {
+        if !commands.isTrusted(proposalID, in: folder) {
             // Filed into another binder before a crash: never a second approvable copy.
             if (try? commands.loadDigests())?.keys.contains(where: { $0.hasSuffix("#" + proposalID) }) == true {
                 throw Commands.Failure(message: "this card was already filed into another binder; it leaves the Inbox shortly")
@@ -1144,13 +1152,6 @@ public struct CaptureInbox: Sendable {
         journal([("card", .string(proposalID)), ("stage", .str("filed_by_person"))])
     }
 
-    /// Whether the binder holds this proposal as Sprava last wrote it.
-    func isTrusted(_ id: String, in folder: URL, commands: Commands) -> Bool {
-        guard let trusted = try? commands.loadDigests(),
-              let (_, digest) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }) else { return false }
-        return [folder, folder.standardizedFileURL].contains { trusted[commands.key($0, id)] == digest }
-    }
-
     /// The Inbox lets go of a card: its digest first, so the leftover file is never shown, then the file.
     func letGo(_ id: String) throws {
         var digests = try unfiledDigests()
@@ -1164,7 +1165,7 @@ public struct CaptureInbox: Sendable {
         let waiting = Set(unfiled().map(\.id))
         guard !waiting.isEmpty else { return }
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
-            for (p, _) in ProposalStore.list(in: row.folder) where waiting.contains(p.id) && isTrusted(p.id, in: row.folder, commands: commands) {
+            for (p, _) in ProposalStore.list(in: row.folder) where waiting.contains(p.id) && commands.isTrusted(p.id, in: row.folder) {
                 guard (try? letGo(p.id)) != nil else { continue }
                 journal([("card", .string(p.id)), ("stage", .str("filed_by_person_finished"))])
             }

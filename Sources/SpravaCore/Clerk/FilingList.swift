@@ -58,14 +58,21 @@ public struct FilingList: Sendable {
         let all = load()
         var seen = Set<String>()
         return rows.compactMap { row in
-            let name = row.teka.catalog?["meta"]?["disclosure"]?.stringValue == "none" ? Self.label(row.folder) : row.name
             guard row.teka.isAdopted, !row.teka.writesBlocked, Owner.device(of: row.folder) == deviceID,
-                  let entry = all[row.folder.standardizedFileURL.path], entry.filing, !entry.description.isEmpty,
-                  name != "not-sure", seen.insert(name).inserted else { return nil }
+                  let entry = all[row.folder.standardizedFileURL.path], entry.filing, !entry.description.isEmpty else { return nil }
+            let name = Self.name(of: row)
+            guard name != "not-sure", seen.insert(name).inserted else { return nil }
             return FilingBinder(name: name, description: entry.description, folder: row.folder,
                                 words: FilingBinder.index(catalog: row.teka.catalog, description: entry.description),
                                 openItems: FilingBinder.candidates(catalog: row.teka.catalog))
         }
+    }
+
+    /// The name the clerk and the model know a binder by: its opaque label while the disclosure the person
+    /// confirmed is `none`, whatever an outside edit wrote since (the privacy ratchet, architecture 4.5), else its
+    /// name.
+    public static func name(of row: ShelfRow) -> String {
+        PrivacyRatchet.disclosure(row) == "none" ? label(row.folder) : row.name
     }
 
     /// A stable opaque label for a binder whose name the model must not see: `binder-` and six hex digits of the

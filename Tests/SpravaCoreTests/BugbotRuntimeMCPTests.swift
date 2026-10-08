@@ -155,7 +155,7 @@ import Testing
         var e = IntakeReadings.Entry(id: "reading-1", binder: s.folder.standardizedFileURL.path, name: "letter.pdf", sha256: String(repeating: "0", count: 64),
                                      card: "card-1", reading: IntakeReading(kind: "text", textFrom: "parsed", text: "An invented letter.", channel: "other"), now: now)
         e.escalation = "waiting"
-        store.save(e)
+        try store.save(e)
         let r = try tool(s.server, "finish_reading", .obj([("binder", .str("estate-example")), ("reading_id", .str("reading-1"))]))
         #expect(r["isError"] == .bool(true))
         #expect(store.load("reading-1")?.escalation == "waiting")

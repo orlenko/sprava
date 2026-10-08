@@ -22,12 +22,14 @@ final class BinderActions: ObservableObject {
         var asksChannel = false
     }
 
-    /// One add_item the person may change before approving.
+    /// One add_item, or one item an adoption repair card completes, the person may change before approving.
     struct Editable: Identifiable, Equatable {
         let index: Int
         var title: String
         var due: String
         var priority: String
+        /// Who the item waits on, when the card offers it (a repair card, binder-v0 §9.4); nil otherwise.
+        var waitingOn: String?
         var include = true
         var id: Int { index }
     }
@@ -79,7 +81,7 @@ final class BinderActions: ObservableObject {
                             editable: (p["editable"]?.arrayValue ?? []).compactMap { e in
                                 guard let i = e["index"]?.numberValue?.safeInteger else { return nil }
                                 return Editable(index: Int(i), title: e["title"]?.stringValue ?? "", due: e["due"]?.stringValue ?? "",
-                                                priority: e["priority"]?.stringValue ?? "normal")
+                                                priority: e["priority"]?.stringValue ?? "normal", waitingOn: e["waiting_on"]?.stringValue)
                             })
                 card.asksChannel = p["intake"]?["obtained"]?["channel"] == .str("other")
                 return card
@@ -156,6 +158,7 @@ final class BinderActions: ObservableObject {
                 if e.title != original.title { o.append(("title", .string(e.title))) }
                 if e.due != original.due { o.append(("due", .string(e.due))) }
                 if e.priority != original.priority { o.append(("priority", .string(e.priority))) }
+                if let party = e.waitingOn, party != original.waitingOn { o.append(("waiting_on", .string(party))) }
                 return o.count > 1 ? .obj(o) : nil
             }
             if !changed.isEmpty { fields.append(("edits", .array(changed))) }
@@ -242,6 +245,9 @@ struct ReviewSection: View {
                                         Text("high").tag("high"); Text("normal").tag("normal"); Text("low").tag("low")
                                     }
                                     .labelsHidden().frame(width: 90)
+                                    if e.waitingOn != nil {
+                                        TextField("Waiting on", text: partyBinding(card.id, e.index)).textFieldStyle(.roundedBorder).frame(width: 160)
+                                    }
                                 }
                             }
                         }
@@ -269,6 +275,15 @@ extension ReviewSection {
                 set: { value in
                     guard let i = actions.editing[card]?.firstIndex(where: { $0.index == index }) else { return }
                     actions.editing[card]![i][keyPath: path] = value
+                })
+    }
+
+    /// A binding into the party of one editable item, shown only when the card offers one.
+    func partyBinding(_ card: String, _ index: Int) -> Binding<String> {
+        Binding(get: { actions.editing[card]?.first { $0.index == index }?.waitingOn ?? "" },
+                set: { value in
+                    guard let i = actions.editing[card]?.firstIndex(where: { $0.index == index }) else { return }
+                    actions.editing[card]![i].waitingOn = value
                 })
     }
 }

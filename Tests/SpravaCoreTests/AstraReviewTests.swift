@@ -153,7 +153,7 @@ import Testing
                                      sha256: String(repeating: "0", count: 64), card: card.id,
                                      reading: IntakeReading(kind: "text", textFrom: "parsed", text: "An invented notice.", channel: "other"), now: pNow)
         e.escalation = "waiting"
-        store.save(e)
+        try store.save(e)
         let args = JSONValue.obj([("binder", .str("estate-example")), ("reading_id", .str("reading-astra"))])
         #expect(try m.tool(s.server, "read_document", args)["isError"] == .bool(false))
 

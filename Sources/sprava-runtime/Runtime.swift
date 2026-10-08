@@ -501,7 +501,7 @@ final class Runtime: @unchecked Sendable {
             guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
             let binder = FilingList(support: support).binders(rows: rows, deviceID: commands.deviceID).first { $0.folder.standardizedFileURL.path == entry.binder }
                 ?? rows.first { $0.folder.standardizedFileURL.path == entry.binder }.map { row in
-                    FilingBinder(name: row.name, description: "", folder: folder, openItems: FilingBinder.candidates(catalog: row.teka.catalog))
+                    FilingBinder(name: FilingList.name(of: row), description: "", folder: folder, openItems: FilingBinder.candidates(catalog: row.teka.catalog))
                 }
             let t0 = Date()
             let locale = IntakeReading.language(of: entry.reading.text)
@@ -512,7 +512,7 @@ final class Runtime: @unchecked Sendable {
                 log("clerk document outcome=failed calls=\(doc.calls) ms=\(Int(seconds * 1000))")
             } else {
                 let outcome = xpc.queue.sync { watcher.commitReading(entry, doc, commands: commands) }
-                log("clerk document outcome=\(doc.outcome) class=\(doc.documentClass) items=\(outcome.items) escalated=\(outcome.escalated) calls=\(doc.calls) ms=\(Int(seconds * 1000))")
+                log("clerk document outcome=\(doc.outcome) class=\(doc.documentClass) items=\(outcome.items) escalated=\(outcome.escalated) card_changed=\(outcome.cardChanged) calls=\(doc.calls) ms=\(Int(seconds * 1000))")
             }
             read += 1
         }
@@ -567,9 +567,11 @@ final class Runtime: @unchecked Sendable {
         guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         let m = backup.maintain(rows: rows, deviceID: commands.deviceID)
         if m.snapshots > 0 || m.failed > 0 || m.retention || m.checked {
-            log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
+            log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) failed_parts=\(m.failedParts.joined(separator: ",")) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
         }
-        return m.failed > 0 ? .error(code: "backup_failed", culprit: "\(m.failed) binder(s) or check") : requestOutcome
+        // Sprava's own state snapshot, retention and the check fail the job as a binder does (docs/backup.md §3.3).
+        let culprit = "\(m.failed) failure(s)" + (m.failedParts.isEmpty ? " in binder backups" : ", including " + m.failedParts.joined(separator: ", "))
+        return m.failed > 0 ? .error(code: "backup_failed", culprit: culprit) : requestOutcome
     }
 
     /// The Shelf for a job: one that cannot be read fails the job, never reads as an empty Shelf.
