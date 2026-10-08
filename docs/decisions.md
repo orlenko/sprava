@@ -215,7 +215,7 @@
 - **A5 recommended.** The review queue: a proposal is an op batch with provenance, confidence and
   source spans; cards offer approve, edit, reject; applied ops carry `approved_by`; undo is a
   compensating op. Tier 1 and Tier 2 proposals look identical in the queue.
-- **A6 recommended.** Encryption: binders are plain folders on a FileVault disk; the offsite backup
+- **A6 superseded by A11 and A12** (see `docs/backup.md`). Encryption: binders are plain folders on a FileVault disk; the offsite backup
   is ciphertext only in the cmirror model (path-addressed age blobs, encrypted manifest, archive of
   replaced blobs); the MVP calls cmirror where it is installed and a native implementation comes
   later; the root key stays the age identity file (a Keychain or Secure Enclave copy is device-bound
@@ -226,8 +226,11 @@
   keeps a mirror in a folder the person chooses, usually one their cloud app syncs, plain or encrypted. The
   engine is restic, bundled with the app; existing cmirror copies are migrated by decrypting with cmirror and
   backing up again. Where the key is kept is the person's choice (a key file the person stores, for example
-  in a password manager). Open: retention ("at least N versions for at least X days"), git per binder, and
-  offloading large binders with one-click retrieval.
+  in a password manager). Designed in `docs/backup.md`.
+- **A12 decided (2026-10-07, by the author).** The mirror lives in iCloud Drive (Mac-only tool; other
+  destinations later). No git as a versioning mechanism: restic snapshots are the versions. A live binder stays
+  entirely local; a finished binder is offloaded whole and restored with one click when needed. Offloading
+  requires a second, independent backup.
 - **A7 recommended.** An explicit inventory of what leaves the Mac, kept in the docs and the app:
   nothing by default; backup ciphertext; Tier 2 MCP clients, per binder and opt-in; the existing hub's
   Google Tasks mirror during the transition. Sprava ignores `.claude/settings.json` and the lifeproj

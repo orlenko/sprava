@@ -808,6 +808,11 @@ For the record, holos itself signals only through files: its recorder writes a s
 
 ## 9. Encryption and backup
 
+> **Replaced in part (2026-10-07, decisions.md A11, A12).** Backup is now an encrypted restic mirror in iCloud
+> Drive, with offload and restore of finished binders, designed in `docs/backup.md`. That document replaces
+> §9.1's cmirror model, the root identity file of §9.2 and all of §9.3. §9.2's rows for MCP tokens, the runtime
+> key and the device id still hold.
+
 This section defends boundary 6 and the "stolen backup" and "lost Mac" rows of the threat model.
 
 ### 9.1 What is encrypted where
