@@ -159,10 +159,17 @@ public struct IntakeWatcher: Sendable {
                         let reading = prepared.readings[path]
                         if requireReading && reading == nil { result.waiting += 1; next[file.name] = entry; continue }
                         let sha = prepared.digests[path] ?? DocumentPaths.sha256(of: URL(fileURLWithPath: path))
-                        if let existing = waiting.first(where: { $0.raw["provenance"]?["intake"]?["name"]?.stringValue == file.name
-                            && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }) {
+                        let matching = waiting.filter { $0.raw["provenance"]?["intake"]?["name"]?.stringValue == file.name
+                            && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }
+                        // Only a card Sprava recorded is taken over, with its reading made sure of; one it cannot
+                        // vouch for could never be approved, so it is withdrawn and the file carded again.
+                        if let existing = matching.first(where: { Self.isTrusted($0.id, in: row.folder, commands: commands) }) {
                             entry?.card = existing.id
+                            if let sha, IntakeReadings(support: support).forCard(existing.id) == nil {
+                                saveReading(reading, file: file, sha: sha, card: existing.id, in: row, now: now)
+                            }
                         } else {
+                            for stranded in matching { withdraw(stranded.id, in: row.folder, now: now) }
                             entry?.card = card(file, sha: sha, reading: reading, digests: prepared.digests, in: row, commands: commands, now: now)
                             if entry?.card != nil {
                                 result.carded += 1
@@ -316,17 +323,35 @@ public struct IntakeWatcher: Sendable {
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
         do {
             try ProposalStore.save(proposal, in: row.folder)
-            try commands.trustProposals([proposal.id], in: row.folder)
         } catch {
             return nil
         }
-        // A reading with text waits for the clerk's document reading (§4.2, §4.3).
-        if let r = reading, r.held == nil, !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let entry = IntakeReadings.Entry(id: UUIDv7.make(now: now), binder: row.folder.standardizedFileURL.path, name: file.name,
-                                             sha256: sha, card: proposal.id, reading: r, now: now)
-            IntakeReadings(support: support).save(entry)
+        do {
+            try commands.trustProposals([proposal.id], in: row.folder)
+        } catch {
+            // A card whose digest was not kept could never be approved: it goes, and the file stays uncarded, so the
+            // next scan cards it again.
+            let written = ProposalStore.dir(row.folder).appendingPathComponent("\(proposal.id).json")
+            if (try? FileManager.default.removeItem(at: written)) == nil { withdraw(proposal.id, in: row.folder, now: now) }
+            return nil
         }
+        saveReading(reading, file: file, sha: sha, card: proposal.id, in: row, now: now)
         return proposal.id
+    }
+
+    /// A reading with text waits for the clerk's document reading (§4.2, §4.3).
+    func saveReading(_ reading: IntakeReading?, file: Candidate, sha: String, card: String, in row: ShelfRow, now: Date) {
+        guard let r = reading, r.held == nil, !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let entry = IntakeReadings.Entry(id: UUIDv7.make(now: now), binder: row.folder.standardizedFileURL.path, name: file.name,
+                                         sha256: sha, card: card, reading: r, now: now)
+        IntakeReadings(support: support).save(entry)
+    }
+
+    /// Whether the binder holds this card as Sprava last wrote it (its recorded digest matches).
+    static func isTrusted(_ id: String, in folder: URL, commands: Commands) -> Bool {
+        guard let trusted = try? commands.loadDigests(),
+              let (_, digest) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }) else { return false }
+        return [folder, folder.standardizedFileURL].contains { trusted[commands.key($0, id)] == digest }
     }
 
     func withdraw(_ id: String, in folder: URL, now: Date) {

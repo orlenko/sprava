@@ -169,19 +169,31 @@ public final class MCPListener: @unchecked Sendable {
         while true {
             switch reader.next(limit: Self.lineLimit) {
             case .line(let line):
-                // Revocation is immediate (architecture 7.5): the record is checked again before every call.
-                guard let current = (try? MCPClients.load(support))?.clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
-                      !current.revoked else {
+                // Revocation is immediate (architecture 7.5): the record is checked again before every call, on the
+                // command queue just before dispatch, so a revocation queued ahead of the call is always seen.
+                enum Gate { case revoked, changed, reply(String?) }
+                let started = Date()
+                let gate = queue.sync { () -> Gate in
+                    guard let current = (try? MCPClients.load(support))?.clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
+                          !current.revoked else { return .revoked }
+                    // So is any other change to its rights (scope, documents): the connection ends, and the next one
+                    // gets the new record.
+                    guard current == client else { return .changed }
+                    return .reply(server.handle(line: line))
+                }
+                let reply: String
+                switch gate {
+                case .revoked:
                     log("mcp client=\(client.id) closed=revoked")
                     return
-                }
-                // So is any other change to its rights (scope, documents): the connection ends, and the next one gets the new record.
-                guard current == client else {
+                case .changed:
                     log("mcp client=\(client.id) closed=changed")
                     return
+                case .reply(nil):
+                    continue
+                case .reply(let r?):
+                    reply = r
                 }
-                let started = Date()
-                guard let reply = queue.sync(execute: { server.handle(line: line) }) else { continue }
                 if !writeLine(conn, reply) { return }
                 // Names, sizes and durations only, never content (architecture 3.7, 7.5): a method name the server
                 // does not know is logged as unknown_method, so no text a client chose reaches the log.

@@ -130,22 +130,22 @@ import Testing
 
         let backup = Backup(support: support, removeFolder: { try FileManager.default.removeItem(at: $0) })
         let requests = BackupRequests(support: support)
-        func drain() { while let r = requests.next(), r.state == "queued" { requests.run(r, backup: backup, deviceID: "dev", now: now) } }
+        func drain() throws { while let r = try requests.next(), r.state == "queued" { requests.run(r, backup: backup, deviceID: "dev", now: now) } }
 
         // Without the confirmation, the request stops and lists the open items.
         _ = try call(c, [("command", .str("backup_request")), ("kind", .str("offload")), ("binder", .string(folder.path))])
-        drain()
-        #expect(requests.all().last?.state == "needs_confirmation")
+        try drain()
+        #expect(try requests.all().last?.state == "needs_confirmation")
         _ = try call(c, [("command", .str("backup_request")), ("kind", .str("offload")), ("binder", .string(folder.path)), ("confirm_open_items", .bool(true))])
-        drain()
-        #expect(requests.all().last?.state == "done", "\(requests.all())")
+        try drain()
+        #expect(try requests.all().last?.state == "done", "\((try? requests.all()) ?? [])")
         #expect(!FileManager.default.fileExists(atPath: folder.path))
         let status = try call(c, [("command", .str("backup_status"))])
         let offloaded = try #require(status["offloaded"]?.arrayValue?.first)
 
         _ = try call(c, [("command", .str("backup_request")), ("kind", .str("restore")), ("backup_id", offloaded["id"]!)])
-        drain()
-        #expect(requests.all().last?.state == "done", "\(requests.all())")
+        try drain()
+        #expect(try requests.all().last?.state == "done", "\((try? requests.all()) ?? [])")
         #expect(Teka.read(folder).state == .ready)
     }
 }

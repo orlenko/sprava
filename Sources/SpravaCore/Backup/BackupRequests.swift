@@ -37,8 +37,10 @@ public struct BackupRequests: Sendable {
         return try body()
     }
 
-    public func all() -> [Request] {
-        (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([Request].self, from: $0) } ?? []
+    /// The queue. Only a missing file is empty; one that cannot be read or decoded throws, so nothing ever saves
+    /// over the restores, backups and waiting offloads it holds.
+    public func all() throws -> [Request] {
+        try OwnState.read([Request].self, from: url) ?? []
     }
 
     func save(_ list: [Request]) throws {
@@ -53,7 +55,7 @@ public struct BackupRequests: Sendable {
     @discardableResult
     public func enqueue(_ r: Request) throws -> Request {
         try locked {
-            var list = all()
+            var list = try all()
             if let same = list.first(where: { $0.kind == r.kind && $0.binder == r.binder && $0.backupID == r.backupID
                 && ["queued", "running", "waiting_for_icloud"].contains($0.state) }) { return same }
             list.append(r)
@@ -62,9 +64,10 @@ public struct BackupRequests: Sendable {
         }
     }
 
+    /// Changes one request. A queue that cannot be read is left as it is; the job reports it on its next run.
     public func update(_ id: String, _ change: (inout Request) -> Void) {
         locked {
-            var list = all()
+            guard var list = try? all() else { return }
             guard let i = list.firstIndex(where: { $0.id == id }) else { return }
             change(&list[i])
             try? save(list)
@@ -74,9 +77,9 @@ public struct BackupRequests: Sendable {
     /// At runtime start nothing is running, so a request left "running" was cut off by a crash or a restart. It is
     /// marked failed, not run again, so a request that brings the runtime down cannot do so in a loop; an offload
     /// keeps its progress in the backup's state and resumes when the person asks again.
-    public func recoverInterrupted(now: Date = Date()) {
-        locked {
-            var list = all()
+    public func recoverInterrupted(now: Date = Date()) throws {
+        try locked {
+            var list = try all()
             var changed = false
             for i in list.indices where list[i].state == "running" {
                 list[i].state = "failed"
@@ -88,9 +91,12 @@ public struct BackupRequests: Sendable {
         }
     }
 
-    /// The next request to run: a waiting offload is retried too, since iCloud may have caught up.
-    public func next() -> Request? {
-        all().first { $0.state == "queued" } ?? all().first { $0.state == "waiting_for_icloud" }
+    /// The next request to run: a queued one first; else a waiting offload is retried, since iCloud may have caught
+    /// up, the one retried longest ago first, so several waiting offloads take turns.
+    public func next() throws -> Request? {
+        let list = try all()
+        return list.first { $0.state == "queued" }
+            ?? list.filter { $0.state == "waiting_for_icloud" }.min { (ISOTime.date($0.at) ?? .distantPast) < (ISOTime.date($1.at) ?? .distantPast) }
     }
 
     /// Runs one request with the given backup; the runtime calls this off the command queue.
@@ -102,7 +108,7 @@ public struct BackupRequests: Sendable {
                 guard let path = r.binder else { throw Backup.Failure(message: "no binder") }
                 switch try backup.offload(URL(fileURLWithPath: path, isDirectory: true), deviceID: deviceID, confirmOpenItems: r.confirmOpenItems, now: now) {
                 case .waitingForICloud(let n):
-                    update(r.id) { $0.state = "waiting_for_icloud"; $0.message = "waiting for iCloud to upload \(n) file(s)" }
+                    update(r.id) { $0.state = "waiting_for_icloud"; $0.message = "waiting for iCloud to upload \(n) file(s)"; $0.at = ISOTime.string(now) }
                     return
                 case .done(let record):
                     update(r.id) { $0.state = "done"; $0.message = "offloaded \(record.name)"; $0.backupID = record.backupID }

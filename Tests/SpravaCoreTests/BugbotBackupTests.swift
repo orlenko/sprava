@@ -336,12 +336,12 @@ import Testing
             _ = try? requests.enqueue(.init(id: "r\(i)", kind: "drill", binder: "/Invented/binder-\(i)", at: at))
             requests.update("r\(i)") { $0.state = "running" }
         }
-        let all = requests.all()
+        let all = try requests.all()
         #expect(all.count == 200)
         #expect(all.allSatisfy { $0.state == "running" })
 
         // After a restart nothing is running: those requests are marked interrupted, not run again.
-        requests.recoverInterrupted()
-        #expect(requests.all().allSatisfy { $0.state == "failed" && ($0.message ?? "").contains("interrupted") })
+        try requests.recoverInterrupted()
+        #expect(try requests.all().allSatisfy { $0.state == "failed" && ($0.message ?? "").contains("interrupted") })
     }
 }

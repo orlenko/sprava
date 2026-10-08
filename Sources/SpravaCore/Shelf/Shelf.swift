@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Where Sprava keeps its own state: `$SPRAVA_SUPPORT_DIR`, else `~/Library/Application Support/Sprava`.
@@ -67,21 +68,35 @@ public struct ShelfStore: Sendable {
     public func pickedFolders() -> [URL] { (try? readFolders()) ?? [] }
 
     public func add(_ folder: URL) throws {
-        var folders = try readFolders().map(\.path)
-        let path = folder.standardizedFileURL.path
-        guard !folders.contains(where: { Shelf.identity($0) == Shelf.identity(path) }) else { return }
-        folders.append(path)
-        try save(folders)
+        try locked {
+            var folders = try readFolders().map(\.path)
+            let path = folder.standardizedFileURL.path
+            guard !folders.contains(where: { Shelf.identity($0) == Shelf.identity(path) }) else { return }
+            folders.append(path)
+            try save(folders)
+        }
     }
 
     public func remove(_ folder: URL) throws {
         let path = folder.standardizedFileURL.path
-        try save(try readFolders().map(\.path).filter { Shelf.identity($0) != Shelf.identity(path) })
+        try locked { try save(try readFolders().map(\.path).filter { Shelf.identity($0) != Shelf.identity(path) }) }
+    }
+
+    /// The app and the runtime both change the Shelf: each read-modify-write holds a file lock next to shelf.json,
+    /// so neither loses a binder the other just added.
+    private func locked<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let lock = file.deletingLastPathComponent().appendingPathComponent("shelf.lock").path
+        let fd = open(lock, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw Unreadable(path: lock) }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw Unreadable(path: lock) }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
     }
 
     private func save(_ folders: [String]) throws {
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         var c = contents() ?? Contents()
