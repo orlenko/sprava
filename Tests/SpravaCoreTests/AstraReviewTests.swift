@@ -51,6 +51,66 @@ import Testing
         #expect(throws: (any Error).self) { try ProposalStore.load(name, in: s.folder, expectedDigest: nil) }
     }
 
+    @Test func unfiledCardIDsNeverReachOutsideTheirFolder() throws {
+        let s = try pSetup()
+        var forged = Proposal.make(title: "Invented card", actor: clerk, ops: [], now: pNow)
+        forged.raw.set("id", .str("../capture/state"))
+        let name = UUIDv7.make(now: pNow)
+        #expect(throws: (any Error).self) { try s.inbox.writeUnfiled(forged.raw) }
+        #expect(!FileManager.default.fileExists(atPath: s.inbox.dir.appendingPathComponent("state.json").path))
+        #expect(throws: (any Error).self) { try s.inbox.discard("../capture/state") }
+        let good = Proposal.make(title: "Invented card", actor: clerk, ops: [], now: pNow)
+        try s.inbox.writeUnfiled(good.raw)
+        #expect(s.inbox.unfiled().map(\.id) == [good.id])
+        // A card under another card's name is not shown, even with a digest recorded for that name.
+        var renamed = good.raw
+        renamed.set("id", .string(UUIDv7.make(now: pNow)))
+        let renamedBytes = Data(JSONWriter.pretty(.object(renamed)).utf8)
+        var digests = try s.inbox.unfiledDigests()
+        digests[name] = CaptureInbox.digest(renamedBytes)
+        try s.inbox.saveUnfiledDigests(digests)
+        try renamedBytes.write(to: s.inbox.unfiledDir.appendingPathComponent("\(name).json"))
+        #expect(s.inbox.unfiled().map(\.id) == [good.id])
+    }
+
+    // MARK: - 2. A raise to private redacts every item a waiting card writes to
+
+    @Test func raisingToPrivateRedactsEveryItemACardWritesTo() throws {
+        let s = try pSetup()
+        try bAddItem(s, id: "estate-example-2026-030", title: "Ask about the invented deed")
+        try bAddItem(s, id: "estate-example-2026-031", title: "Return the invented keys")
+        try bAddItem(s, id: "estate-example-2026-032", title: "Sort the invented letters")
+        let event = "01a10000-0000-7000-8000-0000000000b2"
+        let ops = [
+            op("set_status", [("id", .str("estate-example-2026-030")), ("status", .str("waiting")),
+                              ("waiting_on", .str("Invented Notary Office")), ("follow_up_at", .str("2026-10-20"))]),
+            op("update_item", [("id", .str("estate-example-2026-031")), ("set", .obj([("notes", .str("left with the invented neighbour"))]))]),
+            op("complete", [("id", .str("estate-example-2026-032")), ("closed_at", .str("2026-10-06T13:00:00Z")), ("source", .str("capture"))]),
+        ]
+        let card = Proposal.make(title: "Three changes from a note", actor: clerk, ops: ops,
+                                 provenance: JSONObject([(key: "events", value: .array([.string(event)]))]), now: pNow)
+        try ProposalStore.save(card, in: s.folder)
+        try s.commands.trustProposals([card.id], in: s.folder)
+
+        #expect(s.inbox.raisePrivacy(chain: [event], binders: pRows(s), commands: s.commands, now: pNow))
+        let rewritten = try #require(pOpen(s).first { $0.id == card.id })
+        #expect(rewritten.raw["provenance"]?["private"] == .bool(true))
+        for (n, name) in [(30, "set_status"), (31, "update_item"), (32, "complete")] {
+            let id = JSONValue.string("estate-example-2026-0\(n)")
+            let redacts = rewritten.ops.firstIndex { $0["op"] == .str("update_item") && $0["args"]?["id"] == id && $0["args"]?["set"]?["redact"] == .bool(true) }
+            let writes = rewritten.ops.lastIndex { $0["op"] == .string(name) && $0["args"]?["id"] == id }
+            #expect(redacts != nil && writes != nil && redacts! <= writes!, "item \(n)")
+            #expect(redacts.map { rewritten.ops[$0]["args"]?["set"]?["kind"] } == .str("other"), "item \(n)")
+        }
+        // Approved as shown, the party it waits on never reaches the hub.
+        let shown = try #require(try listed(s, card.id))
+        #expect(shown["verified"] == .bool(true))
+        let r = try call(s, [("command", .str("approve")), ("binder", .string(s.folder.path)), ("proposal", .string(card.id)), ("digest", shown["digest"]!)])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let slice = JSONWriter.compact(.array(try bSlice(s.folder)))
+        #expect(!slice.contains("Invented Notary Office") && !slice.contains("invented deed") && !slice.contains("invented keys"))
+    }
+
     // MARK: - 3. The offload's last check and removal hold the binder lock
 
     @Test func offloadRemovesTheFolderUnderTheBinderLock() throws {
@@ -142,6 +202,74 @@ import Testing
         #expect(try Data(contentsOf: watcher.stateURL) == garbage)
         try FileManager.default.removeItem(at: watcher.stateURL)
         #expect(!watcher.scan(binders: pRows(s), commands: s.commands, now: pNow).cursorUnreadable)
+    }
+
+    // MARK: - 7. A clerk card that cannot be trusted leaves the code-built card
+
+    @Test func aClerkCardThatCannotBeTrustedLeavesTheCodeBuiltCard() async throws {
+        let s = try pSetup()
+        _ = try note(s, "Call the invented notary about the deed", hint: "estate-example")
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        let work = try #require(s.inbox.nextForClerk())
+        let model = RecordingModel([.obj([("items", .array([item("Call the invented notary", "Call the notary", "call")]))])])
+        let interp = await Clerk(model: model).read(work.event, filing: [], hint: work.hint, now: pNow)
+        try garbage.write(to: s.commands.digestsURL)
+
+        let out = s.inbox.commitClerk(work, interp, filing: [], rows: pRows(s), commands: s.commands, seconds: 1, now: pNow)
+        #expect(!out.replaced && out.filed == 0)
+        #expect(pOpen(s).map(\.id) == [work.tier0])
+        #expect(try s.inbox.readState().clerk?[work.event.id] == "retry")
+        // Once the record can be written again, the reading is tried again and replaces the card.
+        try FileManager.default.removeItem(at: s.commands.digestsURL)
+        try s.commands.trustProposals([work.tier0], in: s.folder)
+        let again = try #require(s.inbox.nextForClerk())
+        let retried = s.inbox.commitClerk(again, interp, filing: [], rows: pRows(s), commands: s.commands, seconds: 1, now: pNow)
+        #expect(retried.replaced)
+        #expect(!pOpen(s).map(\.id).contains(work.tier0))
+    }
+
+    // MARK: - 8. Filing an Inbox card never loses it
+
+    @Test func aFilingCutShortNeverLosesTheCard() throws {
+        let s = try pSetup()
+        _ = try note(s, "Send the invented form")
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        let card = try #require(s.inbox.unfiled().first)
+        // A binder that cannot take the card: the Inbox keeps it.
+        let proposals = try ProposalStore.checkedDir(s.folder, create: true)
+        chmod(proposals.path, 0o500)
+        #expect(throws: (any Error).self) { try s.inbox.file(card.id, into: s.folder, commands: s.commands) }
+        chmod(proposals.path, 0o700)
+        #expect(s.inbox.unfiled().map(\.id) == [card.id])
+
+        // A crash after the binder's copy was saved and trusted, before the Inbox let go: both hold the card...
+        var raw = card.raw
+        raw.remove("binder")
+        try ProposalStore.save(Proposal(raw: raw), in: s.folder)
+        try s.commands.trustProposals([card.id], in: s.folder)
+        #expect(s.inbox.unfiled().map(\.id) == [card.id])
+        // ...until the next sweep, which drops the Inbox's copy; the binder's stays approvable.
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        #expect(s.inbox.unfiled().isEmpty)
+        #expect(pOpen(s).map(\.id) == [card.id])
+        #expect(try listed(s, card.id)?["verified"] == .bool(true))
+    }
+
+    @Test func filingAgainAfterACrashOnlyFinishesTheMove() throws {
+        let s = try pSetup()
+        _ = try note(s, "Send the invented form")
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        let card = try #require(s.inbox.unfiled().first)
+        var raw = card.raw
+        raw.remove("binder")
+        try ProposalStore.save(Proposal(raw: raw), in: s.folder)
+        try s.commands.trustProposals([card.id], in: s.folder)
+        let digest = try #require(try listed(s, card.id)?["digest"])
+
+        try s.inbox.file(card.id, into: s.folder, commands: s.commands)
+        #expect(s.inbox.unfiled().isEmpty)
+        #expect(pOpen(s).map(\.id) == [card.id])
+        #expect(try listed(s, card.id)?["digest"] == digest)
     }
 
     // MARK: - 9. A missing document reader holds the file
