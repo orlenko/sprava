@@ -221,6 +221,13 @@
   later; the root key stays the age identity file (a Keychain or Secure Enclave copy is device-bound
   and cannot be the only copy); per-binder keys are designed (binder key wrapped by the root key,
   crypto-shredding on archive) and deferred to sharing and sync.
+- **A11 decided (2026-10-07, by the author; revises A6).** Backup is a setting, not a plugin. Binders always
+  live in a local folder; a live binder inside a synced folder is not supported (architecture 2.3). Backup
+  keeps a mirror in a folder the person chooses, usually one their cloud app syncs, plain or encrypted. The
+  engine is restic, bundled with the app; existing cmirror copies are migrated by decrypting with cmirror and
+  backing up again. Where the key is kept is the person's choice (a key file the person stores, for example
+  in a password manager). Open: retention ("at least N versions for at least X days"), git per binder, and
+  offloading large binders with one-click retrieval.
 - **A7 recommended.** An explicit inventory of what leaves the Mac, kept in the docs and the app:
   nothing by default; backup ciphertext; Tier 2 MCP clients, per binder and opt-in; the existing hub's
   Google Tasks mirror during the transition. Sprava ignores `.claude/settings.json` and the lifeproj
