@@ -301,14 +301,17 @@ public struct CaptureInbox: Sendable {
                 return
             }
             replaces = earlier
-            withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, now: now)
+            let withdrawn = withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, now: now)
             // Items already filed from the earlier version get a change card, never new items beside them (§6.5).
-            if let made = correctionCards(event, chain: chain, binders: binders, commands: commands, now: now), !made.isEmpty {
-                state.cards[id] = made[0].1
-                state.cardBinder = (state.cardBinder ?? [:]).merging([id: made[0].0.path]) { $1 }
+            if let made = correctionCards(event, chain: chain, current: earlier, withdrawn: withdrawn, paths: state.paths ?? [:],
+                                          binders: binders, commands: commands, now: now) {
+                if let (folder, card) = made.first {
+                    state.cards[id] = card
+                    if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
+                    result.filed += 1
+                }
                 state.clerk = (state.clerk ?? [:]).merging([id: "kept"]) { $1 }   // the clerk would add them again
-                state.ingested[id] = "proposed"
-                result.filed += 1
+                state.ingested[id] = made.isEmpty ? "nothing_to_change" : "proposed"
                 journal([("event", .string(id)), ("stage", .str("correction_proposed")), ("cards", .int(made.count))])
                 return
             }
@@ -371,70 +374,229 @@ public struct CaptureInbox: Sendable {
         return (unfiled, filed)
     }
 
-    /// Change cards for a corrected note whose earlier version was already filed: per binder, the note's lines map
-    /// in order onto the items filed from the chain. A changed line updates the title, an extra line adds an item, and
-    /// an item with no line left is offered to drop. Returns (binder, card id) for each card saved.
-    func correctionCards(_ event: CaptureEvent, chain: [String], binders: [ShelfRow], commands: Commands, now: Date) -> [(URL, String)]? {
-        let ids = Set(chain)
-        let lines = Self.lines(of: event.text).prefix(10).map(\.text)
-        var made: [(URL, String)] = []
-        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
-            let filed = row.teka.items.compactMap { $0.object }.filter { o in
-                (o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).contains(where: ids.contains)
+    /// What happened to one line of an earlier text in the corrected one.
+    enum LineFate: Equatable { case same(Int), changed(Int), removed }
+
+    /// A line diff: the longest common run of equal lines anchors the two texts; between anchors, old and new lines
+    /// pair up in order as changed, and what is left over was removed or added. Returns each old line's fate and the
+    /// indices of the added new lines.
+    static func diffLines(_ old: [String], _ new: [String]) -> (fates: [LineFate], added: [Int]) {
+        let n = old.count, m = new.count
+        var lcs = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                lcs[i][j] = old[i] == new[j] ? lcs[i + 1][j + 1] + 1 : max(lcs[i + 1][j], lcs[i][j + 1])
             }
-            guard !filed.isEmpty else { continue }
-            var ops: [JSONObject] = []
-            for i in 0..<max(filed.count, lines.count) {
-                if i < filed.count, i < lines.count {
-                    guard let itemID = filed[i]["id"], filed[i]["title"]?.stringValue != lines[i] else { continue }
-                    var set = JSONObject([(key: "title", value: .string(String(lines[i].prefix(200))))])
-                    // A private correction's words are redacted as they land (capture-event-v0 §3.3).
-                    if event.isPrivate {
-                        set.set("redact", .bool(true))
-                        if filed[i]["kind"] == nil { set.set("kind", .str("other")) }
+        }
+        var anchors: [(Int, Int)] = []
+        var i = 0, j = 0
+        while i < n, j < m {
+            if old[i] == new[j] { anchors.append((i, j)); i += 1; j += 1 } else if lcs[i + 1][j] >= lcs[i][j + 1] { i += 1 } else { j += 1 }
+        }
+        var fates = Array(repeating: LineFate.removed, count: n)
+        var added: [Int] = []
+        var (a, c) = (0, 0)
+        for (b, d) in anchors + [(n, m)] {
+            let paired = min(b - a, d - c)
+            for t in 0..<paired { fates[a + t] = .changed(c + t) }
+            added += Array((c + paired)..<d)
+            if b < n { fates[b] = .same(d) }
+            (a, c) = (b + 1, d + 1)
+        }
+        return (fates, added)
+    }
+
+    /// The text of an earlier event, read again from the capture folder; nil when it is gone or unreadable.
+    func storedText(_ id: String, paths: [String: String]) -> String? {
+        guard let parts = paths[id]?.split(separator: "/").map(String.init), parts.count == 2,
+              case .ok(let data) = SafeFile.read(root.appendingPathComponent(parts[0]).appendingPathComponent(parts[1])) else { return nil }
+        return (try? JSONParser.parse(data).value)?["text"]?.stringValue
+    }
+
+    /// Change cards for a corrected note whose earlier version was already filed (capture-event-v0 §3.2, §6.5).
+    /// Each filed item is matched to its own source line: by its title when that is exactly one line of the current
+    /// text, else by the span it carries, and followed line by line through the current text to the new one (each
+    /// step a line diff): an item whose line changed
+    /// gets the new line as its title when its title is still that line's words (a clerk's title is its own words and
+    /// stays), an item whose line is gone is offered to drop, and an item whose line cannot be identified is left
+    /// alone. New lines, and lines whose waiting card this correction withdrew, are proposed once: in the binder of
+    /// the item filed from the nearest line, else unfiled. A private correction redacts every item it touches.
+    /// Returns (binder or nil for unfiled, card id) for each card saved; nil when nothing was filed from the chain.
+    func correctionCards(_ event: CaptureEvent, chain: [String], current: String, withdrawn: [(URL?, Proposal)], paths: [String: String],
+                         binders: [ShelfRow], commands: Commands, now: Date) -> [(URL?, String)]? {
+        let ids = Set(chain)
+        let newLines = Self.lines(of: event.text)
+        typealias Lines = [(text: String, start: Int, end: Int)]
+        var linesCache: [String: Lines?] = [:]
+        var toCurrent: [String: [LineFate]?] = [:]
+        func lines(_ id: String) -> Lines? {
+            if let cached = linesCache[id] { return cached }
+            let found = storedText(id, paths: paths).map(Self.lines(of:))
+            linesCache[id] = .some(found)
+            return found
+        }
+        /// The line of `id`'s text that holds offset `start`.
+        func line(of start: Int, in id: String) -> Int? {
+            lines(id)?.firstIndex { $0.start <= start && start < $0.end }
+        }
+        // Lines move from the event an item came from to the current text, then from the current text to the new one.
+        let currentLines = lines(current)
+        let step = currentLines.map { Self.diffLines($0.map(\.text), newLines.map(\.text)) }
+        /// The current text's line for line `k` of event `id`'s text; nil when an earlier correction removed it.
+        func inCurrent(_ id: String, _ k: Int) -> Int? {
+            if id == current { return k }
+            if toCurrent[id] == nil {
+                toCurrent[id] = .some(lines(id).flatMap { old in currentLines.map { Self.diffLines(old.map(\.text), $0.map(\.text)).fates } })
+            }
+            guard let fates = toCurrent[id] ?? nil, k < fates.count else { return nil }
+            switch fates[k] {
+            case .same(let c), .changed(let c): return c
+            case .removed: return nil
+            }
+        }
+
+        let rows = binders.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == commands.deviceID }
+        let filed = rows.map { row in
+            (row.folder, row.teka.items.compactMap(\.object).filter { o in
+                (o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).contains(where: ids.contains)
+            })
+        }.filter { !$0.1.isEmpty }
+        guard !filed.isEmpty else { return nil }
+
+        let closedAt = JSONValue.string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
+        var ops: [URL: [JSONObject]] = [:]
+        var placedAt: [Int: URL] = [:]   // new line -> a binder holding an item filed from it
+        for (folder, items) in filed {
+            for o in items {
+                guard let itemID = o["id"] else { continue }
+                let title = o["title"]?.stringValue ?? ""
+                // The item's own line: its title in the current text, else its span in the text it came from.
+                var source: (event: String, line: Int)?
+                let matches = (currentLines ?? []).indices.filter { String(currentLines![$0].text.prefix(200)) == title }
+                if matches.count == 1 {
+                    source = (current, matches[0])
+                } else if let start = o["provenance"]?["span"]?["start"]?.numberValue?.safeInteger,
+                          let from = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue).first(where: ids.contains),
+                          let k = line(of: Int(start), in: from) {
+                    source = (from, k)
+                }
+                var set = JSONObject()
+                var drop = false
+                if let source, let c = inCurrent(source.event, source.line), let fates = step?.fates, c < fates.count {
+                    switch fates[c] {
+                    case .same(let j):
+                        placedAt[j] = placedAt[j] ?? folder
+                    case .changed(let j):
+                        placedAt[j] = placedAt[j] ?? folder
+                        // Only words that are still the line's own are rewritten.
+                        let newTitle = String(newLines[j].text.prefix(200))
+                        let own = [lines(source.event)?[source.line].text, currentLines?[c].text].compactMap { $0.map { String($0.prefix(200)) } }
+                        if own.contains(title), newTitle != title { set.set("title", .string(newTitle)) }
+                    case .removed:
+                        drop = true
                     }
-                    ops.append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(set))]))]))
-                } else if i < lines.count {
-                    var item = JSONObject()
-                    item.set("id", .string("$new:\(i + 1)"))
-                    item.set("title", .string(String(lines[i].prefix(200))))
-                    item.set("status", .str("open"))
-                    item.set("priority", .str("normal"))
-                    item.set("no_deadline", .bool(true))
-                    if event.isPrivate {
-                        item.set("redact", .bool(true))
-                        item.set("kind", .str("other"))
-                    }
-                    item.set("provenance", .obj([("events", .array([.string(event.id)]))]))
-                    ops.append(JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .object(item))]))]))
-                } else if let itemID = filed[i]["id"] {
-                    ops.append(JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
-                        ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))]))
+                }
+                if drop {
+                    ops[folder, default: []].append(JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
+                        ("id", itemID), ("closed_at", closedAt), ("source", .str("capture"))]))]))
+                    continue
+                }
+                // A private correction's words are redacted as they land, and so is what it leaves in place (§3.3).
+                if event.isPrivate, o["redact"] != .bool(true) {
+                    set.set("redact", .bool(true))
+                    if o["kind"] == nil { set.set("kind", .str("other")) }
+                }
+                guard !set.entries.isEmpty else { continue }
+                ops[folder, default: []].append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(set))]))]))
+            }
+        }
+
+        // Lines to propose: new ones, and those whose waiting card was withdrawn above, each once.
+        var propose: [Int: URL?] = [:]
+        for (folder, p) in withdrawn {
+            for op in p.ops where op["op"] == .str("add_item") {
+                guard let span = op["spans"]?.arrayValue?.first, let from = span["event"]?.stringValue, ids.contains(from),
+                      let start = span["start"]?.numberValue?.safeInteger, let k = line(of: Int(start), in: from),
+                      let c = inCurrent(from, k), let fates = step?.fates, c < fates.count else { continue }
+                switch fates[c] {
+                case .same(let j), .changed(let j):
+                    // Back where it waited when that binder is this Mac's, else unfiled.
+                    let back = folder.flatMap { f in rows.contains { $0.folder == f } ? f : nil }
+                    if placedAt[j] == nil, propose[j] == nil { propose[j] = .some(back) }
+                case .removed: break
                 }
             }
-            guard !ops.isEmpty else { continue }
-            let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
-            var provenance = JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "supersedes", value: .array(chain.map(JSONValue.string))),
-                                         (key: "filed_by", value: .str("code, no model"))])
-            if event.isPrivate { provenance.set("private", .bool(true)) }
-            let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: ops,
-                                     provenance: provenance, now: now)
-            if (try? ProposalStore.save(card, in: row.folder)) != nil {
-                commands.trustProposals([card.id], in: row.folder)
-                made.append((row.folder, card.id))
+        }
+        for j in step?.added ?? [] where propose[j] == nil {
+            let before = placedAt.keys.filter { $0 < j }.max(), after = placedAt.keys.filter { $0 > j }.min()
+            propose[j] = .some(before.flatMap { placedAt[$0] } ?? after.flatMap { placedAt[$0] })
+        }
+        let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+        var adds: [URL?: [JSONObject]] = [:]
+        for j in propose.keys.sorted().prefix(10) {
+            let target = propose[j]!
+            var item = JSONObject()
+            item.set("id", .string("$new:\((adds[target]?.count ?? 0) + 1)"))
+            item.set("title", .string(String(newLines[j].text.prefix(200))))
+            item.set("status", .str("open"))
+            item.set("priority", .str("normal"))
+            item.set("no_deadline", .bool(true))
+            if event.isPrivate {
+                item.set("redact", .bool(true))
+                item.set("kind", .str("other"))
             }
+            item.set("provenance", .obj([("events", .array([.string(event.id)])), ("proposed_by", .object(actor)),
+                                         ("span", .obj([("start", .int(newLines[j].start)), ("end", .int(newLines[j].end))]))]))
+            let span = JSONValue.obj([("event", .string(event.id)), ("start", .int(newLines[j].start)), ("end", .int(newLines[j].end))])
+            adds[target, default: []].append(JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .object(item))])),
+                                                         (key: "spans", value: .array([span]))]))
+        }
+
+        var provenance = JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "supersedes", value: .array(chain.map(JSONValue.string))),
+                                     (key: "filed_by", value: .str("code, no model"))])
+        if event.isPrivate { provenance.set("private", .bool(true)) }
+        var made: [(URL?, String)] = []
+        for folder in rows.map(\.folder) where ops[folder] != nil || adds[folder] != nil {
+            let cardOps = (ops[folder] ?? []) + (adds[folder] ?? [])
+            guard !cardOps.isEmpty else { continue }
+            let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: cardOps,
+                                     provenance: provenance, now: now)
+            if (try? ProposalStore.save(card, in: folder)) != nil {
+                commands.trustProposals([card.id], in: folder)
+                made.append((folder, card.id))
+            }
+        }
+        if let unfiledOps = adds[nil] {
+            let noun = event.raw["source"]?["kind"]?.stringValue == "dictation" ? "dictation" : "note"
+            var card = Proposal.make(title: "Corrected \(noun): add \(unfiledOps.count == 1 ? "a new line" : "\(unfiledOps.count) new lines")",
+                                     actor: actor, ops: unfiledOps, provenance: provenance, now: now).raw
+            card.set("binder", .str("not sure"))
+            if (try? writeUnfiled(card)) != nil { made.append((nil, card["id"]?.stringValue ?? "")) }
         }
         return made
     }
 
-    /// Withdraws what still waits from a chain, and ends the clerk's work on it.
-    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], now: Date) {
+    /// Withdraws what still waits from a chain, and ends the clerk's work on it. A card that only redacts stays: a
+    /// raise to private holds whatever comes after it. Returns the cards withdrawn (binder, or nil when unfiled).
+    @discardableResult
+    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], now: Date) -> [(URL?, Proposal)] {
         let (unfiled, filed) = pendingCards(chain: chain, binders: binders)
-        for p in unfiled { try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(p.id).json")) }
-        for (folder, p) in filed { try? TekaStore(folder: folder).reject(p, reason: reason, now: now) }
+        func onlyRedacts(_ p: Proposal) -> Bool {
+            !p.ops.isEmpty && p.ops.allSatisfy { $0["op"] == .str("update_item") && $0["args"]?["set"]?["redact"] == .bool(true) }
+        }
+        var out: [(URL?, Proposal)] = []
+        for p in unfiled {
+            try? FileManager.default.removeItem(at: unfiledDir.appendingPathComponent("\(p.id).json"))
+            out.append((nil, p))
+        }
+        for (folder, p) in filed where !onlyRedacts(p) {
+            try? TekaStore(folder: folder).reject(p, reason: reason, now: now)
+            out.append((folder, p))
+        }
         var clerk = state.clerk ?? [:]
         for id in chain where clerk[id] != nil { clerk[id] = "superseded" }
         state.clerk = clerk
+        return out
     }
 
     /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items
@@ -533,10 +695,7 @@ public struct CaptureInbox: Sendable {
     public func notFiled(_ proposal: Proposal) -> [String] {
         guard let spans = proposal.raw["provenance"]?["unfiled"]?.arrayValue, !spans.isEmpty,
               let id = proposal.raw["provenance"]?["events"]?.arrayValue?.first?.stringValue,
-              let path = loadState().paths?[id] else { return [] }
-        let parts = path.split(separator: "/").map(String.init)
-        guard parts.count == 2, case .ok(let data) = SafeFile.read(root.appendingPathComponent(parts[0]).appendingPathComponent(parts[1])),
-              let text = (try? JSONParser.parse(data).value)?["text"]?.stringValue else { return [] }
+              let text = storedText(id, paths: loadState().paths ?? [:]) else { return [] }
         let scalars = Array(text.unicodeScalars)
         return spans.compactMap { span in
             guard let a = span["start"]?.numberValue?.safeInteger, let b = span["end"]?.numberValue?.safeInteger,
@@ -784,7 +943,9 @@ public struct CaptureInbox: Sendable {
                 item.set("redact", .bool(true))
                 item.set("kind", .str("other"))
             }
-            item.set("provenance", .obj([("events", .array([.string(event.id)])), ("proposed_by", .object(actor))]))
+            // The item keeps its line's span, so a correction of the note finds the item's own line (§6.5).
+            item.set("provenance", .obj([("events", .array([.string(event.id)])), ("proposed_by", .object(actor)),
+                                         ("span", .obj([("start", .int(line.start)), ("end", .int(line.end))]))]))
             let span = JSONValue.obj([("event", .string(event.id)), ("start", .int(line.start)), ("end", .int(line.end))])
             ops.append(JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .object(item))])),
                                    (key: "spans", value: .array([span]))]))
