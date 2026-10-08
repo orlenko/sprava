@@ -1,0 +1,84 @@
+{
+  "teka": "estate-example",
+  "lifecycle": "finite",
+  "active_chapter": null,
+  "active_chapters": [],
+  "generated": "2026-10-06T14:30:00Z",
+  "items": [
+    {
+      "id": "estate-example-2026-007",
+      "title": "File the estate inventory with the notary",
+      "status": "open",
+      "priority": "high",
+      "due": "2026-10-10",
+      "no_deadline": false,
+      "tags": [
+        "notary"
+      ],
+      "waiting_on": null,
+      "link": null,
+      "kind": "filing"
+    },
+    {
+      "id": "estate-example-2026-008",
+      "title": "Bank statement for the estate account",
+      "status": "waiting",
+      "priority": "normal",
+      "due": "2026-10-31",
+      "no_deadline": false,
+      "tags": [
+        "bank"
+      ],
+      "waiting_on": "[party]",
+      "link": null,
+      "kind": "document-request",
+      "follow_up_at": "2026-10-09"
+    },
+    {
+      "id": "estate-example-2026-009",
+      "title": "[redacted]",
+      "status": "open",
+      "priority": "high",
+      "due": "2026-10-15",
+      "no_deadline": false,
+      "tags": [],
+      "waiting_on": null,
+      "link": null,
+      "kind": "decision"
+    },
+    {
+      "id": "estate-example-2026-010",
+      "title": "Pay the property tax instalment on the house",
+      "status": "open",
+      "priority": "normal",
+      "due": "2026-11-14",
+      "no_deadline": false,
+      "tags": [],
+      "waiting_on": null,
+      "link": null,
+      "kind": "payment"
+    },
+    {
+      "id": "estate-example-2026-012",
+      "title": "Maintenance invoices (house)",
+      "status": "blocked",
+      "priority": "normal",
+      "due": "2026-10-30",
+      "no_deadline": false,
+      "tags": [],
+      "waiting_on": "[party]",
+      "link": null,
+      "kind": "document-request",
+      "follow_up_at": "2026-10-06"
+    }
+  ],
+  "format_version": "1",
+  "disclosure": "title",
+  "closed": [
+    {
+      "id": "estate-example-2026-005",
+      "action": "done",
+      "closed_at": null
+    }
+  ]
+}

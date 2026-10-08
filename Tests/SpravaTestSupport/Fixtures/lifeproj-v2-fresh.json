@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "schema_version": 2,
+    "name": "estate-example",
+    "domain": "legal",
+    "lifecycle": "finite",
+    "created": "2026-10-06",
+    "next_doc_id": 1,
+    "next_item_id": 1,
+    "profile": {}
+  },
+  "documents": [],
+  "open_items": [],
+  "processing_log": [],
+  "entities": []
+}

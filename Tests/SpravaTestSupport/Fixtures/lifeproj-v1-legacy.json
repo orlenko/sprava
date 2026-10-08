@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "name": "tax-2026",
+    "domain": "tax",
+    "lifecycle": "finite",
+    "created": "2026-06-27"
+  },
+  "documents": [
+    { "id": "d1", "title": "T4 slip, employer A. Example Ltd", "file": "slips/2026-02-28_t4.pdf" }
+  ],
+  "open_items": [
+    { "id": "loose", "title": "no schema here" },
+    { "id": "t2", "title": "Collect the donation receipts", "status": "open" }
+  ],
+  "processing_log": [
+    { "when": "2026-03-01", "what": "started the binder" }
+  ]
+}

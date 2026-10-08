@@ -1,0 +1,17 @@
+{
+  "id": "019a2000-0000-7000-8000-000000000009",
+  "at": "2026-10-06T12:00:00-04:00",
+  "actor": {
+    "kind": "user",
+    "client": "sprava/0.1"
+  },
+  "before_hash": "sha256:8cef6f2aeb8fdf49ba8d7feee08036437483af419d13752c69dcb6dd9b9523e1",
+  "after_hash": "sha256:f3d2272c42df913a996062ee75a3b0b3d75a6e06bc5ea5361bb7e7fe2fc72265",
+  "op": "set_status",
+  "args": {
+    "id": "rental-elm-street-2026-005",
+    "status": "waiting",
+    "waiting_on": "the chimney sweep",
+    "follow_up_at": "2026-10-13"
+  }
+}
