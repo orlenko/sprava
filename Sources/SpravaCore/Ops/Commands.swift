@@ -112,9 +112,16 @@ public struct Commands: Sendable {
                 o.set("notes", .array(notes.map(JSONValue.string)))
                 // What the person may edit on the card (CardEdits).
                 o.set("editable", .array(p.ops.enumerated().compactMap { i, op -> JSONValue? in
-                    guard op["op"] == .str("add_item"), let item = op["args"]?["item"] else { return nil }
-                    return .obj([("index", .int(i)), ("title", item["title"] ?? .str("")), ("due", item["due"] ?? .str("")),
-                                 ("priority", item["priority"] ?? .str("normal"))])
+                    if op["op"] == .str("add_item"), let item = op["args"]?["item"] {
+                        return .obj([("index", .int(i)), ("title", item["title"] ?? .str("")), ("due", item["due"] ?? .str("")),
+                                     ("priority", item["priority"] ?? .str("normal"))])
+                    }
+                    // An adoption repair card: the item's current values, for the person to complete (binder-v0 §9.4).
+                    guard op["op"] == .str("update_item"), p.raw["provenance"]?["repair"] != nil, let id = op["args"]?["id"],
+                          let item = catalog?["open_items"]?.arrayValue?.first(where: { $0["id"] == id }) else { return nil }
+                    func text(_ key: String, _ fallback: String) -> JSONValue { .string(item[key]?.stringValue ?? fallback) }
+                    return .obj([("index", .int(i)), ("title", text("title", "")), ("due", text("due", "")),
+                                 ("priority", text("priority", "normal")), ("waiting_on", text("waiting_on", ""))])
                 }))
                 if let c = p.raw["confidence"] { o.set("confidence", c) }
                 if let intake = p.raw["provenance"]?["intake"] { o.set("intake", intake) }
@@ -178,7 +185,9 @@ public struct Commands: Sendable {
                     }
                 }
                 let applied = try store.approve(proposal, edited: edited, now: now)
-                try recordDigests([id] + store.createdProposals, in: f)
+                // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
+                let stamp = (try? Adoption.offerStamp(f, client: client, now: now)) ?? nil
+                try recordDigests([id] + store.createdProposals + (stamp.map { [$0] } ?? []), in: f)
                 return JSONObject([(key: "applied", value: .int(applied.count))])
             }
             try store.reject(proposal, reason: r["reason"]?.stringValue, now: now)

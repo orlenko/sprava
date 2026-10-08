@@ -143,7 +143,9 @@ public struct Proposal: Sendable {
                 let field = path.split(separator: "/").joined(separator: ".")
                 return step["value"].map { "\(field) = \(canonicalText($0).prefix(40))" } ?? field
             }
-            return "Stamp the catalog as binder v0: " + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
+            let stamps = (args["patch"]?.arrayValue ?? []).contains { $0["path"] == .str("/meta/format_version") }
+            return (stamps ? "Stamp the catalog as binder v0: " : "Migrate the catalog: ")
+                + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
         case "set_meta": return "Set " + (args["set"]?.objectValue?.keys.joined(separator: ", ") ?? "binder settings")
         case let other?: return other.replacingOccurrences(of: "_", with: " ")
         case nil: return "?"
@@ -209,7 +211,7 @@ public enum CardEdits {
         public var description: String { message }
     }
 
-    /// `edits` is `[{index, skip?, title?, due?, priority?, folder?}]`; `due` is a date, or "" for no deadline.
+    /// `edits` is `[{index, skip?, title?, due?, priority?, waiting_on?, folder?}]`; `due` is a date, or "" for no deadline.
     public static func apply(_ edits: [JSONValue], to ops: [JSONObject]) throws -> [JSONObject] {
         var out = ops
         var skipped = Set<Int>()
@@ -242,11 +244,39 @@ public enum CardEdits {
                 }
                 args.set("item", .object(item))
             case "update_item":
-                if let d = e["due"]?.stringValue, var set = args["set"]?.objectValue {
-                    guard let date = CalendarDate.strict(d) else { throw Failure(message: "a date is written YYYY-MM-DD") }
-                    set.set("due", .string(date.description))
-                    args.set("set", .object(set))
+                // A repair card asks for what is missing: a due date or none, a party, a priority (binder-v0 §9.4).
+                guard e["due"] != nil || e["waiting_on"] != nil || e["priority"] != nil else { break }
+                var set = args["set"]?.objectValue ?? JSONObject()
+                var unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
+                func clear(_ key: String) {
+                    set.remove(key)
+                    if !unset.contains(key) { unset.append(key) }
                 }
+                if let d = e["due"]?.stringValue {
+                    if d.isEmpty {
+                        clear("due")
+                        unset.removeAll { $0 == "no_deadline" }
+                        set.set("no_deadline", .bool(true))
+                    } else {
+                        guard let date = CalendarDate.strict(d) else { throw Failure(message: "a date is written YYYY-MM-DD") }
+                        unset.removeAll { $0 == "due" }
+                        set.set("due", .string(date.description))
+                        clear("no_deadline")
+                    }
+                }
+                if let w = e["waiting_on"]?.stringValue {
+                    let party = w.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !party.isEmpty, party.count <= 200 else { throw Failure(message: "who it waits on is one line of text") }
+                    unset.removeAll { $0 == "waiting_on" }
+                    set.set("waiting_on", .string(party))
+                }
+                if let p = e["priority"]?.stringValue {
+                    guard ["high", "normal", "low"].contains(p) else { throw Failure(message: "priority is high, normal or low") }
+                    unset.removeAll { $0 == "priority" }
+                    set.set("priority", .string(p))
+                }
+                args.set("set", .object(set))
+                if unset.isEmpty { args.remove("unset") } else { args.set("unset", .array(unset.map(JSONValue.string))) }
             default:
                 break
             }

@@ -583,4 +583,87 @@ import Testing
         _ = try TransactionGuard.check([guardLine("complete", .obj([("id", .str("estate-example-2026-007")), ("closed_at", .null),
                                                                      ("source", .str("osavul"))]), actor: external)], on: catalog)
     }
+
+    // MARK: - Adoption
+
+    /// A binder from an invented catalog, adopted through the commands; returns the cards listed afterwards.
+    func adoptCatalog(_ c: Commands, name: String, _ text: String, manual: String? = nil) throws -> (URL, [JSONValue]) {
+        let folder = try makeTeka(fixture: "lifeproj-v2-fresh", folderName: name) { f in
+            try Data(text.utf8).write(to: f.appendingPathComponent("catalog.json"))
+            if let manual { try Data(manual.utf8).write(to: f.appendingPathComponent("CLAUDE.md")) }
+        }
+        let r = try call(c, [("command", .str("adopt")), ("binder", .string(folder.path))])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        return (folder, try cards(c, folder))
+    }
+
+    func cards(_ c: Commands, _ folder: URL) throws -> [JSONValue] {
+        (try call(c, [("command", .str("proposals")), ("binder", .string(folder.path))])["proposals"]?.arrayValue ?? [])
+            .filter { $0["state"] == .str("proposed") }
+    }
+
+    func approve(_ c: Commands, _ folder: URL, _ card: JSONValue, edits: JSONValue? = nil) throws -> JSONValue {
+        var fields: [(String, JSONValue)] = [("command", .str("approve")), ("binder", .string(folder.path)), ("proposal", card["id"]!), ("digest", card["digest"]!)]
+        if let edits { fields.append(("edits", edits)) }
+        return try call(c, fields)
+    }
+
+    @Test func anItemThatBreaksTheRulesGetsARepairCard() throws {   // qgXO-
+        let c = commands()
+        let (folder, listed) = try adoptCatalog(c, name: "estate-sample", """
+        {"meta": {"schema_version": 2, "name": "estate-sample"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "estate-sample-2026-001", "title": "Ask the bank for the statement", "status": "open", "priority": "normal"}]}
+        """)
+        let repair = try #require(listed.first { $0["title"] == .str("Fill in what this item is missing") })
+        #expect(listed.count == 1)   // no stamp while the item is dateless
+        #expect(repair["editable"]?.arrayValue?.first?["index"] == .int(0))
+        #expect(repair["notes"]?.arrayValue?.contains { $0.stringValue?.contains("fill in what is missing") == true } == true)
+        let r = try approve(c, folder, repair, edits: .array([.obj([("index", .int(0)), ("due", .str("2026-12-01"))])]))
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let stamp = try #require(try cards(c, folder).first { $0["title"] == .str("Stamp this binder as binder v0") })
+        #expect(try approve(c, folder, stamp)["ok"] == .bool(true))
+        #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
+    }
+
+    @Test func aLifeprojV1CatalogIsOfferedTheStamp() throws {   // qJwVl
+        let c = commands()
+        let (folder, listed) = try adoptCatalog(c, name: "tax-2026", """
+        {"meta": {"schema_version": 1, "name": "tax-2026"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "tax-2026-2026-001", "title": "Collect the donation receipts", "status": "open", "priority": "normal", "due": "2026-12-01"}]}
+        """)
+        let stamp = try #require(listed.first { $0["title"] == .str("Stamp this binder as binder v0") })
+        #expect(stamp["lines"]?.arrayValue?.first?.stringValue?.contains("meta.schema_version = 2") == true)
+        #expect(try approve(c, folder, stamp)["ok"] == .bool(true))
+        #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
+    }
+
+    @Test func aPreLifeprojCatalogIsMigratedThenStamped() throws {   // qJwVl
+        let c = commands()
+        let (folder, listed) = try adoptCatalog(c, name: "tax-2026", """
+        {"meta": {"name": "tax-2026"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "tax-2026-2026-001", "title": "Collect the donation receipts", "status": "open", "priority": "normal", "due": "2026-12-01"}]}
+        """)
+        let first = try #require(listed.first { $0["lines"]?.arrayValue?.first?.stringValue?.contains("meta.schema_version = 1") == true })
+        #expect(try approve(c, folder, first)["ok"] == .bool(true))
+        #expect(Teka.read(folder).level == .lifeprojV1)
+        let stamp = try #require(try cards(c, folder).first { $0["title"] == .str("Stamp this binder as binder v0") })
+        #expect(try approve(c, folder, stamp)["ok"] == .bool(true))
+        #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
+    }
+
+    @Test func spravasOwnAddendumDoesNotMeanLifeprojReaches() throws {   // qfZ4T
+        let only = try makeTeka(fixture: "lifeproj-v2-fresh") { f in
+            try Data(ManualAddendum.text.utf8).write(to: f.appendingPathComponent("CLAUDE.md"))
+        }
+        #expect(Adoption.survey(only, inRegistry: false)["lifeproj_can_reach"] == .bool(false))
+        let result = try Adoption.adopt(only, inRegistry: false, deviceID: "t", today: today, now: now)
+        let stamp = try #require(result.proposals.first { $0.title == "Stamp this binder as binder v0" })
+        #expect(Proposal.describe(stamp.ops[0], catalog: nil).contains("meta.disclosure = none"))
+        // An instruction outside the addendum still counts.
+        let both = try makeTeka(fixture: "lifeproj-v2-fresh") { f in
+            try Data(("# Binder\n\n" + ManualAddendum.text + "\n## Digest\n\nRun `lifeproj publish` at the end.\n").utf8)
+                .write(to: f.appendingPathComponent("CLAUDE.md"))
+        }
+        #expect(Adoption.survey(both, inRegistry: false)["lifeproj_can_reach"] == .bool(true))
+    }
 }

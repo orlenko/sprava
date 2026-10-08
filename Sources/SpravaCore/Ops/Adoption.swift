@@ -53,6 +53,7 @@ public enum Adoption {
         // lifeproj reaches the binder when it is registered, equipped, or when the binder's agent notes tell an
         // agent to run lifeproj's publish or drain.
         let notes = ["CLAUDE.md", "AGENTS.md"].compactMap { try? String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8) }
+            .map(withoutAddendum)
         let notesRunLifeproj = notes.contains { text in
             text.range(of: #"lifeproj\s+(publish|drain)"#, options: .regularExpression) != nil
         }
@@ -63,6 +64,27 @@ public enum Adoption {
         s.set("old_email_intake_layout", .bool(fm.fileExists(atPath: folder.appendingPathComponent("intake/mail/state.json").path)))
         s.set("synced_location", .bool(syncedLocation(folder)))
         return s
+    }
+
+    /// A manual without Sprava's own addendum, which names `lifeproj publish` only to forbid it: from the marker
+    /// line to the next `## ` heading after the addendum's own, or to the end.
+    static func withoutAddendum(_ text: String) -> String {
+        var out: [Substring] = []
+        var inAddendum = false
+        var sawHeading = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.contains(ManualAddendum.marker) {
+                inAddendum = true
+                sawHeading = false
+                continue
+            }
+            if inAddendum, line.hasPrefix("## ") {
+                if !sawHeading { sawHeading = true; continue }
+                inAddendum = false
+            }
+            if !inAddendum { out.append(line) }
+        }
+        return out.joined(separator: "\n")
     }
 
     /// iCloud Drive, File Provider folders, and Desktop or Documents (which iCloud may sync): adoption is refused
@@ -173,20 +195,78 @@ public enum Adoption {
                                            ops: closeOps, now: now))
         }
 
+        // One repair card per item that breaks its level's rules: a migration cannot invent a date or a party, so
+        // the person fills them in on the card (binder-v0 §9.4 step 4). Closures and shared ids are handled above.
+        let handled: Set<RuleFinding.Code> = [.doneInOpenItems, .reusedID, .duplicateID]
+        var repaired = Set<String>()
+        for finding in teka.findings where !handled.contains(finding.code) {
+            guard let index = Int(finding.location.dropFirst("open_items[".count).dropLast()), items.indices.contains(index),
+                  case .object(let o) = items[index], let id = o["id"], seenIDs[id] == 1,
+                  repaired.insert(finding.location).inserted else { continue }
+            let missing = teka.findings.filter { $0.location == finding.location && !handled.contains($0.code) }
+                .map { $0.field.map { "\($0)" } ?? $0.code.rawValue }
+            var set = JSONObject()
+            let status = o["status"]?.stringValue
+            if status == "waiting" || status == "blocked", o["follow_up_at"] == nil {
+                set.set("follow_up_at", .string(today.adding(days: 7).description))
+                set.set("derived", .array([.str("follow_up_at")]))
+            }
+            var op = JSONObject([(key: "op", value: .str("update_item")),
+                                 (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
+            op.set("card", .obj([("flags", .array([.string("fill in what is missing: " + missing.joined(separator: ", "))]))]))
+            proposals.append(Proposal.make(title: "Fill in what this item is missing", actor: importActor, ops: [op],
+                                           provenance: JSONObject([(key: "repair", value: .array(missing.map(JSONValue.string)))]), now: now))
+        }
+
+        // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4).
+        // A core key that is not an array stays in needs migration for now.
+        if teka.level == .preLifeproj, let found = Teka.read(folder).catalog {
+            var patch: [JSONValue] = []
+            if case .object(let meta)? = found["meta"] {
+                if let old = meta["schema_version"] {
+                    if meta["legacy_schema_version"] == nil {
+                        patch.append(.obj([("op", .str("add")), ("path", .str("/meta/legacy_schema_version")), ("value", old)]))
+                    }
+                    patch.append(.obj([("op", .str("replace")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
+                } else {
+                    patch.append(.obj([("op", .str("add")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
+                }
+            } else if found["meta"] == nil {
+                patch.append(.obj([("op", .str("add")), ("path", .str("/meta")), ("value", .obj([("schema_version", .int(1))]))]))
+            }
+            if !patch.isEmpty {
+                let migrate = JSONObject([(key: "op", value: .str("migrate")), (key: "args", value: .obj([("patch", .array(patch))]))])
+                proposals.append(Proposal.make(title: "Mark this catalog as lifeproj v1, the first step to binder v0", actor: importActor,
+                                               ops: [migrate], provenance: JSONObject([(key: "adoption", value: .str("schema"))]), now: now))
+            }
+        }
+
         // Step 6: the stamp, when the catalog would then satisfy v0. Proposed after the closures.
+        if let stamp = stampProposal(folder, survey: survey, pending: closeOps, client: client, now: now) { proposals.append(stamp) }
+        for p in proposals { try ProposalStore.save(p, in: folder) }
+        return Result(mechanical: mechanical, proposals: proposals)
+    }
+
+    /// The stamp card of binder-v0 §9.4 step 6, when the catalog, after the `pending` ops, would be a clean v0
+    /// catalog; a lifeproj v1 catalog also gets `schema_version: 2`. nil otherwise.
+    static func stampProposal(_ folder: URL, survey: JSONObject, pending: [JSONObject], client: String, now: Date) -> Proposal? {
+        let teka = Teka.read(folder)
+        guard let current = teka.catalog, teka.level == .lifeprojV2 || teka.level == .lifeprojV1 else { return nil }
+        let importActor = JSONObject([(key: "kind", value: .str("import")), (key: "client", value: .string(client))])
         let lifeprojReach = survey["lifeproj_can_reach"] == .bool(true)
         var patch: [JSONValue] = []
-        let meta = Teka.read(folder).catalog?["meta"]?.objectValue ?? JSONObject()
+        let meta = current["meta"]?.objectValue ?? JSONObject()
         func add(_ key: String, _ value: JSONValue) {
             patch.append(.obj([("op", .str(meta[key] == nil ? "add" : "replace")), ("path", .string("/meta/\(key)")), ("value", value)]))
         }
+        if teka.level == .lifeprojV1 { add("schema_version", .int(2)) }
         if meta["name"] == nil { add("name", .string(folder.lastPathComponent)) }
         add("format", .str("teka"))
         add("format_version", .str("0"))
         add("disclosure", .str(lifeprojReach ? "full" : "none"))
         if meta["modules"] == nil, case .array(let found)? = survey["modules_found"], !found.isEmpty { add("modules", .array(found)) }
         if meta["id_scheme"] == nil { add("id_scheme", survey["ids"] == .str("teka-year-seq") ? .str("teka-year-seq") : .str("opaque")) }
-        for key in ["documents", "open_items", "processing_log"] where Teka.read(folder).catalog?[key] == nil {
+        for key in ["documents", "open_items", "processing_log"] where current[key] == nil {
             patch.append(.obj([("op", .str("add")), ("path", .string("/\(key)")), ("value", .array([]))]))
         }
         var migrateArgs = JSONObject()
@@ -194,25 +274,31 @@ public enum Adoption {
         migrateArgs.set("to", .obj([("schema_version", .int(2)), ("format", .str("teka")), ("format_version", .str("0"))]))
         migrateArgs.set("patch", .array(patch))
         let stamp = JSONObject([(key: "op", value: .str("migrate")), (key: "args", value: .object(migrateArgs))])
-        // Offer the stamp only if, after the closures, the catalog would be a clean v0 catalog.
-        if let current = Teka.read(folder).catalog, Teka.read(folder).level == .lifeprojV2 {
-            var trial = current
-            let probe: [JSONObject] = (closeOps + [stamp]).map { body in
-                var line = body
-                line.set("id", .string(UUIDv7.make(now: now)))
-                line.set("at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
-                line.set("actor", .object(importActor))
-                return line
-            }
-            if let result = try? TransactionGuard.check(probe, on: trial) {
-                trial = result.catalog
-                if TransactionGuard.violations(trial).isEmpty {
-                    proposals.append(Proposal.make(title: "Stamp this binder as binder v0", actor: importActor,
-                                                   ops: [stamp], now: now))
-                }
-            }
+        // Offer the stamp only if, after the pending ops, the catalog would be a clean v0 catalog.
+        let probe: [JSONObject] = (pending + [stamp]).map { body in
+            var line = body
+            line.set("id", .string(UUIDv7.make(now: now)))
+            line.set("at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
+            line.set("actor", .object(importActor))
+            return line
         }
-        for p in proposals { try ProposalStore.save(p, in: folder) }
-        return Result(mechanical: mechanical, proposals: proposals)
+        guard let result = try? TransactionGuard.check(probe, on: current), TransactionGuard.violations(result.catalog).isEmpty else { return nil }
+        return Proposal.make(title: "Stamp this binder as binder v0", actor: importActor, ops: [stamp],
+                             provenance: JSONObject([(key: "adoption", value: .str("stamp"))]), now: now)
+    }
+
+    /// After the person approves a card in a binder that is adopted but not yet stamped, offers the stamp once the
+    /// catalog would pass, unless a stamp card is already waiting. Returns the id of a card it wrote.
+    public static func offerStamp(_ folder: URL, client: String = "sprava/0.1", now: Date = Date()) throws -> String? {
+        let level = Teka.read(folder).level
+        guard level == .lifeprojV1 || level == .lifeprojV2 else { return nil }
+        let waiting = ProposalStore.list(in: folder).contains { p, _ in
+            p.state == "proposed" && (p.raw["provenance"]?["adoption"] == .str("stamp") || p.ops.contains { $0["op"] == .str("migrate") })
+        }
+        guard !waiting, let ops = try? TekaStore(folder: folder).readOpLog().ops,
+              let survey = ops.last(where: { $0["op"] == .str("import_snapshot") })?["args"]?["survey"]?.objectValue,
+              let card = stampProposal(folder, survey: survey, pending: [], client: client, now: now) else { return nil }
+        try ProposalStore.save(card, in: folder)
+        return card.id
     }
 }
