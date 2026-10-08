@@ -17,6 +17,7 @@ swift build --product SpravaApp "$@"
 swift build --product sprava "$@"
 swift build --product sprava-runtime "$@"
 swift build --product sprava-mcp "$@"
+swift build --product sprava-extract "$@"
 plutil -lint Resources/LaunchAgents/*.plist
 bin_dir=$(swift build --show-bin-path "$@")
 
@@ -29,6 +30,7 @@ cp "$bin_dir/SpravaApp" "$bundle/Contents/MacOS/SpravaApp"
 cp "$bin_dir/sprava" "$bundle/Contents/MacOS/sprava"
 cp "$bin_dir/sprava-runtime" "$bundle/Contents/MacOS/sprava-runtime"
 cp "$bin_dir/sprava-mcp" "$bundle/Contents/MacOS/sprava-mcp"
+cp "$bin_dir/sprava-extract" "$bundle/Contents/MacOS/sprava-extract"
 # restic, the backup engine (docs/backup.md section 10): a pinned release, signed with the app.
 restic_bin="${SPRAVA_RESTIC:-$(command -v restic || true)}"
 if [ -z "$restic_bin" ]; then
@@ -40,6 +42,8 @@ restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
 [ -f "$restic_license" ] && cp "$restic_license" "$bundle/Contents/Resources/restic-LICENSE.txt"
 codesign --force --sign - --identifier ca.orlenko.sprava.restic "$bundle/Contents/MacOS/restic"
 codesign --force --sign - --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
+codesign --force --sign - --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \
+    "$bundle/Contents/MacOS/sprava-extract"
 codesign --force --sign - --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
 codesign --force --sign - --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
 codesign --force --sign - --identifier ca.orlenko.sprava "$bundle"

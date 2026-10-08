@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "SpravaApp", targets: ["SpravaApp"]),
         .executable(name: "sprava-runtime", targets: ["sprava-runtime"]),
         .executable(name: "sprava-mcp", targets: ["sprava-mcp"]),
+        .executable(name: "sprava-extract", targets: ["sprava-extract"]),
     ],
     targets: [
         .target(name: "SpravaCore"),
@@ -17,6 +18,10 @@ let package = Package(
         .executableTarget(name: "SpravaApp", dependencies: ["SpravaCore"]),
         .executableTarget(name: "sprava-runtime", dependencies: ["SpravaCore"]),
         .executableTarget(name: "sprava-mcp", dependencies: ["SpravaCore"]),
+        // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
+        .executableTarget(name: "sprava-extract", dependencies: ["SpravaCore"],
+                          linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
+                                                         "-Xlinker", "Resources/sprava-extract-Info.plist"])]),
         .testTarget(
             name: "SpravaCoreTests",
             dependencies: ["SpravaCore"],
