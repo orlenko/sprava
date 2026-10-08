@@ -63,6 +63,12 @@
   slices and outboxes, the `urn:sprava:teka:v0:` schema ids). The binder folder for exporter
   instructions is `outgoing/`, so it does not collide with the hub spool's `outbox/`, which keeps its
   name. Supersedes the format-term part of P11.
+- **P19 decided (2026-10-08, by the author).** The online surface for to-dos is Sprava's own companion: an
+  installable web app (it must work on Android; the author's phone is not an iPhone) backed by a relay that
+  stores only end-to-end encrypted data. Not Google Tasks, not Apple Reminders. The Mac stays the source of
+  truth and the only place changes are approved; the phone views, checks off, snoozes and captures. The relay
+  is portable (one small service plus an S3-compatible bucket) and becomes the foundation for sharing a binder
+  and a second Mac. It comes right after the MVP. Designed in `docs/companion.md`.
 - **P6 superseded by P12.** Capture comes from holos through a versioned capture-event format. Sprava never
   links holos code and never reads holos's private file layout as its contract.
 - **P7 superseded by P12.** holos is the **producer**: it writes one immutable capture-event file per
