@@ -528,4 +528,59 @@ import Testing
         #expect(line["args"]?["closed_at"] == line["at"])
         #expect(line["args"]?["source"] == .str("brain"))
     }
+
+    // MARK: - Guard and validation
+
+    func guardLine(_ type: String, _ args: JSONValue, actor: JSONObject) -> JSONObject {
+        var line = JSONObject()
+        line.set("id", .string(UUIDv7.make(now: now)))
+        line.set("at", .str("2026-10-07T09:00:00Z"))
+        line.set("actor", .object(actor))
+        if actor["kind"] == .str("brain") {
+            line.set("proposal", .str("p1"))
+            line.set("approved_by", .str("user"))
+        }
+        line.set("op", .string(type))
+        line.set("args", args)
+        return line
+    }
+
+    func v0Catalog() throws -> JSONObject {
+        let url = try #require(Bundle.module.url(forResource: "sprava-v0", withExtension: "json", subdirectory: "Fixtures"))
+        return try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+    }
+
+    @Test func aFreeLogEntryNeedsAnAction() throws {   // qIe1W
+        let catalog = try v0Catalog()
+        for entry: JSONValue in [.obj([]), .obj([("action", .int(3))]), .obj([("action", .str(" "))])] {
+            #expect(throws: TransactionGuard.Rejection.self) {
+                try TransactionGuard.check([guardLine("add_log_entry", .obj([("entry", entry)]), actor: user)], on: catalog)
+            }
+        }
+        _ = try TransactionGuard.check([guardLine("add_log_entry", .obj([("entry", .obj([("action", .str("offloaded"))]))]), actor: user)], on: catalog)
+    }
+
+    @Test func recurrenceIsNotRemovedInThisVersion() throws {   // p8-RD
+        let catalog = try v0Catalog()
+        let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("sprava/0.1"))])
+        for actor in [brain, user] {
+            let line = guardLine("update_item", .obj([("id", .str("estate-example-2026-010")), ("unset", .array([.str("recurrence")]))]), actor: actor)
+            #expect {
+                try TransactionGuard.check([line], on: catalog)
+            } throws: { ($0 as? TransactionGuard.Rejection)?.description.contains("recurrence") == true }
+        }
+    }
+
+    @Test func closureFieldsHaveLogEntryTypes() throws {   // p8-Re
+        let catalog = try v0Catalog()
+        let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("sprava/0.1"))])
+        for args: JSONValue in [.obj([("id", .str("estate-example-2026-007")), ("closed_at", .int(5))]),
+                                .obj([("id", .str("estate-example-2026-007")), ("source", .obj([]))]),
+                                .obj([("id", .str("estate-example-2026-007")), ("note", .int(1))])] {
+            #expect(throws: TransactionGuard.Rejection.self) { try TransactionGuard.check([guardLine("complete", args, actor: brain)], on: catalog) }
+        }
+        let external = JSONObject([(key: "kind", value: .str("external")), (key: "client", value: .str("sprava/0.1"))])
+        _ = try TransactionGuard.check([guardLine("complete", .obj([("id", .str("estate-example-2026-007")), ("closed_at", .null),
+                                                                     ("source", .str("osavul"))]), actor: external)], on: catalog)
+    }
 }

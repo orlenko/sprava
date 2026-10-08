@@ -311,7 +311,8 @@ public struct Backup: Sendable {
             let unchanged = st.restored[id].map { $0.manifest == Self.manifest(folder) } ?? false
             if !open.isEmpty, !unchanged {
                 // The person's confirmation goes into the binder's history before the snapshot.
-                let entry = JSONObject([(key: "entry", value: .obj([("title", .string("Offloaded with \(open.count) open item(s), confirmed")),
+                let entry = JSONObject([(key: "entry", value: .obj([("action", .str("offloaded")),
+                                                                    ("title", .string("Offloaded with \(open.count) open item(s), confirmed")),
                                                                     ("date", .string(CalendarDate.today(now: now).description))]))])
                 try TekaStore(folder: folder).apply([.init(op: "add_log_entry", args: entry,
                                                            actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)

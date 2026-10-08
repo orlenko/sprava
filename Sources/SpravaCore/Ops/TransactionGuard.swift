@@ -130,11 +130,31 @@ public enum TransactionGuard {
                 problems.append("file_document: from must be a file under intake/")
             }
         }
-        // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2).
+        // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2): neither is set
+        // nor removed, so a series never quietly becomes a one-off.
         let written = [args?["item"]?.objectValue, args?["set"]?.objectValue].compactMap { $0 }
+        let removed = args?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
         if ["add_item", "update_item", "reopen"].contains(type), kind != "import",
-           written.contains(where: { $0["recurrence"] != nil || $0["dismissed"] != nil }) {
-            problems.append("\(type): recurrence and dismissed are not set in this version")
+           written.contains(where: { $0["recurrence"] != nil || $0["dismissed"] != nil })
+            || (type == "update_item" && kind != "import" && (removed.contains("recurrence") || removed.contains("dismissed"))) {
+            problems.append("\(type): recurrence and dismissed are not set or removed in this version")
+        }
+        // A free log entry says what happened; `at`, `via` and `op_id` are stamped (binder-v0 §6.8, §10.4).
+        if type == "add_log_entry" {
+            let entry = args?["entry"]?.objectValue
+            if (entry?["action"]?.stringValue ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+                problems.append("add_log_entry: the entry needs an action, a non-empty string")
+            }
+        }
+        // What a closure writes into its log entry has the log entry's types (binder-v0 §10.4).
+        if type == "complete" || type == "drop" {
+            if let closedAt = args?["closed_at"], closedAt != .null, closedAt.stringValue == nil {
+                problems.append("\(type): closed_at is a time or null")
+            }
+            if let source = args?["source"], (source.stringValue ?? "").isEmpty { problems.append("\(type): source is a non-empty string") }
+            for key in ["note", "reason"] where args?[key] != nil && args?[key]?.stringValue == nil {
+                problems.append("\(type): \(key) is text")
+            }
         }
         if type == "external_edit", kind != "external" { problems.append("external_edit: actor kind must be external") }
         if ["import_snapshot", "migrate", "abort"].contains(type), kind != "import" { problems.append("\(type): actor kind must be import") }

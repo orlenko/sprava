@@ -24,7 +24,7 @@ import Testing
         let other = Commands(support: s.support, deviceID: "another-mac")
         let server = MCPServer(client: client, commands: other, shelf: { Shelf.rows(registry: nil, picked: [s.folder]) }, now: { pNow })
         let meta = #""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#
-        let r = try JSONParser.parse(server.handle(line: #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{\#(meta),"name":"propose_ops","arguments":{"binder":"estate-example","title":"x","ops":[{"op":"add_log_entry","args":{"entry":{"title":"x","date":"2026-10-06"}}}]}}}"#)!).value
+        let r = try JSONParser.parse(server.handle(line: #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{\#(meta),"name":"propose_ops","arguments":{"binder":"estate-example","title":"x","ops":[{"op":"add_log_entry","args":{"entry":{"action":"noted","title":"x","date":"2026-10-06"}}}]}}}"#)!).value
         #expect(r["result"]?["isError"] == .bool(true))
         #expect(pOpen(s).isEmpty)
     }
