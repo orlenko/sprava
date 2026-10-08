@@ -102,7 +102,7 @@ import Testing
         let card = Proposal.make(title: "Add 2 items", actor: JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .str("t"))]),
                                  ops: [add(1, "Pay plumber"), add(2, "Milk")], now: now)
         try ProposalStore.save(card, in: folder)
-        c.trustProposals([card.id], in: folder)
+        try c.trustProposals([card.id], in: folder)
         let listed = try JSONParser.parse(c.handle(JSONWriter.compact(.obj([("command", .str("proposals")), ("binder", .string(folder.path))])), now: now, today: today)).value
         let shown = try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .string(card.id) })
         #expect(shown["editable"]?.arrayValue?.count == 2)

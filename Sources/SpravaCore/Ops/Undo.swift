@@ -22,6 +22,38 @@ public enum IDMint {
         return out.isEmpty ? "item" : out
     }
 
+    /// Every record id the op log has ever seen, so a minted id is never one of them (binder-v0 §5.6): the records
+    /// of each `import_snapshot`, the new records of `add_item`, `reopen` and `file_document`, and the records an
+    /// `external_edit` or `migrate` patch wrote (the `id`, `item` and `document` of every object in its values).
+    public static func usedIDs(opLog: [JSONObject]) -> [JSONValue] {
+        var out: [JSONValue] = []
+        func scan(_ value: JSONValue) {
+            switch value {
+            case .object(let o):
+                for key in ["id", "item", "document"] {
+                    if let v = o[key], v.stringValue != nil || v.numberValue != nil { out.append(v) }
+                }
+                for e in o.entries { scan(e.value) }
+            case .array(let a): a.forEach(scan)
+            default: break
+            }
+        }
+        for op in opLog {
+            let args = op["args"]
+            switch op["op"]?.stringValue {
+            case "import_snapshot"?:
+                let catalog = args?["catalog"]
+                for key in ["open_items", "documents", "processing_log"] { (catalog?[key]?.arrayValue ?? []).forEach(scan) }
+            case "external_edit"?, "migrate"?:
+                for step in args?["patch"]?.arrayValue ?? [] { if let v = step["value"] { scan(v) } }
+            default:
+                if let id = args?["item"]?["id"] { out.append(id) }
+                if let id = args?["document"]?["id"] { out.append(id) }
+            }
+        }
+        return out
+    }
+
     public static func next(catalog: JSONObject, opLog: [JSONObject], year: Int, document: Bool = false) -> String {
         let name = catalog["meta"]?["name"]?.stringValue ?? "item"
         let p = prefix(for: name)
@@ -33,10 +65,7 @@ public enum IDMint {
         for entry in catalog["processing_log"]?.arrayValue ?? [] {
             used += [entry["id"], entry["item"], entry["document"]].compactMap { $0 }
         }
-        for op in opLog {
-            if let id = op["args"]?["item"]?["id"] { used.append(id) }
-            if let id = op["args"]?["document"]?["id"] { used.append(id) }
-        }
+        used += usedIDs(opLog: opLog)
         var maxN = 0
         for case .string(let s) in used {
             guard let m = s.wholeMatch(of: pattern), Int(m.output[1].substring ?? "") == year,
@@ -66,14 +95,29 @@ public enum Undo {
         public var description: String { message }
     }
 
+    /// The ops `compensate` can reverse; every other op records a fact or is corrected by another op (binder-v0 §6.10).
+    public static func supported(_ op: JSONObject) -> Bool {
+        ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop"].contains(op["op"]?.stringValue ?? "")
+    }
+
     /// The compensating op body for `target`, given the catalog now and the op log. `stateBefore` is the catalog as
-    /// it was just before `target` (from replay), used to restore earlier values.
+    /// it was just before `target` (from replay), used to restore earlier values. `stateAfter`, the catalog just after
+    /// it, guards against undoing through a newer change: when a field the target wrote has changed since, the undo
+    /// is refused rather than overwriting that change.
     public static func compensate(_ target: JSONObject, catalog: JSONObject, opLog: [JSONObject], stateBefore: JSONObject,
-                                  year: Int, now: Date) throws -> (op: String, args: JSONObject) {
+                                  stateAfter: JSONObject? = nil, year: Int, now: Date) throws -> (op: String, args: JSONObject) {
         let args = target["args"]?.objectValue ?? JSONObject()
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         func itemBefore(_ id: JSONValue) -> JSONObject? {
             stateBefore["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
+        }
+        func unchangedSince(_ id: JSONValue, _ fields: [String]) throws {
+            guard let stateAfter else { return }
+            let then = stateAfter["open_items"]?.arrayValue?.first { $0["id"] == id }
+            let current = catalog["open_items"]?.arrayValue?.first { $0["id"] == id }
+            for field in fields where current?[field] != then?[field] {
+                throw Unsupported(message: "\(field) changed since; edit it instead")
+            }
         }
         switch target["op"]?.stringValue {
         case "add_item":
@@ -89,6 +133,7 @@ public enum Undo {
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
             let set = args["set"]?.objectValue ?? JSONObject()
             let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            try unchangedSince(id, set.keys + unset)
             var restore = JSONObject()
             var remove: [String] = []
             for key in set.keys + unset {
@@ -105,6 +150,7 @@ public enum Undo {
 
         case "set_status":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
+            try unchangedSince(id, ["status", "waiting_on", "follow_up_at", "expected_by"])
             var a = JSONObject()
             a.set("id", id)
             a.set("status", before["status"] ?? .str("open"))
@@ -158,31 +204,34 @@ extension TekaStore {
     /// Undoes one applied op by appending its compensating op (actor user), with `compensates` set.
     @discardableResult
     public func undo(opID: String, now: Date = Date()) throws -> [JSONObject] {
-        let log = try readOpLog().ops
-        guard let index = log.firstIndex(where: { $0["id"]?.stringValue == opID }) else { throw Refused(reason: "no such op") }
-        if log.contains(where: { $0["compensates"]?.stringValue == opID }) { throw Refused(reason: "already undone") }
-        guard index > 0 else { throw Refused(reason: "the import snapshot cannot be undone") }
-        let before = try Replay.run(Array(log[..<index]))
-        let catalog = try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue ?? JSONObject()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        let (op, args) = try Undo.compensate(log[index], catalog: catalog, opLog: log, stateBefore: before,
-                                             year: calendar.component(.year, from: now), now: now)
         let actor = JSONObject([(key: "kind", value: .str("user"))])
-        var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])]
-        // set_status keeps waiting fields it is not given unless the status is open, so fields the undone op
-        // introduced are removed by a second op in the same batch.
-        if op == "set_status", let id = args["id"],
-           let now_ = catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
-           let was = before["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
-           args["status"]?.stringValue != "open" {
-            let introduced = ["waiting_on", "follow_up_at", "expected_by"].filter { now_[$0] != nil && was[$0] == nil }
-            if !introduced.isEmpty {
-                bodies.append(.init(op: "update_item", args: JSONObject([(key: "id", value: id), (key: "unset", value: .array(introduced.map(JSONValue.string)))]),
-                                    actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
+        // The compensation is built from the catalog and log read under the lock, after outside edits were absorbed,
+        // so an edit made meanwhile is seen and never overwritten with older values.
+        return try apply(building: { catalog, log in
+            guard let index = log.firstIndex(where: { $0["id"]?.stringValue == opID }) else { throw Refused(reason: "no such op") }
+            if log.contains(where: { $0["compensates"]?.stringValue == opID }) { throw Refused(reason: "already undone") }
+            guard index > 0 else { throw Refused(reason: "the import snapshot cannot be undone") }
+            let before = try Replay.run(Array(log[..<index]))
+            let after = try Replay.run(Array(log[...index]))
+            let (op, args) = try Undo.compensate(log[index], catalog: catalog, opLog: log, stateBefore: before, stateAfter: after,
+                                                 year: calendar.component(.year, from: now), now: now)
+            var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])]
+            // set_status keeps waiting fields it is not given unless the status is open, so fields the undone op
+            // introduced are removed by a second op in the same batch.
+            if op == "set_status", let id = args["id"],
+               let now_ = catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+               let was = before["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+               args["status"]?.stringValue != "open" {
+                let introduced = ["waiting_on", "follow_up_at", "expected_by"].filter { now_[$0] != nil && was[$0] == nil }
+                if !introduced.isEmpty {
+                    bodies.append(.init(op: "update_item", args: JSONObject([(key: "id", value: id), (key: "unset", value: .array(introduced.map(JSONValue.string)))]),
+                                        actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
+                }
             }
-        }
-        return try apply(bodies, batch: bodies.count > 1 ? UUIDv7.make(now: now) : nil, now: now)
+            return bodies
+        }, batch: UUIDv7.make(now: now), now: now)
     }
 }
 
@@ -248,6 +297,6 @@ extension TekaStore {
             line.set("args", body["args"] ?? .obj([]))
             return line
         }
-        _ = try TransactionGuard.check(lines, on: catalog, knownIDs: Set(log.compactMap { $0["args"]?["item"]?["id"] }))
+        _ = try TransactionGuard.check(lines, on: catalog, knownIDs: Set(IDMint.usedIDs(opLog: log)))
     }
 }

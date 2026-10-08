@@ -384,7 +384,7 @@ final class Runtime: @unchecked Sendable {
             do {
                 let drained = try HubLane.drain(row.folder, root: root)
                 if !drained.createdProposals.isEmpty, let commands, let xpc {
-                    xpc.queue.sync { commands.trustProposals(drained.createdProposals, in: row.folder) }
+                    xpc.queue.sync { try? commands.trustProposals(drained.createdProposals, in: row.folder) }
                     log("hub binder=\(bid) overwritten_change_card=1")
                 }
                 let published = try HubLane.publish(row.folder, root: root)

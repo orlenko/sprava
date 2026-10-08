@@ -31,15 +31,17 @@ public struct Commands: Sendable {
         (try? Data(contentsOf: digestsURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
     }
 
-    func saveDigests(_ d: [String: String]) {
-        try? AtomicFile.makePrivateFolder(digestsURL.deletingLastPathComponent())
-        if let data = try? JSONEncoder().encode(d) { try? AtomicFile.write(data, to: digestsURL) }
+    /// Fails loudly: a card whose digest was not kept cannot be approved, so its source must not be marked handled.
+    func saveDigests(_ d: [String: String]) throws {
+        try AtomicFile.makePrivateFolder(digestsURL.deletingLastPathComponent())
+        try AtomicFile.write(try JSONEncoder().encode(d), to: digestsURL)
     }
 
     /// Handles one request: `{"command": ..., ...}`. Returns `{"ok": true, ...}` or `{"ok": false, "error": ...}`.
     /// Records the digests of proposals Sprava itself just wrote (the clerk, the MCP listener, adoption).
     /// Only the ids Sprava just saved are trusted; a file another program dropped into the folder never is.
-    public func trustProposals(_ ids: [String], in folder: URL) { recordDigests(ids, in: folder) }
+    /// Throws when the digests cannot be kept; the caller then treats the card as not made.
+    public func trustProposals(_ ids: [String], in folder: URL) throws { try recordDigests(ids, in: folder) }
 
     public func handle(_ request: String, now: Date = Date(), today: CalendarDate? = nil) -> String {
         do {
@@ -79,7 +81,7 @@ public struct Commands: Sendable {
             let f = try folder(r)
             let inRegistry = r["in_registry"] == .bool(true)
             let result = try Adoption.adopt(f, inRegistry: inRegistry, deviceID: deviceID, today: today, now: now, client: client)
-            recordDigests(result.proposals.map(\.id), in: f)
+            try recordDigests(result.proposals.map(\.id), in: f)
             return JSONObject([(key: "mechanical", value: .int(result.mechanical.count)),
                                (key: "proposals", value: .array(result.proposals.map { .string($0.id) }))])
 
@@ -87,7 +89,7 @@ public struct Commands: Sendable {
             let f = try folder(r)
             // A widening made outside Sprava waits for the person's privacy card (architecture 4.5).
             if Owner.device(of: f) == deviceID, let card = try PrivacyRatchet.ensureCard(folder: f, client: client, now: now) {
-                recordDigests([card], in: f)
+                try recordDigests([card], in: f)
             }
             // A proposal file the runtime did not write has no recorded digest: it is shown as "not verified" and
             // cannot be approved (binder-v0 §6.5; architecture 4.6).
@@ -176,11 +178,11 @@ public struct Commands: Sendable {
                     }
                 }
                 let applied = try store.approve(proposal, edited: edited, now: now)
-                recordDigests([id] + store.createdProposals, in: f)
+                try recordDigests([id] + store.createdProposals, in: f)
                 return JSONObject([(key: "applied", value: .int(applied.count))])
             }
             try store.reject(proposal, reason: r["reason"]?.stringValue, now: now)
-            recordDigests([id], in: f)
+            try recordDigests([id], in: f)
             return JSONObject()
 
         case "apply":
@@ -196,7 +198,7 @@ public struct Commands: Sendable {
             if let c = r["compensates"] { extra.append(("compensates", c)) }
             let store = TekaStore(folder: f, client: client)
             let applied = try store.apply([.init(op: op, args: args, actor: actor, extra: extra)], now: now)
-            recordDigests(store.createdProposals, in: f)
+            try recordDigests(store.createdProposals, in: f)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
 
         case "undo":
@@ -204,7 +206,7 @@ public struct Commands: Sendable {
             guard case .string(let opID)? = r["op_id"] else { throw Failure(message: "undo needs op_id") }
             let store = TekaStore(folder: f, client: client)
             let applied = try store.undo(opID: opID, now: now)
-            recordDigests(store.createdProposals, in: f)
+            try recordDigests(store.createdProposals, in: f)
             return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
 
         case "capture_notice":
@@ -267,14 +269,15 @@ public struct Commands: Sendable {
             let url = LifeprojRegistry.defaultPath()
             let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
             let store = ShelfStore(supportDirectory: support)
-            let names = Shelf.rows(registry: registry, picked: store.pickedFolders(), includeArchived: true).map(\.name)
+            // shelf.json is read first: one that cannot be read fails before any folder is made.
+            let names = Shelf.rows(registry: registry, picked: try store.readFolders(), includeArchived: true).map(\.name)
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = .current
             let year = r["year"]?.numberValue?.safeInteger.map(Int.init) ?? calendar.component(.year, from: now)
             let created = try BinderCreator.create(parent: URL(fileURLWithPath: parentPath, isDirectory: true).standardizedFileURL, name: name,
                                                    template: template, deviceID: deviceID, knownNames: names, year: year, today: today,
                                                    client: client, now: now)
-            if let card = created.checklistCard { recordDigests([card], in: created.folder) }
+            if let card = created.checklistCard { try recordDigests([card], in: created.folder) }
             try store.add(created.folder)
             try FilingList(support: support).set(created.folder, .init(description: template.description(year), filing: false))
             return JSONObject([(key: "binder", value: .string(created.folder.path)),
@@ -436,7 +439,9 @@ public struct Commands: Sendable {
         case "revoke_client":
             guard case .string(let id)? = r["client_id"] else { throw Failure(message: "revoke_client needs client_id") }
             var clients = MCPClients.load(support)
-            let scope = clients.clients.first { $0.id == id }?.binders.keys.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? []
+            // Every record under this id, so a client registered again after a revoke has its cards withdrawn too.
+            let scope = Set(clients.clients.filter { $0.id == id }.flatMap(\.binders.keys)).sorted()
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
             clients.revoke(id: id)
             try clients.save(support)
             // Its cards still waiting are withdrawn (architecture 7.5).
@@ -466,8 +471,8 @@ public struct Commands: Sendable {
                 o.set("origin", op["actor"]?["origin"] ?? .null)
                 o.set("line", .string(Proposal.describe(op, catalog: catalog)))
                 o.set("undone", .bool(undone.contains(op["id"]?.stringValue ?? "")))
-                o.set("undoable", .bool(!["external_edit", "add_log_entry", "reopen", "rename_teka", "set_meta", "set_disclosure"].contains(op["op"]?.stringValue ?? "")
-                                        && op["compensates"] == nil))
+                // The same list Undo.compensate handles, so a filing is never offered as undoable (binder-v0 §6.10).
+                o.set("undoable", .bool(Undo.supported(op) && op["compensates"] == nil))
                 return .object(o)
             }))])
 
@@ -478,11 +483,11 @@ public struct Commands: Sendable {
 
     func key(_ folder: URL, _ id: String) -> String { folder.path + "#" + id }
 
-    func recordDigests(_ ids: [String], in folder: URL) {
+    func recordDigests(_ ids: [String], in folder: URL) throws {
         guard !ids.isEmpty else { return }
         let wanted = Set(ids)
         var digests = loadDigests()
         for (p, d) in ProposalStore.list(in: folder) where wanted.contains(p.id) { digests[key(folder, p.id)] = d }
-        saveDigests(digests)
+        try saveDigests(digests)
     }
 }

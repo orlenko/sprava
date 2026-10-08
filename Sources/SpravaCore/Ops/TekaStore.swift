@@ -173,14 +173,24 @@ public final class TekaStore {
     @discardableResult
     public func apply(_ bodies: [OpBody], batch: String? = nil, now: Date = Date(),
                       underLock after: (() throws -> Void)? = nil) throws -> [JSONObject] {
-        try withLock {
+        try apply(building: { _, _ in bodies }, batch: batch, now: now, underLock: after)
+    }
+
+    /// Applies a batch built from the catalog and the op log as read under the lock, after outside edits were
+    /// absorbed, so a check such as a card's `expect` or an undo's earlier values sees exactly what the batch is
+    /// applied to (architecture 4.2 step 4). `build` runs again on each pass.
+    @discardableResult
+    func apply(building build: (_ catalog: JSONObject, _ log: [JSONObject]) throws -> [OpBody], batch: String? = nil,
+               now: Date = Date(), underLock after: (() throws -> Void)? = nil) throws -> [JSONObject] {
+        testHookBeforeLock?()
+        return try withLock {
             // An editor that skips the lock can change the file at any moment: each pass absorbs what it finds,
             // and a change seen while writing starts the pass again (binder-v0 §4.9 step 5).
             var attempt = 0
             while true {
                 attempt += 1
                 do {
-                    let lines = try applyOnce(bodies, batch: batch, now: now)
+                    let lines = try applyOnce(build, batch: batch, now: now)
                     try after?()
                     return lines
                 } catch is ChangedWhileWriting where attempt < 5 {
@@ -204,10 +214,24 @@ public final class TekaStore {
         var description: String { "catalog.json keeps changing while the change is written; try again" }
     }
 
-    func applyOnce(_ bodies: [OpBody], batch: String?, now: Date) throws -> [JSONObject] {
+    /// Whether every op is the repair of a broken stamp: a `migrate` that only writes `meta.format_version` or
+    /// `meta.schema_version` (binder-v0 §9.6).
+    static func isStampRepair(_ bodies: [OpBody]) -> Bool {
+        !bodies.isEmpty && bodies.allSatisfy { body in
+            let patch = body.args["patch"]?.arrayValue ?? []
+            return body.op == "migrate" && !patch.isEmpty
+                && patch.allSatisfy { ["/meta/format_version", "/meta/schema_version"].contains($0["path"]?.stringValue ?? "") }
+        }
+    }
+
+    func applyOnce(_ build: (JSONObject, [JSONObject]) throws -> [OpBody], batch: String?, now: Date) throws -> [JSONObject] {
         var (catalog, hash, _) = try readCatalog()
         var log = try readOpLog().ops
         guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
+        // An unknown level writes nothing, not even the record of an outside edit (binder-v0 §9.6).
+        if case .unknown(let why) = CatalogLevel.classify(catalog) {
+            throw Refused(reason: "this catalog's level is unknown (\(why)); Sprava writes nothing to it")
+        }
         if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
             log.append(contentsOf: absorbed)
         }
@@ -216,10 +240,21 @@ public final class TekaStore {
         }
         // The chain must hold before anything is appended: the head of the log is the catalog found.
         guard log.last?["after_hash"]?.stringValue == hash else { throw ChangedWhileWriting() }
+        let bodies = try build(catalog, log)
+        // A broken stamp blocks every write until the person approves its repair (binder-v0 §9.6).
+        if CatalogLevel.classify(catalog) == .brokenStamp, !Self.isStampRepair(bodies) {
+            throw Refused(reason: "the catalog's stamp is broken (meta.format_version); nothing is written until its repair is approved")
+        }
 
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         var lines: [JSONObject] = []
-        for (seq, body) in bodies.enumerated() {
+        for (seq, var body) in bodies.enumerated() {
+            // An applied op carries every value its effect needs (binder-v0 §6.3): a closure's time and source are
+            // written into the op, not only into the log entry.
+            if ["complete", "drop"].contains(body.op) {
+                if body.args["next_due"] == nil, body.args["closed_at"] == nil { body.args.set("closed_at", .string(at)) }
+                if body.args["source"] == nil, let kind = body.actor["kind"] { body.args.set("source", kind) }
+            }
             var line = JSONObject()
             line.set("id", .string(UUIDv7.make(now: now)))
             line.set("at", .string(at))
@@ -239,7 +274,7 @@ public final class TekaStore {
             if let note = body.extra.first(where: { $0.0 == "note" })?.1 { line.set("note", note) }
             lines.append(line)
         }
-        let knownIDs = Set(log.compactMap { $0["args"]?["item"]?["id"] })
+        let knownIDs = Set(IDMint.usedIDs(opLog: log))
         let (result, hashes) = try TransactionGuard.check(lines, on: catalog, knownIDs: knownIDs)
         var previous = hash
         for i in lines.indices {
@@ -321,6 +356,25 @@ public final class TekaStore {
         guard nowHash == expectedHash else { throw ChangedWhileWriting() }
 
         try appendLines(lines)
+        // The log flush is the slowest step: hash once more, and if the file changed meanwhile, abort the batch so
+        // the next pass records the edit and applies the batch on top of it (architecture 4.2 step 9).
+        if !lines.isEmpty {
+            try testHookAfterAppend?()
+            let (_, againHash, _) = try readCatalog()
+            if againHash != expectedHash {
+                var abort = JSONObject()
+                abort.set("id", .string(UUIDv7.make()))
+                abort.set("at", .string(ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)))
+                abort.set("actor", .obj([("kind", .str("import")), ("client", .string(client))]))
+                abort.set("before_hash", .string(expectedHash))
+                abort.set("after_hash", .string(expectedHash))
+                abort.set("op", .str("abort"))
+                abort.set("args", .obj([("ops", .array(lines.compactMap { $0["id"] })),
+                                        ("reason", .str("the catalog was edited outside while this change was written"))]))
+                try appendLines([abort])
+                throw ChangedWhileWriting()
+            }
+        }
         // A crash or failure from here on is rolled forward on the next read (binder-v0 §6.7 step 3, §6.9).
         try performMoves(moves)
         guard rename(temp.path, catalogURL.path) == 0 else { throw AtomicFile.Failure(step: "rename catalog", code: errno) }
@@ -443,6 +497,23 @@ public final class TekaStore {
                 }
             }
             guard possible else {
+                // Files this write already moved go back to intake/, so the card can be approved again; a file
+                // that cannot go back is named in the abort's reason.
+                var stranded: [String] = []
+                for op in trailing where op["op"] == .str("file_document") {
+                    let args = op["args"]?.objectValue ?? JSONObject()
+                    guard let from = args["from"]?.stringValue, let to = args["document"]?["path"]?.stringValue,
+                          let sha = args["document"]?["sha256"]?.stringValue,
+                          DocumentPaths.plainFile(to, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha else { continue }
+                    if DocumentPaths.isIntake(from), DocumentPaths.isFreeDestination(from, in: folder),
+                       (try? DocumentPaths.makeParents(from, in: folder)) != nil,
+                       renamex_np(folder.appendingPathComponent(to).path, folder.appendingPathComponent(from).path, UInt32(RENAME_EXCL)) == 0 {
+                        continue
+                    }
+                    stranded.append(to)
+                }
+                let reason = "a filed file is missing from both intake/ and its destination"
+                    + (stranded.isEmpty ? "" : "; moved but not recorded: " + stranded.joined(separator: ", "))
                 var abort = JSONObject()
                 abort.set("id", .string(UUIDv7.make(now: now)))
                 abort.set("at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
@@ -450,8 +521,7 @@ public final class TekaStore {
                 abort.set("before_hash", .string(b))
                 abort.set("after_hash", .string(b))
                 abort.set("op", .str("abort"))
-                abort.set("args", .obj([("ops", .array(trailing.compactMap { $0["id"] })),
-                                        ("reason", .str("a filed file is missing from both intake/ and its destination"))]))
+                abort.set("args", .obj([("ops", .array(trailing.compactMap { $0["id"] })), ("reason", .string(reason))]))
                 try appendLines([abort])
                 lastAbsorbed = .aborted(trailing.count)
                 return [abort]
@@ -531,25 +601,51 @@ public final class TekaStore {
     /// Proposal ids this store wrote itself, for the caller to trust. A store lives for one command.
     public private(set) var createdProposals: [String] = []
 
-    /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item gets a
-    /// placeholder, because its old id was used once and is never reused.
+    /// Tests only: runs after a batch's op lines are flushed and before the catalog is checked again.
+    var testHookAfterAppend: (() throws -> Void)?
+    /// Tests only: runs right before a batch takes the lock, where another program's edit could land.
+    var testHookBeforeLock: (() -> Void)?
+
+    /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item or a
+    /// filed document gets a placeholder, because its old id was used once and is never reused; later ops that named
+    /// it name the placeholder. A filing is recorded where the file already is, without `from`. When any lost op
+    /// cannot be rebuilt, the card lists them all and asks for a repair by hand; it is never a part of the batch
+    /// (binder-v0 §6.7 step 6).
     static func reapplyCard(_ ops: [JSONObject], client: String, now: Date) -> Proposal? {
         var n = 0
+        var renamed: [JSONValue: JSONValue] = [:]
+        var rebuilt = true
         let bodies: [JSONObject] = ops.compactMap { op in
-            guard let type = op["op"]?.stringValue, ["add_item", "update_item", "set_status", "complete", "drop"].contains(type),
-                  var args = op["args"]?.objectValue else { return nil }
-            if type == "add_item", var item = args["item"]?.objectValue {
-                n += 1
-                item.set("id", .string("$new:\(n)"))
-                args.set("item", .object(item))
+            guard let type = op["op"]?.stringValue, var args = op["args"]?.objectValue else { return nil }
+            switch type {
+            case "add_item":
+                if var item = args["item"]?.objectValue {
+                    n += 1
+                    if let old = item["id"] { renamed[old] = .string("$new:\(n)") }
+                    item.set("id", .string("$new:\(n)"))
+                    args.set("item", .object(item))
+                }
+            case "file_document":
+                if var document = args["document"]?.objectValue {
+                    n += 1
+                    document.set("id", .string("$new:\(n)"))
+                    args.set("document", .object(document))
+                }
+                args.remove("from")
+            case "update_item", "set_status", "complete", "drop":
+                if let id = args["id"], let placeholder = renamed[id] { args.set("id", placeholder) }
+            default:
+                rebuilt = false
             }
             return JSONObject([(key: "op", value: .string(type)), (key: "args", value: .object(args))])
         }
         guard !bodies.isEmpty else { return nil }
         let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
-        return Proposal.make(title: "A change of yours was overwritten by another program. Apply it again?", actor: actor,
-                             ops: bodies, provenance: JSONObject([(key: "overwritten_ops", value: .array(ops.compactMap { $0["id"] }))]),
-                             now: now)
+        var provenance = JSONObject([(key: "overwritten_ops", value: .array(ops.compactMap { $0["id"] }))])
+        if !rebuilt { provenance.set("manual_repair", .bool(true)) }
+        return Proposal.make(title: rebuilt ? "A change of yours was overwritten by another program. Apply it again?"
+                                 : "A change of yours was overwritten by another program and cannot be applied again from here; repair it by hand, then reject this card",
+                             actor: actor, ops: bodies, provenance: provenance, now: now)
     }
 
     /// The last complete batch, or the last single op.

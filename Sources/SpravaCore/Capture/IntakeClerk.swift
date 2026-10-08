@@ -82,7 +82,7 @@ extension IntakeWatcher {
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
         do {
             try ProposalStore.save(proposal, in: folder)
-            commands.trustProposals([proposal.id], in: folder)
+            try commands.trustProposals([proposal.id], in: folder)
         } catch {
             e.state = "kept"
             store.save(e)

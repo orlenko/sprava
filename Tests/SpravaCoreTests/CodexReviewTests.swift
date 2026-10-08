@@ -150,7 +150,7 @@ import Testing
         let card = Proposal.make(title: "Close", actor: actor, ops: [JSONObject([(key: "op", value: .str("complete")), (key: "args", value: .obj([
             ("id", .str("estate-example-2026-007")), ("closed_at", .str("2026-10-06T12:00:00Z")), ("source", .str("capture"))]))])], now: pNow)
         try ProposalStore.save(card, in: s.folder)
-        s.commands.trustProposals([card.id], in: s.folder)
+        try s.commands.trustProposals([card.id], in: s.folder)
         _ = try req(s.commands, [("command", .str("apply")), ("binder", .string(s.folder.path)), ("op", .str("update_item")),
                                  ("args", .obj([("id", .str("estate-example-2026-007")), ("set", .obj([("due", .str("2026-12-01"))]))]))])
         let listed = try req(s.commands, [("command", .str("proposals")), ("binder", .string(s.folder.path))])

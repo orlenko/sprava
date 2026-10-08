@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// A proposal: a batch of op bodies waiting for the person, stored as `.sprava/proposals/<id>.json` and
@@ -230,8 +231,9 @@ public enum CardEdits {
                 }
                 if let d = e["due"]?.stringValue {
                     if d.isEmpty {
+                        // Every status needs a due or no_deadline (binder-v0 §4.4), waiting and blocked too.
                         item.remove("due")
-                        if item["status"]?.stringValue == "open" { item.set("no_deadline", .bool(true)) }
+                        item.set("no_deadline", .bool(true))
                     } else {
                         guard let date = CalendarDate.strict(d) else { throw Failure(message: "a date is written YYYY-MM-DD") }
                         item.set("due", .string(date.description))
@@ -264,6 +266,23 @@ public enum ProposalStore {
 
     static func dir(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/proposals", isDirectory: true) }
 
+    /// `.sprava` and `.sprava/proposals` as real folders, never links, so no card is written or read outside the
+    /// binder (binder-v0 §3.6). Missing ones are made 0700 when `create` is set, one level at a time.
+    static func checkedDir(_ folder: URL, create: Bool) throws -> URL {
+        for url in [folder.appendingPathComponent(".sprava", isDirectory: true), dir(folder)] {
+            var st = stat()
+            if lstat(url.path, &st) == 0 {
+                guard st.st_mode & S_IFMT == S_IFDIR else {
+                    throw TekaStore.Refused(reason: (url.lastPathComponent == "proposals" ? ".sprava/proposals" : ".sprava") + " is not a regular folder")
+                }
+                continue
+            }
+            guard errno == ENOENT, create else { throw TekaStore.Refused(reason: "the proposals folder cannot be read") }
+            guard mkdir(url.path, 0o700) == 0 || errno == EEXIST else { throw TekaStore.Refused(reason: "the proposals folder cannot be made") }
+        }
+        return dir(folder)
+    }
+
     static func digest(_ data: Data) -> String {
         "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -271,29 +290,30 @@ public enum ProposalStore {
     /// Writes the proposal and returns the file's digest, which the caller records in its own state.
     @discardableResult
     public static func save(_ proposal: Proposal, in folder: URL) throws -> String {
-        try AtomicFile.makePrivateFolder(dir(folder))
+        let target = try checkedDir(folder, create: true)
         var raw = proposal.raw
         // On first save, the card records what it assumed about each existing item it touches (architecture 4.6).
         if raw["expect"] == nil, proposal.state == "proposed" {
             raw.set("expect", .object(Proposal.fingerprints(proposal.ops, catalog: Teka.read(folder).catalog)))
         }
         let data = Data(JSONWriter.pretty(.object(raw)).utf8)
-        try AtomicFile.write(data, to: dir(folder).appendingPathComponent("\(proposal.id).json"))
+        try AtomicFile.write(data, to: target.appendingPathComponent("\(proposal.id).json"))
         return digest(data)
     }
 
-    /// Every proposal in the binder, with its file digest. Unreadable files are skipped.
+    /// Every proposal in the binder, with its file digest. Unreadable files are skipped; a linked folder lists nothing.
     public static func list(in folder: URL) -> [(Proposal, String)] {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir(folder).path) else { return [] }
+        guard let dir = try? checkedDir(folder, create: false),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
         return names.filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.sorted().compactMap { name in
-            guard let data = try? Data(contentsOf: dir(folder).appendingPathComponent(name)),
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
                   case .object(let o)? = try? JSONParser.parse(data).value else { return nil }
             return (Proposal(raw: o), digest(data))
         }
     }
 
     public static func load(_ id: String, in folder: URL, expectedDigest: String?) throws -> Proposal {
-        let data = try Data(contentsOf: dir(folder).appendingPathComponent("\(id).json"))
+        let data = try Data(contentsOf: try checkedDir(folder, create: false).appendingPathComponent("\(id).json"))
         if let expectedDigest, digest(data) != expectedDigest { throw Tampered(id: id) }
         guard case .object(let o) = try JSONParser.parse(data).value else { throw Tampered(id: id) }
         return Proposal(raw: o)
@@ -307,6 +327,11 @@ extension TekaStore {
     public func approve(_ proposal: Proposal, edited: [JSONObject]? = nil, approvedBy: String = "user",
                         now: Date = Date()) throws -> [JSONObject] {
         guard proposal.state == "proposed" else { throw Refused(reason: "proposal is \(proposal.state), not proposed") }
+        // A card that only reports lost changes is never applied in part (binder-v0 §6.7 step 6).
+        guard proposal.raw["provenance"]?["manual_repair"] != .bool(true) else {
+            throw Refused(reason: "this change has to be repaired by hand; reject the card once it is done")
+        }
+        guard !(edited ?? proposal.ops).isEmpty else { throw Refused(reason: "this card has no change to apply") }
         // Facts are recorded by Sprava itself, never approved from a card.
         let facts: Set<String> = ["import_snapshot", "external_edit", "abort", "expunge"]
         if let bad = (edited ?? proposal.ops).first(where: { facts.contains($0["op"]?.stringValue ?? "") }) {
@@ -330,20 +355,22 @@ extension TekaStore {
             try ProposalStore.save(Proposal(raw: raw), in: folder)
             return already
         }
-        let changed = proposal.changedSince(catalog: try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue)
-        if !changed.isEmpty {
-            throw Refused(reason: "needs a look: changed since this card was made: " + changed.joined(separator: ", "))
-        }
-        let catalog = try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue ?? JSONObject()
-        let resolved = Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: try readOpLog().ops,
-                                            year: Calendar(identifier: .gregorian).component(.year, from: now),
-                                            at: ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
-        let bodies = resolved.map { op in
-            OpBody(op: op["op"]?.stringValue ?? "", args: op["args"]?.objectValue ?? JSONObject(), actor: actor,
-                   extra: [("proposal", .string(proposal.id)), ("approved_by", .string(approvedBy))]
-                       + (op["note"].map { [("note", $0)] } ?? []))
-        }
-        let applied = try apply(bodies, batch: proposal.id, now: now)
+        // The card's `expect` is checked, and its placeholders minted, against the catalog the batch is applied to,
+        // under the lock and after outside edits were absorbed (architecture 4.2 step 4).
+        let applied = try apply(building: { catalog, log in
+            let changed = proposal.changedSince(catalog: catalog)
+            if !changed.isEmpty {
+                throw Refused(reason: "needs a look: changed since this card was made: " + changed.joined(separator: ", "))
+            }
+            let resolved = Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: log,
+                                                year: Calendar(identifier: .gregorian).component(.year, from: now),
+                                                at: ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
+            return resolved.map { op in
+                OpBody(op: op["op"]?.stringValue ?? "", args: op["args"]?.objectValue ?? JSONObject(), actor: actor,
+                       extra: [("proposal", .string(proposal.id)), ("approved_by", .string(approvedBy))]
+                           + (op["note"].map { [("note", $0)] } ?? []))
+            }
+        }, batch: proposal.id, now: now)
         var raw = proposal.raw
         raw.set("state", .str("applied"))
         raw.set("applied_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))

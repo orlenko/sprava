@@ -26,11 +26,22 @@ public struct DashboardKeeper: Sendable {
 
     public var isSwitched: Bool { load()?.switched == true }
 
-    /// The file as found, when it is a regular file of this user (never through a link).
-    func current() -> String? {
-        guard case .ok(let data) = SafeFile.read(fileURL, limit: 4 * 1024 * 1024) else { return nil }
-        return String(decoding: data, as: UTF8.self)
+    /// The file as found, when it is a regular file of this user (never through a link); nil when there is none.
+    /// A file that exists but cannot be read (too large, another owner, a link, a failed open) throws, so it is
+    /// never written over and its Notes are never lost.
+    func found() throws -> String? {
+        switch SafeFile.read(fileURL, limit: 4 * 1024 * 1024) {
+        case .ok(let data): return String(decoding: data, as: UTF8.self)
+        case .refused(let why): throw TekaStore.Refused(reason: "DASHBOARD.md cannot be read (\(why)); it was left as it is")
+        case .missing:
+            var st = stat()
+            if lstat(fileURL.path, &st) != 0, errno == ENOENT { return nil }
+            throw TekaStore.Refused(reason: "DASHBOARD.md cannot be read; it was left as it is")
+        }
     }
+
+    /// The file as found, for reading only; nil when there is none or it cannot be read.
+    func current() -> String? { (try? found()) ?? nil }
 
     var hasManual: Bool {
         var st = stat()
@@ -64,7 +75,7 @@ public struct DashboardKeeper: Sendable {
             guard Teka.read(folder).isAdopted, let catalog = Teka.read(folder).catalog else { throw TekaStore.Refused(reason: "not adopted") }
             var st = stat()
             if lstat(fileURL.path, &st) == 0, st.st_mode & S_IFMT != S_IFREG { throw TekaStore.Refused(reason: "DASHBOARD.md is not a regular file") }
-            let old = current()
+            let old = try found()
             var notes: String?
             if let old {
                 try keepCopy(old, now: now)
@@ -85,7 +96,7 @@ public struct DashboardKeeper: Sendable {
         return try TekaStore(folder: folder).withLock {
             guard let catalog = Teka.read(folder).catalog else { return .unchanged }
             let hash = try Canonical.hash(.object(catalog))
-            let found = current()
+            let found = try found()
             if hash == state.catalogHash, today.description == state.day, let found, !Dashboard.editedOutsideNotes(found) { return .unchanged }
             var edited = false
             if let found, Dashboard.editedOutsideNotes(found) {
