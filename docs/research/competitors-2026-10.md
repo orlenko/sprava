@@ -2,7 +2,7 @@
 
 Status: v0 draft of 2026-10-06. Written by the planning session from the verified research digest on competitors; nothing here was searched again. It replaces section 7 and the addendum of `docs/brainstorm/2026-10-06_product-brainstorm.md` as the current picture. Prices and dates are as read on the dates given in section 10. This is not legal advice.
 
-How to read this file. A binder is one case file for one episode of a person's life; Sprava calls its on-disk form a teka. "Verified" means the research verifier confirmed the claim on the vendor's own page. "Secondary" means press or blog coverage only. "Unresolved" means the sources conflict or no primary source could be read. Claims the verifier refuted were removed; where the brainstorm stated one, this file says so. Bracketed numbers such as [12] point to the sources in section 10. References such as "(decisions.md A4)" point to the decisions log, which this file follows.
+How to read this file. A binder is one case file for one episode of a person's life, kept as an ordinary folder on disk. "Verified" means the research verifier confirmed the claim on the vendor's own page. "Secondary" means press or blog coverage only. "Unresolved" means the sources conflict or no primary source could be read. Claims the verifier refuted were removed; where the brainstorm stated one, this file says so. Bracketed numbers such as [12] point to the sources in section 10. References such as "(decisions.md A4)" point to the decisions log, which this file follows.
 
 ## 1. Summary: what changed since the brainstorm
 

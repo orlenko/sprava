@@ -1,4 +1,4 @@
-# teka v0: the open binder format
+# binder v0: the open binder format
 
 Status: v0 draft of 2026-10-06, revised twice the same day after two design-skeptic reviews. Nothing here is final. The draft follows `docs/decisions.md` and cites its entries, for example "(decisions.md F3)". Where it adds a rule that no decision covers, it says so, and section 12 lists those additions for the author. Every example in this document is invented.
 
@@ -6,20 +6,20 @@ Status: v0 draft of 2026-10-06, revised twice the same day after two design-skep
 
 ### 1.1 What this document covers
 
-A teka is one folder on disk that holds everything about one episode of a person's life: an estate to settle, a kitchen renovation, a tax year, a rental property. This document says what must be inside that folder for a program to read it, change it safely and hand parts of it to other programs. It covers:
+A binder is one folder on disk that holds everything about one episode of a person's life: an estate to settle, a kitchen renovation, a tax year, a rental property. This document says what must be inside that folder for a program to read it, change it safely and hand parts of it to other programs. It covers:
 
 - the folder layout (section 3);
 - `catalog.json`, the one file that states what is true now, and how to write it safely (section 4);
 - the meaning of the fields: deadlines, waiting, nudges, recurrence, redaction, ids and closing (section 5);
 - the typed operations ("ops") through which every change is made, the log that records them, undo and forgetting (section 6);
 - the files that are derived from the catalog (section 7);
-- an optional federation profile for sharing a redacted summary of a teka with a cross-binder view (section 8);
-- how an existing teka made with lifeproj is adopted without loss, and what lifeproj must change to coexist (section 9);
+- an optional federation profile for sharing a redacted summary of a binder with a cross-binder view (section 8);
+- how an existing binder made with lifeproj is adopted without loss, and what lifeproj must change to coexist (section 9);
 - JSON Schemas (section 10), conformance checks (section 11) and open questions (section 12).
 
 The format was extracted from lifeproj, the Python command-line tool the author has used for months (lifeproj v0.12.0; its 149 tests passed on Python 3.14.7 on 2026-10-06). lifeproj is public, so every lifeproj reference below names a file and a function or test in its repository. lifeproj enforces less than its prose says. Only the rules that lifeproj's code checks are treated as proven; the rest of this document adds rules and says so where it does.
 
-Two implementations are expected: Sprava, the Mac app, and lifeproj, which becomes the second implementation of this format rather than a dependency of Sprava (HANDOFF.md, "Constraints to plan around"). Today lifeproj writes no op log and knows none of the v0 additions. In the terms of section 1.6 it is a catalog writer, and section 9.8 lists what it must change before it can safely share a teka with a full implementation.
+Two implementations are expected: Sprava, the Mac app, and lifeproj, which becomes the second implementation of this format rather than a dependency of Sprava (HANDOFF.md, "Constraints to plan around"). Today lifeproj writes no op log and knows none of the v0 additions. In the terms of section 1.6 it is a catalog writer, and section 9.8 lists what it must change before it can safely share a binder with a full implementation.
 
 ### 1.2 Status
 
@@ -35,24 +35,24 @@ This is a v0 draft. A draft may change in ways that are not backward compatible 
 
 ### 1.4 What a reader does with a newer version
 
-- `catalog.json` with a `format_version` the reader does not know: the reader may display the catalog and must not write to the teka, not even `DASHBOARD.md`. It tells the user that a newer implementation is needed.
+- `catalog.json` with a `format_version` the reader does not know: the reader may display the catalog and must not write to the binder, not even `DASHBOARD.md`. It tells the user that a newer implementation is needed.
 - `catalog.json` at an unknown catalog level (section 9.6): the same.
 - A slice or an outbox file (section 8) with a `format_version` the reader does not know: the reader uses only the frozen lifeproj fields and ignores everything else. Those files are additive by rule.
 - An op log (section 6) that contains an op type the reader does not know: the log was written by a newer version, because op types are a closed list. The reader stops replaying at that op, does not append to the log, and reports the op type. History cannot be skipped.
 
 ### 1.5 Licence of this document (proposed)
 
-The author has not decided the licences (decisions.md L1, L2). The recommendation this draft follows: the prose of the specification under CC-BY-4.0; the JSON Schemas, validators and conformance tests under Apache-2.0; and an explicit note that no trademark rights in the names "Sprava" or "teka" are granted (decisions.md L2). The repository is LGPL-2.1 today.
+The author has not decided the licences (decisions.md L1, L2). The recommendation this draft follows: the prose of the specification under CC-BY-4.0; the JSON Schemas, validators and conformance tests under Apache-2.0; and an explicit note that no trademark rights in the name "Sprava" are granted (decisions.md L2). The repository is LGPL-2.1 today.
 
 ### 1.6 Conformance classes
 
 An implementation claims one of three nested classes, and may add the optional federation profile. Each check in section 11 is tagged with the class it applies to. The words "must" and "never" state requirements. "Should" states a recommendation that an implementation may depart from for a stated reason. "May" states a permission.
 
-- **Reader** `[R]`: parses catalogs at every catalog level, classifies the teka's state (section 9.6), computes buckets (section 5.2) and writes nothing inside the teka. A view of a teka is a reader.
-- **Catalog writer** `[W]`: a reader that also rewrites `catalog.json`. It follows the preservation rule (section 4.7), the JSON conventions (section 4.8) and the write protocol with its lock (section 4.9). It keeps no op log. When a full implementation manages the same teka, every write by a catalog writer is recorded there as an external edit (section 6.7). A catalog writer claims `[W]` for the catalog levels it supports. To claim it for v0, it must keep the v0 record rules whenever it edits a stamped v0 catalog; checks tagged `[W, v0]` apply only to that claim. Today's lifeproj is a catalog writer for lifeproj v1 and v2 catalogs only. It implements the pre-v0 federation behaviour that section 8 extends, and section 9.8 lists what it needs before it can share a v0 teka.
-- **Full implementation** `[F]`: a catalog writer that makes every change as an op, keeps the op log (section 6), absorbs external edits, handles proposals, renders `DASHBOARD.md` (section 7.1) and adopts lifeproj tekas (section 9). Sprava is a full implementation.
+- **Reader** `[R]`: parses catalogs at every catalog level, classifies the binder's state (section 9.6), computes buckets (section 5.2) and writes nothing inside the binder. A view of a binder is a reader.
+- **Catalog writer** `[W]`: a reader that also rewrites `catalog.json`. It follows the preservation rule (section 4.7), the JSON conventions (section 4.8) and the write protocol with its lock (section 4.9). It keeps no op log. When a full implementation manages the same binder, every write by a catalog writer is recorded there as an external edit (section 6.7). A catalog writer claims `[W]` for the catalog levels it supports. To claim it for v0, it must keep the v0 record rules whenever it edits a stamped v0 catalog; checks tagged `[W, v0]` apply only to that claim. Today's lifeproj is a catalog writer for lifeproj v1 and v2 catalogs only. It implements the pre-v0 federation behaviour that section 8 extends, and section 9.8 lists what it needs before it can share a v0 binder.
+- **Full implementation** `[F]`: a catalog writer that makes every change as an op, keeps the op log (section 6), absorbs external edits, handles proposals, renders `DASHBOARD.md` (section 7.1) and adopts lifeproj binders (section 9). Sprava is a full implementation.
 - **Federation profile** `[P]`: optional for a catalog writer or a full implementation. It publishes slices and drains outboxes as section 8 says.
-- **Slice reader** `[H]`: a program outside every teka that reads slices and writes completions, such as the hub or an app's cross-binder view. It never writes inside a teka. Section 8.4 states its rules.
+- **Slice reader** `[H]`: a program outside every binder that reads slices and writes completions, such as the hub or an app's cross-binder view. It never writes inside a binder. Section 8.4 states its rules.
 
 A check tagged `[R]` applies to readers, catalog writers and full implementations. One tagged `[W]` applies to full implementations too. `[P]` and `[H]` stand apart from the three nested classes.
 
@@ -60,13 +60,12 @@ A check tagged `[R]` applies to readers, catalog writers and full implementation
 
 Each term is defined once here and used with that meaning everywhere below.
 
-- **teka**: one folder for one life episode, laid out as this document describes. The word is the lowercase format term; it is never an app name (decisions.md P11).
-- **binder**: the same thing as a teka, in product language. The app shows "binders". Normative text in this document says "teka".
-- **catalog**: the file `catalog.json` at the root of a teka. It states what is true now: which documents exist, which items are open, and the processing log of what happened. It is the truth of state (decisions.md F1).
-- **catalog level**: which set of rules a catalog follows. There are three: lifeproj v1 (`meta.schema_version: 1`, loose items), lifeproj v2 (`schema_version: 2`, lifeproj's strict item rules) and teka v0 (`meta.format: "teka"`, this document). Section 9.6 says how the level is read.
-- **checker version**: which copy of lifeproj's validator `catalog_check.py` a teka holds: gen1, gen2 or gen3 (section 9.2). It is unrelated to the catalog level.
+- **binder**: one folder for one life episode, laid out as this document describes. The app and this document use the same word, and it is never an app name (decisions.md P11, P18). lifeproj and earlier drafts called it a "teka", and some on-disk names keep that word for compatibility: `meta.format: "teka"`, the lock file `.teka.lock`, the op `rename_teka`, the id scheme `teka-year-seq`, the `teka-dashboard` marker line of `DASHBOARD.md`, the `teka` field of slices and outbox files, and the `urn:sprava:teka:v0:` prefix of the schema `$id`s.
+- **catalog**: the file `catalog.json` at the root of a binder. It states what is true now: which documents exist, which items are open, and the processing log of what happened. It is the truth of state (decisions.md F1).
+- **catalog level**: which set of rules a catalog follows. There are three: lifeproj v1 (`meta.schema_version: 1`, loose items), lifeproj v2 (`schema_version: 2`, lifeproj's strict item rules) and binder v0 (`meta.format: "teka"`, this document). Section 9.6 says how the level is read.
+- **checker version**: which copy of lifeproj's validator `catalog_check.py` a binder holds: gen1, gen2 or gen3 (section 9.2). It is unrelated to the catalog level.
 - **item**: one entry of the catalog's `open_items[]`: a thing to do, decide, pay, send or wait for.
-- **document**: one entry of the catalog's `documents[]`, pointing at a file inside the teka.
+- **document**: one entry of the catalog's `documents[]`, pointing at a file inside the binder.
 - **processing log**: the catalog's array `processing_log[]`. It is append-only. One entry of it is a **log entry**.
 - **op**: a typed, validated change to the catalog, for example "add this item" or "close that item". A full implementation makes every change to a catalog as an op. Ops are recorded in the op log, which is the truth of history (decisions.md F1).
 - **op log**: the file `.sprava/ops.ndjson`, one applied op per line. NDJSON means newline-delimited JSON: each line is one complete JSON object. The op log and the processing log are different things; this document never says "the log" alone.
@@ -82,36 +81,36 @@ Each term is defined once here and used with that meaning everywhere below.
 - **capture event**: one immutable record of something the user captured, such as a dictation, in the separate capture-event format (decisions.md C1).
 - **interpretation**: the clerk's typed reading of one capture event, from which code builds a proposal (decisions.md C3).
 - **digest**: a working session in which pending intake is filed and the catalog is brought up to date, by a person, a terminal agent or the clerk. The term comes from lifeproj's manuals.
-- **survey**: the read-only inspection of a teka that starts adoption. It records counts and kinds of problems, never personal values (section 9.2).
-- **registry** and **fleet commands**: lifeproj keeps a list of the tekas it manages, its registry. Its fleet commands, such as `lifeproj drain --all`, act on every teka in that list.
-- **doctor**: a check an implementation runs on demand over its tekas and reports on, without changing anything (decisions.md A9).
+- **survey**: the read-only inspection of a binder that starts adoption. It records counts and kinds of problems, never personal values (section 9.2).
+- **registry** and **fleet commands**: lifeproj keeps a list of the binders it manages, its registry. Its fleet commands, such as `lifeproj drain --all`, act on every binder in that list.
+- **doctor**: a check an implementation runs on demand over its binders and reports on, without changing anything (decisions.md A9).
 - **derived file**: a file computed from the catalog: `DASHBOARD.md`, the index, the cursors.
-- **Now page**: the app's view of one teka's buckets (section 5.2). The **roll-up** is the cross-binder view of several tekas at once.
-- **slice**: the redacted summary of a teka's open items that the teka publishes for a cross-binder view, as `inbox/<teka>.agenda.json` on the spool.
-- **spool**: a shared folder outside every teka through which tekas and the cross-binder view exchange slices and completions. Neither side reads the other's files; they read the spool.
+- **Now page**: the app's view of one binder's buckets (section 5.2). The **roll-up** is the cross-binder view of several binders at once.
+- **slice**: the redacted summary of a binder's open items that the binder publishes for a cross-binder view, as `inbox/<binder>.agenda.json` on the spool.
+- **spool**: a shared folder outside every binder through which binders and the cross-binder view exchange slices and completions. Neither side reads the other's files; they read the spool.
 - **completion**: a note from the hub that an item was done or dropped, left in the outbox on the spool. To **drain** is to apply the waiting completions to the catalog (section 8.3).
 - **alias**: a neutral id published in a slice in place of an item id that could spell out the item's subject (section 5.6).
 - **external change**: any op whose actor is `external`: an edit of `catalog.json` by another program, recorded afterwards, or a completion drained from the hub. The app shows each one so the user can undo it. An **external edit** is the first kind only (section 6.7).
 - **hub**: the existing cross-binder view that reads slices from the spool and writes completions back. Its codename is not a public product name (decisions.md P11). This document says "the hub" except where it quotes lifeproj's file names, environment variables and wire values, such as `osavul.py` and `$OSAVUL_SPOOL`.
-- **federation profile**: the optional part of this format (section 8) that an implementation supports when it publishes slices and drains completions. A teka that never publishes is still a valid teka.
-- **implementation**: any program that reads or writes tekas according to this document, in one of the classes of section 1.6. Sprava and lifeproj are the two expected ones.
-- **module**: an optional part of a teka that adds folders, files or catalog arrays, such as `chapters` or `ledger` (section 3.3).
-- **disclosure**: the setting in `meta` that says how much of a teka a reader outside it may receive: everything, titles, only kinds, or nothing. Section 5.5 defines it for slices. decisions.md A4 also uses it to bound what an MCP call may return; how it combines with per-client scope is for the architecture document. `DASHBOARD.md` and `.sprava/` are never served over MCP.
+- **federation profile**: the optional part of this format (section 8) that an implementation supports when it publishes slices and drains completions. A binder that never publishes is still a valid binder.
+- **implementation**: any program that reads or writes binders according to this document, in one of the classes of section 1.6. Sprava and lifeproj are the two expected ones.
+- **module**: an optional part of a binder that adds folders, files or catalog arrays, such as `chapters` or `ledger` (section 3.3).
+- **disclosure**: the setting in `meta` that says how much of a binder a reader outside it may receive: everything, titles, only kinds, or nothing. Section 5.5 defines it for slices. decisions.md A4 also uses it to bound what an MCP call may return; how it combines with per-client scope is for the architecture document. `DASHBOARD.md` and `.sprava/` are never served over MCP.
 - **kind**: a word from a short closed list that says what type of thing an item is without saying what it is about, so a redacted item can still be triaged. This document writes "the item's `kind`" for that field and "disclosure level `kind`" for the disclosure setting of the same name.
-- **teka states**: ready, needs migration, needs attention, corrupt, unknown level and not a teka. Section 9.6 defines them.
+- **binder states**: ready, needs migration, needs attention, corrupt, unknown level and not a binder. Section 9.6 defines them.
 - **today**: the local calendar date in the user's time zone at the moment a rule is evaluated.
 
 ## 3. The folder spine
 
 ### 3.1 Required files
 
-A folder is a teka when it contains a file named `catalog.json`. This is lifeproj's own test: its fleet commands skip a registered folder without `catalog.json` as "not a lifeproj teka" and report a broken one as an error (`osavul.py`, `_drain_teka`; tests `test_drain_all_skips_unmigrated`, `test_drain_all_errors_on_broken_catalog`). The file must parse as a JSON object; otherwise the teka is corrupt (section 9.6). An object without a `meta` object, or whose `meta` has no `schema_version`, is still a teka: it is a pre-lifeproj catalog that needs migration (section 9.6). lifeproj's `publish` and `drain` read such a file too, and fall back to the folder name for the teka's name (`osavul.py`, `teka_name`). lifeproj's manual says the format grew out of a hand-made catalog that predates lifeproj (`docs/DESIGN.md`), so such files exist.
+A folder is a binder when it contains a file named `catalog.json`. This is lifeproj's own test: its fleet commands skip a registered folder without `catalog.json` as "not a lifeproj teka" and report a broken one as an error (`osavul.py`, `_drain_teka`; tests `test_drain_all_skips_unmigrated`, `test_drain_all_errors_on_broken_catalog`). The file must parse as a JSON object; otherwise the binder is corrupt (section 9.6). An object without a `meta` object, or whose `meta` has no `schema_version`, is still a binder: it is a pre-lifeproj catalog that needs migration (section 9.6). lifeproj's `publish` and `drain` read such a file too, and fall back to the folder name for the binder's name (`osavul.py`, `teka_name`). lifeproj's manual says the format grew out of a hand-made catalog that predates lifeproj (`docs/DESIGN.md`), so such files exist.
 
-The teka's name is `meta.name`, and it must equal the folder's basename (decisions.md F6). The comparison is byte equality after both are normalized to Unicode NFC, and it is case-sensitive. lifeproj accepts any name except an empty one, `.`, `..` or one containing `/` (`cli.py`, `cmd_new`), so spaces occur. A v0 implementation that creates a teka uses only lowercase ASCII letters, digits and hyphens, starting with a letter or a digit (`^[a-z0-9][a-z0-9-]*$`), because the name becomes a prefix of ids and a file name on the spool. A name found at adoption that does not have this shape is accepted and reported. New ids in such a teka use a cleaned-up form of the name (section 5.6).
+The binder's name is `meta.name`, and it must equal the folder's basename (decisions.md F6). The comparison is byte equality after both are normalized to Unicode NFC, and it is case-sensitive. lifeproj accepts any name except an empty one, `.`, `..` or one containing `/` (`cli.py`, `cmd_new`), so spaces occur. A v0 implementation that creates a binder uses only lowercase ASCII letters, digits and hyphens, starting with a letter or a digit (`^[a-z0-9][a-z0-9-]*$`), because the name becomes a prefix of ids and a file name on the spool. A name found at adoption that does not have this shape is accepted and reported. New ids in such a binder use a cleaned-up form of the name (section 5.6).
 
-When the folder's basename and `meta.name` differ, for example after the folder was renamed in Finder, the teka needs attention (section 9.6). It stays readable and accepts ops, but it publishes and drains nothing until the user applies a `rename_teka` op, a direct action in the app (sections 6.3 and 6.5). Publishing and draining also require the name to be unique among the tekas an implementation knows, after case folding and NFC. The comparison includes every unexpired former name of those tekas (`meta.former_names`, section 8.3): a teka may not be created with, or renamed to, a name another teka still drains under. APFS volumes are case-insensitive by default, so `Tax-2026` and `tax-2026` would share one spool file.
+When the folder's basename and `meta.name` differ, for example after the folder was renamed in Finder, the binder needs attention (section 9.6). It stays readable and accepts ops, but it publishes and drains nothing until the user applies a `rename_teka` op, a direct action in the app (sections 6.3 and 6.5). Publishing and draining also require the name to be unique among the binders an implementation knows, after case folding and NFC. The comparison includes every unexpired former name of those binders (`meta.former_names`, section 8.3): a binder may not be created with, or renamed to, a name another binder still drains under. APFS volumes are case-insensitive by default, so `Tax-2026` and `tax-2026` would share one spool file.
 
-When an implementation creates or adopts a teka, it reports whether the folder lies in a place a sync service uploads (section 9.2 step 14).
+When an implementation creates or adopts a binder, it reports whether the folder lies in a place a sync service uploads (section 9.2 step 14).
 
 ### 3.2 Optional files and folders with a defined meaning
 
@@ -120,7 +119,7 @@ When an implementation creates or adopts a teka, it reports whether the folder l
 | `catalog.json` | The catalog (section 4). Required. | Writers, under the write protocol (section 4.9). |
 | `DASHBOARD.md` | Current truth rendered for reading (section 7.1). Its Notes section, from the line `## Notes` to the end, is kept as written. | A full implementation, once the user has approved the switch from a hand-kept dashboard. |
 | `.teka.lock` | The lock file of the write protocol (section 4.9). Empty. | Created by the first writer; never deleted. |
-| `.sprava/` | The op log, proposals, index, cursors and saved copies (section 7.2). | Owned by the full implementation that adopted the teka. Its files are untrusted when read (section 7.2). |
+| `.sprava/` | The op log, proposals, index, cursors and saved copies (section 7.2). | Owned by the full implementation that adopted the binder. Its files are untrusted when read (section 7.2). |
 | `intake/` | A transient drop zone. A file in it means "not yet filed". Empty after a digest. The exception is the old email-intake layout of section 3.3: `.env` and `state.json` under `intake/mail/` are never filed. | People and capture tools put files in; filing moves them out. |
 | `intake/_converted/` | Text extracted from dropped scans and PDFs. Regenerable. | An implementation. May be cleared at any time. |
 | `README.md` | A human "start here" page. Informative. | A person. Never touched by an implementation. |
@@ -131,7 +130,7 @@ Section 9.7 is the one statement of what an implementation may write.
 
 ### 3.3 Module folders and files
 
-lifeproj adds these on request (`modules.py`). `meta.modules[]` lists which ones a teka uses (section 4.2). `ledger/`, `timeline.md` and `chapters/` are folder conventions in v0: described here, left opaque and never written by an implementation (decisions.md F7). This draft leaves `entities/` and `sources/` alone too (section 9.7). `correspondence/` is a document folder: filing may create new files in it.
+lifeproj adds these on request (`modules.py`). `meta.modules[]` lists which ones a binder uses (section 4.2). `ledger/`, `timeline.md` and `chapters/` are folder conventions in v0: described here, left opaque and never written by an implementation (decisions.md F7). This draft leaves `entities/` and `sources/` alone too (section 9.7). `correspondence/` is a document folder: filing may create new files in it.
 
 | Module | Adds | State kept where |
 | ------ | ---- | ---------------- |
@@ -139,11 +138,11 @@ lifeproj adds these on request (`modules.py`). `meta.modules[]` lists which ones
 | `docs-intake` | `intake/_converted/` | Nothing in the catalog. |
 | `github-source` | `sources/` with `sources/github.toml` | Pulled metadata under `sources/`. |
 | `timeline` | `timeline.md` | A Markdown table `Date, Event, Source, Notes`, newest last. |
-| `ledger` | `ledger/` with `ledger/README.md` | Typed transactions as files under `ledger/`; the file format is the teka's own. |
+| `ledger` | `ledger/` with `ledger/README.md` | Typed transactions as files under `ledger/`; the file format is the binder's own. |
 | `chapters` | `chapters/`, `chapters/_past/` | One subfolder per finite episode (for example a tenancy); the active ones are listed in `meta.active_chapters`. |
 | `entities` | `entities/` and the catalog array `entities[]` | One row per comparable thing (a candidate, a unit, a vendor bid) plus a subfolder. |
 
-The old email-intake layout. Tekas made by lifeproj 0.1.0 (commit `b950006`) keep the mail puller's credentials at `intake/mail/.env` and its sync watermark at `intake/mail/state.json`, because that release's manual ran the puller from inside `intake/mail/`. A later commit (`7d625cf`) moved both to `scripts/mail/`, so a routine clearing of the intake would not lose them, and no lifeproj command migrates an old teka. An implementation therefore never files, indexes, shows to a model or clears a `.env` or `state.json` under `intake/mail/`. The survey reports them (section 9.2 step 12).
+The old email-intake layout. Binders made by lifeproj 0.1.0 (commit `b950006`) keep the mail puller's credentials at `intake/mail/.env` and its sync watermark at `intake/mail/state.json`, because that release's manual ran the puller from inside `intake/mail/`. A later commit (`7d625cf`) moved both to `scripts/mail/`, so a routine clearing of the intake would not lose them, and no lifeproj command migrates an old binder. An implementation therefore never files, indexes, shows to a model or clears a `.env` or `state.json` under `intake/mail/`. The survey reports them (section 9.2 step 12).
 
 ### 3.4 What is format and what is not
 
@@ -156,14 +155,14 @@ The following may be present and must be tolerated, ignored and never executed b
 - `.git/` (tolerated and ignored; whether git history counts as provenance is open, decisions.md F12);
 - any file an implementation does not recognise.
 
-An implementation never runs a hook, a script or a validator found inside a teka. It validates with its own rules (section 10).
+An implementation never runs a hook, a script or a validator found inside a binder. It validates with its own rules (section 10).
 
 Running is only one way a file can act, so an implementation also follows these rules:
 
-- It reads as data only `catalog.json`, the files that `documents[]` names, `intake/` and `DASHBOARD.md`. Indexing, search, a model's context and MCP reads never cover `scripts/`, `.claude/`, `.agents/`, `.git/`, `.sprava/`, a file named `.env`, `.env.*` or `state.json` under `intake/mail/`, or a key file. A key file is any file whose name matches `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ecdsa*`, `id_ed25519*`, `*.age`, `age-identity*`, `.netrc`, `credentials*`, `token*.json` or `*.keychain*`. A match is excluded even when `documents[]` names the file. The email-intake module keeps a mail puller's configuration and state in `scripts/mail/` (`modules.py`), so credentials can sit inside a teka.
-- Text from a teka is data for any model, never instructions. That covers `CLAUDE.md`, `AGENTS.md`, filed emails and item titles.
+- It reads as data only `catalog.json`, the files that `documents[]` names, `intake/` and `DASHBOARD.md`. Indexing, search, a model's context and MCP reads never cover `scripts/`, `.claude/`, `.agents/`, `.git/`, `.sprava/`, a file named `.env`, `.env.*` or `state.json` under `intake/mail/`, or a key file. A key file is any file whose name matches `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ecdsa*`, `id_ed25519*`, `*.age`, `age-identity*`, `.netrc`, `credentials*`, `token*.json` or `*.keychain*`. A match is excluded even when `documents[]` names the file. The email-intake module keeps a mail puller's configuration and state in `scripts/mail/` (`modules.py`), so credentials can sit inside a binder.
+- Text from a binder is data for any model, never instructions. That covers `CLAUDE.md`, `AGENTS.md`, filed emails and item titles.
 - It never hands a file that can launch something to the system's default handler without a warning. The test uses the file's type as macOS sees it (its uniform type identifier), never the extension alone: anything that conforms to `public.executable`, an application bundle, a script, an installer package, a disk image, a shortcut or a location file (`.webloc`, `.fileloc`), and any file with the executable bit set, which Terminal would run.
-- Any view of teka content, a filed email or a Markdown document included, loads no remote resource: it renders without network access or blocks every `http` and `https` load. It never follows a link on its own. A remote link is shown as text the user can choose to open. A remote image in a filed email would otherwise tell the sender that the mail was read, and from which address.
+- Any view of binder content, a filed email or a Markdown document included, loads no remote resource: it renders without network access or blocks every `http` and `https` load. It never follows a link on its own. A remote link is shown as text the user can choose to open. A remote image in a filed email would otherwise tell the sender that the mail was read, and from which address.
 - Filing keeps a file's extended attributes, including `com.apple.quarantine`, which Gatekeeper relies on.
 - If git history is ever read (decisions.md F12), it is read without running the repository's configuration or hooks, for example with a read-only library.
 
@@ -208,18 +207,18 @@ An implementation never deletes an original. Filing moves files out of `intake/`
 
 ### 3.6 Containment
 
-Every path in this format is relative to the teka folder and must stay inside it. A relative path can still leave the folder through a symbolic link (a symlink: a file that points at another path). So an implementation:
+Every path in this format is relative to the binder folder and must stay inside it. A relative path can still leave the folder through a symbolic link (a symlink: a file that points at another path). So an implementation:
 
-- resolves the real path before it reads, hashes, indexes, serves or moves a file, and refuses anything that resolves outside the teka;
+- resolves the real path before it reads, hashes, indexes, serves or moves a file, and refuses anything that resolves outside the binder;
 - opens files without following symlinks where macOS allows it (`O_NOFOLLOW`, or `O_NOFOLLOW_ANY` for every part of the path);
-- treats the teka as needing attention when `catalog.json`, `DASHBOARD.md`, `.teka.lock` or `.sprava/` is a symlink, or is not a regular file or folder, and writes nothing until that is fixed;
+- treats the binder as needing attention when `catalog.json`, `DASHBOARD.md`, `.teka.lock` or `.sprava/` is a symlink, or is not a regular file or folder, and writes nothing until that is fixed;
 - creates temporary files exclusively (`O_CREAT|O_EXCL`) under a random name that starts with `.` and ends with `.tmp`, never at a fixed name. The dot keeps a temporary file on the spool from being read as a slice. lifeproj's fixed `.catalog.json.tmp` is a known gap (section 9.8).
 
 ## 4. catalog.json
 
 ### 4.1 Top-level shape
 
-`catalog.json` is a JSON object. A fresh lifeproj teka has exactly four keys, `meta`, `documents`, `open_items` and `processing_log`, plus `entities` when the entities module is on (`scaffold.py`, `build`). Any other top-level key is allowed and must be preserved. In a lifeproj catalog a missing core array means "empty"; lifeproj's checker fills a missing one with `[]` rather than reporting it (`templates.py`, `CATALOG_CHECK`). In a stamped v0 catalog the three core arrays are required, and a missing one is a rule failure that a proposal repairs. A core key that holds something other than an array, for example `documents` as an object keyed by id, which lifeproj's checker skips, makes the catalog need migration (section 9.6).
+`catalog.json` is a JSON object. A fresh lifeproj binder has exactly four keys, `meta`, `documents`, `open_items` and `processing_log`, plus `entities` when the entities module is on (`scaffold.py`, `build`). Any other top-level key is allowed and must be preserved. In a lifeproj catalog a missing core array means "empty"; lifeproj's checker fills a missing one with `[]` rather than reporting it (`templates.py`, `CATALOG_CHECK`). In a stamped v0 catalog the three core arrays are required, and a missing one is a rule failure that a proposal repairs. A core key that holds something other than an array, for example `documents` as an object keyed by id, which lifeproj's checker skips, makes the catalog need migration (section 9.6).
 
 Every top-level array of objects obeys one generic rule: among entries that carry an `id`, ids are unique within the array (`templates.py`, `main`). An entry without an `id` is unconstrained by this rule, and lifeproj's checker skips an array that holds anything other than objects. Two ids are the same when they have the same JSON type and the same value (section 5.6). A duplicate in `open_items[]`, `documents[]` or `processing_log[]` is a rule failure (section 9.6). A duplicate in an array this document does not define is reported and never blocks reading or writing.
 
@@ -231,16 +230,16 @@ Every top-level array of objects obeys one generic rule: among entries that carr
 | `name` | string | yes in v0 | Equals the folder basename (section 3.1). lifeproj falls back to the folder name when `name` is absent; the adoption migration adds it. Changed only by `rename_teka`. |
 | `domain` | string | no | Free text. lifeproj's starter offers `general`, `legal`, `tenancy`, `condo`, `product`, `tax`. Default `general`. |
 | `lifecycle` | `ongoing` or `finite` | no | Whether the episode ends on a deliverable. Carried into the slice. |
-| `created` | date | no | `YYYY-MM-DD`, the day the teka was made. |
+| `created` | date | no | `YYYY-MM-DD`, the day the binder was made. |
 | `next_doc_id`, `next_item_id` | integer | no | Stamped by lifeproj, never read or incremented by any lifeproj code. Preserved, never trusted (section 5.6). |
 | `profile` | object | no | Stamped as `{}` by lifeproj, never read. Preserved. |
 | `active_chapters` | array of strings | no | The active chapters (0, 1 or many). lifeproj also accepts a bare string and reads `current_chapters` as a fallback; `active_chapter` (string or null) is the single-chapter legacy form. Writers emit the array. |
 | `format` | the string `teka` | yes in v0 | Declares that the catalog follows this document (decisions.md F6). |
 | `format_version` | string of digits | yes in v0 | `"0"` for this document. |
-| `modules` | array of strings | no | Which modules the teka uses, from the names in section 3.3; other names are allowed. No name twice. |
-| `disclosure` | `full`, `title`, `kind` or `none` | yes in v0 | What a reader outside the teka may receive (section 5.5). A teka that a v0 implementation creates starts at `none`. Changed only by `set_disclosure`, which only the user applies (section 6.3). |
+| `modules` | array of strings | no | Which modules the binder uses, from the names in section 3.3; other names are allowed. No name twice. |
+| `disclosure` | `full`, `title`, `kind` or `none` | yes in v0 | What a reader outside the binder may receive (section 5.5). A binder that a v0 implementation creates starts at `none`. Changed only by `set_disclosure`, which only the user applies (section 6.3). |
 | `id_scheme` | `teka-year-seq` or `opaque` | no | How ids are minted (section 5.6). |
-| `former_names` | array of `{name, until}` | no | Names the teka had before a `rename_teka`, kept so the outbox under an old name is still drained until the date `until` (section 8.3). `until` is always present; the `rename_teka` op carries it (section 6.3). Added by this draft. |
+| `former_names` | array of `{name, until}` | no | Names the binder had before a `rename_teka`, kept so the outbox under an old name is still drained until the date `until` (section 8.3). `until` is always present; the `rename_teka` op carries it (section 6.3). Added by this draft. |
 
 Anything else in `meta` is preserved. lifeproj validates none of these fields except `schema_version`. The types in this table are enforced once `format` is `teka`; on a lifeproj catalog they are reported, never enforced (section 10).
 
@@ -248,13 +247,13 @@ A catalog is stamped `format: "teka"` only when the whole catalog satisfies the 
 
 ### 4.3 `documents[]` (decisions.md F7)
 
-lifeproj defines no fields for documents; only the generic unique-id rule applies (`templates.py`, `CATALOG_CHECK` and `main`). The real shapes exist only in private tekas and have not been surveyed (decisions.md F11). v0 defines a minimal record:
+lifeproj defines no fields for documents; only the generic unique-id rule applies (`templates.py`, `CATALOG_CHECK` and `main`). The real shapes exist only in private binders and have not been surveyed (decisions.md F11). v0 defines a minimal record:
 
 | Field | Type | Required | Rule |
 | ----- | ---- | -------- | ---- |
 | `id` | string or integer | yes | A non-empty string, or a non-zero integer found at adoption. Unique within `documents[]`. An id found at adoption is kept as it is. A v0 implementation mints ASCII ids, recommended form `<prefix>-doc-<YYYY>-<NNN>` (section 5.6). |
 | `title` | string | yes | One line, non-empty. |
-| `path` | string | yes | Relative to the teka folder (section 3.6). A path written by `file_document` or `update_document` follows the path rules below. A path found at adoption is kept as it is and reported when it breaks them, except that a path under `chapters/` or `entities/` is not reported; a foreign absolute path is never opened. |
+| `path` | string | yes | Relative to the binder folder (section 3.6). A path written by `file_document` or `update_document` follows the path rules below. A path found at adoption is kept as it is and reported when it breaks them, except that a path under `chapters/` or `entities/` is not reported; a foreign absolute path is never opened. |
 | `date` | date | no | The document's own date, when known. |
 | `kind` | string | no | Free text, for example `letter`, `invoice`, `statement`, `notice`, `contract`, `scan`, `email-thread`, `photo`, `note`. Not the closed item kind. |
 | `source` | string | no | Where it came from: `intake/`, `intake/mail`, a capture tool, a scan. |
@@ -271,7 +270,7 @@ A path is also not reserved. Names are compared after NFC and Unicode case foldi
 - an agent manual in any segment: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, and any other manual name the implementation knows, so a filed attachment can never become instructions that a terminal agent loads;
 - anything under `intake/`, `scripts/`, `ledger/`, `sources/`, `chapters/` or `entities/`.
 
-`update_document` moves nothing, so the path it records may lie under `chapters/` or `entities/`; the other rules apply. `file_document` never creates a file there (decisions.md F7; section 12 asks whether it should). Dot folders such as `.sprava/`, `.claude/` and `.git/` are excluded by the segment rule. After symlinks are resolved the path lies inside the teka (section 3.6), and the reserved-name test runs on that resolved path. The file must exist at that path when `file_document`, or an `update_document` that sets `path`, is applied. Later ops do not check it, and replay never does.
+`update_document` moves nothing, so the path it records may lie under `chapters/` or `entities/`; the other rules apply. `file_document` never creates a file there (decisions.md F7; section 12 asks whether it should). Dot folders such as `.sprava/`, `.claude/` and `.git/` are excluded by the segment rule. After symlinks are resolved the path lies inside the binder (section 3.6), and the reserved-name test runs on that resolved path. The file must exist at that path when `file_document`, or an `update_document` that sets `path`, is applied. Later ops do not check it, and replay never does.
 
 Legacy records that lack `id`, `title` or `path` are reported at adoption. A `migrate` op adds the missing v0 keys beside the legacy ones and never removes a legacy key (section 9.5).
 
@@ -289,7 +288,7 @@ The rules lifeproj's code enforces (`templates.py`, `check_open_items`; duplicat
 | `no_deadline` | boolean | one of the two | Exactly one of `due` and `no_deadline: true` is present. Only the value `true` counts; `false` is the same as absent. In a lifeproj catalog an empty or `null` `due` counts as absent. A v0 writer omits a key it has no value for and never writes `null`. |
 | `waiting_on` | string | when waiting or blocked | Non-empty free text naming the party. |
 | `tags` | array of strings | no | Functional labels. At disclosure level `full` they pass through per-item redaction unchanged, as in lifeproj. They are emptied for a redacted item at disclosure level `title`, and for every item at disclosure level `kind` (section 5.5). A tag should not carry the subject of a redacted item; when an op sets `redact: true`, the review card lists the tags that stay published. |
-| `link` | string | no | A path inside the teka, optionally with a `#fragment`, for example `DASHBOARD.md#tax-2026-2026-001`. lifeproj does not validate it. A link is only read, so its rules are lighter than the filing rules of section 4.3: it is relative, in NFC, `/`-separated, with no empty or `..` segment and no control character, and it lies inside the teka after symlinks are resolved. It may name a folder or a reserved file such as `timeline.md`. The app refuses to open a link whose target is under `.sprava/`, `.git/`, `.claude/`, `.agents/` or `scripts/`, or is a `.env` or key file (section 3.4). Any other value, such as a URL or an absolute path, is inert text: shown, never opened or resolved, and reported by the survey (section 9.2). |
+| `link` | string | no | A path inside the binder, optionally with a `#fragment`, for example `DASHBOARD.md#tax-2026-2026-001`. lifeproj does not validate it. A link is only read, so its rules are lighter than the filing rules of section 4.3: it is relative, in NFC, `/`-separated, with no empty or `..` segment and no control character, and it lies inside the binder after symlinks are resolved. It may name a folder or a reserved file such as `timeline.md`. The app refuses to open a link whose target is under `.sprava/`, `.git/`, `.claude/`, `.agents/` or `scripts/`, or is a `.env` or key file (section 3.4). Any other value, such as a URL or an absolute path, is inert text: shown, never opened or resolved, and reported by the survey (section 9.2). |
 | `redact` | boolean | no | `true` means the slice shows a generic title and a masked party (section 5.5). |
 | `slice_title` | string | no | A sanitized replacement title for the slice. Non-empty when present. |
 | `follow_up_at` | date | v0: when waiting or blocked | The day to chase the party if nothing has arrived (section 5.3). On adoption a missing value is derived and marked. |
@@ -351,7 +350,7 @@ The same rule applies to slices and outbox files that an implementation rewrites
 
 ### 4.8 JSON conventions (decisions.md F10)
 
-- I-JSON. Every catalog, slice, outbox file and op line a v0 implementation writes is I-JSON (RFC 7493, section 2.2): no duplicate member names, no lone surrogate escapes such as `\ud800`, and every integer within -(2^53)+1 to 2^53-1. A number with a fraction, such as `19.99` or `0.1`, is allowed; it is read and hashed as the nearest IEEE double, as RFC 8785 does. A reader that finds a duplicate member name, a lone surrogate or an integer out of that range in a catalog never picks one reading silently: parsers disagree on which duplicate wins, and a large integer loses digits in a double. The teka then needs attention (section 9.6), and nothing is written until the user approves a repair. A number too large for a double at all is treated the same way. The repair keeps every value as written in the file: the other values of a duplicate member go under `legacy_<name>` keys (section 9.5), and an out-of-range number becomes a string of the same digits. The implementation then records the difference from the expected state as an `external_edit` whose `hint` says the file held unsafe JSON. At adoption, the import snapshot holds the repaired catalog, and the byte copy in `.sprava/adopted/` keeps the original (section 9.4).
+- I-JSON. Every catalog, slice, outbox file and op line a v0 implementation writes is I-JSON (RFC 7493, section 2.2): no duplicate member names, no lone surrogate escapes such as `\ud800`, and every integer within -(2^53)+1 to 2^53-1. A number with a fraction, such as `19.99` or `0.1`, is allowed; it is read and hashed as the nearest IEEE double, as RFC 8785 does. A reader that finds a duplicate member name, a lone surrogate or an integer out of that range in a catalog never picks one reading silently: parsers disagree on which duplicate wins, and a large integer loses digits in a double. The binder then needs attention (section 9.6), and nothing is written until the user approves a repair. A number too large for a double at all is treated the same way. The repair keeps every value as written in the file: the other values of a duplicate member go under `legacy_<name>` keys (section 9.5), and an out-of-range number becomes a string of the same digits. The implementation then records the difference from the expected state as an `external_edit` whose `hint` says the file held unsafe JSON. At adoption, the import snapshot holds the repaired catalog, and the byte copy in `.sprava/adopted/` keeps the original (section 9.4).
 - Encoding UTF-8. Non-ASCII text is written as is, never as `\uXXXX` escapes. lifeproj escapes non-ASCII when it rewrites a catalog after a drain; a reader must accept both forms, since they are the same JSON value.
 - Two-space indentation, one key per line, a trailing newline. Objects inside arrays follow the same indentation.
 - Key order preserved on rewrite; new records use the documented order.
@@ -363,15 +362,15 @@ The same rule applies to slices and outbox files that an implementation rewrites
 
 An atomic rename prevents a torn file. It does not prevent a lost update. If two programs read the catalog, change it and rename their versions into place, the second rename erases the first program's change. lifeproj's drain shows the cost: it writes the catalog, then deletes the applied completions from the outbox, so a closure erased by a later rename is lost everywhere and the item comes back open. Every writer therefore follows this protocol, lifeproj included (section 9.8):
 
-1. Open `<teka>/.teka.lock`, creating it if it is missing (it is never deleted), and take an exclusive advisory lock on it with `flock`. Hold the lock until the last step.
+1. Open `<binder>/.teka.lock`, creating it if it is missing (it is never deleted), and take an exclusive advisory lock on it with `flock`. Hold the lock until the last step.
 2. Read and parse `catalog.json` and compute its content hash.
 3. A full implementation absorbs any external edit now (section 6.7), then builds its ops and runs the transaction guard (section 6.3).
 4. Apply the change and write the result to a new temporary file next to the catalog, created exclusively under a random name (section 3.6). Flush it to stable storage with `fcntl(F_FULLFSYNC)`. On macOS, `fsync` alone does not force data to stable storage; Apple's manual page for `fsync` points to `F_FULLFSYNC`.
 5. Read `catalog.json` again and hash it. If the hash differs from step 2, someone changed the file without taking the lock: delete the temporary file and go back to step 2, still holding the lock. This step narrows the window for programs that skip the lock, such as a person in a text editor. It cannot close it.
 6. A full implementation now appends its op lines to the op log, flushes them with `F_FULLFSYNC`, and moves a filed document into place (section 6.9).
-7. Rename the temporary file over `catalog.json`, then flush the teka folder itself (open it and `fsync` it) so the rename survives a power loss. A full implementation updates `.sprava/snapshot.json`. Release the lock.
+7. Rename the temporary file over `catalog.json`, then flush the binder folder itself (open it and `fsync` it) so the rename survives a power loss. A full implementation updates `.sprava/snapshot.json`. Release the lock.
 
-The same lock covers every other file the change writes inside the teka, such as a filed document. A drain holds it until the outbox is acknowledged (section 8.3). A writer holds the lock for one change only, never while it waits for the user. The lock covers nothing outside the teka: the hub writes the outbox on the spool without it (section 8.3).
+The same lock covers every other file the change writes inside the binder, such as a filed document. A drain holds it until the outbox is acknowledged (section 8.3). A writer holds the lock for one change only, never while it waits for the user. The lock covers nothing outside the binder: the hub writes the outbox on the spool without it (section 8.3).
 
 ## 5. Semantics
 
@@ -385,7 +384,7 @@ These rules are what make a catalog trustworthy. The schemas check the ones a sc
 4. `open_items[]` and `documents[]` state the present; the processing log and the op log record the past. A derived file is never edited by hand, and a hand edit of the catalog is recorded, never silently absorbed (section 6.7).
 5. Every change is an op with an actor. Nothing a clerk or a brain proposes is applied without the user's approval. Section 6.5 lists the changes that need no proposal. Two paths close items without an approval step: draining completions from the hub's outbox (section 8.3), which keeps lifeproj's semantics (decisions.md F8), and a direct edit of `catalog.json` by another program, which is recorded afterwards as an `external_edit` (section 6.7). The app shows both as external changes the user can undo.
 6. Redaction hides, it never lies. A redacted item still says what kind of thing it is and keeps its dates and status. Redaction does not hide everything: section 5.5 lists what a cross-binder view still receives.
-7. Absence means absence. A missing optional field is unknown; a missing slice means the teka chose not to publish; neither is an error.
+7. Absence means absence. A missing optional field is unknown; a missing slice means the binder chose not to publish; neither is an error.
 
 ### 5.2 Status and buckets (decisions.md F4)
 
@@ -432,21 +431,21 @@ The problem these solve: items waiting on someone else kept their old `due` date
 
 ### 5.4 Recurrence (decisions.md F3)
 
-`recurrence` is `{"freq": "monthly", "day": D}` or `{"freq": "yearly", "month": M, "day": D}` with `1 ≤ D ≤ 31` and `1 ≤ M ≤ 12`. `month` is ignored when `freq` is `monthly`. The rules are the hub's rules today, moved into the teka:
+`recurrence` is `{"freq": "monthly", "day": D}` or `{"freq": "yearly", "month": M, "day": D}` with `1 ≤ D ≤ 31` and `1 ≤ M ≤ 12`. `month` is ignored when `freq` is `monthly`. The rules are the hub's rules today, moved into the binder:
 
 - A recurring item requires `due`, and `due` always holds the next occurrence.
 - `next_after(d)` is the first date strictly after date `d` that matches the rule, with month-length clamping: for a month with fewer days than `D`, the occurrence falls on that month's last day (so `day: 31` gives 30 April and 28 or 29 February; `month: 2, day: 29` gives 28 February in a common year).
 - `complete` on a recurring item does not close it. The applied op carries `occurrence_due` (the `due` being completed) and `next_due`, which is `next_after(max(due, today))` on the day the op is applied. That date is strictly later than both, so the next date never lands in the past. Applying the op sets `due` to `next_due` and appends an `occurrence` entry with `item` (never `id`), `due` and `next_due`. The item stays open. Because the op records `next_due`, replaying it on a later day gives the same result.
 - The transaction guard refuses a `complete` without `next_due` on an item that has `recurrence`, and a `complete` with `next_due` on an item that has none. So `complete` never closes a recurring item; ending a series is `drop`.
-- decisions.md F3 says that dismissing a recurring item ends it, as the hub does today. Section 5.7 says how the hub's "dismiss" maps onto teka ops. The teka op `dismiss` is a reversible hide. Nothing advances an item on its own, so a dismissed recurring item simply keeps its `due` until it is undismissed. `complete` and `drop` work on a dismissed item as on any other.
+- decisions.md F3 says that dismissing a recurring item ends it, as the hub does today. Section 5.7 says how the hub's "dismiss" maps onto binder ops. The binder op `dismiss` is a reversible hide. Nothing advances an item on its own, so a dismissed recurring item simply keeps its `due` until it is undismissed. `complete` and `drop` work on a dismissed item as on any other.
 - Removing `recurrence` (an `update_item` with `unset`) turns the item into a one-off due on its current `due`.
 - A completion drained from the hub for a recurring item advances it the same way. Section 8.3 says how a repeated completion is recognised and skipped.
 
 ### 5.5 Disclosure and redaction (decisions.md F6, F8)
 
-Two levels of control exist. `meta.disclosure` sets the teka's ceiling; per-item `redact` and `slice_title` tighten within it. An item can be more hidden than the teka's level, never less.
+Two levels of control exist. `meta.disclosure` sets the binder's ceiling; per-item `redact` and `slice_title` tighten within it. An item can be more hidden than the binder's level, never less.
 
-Disclosure is enforced by the publisher. Only a publisher that reads `meta.disclosure` and `dismissed` can publish a slice safely. Today's lifeproj reads neither. It republishes after every fleet drain, and the manual it stamps into each teka tells terminal agents to run `lifeproj publish` in every digest. Section 8.1 therefore limits what a teka that lifeproj can still reach may use, until lifeproj implements this section (section 9.8).
+Disclosure is enforced by the publisher. Only a publisher that reads `meta.disclosure` and `dismissed` can publish a slice safely. Today's lifeproj reads neither. It republishes after every fleet drain, and the manual it stamps into each binder tells terminal agents to run `lifeproj publish` in every digest. Section 8.1 therefore limits what a binder that lifeproj can still reach may use, until lifeproj implements this section (section 9.8).
 
 `kind` is the closed list `legal-deadline`, `payment`, `reply-owed`, `filing`, `appointment`, `document-request`, `decision`, `other`. The words describe the type of obligation without its subject:
 
@@ -474,7 +473,7 @@ What each disclosure level publishes (section 8.2 has the exact projection):
 
 Disclosure level `full` is lifeproj's projection (`osavul.py`, `project_slice`; test `test_redaction_projection`), including its `[party]` for a redacted item that has no party, kept for byte compatibility. It has two deliberate departures for redacted items. `link` becomes null, because a file path tends to name the subject. An id that is not in the recommended form is replaced by an alias, because a hand-made id can spell the subject out. A slice item already allows a null `link`, so lifeproj readers are unaffected. Disclosure levels `title` and `kind` have no lifeproj counterpart, so they mask more: chapters, because a chapter name tends to be a counterpart's name; the tags of redacted items; and every id that is not in the recommended form, redacted or not, because at those levels a hand-made id would show what the masked title hides.
 
-What stays visible at every level except `none`: the teka's name (the slice's `teka` key, which is also the spool file name), each item's kind, dates, status, priority and published id, and the tags at `full` and, for items that are not redacted, at `title`. A sensitive teka should therefore have a neutral name, and the clerk never proposes a tag for a redacted item.
+What stays visible at every level except `none`: the binder's name (the slice's `teka` key, which is also the spool file name), each item's kind, dates, status, priority and published id, and the tags at `full` and, for items that are not redacted, at `title`. A sensitive binder should therefore have a neutral name, and the clerk never proposes a tag for a redacted item.
 
 The review card marks as a privacy change every op that loosens what the hub may receive: `set_disclosure` to a higher level, `redact` changed from `true` to `false`, `slice_title` removed or changed, a tag added to a redacted item, or the item's `kind` removed from a redacted item. Only the user can apply `set_disclosure` (section 6.3). An implementation may refuse the other loosening ops when a brain proposes them.
 
@@ -484,39 +483,39 @@ Lowering disclosure stops future publication. It does not erase what the hub or 
 
 ### 5.6 Ids (decisions.md F6)
 
-- An id is stable for the life of the teka and never reused. lifeproj requires only that it be present and not empty.
+- An id is stable for the life of the binder and never reused. lifeproj requires only that it be present and not empty.
 - Types and equality. A v0 id is a non-empty string or a non-zero integer. Two ids are the same when they have the same JSON type and the same value: `7` and `"7"` are different ids, and `true` is never an id. Every copy of an id, in a closure entry, an op or `provenance`, keeps its JSON type. Python treats `1`, `1.0` and `true` as equal and Swift does not, so an implementation compares the type first.
 - Minted ids. A v0 implementation mints string ids that match `^[A-Za-z0-9][A-Za-z0-9._-]*$`: ASCII letters, digits, dots, underscores and hyphens, starting with a letter or a digit. This rule is added by this draft. ASCII rules out look-alike letters and invisible characters such as U+200B, which a "no whitespace" pattern lets through. Ids found at adoption are kept as they are; the survey reports any that are not strings, hold whitespace, non-ASCII, format or control characters, or are not in the recommended form and contain a run of four or more letters, which may name the subject (section 9.2).
-- The mint prefix. New ids start with the mint prefix: `meta.name` when it matches `^[a-z0-9][a-z0-9-]*$`; otherwise the name cleaned up in this order: Unicode NFKD, characters outside ASCII removed, lowercase, every run of other characters than `a-z` and `0-9` turned into one `-`, and `-` trimmed from both ends; and when that leaves nothing, the word `item`. So a teka adopted as `Estate of A. Example` mints `estate-of-a-example-2026-001`.
-- The recommended form. An item id is in the recommended form when it matches `^<prefix>-\d{4}-\d{3,}$`, where `<prefix>` is the current mint prefix with every regular-expression metacharacter escaped. For example `estate-example-2026-007`: a four-digit year and a zero-padded number of at least three digits that increments within the year. It says nothing about the item's subject. The recommended document form is `<prefix>-doc-<YYYY>-<NNN>`, tested the same way. This one test decides aliases, `meta.id_scheme` and check 66. An id minted under a former name of the teka is not in the recommended form, so it is aliased where section 5.5 says.
+- The mint prefix. New ids start with the mint prefix: `meta.name` when it matches `^[a-z0-9][a-z0-9-]*$`; otherwise the name cleaned up in this order: Unicode NFKD, characters outside ASCII removed, lowercase, every run of other characters than `a-z` and `0-9` turned into one `-`, and `-` trimmed from both ends; and when that leaves nothing, the word `item`. So a binder adopted as `Estate of A. Example` mints `estate-of-a-example-2026-001`.
+- The recommended form. An item id is in the recommended form when it matches `^<prefix>-\d{4}-\d{3,}$`, where `<prefix>` is the current mint prefix with every regular-expression metacharacter escaped. For example `estate-example-2026-007`: a four-digit year and a zero-padded number of at least three digits that increments within the year. It says nothing about the item's subject. The recommended document form is `<prefix>-doc-<YYYY>-<NNN>`, tested the same way. This one test decides aliases, `meta.id_scheme` and check 66. An id minted under a former name of the binder is not in the recommended form, so it is aliased where section 5.5 says.
 - Minting happens when an op is applied, never when it is proposed. A proposal names a new record with a placeholder such as `"$new:1"`, which later ops in the same proposal may reference. The applier replaces each placeholder with a real id before it writes the op lines, so applied ops never hold placeholders and two pending proposals can never claim the same number. The next number is one more than the largest `NNN` already used for that year, read with the anchored pattern `^<prefix>-(\d{4})-(\d{3,})$` (with `-doc` for documents) from the ids in `open_items[]` (or `documents[]`), the closure ids and `item` values in the processing log, and the op log. `YYYY` is the local calendar year of the op's `at`. `meta.next_item_id` and `meta.next_doc_id` are never read for this purpose: `scaffold.py` stamps them and no lifeproj code reads or increments them.
 - Bare ids such as `item-0001` are accepted; both forms are legal input today (lifeproj's test fixtures use bare ids; its manual shows prefixed ones). An implementation never rewrites an existing id.
-- At the slice boundary an id is prefixed with `<teka>-` unless it already starts with that string. The test is a plain string prefix, as lifeproj does (test `test_id_prefix_is_idempotent`). An integer id is written in decimal first, as lifeproj's `str()` does, so the id `7` in a teka named `tax-2026` publishes as `tax-2026-7`. Two ids can then project to the same slice id: in a teka named `estate-example`, the ids `estate-example-2026-007` and `2026-007` both publish as `estate-example-2026-007`, and a drain would close the wrong one. So the projected ids of a teka must be unique. `add_item`, `reopen` and minting reject an id whose projection collides with an existing one, and publishing fails, as it does on a validation error, when a collision is found. The same can happen across tekas whose names are hyphen prefixes of each other (`tax` and `tax-2026`); the survey and a doctor check flag such pairs.
-- Aliases. Where section 5.5 calls for one, an id is published as `<teka>-r-` followed by the first 12 hex digits of HMAC-SHA-256 of the id's canonical JSON text (section 4.8; so `7` and `"7"` give different aliases), keyed with 32 random bytes kept in `.sprava/slice-key` and made on first publish. Losing the key changes the aliases, which the hub sees as items replaced.
+- At the slice boundary an id is prefixed with `<binder>-` unless it already starts with that string. The test is a plain string prefix, as lifeproj does (test `test_id_prefix_is_idempotent`). An integer id is written in decimal first, as lifeproj's `str()` does, so the id `7` in a binder named `tax-2026` publishes as `tax-2026-7`. Two ids can then project to the same slice id: in a binder named `estate-example`, the ids `estate-example-2026-007` and `2026-007` both publish as `estate-example-2026-007`, and a drain would close the wrong one. So the projected ids of a binder must be unique. `add_item`, `reopen` and minting reject an id whose projection collides with an existing one, and publishing fails, as it does on a validation error, when a collision is found. The same can happen across binders whose names are hyphen prefixes of each other (`tax` and `tax-2026`); the survey and a doctor check flag such pairs.
+- Aliases. Where section 5.5 calls for one, an id is published as `<binder>-r-` followed by the first 12 hex digits of HMAC-SHA-256 of the id's canonical JSON text (section 4.8; so `7` and `"7"` give different aliases), keyed with 32 random bytes kept in `.sprava/slice-key` and made on first publish. Losing the key changes the aliases, which the hub sees as items replaced.
 - Published ids are remembered. `.sprava/cursors.json` keeps, for each item, the id it was last published under. A drain resolves a completion against that map as well as against the rules of section 8.3, and a closed item appears in the slice's `closed[]` under the id the hub last saw (section 8.2).
-- `meta.id_scheme` records which convention the teka follows: `teka-year-seq` when every item id is in the recommended form, `opaque` otherwise. New ids use the recommended form in both cases.
+- `meta.id_scheme` records which convention the binder follows: `teka-year-seq` when every item id is in the recommended form, `opaque` otherwise. New ids use the recommended form in both cases.
 
 ### 5.7 Dismiss
 
 `dismiss` sets `dismissed: true`. The item keeps its status, dates and party; it leaves every bucket, the dashboard lists and the published slice. `undismiss` removes the flag. Both are lossless and reversible. Closing an item for real is `complete` or `drop`, and ending a recurring series is `drop` (section 5.4). `dismissed` and these two ops are added by this draft; they are not yet in decisions.md.
 
-The hub's "dismiss" maps onto teka ops by this table, and nowhere else in this document:
+The hub's "dismiss" maps onto binder ops by this table, and nowhere else in this document:
 
-| The hub dismisses | Teka op |
+| The hub dismisses | Binder op |
 | ----------------- | ------- |
 | a binder item that does not recur | `dismiss`, a reversible hide, like the hub's mute today |
 | a binder item that recurs | `drop`, which ends the series, as decisions.md F3 says ("dismissing ends it") |
 | one of its own items that belongs to no binder | none; it stays in the hub |
 
-If the author prefers that a hub dismiss of a recurring item only hides it, the second row becomes `dismiss` (section 12, question 18). Today's outbox carries only `done` and `dropped` (section 8.3), so a hub dismiss reaches a teka only through a future outbox version or an app that replaces the hub.
+If the author prefers that a hub dismiss of a recurring item only hides it, the second row becomes `dismiss` (section 12, question 18). Today's outbox carries only `done` and `dropped` (section 8.3), so a hub dismiss reaches a binder only through a future outbox version or an app that replaces the hub.
 
 ### 5.8 Provenance
 
-`provenance` on an item or a document is an object with optional `events` (ids of the capture events it came from), `proposed_by` (an actor, section 6.2), `approved_by` (`"user"` in a single-user teka, or a random id the app mints for each person, never the macOS login name, a full name, a numeric user id or an email address), `op` (the op that created the record), `proposal` (the proposal it came from) and `reopened_from` (on a reopened item, the closed id). Other keys are allowed. Provenance holds references such as ids and offsets, never copied source text. The op log holds the complete history; `provenance` is the summary a view can show without reading it.
+`provenance` on an item or a document is an object with optional `events` (ids of the capture events it came from), `proposed_by` (an actor, section 6.2), `approved_by` (`"user"` in a single-user binder, or a random id the app mints for each person, never the macOS login name, a full name, a numeric user id or an email address), `op` (the op that created the record), `proposal` (the proposal it came from) and `reopened_from` (on a reopened item, the closed id). Other keys are allowed. Provenance holds references such as ids and offsets, never copied source text. The op log holds the complete history; `provenance` is the summary a view can show without reading it.
 
 ### 5.9 Contexts
 
-`contexts` holds GTD contexts (from the Getting Things Done method: the place or tool a task needs) as `@` tags: the universal ones `@anywhere`, `@online`, `@calls`, `@phone`, `@computer`, and place-bound ones such as `@errands` or `@office`. Resolution when a view asks "what can I do right here": an explicit tag on the item, else the teka's default (an open question, section 12), else `@anywhere`. Contexts are planning metadata; they never affect buckets or publication. They are added by this draft and are not yet in decisions.md.
+`contexts` holds GTD contexts (from the Getting Things Done method: the place or tool a task needs) as `@` tags: the universal ones `@anywhere`, `@online`, `@calls`, `@phone`, `@computer`, and place-bound ones such as `@errands` or `@office`. Resolution when a view asks "what can I do right here": an explicit tag on the item, else the binder's default (an open question, section 12), else `@anywhere`. Contexts are planning metadata; they never affect buckets or publication. They are added by this draft and are not yet in decisions.md.
 
 ### 5.10 Closing (decisions.md F5)
 
@@ -587,7 +586,7 @@ The transaction guard (decisions.md A2) runs before an op is written to the op l
 
 These ops set `updated_at` to the op's `at` on the item they change: `add_item` and `reopen` (with `created_at`), `update_item`, `set_status`, `dismiss`, `undismiss`, and `complete` when it advances a recurring item. No other op sets it.
 
-Ops for the hub's own vocabulary that have no teka meaning (`add_context`, which creates a global `@label`) are not teka ops. Hub annotations `contexts` and `estimate_min` map onto `update_item`; the hub's dismiss maps as the table in section 5.7 says.
+Ops for the hub's own vocabulary that have no binder meaning (`add_context`, which creates a global `@label`) are not binder ops. Hub annotations `contexts` and `estimate_min` map onto `update_item`; the hub's dismiss maps as the table in section 5.7 says.
 
 ### 6.4 Examples: two op lines and one log entry
 
@@ -691,13 +690,13 @@ Terminal agents and lifeproj edit `catalog.json` directly today, and the author 
 
 The snapshot is rewritten only after a catalog rename has succeeded (section 6.9). So `S = a` means the trailing write reached the disk, and `S = b` means it did not, or that a crash came between the rename and the snapshot update. Then the implementation:
 
-1. parses the file. If it does not parse or is not a JSON object, the teka is corrupt (section 9.6): the implementation stops writing to it and tells the user. It never repairs the file on its own. When the op log replays to a consistent state, or the snapshot is usable, it offers to restore the catalog from that state, and the user decides. This covers a catalog left empty or torn by a power loss. A duplicate key, a lone surrogate or an out-of-range integer puts the teka in needs attention instead (section 4.8).
+1. parses the file. If it does not parse or is not a JSON object, the binder is corrupt (section 9.6): the implementation stops writing to it and tells the user. It never repairs the file on its own. When the op log replays to a consistent state, or the snapshot is usable, it offers to restore the catalog from that state, and the user decides. This covers a catalog left empty or torn by a power loss. A duplicate key, a lone surrogate or an out-of-range integer puts the binder in needs attention instead (section 4.8).
 2. If `H = a`, nothing changed outside. If also `S ≠ a`, a crash came after the rename and before the snapshot update, and the implementation rewrites the snapshot from the catalog.
-3. If `H = b` and `S = b`, a write was cut short by a crash: it was logged but never renamed into place. The implementation rolls it forward. It applies those ops again, which gives the same `after_hash` because ops are pure, and finishes a logged file move as section 6.9 says. No external edit is recorded. If rolling forward is impossible, for example because a filed file is missing from both places, it appends an `abort` that names those ops, and the teka needs attention.
+3. If `H = b` and `S = b`, a write was cut short by a crash: it was logged but never renamed into place. The implementation rolls it forward. It applies those ops again, which gives the same `after_hash` because ops are pure, and finishes a logged file move as section 6.9 says. No external edit is recorded. If rolling forward is impossible, for example because a filed file is missing from both places, it appends an `abort` that names those ops, and the binder needs attention.
 4. If `H = b` and `S = a`, the write reached the disk and someone then put the catalog back as it was, for example with `git checkout` or a restore from backup. The implementation does not roll forward. It records the revert as an `external_edit` (step 5) and shows the card of step 6. When the snapshot is missing and `H = b`, the two cases cannot be told apart, and a card asks the user whether to apply the logged change again or to record that it was undone.
 5. Otherwise, someone edited the file. The expected state is the snapshot when `S = a`. When `S = b`, the trailing write never took effect: an `abort` names its ops first, and the expected state is the snapshot. When the snapshot is missing, or `S` is neither value, the expected state is the state after the last op, rebuilt by replay, and nothing is aborted. Then the implementation computes an RFC 6902 patch from the expected state to the parsed value and appends an `external_edit` op with `before_hash` equal to the expected state's hash and `after_hash` equal to `H`. It updates the snapshot. The `external_edit` writes nothing into the catalog, so the next read finds a match.
 6. checks whether the external edit undid the user's own change. When the patch puts back, on every path the last batch changed, the value that path had before that batch, another program has overwritten that change. That is what happens when a program that skips the lock reads the catalog before the implementation writes and renames its own copy over it afterwards, as today's lifeproj can (section 9.8). The app labels the edit "a change of yours was overwritten by another program" and offers a card that applies the lost ops again, as new ops by the user. The loss is never absorbed silently.
-7. validates the found catalog. Records that break their level's rules put the teka in the needs-attention state for those records only: ops that touch them are refused, other ops proceed, and the dashboard is still regenerated with a warning. A repair proposal is offered. When an edit put `status: done` into a v0 catalog, the repair is a `complete`, because lifeproj's manual tells agents to mark items done (section 9.8). A compact or week date gets a proposal that rewrites it.
+7. validates the found catalog. Records that break their level's rules put the binder in the needs-attention state for those records only: ops that touch them are refused, other ops proceed, and the dashboard is still regenerated with a warning. A repair proposal is offered. When an edit put `status: done` into a v0 catalog, the repair is a `complete`, because lifeproj's manual tells agents to mark items done (section 9.8). A compact or week date gets a proposal that rewrites it.
 
 One case stays ambiguous: a crash after the rename and before the snapshot update, followed by an outside edit before the next read. Step 5 then aborts a write that did take effect, and its effect shows up inside the `external_edit`. The catalog is right; only the attribution of that change is lost.
 
@@ -730,12 +729,12 @@ The `closed-duplicate` row repairs a state that lifeproj's manual produces. The 
   2. Write the new catalog to a temporary file, flush it with `F_FULLFSYNC`, and check that `catalog.json` has not changed since it was read (section 4.9 steps 4 and 5).
   3. Append all the lines of the change in one write: a single op, or a batch whose lines carry `batch`, `seq` and `batch_size`. Then flush the op log with `fcntl(F_FULLFSYNC)`; plain `fsync` does not reach stable storage on macOS.
   4. For a `file_document` with `from`, move the file with a rename that fails when the destination exists (on macOS, `renamex_np` with `RENAME_EXCL`). The guard has already refused a destination that exists.
-  5. Rename the temporary file over `catalog.json`, then `fsync` the teka folder.
+  5. Rename the temporary file over `catalog.json`, then `fsync` the binder folder.
   6. Update `.sprava/snapshot.json`.
 - A crash between steps 3 and 5 leaves ops in the op log that the catalog does not show yet. Section 6.7 step 3 rolls them forward on the next read and never mistakes them for an external edit. A crash between steps 5 and 6 leaves a stale snapshot, which section 6.7 step 2 rewrites. A logged `file_document` is rolled forward like this: if the source is still in `intake/` and the destination is free, move it, then write the catalog; if the source is gone and the destination holds a file with the recorded `sha256`, write the catalog only; in any other case, `abort` and needs attention.
 - A torn last line (no trailing newline), and a trailing batch with fewer lines than its `batch_size`, never took effect: the catalog is written only after the whole change is in the op log. A reader ignores them, and the next append first truncates them, after copying them to `.sprava/torn/<timestamp>.ndjson`, where `<timestamp>` is the time of the copy written without colons (section 7.2).
-- The first line is an `import_snapshot`. For a teka created by an implementation, that snapshot is the freshly scaffolded catalog.
-- The op log is private to the teka and lives inside it, so a backup of the folder carries history too.
+- The first line is an `import_snapshot`. For a binder created by an implementation, that snapshot is the freshly scaffolded catalog.
+- The op log is private to the binder and lives inside it, so a backup of the folder carries history too.
 
 ### 6.10 Undo (decisions.md A2, A5)
 
@@ -772,10 +771,10 @@ Under the lock, the implementation:
 1. builds rewritten copies of `catalog.json`, every op line (the import snapshot included), every proposal, `snapshot.json`, the Notes section of `DASHBOARD.md`, the saved copies under `.sprava/adopted/` and the torn-line copies under `.sprava/torn/`. In each, every occurrence of the text inside a free-text string becomes `[expunged]`. A saved copy is parsed, rewritten and written back, so it is no longer byte-exact; a saved dashboard is rewritten as text.
 2. re-stamps the hashes. It replays the rewritten op log from its import snapshot and sets each op's `before_hash` and `after_hash` from that replay. The whole log then verifies again, and it holds no hash of a state that contained the text. The replayed state must equal the rewritten catalog, and the transaction guard must accept that catalog; otherwise the expunge stops before anything is written.
 3. adds an `expunge` op whose two hashes equal the new head. It records how many values were replaced in each place, the ids of the rewritten op lines and an optional reason. It never records the text or a digest of it: a short secret such as a 4-digit code or an account number can be recovered from its SHA-256 in seconds by trying every candidate.
-4. writes the files, each through a temporary file and a rename, with `catalog.json` last. Before the first rename it creates an empty marker, `.sprava/expunge-pending`, and removes it after the last. While the marker exists, the implementation reads nothing else in the teka: it asks the user to enter the text again and repeats the expunge, which leaves files already rewritten as they are.
+4. writes the files, each through a temporary file and a rename, with `catalog.json` last. Before the first rename it creates an empty marker, `.sprava/expunge-pending`, and removes it after the last. While the marker exists, the implementation reads nothing else in the binder: it asks the user to enter the text again and repeats the expunge, which leaves files already rewritten as they are.
 5. clears `intake/_converted/`, which can be regenerated. It builds a new `index.sqlite` with SQLite's `secure_delete` on, then deletes the old file with its `-wal`, `-shm` and `-journal` files. It clears the slice hash in `.sprava/cursors.json` and, with the federation profile on, republishes the slice at once, or removes it at disclosure level `none`.
 
-What stays. Expunge works on the teka's own files. It cannot reach the capture folder and the clerk's interpretations, which are immutable by design (decisions.md C1, C2, C3) and which the review card's spans point into; file names and the contents of filed documents; backups made earlier (the backup keeps an archive of replaced blobs, decisions.md A6); APFS local snapshots and Time Machine; and the hub and its mirrors, such as Google Tasks. The confirmation card lists each of these. On a copy-on-write volume, rewriting a file makes the old text unreadable through that file; the old blocks can survive on the disk until they are reused. Whether expunge belongs in v0 is an open question (section 12).
+What stays. Expunge works on the binder's own files. It cannot reach the capture folder and the clerk's interpretations, which are immutable by design (decisions.md C1, C2, C3) and which the review card's spans point into; file names and the contents of filed documents; backups made earlier (the backup keeps an archive of replaced blobs, decisions.md A6); APFS local snapshots and Time Machine; and the hub and its mirrors, such as Google Tasks. The confirmation card lists each of these. On a copy-on-write volume, rewriting a file makes the old text unreadable through that file; the old blocks can survive on the disk until they are reused. Whether expunge belongs in v0 is an open question (section 12).
 
 ## 7. Derived files
 
@@ -793,7 +792,7 @@ Rules:
 - The file is regenerated whenever the catalog's hash changes and at least once per calendar day.
 - Its inputs are the catalog, `today`, the user's time zone (Recently closed depends on it, section 5.2), whether `CLAUDE.md` exists, and the Notes section. The same inputs give the same bytes.
 - Two implementations produce the same bytes apart from the header line, which names the implementation, and the marker line, whose hash covers the header line. A cross-implementation comparison ignores those two lines.
-- Redaction does not apply; the file is inside the teka.
+- Redaction does not apply; the file is inside the binder.
 - Hidden items are counted, not listed.
 - Lines never carry a time of day. The only date that is not in the catalog is `today`.
 
@@ -847,7 +846,7 @@ Every string from the catalog is escaped before it is written. Newlines and tabs
 
 ### 7.2 `.sprava/`
 
-The folder belongs to the full implementation that adopted the teka (decisions.md F1). It is created with mode 0700 and its files with mode 0600, and the survey reports wider modes, because the op log holds history and `slice-key` ties aliases back to raw ids. Its contents:
+The folder belongs to the full implementation that adopted the binder (decisions.md F1). It is created with mode 0700 and its files with mode 0600, and the survey reports wider modes, because the op log holds history and `slice-key` ties aliases back to raw ids. Its contents:
 
 | File | What it holds | Rebuildable? |
 | ---- | ------------- | ------------ |
@@ -858,39 +857,39 @@ The folder belongs to the full implementation that adopted the teka (decisions.m
 | `slice-key` | The key for aliases (section 5.6). | No. Losing it changes the aliases. |
 | `snapshot.json` | The catalog as of the last catalog write that succeeded, used to tell a crash from a hand edit and to compute external-edit patches (section 6.7). | Yes, by replay (section 6.6). |
 | `cursors.json` | Cursors: the last op id and hash; the capture events consumed per capture folder (decisions.md C2), keyed by the folder's path written as `~/...`; the last published slice's hash, `generated` stamp, each recurring item's published `due`, and the id each item was last published under (section 5.6); the last drain. | Yes: from the op log, the proposals' provenance, the slice key, `meta.former_names` and the spool. |
-| `index.sqlite` | The per-teka full-text index (decisions.md A3), covering only what section 3.4 allows. | Yes, from the catalog and the documents. |
+| `index.sqlite` | The per-binder full-text index (decisions.md A3), covering only what section 3.4 allows. | Yes, from the catalog and the documents. |
 | `expunge-pending` | An empty marker that exists only while an expunge is being written (section 6.11). | Not applicable. |
 
 Any other file an implementation keeps there must be rebuildable, and a second implementation must ignore files it does not know.
 
-Files under `.sprava/` are untrusted when read. Any program that can write the teka can plant one there: a terminal agent misled by a filed email (section 3.4), a restored backup, or a teka received from someone else. So:
+Files under `.sprava/` are untrusted when read. Any program that can write the binder can plant one there: a terminal agent misled by a filed email (section 3.4), a restored backup, or a binder received from someone else. So:
 
 - every file is validated against its schema when it is read;
-- the implementation keeps, outside the teka, a list of the proposal ids it created. A proposal file not on that list is shown as "found in the folder, origin unknown", never as the clerk's or a brain's work, and is never applied without the user editing or confirming each op;
+- the implementation keeps, outside the binder, a list of the proposal ids it created. A proposal file not on that list is shown as "found in the folder, origin unknown", never as the clerk's or a brain's work, and is never applied without the user editing or confirming each op;
 - `index.sqlite` is opened only when this installation created it, and always with SQLite's defensive settings (`SQLITE_DBCONFIG_DEFENSIVE` on, `trusted_schema` off). Otherwise it is rebuilt;
-- a `slice-key` that this installation did not make is reported before it is used, since it would change the published aliases. Paths stored under `.sprava/`, or in the survey, are relative to the teka or start with `~/`; they never contain a user name. The runtime's single-instance lease and heartbeat are not kept inside a teka (decisions.md A1).
+- a `slice-key` that this installation did not make is reported before it is used, since it would change the published aliases. Paths stored under `.sprava/`, or in the survey, are relative to the binder or start with `~/`; they never contain a user name. The runtime's single-instance lease and heartbeat are not kept inside a binder (decisions.md A1).
 
 ## 8. The federation profile (optional)
 
-An implementation that publishes slices and drains completions follows this profile, because the existing hub reads them today and must keep working while tekas move over one at a time (decisions.md A8). The hub never reads inside a teka; a teka never reads the hub's files. Both read the spool.
+An implementation that publishes slices and drains completions follows this profile, because the existing hub reads them today and must keep working while binders move over one at a time (decisions.md A8). The hub never reads inside a binder; a binder never reads the hub's files. Both read the spool.
 
 ### 8.1 The spool
 
 - Root: `$OSAVUL_SPOOL` when set; else `$XDG_DATA_HOME/osavul` when `XDG_DATA_HOME` is set; else `~/.local/share/osavul` (`osavul.py`, `spool_root`).
-- Layout: `inbox/<teka>.agenda.json` (the teka writes, the hub reads), `outbox/<teka>.intake.json` (the hub writes, the teka drains), `state/` (the hub's own; never touched by a teka).
+- Layout: `inbox/<binder>.agenda.json` (the binder writes, the hub reads), `outbox/<binder>.intake.json` (the hub writes, the binder drains), `state/` (the hub's own; never touched by a binder).
 - The user turns the spool on by creating its root folder. A publisher never creates the root. When the root is absent, publishing is a quiet no-op: a one-line hint, success, nothing written (test `test_publish_noop_when_spool_absent`). The publisher creates `inbox/` under an existing root.
 - Ownership. The root, `inbox/` and `outbox/` must belong to the user and must not be writable by group or others. A publisher creates folders with mode 0700 and files with mode 0600, and refuses an `inbox/` or `outbox/` that is a symlink. `$OSAVUL_SPOOL` can point anywhere; an implementation warns when the root lies inside a folder that a sync service uploads, such as iCloud Drive, because slices would then leave the Mac (decisions.md A7).
 - Registration is the slice file appearing. There is no registry call.
-- A teka at disclosure level `none`, or one that never publishes, is invisible to the hub by design, never an error.
-- One publisher and one drainer per teka. A teka whose `meta.format` is `teka` is published and drained only by an implementation of this profile that reads `meta.disclosure`, `dismissed` and `recurrence` and takes the lock of section 4.9. Today's lifeproj does none of this. It projects every item at full disclosure, dismissed ones included, with real ids in place of aliases; it closes a recurring item for good, with a closure entry that has no `final`; and its fleet drain republishes every teka it drained (`osavul.py`, `project_slice`, `_drain_teka`, `drain_all`).
-- lifeproj can reach a teka without its registry. The manual lifeproj stamps into each teka tells terminal agents to run `lifeproj drain` first and `lifeproj publish` last in every digest (`templates.py`, `CLAUDE_HEADER` and `CLAUDE_OSAVUL`), and both commands work on the current folder whether or not it is registered (`osavul.py`, `publish` and `drain`). So a teka counts as reachable by lifeproj when it is in lifeproj's registry, holds lifeproj's `catalog_check.py`, or has a `CLAUDE.md` or `AGENTS.md` that mentions `lifeproj publish` or `lifeproj drain`. Until the change of section 9.8 ships and the user confirms that the lifeproj they use has it, an adopted teka that lifeproj can reach keeps disclosure level `full`: the app offers no other level, refuses `dismiss` and `recurrence` on it, and says why. The manual addendum of section 9.8 is a precondition for anything stricter, because an agent following the old manual would undo it.
-- A publish by someone else is noticed. Before it publishes, and when it drains, an implementation compares the slice on the spool with the hash of the slice it last wrote (`.sprava/cursors.json`). When they differ, another program published the teka: the implementation republishes at once, or removes the slice at disclosure level `none`, and tells the user which teka was affected.
+- A binder at disclosure level `none`, or one that never publishes, is invisible to the hub by design, never an error.
+- One publisher and one drainer per binder. A binder whose `meta.format` is `teka` is published and drained only by an implementation of this profile that reads `meta.disclosure`, `dismissed` and `recurrence` and takes the lock of section 4.9. Today's lifeproj does none of this. It projects every item at full disclosure, dismissed ones included, with real ids in place of aliases; it closes a recurring item for good, with a closure entry that has no `final`; and its fleet drain republishes every binder it drained (`osavul.py`, `project_slice`, `_drain_teka`, `drain_all`).
+- lifeproj can reach a binder without its registry. The manual lifeproj stamps into each binder tells terminal agents to run `lifeproj drain` first and `lifeproj publish` last in every digest (`templates.py`, `CLAUDE_HEADER` and `CLAUDE_OSAVUL`), and both commands work on the current folder whether or not it is registered (`osavul.py`, `publish` and `drain`). So a binder counts as reachable by lifeproj when it is in lifeproj's registry, holds lifeproj's `catalog_check.py`, or has a `CLAUDE.md` or `AGENTS.md` that mentions `lifeproj publish` or `lifeproj drain`. Until the change of section 9.8 ships and the user confirms that the lifeproj they use has it, an adopted binder that lifeproj can reach keeps disclosure level `full`: the app offers no other level, refuses `dismiss` and `recurrence` on it, and says why. The manual addendum of section 9.8 is a precondition for anything stricter, because an agent following the old manual would undo it.
+- A publish by someone else is noticed. Before it publishes, and when it drains, an implementation compares the slice on the spool with the hash of the slice it last wrote (`.sprava/cursors.json`). When they differ, another program published the binder: the implementation republishes at once, or removes the slice at disclosure level `none`, and tells the user which binder was affected.
 
 ### 8.2 Agenda slice v1
 
 The slice is lifeproj's frozen contract plus additive fields (decisions.md F8 names four; this draft adds a fifth, `disclosure`). The file is JSON with two-space indentation and a trailing newline, written to a temporary file in `inbox/` created exclusively under a random name that starts with `.` and ends with `.tmp` (section 3.6), then renamed into place. A hub never reads a name that starts with `.`. lifeproj writes `json.dumps(obj, indent=2)` to a fixed temporary name (`osavul.py`, `publish`); that byte form is informative, and a reader accepts any valid JSON.
 
-Top level, in this order: `teka` (`meta.name`, else the folder basename), `lifecycle` (`meta.lifecycle`, null when absent, not validated), `active_chapter`, `active_chapters`, `generated`, `items`, then the v1 additions `format_version` (`"1"`), `disclosure` (the teka's level) and `closed`.
+Top level, in this order: `teka` (`meta.name`, else the folder basename), `lifecycle` (`meta.lifecycle`, null when absent, not validated), `active_chapter`, `active_chapters`, `generated`, `items`, then the v1 additions `format_version` (`"1"`), `disclosure` (the binder's level) and `closed`.
 
 - `active_chapters`: `meta.active_chapters`, falling back to `meta.current_chapters` when the former is absent; a bare string becomes a one-element list; empty strings are dropped; default `[]`. `active_chapter`: `meta.active_chapter` as is; when it is null and exactly one chapter is active, that chapter; else null (test `test_active_chapters_projection`). At disclosure levels `title` and `kind` both are masked (section 5.5).
 - `generated`: a timestamp, `YYYY-MM-DDTHH:MM:SSZ`. The hub derives staleness from it; a reader also tolerates an offset form.
@@ -909,7 +908,7 @@ The outbox file is `outbox/<meta.name>.intake.json`. lifeproj's drain semantics 
 
 - Read only `completions` (default `[]`). `items[]` is preserved untouched. `teka` and `generated` are ignored. The v1 `format_version` is ignored too.
 - A completion has `id` (required), `action` (`done` or `dropped`; anything else is skipped), optional `at` (copied into `closed_at`) and optional `source` (default `osavul`). Outbox v1 adds an optional `due`: the due date the hub showed when the item was checked off. A hub that does not know the field leaves it out.
-- Matching: the id is resolved against, in this order, the raw catalog id; `<teka>-<raw id>`, an integer id written in decimal; the alias of any open item, whether or not it is redacted now; and the id each item was last published under (section 5.6). The first match wins (test `test_drain_resolves_prefixed_slice_id`).
+- Matching: the id is resolved against, in this order, the raw catalog id; `<binder>-<raw id>`, an integer id written in decimal; the alias of any open item, whether or not it is redacted now; and the id each item was last published under (section 5.6). The first match wins (test `test_drain_resolves_prefixed_slice_id`).
 - Per completion: skip when the id is missing, the action is unknown, the id is unknown, or the item is already gone; otherwise close it.
 - The catalog is written first, under the lock and atomically, and only when something was applied. Then the outbox is acknowledged by removing the applied completions. Unknown completions linger forever (tests `test_drain_applies_done_and_dropped`, `test_drain_idempotent_and_preserves_items`).
 - Re-running is a no-op. A drain never republishes by itself; a digest, or an implementation's next publish, does.
@@ -917,7 +916,7 @@ The outbox file is `outbox/<meta.name>.intake.json`. lifeproj's drain semantics 
 
 After a rename. With the federation profile on, applying `rename_teka` removes `inbox/<former name>.agenda.json` and publishes under the new name at once. Every published id changes with the name: prefixed ids carry the new name, and ids minted under the former name are aliased where section 5.5 says. The hub therefore sees every item replaced by a new one, and the rename card says so before the user applies it. Until each former name's `until` date, the drain also reads `outbox/<former name>.intake.json`, and there it also resolves `<former name>-<raw id>` and aliases made with the former name.
 
-Acknowledging without losing the hub's writes. The hub writes the outbox without the teka's lock, which covers only files inside the teka (section 4.9). lifeproj's drain rewrites the outbox from the copy it read before applying anything, so a completion the hub adds in between is erased everywhere, and its item stays open. An implementation of this profile acknowledges like this instead:
+Acknowledging without losing the hub's writes. The hub writes the outbox without the binder's lock, which covers only files inside the binder (section 4.9). lifeproj's drain rewrites the outbox from the copy it read before applying anything, so a completion the hub adds in between is erased everywhere, and its item stays open. An implementation of this profile acknowledges like this instead:
 
 1. Just before acknowledging, read the outbox again and hash its bytes.
 2. From that fresh copy, remove only the completions that were applied, matched by `id` and `at`; one with the same id and a different `at` is new and stays. Also remove a completion that an earlier drain applied but could not acknowledge because it crashed: its item is already closed by a drained closure entry with the same id and a `closed_at` equal to its `at`.
@@ -928,7 +927,7 @@ This shrinks the window to the moment between the last read and the rename. It c
 
 In a full implementation:
 
-- Each completion is checked on its own. Before ops are built, a `source` that is absent or not a string becomes `osavul`, and an `at` that is not a string becomes null, with the original value kept in the op's `note`. A completion that still cannot form an op the transaction guard accepts is skipped, left in the outbox, and reported with the teka's name and the published id, never the title. One bad completion never blocks the others.
+- Each completion is checked on its own. Before ops are built, a `source` that is absent or not a string becomes `osavul`, and an `at` that is not a string becomes null, with the original value kept in the op's `note`. A completion that still cannot form an op the transaction guard accepts is skipped, left in the outbox, and reported with the binder's name and the published id, never the title. One bad completion never blocks the others.
 - Each accepted completion is one op with actor `{kind: "external", client: <the implementation's program/version>, origin: "spool-outbox"}`, and the completions applied by one drain form one batch.
 - The op is `complete` for `done` and `drop` for `dropped`. `args.closed_at` is the completion's `at` as normalized above, which may be null. `args.source` is its `source` as normalized above.
 - The closure entry also carries `at` (the drain time), `op_id`, `kind` and `final`, and its `via` names the implementation instead of `lifeproj drain`.
@@ -946,13 +945,13 @@ These are the deliberate departures from lifeproj's drain, and the only ones. On
 A slice reader `[H]` (section 1.6), such as the hub or a cross-binder view in an implementation:
 
 - ignores unknown top-level keys and unknown item keys; a slice without `format_version` is a lifeproj slice;
-- treats an absent slice as an invisible teka, never an error;
+- treats an absent slice as an invisible binder, never an error;
 - flags a malformed or missing slice by file name only, never by title, and logs parse errors without content (the hub does this today);
 - derives staleness from `generated` and flags a slice older than 7 days (`brief.py`, `STALE_DAYS`);
 - drops anything a slice's `disclosure` would hide, for example a real title in a slice at `kind`;
 - writes completions idempotently by id, never a duplicate, and adds `due` to a completion when the slice item had one (section 8.3);
 - never reads a file in `inbox/` whose name starts with `.`, since that is a publisher's temporary file;
-- never writes anything into a teka.
+- never writes anything into a binder.
 
 The existing hub's behaviour on unknown keys has not been verified from its code (its documents are private); it is an open question (section 12).
 
@@ -960,17 +959,17 @@ The existing hub's behaviour on unknown keys has not been verified from its code
 
 The hub has a provisional lane for readable documents. It is a product feature, not part of this format (decisions.md F8). For orientation only: `briefs/<binder>/manifest.json` holds `{teka, generated, briefs[]}` where each brief has `id`, `file` (one path segment ending in `.md`), `title`, `summary`, `kind`, `event_date`, `doc_date`, `tags`, `bytes`, `updated`, `status` (`published` or `pending`) and `pin_current`; the documents live in `briefs/<binder>/docs/<file>.md`; current versus archive is recomputed on every read; the lane is read-only; containment rules apply (an allowlist, one path segment, no symlinks, a 404 for every refusal). In Sprava, documents readable in the app replace it.
 
-## 9. Adopting an existing teka
+## 9. Adopting an existing binder
 
 ### 9.1 The rule
 
-A full implementation adopts a teka in place (decisions.md F1). It never copies a teka into a store and converts no file. It owns only `.sprava/`, `catalog.json` (through ops) and `DASHBOARD.md` (after the switch of section 7.1). Section 9.7 says exactly what it may write; everything else is left as found.
+A full implementation adopts a binder in place (decisions.md F1). It never copies a binder into a store and converts no file. It owns only `.sprava/`, `catalog.json` (through ops) and `DASHBOARD.md` (after the switch of section 7.1). Section 9.7 says exactly what it may write; everything else is left as found.
 
 ### 9.2 The survey
 
 Adoption begins with a read-only survey whose results are recorded in the `import_snapshot` op. The results hold counts, kinds of problems and record ids, never personal values.
 
-1. Parse `catalog.json` and classify the teka's state (section 9.6). Corrupt: stop.
+1. Parse `catalog.json` and classify the binder's state (section 9.6). Corrupt: stop.
 2. Read the catalog level (section 9.6).
 3. Classify `catalog_check.py` by the SHA-256 of its bytes, without running it. This is the checker version:
 
@@ -980,7 +979,7 @@ Adoption begins with a read-only survey whose results are recorded in the `impor
    | gen2, strict without the `redact` and `slice_title` type checks | `c3658fc` (2026-06-30) | `dc19265c394fb10637238ccb4b20a68970606413741b85333c7d1471a9056cdd` |
    | gen3, current | `cf6ddd6` (2026-06-30) and HEAD | `b13dcf01647a88e16edf24b1cab2205054709753025b26e546e62069851c916d` |
 
-   Any other hash is "modified or unknown"; per-teka variation of the checker is legitimate in lifeproj, and the implementation validates with its own rules whatever the copy says.
+   Any other hash is "modified or unknown"; per-binder variation of the checker is legitimate in lifeproj, and the implementation validates with its own rules whatever the copy says.
 4. Count items by status. Note `done` items inside `open_items[]`, waiting or blocked items without `follow_up_at`, items that fail lifeproj's v2 rules, and open items whose id already closes a processing log entry (section 6.8). Note, by kind of difference, items that pass lifeproj but break a v0 rule: an empty or null `due`, a compact or week date, a null `waiting_on` or `link`, non-string tags, a redacted item without `kind`, ids that are neither strings nor integers, and ids that hold whitespace, non-ASCII, format or control characters, or that are not in the recommended form and contain a run of four or more letters (section 5.6).
 5. Classify ids: all in the recommended form (`teka-year-seq`) or not (`opaque`). Note ids whose slice projections collide (section 5.6).
 6. Note non-ASCII escaping (`\uXXXX`) so the first rewrite's byte change is expected.
@@ -988,19 +987,19 @@ Adoption begins with a read-only survey whose results are recorded in the `impor
 8. Note `documents[]` records lacking `id`, `title` or `path`, and `entities[]` rows lacking `status`. Legacy processing log entries are accepted as they are.
 9. Note which module folders exist, to propose `meta.modules`, and every found value under a v0 field name that the v0 types reject, by field name only. The names that can collide are `kind`, `date`, `source`, `sha256`, `path`, `title`, `created`, `lifecycle`, `provenance`, `contexts`, `derived`, `follow_up_at`, `expected_by`, `recurrence`, `disclosure` and `id_scheme` (section 9.5).
 10. `DASHBOARD.md`: its SHA-256, whether this format's renderer wrote it (the marker line), and the path of its saved copy (section 7.1).
-11. `meta.name`: whether it is present, equals the basename (section 3.1), has the recommended shape, and is unique after case folding among the tekas the implementation knows, their unexpired former names included. Also whether lifeproj can still reach the teka, by the test of section 8.1: listed in lifeproj's registry, holding `catalog_check.py`, or with a manual that runs `lifeproj publish` or `lifeproj drain`.
+11. `meta.name`: whether it is present, equals the basename (section 3.1), has the recommended shape, and is unique after case folding among the binders the implementation knows, their unexpired former names included. Also whether lifeproj can still reach the binder, by the test of section 8.1: listed in lifeproj's registry, holding `catalog_check.py`, or with a manual that runs `lifeproj publish` or `lifeproj drain`.
 12. Files that may send data off the Mac or hold secrets, without running them or reading their values: whether `.claude/settings.json` declares hooks (lifeproj stamps routing hooks that send prompt text to an outside service), reported as "may send data off this Mac"; `scripts/mail/.env` and other `.env` or key files (section 3.4), reported as "holds credentials"; and `intake/mail/.env` or `intake/mail/state.json`, reported as "old email-intake layout: credentials and sync state inside the intake", with a pointer to lifeproj's relocation of them to `scripts/mail/` (section 3.3).
-13. Symlinks in the teka that resolve outside it (section 3.6), and modes on `.sprava/` wider than 0700 for the folder and 0600 for its files (section 7.2).
-14. Whether the teka's resolved path lies in a place a sync service uploads: iCloud Drive (`~/Library/Mobile Documents/`), `~/Desktop` or `~/Documents` while iCloud's Desktop and Documents option is on, any File Provider folder under `~/Library/CloudStorage/`, or any path whose ubiquitous-item resource values say it is synced. It is reported as "this folder is uploaded by a sync service", because the catalog, the op log with its verbatim import snapshot, the proposals and `slice-key` would then leave the Mac (decisions.md A7). The app warns, and lists the teka in its inventory of what leaves the Mac.
+13. Symlinks in the binder that resolve outside it (section 3.6), and modes on `.sprava/` wider than 0700 for the folder and 0600 for its files (section 7.2).
+14. Whether the binder's resolved path lies in a place a sync service uploads: iCloud Drive (`~/Library/Mobile Documents/`), `~/Desktop` or `~/Documents` while iCloud's Desktop and Documents option is on, any File Provider folder under `~/Library/CloudStorage/`, or any path whose ubiquitous-item resource values say it is synced. It is reported as "this folder is uploaded by a sync service", because the catalog, the op log with its verbatim import snapshot, the proposals and `slice-key` would then leave the Mac (decisions.md A7). The app warns, and lists the binder in its inventory of what leaves the Mac.
 
 ### 9.3 What the catalog levels mean
 
-A lifeproj v1 teka passes its own checker with loose items, yet lifeproj's `publish` refuses it, because `publish` validates strictly regardless of `schema_version` (`osavul.py`, `publish`). No lifeproj command migrates a catalog. An implementation of this format therefore validates every catalog against the rules of its catalog level and treats strict failures on a v1 catalog as "needs migration", never as corruption.
+A lifeproj v1 binder passes its own checker with loose items, yet lifeproj's `publish` refuses it, because `publish` validates strictly regardless of `schema_version` (`osavul.py`, `publish`). No lifeproj command migrates a catalog. An implementation of this format therefore validates every catalog against the rules of its catalog level and treats strict failures on a v1 catalog as "needs migration", never as corruption.
 
 ### 9.4 What adoption does, in order
 
 1. Takes the lock, copies `catalog.json` and `DASHBOARD.md` (when present) byte for byte to `.sprava/adopted/`, and appends `import_snapshot` with the parsed catalog and the survey. Nothing else in the folder changes. The byte copy matters because the first rewrite changes the catalog's bytes (escaping and hand layout) without changing its content.
-2. Renders the dashboard. It writes `DASHBOARD.md` only when the file is absent or carries the marker line; otherwise it offers the switch card of section 7.1. For a v1 catalog it renders what it can (section 5.2) and marks the teka "needs migration".
+2. Renders the dashboard. It writes `DASHBOARD.md` only when the file is absent or carries the marker line; otherwise it offers the switch card of section 7.1. For a v1 catalog it renders what it can (section 5.2) and marks the binder "needs migration".
 3. Applies mechanical, lossless changes without a proposal, each as an op with actor `import`, and shows them together on one card the user can undo:
    - deriving `follow_up_at` for waiting and blocked items (section 5.3), with `derived: ["follow_up_at"]`;
    - removing keys whose value is `null` (`due`, `waiting_on`, `link`), since null means absent;
@@ -1013,12 +1012,12 @@ A lifeproj v1 teka passes its own checker with loose items, yet lifeproj's `publ
    - for a pre-lifeproj catalog (section 9.6), a `migrate` that adds `meta` with `schema_version: 1`, or adds `schema_version: 1` to an existing `meta`, keeping a found value below 1 under `legacy_schema_version` first; and for a core key that holds something other than an array, a `migrate` that copies the value to `legacy_<key>` and replaces the key with an array. For an object keyed by id, the array holds its values in order, each given its key as `id` when it has none;
    - `set_meta` for `modules`, `id_scheme` and any `meta` field the v0 types reject, keeping the old value first as section 9.5 says.
    It also offers the user a `rename_teka` when the name and the basename differ (section 3.1). That is a direct action, applied by the user, never part of a proposal (section 6.5).
-5. Asks the user for `disclosure`, proposing `full` when the teka has published slices before and `none` when it has not. While lifeproj can still reach the teka, only `full` is offered (section 8.1).
-6. When the catalog, once stamped, would satisfy the whole v0 schema and the conformance checks, proposes a `migrate` that stamps `schema_version: 2` (replacing any value that is not the integer 2), `name` (the folder basename, when absent), `format: "teka"`, `format_version: "0"`, `disclosure`, and empty `documents`, `open_items` and `processing_log` arrays when they are missing. Once the user approves it, the teka is a v0 teka. Until then it is adopted and "needs migration": readable, with history recorded, and accepting ops that add no new violation (section 6.3).
+5. Asks the user for `disclosure`, proposing `full` when the binder has published slices before and `none` when it has not. While lifeproj can still reach the binder, only `full` is offered (section 8.1).
+6. When the catalog, once stamped, would satisfy the whole v0 schema and the conformance checks, proposes a `migrate` that stamps `schema_version: 2` (replacing any value that is not the integer 2), `name` (the folder basename, when absent), `format: "teka"`, `format_version: "0"`, `disclosure`, and empty `documents`, `open_items` and `processing_log` arrays when they are missing. Once the user approves it, the binder is a v0 binder. Until then it is adopted and "needs migration": readable, with history recorded, and accepting ops that add no new violation (section 6.3).
 
 Prefixed and bare ids are both kept as they are. A `status: done` item is never deleted; it becomes a closure with its title and fields preserved. Non-ASCII text is written unescaped on the first rewrite; the content is identical.
 
-Leaving. To hand a teka back to lifeproj alone, the user can restore `.sprava/adopted/catalog.json`, which loses the changes made since adoption (they stay in the op log), or remove `meta.format` and `meta.format_version` by hand. No op removes the stamp, because `migrate` never removes a key. A lifeproj with change 2 of section 9.8 publishes and drains the teka again once `meta.format` is gone. A full implementation that still watches the folder records the edit as an external edit. Section 12 asks whether v0 needs a release op.
+Leaving. To hand a binder back to lifeproj alone, the user can restore `.sprava/adopted/catalog.json`, which loses the changes made since adoption (they stay in the op log), or remove `meta.format` and `meta.format_version` by hand. No op removes the stamp, because `migrate` never removes a key. A lifeproj with change 2 of section 9.8 publishes and drains the binder again once `meta.format` is gone. A full implementation that still watches the folder records the edit as an external edit. Section 12 asks whether v0 needs a release op.
 
 ### 9.5 Legacy keys
 
@@ -1028,11 +1027,11 @@ A `migrate` op may add v0 keys beside legacy ones (for example `path` next to a 
 
 Some legacy values break a v0 rule and cannot be rewritten without loss: an id with whitespace, a hand-written log entry, a foreign absolute path. They are accepted as found. The v0 record rules apply to records a v0 implementation creates or changes; the catalog schema enforces on found records only what can be repaired by adding or replacing values (section 10).
 
-### 9.6 Teka states
+### 9.6 Binder states
 
 Each state is defined here once; other sections cite it.
 
-- **Not a teka**: the folder has no `catalog.json`. It is skipped, never reported as an error, as lifeproj does.
+- **Not a binder**: the folder has no `catalog.json`. It is skipped, never reported as an error, as lifeproj does.
 - **Corrupt**: `catalog.json` is not UTF-8, does not parse as JSON, or is not a JSON object. The implementation reads nothing further, writes nothing, and tells the user. When the op log or the snapshot holds a consistent state, it offers to restore the catalog from it (section 6.7 step 1); otherwise recovery is a hand fix or a restore from backup.
 - **Unknown level**: the level table below says so. The implementation may display the catalog and writes nothing (section 1.4).
 - **Needs migration**: a catalog at a known level that is not yet stamped v0, or whose records fail its level's rules (duplicate ids or non-object entries in `open_items[]`, `documents[]` or `processing_log[]` included). A pre-lifeproj catalog is in this state too: an object without a `meta` object, without `meta.schema_version`, with `schema_version` an integer below 1, or with a core key that holds something other than an array. It is adopted and readable, and accepts ops that add no new violation; adoption proposes the migration (section 9.4 step 4).
@@ -1049,13 +1048,13 @@ The level table. The level is read on every read of the catalog, from the values
 | absent | missing, or an integer below 1 | any | pre-lifeproj: needs migration |
 | absent | a digit string such as `"2"`, or a number with a fraction such as `2.0` | any | lifeproj v1, because lifeproj's checker treats every value that is not an integer as legacy |
 | absent | null, a boolean, an object, an array, or a string that is not digits | any | unknown level |
-| exactly `"teka"` | the integer `2` | exactly `"0"` | teka v0 |
-| exactly `"teka"` | anything else | exactly `"0"` | teka v0, needs attention: a repair proposal replaces the value with `2` |
+| exactly `"teka"` | the integer `2` | exactly `"0"` | binder v0 |
+| exactly `"teka"` | anything else | exactly `"0"` | binder v0, needs attention: a repair proposal replaces the value with `2` |
 | exactly `"teka"` | any | a string of digits other than `"0"` | unknown level, written by a newer version |
 | exactly `"teka"` | any | missing, or not a string of digits | needs attention: a broken stamp, shown read-only until the user approves a repair |
 | any other value, `"Teka"` included | any | any | unknown level |
 
-When more than one state applies, the most restrictive one decides what may be written, in this order: not a teka, corrupt, unknown level, needs attention, needs migration, ready. The app shows every state that applies.
+When more than one state applies, the most restrictive one decides what may be written, in this order: not a binder, corrupt, unknown level, needs attention, needs migration, ready. The app shows every state that applies.
 
 JSON Schema cannot tell `2.0` from `2`, so a catalog with `schema_version: 2.0` and loose items fails `catalog.schema.json` although the table reads it as lifeproj v1. The table wins; check 84 tests these cases. Treating `2.0` as legacy matches lifeproj's checker.
 
@@ -1074,23 +1073,23 @@ May write:
 - `intake/_converted/`, which may also be cleared;
 - new files created by `file_document`: files moved out of `intake/` into any document folder, `correspondence/` included. A new file never replaces an existing one. `.env` and `state.json` under `intake/mail/` are never moved (section 3.3).
 
-Must never write, move or delete: `CLAUDE.md`, `AGENTS.md` and any other agent manual (section 4.3), `README.md`, `.claude/`, `.agents/`, `catalog_check.py`, `scripts/`, `.git/`, `ledger/`, `timeline.md` and `chapters/` (decisions.md F7), the `entities/` and `sources/` folders, any existing file in a document folder, and any file it does not recognise. Reading those folders, and recording a path under `chapters/` or `entities/` with `update_document`, is allowed. lifeproj's chapters and entities modules tell agents to keep each chapter's or entity's documents in its subfolder (`modules.py`), so section 12 asks whether filing new files there should be allowed. It never executes anything found in the teka (decisions.md F9, section 3.4). It never rewrites ids, legacy keys, escaped text's meaning, or foreign absolute paths.
+Must never write, move or delete: `CLAUDE.md`, `AGENTS.md` and any other agent manual (section 4.3), `README.md`, `.claude/`, `.agents/`, `catalog_check.py`, `scripts/`, `.git/`, `ledger/`, `timeline.md` and `chapters/` (decisions.md F7), the `entities/` and `sources/` folders, any existing file in a document folder, and any file it does not recognise. Reading those folders, and recording a path under `chapters/` or `entities/` with `update_document`, is allowed. lifeproj's chapters and entities modules tell agents to keep each chapter's or entity's documents in its subfolder (`modules.py`), so section 12 asks whether filing new files there should be allowed. It never executes anything found in the binder (decisions.md F9, section 3.4). It never rewrites ids, legacy keys, escaped text's meaning, or foreign absolute paths.
 
 Three of these permissions go beyond decisions.md F1, which says everything outside `.sprava/`, `catalog.json` and `DASHBOARD.md` is left alone: filing moves files out of `intake/` into document folders, `intake/_converted/` is written, and `.teka.lock` is created. Section 12 proposes amending F1.
 
 ### 9.8 What lifeproj must change to coexist
 
-lifeproj is a catalog writer (section 1.6). To share a teka safely with a full implementation it needs these changes. Until they ship, the restrictions of section 8.1 apply.
+lifeproj is a catalog writer (section 1.6). To share a binder safely with a full implementation it needs these changes. Until they ship, the restrictions of section 8.1 apply.
 
 1. Take the lock and compare before the rename (section 4.9) in every command that writes `catalog.json`, `drain` first, and keep the lock until the outbox is acknowledged. Create temporary files exclusively under random names. Until it does, a lifeproj write can overwrite an approved change; section 6.7 step 6 makes that visible.
-2. Refuse `publish` and `drain` on a catalog whose `meta.format` is `teka`, unless lifeproj implements the federation profile in full: `meta.disclosure` and masked chapters (section 5.5), `dismissed` (section 5.7), recurring items advanced and never closed (section 5.4), aliases and collision checks (section 5.6), and `closed[]` (section 8.2). This must hold for `publish` and `drain` run inside a teka folder, not only for fleet commands, because terminal agents run them there in every digest.
-3. Leave a teka out of `drain --all` and its republish when another implementation drains it (section 8.1).
+2. Refuse `publish` and `drain` on a catalog whose `meta.format` is `teka`, unless lifeproj implements the federation profile in full: `meta.disclosure` and masked chapters (section 5.5), `dismissed` (section 5.7), recurring items advanced and never closed (section 5.4), aliases and collision checks (section 5.6), and `closed[]` (section 8.2). This must hold for `publish` and `drain` run inside a binder folder, not only for fleet commands, because terminal agents run them there in every digest.
+3. Leave a binder out of `drain --all` and its republish when another implementation drains it (section 8.1).
 4. Optionally, write v0 record shapes when it edits a v0 catalog: no `status: done`, and closure entries with `final`. Edits that do not are still absorbed as external edits and repaired by proposal. Doing this is what claiming `[W]` for v0 means (section 1.6).
 
-The teka's own manual (`CLAUDE.md`, stamped by lifeproj from `templates.py`) conflicts with a v0 teka in three ways. It tells agents to mark items `done` and drop them once shown. It tells them to run `lifeproj drain` and `lifeproj publish` in each digest. And it tells them to regenerate `DASHBOARD.md` and keep facts there, such as a ledger's balance or a chapter's key facts, which a rendered dashboard would overwrite outside its Notes section. An implementation never edits the manual. The app offers the user a short addendum to paste in, and lifeproj could stamp it for v0 tekas. The addendum says, in substance:
+The binder's own manual (`CLAUDE.md`, stamped by lifeproj from `templates.py`) conflicts with a v0 binder in three ways. It tells agents to mark items `done` and drop them once shown. It tells them to run `lifeproj drain` and `lifeproj publish` in each digest. And it tells them to regenerate `DASHBOARD.md` and keep facts there, such as a ledger's balance or a chapter's key facts, which a rendered dashboard would overwrite outside its Notes section. An implementation never edits the manual. The app offers the user a short addendum to paste in, and lifeproj could stamp it for v0 binders. The addendum says, in substance:
 
 - close items with the app, or by moving the item out of `open_items[]` and into a closure entry in `processing_log[]` in one edit; never set `status` to `done`, and never log a closure for an item that stays open;
-- do not run `lifeproj publish` or `lifeproj drain` in this teka; the app does both;
+- do not run `lifeproj publish` or `lifeproj drain` in this binder; the app does both;
 - edit `DASHBOARD.md` only below the line `## Notes`, and do not regenerate it.
 
 ## 10. JSON Schemas
@@ -1099,7 +1098,7 @@ All schemas use JSON Schema 2020-12. Each is self-contained (no cross-file refer
 
 Validation means structure. Rules a schema cannot express are conformance checks instead (section 11): unique ids within an array, compared by JSON type and value; an open item's id not in the processing log; `meta.name` equal to the folder basename; unique slice projections; the path rules after NFC, full Unicode case folding and symlinks, and Cf characters outside the Basic Multilingual Plane; real calendar dates in lifeproj's loose forms; the level table of section 9.6, `2.0` included; a field named in both `set` and `unset`; `end` not less than `start` in a span; the guard's "new violation" rule; and I-JSON. The schemas compare reserved names without regard to ASCII case by listing both cases of each letter, because the regular-expression dialect of JSON Schema has no case-insensitive flag.
 
-How the catalog schema handles the catalog levels. The generic layer checks only what lifeproj's checker needs: `meta` is an object with `schema_version`, and the core arrays are arrays. When `schema_version` is an integer 2 or more, it applies lifeproj's item rules and nothing stricter. When `meta.format` is `teka`, it applies the v0 rules to `meta`, every item, every document, every entity row, and every log entry a v0 implementation wrote. So a fresh lifeproj catalog, a teka name with a space, entity rows without `status`, an empty or compact `due` and an integer id all validate as lifeproj catalogs, and a v1 catalog with loose items validates as legacy (and still needs migration). A catalog that claims `format: "teka"` must satisfy everything.
+How the catalog schema handles the catalog levels. The generic layer checks only what lifeproj's checker needs: `meta` is an object with `schema_version`, and the core arrays are arrays. When `schema_version` is an integer 2 or more, it applies lifeproj's item rules and nothing stricter. When `meta.format` is `teka`, it applies the v0 rules to `meta`, every item, every document, every entity row, and every log entry a v0 implementation wrote. So a fresh lifeproj catalog, a binder name with a space, entity rows without `status`, an empty or compact `due` and an integer id all validate as lifeproj catalogs, and a v1 catalog with loose items validates as legacy (and still needs migration). A catalog that claims `format: "teka"` must satisfy everything.
 
 ### 10.1 catalog.json
 
@@ -1109,8 +1108,8 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:catalog",
-  "title": "teka v0 catalog.json",
-  "description": "The catalog of one teka. Three catalog levels are accepted: lifeproj v1 (loose), lifeproj v2 (lifeproj's open_items rules) and teka v0 (meta.format is \"teka\"). The generic layer checks only what lifeproj's checker needs to read a catalog. Unknown fields and unknown top-level arrays are allowed and must be preserved by every writer.",
+  "title": "binder v0 catalog.json",
+  "description": "The catalog of one binder. Three catalog levels are accepted: lifeproj v1 (loose), lifeproj v2 (lifeproj's open_items rules) and binder v0 (meta.format is \"teka\"). The generic layer checks only what lifeproj's checker needs to read a catalog. Unknown fields and unknown top-level arrays are allowed and must be preserved by every writer.",
   "type": "object",
   "required": ["meta"],
   "properties": {
@@ -1135,7 +1134,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
       "then": { "properties": { "open_items": { "items": { "$ref": "#/$defs/item_v2" } } } }
     },
     {
-      "$comment": "teka v0: meta.format is \"teka\". The v0 rules then apply to meta, every open item, every document, every entity and every log entry a v0 implementation wrote.",
+      "$comment": "binder v0: meta.format is \"teka\". The v0 rules then apply to meta, every open item, every document, every entity and every log entry a v0 implementation wrote.",
       "if": { "properties": { "meta": { "required": ["format"], "properties": { "format": { "const": "teka" } } } } },
       "then": {
         "required": ["documents", "open_items", "processing_log"],
@@ -1340,7 +1339,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
         "path": {
           "type": "string",
           "minLength": 1,
-          "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+          "$comment": "Relative to the binder folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
         },
         "date": { "$ref": "#/$defs/date" },
         "kind": { "type": "string", "minLength": 1 },
@@ -1459,8 +1458,8 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:item",
-  "title": "teka v0 open item",
-  "description": "One entry of open_items[] in a teka v0 catalog. It satisfies lifeproj's schema_version 2 rules and adds the v0 fields. An id found at adoption is accepted as it is; an id minted by a v0 implementation also matches minted_id in op.schema.json. This file is the single source of the item_v0 copies in catalog.schema.json and op.schema.json. Unknown fields are allowed and preserved.",
+  "title": "binder v0 open item",
+  "description": "One entry of open_items[] in a binder v0 catalog. It satisfies lifeproj's schema_version 2 rules and adds the v0 fields. An id found at adoption is accepted as it is; an id minted by a v0 implementation also matches minted_id in op.schema.json. This file is the single source of the item_v0 copies in catalog.schema.json and op.schema.json. Unknown fields are allowed and preserved.",
   "type": "object",
   "required": ["id", "title", "status", "priority"],
   "properties": {
@@ -1578,8 +1577,8 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:document",
-  "title": "teka v0 document record",
-  "description": "One entry of documents[] in a teka v0 catalog. The file lives at path, inside the teka folder. Single source of the document_v0 copies. Unknown fields are allowed and preserved.",
+  "title": "binder v0 document record",
+  "description": "One entry of documents[] in a binder v0 catalog. The file lives at path, inside the binder folder. Single source of the document_v0 copies. Unknown fields are allowed and preserved.",
   "type": "object",
   "required": ["id", "title", "path"],
   "properties": {
@@ -1591,7 +1590,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
     "path": {
       "type": "string",
       "minLength": 1,
-      "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+      "$comment": "Relative to the binder folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
     },
     "date": { "$ref": "#/$defs/date" },
     "kind": { "type": "string", "minLength": 1 },
@@ -1649,7 +1648,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:log-entry",
-  "title": "teka v0 processing_log entry",
+  "title": "binder v0 processing_log entry",
   "description": "One entry of processing_log[]. Entries a v0 implementation writes carry op_id and follow these rules; legacy entries are accepted as they are. Single source of the log_entry_v0 copy. Unknown fields are allowed and preserved.",
   "$comment": "Rules for entries a v0 implementation writes, which always carry op_id. Entries without op_id are legacy and unconstrained; lifeproj's rule that any entry with an id closes that item holds for them whatever their action.",
   "if": { "type": "object", "required": ["op_id"] },
@@ -1726,7 +1725,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:op",
-  "title": "teka v0 applied op",
+  "title": "binder v0 applied op",
   "description": "One line of .sprava/ops.ndjson: an op that has been applied to catalog.json, with its envelope. An applied op carries every value its effect needs, so applying it is a pure function of the catalog and the op (section 6.3). The op body (op, args, note) is what a proposal carries before it is applied.",
   "type": "object",
   "required": ["id", "at", "actor", "op", "args", "before_hash", "after_hash"],
@@ -2319,7 +2318,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
         "path": {
           "type": "string",
           "minLength": 1,
-          "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+          "$comment": "Relative to the binder folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
         },
         "date": { "$ref": "#/$defs/date" },
         "kind": { "type": "string", "minLength": 1 },
@@ -2391,7 +2390,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:op-batch",
-  "title": "teka v0 op batch (proposal)",
+  "title": "binder v0 op batch (proposal)",
   "description": "A set of ops that are approved and applied together, with the provenance a review card shows. Stored as .sprava/proposals/<id>.json; the applied ops are appended to .sprava/ops.ndjson with proposal and batch set to this id. A new record's id in a proposal is a placeholder such as \"$new:1\", which later ops in the same batch may reference; the real id is minted when the batch is applied (section 5.6).",
   "type": "object",
   "required": ["id", "format_version", "created_at", "actor", "state", "ops"],
@@ -2508,7 +2507,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:slice",
-  "title": "agenda slice v1 (inbox/<teka>.agenda.json)",
+  "title": "agenda slice v1 (inbox/<binder>.agenda.json)",
   "description": "What a v0 publisher writes to the spool. The six top-level keys and the nine item keys are lifeproj's frozen contract; format_version, disclosure, closed[], kind and follow_up_at are v1 additions a hub may ignore. lifeproj itself may publish dates in other ISO forms; a reader treats an unparseable due as undated. A reader must ignore unknown keys.",
   "type": "object",
   "required": ["teka", "lifecycle", "active_chapter", "active_chapters", "generated", "items"],
@@ -2598,8 +2597,8 @@ How the catalog schema handles the catalog levels. The generic layer checks only
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:outbox",
-  "title": "outbox v1 (outbox/<teka>.intake.json)",
-  "description": "What a hub writes for a teka to drain. completions[] is live; items[] is a documented stub that a drain preserves untouched. teka and generated are informative; a drain ignores them.",
+  "title": "outbox v1 (outbox/<binder>.intake.json)",
+  "description": "What a hub writes for a binder to drain. completions[] is live; items[] is a documented stub that a drain preserves untouched. teka and generated are informative; a drain ignores them.",
   "type": "object",
   "properties": {
     "teka": { "type": "string" },
@@ -2628,7 +2627,7 @@ How the catalog schema handles the catalog levels. The generic layer checks only
           "id": {
             "type": "string",
             "minLength": 1,
-            "description": "The published slice id (teka-prefixed) or the raw catalog id; a drain matches either."
+            "description": "The published slice id (binder-prefixed) or the raw catalog id; a drain matches either."
           },
           "action": { "enum": ["done", "dropped"] },
           "at": {
@@ -2684,10 +2683,10 @@ Each statement is testable. Where lifeproj already pins it, the test is named (`
 
 Folder and identity
 
-1. `[R]` A folder is a teka exactly when it contains `catalog.json`. The teka is corrupt when the file does not parse or is not a JSON object. An object without `meta` or without `meta.schema_version` is a pre-lifeproj catalog that needs migration, never corrupt. (`test_drain_all_skips_unmigrated`, `test_drain_all_errors_on_broken_catalog` for the existence part; the rest is new)
-2. `[R]` `meta.name` equals the folder basename after NFC, compared case-sensitively; a mismatch puts the teka in needs attention. `[F]` A teka a v0 implementation creates has a name matching `^[a-z0-9][a-z0-9-]*$`, unique among the known tekas and their unexpired former names. (`test_new_rejects_path_like_names` for lifeproj's name rule; the rest is new)
-3. `[F]` Given a teka whose `catalog_check.py`, `scripts/` files, `.claude/` hooks and a filed `.command` file each write a marker file when run, no marker exists after adoption, a series of ops, a publish and a drain. (new)
-4. `[W]` Inside the teka, an implementation deletes no file, except that filing moves files out of `intake/` and `intake/_converted/` may be cleared. Filing never replaces an existing file. (new)
+1. `[R]` A folder is a binder exactly when it contains `catalog.json`. The binder is corrupt when the file does not parse or is not a JSON object. An object without `meta` or without `meta.schema_version` is a pre-lifeproj catalog that needs migration, never corrupt. (`test_drain_all_skips_unmigrated`, `test_drain_all_errors_on_broken_catalog` for the existence part; the rest is new)
+2. `[R]` `meta.name` equals the folder basename after NFC, compared case-sensitively; a mismatch puts the binder in needs attention. `[F]` A binder a v0 implementation creates has a name matching `^[a-z0-9][a-z0-9-]*$`, unique among the known binders and their unexpired former names. (`test_new_rejects_path_like_names` for lifeproj's name rule; the rest is new)
+3. `[F]` Given a binder whose `catalog_check.py`, `scripts/` files, `.claude/` hooks and a filed `.command` file each write a marker file when run, no marker exists after adoption, a series of ops, a publish and a drain. (new)
+4. `[W]` Inside the binder, an implementation deletes no file, except that filing moves files out of `intake/` and `intake/_converted/` may be cleared. Filing never replaces an existing file. (new)
 
 Catalog structure
 
@@ -2736,14 +2735,14 @@ Federation profile
 
 33. `[P]` The spool root resolves as `$OSAVUL_SPOOL`, else `$XDG_DATA_HOME/osavul`, else `~/.local/share/osavul`; an absent root means a quiet no-op and the root is never created. (`test_publish_noop_when_spool_absent`, `test_drain_stub_is_safe`)
 34. `[P]` A slice has the six top-level keys in order, then `format_version`, `disclosure` and `closed` in that order, and each item exactly the nine keys in order, followed only by `kind` and `follow_up_at`. (`test_project_slice_shape` for lifeproj's part)
-35. `[P]` Slice ids are prefixed with `<teka>-` once, never twice. (`test_id_prefix_is_idempotent`)
+35. `[P]` Slice ids are prefixed with `<binder>-` once, never twice. (`test_id_prefix_is_idempotent`)
 36. `[P]` At `full`: `slice_title` wins; `redact: true` gives `[redacted]`, `[party]` and, from a v0 publisher, a null `link`; tags pass through; an unredacted item's `waiting_on` passes through. (`test_redaction_projection`; the null `link` is new)
 37. `[P]` `active_chapters` projection: one chapter fills `active_chapter`; many leave it null; `current_chapters` is the fallback; none gives `[]` and null. (`test_active_chapters_projection`)
 38. `[P]` Publishing validates items under the v2 rules regardless of `schema_version`; on error nothing is written. (`test_publish_rejects_invalid_open_items`, `test_publish_writes_valid_slice`)
 39. `[P]` The slice is written atomically through a temporary file and a rename. (`publish`; new test)
-40. `[P]` A drain matches a completion by raw id, `<teka>-<raw id>`, the alias of any open item, or the id last published for an item; in a former name's outbox, also by `<former>-<raw id>`. The closure entry keeps the raw id with its JSON type. (`test_drain_resolves_prefixed_slice_id`; the rest is new)
+40. `[P]` A drain matches a completion by raw id, `<binder>-<raw id>`, the alias of any open item, or the id last published for an item; in a former name's outbox, also by `<former>-<raw id>`. The closure entry keeps the raw id with its JSON type. (`test_drain_resolves_prefixed_slice_id`; the rest is new)
 41. `[P]` A drain applies only `done` and `dropped`, skips unknown and already-closed ids, writes the catalog before acknowledging the outbox, acknowledges by removing applied completions (matched by `id` and `at`) from a fresh read of the outbox, deletes the file only when nothing else is left in it, leaves unknown completions and `items[]` in place, and is idempotent. (`test_drain_applies_done_and_dropped`, `test_drain_idempotent_and_preserves_items`, `test_drain_no_outbox_is_noop` for lifeproj's part)
-42. `[P]` A drain never republishes; a fleet loop republishes only tekas that drained something. (`test_drain_all_fleet`)
+42. `[P]` A drain never republishes; a fleet loop republishes only binders that drained something. (`test_drain_all_fleet`)
 43. `[P]` A broken `catalog.json` is an error that does not stop the fleet; a folder without one is a skip. (`test_drain_all_errors_on_broken_catalog`, `test_drain_all_skips_unmigrated`)
 44. `[H]` A slice reader skips `done` items, tolerates sparse items and offset `generated` stamps, buckets an unparseable `due` as undated, flags a slice older than 7 days, and never reads a dot-file in `inbox/`. (`test_tolerates_offset_stamps_and_sparse_items`, `test_unparseable_due_is_undated_never_dropped`, `test_sources_report_stale_never_published_and_undrained`)
 45. `[P]` At disclosure level `none` no slice exists. At `kind` every title is `[redacted]`, tags are empty, chapters are masked and every item carries a kind. At `title`, `waiting_on` is `[party]` only where a party exists, a redacted item's tags are empty, and chapters are masked. At `title` and `kind`, every id not in the recommended form is aliased. Below `full`, `closed[].closed_at` carries the day only. (new)
@@ -2766,22 +2765,22 @@ Write protocol and recovery
 56. `[F]` Two proposals that each add one item, approved one after the other, both apply, with different minted ids. (new)
 57. `[F]` Each op in the table of section 6.10 is reversed by its compensating op. A mistaken `complete` is undone by `reopen`, and the new item carries `reopened_from`. (new)
 58. `[P]` A drained completion for a recurring item, delivered twice, advances it once. A completion whose `due` is earlier than the item's `due`, including one ticked in the hub after the app already advanced and republished, is acknowledged without a second advance. A completion without `due`, or with a null `at`, goes to a card and never advances on its own. (new)
-59. `[W]` With an unknown `format_version`, nothing in the teka is written, `DASHBOARD.md` included (section 1.4). (new)
+59. `[W]` With an unknown `format_version`, nothing in the binder is written, `DASHBOARD.md` included (section 1.4). (new)
 60. `[F]` `set_status` to `open` removes `waiting_on`, `follow_up_at` and `expected_by` unless the op supplies them. (new)
 61. `[F]` `format: "teka"` is stamped only on a catalog that then satisfies the v0 schema and the conformance checks. (new)
 
 Containment and privacy
 
-62. `[F]` A `file_document` whose `from` is outside `intake/`, or whose `path` breaks the rules of section 4.3, is rejected, reserved names compared without regard to case and agent manuals refused in any segment; so is any path that reaches outside the teka through a symlink. (samples in section 10.9, pending publication; the symlink part is new)
+62. `[F]` A `file_document` whose `from` is outside `intake/`, or whose `path` breaks the rules of section 4.3, is rejected, reserved names compared without regard to case and agent manuals refused in any segment; so is any path that reaches outside the binder through a symlink. (samples in section 10.9, pending publication; the symlink part is new)
 63. `[R]` Hash vectors. Two inputs that differ only in escaping, `{"title": "Caf\u00e9"}` (the escape written out, six characters) and `{"title": "Café"}` (the precomposed letter U+00E9), both hash to `sha256:97abf59ac9ce42d34f62d32f6b75eb18a16cedc16ef9de9c818e902a93c51e5f`. The same title with a decomposed `é` (an `e` followed by U+0301) hashes to `sha256:e7156f5c49620b91d15fd0591e9502fe9790b7f1159314a6f77591083fbd7fac`: RFC 8785 does not normalize, so a tool that rewrites NFC text as NFD causes an external edit. `{"amount": 12.5, "big": 1e16, "small": 1e-7}` canonicalizes to `{"amount":12.5,"big":10000000000000000,"small":1e-7}` and hashes to `sha256:bf32401fef70ae0645acbb210250c2874daa04e3fbc33c94e4ac6463c89d5acf`. `{"ﬁ": 1, "😀": 2}` canonicalizes to `{"😀":2,"ﬁ":1}` and hashes to `sha256:14dc6c14e11d686bbd1332452e5c8dc999ac1479def9c87e945308b1b27d469b`. A duplicate key, a lone `\ud800` and the integer 9007199254740993 each put a catalog in needs attention, and nothing is written until a repair is approved. (new)
 64. `[F]` A title `![x](https://tracker.example/p.png)` renders in `DASHBOARD.md` as inert text. (new)
-65. `[P]` A teka's projected slice ids are unique; publishing fails on a collision. (new)
+65. `[P]` A binder's projected slice ids are unique; publishing fails on a collision. (new)
 66. `[P]` A redacted item whose id is not in the recommended form of section 5.6 is published under an alias, and the drain resolves the alias. An id such as `sell-house-before-probate`, which matches the minted pattern but not the recommended form, is aliased. (new)
 67. `[F]` Index, search and MCP reads never return content from `scripts/`, `.claude/`, `.agents/`, `.git/`, `.sprava/`, a `.env` file, `intake/mail/state.json` or a key file as section 3.4 lists them. (new)
 68. `[F]` After an `expunge`, the forgotten text appears in no free-text value of `catalog.json`, `ops.ndjson`, the proposals, `snapshot.json`, the Notes section of `DASHBOARD.md`, `.sprava/adopted/` or `.sprava/torn/`; `intake/_converted/` is empty; the bytes of the new `index.sqlite` and of its `-wal` and `-journal` files hold no copy; and the slice was republished. (new)
 69. `[P]` A publisher refuses a symlinked `inbox/` or `outbox/` and creates slice files with mode 0600. (new)
 70. `[F]` Adoption saves `DASHBOARD.md` to `.sprava/adopted/` before writing anything, and no rendering replaces a hand-edited dashboard without a saved copy. (new)
-71. `[P]` A publisher that does not implement sections 5.5 to 5.7 does not publish or drain a stamped v0 teka, whether it is run on one folder or on a fleet. (new; requires the lifeproj change of section 9.8)
+71. `[P]` A publisher that does not implement sections 5.5 to 5.7 does not publish or drain a stamped v0 binder, whether it is run on one folder or on a fleet. (new; requires the lifeproj change of section 9.8)
 
 Added after the second review
 
@@ -2791,32 +2790,32 @@ Added after the second review
 75. `[F]` A simulated lifeproj drain that reads the catalog, waits while the implementation applies an approved op, and then renames its own copy over the catalog, yields an external edit labelled as an overwritten change with a card to apply the lost ops again. (new)
 76. `[P]` A completion the hub adds to the outbox while a drain is running survives the acknowledgement. (new)
 77. `[P]` A completion with `source: null`, one with a numeric `at`, and one that the guard rejects do not stop the other completions of the same drain from applying; the rejected one stays in the outbox. (new)
-78. `[P]` After `rename_teka`, the old slice is removed, a completion for a bare id published under the former name resolves through the former outbox, and no new teka may take the former name before its `until` date. (new)
-79. `[P]` When the slice on the spool differs from the hash recorded in `.sprava/cursors.json`, the implementation republishes or removes it and tells the user. A teka holding `catalog_check.py` or a manual that runs `lifeproj publish` is offered only disclosure level `full` until section 9.8's change is confirmed. (new)
+78. `[P]` After `rename_teka`, the old slice is removed, a completion for a bare id published under the former name resolves through the former outbox, and no new binder may take the former name before its `until` date. (new)
+79. `[P]` When the slice on the spool differs from the hash recorded in `.sprava/cursors.json`, the implementation republishes or removes it and tells the user. A binder holding `catalog_check.py` or a manual that runs `lifeproj publish` is offered only disclosure level `full` until section 9.8's change is confirmed. (new)
 80. `[F]` A complete or a drop of an integer-id item writes a closure entry whose `id` is that integer; a `reopen` of it carries the integer in `args.id` and in `provenance.reopened_from`. (samples in section 10.9, pending publication)
 81. `[F]` The guard refuses `complete` without `next_due` on a recurring item, and with `next_due` on an item without `recurrence`. A `set_status` with `derived` marks the field; one without it removes the field's name; an empty `derived` is removed. (new)
 82. `[F]` A proposal file planted in `.sprava/proposals/` by another program is shown as "found in the folder, origin unknown". A planted `index.sqlite` is rebuilt, not opened. (new)
 83. `[F]` Viewing a filed email `.md` that holds `![x](https://tracker.example/p.png)` makes no network request. (new)
 84. `[R]` The level table of section 9.6 classifies `format: "Teka"` as unknown level, `format: "teka"` without `format_version` as a broken stamp, `format: "teka"` with `schema_version: "2"` as needing attention, and `schema_version: 0` as pre-lifeproj. (new)
 85. `[F]` A found item `kind: "invoice"` survives stamping as `legacy_kind`, and the stamped item carries a kind from the closed list. (new)
-86. `[F]` A teka inside iCloud Drive or a File Provider folder is reported as uploaded by a sync service, at creation and at adoption. (new)
+86. `[F]` A binder inside iCloud Drive or a File Provider folder is reported as uploaded by a sync service, at creation and at adoption. (new)
 
 ## 12. Open questions for the author
 
 1. Is the op log history that must survive, or a cache? This draft says the op log, the proposals, the saved dashboards and the slice key are the files under `.sprava/` that cannot be rebuilt. Closure entries now keep the closed item in `final`, so the catalog alone no longer loses fields when an item closes (decisions.md F1, F2). If you want "everything under `.sprava/` is disposable", history must be accepted as lossy.
-2. The documents and log shapes of your live tekas are unknown (decisions.md F11). Section 4.3 requires `id`, `title` and `path` for v0 document records. Will you run the structure-only survey so the legacy-key mapping in section 9.5 can be written and lossless adoption tested?
+2. The documents and log shapes of your live binders are unknown (decisions.md F11). Section 4.3 requires `id`, `title` and `path` for v0 document records. Will you run the structure-only survey so the legacy-key mapping in section 9.5 can be written and lossless adoption tested?
 3. Should `title` disclosure mask `waiting_on` and `link` for every item, as section 5.5 does, or only honour per-item `redact` as `full` does? The hub shows the party in its Waiting bucket, so the choice affects its usefulness.
-4. Is the `kind` list right for your tekas? The draft uses eight values with `other` as the escape hatch, and freezes the list within v0.
+4. Is the `kind` list right for your binders? The draft uses eight values with `other` as the escape hatch, and freezes the list within v0.
 5. Hub annotations: the hub also keeps an `importance` field whose type is unknown to this draft. Should `importance` become an item field (and with what values), stay hub-only, or be dropped?
-6. Where does a teka's default context live? Section 5.9 resolves an item's context as explicit tag, teka default, `@anywhere`, but `meta` has no field for the default yet. Proposed: `meta.default_context`.
+6. Where does a binder's default context live? Section 5.9 resolves an item's context as explicit tag, binder default, `@anywhere`, but `meta` has no field for the default yet. Proposed: `meta.default_context`.
 7. Mechanical steps at adoption (section 9.4 step 3) are applied without a proposal because they are lossless and marked: deriving `follow_up_at`, removing null values, removing an empty `due`, and rewriting compact dates. Do you want them to go through the review queue anyway?
 8. Does the existing hub ignore unknown keys in a slice and unknown top-level fields (`format_version`, `disclosure`, `closed[]`)? Its code is private; section 8.4 states the rule as a requirement, and the first v1 publish against the live hub will tell.
 9. `closed[]` in the slice: this draft answers "ids, actions, dates and kind only". Closure entries already keep `redact` and `slice_title` inside `final` (section 5.10), so per-item redaction could be honoured if titles were ever published there. Should they ever be?
-10. Local git in tekas (decisions.md F12): tolerated and ignored here. Should a `.git/` history count as provenance when `.sprava/ops.ndjson` is missing?
+10. Local git in binders (decisions.md F12): tolerated and ignored here. Should a `.git/` history count as provenance when `.sprava/ops.ndjson` is missing?
 11. `$id` for the schemas uses `urn:sprava:teka:v0:` because no domain is registered (decisions.md P11). Replace with `https://sprava.app/...` once the name and domain are settled?
-12. Should the dashboard carry the redacted or the natural titles? The draft uses natural titles because the file is inside the teka. If a teka folder is ever shared or synced wholesale, that choice leaks.
+12. Should the dashboard carry the redacted or the natural titles? The draft uses natural titles because the file is inside the binder. If a binder folder is ever shared or synced wholesale, that choice leaks.
 13. How long does a rejected proposal stay in `.sprava/proposals/`? The draft proposes 90 days unless the user keeps it. Forever would keep the provenance of what the clerk got wrong, and also any sensitive text the rejected proposal holds.
-14. Proposal: a teka's own staleness signal, "last activity", taken from the `at` of its latest op, beside the slice's `generated` stamp. Which threshold should raise the digest-overdue signal in the app?
+14. Proposal: a binder's own staleness signal, "last activity", taken from the `at` of its latest op, beside the slice's `generated` stamp. Which threshold should raise the digest-overdue signal in the app?
 15. Should `expunge` (section 6.11) be part of v0? It is the only way to forget a dictated account number or health detail, and it is the one exception to the append-only op log.
 16. decisions.md F1 says everything outside `.sprava/`, `catalog.json` and `DASHBOARD.md` is left alone. Filing into document folders, `intake/_converted/` and `.teka.lock` go beyond that (section 9.7). Proposed: amend F1 to name these three exceptions. A related question on F7: lifeproj's chapters and entities modules keep each chapter's or entity's documents in its own subfolder, and decisions.md P9 recommends a rental property with tenancies as chapters as a first template. This draft keeps `chapters/` and `entities/` closed to filing, as F7's "left opaque" reads, and lets `update_document` only record paths there. Should filing be allowed to create new files under `chapters/<name>/` (not `_past/`) and `entities/<id>/`, never replacing one?
 17. decisions.md F7 asks for `at` (or `closed_at`) and `action` on every processing log entry. This draft requires them only on entries a v0 implementation writes, because legacy entries cannot be rewritten (section 4.5). Update F7?
@@ -2828,10 +2827,10 @@ Added after the second review
     - v0 has no op for entity rows (section 4.6). Should `add_entity` and `update_entity` ({id, set?, unset?}, never `id`) join v0, so that an accepted bid is a recorded change rather than an external edit?
 19. Should a drain hold some completions for approval: more than a set number of closures at once, or any closure of a `legal-deadline` or `payment` item? That would protect against a misbehaving local process writing the outbox, but it departs from decisions.md F8, which keeps lifeproj's completion semantics exactly. This draft keeps F8 and only shows each drained batch as an undoable change.
 20. The slice gains a fifth additive field, `disclosure`, beyond the four in decisions.md F8. At `full`, a redacted item's `link` is published as null and a hand-made id as an alias, which departs from lifeproj's projection (section 5.5). At `title` and `kind`, which lifeproj does not have, every id that is not in the recommended form is aliased, redacted or not, and a redacted item's tags are emptied at `title`. Accept these departures?
-21. A sensitive teka's name is visible to the hub at every level except `none`. Should `meta` gain a `public_name` that the slice and the spool file use instead?
-22. When will lifeproj gain the changes of section 9.8? Until then, every adopted teka that lifeproj can reach keeps disclosure level `full` and cannot use `dismiss` or recurrence. Reachable includes every teka that holds `catalog_check.py` or a manual that runs `lifeproj publish`, which today is every teka lifeproj made.
+21. A sensitive binder's name is visible to the hub at every level except `none`. Should `meta` gain a `public_name` that the slice and the spool file use instead?
+22. When will lifeproj gain the changes of section 9.8? Until then, every adopted binder that lifeproj can reach keeps disclosure level `full` and cannot use `dismiss` or recurrence. Reachable includes every binder that holds `catalog_check.py` or a manual that runs `lifeproj publish`, which today is every binder lifeproj made.
 23. The hub writes the outbox without a lock, so a drain can still lose a completion that lands between its last read and its rename (section 8.3). Should the hub take a lock on the outbox, or write one file per completion, which would make acknowledgement race-free?
-24. Recurring items move into the teka (section 5.4). Once an item carries `recurrence`, the hub must stop advancing or closing it on its own, and should add `due` to its completions so the drain can tell occurrences apart. How should the hub learn which items recur: a `recurrence` field in the slice, or the `kind`?
+24. Recurring items move into the binder (section 5.4). Once an item carries `recurrence`, the hub must stop advancing or closing it on its own, and should add `due` to its completions so the drain can tell occurrences apart. How should the hub learn which items recur: a `recurrence` field in the slice, or the `kind`?
 25. Leaving Sprava is a hand edit today (section 9.4, "Leaving"). Should v0 have a release op that removes the stamp, as the one exception to "migrate never removes a key"?
 26. Changes `docs/architecture.md` and `docs/mvp.md` ask of this draft, not yet made here. Each needs the author's acceptance (architecture.md section 13, items 8, 10, 11, 31, 36 and 43; mvp.md section 8, questions 3 and 13):
     - a `withdrawn` proposal state, so that a brain's withdrawal is not recorded as a rejection, and a named `expect` field on proposals (section 6.5);
@@ -2839,8 +2838,8 @@ Added after the second review
     - an actor field for the MCP client's name on `brain` ops, because `actor.client` names the implementation that applied the op (section 6.2);
     - `documents[].sensitivity` with the value `private`, honoured by every reader, whose removal or lowering is a privacy change. capture-event-v0 section 3.3 calls the same marker `redact: true` on the document record, which section 4.3 does not define, so one name must be chosen for both drafts;
     - `.sprava/owner.json`, the owner record, and `.sprava/proposals/<id>/`, the body of a document a brain proposes, in the table of section 7.2, which today requires every unlisted file there to be rebuildable;
-    - in sections 6.5 and 9.7, two more writes and one rule: the visible `captures/` folder of filed captures (which mvp.md defers), a new file created in a document folder for an approved brain document, and the rule that nothing a proposal carries reaches the teka's visible folders before approval;
-    - in section 9.8, lifeproj's refusal keyed on adoption (a teka that has `.sprava/ops.ndjson`) as well as on `meta.format`, refusing with one line and exit status 0, and the outbox acknowledgement of section 8.3 asked of lifeproj too;
+    - in sections 6.5 and 9.7, two more writes and one rule: the visible `captures/` folder of filed captures (which mvp.md defers), a new file created in a document folder for an approved brain document, and the rule that nothing a proposal carries reaches the binder's visible folders before approval;
+    - in section 9.8, lifeproj's refusal keyed on adoption (a binder that has `.sprava/ops.ndjson`) as well as on `meta.format`, refusing with one line and exit status 0, and the outbox acknowledgement of section 8.3 asked of lifeproj too;
     - in section 9.8, an addendum that forbids every hand edit of `catalog.json`, closing included, opens with a marker line, and says it overrides older instructions in the same manual;
     - after an outside edit, mechanical repairs applied as one undoable `import` batch after a quiet period with no outside write, where section 6.5's complete list of changes without a proposal names mechanical steps only at adoption and section 6.7 step 7 offers every repair as a proposal;
-    - rules for creating a teka beyond sections 3.1, 4.2 and 6.9: an empty stamped v0 catalog and the template's checklist offered as one proposal.
+    - rules for creating a binder beyond sections 3.1, 4.2 and 6.9: an empty stamped v0 catalog and the template's checklist offered as one proposal.

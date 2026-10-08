@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:slice",
-  "title": "agenda slice v1 (inbox/<teka>.agenda.json)",
+  "title": "agenda slice v1 (inbox/<binder>.agenda.json)",
   "description": "What a v0 publisher writes to the spool. The six top-level keys and the nine item keys are lifeproj's frozen contract; format_version, disclosure, closed[], kind and follow_up_at are v1 additions a hub may ignore. lifeproj itself may publish dates in other ISO forms; a reader treats an unparseable due as undated. A reader must ignore unknown keys.",
   "type": "object",
   "required": ["teka", "lifecycle", "active_chapter", "active_chapters", "generated", "items"],

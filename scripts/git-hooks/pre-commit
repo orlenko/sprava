@@ -1,0 +1,22 @@
+#!/bin/sh
+# Before every commit: the package builds, and the staged diff holds no private token.
+# Private patterns live outside the repository, one extended regex per line, in
+# ${SPRAVA_PRIVATE_TOKENS:-~/.config/sprava/private-tokens}; the repository is public, so they are never committed.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+tokens="${SPRAVA_PRIVATE_TOKENS:-$HOME/.config/sprava/private-tokens}"
+if [ -f "$tokens" ]; then
+    hits=$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' | grep -inEf "$tokens" || true)
+    if [ -n "$hits" ]; then
+        echo "pre-commit: the staged changes contain a private token (patterns in $tokens):" >&2
+        echo "$hits" | cut -c1-160 >&2
+        exit 1
+    fi
+else
+    echo "pre-commit: no private-token list at $tokens; the privacy scan was skipped" >&2
+fi
+
+if git diff --cached --name-only | grep -qE '\.swift$|^Package\.swift$'; then
+    swift build >/dev/null 2>&1 || { echo "pre-commit: swift build failed; run it to see why" >&2; exit 1; }
+fi

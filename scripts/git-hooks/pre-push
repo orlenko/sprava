@@ -1,0 +1,36 @@
+#!/bin/sh
+# Before every push: the test suites for what the push changes. There is no hosted CI, so this is the gate.
+# Swift changes run ./scripts/test.sh (each test target is its own run; it ends with one line for all of them).
+# Companion changes run companion/test.sh.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+zero=0000000000000000000000000000000000000000
+changed=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue                      # a deleted branch
+    if [ "$remote_sha" = "$zero" ]; then                        # a new branch: compare with main
+        base=$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "")
+    else
+        base=$remote_sha
+    fi
+    if [ -n "$base" ]; then
+        changed="$changed
+$(git diff --name-only "$base" "$local_sha")"
+    else
+        changed="$changed
+$(git ls-tree -r --name-only "$local_sha")"
+    fi
+done
+
+fail() { echo "$1" >&2; echo "pre-push: tests failed; nothing was pushed" >&2; exit 1; }
+
+if echo "$changed" | grep -qE '^(Sources/|Tests/|Package\.swift|scripts/test\.sh)' && [ -f Package.swift ]; then
+    out=$(./scripts/test.sh 2>&1) || true
+    echo "$out" | grep -q "^All test runs passed" || fail "$(echo "$out" | grep -E "✘|error:|^Tests failed" | head -20)"
+    echo "$out" | grep "^All test runs passed" >&2
+fi
+if echo "$changed" | grep -q '^companion/' && [ -x companion/test.sh ]; then
+    out=$(companion/test.sh 2>&1) || fail "$(echo "$out" | tail -30)"
+    echo "companion tests passed" >&2
+fi
+exit 0

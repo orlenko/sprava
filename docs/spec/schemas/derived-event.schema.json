@@ -81,7 +81,7 @@
     },
     "content": {
       "type": "object",
-      "description": "Depends on kind. For interpretation it validates against interpretation.schema.json. For summary it is title, summary, points, actions and language. For proposal and filing it follows the teka op schema, one binder per event."
+      "description": "Depends on kind. For interpretation it validates against interpretation.schema.json. For summary it is title, summary, points, actions and language. For proposal and filing it follows the binder op schema, one binder per event."
     },
     "supersedes": { "$ref": "capture-event.schema.json#/$defs/uuid" },
     "extensions": {
