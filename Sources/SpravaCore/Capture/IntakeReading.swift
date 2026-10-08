@@ -236,9 +236,10 @@ public struct IntakeReadings: Sendable {
 
     func url(_ id: String) -> URL { dir.appendingPathComponent(id + ".json") }
 
-    public func save(_ e: Entry) {
-        try? AtomicFile.makePrivateFolder(dir)
-        try? AtomicFile.write(Data(JSONWriter.pretty(.object(e.json)).utf8), to: url(e.id))
+    /// Throws when the reading cannot be written, so a caller never counts a reading as kept that is not.
+    public func save(_ e: Entry) throws {
+        try AtomicFile.makePrivateFolder(dir)
+        try AtomicFile.write(Data(JSONWriter.pretty(.object(e.json)).utf8), to: url(e.id))
     }
 
     public func load(_ id: String) -> Entry? {

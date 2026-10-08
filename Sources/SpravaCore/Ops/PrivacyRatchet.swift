@@ -94,6 +94,9 @@ public enum PrivacyRatchet {
         /// Open items whose `slice_title` an outside edit removed or changed, waiting for a card: the hub keeps the
         /// confirmed title until then.
         public var retitled: [Retitled] = []
+        /// The confirmed hub title of every item that has one, by the id's canonical text, closed items included:
+        /// the hub never sees another title for them until the person allows it.
+        public var titles: [String: JSONValue] = [:]
     }
 
     public struct Retitled: Equatable {
@@ -125,7 +128,8 @@ public enum PrivacyRatchet {
             return Retitled(id: id, confirmed: kept, found: sliceTitle(it["slice_title"]))
         }
         return View(disclosure: disclosure, redacted: foundRedacted.union(confirmed.redacted),
-                    widenedTo: disclosure == found ? nil : found, lifted: lifted, retitled: retitled)
+                    widenedTo: disclosure == found ? nil : found, lifted: lifted, retitled: retitled,
+                    titles: confirmed.sliceTitles)
     }
 
     /// The disclosure every cross-binder surface uses for a Shelf row.

@@ -167,7 +167,7 @@ import Testing
         try FileManager.default.removeItem(at: s.commands.digestsURL)
         #expect(scan(s).carded == 1)
         let card = try #require(s.cards.first)
-        #expect(IntakeWatcher.isTrusted(card.id, in: s.folder, commands: s.commands))
+        #expect(s.commands.isTrusted(card.id, in: s.folder))
         #expect(IntakeReadings(support: s.support).forCard(card.id) != nil)
     }
 
@@ -192,7 +192,7 @@ import Testing
         scan(s)
         let second = try #require(s.cards.first)
         #expect(s.cards.count == 1 && second.id != first.id)
-        #expect(IntakeWatcher.isTrusted(second.id, in: s.folder, commands: s.commands))
+        #expect(s.commands.isTrusted(second.id, in: s.folder))
         #expect(ProposalStore.list(in: s.folder).first { $0.0.id == first.id }?.0.state == "rejected")
     }
 

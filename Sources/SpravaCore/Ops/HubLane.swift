@@ -297,7 +297,8 @@ public enum HubLane {
         }
 
         // Items published redacted stay redacted unless the person lifted it with an op since then; a redaction an
-        // outside edit removed stays until the person approves the privacy card (architecture 4.5).
+        // outside edit removed stays until the person approves the privacy card (architecture 4.5). Both this and
+        // the confirmed hub titles cover the items closed once as well as the open ones.
         let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
         var lifted = Set<String>()
         for op in ops.dropFirst(min(cursors.opCount ?? 0, ops.count)) where op["op"] == .str("update_item")
@@ -310,9 +311,7 @@ public enum HubLane {
         let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted)
         let key = try sliceKey(folder)
         let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
-                                       key: key, now: now, alsoRedact: keepRedacted,
-                                       keepTitles: Dictionary(privacy.retitled.compactMap { r in
-                                           (try? Canonical.serialize(r.id)).map { ($0, r.confirmed) } }, uniquingKeysWith: { a, _ in a }))
+                                       key: key, now: now, alsoRedact: keepRedacted, keepTitles: privacy.titles)
         let hash = try Canonical.hash(stripGenerated(slice))
         if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
         try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)

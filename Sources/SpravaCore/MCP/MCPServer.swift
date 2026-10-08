@@ -308,7 +308,9 @@ public final class MCPServer: @unchecked Sendable {
             if let note = args["note"]?.stringValue, let problem = Self.unsafeText(note) { return Self.toolError("note holds \(problem)") }
             e.escalation = "answered"
             e.answer = "none"
-            IntakeReadings(support: commands.support).save(e)
+            guard (try? IntakeReadings(support: commands.support).save(e)) != nil else {
+                return Self.toolError("the reading could not be updated; try again")
+            }
             return Self.toolResult(.obj([("reading_id", .string(e.id)), ("state", .str("answered"))]))
 
         case "list_binders":
@@ -424,7 +426,7 @@ public final class MCPServer: @unchecked Sendable {
             if var e = answered {
                 e.escalation = "answered"
                 e.answer = proposal.id
-                IntakeReadings(support: commands.support).save(e)
+                try? IntakeReadings(support: commands.support).save(e)
             }
             return Self.toolResult(.obj([("proposal_id", .string(proposal.id)), ("state", .str("proposed")),
                                          ("note", .str("Waiting for the person in the Sprava app. Nothing has changed yet."))]))

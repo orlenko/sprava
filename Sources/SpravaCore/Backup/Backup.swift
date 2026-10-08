@@ -650,6 +650,9 @@ public struct Backup: Sendable {
         public var stateSnapshot = false
         public var retention = false
         public var checked = false
+        /// What failed apart from the binders, by name (`backup_state` unreadable, `state_snapshot`, `retention`,
+        /// `check`, `offload`): each also counts in `failed` and stays due, so the next run tries it again.
+        public var failedParts: [String] = []
     }
 
     /// Hourly snapshots of each live binder this Mac manages (skipped when unchanged), Sprava's state daily,
@@ -664,13 +667,17 @@ public struct Backup: Sendable {
             guard let iso, let d = ISOTime.date(iso) else { return true }
             return now.timeIntervalSince(d) > seconds
         }
-        guard let st = try? state() else {
+        func fail(_ part: String) {
             m.failed += 1
+            if !m.failedParts.contains(part) { m.failedParts.append(part) }
+        }
+        guard let st = try? state() else {
+            fail("backup_state")
             return m
         }
         // An offload interrupted after its record was kept is finished here, whatever became of its request.
         for (id, job) in st.offloads where job.stage == "leaving" {
-            if (try? continueOffload(id, now: now)) == nil { m.failed += 1 }
+            if (try? continueOffload(id, now: now)) == nil { fail("offload") }
         }
         for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
             guard let id = try? Self.backupID(row.folder) else { continue }
@@ -687,11 +694,17 @@ public struct Backup: Sendable {
             guard let st = try? state() else { return false }
             return older(field(st), than: seconds)
         }
-        if due(\.stateSnapshotAt, 86_400), (try? backUpState(now: now)) != nil { m.stateSnapshot = true }
-        if due(\.lastForget, 7 * 86_400), (try? applyRetention(now: now)) != nil { m.retention = true }
+        // Sprava's own state holds the offload records and other recovery state: a failed snapshot of it is a
+        // failure like a binder's, and so is a failed retention run. Neither moves its date, so both stay due.
+        if due(\.stateSnapshotAt, 86_400) {
+            if (try? backUpState(now: now)) != nil { m.stateSnapshot = true } else { fail("state_snapshot") }
+        }
+        if due(\.lastForget, 7 * 86_400) {
+            if (try? applyRetention(now: now)) != nil { m.retention = true } else { fail("retention") }
+        }
         if due(\.lastCheck, 7 * 86_400) {
             let readData = due(\.lastReadData, 30 * 86_400)
-            if (try? check(readData: readData, now: now)) != nil { m.checked = true } else { m.failed += 1 }
+            if (try? check(readData: readData, now: now)) != nil { m.checked = true } else { fail("check") }
         }
         return m
     }

@@ -10,17 +10,18 @@ extension IntakeWatcher {
             let folder = URL(fileURLWithPath: e.binder, isDirectory: true)
             guard ProposalStore.list(in: folder).contains(where: { $0.0.id == e.card && $0.0.state == "proposed" }) else {
                 e.state = "kept"
-                store.save(e)
+                try? store.save(e)
                 continue
             }
             if e.attempts >= 2 {
                 e.state = "kept"
-                store.save(e)
+                try? store.save(e)
                 continue
             }
             e.attempts += 1
             e.state = "attempt"
-            store.save(e)
+            // The attempt is on disk before any model call, or there is no call this run (the poison rule).
+            guard (try? store.save(e)) != nil else { return nil }
             return e
         }
         return nil
@@ -30,6 +31,8 @@ extension IntakeWatcher {
         public var items = 0
         public var replaced = false
         public var escalated = false
+        /// The code-built card was changed by another program since Sprava wrote it: nothing was built on it.
+        public var cardChanged = false
     }
 
     /// Stores the clerk's card for a document and withdraws the code-built one, unless the person acted on it
@@ -40,9 +43,18 @@ extension IntakeWatcher {
         let store = IntakeReadings(support: support)
         guard var e = store.load(entry.id), e.state == "attempt" else { return outcome }
         let folder = URL(fileURLWithPath: e.binder, isDirectory: true)
-        guard let (tier0, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == e.card }), tier0.state == "proposed" else {
+        // The clerk's card is built on the code-built card's ops, so only a card still as Sprava wrote it is used;
+        // one another program changed stays as it is, unverified, and is never carried into a trusted card.
+        let tier0: Proposal
+        do { tier0 = try commands.loadTrusted(e.card, in: folder) } catch {
+            outcome.cardChanged = error is ProposalStore.Tampered
             e.state = "kept"
-            store.save(e)
+            try? store.save(e)
+            return outcome
+        }
+        guard tier0.state == "proposed" else {
+            e.state = "kept"
+            try? store.save(e)
             return outcome
         }
         e.result = doc.json
@@ -85,7 +97,7 @@ extension IntakeWatcher {
             try commands.trustProposals([proposal.id], in: folder)
         } catch {
             e.state = "kept"
-            store.save(e)
+            try? store.save(e)
             return outcome
         }
         try? TekaStore(folder: folder).reject(tier0, reason: "replaced by the clerk's reading", now: now)
@@ -100,7 +112,7 @@ extension IntakeWatcher {
         }
         e.card = proposal.id
         e.state = "read"
-        store.save(e)
+        try? store.save(e)
         outcome.replaced = true
         return outcome
     }
@@ -110,6 +122,6 @@ extension IntakeWatcher {
         let store = IntakeReadings(support: support)
         guard var e = store.load(entry.id), e.state == "attempt" else { return }
         e.state = e.attempts >= 2 ? "kept" : "pending"
-        store.save(e)
+        try? store.save(e)
     }
 }
