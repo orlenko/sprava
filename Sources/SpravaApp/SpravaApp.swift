@@ -101,11 +101,17 @@ final class ShelfModel: ObservableObject {
     func newBinder() {
         let year = Calendar.current.component(.year, from: Date())
         let alert = NSAlert()
-        alert.messageText = "New binder for a tax year"
-        alert.informativeText = "Name it with lowercase letters, digits and hyphens. Its checklist arrives as one card to approve. It is not backed up until you register it with cmirror."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = BinderTemplate.taxYear.suggestedName(year)
-        alert.accessoryView = field
+        alert.messageText = "New binder"
+        alert.informativeText = "Pick a starting point and a name: lowercase letters, digits and hyphens. A template's checklist arrives as one card to approve."
+        let templates = BinderTemplate.all
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: 260, height: 26))
+        picker.addItems(withTitles: templates.map(\.title))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = templates[0].suggestedName(year)
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
+        box.addSubview(picker)
+        box.addSubview(field)
+        alert.accessoryView = box
         alert.addButton(withTitle: "Choose Where…")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -117,10 +123,11 @@ final class ShelfModel: ObservableObject {
         panel.message = "Choose the folder that will hold the new binder."
         guard panel.runModal() == .OK, let parent = panel.url else { return }
         let name = field.stringValue
+        let template = templates[max(0, picker.indexOfSelectedItem)].key
         Task {
             do {
                 let r = try await RuntimeClient().global("create_binder", [("parent", .string(parent.path)), ("name", .string(name)),
-                                                                            ("template", .str("tax-year")), ("year", .int(year))])
+                                                                            ("template", .string(template)), ("year", .int(year))])
                 refresh()
                 if let path = r["binder"]?.stringValue { selection = URL(fileURLWithPath: path).standardizedFileURL }
             } catch {

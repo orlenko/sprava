@@ -45,6 +45,17 @@ import Testing
         #expect(settings["description"]?.stringValue?.hasPrefix("Tax year 2026") == true)
     }
 
+    @Test func aBlankBinderIsReadyWithNoCard() throws {
+        let (c, parent) = try setup()
+        let r = try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .str("kitchen-reno")),
+                             ("template", .str("blank"))])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        #expect(r["proposal"] == .null)
+        let folder = URL(fileURLWithPath: try #require(r["binder"]?.stringValue))
+        #expect(Teka.read(folder).state == .ready)
+        #expect(ProposalStore.list(in: folder).isEmpty)
+    }
+
     @Test func badNamesDuplicatesAndExistingFoldersAreRefused() throws {
         let (c, parent) = try setup()
         for name in ["Tax 2026", "-tax", "tax/2026", "", "TAX-2026"] {

@@ -248,10 +248,11 @@ public struct Commands: Sendable {
             let created = try BinderCreator.create(parent: URL(fileURLWithPath: parentPath, isDirectory: true).standardizedFileURL, name: name,
                                                    template: template, deviceID: deviceID, knownNames: names, year: year, today: today,
                                                    client: client, now: now)
-            recordDigests([created.checklistCard], in: created.folder)
+            if let card = created.checklistCard { recordDigests([card], in: created.folder) }
             try store.add(created.folder)
             try FilingList(support: support).set(created.folder, .init(description: template.description(year), filing: false))
-            return JSONObject([(key: "binder", value: .string(created.folder.path)), (key: "proposal", value: .string(created.checklistCard))])
+            return JSONObject([(key: "binder", value: .string(created.folder.path)),
+                               (key: "proposal", value: created.checklistCard.map(JSONValue.string) ?? .null)])
 
         case "switch_dashboard":
             // The one-time switch card of binder-v0 §7.1, approved by the person.

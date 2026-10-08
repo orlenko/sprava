@@ -26,7 +26,15 @@ public struct BinderTemplate: Sendable {
             "Keep the notice of assessment once it arrives",
         ])
 
-    public static let all = [taxYear]
+    /// An empty binder: the person names it and writes its description; nothing arrives as a card.
+    public static let blank = BinderTemplate(
+        key: "blank", title: "An empty binder",
+        suggestedName: { _ in "new-binder" },
+        description: { _ in "" },
+        folders: ["documents"],
+        checklist: [])
+
+    public static let all = [blank, taxYear]
 }
 
 /// Creates a binder from a template: a ready binder-v0 folder at disclosure `none`, adopted at once, whose checklist
@@ -34,7 +42,8 @@ public struct BinderTemplate: Sendable {
 public enum BinderCreator {
     public struct Created: Sendable {
         public let folder: URL
-        public let checklistCard: String
+        /// nil for a template with no checklist.
+        public let checklistCard: String?
     }
 
     public static func create(parent: URL, name: String, template: BinderTemplate, deviceID: String, knownNames: [String],
@@ -90,6 +99,7 @@ public enum BinderCreator {
         }
         // The checklist is the person's choice of template, so it arrives as the person's own card.
         let user = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
+        guard !ops.isEmpty else { return Created(folder: folder, checklistCard: nil) }
         let card = Proposal.make(title: "Start with the \(template.title.lowercased()) checklist (\(ops.count) items, no dates)", actor: user,
                                  ops: ops, provenance: JSONObject([(key: "template", value: .string(template.key))]), now: now)
         try ProposalStore.save(card, in: folder)
