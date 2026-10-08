@@ -274,8 +274,8 @@ The spikes by increment:
    - How the material was obtained (email, a paper scan, a download, the person's note) is recorded with it (P16).
    - Useful alone: the agent-and-monitor routine each binder runs today moves into Sprava, with every result a card the person approves.
 
-8. One template, and the backup line. About 1 week.
-   - Useful alone: a new `tax-2026` binder starts in Sprava, ready and stamped v0. The Health page shows which binders cmirror backs up, and when it last did so if spike (l) finds a way to read it.
+8. One template, and backup with offload. The template took about 1 week; backup and offload are not yet sized.
+   - Useful alone: a new `tax-2026` binder starts in Sprava, ready and stamped. Every binder is backed up to an encrypted restic mirror in iCloud Drive, and a finished binder is offloaded and restored with one click (`docs/backup.md`; decisions.md A11, A12). The template and the Health line are built; backup and offload are not.
    - Proves: Sprava works for a binder it created, the path a second user will take.
    - Main risk: binder-v0 has only partial rules for creating a binder (question 3), and the choice of template is open (decisions.md P9).
    - It may ship during the window or after it, because it touches nothing the measures read.
