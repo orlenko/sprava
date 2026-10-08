@@ -1,8 +1,9 @@
 import Foundation
 
 /// The privacy ratchet (architecture 4.5 step 5; binder-v0 §5.5, §6.7): an outside edit that narrows what a binder
-/// shows takes effect at once; one that widens it (`meta.disclosure` raised, `redact` cleared) does not. The hub
-/// slice and MCP keep projecting with the last values the person confirmed until a privacy card is approved.
+/// shows takes effect at once; one that widens it (`meta.disclosure` raised, `redact` cleared, `slice_title` removed
+/// or changed) does not. The hub slice and MCP keep projecting with the last values the person confirmed until a
+/// privacy card is approved.
 ///
 /// In the MVP the confirmed values are kept unsealed (mvp.md section 4): they are the values Sprava itself last
 /// applied, read from the binder's op log, which records every op Sprava applied and every outside edit apart.
@@ -23,12 +24,18 @@ public enum PrivacyRatchet {
 
     /// What Sprava itself last applied: the latest `import_snapshot`, then every later op Sprava applied, skipping
     /// aborted ones; an `external_edit` never counts. A redaction is confirmed by any op that sets it and lifted
-    /// only by the person's own op (architecture 4.5, 7.3).
+    /// only by the person's own op (architecture 4.5, 7.3). So is a hub title: any op may give an item one where it
+    /// had none, but only the person's own op changes or removes it.
     public struct Confirmed: Equatable {
         public var disclosure: String
         /// Items whose redaction stands, by the id's canonical text.
         public var redacted: Set<String>
+        /// The `slice_title` that stands for each item, by the id's canonical text.
+        public var sliceTitles: [String: JSONValue] = [:]
     }
+
+    /// A `slice_title` that counts: a truthy value, as the projection reads it.
+    static func sliceTitle(_ value: JSONValue?) -> JSONValue? { value.flatMap { ItemRules.isTruthy($0) ? $0 : nil } }
 
     public static func confirmed(opLog ops: [JSONObject]) -> Confirmed? {
         guard let start = ops.lastIndex(where: { $0["op"] == .str("import_snapshot") }) else { return nil }
@@ -36,8 +43,10 @@ public enum PrivacyRatchet {
         let snapshot = ops[start]["args"]?["catalog"]
         var c = Confirmed(disclosure: level(snapshot?["meta"]?["disclosure"]), redacted: [])
         func key(_ id: JSONValue?) -> String? { id.flatMap { try? Canonical.serialize($0) } }
-        for item in snapshot?["open_items"]?.arrayValue ?? [] where item["redact"] == .bool(true) {
-            if let k = key(item["id"]) { c.redacted.insert(k) }
+        for item in snapshot?["open_items"]?.arrayValue ?? [] {
+            guard let k = key(item["id"]) else { continue }
+            if item["redact"] == .bool(true) { c.redacted.insert(k) }
+            if let t = sliceTitle(item["slice_title"]) { c.sliceTitles[k] = t }
         }
         for op in ops.dropFirst(start + 1) where !aborted.contains(op["id"]?.stringValue ?? "") {
             let args = op["args"]
@@ -50,7 +59,9 @@ public enum PrivacyRatchet {
                     c.disclosure = step["op"] == .str("remove") ? "full" : level(step["value"])
                 }
             case "add_item"?, "reopen"?:
-                if args?["item"]?["redact"] == .bool(true), let k = key(args?["item"]?["id"]) { c.redacted.insert(k) }
+                guard let k = key(args?["item"]?["id"]) else { continue }
+                if args?["item"]?["redact"] == .bool(true) { c.redacted.insert(k) }
+                if let t = sliceTitle(args?["item"]?["slice_title"]) { c.sliceTitles[k] = t }
             case "update_item"?:
                 guard let k = key(args?["id"]) else { continue }
                 if args?["set"]?["redact"] == .bool(true) {
@@ -58,6 +69,11 @@ public enum PrivacyRatchet {
                 } else if byUser, args?["set"]?["redact"] != nil
                             || args?["unset"]?.arrayValue?.contains(.str("redact")) == true {
                     c.redacted.remove(k)
+                }
+                let title = args?["set"]?["slice_title"]
+                if byUser || c.sliceTitles[k] == nil, title != nil
+                    || args?["unset"]?.arrayValue?.contains(.str("slice_title")) == true {
+                    c.sliceTitles[k] = sliceTitle(title)
                 }
             default:
                 break
@@ -75,6 +91,16 @@ public enum PrivacyRatchet {
         public var widenedTo: String?
         /// Open items whose redaction an outside edit cleared, waiting for a card.
         public var lifted: [JSONValue]
+        /// Open items whose `slice_title` an outside edit removed or changed, waiting for a card: the hub keeps the
+        /// confirmed title until then.
+        public var retitled: [Retitled] = []
+    }
+
+    public struct Retitled: Equatable {
+        public var id: JSONValue
+        /// The title the hub keeps, and the one found in the catalog (nil when removed).
+        public var confirmed: JSONValue
+        public var found: JSONValue?
     }
 
     /// The view of an adopted binder. An op log that cannot be read fails closed: disclosure `none`.
@@ -93,8 +119,13 @@ public enum PrivacyRatchet {
             guard let id = it["id"], let k = try? Canonical.serialize(id), confirmed.redacted.contains(k), it["redact"] != .bool(true) else { return nil }
             return id
         }
+        let retitled = items.compactMap { it -> Retitled? in
+            guard let id = it["id"], let k = try? Canonical.serialize(id), let kept = confirmed.sliceTitles[k],
+                  sliceTitle(it["slice_title"]) != kept else { return nil }
+            return Retitled(id: id, confirmed: kept, found: sliceTitle(it["slice_title"]))
+        }
         return View(disclosure: disclosure, redacted: foundRedacted.union(confirmed.redacted),
-                    widenedTo: disclosure == found ? nil : found, lifted: lifted)
+                    widenedTo: disclosure == found ? nil : found, lifted: lifted, retitled: retitled)
     }
 
     /// The disclosure every cross-binder surface uses for a Shelf row.
@@ -118,6 +149,10 @@ public enum PrivacyRatchet {
             ops.append(JSONObject([(key: "op", value: .str("update_item")),
                                    (key: "args", value: .obj([("id", id), ("unset", .array([.str("redact")]))]))]))
         }
+        for r in v.retitled {
+            let change: (String, JSONValue) = r.found.map { ("set", .obj([("slice_title", $0)])) } ?? ("unset", .array([.str("slice_title")]))
+            ops.append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", r.id), change]))]))
+        }
         guard !ops.isEmpty else { return nil }
         let waiting = ProposalStore.list(in: folder).contains { p, _ in
             p.state == "proposed" && p.raw["provenance"]?["privacy_widening"] == .bool(true) && p.ops == ops
@@ -125,7 +160,8 @@ public enum PrivacyRatchet {
         guard !waiting else { return nil }
         let user = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
         let title = v.widenedTo.map { "Disclosure was raised to \($0) outside Sprava. Allow it? Until then the hub and brains see \(v.disclosure)" }
-            ?? "Redaction was removed outside Sprava. Allow it? Until then the hub keeps it redacted"
+            ?? (v.lifted.isEmpty ? "A hub title was changed or removed outside Sprava. Allow it? Until then the hub keeps the one you confirmed"
+                : "Redaction was removed outside Sprava. Allow it? Until then the hub keeps it redacted")
         let card = Proposal.make(title: title, actor: user, ops: ops,
                                  provenance: JSONObject([(key: "privacy_widening", value: .bool(true))]), now: now)
         try ProposalStore.save(card, in: folder)

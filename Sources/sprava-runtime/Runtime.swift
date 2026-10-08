@@ -105,7 +105,7 @@ final class Runtime: @unchecked Sendable {
         self.commands = commands
         try? commands.inbox.registerProducer(folder: commands.deviceID, app: "sprava")
         // No backup request runs yet, so one left "running" was cut off; peeked documents go after a day.
-        BackupRequests(support: support).recoverInterrupted()
+        do { try BackupRequests(support: support).recoverInterrupted() } catch { log("backup requests_unreadable") }
         Backup(support: support, key: nil).cleanPeeks()
         let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
         service.start()
@@ -542,27 +542,34 @@ final class Runtime: @unchecked Sendable {
         return failed > 0 ? .error(code: "dashboard_failed", culprit: "\(failed) binder(s)") : .ok
     }
 
-    /// Backup (docs/backup.md): first any request the app queued (offload, restore, drill, back up now), then the
-    /// scheduled work, which itself does nothing until something is due.
+    /// Backup (docs/backup.md): first one request the app queued (offload, restore, drill, back up now), then the
+    /// scheduled work, which itself does nothing until something is due. The scheduled work runs after a request
+    /// too, so an offload left waiting for iCloud never holds up the other binders' backups and checks.
     func backup() -> JobOutcome {
         guard let commands else { return noCommands }
         let backup = Backup(support: support)
         guard backup.isConfigured else { return .skipped }
         let requests = BackupRequests(support: support)
-        if let request = requests.next() {
-            requests.run(request, backup: backup, deviceID: commands.deviceID)
-            let state = requests.all().first { $0.id == request.id }?.state ?? "?"
-            log("backup request=\(request.kind) state=\(state)")
-            if state == "done" { notify(title: "Sprava", body: "Backup: \(request.kind.replacingOccurrences(of: "_", with: " ")) finished.", id: "backup-\(request.id)") }
-            if state == "failed" { return .error(code: "backup_request_failed", culprit: request.kind) }
-            return .ok
+        var requestOutcome = JobOutcome.ok
+        do {
+            if let request = try requests.next() {
+                requests.run(request, backup: backup, deviceID: commands.deviceID)
+                let state = (try? requests.all())?.first { $0.id == request.id }?.state ?? "?"
+                log("backup request=\(request.kind) state=\(state)")
+                if state == "done" { notify(title: "Sprava", body: "Backup: \(request.kind.replacingOccurrences(of: "_", with: " ")) finished.", id: "backup-\(request.id)") }
+                if state == "failed" { requestOutcome = .error(code: "backup_request_failed", culprit: request.kind) }
+            }
+        } catch {
+            // A queue that cannot be read is left as it is, and reported; the scheduled work still runs.
+            log("backup requests_unreadable")
+            requestOutcome = .error(code: "backup_requests_unreadable", culprit: nil)
         }
         guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         let m = backup.maintain(rows: rows, deviceID: commands.deviceID)
         if m.snapshots > 0 || m.failed > 0 || m.retention || m.checked {
             log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
         }
-        return m.failed > 0 ? .error(code: "backup_failed", culprit: "\(m.failed) binder(s) or check") : .ok
+        return m.failed > 0 ? .error(code: "backup_failed", culprit: "\(m.failed) binder(s) or check") : requestOutcome
     }
 
     /// The Shelf for a job: one that cannot be read fails the job, never reads as an empty Shelf.

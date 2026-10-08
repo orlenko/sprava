@@ -154,9 +154,11 @@ public enum HubLane {
     }
 
     /// The agenda slice at disclosure level `full`: lifeproj's nine keys per item, in order, nothing else
-    /// (binder-v0 §8.2; the v1 additions stay off in the MVP).
+    /// (binder-v0 §8.2; the v1 additions stay off in the MVP). `keepTitles` holds the confirmed hub titles an outside
+    /// edit removed or changed, by the id's canonical text; they stand in for the found ones.
     public static func project(catalog: JSONObject, folderName: String, closedOnce: [JSONObject],
-                               key: SymmetricKey, now: Date, alsoRedact: Set<String> = []) throws -> (slice: JSONValue, ids: [String: String]) {
+                               key: SymmetricKey, now: Date, alsoRedact: Set<String> = [],
+                               keepTitles: [String: JSONValue] = [:]) throws -> (slice: JSONValue, ids: [String: String]) {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
         let teka = meta["name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? folderName
         var chapters: [JSONValue]
@@ -182,7 +184,8 @@ public enum HubLane {
             let sid = sliceID(id, redacted: redacted, teka: teka, key: key)
             guard seen.insert(sid).inserted else { throw TekaStore.Refused(reason: "two items project to the same slice id") }
             ids[(try? Canonical.serialize(id)) ?? idText(id)] = sid
-            let title: JSONValue = it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil }
+            let title: JSONValue = keepTitles[(try? Canonical.serialize(id)) ?? ""]
+                ?? it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil }
                 ?? (redacted ? .str("[redacted]") : it["title"] ?? .null)
             projected.append(.obj([
                 ("id", .string(sid)), ("title", title), ("status", status ?? it["status"] ?? .null),
@@ -307,7 +310,9 @@ public enum HubLane {
         let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted)
         let key = try sliceKey(folder)
         let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
-                                       key: key, now: now, alsoRedact: keepRedacted)
+                                       key: key, now: now, alsoRedact: keepRedacted,
+                                       keepTitles: Dictionary(privacy.retitled.compactMap { r in
+                                           (try? Canonical.serialize(r.id)).map { ($0, r.confirmed) } }, uniquingKeysWith: { a, _ in a }))
         let hash = try Canonical.hash(stripGenerated(slice))
         if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
         try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
