@@ -1,0 +1,203 @@
+{
+  "meta": {
+    "schema_version": 2,
+    "name": "rental-elm-street",
+    "domain": "tenancy",
+    "lifecycle": "ongoing",
+    "created": "2026-06-28",
+    "next_doc_id": 1,
+    "next_item_id": 1,
+    "profile": {},
+    "active_chapters": [
+      "tenancy-2026"
+    ],
+    "format": "teka",
+    "format_version": "0",
+    "modules": [
+      "chapters",
+      "ledger"
+    ],
+    "disclosure": "full",
+    "id_scheme": "opaque"
+  },
+  "documents": [
+    {
+      "id": "doc-0001",
+      "title": "Lease, signed",
+      "path": "chapters/tenancy-2026/2026-07-01_lease-signed.pdf",
+      "date": "2026-07-01"
+    }
+  ],
+  "open_items": [
+    {
+      "id": "rental-elm-street-2026-004",
+      "title": "Furnace inspection quote",
+      "status": "waiting",
+      "priority": "normal",
+      "due": "2026-09-30",
+      "waiting_on": "the furnace contractor",
+      "notes": "Called twice; they promised a quote by end of September.",
+      "follow_up_at": "2026-10-06",
+      "derived": [
+        "follow_up_at"
+      ],
+      "updated_at": "2026-10-06T14:00:01Z"
+    },
+    {
+      "id": "item-0006",
+      "title": "Звіт для бухгалтера",
+      "status": "open",
+      "priority": "normal",
+      "no_deadline": true,
+      "link": "/Users/someone/personal/rental-elm-street/ledger/"
+    },
+    {
+      "id": "rental-elm-street-2026-005",
+      "title": "Book the chimney sweep before the heating season",
+      "status": "open",
+      "priority": "normal",
+      "due": "2026-10-24",
+      "kind": "appointment",
+      "tags": [
+        "maintenance"
+      ],
+      "contexts": [
+        "@calls"
+      ],
+      "created_at": "2026-10-06T15:10:00Z",
+      "updated_at": "2026-10-06T17:30:00Z",
+      "provenance": {
+        "events": [
+          "019a1b00-0000-7000-8000-00000000c0de"
+        ],
+        "proposed_by": {
+          "kind": "clerk",
+          "client": "sprava/0.1",
+          "model": "apple-on-device"
+        },
+        "approved_by": "user",
+        "proposal": "019a2000-0000-7000-8000-000000000006"
+      }
+    },
+    {
+      "id": "rental-elm-street-2026-006",
+      "title": "Collect the monthly rent",
+      "status": "open",
+      "priority": "normal",
+      "due": "2026-12-01",
+      "kind": "payment",
+      "recurrence": {
+        "freq": "monthly",
+        "day": 1
+      },
+      "created_at": "2026-10-06T15:10:00Z",
+      "updated_at": "2026-10-06T18:00:00Z",
+      "provenance": {
+        "events": [
+          "019a1b00-0000-7000-8000-00000000c0de"
+        ],
+        "proposed_by": {
+          "kind": "clerk",
+          "client": "sprava/0.1",
+          "model": "apple-on-device"
+        },
+        "approved_by": "user",
+        "proposal": "019a2000-0000-7000-8000-000000000006"
+      }
+    },
+    {
+      "id": "rental-elm-street-2026-007",
+      "title": "Send the annual rent notice to the tenant",
+      "status": "open",
+      "priority": "high",
+      "due": "2026-10-20",
+      "tags": [
+        "notice"
+      ],
+      "link": "chapters/tenancy-2026/",
+      "created_at": "2026-10-06T18:06:00Z",
+      "updated_at": "2026-10-06T18:06:00Z",
+      "provenance": {
+        "reopened_from": "item-0003",
+        "approved_by": "user"
+      }
+    }
+  ],
+  "processing_log": [
+    {
+      "id": "item-0001",
+      "title": "Deposit the first month's rent",
+      "action": "done",
+      "closed_at": "2026-07-03T14:00:00Z",
+      "source": "google-tasks-via-osavul",
+      "via": "lifeproj drain"
+    },
+    {
+      "id": "item-0002",
+      "title": "Ask about parking",
+      "action": "dropped",
+      "closed_at": null,
+      "source": "osavul",
+      "via": "lifeproj drain"
+    },
+    {
+      "date": "2026-07-01",
+      "action": "filed",
+      "what": "lease signed, moved from intake/ to the chapter folder"
+    },
+    {
+      "id": "item-0005",
+      "title": "Renew the insurance policy",
+      "action": "done",
+      "at": "2026-10-06T14:03:11Z",
+      "closed_at": "2026-10-06T14:03:11Z",
+      "source": "import",
+      "via": "sprava/0.1",
+      "op_id": "019a2000-0000-7000-8000-000000000004",
+      "note": "status was done in open_items at adoption",
+      "final": {
+        "status": "done",
+        "priority": "normal",
+        "due": "2026-09-15"
+      }
+    },
+    {
+      "item": "rental-elm-street-2026-006",
+      "action": "occurrence",
+      "at": "2026-10-06T18:00:00Z",
+      "due": "2026-11-01",
+      "next_due": "2026-12-01",
+      "source": "user",
+      "via": "sprava/0.1",
+      "op_id": "019a2000-0000-7000-8000-000000000012"
+    },
+    {
+      "id": "item-0003",
+      "title": "Send the annual rent notice to the tenant",
+      "action": "done",
+      "at": "2026-10-06T18:05:00Z",
+      "closed_at": "2026-10-06T18:05:00Z",
+      "source": "user",
+      "via": "sprava/0.1",
+      "op_id": "019a2000-0000-7000-8000-000000000013",
+      "final": {
+        "status": "open",
+        "priority": "high",
+        "due": "2026-10-20",
+        "tags": [
+          "notice"
+        ],
+        "link": "chapters/tenancy-2026/"
+      }
+    },
+    {
+      "item": "rental-elm-street-2026-007",
+      "reopened_from": "item-0003",
+      "action": "reopened",
+      "at": "2026-10-06T18:06:00Z",
+      "source": "user",
+      "via": "sprava/0.1",
+      "op_id": "019a2000-0000-7000-8000-000000000014"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "teka": "kitchen-reno",
+  "lifecycle": "finite",
+  "active_chapter": null,
+  "active_chapters": [],
+  "generated": "2026-10-06T14:30:00Z",
+  "items": [
+    { "id": "kitchen-reno-2026-001", "title": "Order tiles", "status": "open", "priority": "normal", "no_deadline": true }
+  ]
+}

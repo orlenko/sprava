@@ -1,0 +1,8 @@
+{
+  "meta": { "schema_version": 2, "name": "kitchen-reno", "format": "teka", "format_version": "0", "disclosure": "full" },
+  "documents": [],
+  "open_items": [
+    { "id": "kitchen-reno-2026-003", "title": "Dispute the invoice", "status": "open", "priority": "high", "due": "2026-10-20", "redact": true }
+  ],
+  "processing_log": []
+}

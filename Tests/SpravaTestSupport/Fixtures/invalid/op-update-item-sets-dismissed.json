@@ -1,0 +1,18 @@
+{
+  "id": "019a2000-0000-7000-8000-000000000002",
+  "at": "2026-10-06T14:00:01Z",
+  "actor": {
+    "kind": "import",
+    "client": "sprava/0.1"
+  },
+  "before_hash": "sha256:047e8e910af84bda32db1fefd057ac286d321cf48a35b98f49d9bcfb6093ffed",
+  "after_hash": "sha256:18f0c93fba9fe5b1d215ea890697b3125071e55571467ea93791d94712a977b7",
+  "op": "update_item",
+  "args": {
+    "id": "rental-elm-street-2026-004",
+    "set": {
+      "dismissed": true
+    }
+  },
+  "note": "due 2026-09-30 has passed, so the follow-up is today"
+}

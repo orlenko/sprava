@@ -1,0 +1,20 @@
+{
+  "id": "019a2000-0000-7000-8000-0000000000c1",
+  "at": "2026-10-06T14:03:11Z",
+  "actor": {
+    "kind": "user",
+    "client": "sprava/0.1"
+  },
+  "before_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "after_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "op": "file_document",
+  "args": {
+    "document": {
+      "id": "rental-elm-street-doc-2026-009",
+      "title": "Invented",
+      "path": "Claude.md",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "from": "intake/scan-2.pdf"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "meta": { "schema_version": 2, "name": "kitchen-reno" },
+  "documents": [],
+  "open_items": [
+    { "id": "kitchen-reno-2026-002", "title": "Electrician's quote", "status": "waiting", "priority": "normal", "due": "2026-10-20" }
+  ],
+  "processing_log": []
+}
