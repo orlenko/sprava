@@ -50,8 +50,8 @@ extension Backup {
         let open = teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }
         if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open.map(\.title)) }
 
-        let id = try Self.backupID(folder)
         var st = try state()
+        let id = try claim(folder, &st)
         try refuseSharedID(id, folder: folder, &st)
         var job = st.offloads[id] ?? InProgress(path: folder.standardizedFileURL.path, stage: "start")
         // The binder stays writable while an offload waits for iCloud, which can take hours. One that changed since
@@ -70,12 +70,20 @@ extension Backup {
             let baseline = st.restored[id].flatMap { $0.repository != nil && $0.repository == s.primary && $0.manifest == current ? $0 : nil }
             let unchanged = try baseline.map { b in try primary.snapshots(tag: "binder:\(id)").contains { $0.id == b.snapshot } } ?? false
             if !open.isEmpty, !unchanged {
-                // The person's confirmation goes into the binder's history before the snapshot.
-                let entry = JSONObject([(key: "entry", value: .obj([("action", .str("offloaded")),
-                                                                    ("title", .string("Offloaded with \(open.count) open item(s), confirmed")),
-                                                                    ("date", .string(CalendarDate.today(now: now).description))]))])
-                try TekaStore(folder: folder).apply([.init(op: "add_log_entry", args: entry,
-                                                           actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
+                // The person's confirmation goes into the binder's history before the snapshot, once: an offload cut
+                // off after writing it finds it there when it starts over the same day.
+                let title = "Offloaded with \(open.count) open item(s), confirmed"
+                let date = CalendarDate.today(now: now).description
+                let logged = (teka.catalog?["processing_log"]?.arrayValue ?? []).contains {
+                    $0["action"]?.stringValue == "offloaded" && $0["title"]?.stringValue == title && $0["date"]?.stringValue == date
+                }
+                if !logged {
+                    let entry = JSONObject([(key: "entry", value: .obj([("action", .str("offloaded")), ("title", .string(title)),
+                                                                        ("date", .string(date))]))])
+                    try TekaStore(folder: folder).apply([.init(op: "add_log_entry", args: entry,
+                                                               actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
+                    step("offload.confirmed")
+                }
             }
             job.openItemsConfirmed = open.count
             let manifest = try Self.manifest(folder)
@@ -86,6 +94,7 @@ extension Backup {
                 // pass `restic check` and give back the binder from the pinned snapshot. One that does not keeps it here.
                 try checkPinned(restored.snapshot, in: primary, named: "the iCloud mirror", id: id, manifest: manifest)
                 job.snapshot = restored.snapshot
+                job.bytes = restored.bytes ?? 0
                 // A copy in a second backup the person has since replaced, or no longer in it, does not count; it is
                 // copied again.
                 let copyHolds = try restored.secondSnapshot.map { copy in
@@ -105,6 +114,7 @@ extension Backup {
                 job.stage = "snapshotted"
                 st.offloads[id] = job
                 try save(st)
+                step("offload.snapshotted")
                 // Verify by restoring into a private temporary folder and comparing every file.
                 let restored = try restoredManifest(snap, from: primary, id: id)
                 guard restored == manifest else {
@@ -116,6 +126,7 @@ extension Backup {
             }
             st.offloads[id] = job
             try save(st)
+            step("offload.verified")
         }
         return try continueOffload(id, now: now)
     }
@@ -166,6 +177,7 @@ extension Backup {
             job.stage = "copied"
             st.offloads[id] = job
             try save(st)
+            step("offload.copied")
         }
         guard job.stage == "copied", let snap = job.snapshot else { throw Failure(message: "offload stopped at \(job.stage)") }
         try refuseIfChanged(id, folder: folder, job, &st)
@@ -181,12 +193,14 @@ extension Backup {
             openItemsConfirmed: job.openItemsConfirmed)
         // The hub stops showing it, as for a binder at disclosure none.
         try removeHubSlice(teka)
+        step("offload.unpublished")
         // The record is kept before the folder goes, so a failure from here on can be finished, never lost.
         job.stage = "leaving"
         st.offloads[id] = job
         st.offloaded.removeAll { $0.backupID == id }
         st.offloaded.append(record)
         try save(st)
+        step("offload.leaving")
         return try leave(id, folder: folder, &st)
     }
 
@@ -211,8 +225,10 @@ extension Backup {
                 try? save(st)
                 throw error
             }
+            step("offload.removed")
         }
         try? ShelfStore(supportDirectory: support).remove(folder)
+        step("offload.unshelved")
         st.offloads[id] = nil
         st.restored[id] = nil
         try save(st)
@@ -249,7 +265,7 @@ extension Backup {
         let path = folder.standardizedFileURL.path
         let refused = { (other: String) in
             Failure(message: "another binder (\(URL(fileURLWithPath: other).lastPathComponent)) has this binder's backup id; nothing was removed. "
-                + "If this one is a copy, delete its .sprava/backup-id so it gets its own; if that one is being restored, finish the restore first")
+                + "If this one is a copy, give it its own backup id; if that one is being restored, finish the restore first")
         }
         if let job = st.offloads[id], job.path != path {
             guard job.stage != "leaving", !FileManager.default.fileExists(atPath: job.path) else { throw refused(job.path) }

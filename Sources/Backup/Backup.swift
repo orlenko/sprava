@@ -21,6 +21,11 @@ public struct Backup: Sendable {
     public let uploadCheck: @Sendable (URL) -> Upload
     /// Runs right after restic has read a binder; tests use it to land a write during a snapshot.
     var afterSnapshot: (@Sendable () -> Void)?
+    /// Runs at each durable step boundary of a multi-step operation, named; tests take an image of the disk there,
+    /// as a crash would leave it, and run the operation again from that image.
+    var atStep: (@Sendable (String) -> Void)?
+
+    func step(_ name: String) { atStep?(name) }
 
     public init(support: URL, key: String? = BackupKey.load(), resticBinary: URL? = Restic.locate(),
                 removeFolder: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
@@ -95,6 +100,8 @@ public struct Backup: Sendable {
         var stateSnapshotAt: String?
         var lastForget: String?
         var lastCheck: String?
+        /// The second backup's own structure check, kept apart so a second backup that is away stays due.
+        var lastSecondCheck: String?
         var lastReadData: String?
         var readDataPart = 0
         var lastDrill: String?
@@ -103,9 +110,19 @@ public struct Backup: Sendable {
         var restored: [String: Restored] = [:]
         /// Restores under way, by backup id: the destination, so an interrupted restore can be resumed (§6.2).
         var restoring: [String: String] = [:]
+        /// Restores whose files are all in place and verified, by backup id. From here a retry only finishes the
+        /// bookkeeping and never restores files again: the binder may already be live, and changed since.
+        var restoredContents: [String: RestoredContents] = [:]
+        /// Rewrites under way, journaled before restic runs: `rewrite --forget` deletes the original snapshots before
+        /// Sprava can rename them in its records, so a rewrite cut off is reconciled through the new snapshots'
+        /// `original` ids (`reconcileRewrites`).
+        var rewrites: [Rewrite] = []
         /// Documents deleted for good that the backups are to forget, waiting or done (`forgetDocument`).
         var forgetting: [Forgetting] = []
         struct BinderRecord: Codable, Equatable {
+            /// The folder that holds this backup id. A copy of the folder carries the same id; while both are there,
+            /// neither backup nor forgetting runs for the copy (`claim`).
+            var path: String?
             var snapshot: String?
             var at: String?
             var bytes: Int64 = 0
@@ -118,6 +135,19 @@ public struct Backup: Sendable {
             var secondSnapshot: String?
             var secondRepository: String?
             var manifest: [String: String]
+            /// The offloaded snapshot's size, so "Offload again" records it rather than nothing.
+            var bytes: Int64?
+        }
+        struct RestoredContents: Codable, Equatable {
+            var path: String
+            /// The baseline a later offload compares with, taken right after restic verified the files.
+            var baseline: Restored?
+        }
+        struct Rewrite: Codable, Equatable {
+            var repository: String
+            var tag: String
+            /// The snapshots carrying `tag` before the rewrite ran.
+            var before: [String]
         }
     }
 
@@ -260,6 +290,8 @@ public struct Backup: Sendable {
         public var settingsError: String?
         /// Documents deleted for good: when the backups stopped holding each, or why they still do.
         public var forgetting: [Forgetting] = []
+        /// The second backup's last structure check (nil: none yet, or no second backup).
+        public var lastSecondCheck: String? = nil
     }
 
     public func status(checkUpload: Bool = true) -> Status {
@@ -273,7 +305,8 @@ public struct Backup: Sendable {
                       binders: st.binders.sorted { $0.key < $1.key }.map { ($0.key, $0.value.at, $0.value.error) },
                       upload: checkUpload ? s.primary.map { uploadCheck(URL(fileURLWithPath: $0)) } : nil,
                       lastCheck: st.lastCheck, lastDrill: st.lastDrill, offloaded: st.offloaded.count, pending: st.offloads.count,
-                      stateError: stateError, settingsError: settingsError, forgetting: st.forgetting)
+                      stateError: stateError, settingsError: settingsError, forgetting: st.forgetting,
+                      lastSecondCheck: st.lastSecondCheck)
     }
 }
 
@@ -300,6 +333,7 @@ extension Backup.State {
         stateSnapshotAt = try c.decodeIfPresent(String.self, forKey: .stateSnapshotAt)
         lastForget = try c.decodeIfPresent(String.self, forKey: .lastForget)
         lastCheck = try c.decodeIfPresent(String.self, forKey: .lastCheck)
+        lastSecondCheck = try c.decodeIfPresent(String.self, forKey: .lastSecondCheck)
         lastReadData = try c.decodeIfPresent(String.self, forKey: .lastReadData)
         readDataPart = try c.decodeIfPresent(Int.self, forKey: .readDataPart) ?? 0
         lastDrill = try c.decodeIfPresent(String.self, forKey: .lastDrill)
@@ -307,6 +341,8 @@ extension Backup.State {
         offloaded = try c.decodeIfPresent([Backup.Offloaded].self, forKey: .offloaded) ?? []
         restored = try c.decodeIfPresent([String: Restored].self, forKey: .restored) ?? [:]
         restoring = try c.decodeIfPresent([String: String].self, forKey: .restoring) ?? [:]
+        restoredContents = try c.decodeIfPresent([String: RestoredContents].self, forKey: .restoredContents) ?? [:]
+        rewrites = try c.decodeIfPresent([Rewrite].self, forKey: .rewrites) ?? []
         forgetting = try c.decodeIfPresent([Backup.Forgetting].self, forKey: .forgetting) ?? []
     }
 }
@@ -314,6 +350,7 @@ extension Backup.State {
 extension Backup.State.BinderRecord {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
         snapshot = try c.decodeIfPresent(String.self, forKey: .snapshot)
         at = try c.decodeIfPresent(String.self, forKey: .at)
         bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0

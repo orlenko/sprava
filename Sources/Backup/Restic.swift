@@ -73,7 +73,17 @@ public struct Restic: Sendable {
         task.arguments = full
         task.environment = ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "RESTIC_PROGRESS_FPS": "0.2"]
         if let cwd { task.currentDirectoryURL = cwd }
-        let out = Pipe(), err = Pipe()
+        // stdout is read here to its end; stderr goes to a private file read after restic exits. Nothing waits on a
+        // second thread: a reader queued on a dispatch queue may never get one while every cooperative thread is
+        // blocked in a call like this, and then every restic run in the process hangs.
+        let out = Pipe()
+        let errURL = runDir.appendingPathComponent(UUID().uuidString + ".err")
+        guard FileManager.default.createFile(atPath: errURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw Failure(message: "restic's error output cannot be kept in \(runDir.path)")
+        }
+        defer { unlink(errURL.path) }
+        let err = try FileHandle(forWritingTo: errURL)
+        defer { try? err.close() }
         task.standardOutput = out
         task.standardError = err
         task.standardInput = FileHandle.nullDevice
@@ -84,19 +94,12 @@ public struct Restic: Sendable {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: k)
             killer = k
         }
-        // Read both pipes fully, so a chatty restic never blocks on a full pipe.
-        let group = DispatchGroup()
-        let errBox = DataBox()
-        group.enter()
-        DispatchQueue.global().async { errBox.data = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
         let stdout = out.fileHandleForReading.readDataToEndOfFile()
-        group.wait()
         task.waitUntilExit()
         killer?.cancel()
-        return Output(status: task.terminationStatus, stdout: stdout, stderr: String(decoding: errBox.data, as: UTF8.self))
+        let stderr = (try? Data(contentsOf: errURL)) ?? Data()
+        return Output(status: task.terminationStatus, stdout: stdout, stderr: String(decoding: stderr, as: UTF8.self))
     }
-
-    final class DataBox: @unchecked Sendable { var data = Data() }
 
     func checked(_ args: [String], cwd: URL? = nil, otherKey: (repo: URL, key: String)? = nil, timeout: TimeInterval? = nil) throws -> Output {
         let o = try run(args, cwd: cwd, otherKey: otherKey, timeout: timeout)
@@ -151,6 +154,9 @@ public struct Restic: Sendable {
         public let id: String
         public let time: String
         public let tags: [String]
+        /// For a snapshot `rewrite` made, the id of the snapshot it replaced (restic's `original`); a copy keeps the
+        /// field as it was.
+        public var original: String? = nil
     }
 
     public func snapshots(tag: String? = nil) throws -> [Snapshot] {
@@ -159,7 +165,8 @@ public struct Restic: Sendable {
         let o = try checked(args)
         return (try JSONParser.parse(o.stdout).value.arrayValue ?? []).compactMap { s in
             guard let id = s["id"]?.stringValue else { return nil }
-            return Snapshot(id: id, time: s["time"]?.stringValue ?? "", tags: s["tags"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+            return Snapshot(id: id, time: s["time"]?.stringValue ?? "", tags: s["tags"]?.arrayValue?.compactMap(\.stringValue) ?? [],
+                            original: s["original"]?.stringValue)
         }
     }
 
@@ -201,21 +208,23 @@ public struct Restic: Sendable {
     }
 
     /// Rewrites every snapshot carrying `tag` without the entry at `path` inside the binder ("documents/deed.pdf"),
-    /// and removes the originals (`--forget`; without it restic keeps them, and the entry with them). Returns each
-    /// rewritten snapshot's new id by its old one: a rewrite keeps a snapshot's time and tags. `prune` then removes
-    /// the data no snapshot uses any more.
-    public func rewrite(tag: String, excluding path: String) throws -> [String: String] {
-        let before = try snapshots(tag: tag)
+    /// and removes the originals (`--forget`; without it restic keeps them, and the entry with them). A rewrite keeps
+    /// a snapshot's time and tags and names the snapshot it replaced in `original`, so `replacements` maps them, also
+    /// after a rewrite that was cut off. `prune` then removes the data no snapshot uses any more.
+    public func rewrite(tag: String, excluding path: String) throws {
         // Anchored at the snapshot's root, with the pattern characters in the name taken literally.
         let pattern = "/" + path.map { "*?[\\".contains($0) ? "\\\($0)" : String($0) }.joined()
         try checked(["rewrite", "--tag", tag, "--exclude", pattern, "--forget", "-q"])
-        let after = try snapshots(tag: tag)
-        let old = Set(before.map(\.id)), current = Set(after.map(\.id))
-        var renamed: [String: String] = [:]
-        for b in before where !current.contains(b.id) {
-            if let n = after.first(where: { !old.contains($0.id) && $0.time == b.time }) { renamed[b.id] = n.id }
+    }
+
+    /// The snapshots carrying `tag` that replaced one of `before`, by the id they replaced. A snapshot that is itself
+    /// one of `before` (left as it was) never counts.
+    public func replacements(of before: Set<String>, tag: String) throws -> [String: String] {
+        var out: [String: String] = [:]
+        for s in try snapshots(tag: tag) where !before.contains(s.id) {
+            if let original = s.original, before.contains(original) { out[original] = s.id }
         }
-        return renamed
+        return out
     }
 
     public func prune() throws {
