@@ -135,7 +135,7 @@ extension CaptureInbox {
     /// What the cards of the current words in `places` carry, leaving out `excluding` (the cards being withdrawn), and
     /// the items already filed from the chain: an item filed from a line still in the current words is that line's
     /// item, so an add of it is carried (a change to it is the correction's to propose).
-    func carried(by words: Words, places: [URL?], excluding: Set<String>, state: State,
+    func carried(by words: Words, places: [URL?], excluding: Set<String>, state: State, commands: Commands,
                  cache: inout [String: ([(text: String, start: Int, end: Int)], [LineFate])?]) -> Carried {
         var out = Carried()
         for folder in places.compactMap({ $0 }) {
@@ -149,7 +149,11 @@ extension CaptureInbox {
             }
         }
         for place in places {
-            let cards = place.map { ProposalStore.list(in: $0).map(\.0) } ?? unfiled()
+            // A waiting card counts only as Sprava wrote it: one another program changed covers nothing (architecture
+            // 4.6). The Inbox lists only cards whose digest it kept.
+            let cards = place.map { folder in
+                ProposalStore.list(in: folder).map(\.0).compactMap { p in p.state == "proposed" ? try? commands.loadTrusted(p.id, in: folder) : p }
+            } ?? unfiled()
             for p in cards where !excluding.contains(p.id) {
                 guard let event = Self.sourceEvent(p), words.events.contains(event) else { continue }
                 let counts = place == nil || p.state == "proposed" || p.state == "applied"
@@ -178,11 +182,15 @@ extension CaptureInbox {
     /// What of card `p` is still owed and not carried yet, as ops and lines for a card that carries it: an op whose
     /// lines are all unchanged is kept as it is (its spans moved to the current words); an added item whose line
     /// changed is proposed again from the line's new words; any other change whose line changed is listed as not filed
-    /// yet, for the person to see in the note's own words. Nil when what it holds cannot be told.
+    /// yet, for the person to see in the note's own words. A kept op keeps what the card assumed about the item it
+    /// changes (its `expect` fingerprint), so a change approved since still stops it for a look (architecture 4.6).
+    /// Nil when what it holds cannot be told.
     func carry(_ p: Proposal, words: Words, covered: inout Carried, state: State, actor: JSONObject, numbered: inout Int,
-               cache: inout [String: ([(text: String, start: Int, end: Int)], [LineFate])?]) -> (ops: [JSONObject], unfiled: [(Int, String)])? {
+               cache: inout [String: ([(text: String, start: Int, end: Int)], [LineFate])?])
+        -> (ops: [JSONObject], unfiled: [(Int, String)], expect: [(String, JSONValue)])? {
         let own = Self.sourceEvent(p)
         var ops: [JSONObject] = []
+        var expect: [(String, JSONValue)] = []
         var listed: [(Int, String)] = []
         func span(_ line: Int, _ start: Int, _ end: Int) -> JSONValue {
             .obj([("event", .string(words.id)), ("start", .int(start)), ("end", .int(end))])
@@ -214,6 +222,9 @@ extension CaptureInbox {
                     o.set("args", .object(args))
                 }
                 ops.append(o)
+                if let id = op["args"]?["id"], op["op"] != .str("add_item"), let key = try? Canonical.serialize(id) {
+                    expect += (p.raw["expect"]?.objectValue?.entries ?? []).filter { $0.key == key || $0.key.hasSuffix(":" + key) }.map { ($0.key, $0.value) }
+                }
                 for l in live { covered.held.insert(Held(line: l.line, what: what)) }
             } else if op["op"] == .str("add_item") {
                 for l in need where !covered.covers(Held(line: l.line, what: "add")) {
@@ -250,7 +261,7 @@ extension CaptureInbox {
                 }
             }
         }
-        return (ops, listed)
+        return (ops, listed, expect)
     }
 
     /// Withdraws `cards` (each in its binder, or the Inbox when nil), once what they hold is carried (`replacement`).
@@ -268,29 +279,38 @@ extension CaptureInbox {
                 $0.teka.isAdopted && Owner.device(of: $0.folder) == commands.deviceID && Self.cardsReadable(in: ProposalStore.dir($0.folder))
             }
             var cache: [String: ([(text: String, start: Int, end: Int)], [LineFate])?] = [:]
-            var covered = carried(by: words, places: [nil] + rows.map(\.folder), excluding: Set(cards.map(\.1.id)), state: state, cache: &cache)
+            var covered = carried(by: words, places: [nil] + rows.map(\.folder), excluding: Set(cards.map(\.1.id)), state: state, commands: commands, cache: &cache)
             let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
             var places: [URL?] = []
             for (place, _) in cards where !places.contains(place) { places.append(place) }
             for place in places {
-                let here = cards.filter { $0.0 == place }.map(\.1)
+                // A binder's card is read as Sprava wrote it: one another program changed is never copied into a card
+                // Sprava trusts, so what it holds cannot be told and it stays, with the work owed (architecture 4.6).
+                var here: [Proposal] = []
+                var known = true
+                for (at, p) in cards where at == place {
+                    guard let folder = place else { here.append(p); continue }
+                    guard let trusted = try? commands.loadTrusted(p.id, in: folder) else { known = false; break }
+                    here.append(trusted)
+                }
                 var ops: [JSONObject] = []
                 var listed: [(Int, String)] = []
+                var expect: [(String, JSONValue)] = []
                 var numbered = 0
-                var known = true
-                for p in here {
+                for p in here where known {
                     guard let c = carry(p, words: words, covered: &covered, state: state, actor: actor, numbered: &numbered, cache: &cache) else {
                         known = false
                         break
                     }
                     ops += c.ops
                     listed += c.unfiled
+                    expect += c.expect
                 }
-                let carriedOver = known && (ops.isEmpty && listed.isEmpty || saveCarry(ops: ops, listed: listed, from: here, words: words, in: place,
-                                                                                         actor: actor, commands: commands, now: now))
+                let carriedOver = known && (ops.isEmpty && listed.isEmpty || saveCarry(ops: ops, listed: listed, expect: expect, from: here, words: words,
+                                                                                         in: place, actor: actor, commands: commands, now: now))
                 if !carriedOver {
                     journal([("event", .string(words.id)), ("stage", .str(known ? "carry_failed" : "carry_unknown")), ("cards", .int(here.count))])
-                    let held = Set(here.map(\.id))
+                    let held = Set(cards.filter { $0.0 == place }.map(\.1.id))
                     going.removeAll { held.contains($0.1.id) }
                     complete = false
                 }
@@ -301,8 +321,10 @@ extension CaptureInbox {
     }
 
     /// Saves the card that carries what withdrawn cards still held, where they waited (the Inbox for an Inbox card),
-    /// trusted; false when it cannot be.
-    func saveCarry(ops: [JSONObject], listed: [(Int, String)], from: [Proposal], words: Words, in folder: URL?,
+    /// trusted; false when it cannot be. Its `expect` is what the withdrawn cards assumed about the items their kept
+    /// ops change, not the items as they are now; two withdrawn cards that assumed different things leave a mark that
+    /// matches no item, so the card is stopped for a look.
+    func saveCarry(ops: [JSONObject], listed: [(Int, String)], expect: [(String, JSONValue)], from: [Proposal], words: Words, in folder: URL?,
                    actor: JSONObject, commands: Commands, now: Date) -> Bool {
         var provenance = JSONObject([(key: "events", value: .array([.string(words.id)])), (key: "filed_by", value: .str("code, no model")),
                                      (key: "carried_from", value: .array(from.map { .string($0.id) }))])
@@ -320,6 +342,15 @@ extension CaptureInbox {
             raw.set("binder", .str("not sure"))
             return (try? writeUnfiled(raw)) != nil
         }
+        var fingerprints = Proposal.fingerprints(card.ops, catalog: Teka.read(folder).catalog)
+        var seen: [String: JSONValue] = [:]
+        for (key, value) in expect {
+            seen[key] = seen[key].map { $0 == value ? value : .str("assumed differently by the cards it carries") } ?? value
+        }
+        for (key, value) in seen { fingerprints.set(key, value) }
+        var raw = card.raw
+        raw.set("expect", .object(fingerprints))
+        card = Proposal(raw: raw)
         guard (try? ProposalStore.save(card, in: folder)) != nil else { return false }
         guard (try? commands.trustProposals([card.id], in: folder)) != nil else {
             let written = ProposalStore.dir(folder).appendingPathComponent("\(card.id).json")
