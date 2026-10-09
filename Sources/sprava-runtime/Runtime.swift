@@ -599,11 +599,15 @@ final class Runtime: @unchecked Sendable {
         var requestOutcome = JobOutcome.ok
         do {
             if let request = try requests.next() {
-                requests.run(request, backup: backup, deviceID: commands.deviceID)
+                do { try requests.run(request, backup: backup, deviceID: commands.deviceID) } catch {
+                    // The queue could not record the request as running, or how it ended: reported, never "done".
+                    log("backup request=\(request.kind) queue_unwritable")
+                    requestOutcome = .error(code: "backup_requests_unwritable", culprit: request.kind)
+                }
                 let state = (try? requests.all())?.first { $0.id == request.id }?.state ?? "?"
                 log("backup request=\(request.kind) state=\(state)")
                 if state == "done" { notify(title: "Sprava", body: "Backup: \(request.kind.replacingOccurrences(of: "_", with: " ")) finished.", id: "backup-\(request.id)") }
-                if state == "failed" { requestOutcome = .error(code: "backup_request_failed", culprit: request.kind) }
+                if state == "failed", requestOutcome == .ok { requestOutcome = .error(code: "backup_request_failed", culprit: request.kind) }
             }
         } catch {
             // A queue that cannot be read is left as it is, and reported; the scheduled work still runs.

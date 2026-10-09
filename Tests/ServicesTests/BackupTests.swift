@@ -41,7 +41,7 @@ import Testing
 
         let backup = Backup(support: support, removeFolder: { try FileManager.default.removeItem(at: $0) })
         let requests = BackupRequests(support: support)
-        func drain() throws { while let r = try requests.next(), r.state == "queued" { requests.run(r, backup: backup, deviceID: "dev", now: now) } }
+        func drain() throws { while let r = try requests.next(), r.state == "queued" { try requests.run(r, backup: backup, deviceID: "dev", now: now) } }
 
         // Without the confirmation, the request stops and lists the open items.
         _ = try call(c, [("command", .str("backup_request")), ("kind", .str("offload")), ("binder", .string(folder.path))])

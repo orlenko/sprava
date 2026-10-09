@@ -203,7 +203,7 @@ import Testing
         #expect(throws: (any Error).self) { try requests.next() }
         #expect(throws: (any Error).self) { try requests.enqueue(.init(id: "x", kind: "drill", binder: "/Invented/x", at: ISOTime.string(now))) }
         #expect(throws: (any Error).self) { try requests.recoverInterrupted() }
-        requests.update("invented") { $0.state = "failed" }
+        #expect(throws: (any Error).self) { try requests.update("invented") { $0.state = "failed" } }
         let r = try call(c, [("command", .str("backup_request")), ("kind", .str("restore")), ("backup_id", .str("invented-id"))])
         #expect(r["ok"] == .bool(false), "\(r)")
         let status = try call(c, [("command", .str("backup_status"))])
