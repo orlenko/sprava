@@ -18,28 +18,29 @@ extension Adoption {
         let setMeta = metaRepair(found)
         var meta = found
         for key in setMeta?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [] { meta.remove(key) }
+        for entry in setMeta?["set"]?.objectValue?.entries ?? [] { meta.set(entry.key, entry.value) }
         var patch: [JSONValue] = []
-        func add(_ key: String, _ value: JSONValue) {
+        // A value the stamp writes over (a found `format`, `format_version`, `disclosure` or a name that is not a
+        // non-empty string) is kept aside under the next free `legacy_<field>` first (binder-v0 §9.5); with none free,
+        // no stamp is offered. `schema_version` is the one value replaced outright (binder-v0 §9.4 step 6); the
+        // migrate's `from` records it.
+        var noLegacyKey = false
+        func add(_ key: String, _ value: JSONValue, keepAside: Bool = true) {
+            if keepAside, let old = meta[key], old != value {
+                guard let aside = legacyKey(key, in: meta) else { noLegacyKey = true; return }
+                patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", old)]))
+                meta.set(aside, old)
+            }
             patch.append(.obj([("op", .str(meta[key] == nil ? "add" : "replace")), ("path", .string("/meta/\(key)")), ("value", value)]))
         }
-        if teka.level == .lifeprojV1 { add("schema_version", .int(2)) }
-        // A name that is not a non-empty string is kept aside too; `set_meta` may not change the name, the stamp may.
-        if let name = meta["name"], (name.stringValue ?? "").isEmpty {
-            guard let aside = legacyKey("name", in: meta) else { return nil }
-            patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", name)]))
-        }
+        if teka.level == .lifeprojV1 { add("schema_version", .int(2), keepAside: false) }
         if (meta["name"]?.stringValue ?? "").isEmpty { add("name", .string(folder.lastPathComponent)) }
         add("format", .str("teka"))
         add("format_version", .str("0"))
-        // A disclosure found with another value (lifeproj's own, or free text) is kept aside before the stamp sets one.
-        let disclosure: JSONValue = .str(lifeprojReach ? "full" : "none")
-        if let old = meta["disclosure"], old != disclosure {
-            guard let aside = legacyKey("disclosure", in: meta) else { return nil }
-            patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", old)]))
-        }
-        add("disclosure", disclosure)
+        add("disclosure", .str(lifeprojReach ? "full" : "none"))
         if meta["modules"] == nil, case .array(let found)? = survey["modules_found"], !found.isEmpty { add("modules", .array(found)) }
         if meta["id_scheme"] == nil { add("id_scheme", survey["ids"] == .str("teka-year-seq") ? .str("teka-year-seq") : .str("opaque")) }
+        if noLegacyKey { return nil }
         for key in ["documents", "open_items", "processing_log"] where current[key] == nil {
             patch.append(.obj([("op", .str("add")), ("path", .string("/\(key)")), ("value", .array([]))]))
         }

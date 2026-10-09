@@ -309,6 +309,34 @@ import Testing
         #expect(teka.catalog?["meta"]?["legacy_lifecycle"] == nil)
     }
 
+    // Layer 5 third calibrated review, finding 1: a format version found before the stamp stays in the catalog under
+    // the next free legacy name, and with no free name no stamp is offered.
+    @Test func theStampKeepsAsideAFoundFormatVersion() throws {
+        let plain = #"{"id":"p-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01"}"#
+        func binder(_ extra: String) throws -> URL {
+            let folder = try lifeproj([plain])
+            let url = folder.appendingPathComponent("catalog.json")
+            let text = try String(contentsOf: url, encoding: .utf8)
+            try Data(text.replacingOccurrences(of: #""name":"tax""#, with: #""name":"tax","format_version":"custom-v3""# + extra).utf8).write(to: url)
+            return folder
+        }
+        let folder = try binder(#","legacy_format_version":"taken""#)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        let stamp = try #require(result.proposals.first { $0.raw["provenance"]?["adoption"] == .str("stamp") })
+        try TekaStore(folder: folder).approve(stamp, now: now)
+        let teka = Teka.read(folder)
+        #expect(teka.state == .ready, "\(teka.reasons)")
+        #expect(teka.catalog?["meta"]?["format_version"] == .str("0"))
+        #expect(teka.catalog?["meta"]?["legacy_format_version"] == .str("taken"))
+        #expect(teka.catalog?["meta"]?["legacy_format_version_2"] == .str("custom-v3"))
+
+        let taken = (1...100).map { #","\#($0 == 1 ? "legacy_format_version" : "legacy_format_version_\($0)")":"taken""# }.joined()
+        let full = try binder(taken)
+        let r = try Adoption.adopt(full, inRegistry: false, deviceID: "t", today: today, now: now)
+        #expect(!r.proposals.contains { $0.raw["provenance"]?["adoption"] == .str("stamp") })
+        #expect(Teka.read(full).catalog?["meta"]?["format_version"] == .str("custom-v3"))
+    }
+
     // Layer 5 second calibrated review, finding 2: a pre-lifeproj schema version stays in the catalog under the next
     // free legacy name when `legacy_schema_version` is taken.
     @Test func anOldSchemaVersionIsKeptBesideATakenLegacyKey() throws {
