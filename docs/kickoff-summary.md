@@ -9,14 +9,14 @@
 ## What Sprava is (one page)
 
 Sprava keeps a case file for each episode of a person's life. An estate to settle, a move, a tax
-year, a rental property, a seat on a condo board: each gets one binder, a **teka**, and the binder
-stays current on its own. At any moment it answers the four questions that matter: what is open,
+year, a rental property, a seat on a condo board: each gets one binder, and the binder stays
+current on its own. At any moment it answers the four questions that matter: what is open,
 what is due, who are we waiting on, and which documents exist. It also keeps a record of how it
 got there, so every fact can be traced to the capture, document or decision it came from.
 
 It is built in three layers.
 
-**The teka: an open folder format.** A binder is an ordinary folder a person can read without the
+**The binder: an open folder format.** A binder is an ordinary folder a person can read without the
 app: an operating manual, a catalog of documents and open items, an append-only log, and a
 dashboard regenerated from the catalog. This is the format the author has run for months with
 lifeproj and terminal agents. Sprava promotes it to a written spec with schemas and conformance
@@ -65,11 +65,11 @@ replace the author as supervisor. The review queue's job is to replace the termi
    recording the catalog's content hash before and after. When the chain breaks (someone edited
    the catalog by hand, or a terminal agent ran a digest), the runtime records an `external_edit`
    op holding the diff, so provenance survives instead of the edit being an error. Why: existing
-   tekas are plain folders that terminal agents edit today, and the author wants lifeproj to stay
+   binders are plain folders that terminal agents edit today, and the author wants lifeproj to stay
    a valid second implementation; a view-only catalog forbids both. Undo, "why does it say that"
    and later multi-device merge all work on the chained log either way. What it changes: Sprava
-   never imports a teka into a store. It opens the folder where it is and adds a `.sprava/`
-   directory inside it for the log and the index. "Existing tekas must open without loss" becomes
+   never imports a binder into a store. It opens the folder where it is and adds a `.sprava/`
+   directory inside it for the log and the index. "Existing binders must open without loss" becomes
    nearly free, because nothing is converted. (`decisions.md` F1)
 
 2. **The clerk emits interpretations, not ops.** The handoff asks for guided generation so the
@@ -107,7 +107,7 @@ replace the author as supervisor. The review queue's job is to replace the termi
    copy; the portable age identity stays. (A6)
 
 5. **The briefs lane is not a format contract.** The handoff asks for slice, outbox *and briefs*
-   contracts in `teka-v0`. The briefs lane is provisional and hub-specific (reading a meeting brief
+   contracts in `binder-v0`. The briefs lane is provisional and hub-specific (reading a meeting brief
    on a second screen). In Sprava it is a product feature, documents readable in the app, not a
    format. I'd leave it out of v0, keep the agenda slice and outbox as an optional *federation
    profile* for coexistence with the existing hub and for any future split-process deployment,
@@ -173,7 +173,7 @@ docs plus a `doctor` command; and one bucket taxonomy instead of the two lifepro
   `open_items[]`; `documents[]` and `processing_log[]` have no schema; there is no dashboard
   renderer; nothing migrates `schema_version`; three generations of the copied-in checker exist;
   `done appears once then drops` is a manual rule, not code; and `lifeproj route` hooks stamped into
-  every teka send prompt text to TypeSafe when a key is set, with a plaintext request log outside
+  every binder send prompt text to TypeSafe when a key is set, with a plaintext request log outside
   the backup. The lifeproj and handoff descriptions also disagree on local git.
 - **Competitors.** OpenAI dots, Meta Muse, Gemini Spark, Microsoft Autopilot, Instinct, Grok Bot,
   Manus Cue and Amazon Quick all run on vendor cloud VMs; Claude moved new Cowork tasks to the
@@ -187,11 +187,11 @@ docs plus a `doctor` command; and one bucket taxonomy instead of the two lifepro
 - **Names.** Osavul: taken, actively being registered for software; keep it private. Teka: Teka
   Industrial holds the word for appliances in many countries and ships a "Teka Home" app; its EU
   class-9 mark covers irons and vacuum cleaners, not software, so the risk for a lowercase format
-  term is bounded, but not for an app name. Sprava: no live mark in classes 9/42 in the US, Canada
-  or EU; npm `sprava` (a Claude Code manager, 2026), sprava.ai (property reports), sprava.dev and
-  two iOS apps use the name; sprava.app, sprava.io and sprava.ca were free on 2026-10-06. None of
-  this is legal advice; a clearance opinion (including the phonetic "Strava") belongs before any
-  announcement.
+  term is bounded, but not for an app name (decisions.md P18 later dropped "teka" for "binder").
+  Sprava: no live mark in classes 9/42 in the US, Canada or EU; npm `sprava` (a Claude Code
+  manager, 2026), sprava.ai (property reports), sprava.dev and two iOS apps use the name;
+  sprava.app, sprava.io and sprava.ca were free on 2026-10-06. None of this is legal advice; a
+  clearance opinion (including the phonetic "Strava") belongs before any announcement.
 
 ## Open questions
 
@@ -222,11 +222,11 @@ Mine:
   scope?
 - **Languages.** English and French in v1, Ukrainian through the open-model fallback later? If
   Ukrainian matters now, the fallback moves into the MVP.
-- **A structure-only survey of your live tekas.** I'm not allowed inside `~/tekas/`, and the
+- **A structure-only survey of your live binders.** I'm not allowed inside the folder that holds them, and the
   `documents[]` and `processing_log[]` shapes exist only there. I have a script that prints key
   names, types and counts and never a value or a name; running it once would let the spec match
   reality. Your call.
-- **Backup.** Should the MVP call cmirror for backups (it exists, and every live teka is registered
+- **Backup.** Should the MVP call cmirror for backups (it exists, and every live binder is registered
   with it) and replace it natively later, or ship its own from day one? There is no mature Swift
   age library, so native means bundling the Go binary or implementing the spec on CryptoKit.
 - **lifeproj's future.** Does it keep evolving as the terminal implementation of the spec, or
@@ -236,15 +236,15 @@ Mine:
 - **A minimal MCP surface in the MVP.** Reads and proposals only, because you drive binders with
   Claude Code today. In or out?
 - **UI toolkit.** holos is AppKit. Same for Sprava, or SwiftUI with AppKit where needed?
-- **Local git in tekas.** The handoff says yes, lifeproj says none by design. Is git history meant
+- **Local git in binders.** The handoff says yes, lifeproj says none by design. Is git history meant
   to be a provenance fallback, or just something v0 tolerates?
-- **Dogfooding from day one.** I'm assuming the MVP opens your live tekas in place on the first
+- **Dogfooding from day one.** I'm assuming the MVP opens your live binders in place on the first
   day it can. That decides the priority of the adopt-in-place path over everything else.
 - **The hub during the transition.** I'm assuming the existing hub, spool and Google Tasks sync
   keep running until Today covers them.
 
 ## What I'm drafting next
 
-`docs/spec/teka-v0.md`, `docs/spec/capture-event-v0.md`, `docs/architecture.md` (with the skeptic
+`docs/spec/binder-v0.md`, `docs/spec/capture-event-v0.md`, `docs/architecture.md` (with the skeptic
 pass), `docs/mvp.md`, and a refreshed competitor section for the brainstorm, all following
 `decisions.md` and all as drafts for you to commit or not.

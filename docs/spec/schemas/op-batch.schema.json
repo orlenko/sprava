@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:op-batch",
-  "title": "teka v0 op batch (proposal)",
+  "title": "binder v0 op batch (proposal)",
   "description": "A set of ops that are approved and applied together, with the provenance a review card shows. Stored as .sprava/proposals/<id>.json; the applied ops are appended to .sprava/ops.ndjson with proposal and batch set to this id. A new record's id in a proposal is a placeholder such as \"$new:1\", which later ops in the same batch may reference; the real id is minted when the batch is applied (section 5.6).",
   "type": "object",
   "required": ["id", "format_version", "created_at", "actor", "state", "ops"],

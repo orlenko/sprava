@@ -85,9 +85,9 @@
       "required": ["title", "action", "people", "binder_guess", "source_span"],
       "properties": {
         "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "A short title for the item, in the capture's language. Model." },
-        "action": { "type": "string", "enum": ["call", "pay", "send", "review", "wait", "file", "meet", "decide", "note", "other"], "description": "What has to happen. Not the teka item kind; code maps it (section 6.5). Model." },
+        "action": { "type": "string", "enum": ["call", "pay", "send", "review", "wait", "file", "meet", "decide", "note", "other"], "description": "What has to happen. Not the binder item kind; code maps it (section 6.5). Model." },
         "when_text": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The time expression exactly as spoken; kept only when it occurs in the quote's sentence and matches a known time pattern. Model. Never a resolved date." },
-        "when_role": { "type": "string", "enum": ["due", "expected", "follow_up"], "description": "Which teka date when_resolved fills, from the words around when_text (by, until, if not by). Code." },
+        "when_role": { "type": "string", "enum": ["due", "expected", "follow_up"], "description": "Which binder date when_resolved fills, from the words around when_text (by, until, if not by). Code." },
         "when_resolved": { "$ref": "#/$defs/date", "description": "The date code resolved when_text to, from captured_at and locale. Never earlier than the capture date. Code." },
         "people": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "People named for this item, as spoken; a role such as the notary is fine. Each entry occurs in the capture text as whole words and is not a pronoun or an indefinite such as someone. Model, checked by code." },
         "speaker": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Meetings only: the label of the turn that holds the item's sentence. Code." },

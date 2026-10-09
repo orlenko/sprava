@@ -1,0 +1,38 @@
+#!/bin/sh
+# Before every commit is recorded: its message holds no private token. Messages become public history too.
+# The same list and rules as pre-commit (tokens.sh): a match is reported by line number only, never by its text;
+# a list that exists but cannot be read, or a malformed pattern, rejects the commit; only a list that is
+# certainly absent skips the scan.
+# The whole message file is scanned as git hands it to this hook, comment lines and anything after a scissors
+# line included: whether git drops those depends on the cleanup mode, and a scissors line can be typed into
+# `-m` as well. So with `git commit -v`, the staged diff below the scissors line is scanned too; a commit that
+# removes a line holding a token is then rejected, and is made without -v.
+set -eu
+hook_dir="$(cd "$(dirname "$0")" && pwd -P)"
+reject() { echo "commit-msg: $1; nothing was committed" >&2; exit 1; }
+[ -r "$hook_dir/tokens.sh" ] || reject "$hook_dir/tokens.sh is missing"
+. "$hook_dir/tokens.sh"
+
+msg="${1:-}"
+{ [ -n "$msg" ] && [ -f "$msg" ] && [ -r "$msg" ]; } || reject "could not read the commit message"
+check_token_list
+if [ "$tokens_state" = absent ]; then
+    echo "commit-msg: no private-token list at $tokens; the scan of the message was skipped" >&2
+    exit 0
+fi
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/sprava-commit-msg.XXXXXX") || reject "could not create a temporary folder"
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# grep exits 0 on a match, 1 on none, and 2 on an error such as a malformed pattern.
+status=0
+grep -naEi -f "$tokens" "$msg" > "$work/hits" 2>/dev/null || status=$?
+[ "$status" -le 1 ] || reject "the privacy scan of the message failed (grep exit status $status); check the patterns in $tokens"
+if [ "$status" -eq 0 ]; then
+    echo "commit-msg: the commit message contains a private token (patterns in $tokens); the matched text is withheld:" >&2
+    cut -d: -f1 "$work/hits" | sed 's/^/message line /' >&2
+    exit 1
+fi
+exit 0

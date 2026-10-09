@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:op",
-  "title": "teka v0 applied op",
+  "title": "binder v0 applied op",
   "description": "One line of .sprava/ops.ndjson: an op that has been applied to catalog.json, with its envelope. An applied op carries every value its effect needs, so applying it is a pure function of the catalog and the op (section 6.3). The op body (op, args, note) is what a proposal carries before it is applied.",
   "type": "object",
   "required": ["id", "at", "actor", "op", "args", "before_hash", "after_hash"],
@@ -594,7 +594,7 @@
         "path": {
           "type": "string",
           "minLength": 1,
-          "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+          "$comment": "Relative to the binder folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
         },
         "date": { "$ref": "#/$defs/date" },
         "kind": { "type": "string", "minLength": 1 },

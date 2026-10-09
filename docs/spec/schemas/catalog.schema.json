@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:catalog",
-  "title": "teka v0 catalog.json",
-  "description": "The catalog of one teka. Three catalog levels are accepted: lifeproj v1 (loose), lifeproj v2 (lifeproj's open_items rules) and teka v0 (meta.format is \"teka\"). The generic layer checks only what lifeproj's checker needs to read a catalog. Unknown fields and unknown top-level arrays are allowed and must be preserved by every writer.",
+  "title": "binder v0 catalog.json",
+  "description": "The catalog of one binder. Three catalog levels are accepted: lifeproj v1 (loose), lifeproj v2 (lifeproj's open_items rules) and binder v0 (meta.format is \"teka\"). The generic layer checks only what lifeproj's checker needs to read a catalog. Unknown fields and unknown top-level arrays are allowed and must be preserved by every writer.",
   "type": "object",
   "required": ["meta"],
   "properties": {
@@ -27,7 +27,7 @@
       "then": { "properties": { "open_items": { "items": { "$ref": "#/$defs/item_v2" } } } }
     },
     {
-      "$comment": "teka v0: meta.format is \"teka\". The v0 rules then apply to meta, every open item, every document, every entity and every log entry a v0 implementation wrote.",
+      "$comment": "binder v0: meta.format is \"teka\". The v0 rules then apply to meta, every open item, every document, every entity and every log entry a v0 implementation wrote.",
       "if": { "properties": { "meta": { "required": ["format"], "properties": { "format": { "const": "teka" } } } } },
       "then": {
         "required": ["documents", "open_items", "processing_log"],
@@ -232,7 +232,7 @@
         "path": {
           "type": "string",
           "minLength": 1,
-          "$comment": "Relative to the teka folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
+          "$comment": "Relative to the binder folder. A record found at adoption may hold any path and is reported; a path written by file_document or update_document follows safe_path or record_path in op.schema.json."
         },
         "date": { "$ref": "#/$defs/date" },
         "kind": { "type": "string", "minLength": 1 },

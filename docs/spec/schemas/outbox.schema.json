@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:outbox",
-  "title": "outbox v1 (outbox/<teka>.intake.json)",
-  "description": "What a hub writes for a teka to drain. completions[] is live; items[] is a documented stub that a drain preserves untouched. teka and generated are informative; a drain ignores them.",
+  "title": "outbox v1 (outbox/<binder>.intake.json)",
+  "description": "What a hub writes for a binder to drain. completions[] is live; items[] is a documented stub that a drain preserves untouched. teka and generated are informative; a drain ignores them.",
   "type": "object",
   "properties": {
     "teka": { "type": "string" },
@@ -31,7 +31,7 @@
           "id": {
             "type": "string",
             "minLength": 1,
-            "description": "The published slice id (teka-prefixed) or the raw catalog id; a drain matches either."
+            "description": "The published slice id (binder-prefixed) or the raw catalog id; a drain matches either."
           },
           "action": { "enum": ["done", "dropped"] },
           "at": {

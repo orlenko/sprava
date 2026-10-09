@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sprava:teka:v0:log-entry",
-  "title": "teka v0 processing_log entry",
+  "title": "binder v0 processing_log entry",
   "description": "One entry of processing_log[]. Entries a v0 implementation writes carry op_id and follow these rules; legacy entries are accepted as they are. Single source of the log_entry_v0 copy. Unknown fields are allowed and preserved.",
   "$comment": "Rules for entries a v0 implementation writes, which always carry op_id. Entries without op_id are legacy and unconstrained; lifeproj's rule that any entry with an id closes that item holds for them whatever their action.",
   "if": { "type": "object", "required": ["op_id"] },
