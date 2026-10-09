@@ -545,14 +545,13 @@ a re-claimed relay from the one it claimed.
   With the right secret, a pairing already joined, or consumed (`joined.json` has an intent, section 7.8: an
   earlier join's transcript may still land), or whose device has a revocation marker, is `409`. Then, under the
   creation lock, the relay counts the devices again as above, and refuses the join with `507`, writing nothing, if
-  there are already 20. The count leaves out the pairing's own device `D` when a record for this pairing and this
-  `D` is already there: an earlier join of the pairing, cut short, wrote it, and it is the slot this join
-  completes, not another device. After a `507` the pairing stays open until it expires. A join writes, in this
-  order, the token's marker, the device's record and `joined.json` (section 7.8); the pairing is joined exactly
-  when `joined.json` exists. Joins are public, so they are bounded before any storage is read: at most 16 are in
-  progress at once, and at most 8 wait for one pairing, each for at most 10 seconds (a join whose client has gone
-  away leaves the queue). Beyond that the answer is `503` with `Retry-After`, which the web app retries (section
-  5.2, step 2).
+  there are already 20. The count leaves out the joining device `D` itself: a record of it can only come from an
+  earlier join of this pairing, cut short, and it is the slot this join completes, not another device. After a
+  `507` the pairing stays open until it expires. A join writes, in this order, the token's marker, the device's
+  record and `joined.json` (section 7.8); the pairing is joined exactly when `joined.json` exists. Joins are
+  public, so they are bounded before any storage is read: at most 16 are in progress at once, and at most 8 wait
+  for one pairing, each for at most 10 seconds (a join whose client has gone away leaves the queue). Beyond that
+  the answer is `503` with `Retry-After`, which the web app retries (section 5.2, step 2).
 - `GET /v0/pairings/{P}` (owner) → `{"state": "open"|"joined"|"keyed"|"acknowledged", "device_id": D|null,
   "device_public_key": "<b64 B>"|null, "hello": "<b64>"|null}`. All three are `null` while the pairing is
   `open`, `device_id` included, and set from its join on. Once set, none of them changes, even when a failed
@@ -571,14 +570,16 @@ a re-claimed relay from the one it claimed.
   relay writes the pairing's acknowledgement, which makes it `acknowledged`, then deletes the sealed key
   payload, keeping `key.sha256`. Repeating it is harmless.
 - `DELETE /v0/pairings/{P}` (owner) → `204`, also when the pairing does not exist. Deletes the pairing, and its
-  device if that device is still pending. The pairing's tombstone `deleted` comes first (section 7.8): from then
-  on the pairing is missing for every route, and a retry, the sweep or the start deletes what is left of it.
+  device if that device is still pending, as expiry does (below). The device's revocation marker comes first when
+  the device goes too, then the pairing's tombstone `deleted` (section 7.8), then the parts: from then on the
+  pairing is missing for every route, and a retry, the sweep or the start deletes what is left of it.
 
 A pairing is deleted 10 minutes after it was made, whatever its state, in the same way. A device still pending at
-that moment is deleted with it. A device that was made active stays; the owner decides about it (section 5.2, step
-6). A pending device deleted with its pairing gets no revocation marker: it was never active, its token admitted
-only its own pairing's `key` and `ack`, which are gone, and the owner never uses its id again (section 5.2, step
-1).
+that moment (it never got its activation marker, and has no revocation marker) is deleted with it, behind its
+revocation marker: the relay writes the device's marker first, then the pairing's tombstone, then deletes the
+parts, so no late write of its token, record or activation can bring it back. A device that was made active stays,
+and so does one that revoked itself since, with its stored revocation; the owner decides about it (sections 5.2,
+step 6, and 7.4). The owner never uses a deleted pending device's id again (section 5.2, step 1).
 
 **A late join.** A join whose response failed (a timeout, a crash, a fenced writer, section 7.9) may have begun
 writes that land later. Its token marker then names a token nobody holds, and its record holds the same bytes
@@ -634,24 +635,26 @@ a newer one: their names differ. Object names are `index/{r}`, `views/{id}/{vers
 and `devices/{D}/outcomes/{r}`, where `{id}` and `{D}` are ids and `{r}`, `{version}` and `{e}` are unsigned
 integers of at least 1, in decimal without leading zeros. Nothing else is accepted.
 
-- `PUT /v0/objects/{name}`, body bytes (a sealed object, at most 1 MiB) → `204`. A `PUT` to a name that exists
-  is refused with `409` and changes nothing, unless the stored bytes are identical, which is `204`, so a retry
-  is harmless. So is a `PUT` to a name whose intent is for other bytes (section 7.8), even before those land:
-  `409` always means that other bytes hold the name. A `PUT` to a deleted name, whatever its bytes, is `410`
-  and changes nothing: a name is never written again once deleted. The check and the write happen under the
-  relay's creation lock.
+- `PUT /v0/objects/{name}`, body bytes (a sealed object, at most 1 MiB) → `204`. A `PUT` to a name that exists is
+  refused with `409` and changes nothing, unless the stored bytes are identical, which is `204`, so a retry is
+  harmless. So is a `PUT` to a name whose intent is for other bytes (section 7.8), even before those land: `409`
+  always means that other bytes hold the name. A `PUT` to a deleted name, whatever its bytes, is `410` and changes
+  nothing, and so is one to a name below its prefix's floor (section 7.8): a name is never written again once
+  deleted. The check and the write happen under the relay's creation lock.
 - `GET /v0/objects/{name}` → bytes, with `ETag: "<SHA-256 of the bytes, in lowercase hex>"` (the quotes are
   part of the value). A request whose `If-None-Match` is exactly that value gets `304` with the same `ETag` and
   no body. Since an object never changes under its name, the tag never goes stale.
-- `DELETE /v0/objects/{name}` → `204`, also when the name does not exist. The relay writes the name's
-  tombstone, durably, then deletes the object (section 7.8). A deleted name is never served (`404`) or listed,
-  even when a late write brings a copy back.
+- `DELETE /v0/objects/{name}` → `204`, also when the name does not exist. The relay writes the name's tombstone,
+  durably, then deletes the object (section 7.8). Then it raises the prefix's floor to the lowest number still
+  published under it, and deletes what the floor covers. A deleted name is never served (`404`) or listed, even
+  when a late write brings a copy back; such a copy is deleted when a listing meets it, and an hourly sweep
+  compacts every object prefix, so one no listing meets goes too.
 - `GET /v0/objects?prefix=<p>[&limit=<n>][&below=<number>]` → `{"names": ["index/42", ...], "next":
-  <number>|null}`. `<p>` is one of `index/`, `views/{id}/`, `devices/{D}/keys/` and `devices/{D}/outcomes/`;
-  any other is `400`. A device listing a prefix it may not list (section 7.1) gets `404`.
-  The names under it come newest first, ordered by their last segment as a number, at most `limit` (1 to 100,
-  default 20), and only those whose number is below `below` when it is given, and not deleted: the relay checks
-  the tombstone of each name present under the prefix. `next` is the number to pass as `below` for the next
+  <number>|null}`. `<p>` is one of `index/`, `views/{id}/`, `devices/{D}/keys/` and `devices/{D}/outcomes/`; any
+  other is `400`. A device listing a prefix it may not list (section 7.1) gets `404`. The names under it come
+  newest first, ordered by their last segment as a number, at most `limit` (1 to 100, default 20), and only those
+  whose number is below `below` when it is given, and not deleted: the relay checks each name present under the
+  prefix against the prefix's floor and the name's tombstone. `next` is the number to pass as `below` for the next
   page, or `null`.
 
 **Finding the newest.** A reader lists a prefix and takes the candidates in order, newest first. It takes the
@@ -757,7 +760,7 @@ deletion. So every object it keeps is one of three kinds:
 | `devices/{D}/record.json` | write-once, at join, alike for every join of the pairing | the pairing id, and nothing else |
 | `devices/{D}/tokens/{sha256}` | write-once, at join, one per token the relay made, named by the token's hash (section 3) | `{"joined_at": time}`, when the token was made, informative. A token is admitted only while its marker exists; a late marker names a token nobody holds |
 | `devices/{D}/active` | write-once marker, at key installation, before the key | nothing |
-| `devices/{D}/revoked` | write-once marker, at removal, before any deletion; never cleaned up | nothing |
+| `devices/{D}/revoked` | write-once marker, at removal, before any deletion, and before a pending device is deleted with its pairing or as an orphan; never cleaned up | nothing |
 | `devices/{D}/revocation` | write-once, at a device's self-revocation, before the marker; kept until the owner deletes the device | the device's sealed revocation |
 | `devices/{D}/last_seen` | informative | the hour the device was last seen; a late write can only set it back an hour |
 | `pairings/{P}/created.json` | write-once | `A`, `D`, the secret's hash, `expires_at` |
@@ -768,10 +771,10 @@ deletion. So every object it keeps is one of three kinds:
 | `pairings/{P}/deleted` | write-once marker, the pairing's tombstone, written before any other part is deleted; never deleted | nothing. A pairing that has it is missing for every route, whatever else is left beside it, and its other parts are deleted (by the deletion, its retry, the sweep or the start) |
 | `objects/{name}` | write-once (section 7.5) | a sealed object |
 | `requests/{D}/{ordinal}-{R}` | write-once, named uniquely by its ordinal | a sealed request |
-| `ordinals/{D}/{block}` | write-once, written before any ordinal in the block is given; deleted only once it ends at or below the device's floor, and never the device's highest | the name of the reserving process's lease, `leases/{rank}-{id}`: it reserves the ordinals `1,024 × block` to `1,024 × block + 1,023` for that process alone (section 7.6) |
-| `intents/{name}/{sha256}` | write-once, empty; the name says everything | the intent to write the object `{name}` (any name above but a lease's, a tombstone's or a floor's) with the bytes whose SHA-256, in lowercase hex, is `{sha256}`. Written and confirmed before those bytes are sent. Kept for the life of the instance, except a request's, which are deleted with the request, after its tombstone, or once they are below the device's floor |
-| `tombstones/{name}` | write-once, empty | nothing: the object `{name}` (an object or a request) was deleted. Written, durably, before the object is deleted. Never deleted, except a request's once it is below the device's floor |
-| `floors/{D}/{ordinal}` | write-once, empty; the name says everything | nothing: every request name of device `D` whose ordinal is below the device's highest floor counts as deleted. Written, durably, before anything it covers is deleted; lower floors are then deleted |
+| `ordinals/{D}/{block}` | write-once, written before any ordinal in the block is given; deleted, with its intents, only once it ends at or below the device's floor, and never the device's highest | the name of the reserving process's lease, `leases/{rank}-{id}`: it reserves the ordinals `1,024 × block` to `1,024 × block + 1,023` for that process alone (section 7.6) |
+| `intents/{name}/{sha256}` | write-once, empty; the name says everything | the intent to write the object `{name}` (any name above but a lease's, a tombstone's or a floor's) with the bytes whose SHA-256, in lowercase hex, is `{sha256}`. Written and confirmed before those bytes are sent. Deleted once nothing needs it: with its request, after the tombstone; once a floor covers its name; with a deleted device or pairing (but the intent of a device's revocation marker); with its ordinal reservation |
+| `tombstones/{name}` | write-once, empty | nothing: the object `{name}` (an object or a request) was deleted. Written, durably, before the object is deleted. Deleted once the floor of its scope covers it |
+| `floors/{scope}/{n}` | write-once, empty; the name says everything | nothing: every name of the scope numbered below its highest floor counts as deleted. The scopes are `requests/{D}` (by ordinal) and, for each object prefix (section 7.5), `objects/{prefix}` without its last `/` (by revision, version or epoch). Written, durably, before anything it covers is deleted; lower floors are then deleted |
 
 A pairing is `open` when only `created.json` exists, `joined` with `joined.json`, `keyed` with `key.sha256`, and
 `acknowledged` with `ack`. The numbers in a lease's rank, a request's ordinal and an ordinal block are written as
@@ -801,32 +804,39 @@ So every write that can land, however late, even after a restart or from a fence
 durable intent before it left, and every later writer of that name sees it. Bytes the name was not promised are
 never stored under it. A refused write stores nothing; its endpoint answers as it does when the name holds other
 bytes (`409`, or `503` for a request, section 7.6). An intent whose bytes were never sent only keeps other bytes
-out. An intent's name is its content, so a late write of one repeats it. Intents are kept for the life of the
-instance, so a name never takes other bytes, even after its object is deleted; a request's are the exception,
-deleted with it after its tombstone, or once the device's floor covers it (below). An intent holds nothing but a
-hash of bytes the relay was given.
+out. An intent's name is its content, so a late write of one repeats it. An intent is deleted only once something
+else refuses every late write to its name: with a request, after its tombstone; once a floor covers the name
+(below); with a deleted device, whose revocation marker refuses everything of it, except the marker's own intent;
+with a deleted pairing, behind its tombstone; and with its ordinal reservation. So a name never takes other bytes,
+even after its object is deleted. An intent holds nothing but a hash of bytes the relay was given.
 
 **Tombstones.** An object the owner deletes (section 7.5) and a request that is deleted (section 7.6) could
 otherwise be written again by a late write. So the relay first writes the name's tombstone `tombstones/{name}`,
 durably, then deletes the object. (These are the relay's; the Mac's outcome tombstones, section 9.1, are another
 thing.) From then on the name is dead: every write to it is refused (step 1 above), and every reader treats a copy
-that a late write brings back as deleted: it is never served or listed. Such a copy of a request is deleted again
-when the relay lists it; one of an object stays in the bucket, hidden, until the instance is retired (section 6).
-A late deletion then only removes what is already dead. A pairing has its own tombstone, `pairings/{P}/deleted`,
-written before any of its other parts is deleted; a device needs none, since its revocation marker is never
-deleted (section 7.4). Tombstones are never deleted, except a request's under its device's floor.
+that a late write brings back as deleted: it is never served or listed. Such a copy is deleted again when a
+listing meets it, and an hourly sweep deletes any no listing meets. A late deletion then only removes what is
+already dead. A pairing has its own tombstone, `pairings/{P}/deleted`, written before any of its other parts is
+deleted; a device needs none, since its revocation marker is never deleted (section 7.4). A tombstone is deleted
+once its scope's floor covers it (below).
 
-**Floors.** A device's requests would otherwise leave a tombstone, and an ordinal reservation, behind for every
-request it ever made. So when the owner deletes a request, and at every sweep, the relay, holding the device's
-lock, which every request's creation also holds from its ordinal to its place in the mailbox (section 7.6), raises
-the device's **floor** to its lowest pending ordinal (or, with nothing pending, the next ordinal it would give):
-it writes `floors/{D}/{ordinal}`, durably, before it deletes anything the floor covers. Every request name of the
-device whose ordinal is below its highest floor counts as deleted, tombstone or not: a copy or an intent a late
-write brings back below it is never listed or served, and is deleted again. Then the relay deletes the lower
-floors, the request tombstones and intents below the floor, and the ordinal reservations that end at or below it,
-but never the device's highest reservation. What request deletions leave is so bounded by what is pending, plus
-one empty intent for each block of ordinals ever reserved (an intent outlives its object, above); and ordinals
-still never go back: a process starts at or above the floor (section 7.6).
+**Floors.** Deletions would otherwise leave a tombstone, an intent or an ordinal reservation behind for every
+request and every object ever made. So each numbered scope has a **floor**, `floors/{scope}/{n}`: every name of
+the scope numbered below its highest floor counts as deleted, tombstone or not, so a copy or an intent a late
+write brings back below it is never listed or served, and is deleted again. The relay writes a floor durably
+before it deletes anything the floor covers, and then deletes the lower floors and what the new one covers: the
+tombstones, intents and late copies below it. A late write of a lower floor changes nothing. A device's requests
+have the floor `floors/requests/{D}/{ordinal}`: when the owner deletes a request, and at every sweep, the relay,
+holding the device's lock, which every request's creation also holds from its ordinal to its place in the mailbox
+(section 7.6), raises it to the device's lowest pending ordinal (or, with nothing pending, the next ordinal it
+would give), and also deletes the ordinal reservations, with their intents, that end at or below it, but never the
+device's highest reservation; ordinals still never go back, since a process starts at or above the floor (section
+7.6). Each object prefix (section 7.5) has the floor `floors/objects/{prefix}{n}`, such as
+`floors/objects/index/{n}`: when the owner deletes an object, and at the hourly sweep, under the creation lock,
+the relay raises it to the lowest number still published under the prefix, or, with nothing published there any
+more (a binder removed, section 9.7), above every number the prefix has held. That floor stays, so late copies of
+the prefix stay deleted. The owner only publishes above what it keeps (section 9.7), so a name below an object
+floor is never written again (section 7.5).
 
 The relay keeps in memory, for each device, a **mailbox**: a map from `R` to its ordinal and its `received_at`
 (when the relay stored it, or the last-modified time the bucket reports for the copy or, when the copy is missing,
@@ -841,6 +851,28 @@ stored copies hold the same `R` (the same bytes, section 7.6), the relay keeps t
 deletes the other, behind its tombstone. An intent without a copy never displaces a stored copy: it enters the map
 only for an `R` the map does not hold.
 
+**What bounds each kind.** Every object the relay keeps is bounded by live data: what the owner keeps published,
+the devices it keeps paired, the pairings made in the last 10 minutes and the requests pending. Two kinds of
+marker are the exception, one empty object each, because a late write could otherwise bring their device or
+pairing back; they grow only with the pairings the owner itself makes. So, in the same way, does the floor of a
+removed binder's views, one empty object per binder ever shown, which keeps late copies of its views deleted.
+
+| Object | Bound |
+|---|---|
+| `claims/{hash}`, `owner.json` | one each; a second claim fails the start (section 6) |
+| `leases/{rank}-{id}` | one per process alive; a ready process deletes every lower one (section 7.9) |
+| `devices/{D}/record.json`, `tokens/`, `active`, `last_seen`, `revocation`, with their intents | per device kept: at most 20 pending and active, plus self-revoked ones until the owner deletes them; deleted with the device |
+| `devices/{D}/revoked` and its intent | **exception**: one per device id the owner ever removed, or abandoned while pending |
+| `pairings/{P}/` parts, with their intents | per pairing made in the last 10 minutes, whatever its state (at most 3 of them open at once); deleted with the pairing |
+| `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
+| `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, the names above its floor: what is published, plus names deleted out of order above the lowest one kept |
+| `floors/objects/...` | one per prefix: the index, each binder ever shown (a removed binder's floor stays, one empty object, owner-driven like the two exceptions), and each device kept (a removed device's go with it) |
+| `requests/{D}/...`, `intents/requests/{D}/...` | pending requests: at most 1,000 per device |
+| `tombstones/requests/{D}/...` | names deleted above the device's floor: at most the requests made since its oldest pending one (120 an hour, for at most 30 days) |
+| `floors/requests/{D}/...` | one per device |
+| `ordinals/{D}/{block}`, with their intents | the blocks above the device's floor, plus its highest: at most the pending span over 1,024, plus one |
+
 At start, after its warm-up (section 7.9) and before serving anything but health, the relay reads its claims
 and writes `owner.json` from the claim if it is missing (section 6). Then it repairs and cleans up, in this
 order, and never deletes a revocation marker. First, a pairing that has its tombstone loses every other part,
@@ -852,15 +884,15 @@ and counts as missing for every rule below. Then:
    admits a device's token or lists devices;
 2. it gives an activation marker to the device of a pairing that has `key.sha256` or `ack`, unless that device
    has a revocation marker;
-3. it deletes the parts of every pairing past its `expires_at`, with the record of its device only if that
-   device is still pending (it has neither an activation nor a revocation marker); a self-revoked device's
-   record and revocation stay until the owner deletes the device;
+3. it deletes the parts of every pairing past its `expires_at`, with its device if that device is still pending
+   (it has neither an activation nor a revocation marker), whose revocation marker it writes first; a
+   self-revoked device's record and revocation stay until the owner deletes the device;
 4. it deletes any other pairing part whose `created.json` is missing, and any device part whose `record.json`
    is missing, revocation markers excepted;
-5. it deletes the record of every pending device (neither an activation nor a revocation marker) whose pairing
-   is missing or past its `expires_at`. A write begun before a crash can land after this cleanup, so the relay
-   also applies this rule before counting devices against the limit of section 7.3: an orphaned pending record
-   never holds a device slot;
+5. it revokes every pending device (neither an activation nor a revocation marker) whose pairing is missing or
+   past its `expires_at`: it writes the device's revocation marker, then deletes its parts. A write begun before
+   a crash can land after this cleanup, so the relay also applies this rule before counting devices against the
+   limit of section 7.3: an orphaned pending record never holds a device slot;
 6. a device with a revocation marker but no stored `revocation` was being deleted by the owner (a
    self-revocation stores its `revocation` before its marker), so the relay deletes the rest of its parts, as
    `DELETE /v0/devices/{D}` does, keeping the marker. A device with both may be self-revoked and waiting for
