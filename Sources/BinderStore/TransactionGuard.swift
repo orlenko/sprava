@@ -223,6 +223,9 @@ public enum TransactionGuard {
         var hashes: [String] = []
         var reasons: [String] = []
         var seenIDs = knownIDs
+        // A record an op changes but leaves invalid is let through only when a later op of the same batch removes that
+        // violation, as a repair card that then closes the item does: the card is judged as one transition.
+        var leftInPlace: [Violation] = []
         for value in (catalog["open_items"]?.arrayValue ?? []) + (catalog["processing_log"]?.arrayValue ?? []) {
             if let id = value["id"] { seenIDs.insert(id) }
             if let id = value["item"] { seenIDs.insert(id) }
@@ -237,6 +240,12 @@ public enum TransactionGuard {
                 if seenIDs.contains(id) { reasons.append("\(type!): id \(canonicalText(id)) was used before and is never reused") }
                 seenIDs.insert(id)
             }
+            // A closure of an item whose title is not text names where its `final` keeps that title (binder-v0 §9.5).
+            if type == "complete" || type == "drop", op["args"]?["next_due"] == nil, let id = op["args"]?["id"],
+               let title = state["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?["title"], title != .null,
+               title.stringValue == nil, op["args"]?["keep_title_as"]?.stringValue?.hasPrefix("legacy_title") != true {
+                reasons.append("\(type!): the item's title is not text, and the closure does not keep it (keep_title_as)")
+            }
             let before = violations(state)
             let next: JSONObject
             do {
@@ -250,7 +259,7 @@ public enum TransactionGuard {
             // Records the op creates or changes must be valid afterwards, even if they were invalid before.
             for (array, id) in touchedRecords(op) {
                 for v in after where v.array == array && v.recordKey == canonicalText(id) && before.contains(v) {
-                    reasons.append("the op leaves \(v) in place")
+                    leftInPlace.append(v)
                 }
             }
             // Records a v0 implementation creates follow the v0 record rules, whatever the catalog's level.
@@ -263,6 +272,8 @@ public enum TransactionGuard {
             do { hashes.append(try Canonical.hash(.object(state))) } catch { reasons.append("\(error)") }
         }
         // The catalog and the log stay readable: nothing is written that the reader would then refuse.
+        let left = violations(state)
+        for v in Set(leftInPlace) where left.contains(v) { reasons.append("the change leaves \(v) in place") }
         if reasons.isEmpty, ops.contains(where: { isUnsafeJSON(.object($0)) }) || isUnsafeJSON(.object(state)) {
             reasons.append("the change holds a number out of range or a repeated member name, which no reader can take back")
         }

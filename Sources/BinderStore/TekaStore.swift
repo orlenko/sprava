@@ -267,6 +267,14 @@ public final class TekaStore {
             if ["complete", "drop"].contains(body.op) {
                 if body.args["next_due"] == nil, body.args["closed_at"] == nil { body.args.set("closed_at", .string(at)) }
                 if body.args["source"] == nil, let kind = body.actor["kind"] { body.args.set("source", kind) }
+                // A title that is not text is kept in the closure's `final` under the next free legacy name, named in
+                // the op so replay gives the same result (binder-v0 §9.5).
+                if body.args["next_due"] == nil, body.args["keep_title_as"] == nil, let id = body.args["id"],
+                   let item = catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+                   let title = item["title"], title != .null, title.stringValue == nil {
+                    let final = JSONObject(item.entries.filter { !["id", "title", "kind"].contains($0.key) })
+                    if let key = Adoption.legacyKey("title", in: final) { body.args.set("keep_title_as", .string(key)) }
+                }
             }
             var line = JSONObject()
             line.set("id", .string(UUIDv7.make(now: now)))

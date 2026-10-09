@@ -563,16 +563,35 @@ extension TekaStore {
             line.set("actor", .object(actor))
             return line
         }
-        let after = try TransactionGuard.check(lines, on: catalog).catalog
-        let items = after["open_items"]?.arrayValue ?? []
         let ids = Set(ops.filter { $0["op"] == .str("update_item") }.compactMap { $0["args"]?["id"] })
-        let left = ItemRules.check(items: items, log: after["processing_log"]?.arrayValue ?? [], v0: true).compactMap { f -> String? in
-            guard let i = TransactionGuard.itemIndex(f.location), items.indices.contains(i), let id = items[i]["id"], ids.contains(id)
-            else { return nil }
-            let name = f.field ?? f.code.rawValue
-            return names.contains(name) ? name : nil
+        // What the card asks for that the items it repairs still lack in `state`, of those items or only of `only`.
+        func missing(in state: JSONObject, only: JSONValue? = nil) -> [String] {
+            let items = state["open_items"]?.arrayValue ?? []
+            return ItemRules.check(items: items, log: state["processing_log"]?.arrayValue ?? [], v0: true).compactMap { f -> String? in
+                guard let i = TransactionGuard.itemIndex(f.location), items.indices.contains(i), let id = items[i]["id"], ids.contains(id),
+                      only == nil || id == only else { return nil }
+                let name = f.field ?? f.code.rawValue
+                return names.contains(name) ? name : nil
+            }
         }
-        if !left.isEmpty { throw Refused(reason: "fill in what is still missing: " + Array(Set(left)).sorted().joined(separator: ", ")) }
+        func refuse(_ left: [String]) throws {
+            if !left.isEmpty { throw Refused(reason: "fill in what is still missing: " + Array(Set(left)).sorted().joined(separator: ", ")) }
+        }
+        // A card that repairs an item and then closes it is judged just before the closure, while the item is still
+        // there: afterwards it is gone, and what it lacked would go into its closure unseen. A title it asks for is a
+        // non-empty string by then.
+        var state = catalog
+        for line in lines {
+            if line["op"] == .str("complete") || line["op"] == .str("drop"), let id = line["args"]?["id"], ids.contains(id) {
+                var left = missing(in: state, only: id)
+                let title = state["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?["title"]
+                if names.contains("title"), (title?.stringValue ?? "").isEmpty { left.append("title") }
+                try refuse(left)
+            }
+            guard let next = try? OpApplier.apply(line, to: state) else { break }   // the guard below reports it
+            state = next
+        }
+        try refuse(missing(in: try TransactionGuard.check(lines, on: catalog).catalog))
     }
 
     /// Rejects a card under the binder lock that approval takes, judged by the card as stored: a card another request
