@@ -11,10 +11,10 @@ import SpravaTestSupport
 import Testing
 
 /// Random sequences of what can happen to the inbox, from fixed seeds: captures (private or not, empty or not) whose
-/// lines belong in two binders, revisions that change some lines and keep the rest, retractions, copies from a second
-/// device, crashes at a random cursor save, the clerk's hand-off (items added in either binder, completions and
+/// lines belong in two binders, revisions that change some lines and keep the rest, approximations (`approx:`
+/// revisions, which a producer's own revision outranks whatever its clock), retractions, copies from a second device, crashes at a random cursor save, the clerk's hand-off (items added in either binder, completions and
 /// date-only updates of existing items), the person approving (through the approval gate), rejecting, filing or
-/// discarding cards, each binder going out of reach and coming back, and sweeps. Three things hold:
+/// discarding cards, each binder going out of reach and coming back, and sweeps. Four things hold:
 /// 1. after every step, every line of each chain's current revision is accounted for, across both binders (read where
 ///    they are, in reach or not) and the Inbox: on a waiting card, listed as not filed yet, in a binder, or declined by
 ///    the person; and every change a waiting card ever asked for from a line still in the current words (a
@@ -23,7 +23,9 @@ import Testing
 ///    binder (or lacks a waiting redaction), and no waiting card adds it unredacted; and at every approval nothing on
 ///    the card the gate lets through is in the clear;
 /// 3. after every clean sweep with both binders in reach, no card waits from a revision that is not the chain's
-///    current words, unless it only narrows privacy (or is a retraction's removal card). Invented data only.
+///    current words, unless it only narrows privacy (or is a retraction's removal card);
+/// 4. after every clean sweep with both binders in reach, no card waits to add again a line an item filed from its
+///    chain holds (a binder away during a correction is reconciled when it is back). Invented data only.
 @Suite(.serialized) struct InboxSequenceTests {
     let devices = ["aaaaaaaa-2222-4333-8444-5555555555e1", "bbbbbbbb-2222-4333-8444-5555555555e2"]
     let unregistered = "00000000-2222-4333-8444-5555555555e0"
@@ -51,13 +53,18 @@ import Testing
         let device: String
         let wall: Int
         let counter: Int
+        var approx: Bool { revision.hasPrefix("approx:") }
     }
 
     /// An event's stamp, as its clock orders it.
+    /// What an event counts for in its chain (capture-event-v0 §3.2): a producer's own revision outranks an
+    /// approximation, then the clock orders them.
     struct Stamp: Comparable {
+        let own: Int
         let wall: Int
         let counter: Int
-        static func < (a: Stamp, b: Stamp) -> Bool { (a.wall, a.counter) < (b.wall, b.counter) }
+        init(_ e: Event) { (own, wall, counter) = (e.approx ? 0 : 1, e.wall, e.counter) }
+        static func < (a: Stamp, b: Stamp) -> Bool { (a.own, a.wall, a.counter) < (b.own, b.wall, b.counter) }
     }
 
     /// A change a waiting card asked for from a line of a chain: the line's words and what the op does.
@@ -86,7 +93,15 @@ import Testing
         var raisers: [Int: Set<String>] = [:]   // chain -> private events from unregistered folders that raised it
         var privateEvents = Set<String>()
 
-        func current(_ chain: Int) -> Event { events[chains[chain].last!]! }
+        /// The chain's current event (capture-event-v0 §3.2): a producer's own revision outranks an `approx:` one, then
+        /// the highest HLC.
+        func currentID(_ chain: Int) -> String {
+            chains[chain].max { a, b in
+                let x = events[a]!, y = events[b]!
+                return (x.approx ? 0 : 1, x.wall, x.counter, a) < (y.approx ? 0 : 1, y.wall, y.counter, b)
+            }!
+        }
+        func current(_ chain: Int) -> Event { events[currentID(chain)]! }
         func ids(_ chain: Int) -> Set<String> { Set(chains[chain] + (copies[chain] ?? [])) }
         var anyAway: Bool { away.contains(true) }
     }
@@ -253,10 +268,13 @@ import Testing
             let numbers = rng.chance(20) ? [] : text(chain, &rng)
             let isPrivate = rng.chance(25)
             m.chains.append([])
-            let id = try publish(s, m, chain: chain, revision: "r1", text: numbers.map { line(chain, $0) }.joined(separator: "\n"),
+            // Sometimes the first event is an approximation (the developer importer's), which a producer's own revision
+            // later replaces whatever its clock.
+            let approx = rng.chance(15)
+            let id = try publish(s, m, chain: chain, revision: approx ? "approx:\(chain)-1" : "r1", text: numbers.map { line(chain, $0) }.joined(separator: "\n"),
                                  private: isPrivate, retracted: false, device: rng.pick(devices))
             m.chains[chain].append(id)
-            m.log.append("new \(chain) \(numbers) private=\(isPrivate)")
+            m.log.append("new \(chain) \(numbers) private=\(isPrivate)\(approx ? " approx" : "")")
         case 12..<28:  // a revision (some lines kept, some gone, some new), or a restore after a retraction
             guard let chain = (0..<m.chains.count).filter({ !m.pseudo.contains($0) }).randomElement(using: &rng) else { return false }
             let old = m.current(chain).text.split(separator: "\n").compactMap(number)
@@ -274,10 +292,16 @@ import Testing
             // Sometimes the words are all taken out (a revision with no text, not a retraction).
             if rng.chance(8) { numbers = [] } else if numbers.isEmpty { numbers = [1] }
             let isPrivate = rng.chance(10)
-            let id = try publish(s, m, chain: chain, revision: "r\(m.chains[chain].count + 1)", text: numbers.map { line(chain, $0) }.joined(separator: "\n"),
-                                 private: isPrivate, retracted: false, device: rng.pick(devices))
+            // Sometimes an approximation (ignored once the chain has a producer's own revision), and sometimes a
+            // producer's revision stamped before the approximations it replaces.
+            let onlyApprox = m.chains[chain].allSatisfy { m.events[$0]!.approx }
+            let approx = rng.chance(12)
+            let early = !approx && onlyApprox && rng.chance(50)
+            let n = m.chains[chain].count + 1
+            let id = try publish(s, m, chain: chain, revision: approx ? "approx:\(chain)-\(n)" : "r\(n)", text: numbers.map { line(chain, $0) }.joined(separator: "\n"),
+                                 private: isPrivate, retracted: false, device: rng.pick(devices), clock: early ? (1_791_359_000_000, m.written + 1) : nil)
             m.chains[chain].append(id)
-            m.log.append("revise \(chain) \(numbers) private=\(isPrivate)\(m.anyAway ? " (away: \(m.away))" : "")")
+            m.log.append("revise \(chain) \(numbers) private=\(isPrivate)\(approx ? " approx" : "")\(early ? " stamped early" : "")\(m.anyAway ? " (away: \(m.away))" : "")")
         case 28..<33:  // a retraction
             guard let chain = (0..<m.chains.count).filter({ !m.pseudo.contains($0) && !m.current($0).retracted }).randomElement(using: &rng) else { return false }
             let isPrivate = rng.chance(10)
@@ -409,7 +433,7 @@ import Testing
             // Only for a revision the inbox has taken in and carded, as the clerk reads only those.
             let stages = s.inbox.loadState().ingested
             guard !m.away[0], !m.unwritable, let chain = (0..<m.chains.count).filter({
-                      !m.chains[$0].isEmpty && !m.current($0).retracted && ["unfiled", "proposed"].contains(stages[m.chains[$0].last!] ?? "")
+                      !m.chains[$0].isEmpty && !m.current($0).retracted && ["unfiled", "proposed"].contains(stages[m.currentID($0)] ?? "")
                   }).randomElement(using: &rng),
                   let source = CaptureInbox.lines(of: m.current(chain).text).randomElement(using: &rng),
                   let target = Teka.read(m.binders[0]).items.compactMap(\.object).filter({ $0["status"] == .str("open") })
@@ -421,7 +445,7 @@ import Testing
                 set.set("redact", .bool(true))
                 if target["kind"] == nil { set.set("kind", .str("other")) }
             }
-            let event = m.chains[chain].last!
+            let event = m.currentID(chain)
             _ = try clerkCard(s, event: event, ops: [spanOp("update_item", [("id", itemID), ("set", .object(set))], event: event, line: source)],
                               in: m.binders[0])
             m.log.append("chain \(chain) changes item \(itemID.stringValue ?? "?") to \(priority) from \"\(source.text)\"")
@@ -449,7 +473,7 @@ import Testing
     /// The stamp of the words a card was made from.
     func stamp(_ p: Proposal, _ m: Model) -> Stamp? {
         guard let id = CaptureInbox.sourceEvent(p), let e = m.events[id] else { return nil }
-        return Stamp(wall: e.wall, counter: e.counter)
+        return Stamp(e)
     }
 
     /// The person declines a card: its lines are theirs, as of the words it came from.
@@ -512,11 +536,13 @@ import Testing
             let lines = Set(CaptureInbox.lines(of: current.text).map(\.text))
             let unheld = lines.filter { !(held.contains($0) || notFiled.contains($0) || m.declined.contains($0)) }.sorted()
                 .map { "the line \"\($0)\" is on no card, item or not-filed list" }
-            let revisions = (m.chains[chain] + (m.copies[chain] ?? [])).compactMap { m.events[$0] }
+            let all = (m.chains[chain] + (m.copies[chain] ?? [])).compactMap { m.events[$0] }
+            // Approximations stop counting once the chain has a producer's own revision.
+            let revisions = all.contains { !$0.approx } ? all.filter { !$0.approx } : all
             func owed(_ line: String, since id: String) -> Bool {
                 guard let e = m.events[id] else { return false }
                 return revisions.allSatisfy { r in
-                    !((e.wall, e.counter) < (r.wall, r.counter) && (r.wall, r.counter) <= (current.wall, current.counter))
+                    !(Stamp(e) < Stamp(r) && Stamp(r) <= Stamp(current))
                         || (!r.retracted && CaptureInbox.lines(of: r.text).contains { $0.text == line })
                 }
             }
@@ -524,7 +550,7 @@ import Testing
             // read from, by the line listed as not filed yet, declined, or read again as a whole.
             func later(_ at: Stamp?, than id: String) -> Bool {
                 guard let at, let e = m.events[id] else { return false }
-                return Stamp(wall: e.wall, counter: e.counter) <= at
+                return Stamp(e) <= at
             }
             let dropped = m.asked.filter { a, from in
                 guard a.chain == chain, lines.contains(a.line), !doing.contains(a) else { return false }
@@ -537,7 +563,7 @@ import Testing
         func newest(_ ids: [String]) -> Event? {
             ids.max { a, b in
                 let x = m.events[a]!, y = m.events[b]!
-                return (x.wall, x.counter, a) < (y.wall, y.counter, b)
+                return (Stamp(x), a) < (Stamp(y), b)
             }.flatMap { m.events[$0] }
         }
         for chain in m.chains.indices {
@@ -549,7 +575,7 @@ import Testing
             let started = newest(events.filter { stages[$0] == "ingested" })
             guard let settled else { continue }   // before a first event is settled, the chain stood for no words
             var candidates = [settled]
-            if let started, (settled.wall, settled.counter) < (started.wall, started.counter) { candidates.append(started) }
+            if let started, Stamp(settled) < Stamp(started) { candidates.append(started) }
             let gaps = candidates.map { $0.retracted ? [] : missing(chain, $0) }
             guard !gaps.isEmpty, !gaps.contains(where: \.isEmpty) else { continue }
             Issue.record("chain \(chain): \(gaps[0].joined(separator: "; "))\n\(diagnose(s, m, chain, seed: seed))")
@@ -623,6 +649,27 @@ import Testing
             let current = m.current(e.chain)
             if current.retracted || e.text != current.text {
                 Issue.record("card \(card.id) waits from chain \(e.chain) \(e.revision), but its current words are \(current.revision)\n\(diagnose(s, m, e.chain, seed: seed))")
+            }
+        }
+        // 4. No card waits to add again a line that an item filed from the chain already holds, in either binder: a
+        // binder away during a correction has its items corrected when it is back, and the card made meanwhile gives
+        // way. (A chain once retracted or emptied is new content again when restored, so it is left out.)
+        for chain in m.chains.indices where !m.chains[chain].isEmpty && !m.current(chain).retracted {
+            let ids = m.ids(chain)
+            guard !(m.chains[chain] + (m.copies[chain] ?? [])).contains(where: { m.events[$0]!.retracted || m.events[$0]!.text.isEmpty }) else { continue }
+            let lines = Set(CaptureInbox.lines(of: m.current(chain).text).map(\.text))
+            func fromChain(_ o: JSONValue?) -> Bool { o?["provenance"]?["events"]?.arrayValue?.contains { ids.contains($0.stringValue ?? "") } == true }
+            // (An item a waiting card drops or retitles does not count: a line the diff takes as moved is added again.)
+            let dropping = Set(cards.flatMap(\.ops).compactMap { op in
+                op["op"] == .str("drop") || op["args"]?["set"]?["title"] != nil ? op["args"]?["id"] : nil
+            })
+            let filed = Set(m.binders.flatMap { Teka.read($0).items.compactMap(\.object) }.filter { o in
+                !["done", "dropped"].contains(o["status"]?.stringValue ?? "") && fromChain(.object(o)) && !dropping.contains(o["id"] ?? .null)
+            }.compactMap { $0["title"]?.stringValue })
+            for card in cards where fromChain(.object(card.raw)) {
+                for t in card.ops.compactMap({ $0["op"] == .str("add_item") ? $0["args"]?["item"]?["title"]?.stringValue : nil }) where lines.contains(t) && filed.contains(t) {
+                    Issue.record("chain \(chain): card \(card.id) adds \"\(t)\" again beside its filed item\n\(diagnose(s, m, chain, seed: seed))")
+                }
             }
         }
     }
@@ -778,9 +825,10 @@ import Testing
         check(s, m, seed: seed)
     }
 
-    /// Seeds whose runs meet the withdrawal gate where it must carry: each fails when withdrawn cards are not carried
-    /// (a completion, a date change, an added line of a binder away during a correction).
-    @Test(arguments: [UInt64(3006), 3025, 3051, 3053])
+    /// Seeds whose runs meet what this class of bugs needs: each fails when withdrawn cards are not carried (3001, 3003,
+    /// 3005), when a binder back after a correction is not reconciled (3001, 3005, 3023), or when an approximation
+    /// counts like a producer's revision (all four).
+    @Test(arguments: [UInt64(3001), 3003, 3005, 3023])
     func randomSequencesKeepEveryCaptureAccountedFor(seed: UInt64) async throws {
         try await run(seed: seed, steps: 150)
     }

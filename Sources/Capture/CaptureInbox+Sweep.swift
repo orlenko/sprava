@@ -170,11 +170,14 @@ extension CaptureInbox {
             state.privateKeys = (state.privateKeys ?? []) + [event.chainKey]
         }
         if (state.privateKeys ?? []).contains(event.chainKey) { markPrivate(chain + [id], state: &state) }
-        // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision older than
-        // it changes nothing. Duplicates count here: a second retraction taken for a copy of the first, because the
+        // The current event of a chain is the one that counts most (`rank`: a producer's own revision over an
+        // approximation, then the highest HLC; capture-event-v0 §3.2): a revision that counts less changes nothing. Duplicates count here: a second retraction taken for a copy of the first, because the
         // restore between them had not arrived yet, still makes that restore stale when it does.
-        let clocks = state.clocks ?? [:]
-        let current = chain.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
+        // An `approx:` revision never outranks a producer's own (`rank`).
+        if event.revision.hasPrefix("approx:"), !(state.approx ?? []).contains(id) { state.approx = (state.approx ?? []) + [id] }
+        let mine = Self.rank(clock: clock, approx: event.revision.hasPrefix("approx:"))
+        func ranked(_ e: String) -> String { Self.rank(e, state: state) }
+        let current = Self.counting(chain, state: state)
         // What this revision is compared with is the newest event whose words are held by a card or a settled stage.
         // One that crashed before its card was made, or a stale revision, holds nothing, so its words are never
         // taken as already filed (§3.2, §5.3).
@@ -186,11 +189,11 @@ extension CaptureInbox {
             result.pending += 1
             return
         }
-        let baseline = holding.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
+        let baseline = Self.counting(holding, state: state)
         let currentRetracted = baseline.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
         // A deletion after the chain's current event, or a restore after its deletion, changes what the chain is:
         // neither repeats an earlier event of the same triple, so neither is taken for a duplicate (§3.2).
-        let transition = baseline.map { (clocks[$0] ?? "") < clock } == true && event.retracted != currentRetracted
+        let transition = baseline.map { ranked($0) < mine } == true && event.retracted != currentRetracted
 
         if new {
             if let earlier = earlierCopy, !transition {
@@ -259,11 +262,11 @@ extension CaptureInbox {
             else { markPrivate([id], state: &state) }
         }
         // A revision that arrives late but is older than what the chain already has changes nothing else.
-        if let current, (clocks[current] ?? "") > clock {
+        if let current, ranked(current) > mine {
             // A retraction left part done still finishes its part: what waits from the events before it goes, and what
             // was filed from them is offered for removal. Nothing of the later events is touched.
             if state.ingested[id] == "retracting" {
-                let before = chain.filter { (clocks[$0] ?? "") < clock }
+                let before = chain.filter { ranked($0) < mine }
                 let done = retract(chain: before, retraction: id, state: &state, binders: binders, commands: commands, now: now)
                 state.ingested[id] = done ? "retracted" : "retracting"
                 journal([("event", .string(id)), ("stage", .str(done ? "retracted" : "retract_failed"))])
@@ -504,6 +507,22 @@ extension CaptureInbox {
             }
         }
         return nil
+    }
+
+    /// Which revision of a chain counts (capture-event-v0 §3.2), as text that sorts like the rule: once any event of a
+    /// chain has a revision that does not start with `approx:`, the `approx:` ones (the developer importer's, 7.8) are
+    /// ignored when choosing the current event, so a producer's own event always outranks an approximation; among
+    /// events of one kind the highest HLC counts. Every choice of a chain's current event, baseline or what stands
+    /// after a retraction goes by this rank; a raise of privacy still comes from every revision.
+    static func rank(_ id: String, state: State) -> String {
+        rank(clock: state.clocks?[id] ?? "", approx: (state.approx ?? []).contains(id))
+    }
+
+    static func rank(clock: String, approx: Bool) -> String { (approx ? "0:" : "1:") + clock }
+
+    /// The event of `ids` that counts most (`rank`).
+    static func counting(_ ids: [String], state: State) -> String? {
+        ids.map { ($0, rank($0, state: state)) }.max { $0.1 < $1.1 }?.0
     }
 
     /// An event's HLC as text that sorts like the clock: wall time, counter, then the id breaks a tie.

@@ -81,8 +81,7 @@ extension CaptureInbox {
     /// restore taken in before an older retraction was finished); none otherwise.
     func wordsAfter(_ retraction: String, state: State) -> Replacement? {
         let chain = state.chainsByKey?.values.first { $0.contains(retraction) } ?? []
-        let clocks = state.clocks ?? [:]
-        let later = chain.filter { (clocks[$0] ?? "") > (clocks[retraction] ?? "") }
+        let later = chain.filter { Self.rank($0, state: state) > Self.rank(retraction, state: state) }
         return later.isEmpty ? .carried(nil) : currentWords(later, state: state)
     }
 
@@ -171,6 +170,8 @@ extension CaptureInbox {
                     for span in op["spans"]?.arrayValue ?? [] {
                         guard let j = line(span) else { continue }
                         if reading { out.lines.insert(j) } else { out.held.insert(Held(line: j, what: Self.what(op))) }
+                        // An item given the line as its title is that line's item: an add of the line is carried.
+                        if op["op"] == .str("update_item"), op["args"]?["set"]?["title"] != nil { out.held.insert(Held(line: j, what: "add")) }
                     }
                 }
                 for span in p.raw["provenance"]?["unfiled"]?.arrayValue ?? [] { if let j = line(span) { out.lines.insert(j) } }

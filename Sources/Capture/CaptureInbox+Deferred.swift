@@ -82,10 +82,9 @@ extension CaptureInbox {
         let debts = (state.debts ?? []).map { Obligation.debt(key: $0) }
         let missed = (state.deferred?[path] ?? []).map { Obligation.missed(event: $0) }
         // A retraction's part is the events before it; a later restore's cards are never its to withdraw.
-        let clocks = state.clocks ?? [:]
         let retractions = state.ingested.filter { $0.value == "retracting" }.keys.sorted().map { id in
             Obligation.retraction(event: id, chain: (state.chainsByKey?.values.first { $0.contains(id) } ?? []).filter {
-                $0 != id && (clocks[$0] ?? "") < (clocks[id] ?? "")
+                $0 != id && Self.rank($0, state: state) < Self.rank(id, state: state)
             })
         }
         return debts + missed + retractions
@@ -198,10 +197,9 @@ extension CaptureInbox {
     /// at its own stamp as the event it repeats. So a retraction taken for a copy of an earlier one (the event between
     /// them came later) still ends the chain after that event.
     static func standing(_ chain: [String], state: State) -> String? {
-        let clocks = state.clocks ?? [:]
         func original(_ e: String) -> String { state.ingested[e] == "duplicate" ? (state.dupOf?[e] ?? e) : e }
         let held = chain.filter { !["ingested", "stale_revision", "duplicate"].contains(state.ingested[original($0)] ?? "ingested") }
-        return held.max(by: { (clocks[$0] ?? "") < (clocks[$1] ?? "") }).map(original)
+        return Self.counting(held, state: state).map(original)
     }
 
     /// The key under which the Inbox's owed work is kept beside the binders'.
@@ -265,7 +263,11 @@ extension CaptureInbox {
             let events = p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
             return events.count == 1 && chain.contains(events[0]) && state.texts?[events[0]] != text
         }
-        return withdraw(outdated.map { (row.folder, $0) }, reason: "replaced by a corrected note", replacement: current, state: state,
-                        binders: [row], commands: commands, now: now)
+        let withdrawn = withdraw(outdated.map { (row.folder, $0) }, reason: "replaced by a corrected note", replacement: current, state: state,
+                                 binders: [row], commands: commands, now: now)
+        // The items filed here are set against the current words, as the correction would have done with the binder
+        // in reach; until that is done the work stays owed.
+        guard case .carried(let words?) = current else { return withdrawn }
+        return reconcile(row, words: words, state: &state, commands: commands, now: now) && withdrawn
     }
 }
