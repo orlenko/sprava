@@ -5,7 +5,8 @@ import { deleteAll, Mutex, scoped, writeOnce, type Store } from '../src/store/st
 
 const bytes = (text: string): Uint8Array => new Uint8Array(Buffer.from(text));
 
-export function storeContract(name: string, open: () => Promise<Store>): void {
+/** `honoursIfAbsent: false` for a store that overwrites despite a conditional write, as some do (§6, step 5). */
+export function storeContract(name: string, open: () => Promise<Store>, options: { honoursIfAbsent?: boolean } = {}): void {
     test(`${name}: get, has, put and delete`, async () => {
         const store = await open();
         assert.equal(await store.get('a/b'), null);
@@ -20,7 +21,7 @@ export function storeContract(name: string, open: () => Promise<Store>): void {
         assert.equal(await store.get('a/b'), null);
     });
 
-    test(`${name}: putIfAbsent writes only a new key`, async () => {
+    test(`${name}: putIfAbsent writes only a new key`, { skip: options.honoursIfAbsent === false }, async () => {
         const store = await open();
         assert.equal(await store.putIfAbsent('k/1', bytes('first')), true);
         assert.equal(await store.putIfAbsent('k/1', bytes('second')), false);

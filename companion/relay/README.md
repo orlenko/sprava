@@ -42,6 +42,45 @@ curl -s http://localhost:8080/v0/health
 It refuses to start, naming the variable, when one is missing or malformed. It logs one JSON line per request
 with the method, the endpoint pattern, the status and the duration, never a token, an id or a body (section 12).
 
+## Deploying your own
+
+A relay is one small container and one private S3-compatible bucket (DigitalOcean Spaces, Amazon S3,
+Cloudflare R2, MinIO). It must run as **exactly one instance**: its rate limits, claim throttle and creation
+lock live in its memory (spec sections 6 and 7), and two instances would break them. Serve it over HTTPS; plain
+HTTP is only for `localhost`.
+
+1. Make a private bucket and an access key limited to it.
+2. Generate the two values only you should know. Keep them out of any file in a repository:
+   ```sh
+   openssl rand -hex 16       # SPRAVA_INSTANCE
+   openssl rand -base64 32    # SPRAVA_SETUP_CODE
+   ```
+3. Run the container built from `companion/relay/Dockerfile` with these variables:
+
+   | Variable | Value |
+   |---|---|
+   | `SPRAVA_INSTANCE` | from step 2; every object lives under it |
+   | `SPRAVA_SETUP_CODE` | from step 2; remove it once the Mac has claimed the relay |
+   | `SPRAVA_WEB_ORIGIN` | the web app's origin, such as `https://companion.example.org` |
+   | `SPRAVA_STORAGE` | `s3` |
+   | `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET` | the bucket, such as `https://<region>.digitaloceanspaces.com` |
+   | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | the key from step 1 |
+   | `PORT` | the port to listen on, 8080 by default |
+
+4. Point the host's health check at `GET /v0/health`. It answers `200` with
+   `{"protocol":0,"claimed":false,"instance":"..."}` until the Mac claims the relay.
+5. In the Mac app, Settings › Phone: the relay's address and the setup code.
+
+Starting over means a new `SPRAVA_INSTANCE` and a new setup code; the old data stays behind under the old
+prefix, which you may delete by hand.
+
+**DigitalOcean App Platform**, as one example: [`deploy/digitalocean-app.yaml`](deploy/digitalocean-app.yaml)
+is an app spec with placeholders. Copy it outside the repository, fill it in (or leave the values empty and set
+them in the control panel, with the secrets as encrypted variables), and create the app with
+`doctl apps create --spec <your copy>`. It builds the Dockerfile, runs one instance, and checks
+`/v0/health`. The relay talks to Spaces path-style and does not rely on conditional writes, which Spaces
+ignores (spec section 6).
+
 ## Crashes and late writes
 
 A process can stop at any moment, and with an S3-compatible store a write it sent may land later, even after a
@@ -77,4 +116,5 @@ endpoint is checked against them:
 - `src/encoding.ts`: b64, ids, tokens and their hashes, times (section 3).
 - `src/json.ts`: the strict JSON reader and the writer (section 3.1).
 - `src/config.ts`: the environment variables (section 13).
-- `src/store/`: the storage interface, the write-once rule (section 7.8) and the backends.
+- `src/store/`: the storage interface, the write-once rule (section 7.8), and the local-folder and S3 backends
+  (`s3.ts` signs with AWS Signature Version 4 using only `node:crypto`).

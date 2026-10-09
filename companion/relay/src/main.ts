@@ -4,11 +4,11 @@ import { ConfigError, readConfig, type Config } from './config.ts';
 import { jsonLog } from './log.ts';
 import { startRelay } from './relay.ts';
 import { FsStore } from './store/fs.ts';
+import { S3Store } from './store/s3.ts';
 import { scoped, type Store } from './store/store.ts';
 
 function openStore(config: Config): Store {
-    if (config.storage.kind === 'fs') return new FsStore(config.storage.dir);
-    throw new ConfigError('SPRAVA_STORAGE=s3 is not available in this build.');
+    return config.storage.kind === 'fs' ? new FsStore(config.storage.dir) : new S3Store(config.storage.s3);
 }
 
 async function main(): Promise<void> {
