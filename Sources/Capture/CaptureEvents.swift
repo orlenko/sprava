@@ -14,7 +14,32 @@ public struct HLC: Codable, Sendable, Equatable {
         let pt = Int64(now.timeIntervalSince1970 * 1000)
         guard let p = previous, p.node == node else { return HLC(wall_ms: pt, counter: 0, node: node) }
         if pt > p.wall_ms { return HLC(wall_ms: pt, counter: 0, node: node) }
+        // A counter that would pass 65535 moves the clock on by a millisecond instead; it never waits (§4.2).
+        if p.counter >= 65_535 { return HLC(wall_ms: p.wall_ms + 1, counter: 0, node: node) }
         return HLC(wall_ms: p.wall_ms, counter: p.counter + 1, node: node)
+    }
+
+    /// Orders stamps of one node: wall time, then the counter.
+    func precedes(_ other: HLC) -> Bool { (wall_ms, counter) < (other.wall_ms, other.counter) }
+}
+
+/// Flushes an open file to stable storage by SpravaKit's rule (`AtomicFile`): `F_FULLFSYNC`, or `fsync` only on a
+/// volume without it (ENOTSUP, EINVAL, ENOTTY); any other failure is reported, and an interrupted call is retried.
+struct DiskFlush: Sendable {
+    var fullSync: @Sendable (Int32) -> Int32 = { fcntl($0, F_FULLFSYNC) }
+    var sync: @Sendable (Int32) -> Int32 = { fsync($0) }
+
+    func callAsFunction(_ fd: Int32, step: String) throws {
+        while fullSync(fd) < 0 {
+            let code = errno
+            if code == EINTR { continue }
+            guard code == ENOTSUP || code == EINVAL || code == ENOTTY else { throw AtomicFile.Failure(step: step, code: code) }
+            while sync(fd) < 0 {
+                let code = errno
+                if code != EINTR { throw AtomicFile.Failure(step: step, code: code) }
+            }
+            return
+        }
     }
 }
 
@@ -45,8 +70,14 @@ public struct CaptureProducer: Sendable {
     public func prepareNote(_ text: String, binderHint: String? = nil, startedAt: Date, savedAt: Date = Date(),
                             locale: String = Locale.current.identifier(.bcp47)) throws -> PreparedNote {
         try AtomicFile.makePrivateFolder(folder)
-        let previous = (try? Data(contentsOf: stateURL)).flatMap { try? JSONDecoder().decode(HLC.self, from: $0) }
-        let hlc = HLC.next(after: previous, node: deviceID.replacingOccurrences(of: "-", with: ""), now: savedAt)
+        // A clock state that exists but cannot be read is never written over (capture-event-v0 §5.3); a missing or
+        // rolled-back one is raised to the highest stamp already published from this folder (§4.2).
+        let node = deviceID.replacingOccurrences(of: "-", with: "")
+        let stored = try StateFile.read(HLC.self, from: stateURL)
+        guard stored.map({ (0...65_535).contains($0.counter) }) ?? true else { throw StateFile.Unreadable(path: stateURL.path) }
+        let previous = [stored, publishedStamp(node: node)].compactMap { $0 }.filter { $0.node == node }
+            .max { $0.precedes($1) }
+        let hlc = HLC.next(after: previous, node: node, now: savedAt)
         try AtomicFile.makePrivateFolder(stateURL.deletingLastPathComponent())
         try AtomicFile.write(try JSONEncoder().encode(hlc), to: stateURL)
 
@@ -69,6 +100,21 @@ public struct CaptureProducer: Sendable {
         if let binderHint { event.set("binder_hint", .string(binderHint)) }
         let bytes = Data(JSONWriter.pretty(.object(event)).utf8)
         return PreparedNote(event: event, bytes: bytes, digest: "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+    }
+
+    /// The highest stamp among the events already in this device's folder, or nil when there is none.
+    func publishedStamp(node: String) -> HLC? {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return nil }
+        var best: HLC?
+        for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") {
+            guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(name)),
+                  let stamp = (try? JSONParser.parse(data).value)?["hlc"], stamp["node"]?.stringValue == node,
+                  let wall = stamp["wall_ms"]?.numberValue?.safeInteger, let counter = stamp["counter"]?.numberValue?.safeInteger,
+                  (0...65_535).contains(counter) else { continue }
+            let found = HLC(wall_ms: wall, counter: Int(counter), node: node)
+            if best.map({ $0.precedes(found) }) ?? true { best = found }
+        }
+        return best
     }
 
     /// Publishes a prepared note into Sprava's own device folder.
@@ -97,6 +143,10 @@ public struct CaptureProducer: Sendable {
 
     /// Writes to `.<name>.tmp`, flushes, then publishes with an exclusive rename that fails if the name exists.
     package static func publish(_ data: Data, as url: URL) throws {
+        try publish(data, as: url, flush: DiskFlush())
+    }
+
+    static func publish(_ data: Data, as url: URL, flush: DiskFlush) throws {
         let temp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".tmp")
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw AtomicFile.Failure(step: "create event", code: errno) }
@@ -110,7 +160,7 @@ public struct CaptureProducer: Sendable {
                 off += n
             }
         }
-        if fcntl(fd, F_FULLFSYNC) != 0 { fsync(fd) }
+        do { try flush(fd, step: "flush event") } catch { close(fd); throw error }
         close(fd)
         guard renamex_np(temp.path, url.path, UInt32(RENAME_EXCL)) == 0 else {
             throw AtomicFile.Failure(step: "publish event", code: errno)

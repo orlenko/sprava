@@ -72,7 +72,7 @@ public struct CaptureInbox: Sendable {
     }
 
     /// Appends one whole line and flushes it, or throws.
-    static func appendDurably(_ line: String, to url: URL) throws {
+    static func appendDurably(_ line: String, to url: URL, flush: DiskFlush = DiskFlush()) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw AtomicFile.Failure(step: "open \(url.lastPathComponent)", code: errno) }
         defer { close(fd) }
@@ -84,7 +84,7 @@ public struct CaptureInbox: Sendable {
                 off += n
             }
         }
-        if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 { throw AtomicFile.Failure(step: "fsync \(url.lastPathComponent)", code: errno) }
+        try flush(fd, step: "fsync \(url.lastPathComponent)")
     }
 
     func notices() -> [String: String] {
@@ -114,6 +114,7 @@ public struct CaptureInbox: Sendable {
         var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
         var clocks: [String: String]? = [:]           // id -> its HLC as sortable text, to find a chain's current event
         package var raises: [String: [String]]? = [:]         // id -> a chain whose raise to private failed, retried each sweep
+        var privates: [String]? = []                  // ids raised to private, or private by their chain (capture-event-v0 §3.3)
         package var examined: [String: Examined] = [:]        // device/name -> last seen
         package struct Examined: Codable, Equatable {
             var size: Int
@@ -209,8 +210,9 @@ public struct CaptureInbox: Sendable {
                 let stem = String(name.dropLast(5))
                 // The journal names an event only by a valid id; any other file name may be the person's words.
                 let logged: JSONValue = CaptureEvent.isUUIDText(stem) ? .string(stem) : .str("invalid-name")
-                // An id still at "ingested" crashed before its card was made: it is picked up again here.
-                if let stage = state.ingested[stem], stage != "ingested" { continue }
+                // An id still at "ingested" crashed before its card was made, and one at "retracting" has a part of
+                // its retraction left to do: either is picked up again here.
+                if let stage = state.ingested[stem], stage != "ingested", stage != "retracting" { continue }
                 let key = deviceName + "/" + name
                 var st = stat()
                 guard lstat(file.path, &st) == 0 else { continue }
@@ -266,9 +268,16 @@ public struct CaptureInbox: Sendable {
         let registered = producer != nil && producer == event.app
         let chainKey = event.app + "|" + (event.raw["source"]?["ref"]?.stringValue ?? "")
         let chain = registered ? (state.chains?[chainKey] ?? []).filter { $0 != id } : []
+        // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2).
+        let clocks = state.clocks ?? [:]
+        let current = chain.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
+        let currentRetracted = current.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
+        // A deletion after the chain's current event, or a restore after its deletion, changes what the chain is:
+        // neither repeats an earlier event of the same triple, so neither is taken for a duplicate (§3.2).
+        let transition = current.map { (clocks[$0] ?? "") < Self.clockKey(event) } == true && event.retracted != currentRetracted
 
         if state.ingested[id] == nil {
-            if let earlier = state.dedupe[event.dedupeKey] {
+            if let earlier = state.dedupe[event.dedupeKey], !transition {
                 // The same capture again: only a raise of sensitivity is applied (capture-event-v0 §3.2).
                 result.duplicates += 1
                 state.ingested[id] = "duplicate"
@@ -288,29 +297,31 @@ public struct CaptureInbox: Sendable {
             result.ingested += 1
         }
 
-        // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision that
-        // arrives late but is older than what the chain already has changes nothing.
-        let clocks = state.clocks ?? [:]
-        let current = chain.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
+        // A revision that arrives late but is older than what the chain already has changes nothing.
         if let current, (clocks[current] ?? "") > Self.clockKey(event) {
             state.ingested[id] = "stale_revision"
             journal([("event", .string(id)), ("stage", .str("stale_revision"))])
             return
         }
         if event.retracted {
-            if !chain.isEmpty { retract(chain: chain, retraction: id, state: &state, binders: binders, commands: commands, now: now) }
-            state.ingested[id] = "retracted"
-            journal([("event", .string(id)), ("stage", .str("retracted"))])
+            // Every part of a retraction is done, or the stage says so and the next sweep does the rest.
+            let done = chain.isEmpty || retract(chain: chain, retraction: id, state: &state, binders: binders, commands: commands, now: now)
+            state.ingested[id] = done ? "retracted" : "retracting"
+            journal([("event", .string(id)), ("stage", .str(done ? "retracted" : "retract_failed"))])
             return
         }
         if event.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             state.ingested[id] = "nothing_to_file"
             return
         }
+        if event.isPrivate, current != nil { raise(chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+        // A chain raised to private stays private for every card made from it later (§3.3).
+        let filedAs = Self.asFiled(event, privates: Set(state.privates ?? []), chain: chain)
+        if filedAs.isPrivate { markPrivate([id], state: &state) }
         // A later event of the chain: the same text changes only sensitivity; other text replaces what still waits.
+        // A restore after a deletion is new content to review, since what was filed may be dropped by now (§3.2).
         var replaces: String?
-        if let earlier = current {
-            if event.isPrivate { raise(chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+        if let earlier = current, !currentRetracted {
             if state.texts?[earlier] == textHash {
                 state.ingested[id] = "same_text"
                 journal([("event", .string(id)), ("stage", .str("same_text"))])
@@ -323,7 +334,7 @@ public struct CaptureInbox: Sendable {
             let withdrawing = withdrawable(chain: chain, binders: binders, deviceID: commands.deviceID)
             let corrections: [(URL?, String)]?
             do {
-                corrections = try correctionCards(event, chain: chain, current: earlier, withdrawn: withdrawing, paths: state.paths ?? [:],
+                corrections = try correctionCards(filedAs, chain: chain, current: earlier, withdrawn: withdrawing, paths: state.paths ?? [:],
                                                   binders: binders, commands: commands, now: now)
             } catch {
                 journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
@@ -357,7 +368,7 @@ public struct CaptureInbox: Sendable {
             } else if let (folder, p) = waitingFiled.first {
                 made = (p.id, folder)
             } else {
-                made = try card(for: event, hint: hint, verified: verified, producer: producer ?? event.app,
+                made = try card(for: filedAs, hint: hint, verified: verified, producer: producer ?? event.app,
                                 replaces: replaces, binders: binders, commands: commands, now: now)
             }
         } catch {
@@ -404,22 +415,47 @@ public struct CaptureInbox: Sendable {
     /// What happened to one line of an earlier text in the corrected one.
     enum LineFate: Equatable { case same(Int), changed(Int), removed }
 
+    /// The most cells the line diff's table may have (16 MB): a correction runs during the sweep, outside the clerk's
+    /// poison rule, so its work is bounded whatever the size of the note.
+    static let diffCells = 4_000_000
+
     /// A line diff: the longest common run of equal lines anchors the two texts; between anchors, old and new lines
     /// pair up in order as changed, and what is left over was removed or added. Returns each old line's fate and the
-    /// indices of the added new lines.
+    /// indices of the added new lines. Equal lines at both ends anchor first; when what lies between them would
+    /// need a table over `diffCells`, it has no anchors and its lines pair up in order.
     static func diffLines(_ old: [String], _ new: [String]) -> (fates: [LineFate], added: [Int]) {
         let n = old.count, m = new.count
-        var lcs = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            for j in stride(from: m - 1, through: 0, by: -1) {
-                lcs[i][j] = old[i] == new[j] ? lcs[i + 1][j + 1] + 1 : max(lcs[i + 1][j], lcs[i][j + 1])
+        var head = 0
+        while head < n, head < m, old[head] == new[head] { head += 1 }
+        var tail = 0
+        while tail < n - head, tail < m - head, old[n - 1 - tail] == new[m - 1 - tail] { tail += 1 }
+        var anchors: [(Int, Int)] = (0..<head).map { ($0, $0) }
+        let rows = n - head - tail, cols = m - head - tail
+        if rows > 0, cols > 0, rows * cols <= diffCells {
+            // Lines as numbers, so the table compares integers.
+            var numbers: [String: Int32] = [:]
+            func number(_ line: String) -> Int32 {
+                if let k = numbers[line] { return k }
+                let k = Int32(numbers.count)
+                numbers[line] = k
+                return k
+            }
+            let a = old[head..<(head + rows)].map(number), b = new[head..<(head + cols)].map(number)
+            let width = cols + 1
+            var lcs = [Int32](repeating: 0, count: (rows + 1) * width)
+            for i in stride(from: rows - 1, through: 0, by: -1) {
+                for j in stride(from: cols - 1, through: 0, by: -1) {
+                    lcs[i * width + j] = a[i] == b[j] ? lcs[(i + 1) * width + j + 1] + 1 : max(lcs[(i + 1) * width + j], lcs[i * width + j + 1])
+                }
+            }
+            var i = 0, j = 0
+            while i < rows, j < cols {
+                if a[i] == b[j] {
+                    anchors.append((head + i, head + j)); i += 1; j += 1
+                } else if lcs[(i + 1) * width + j] >= lcs[i * width + j + 1] { i += 1 } else { j += 1 }
             }
         }
-        var anchors: [(Int, Int)] = []
-        var i = 0, j = 0
-        while i < n, j < m {
-            if old[i] == new[j] { anchors.append((i, j)); i += 1; j += 1 } else if lcs[i + 1][j] >= lcs[i][j + 1] { i += 1 } else { j += 1 }
-        }
+        anchors += (0..<tail).map { (n - tail + $0, m - tail + $0) }
         var fates = Array(repeating: LineFate.removed, count: n)
         var added: [Int] = []
         var (a, c) = (0, 0)
@@ -644,21 +680,22 @@ public struct CaptureInbox: Sendable {
     }
 
     /// Withdraws what still waits from a chain, and ends the clerk's work on it. A card that only redacts stays: a
-    /// raise to private holds whatever comes after it. Returns the cards withdrawn (binder, or nil when unfiled).
+    /// raise to private holds whatever comes after it. Returns false when a card could not be withdrawn.
     @discardableResult
-    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], deviceID: String, now: Date) -> [(URL?, Proposal)] {
-        let out = withdrawable(chain: chain, binders: binders, deviceID: deviceID)
-        for (folder, p) in out {
+    func withdraw(chain: [String], reason: String, state: inout State, binders: [ShelfRow], deviceID: String, now: Date) -> Bool {
+        var complete = true
+        for (folder, p) in withdrawable(chain: chain, binders: binders, deviceID: deviceID) {
             if let folder {
-                try? TekaStore(folder: folder).reject(p, reason: reason, now: now)
-            } else if let file = unfiledFile(p.id) {
-                try? FileManager.default.removeItem(at: file)
+                if (try? TekaStore(folder: folder).reject(p, reason: reason, now: now)) == nil { complete = false }
+            } else if let file = unfiledFile(p.id), (try? FileManager.default.removeItem(at: file)) == nil,
+                      FileManager.default.fileExists(atPath: file.path) {
+                complete = false
             }
         }
         var clerk = state.clerk ?? [:]
         for id in chain where clerk[id] != nil { clerk[id] = "superseded" }
         state.clerk = clerk
-        return out
+        return complete
     }
 
     /// The cards `withdraw` would take from a chain, without touching them: every unfiled one, and each one waiting
@@ -672,13 +709,18 @@ public struct CaptureInbox: Sendable {
     }
 
     /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items
-    /// already filed get a card that offers to drop them.
-    func retract(chain: [String], retraction: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
-        withdraw(chain: chain, reason: "the note was deleted where it was taken", state: &state, binders: binders, deviceID: commands.deviceID, now: now)
+    /// already filed get a card that offers to drop them. Returns false when any of it could not be done; run again,
+    /// it does only what is left, and never makes a second card.
+    func retract(chain: [String], retraction: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
+        var complete = withdraw(chain: chain, reason: "the note was deleted where it was taken", state: &state, binders: binders,
+                                deviceID: commands.deviceID, now: now)
         var clerk = state.clerk ?? [:]
         for id in chain {
             clerk[id] = "retracted"
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent("interpretations/\(id).json"))
+            let interpretation = dir.appendingPathComponent("interpretations/\(id).json")
+            if (try? FileManager.default.removeItem(at: interpretation)) == nil, FileManager.default.fileExists(atPath: interpretation.path) {
+                complete = false
+            }
         }
         state.clerk = clerk
         let ids = Set(chain)
@@ -690,22 +732,66 @@ public struct CaptureInbox: Sendable {
                     ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))])
             }
             guard !filed.isEmpty else { continue }
+            // A card this retraction already made, waiting or acted on, is kept; a leftover that was never trusted
+            // could not be approved, so it goes and the card is made again.
+            let leftover = "its digest could not be kept"
+            var made = false
+            for (p, _) in ProposalStore.list(in: row.folder) where p.raw["provenance"]?["retraction"] == .string(retraction) {
+                if p.state == "proposed", !commands.isTrusted(p.id, in: row.folder) {
+                    if (try? TekaStore(folder: row.folder).reject(p, reason: leftover, now: now)) == nil { complete = false }
+                } else if p.raw["rejected_reason"] != .string(leftover) {
+                    made = true
+                }
+            }
+            guard !made else { continue }
             let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
             let card = Proposal.make(title: "A note was deleted where it was taken. Remove what was filed from it?", actor: actor, ops: filed,
                                      provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))),
                                                              (key: "retraction", value: .string(retraction)),
                                                              (key: "remains", value: .str("the event files in the capture folder, the titles in this binder's history, and backups"))]),
                                      now: now)
-            if (try? ProposalStore.save(card, in: row.folder)) != nil { try? commands.trustProposals([card.id], in: row.folder) }
+            do {
+                try ProposalStore.save(card, in: row.folder)
+            } catch {
+                complete = false
+                continue
+            }
+            if (try? commands.trustProposals([card.id], in: row.folder)) == nil {
+                let written = ProposalStore.dir(row.folder).appendingPathComponent("\(card.id).json")
+                if (try? FileManager.default.removeItem(at: written)) == nil {
+                    try? TekaStore(folder: row.folder).reject(card, reason: leftover, now: now)
+                }
+                complete = false
+            }
         }
+        return complete
     }
 
     /// Applies a raise to private for event `id`; one that could not be written is kept in the cursor and tried
     /// again by every sweep until it is, so an unredacted card never stays approvable.
     func raise(_ chain: [String], for id: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
+        // From now on the chain is private: for cards made later, and for the clerk's reading already under way.
+        markPrivate(chain + [id], state: &state)
+        try? save(state)
         guard !raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) else { return }
         state.raises = (state.raises ?? [:]).merging([id: chain]) { $1 }
         journal([("event", .string(id)), ("stage", .str("privacy_raise_failed"))])
+    }
+
+    /// Records events as private in the cursor; nothing ever takes one out (capture-event-v0 §3.3).
+    func markPrivate(_ ids: [String], state: inout State) {
+        let known = Set(state.privates ?? [])
+        guard !known.isSuperset(of: ids) else { return }
+        state.privates = known.union(ids).sorted()
+    }
+
+    /// The event as its cards file it: private when it is, or when it or its chain was raised to private before;
+    /// sensitivity never goes down (capture-event-v0 §3.3).
+    static func asFiled(_ event: CaptureEvent, privates: Set<String>, chain: [String] = []) -> CaptureEvent {
+        guard !event.isPrivate, privates.contains(event.id) || chain.contains(where: privates.contains) else { return event }
+        var raw = event.raw
+        raw.set("sensitivity", .str("private"))
+        return CaptureEvent(raw: raw, url: event.url, digest: event.digest)
     }
 
     /// A raise to private (capture-event-v0 §3.2, §3.3): waiting cards from the chain become private and redacted
@@ -868,7 +954,7 @@ public struct CaptureInbox: Sendable {
             state.attempts = attempts
             guard (try? save(state)) != nil else { return nil }
             journal([("event", .string(id)), ("stage", .str("clerk_attempt")), ("n", .int(attempts[id]!))])
-            return ClerkWork(event: event, hint: state.hints?[id], tier0: card, tier0Binder: binder)
+            return ClerkWork(event: Self.asFiled(event, privates: Set(state.privates ?? [])), hint: state.hints?[id], tier0: card, tier0Binder: binder)
         }
         return nil
     }
@@ -927,8 +1013,10 @@ public struct CaptureInbox: Sendable {
             log("clerk")
             return outcome
         }
-        let today = Clerk.captureDay(work.event.raw["captured_at"]?.stringValue ?? "") ?? CalendarDate.today(now: now)
-        let cards = Clerk.proposals(interp, event: work.event, today: today, client: commands.client, now: now)
+        // A raise to private that came while the clerk was reading holds for its cards too (capture-event-v0 §3.2).
+        let event = Self.asFiled(work.event, privates: Set(state.privates ?? []))
+        let today = Clerk.captureDay(event.raw["captured_at"]?.stringValue ?? "") ?? CalendarDate.today(now: now)
+        let cards = Clerk.proposals(interp, event: event, today: today, client: commands.client, now: now)
         guard !cards.isEmpty else {
             // Everything the clerk read is already in the binder: the code-built card stays, saying so.
             clerk[id] = "kept"
@@ -1113,12 +1201,27 @@ public struct CaptureInbox: Sendable {
         guard let id = raw["id"]?.stringValue, let file = unfiledFile(id) else { throw Commands.Failure(message: "a card without a valid id") }
         try AtomicFile.makePrivateFolder(unfiledDir)
         let bytes = Data(JSONWriter.pretty(.object(raw)).utf8)
-        // The digest is recorded first: a card whose file was written but not recorded would never be shown.
+        let digest = Self.digest(bytes)
+        // The digest is recorded first: a card whose file was written but not recorded would never be shown. A card
+        // rewritten in place keeps the digest of the file still there beside the new one until the new file is
+        // down, so a rewrite that fails, or a crash in between, never hides the card; the next rewrite tries again.
         var digests = try unfiledDigests()
-        digests[id] = Self.digest(bytes)
+        var both: String?
+        if case .ok(let data) = SafeFile.read(file), case let current = Self.digest(data), current != digest,
+           Self.accepted(digests[id]).contains(current) {
+            both = digest + " " + current
+        }
+        digests[id] = both ?? digest
         try saveUnfiledDigests(digests)
         try AtomicFile.write(bytes, to: file)
+        if both != nil {
+            digests[id] = digest
+            try? saveUnfiledDigests(digests)   // a pair left behind still names the file there
+        }
     }
+
+    /// The digests an entry of the digest list accepts: one, or two while a card is rewritten.
+    static func accepted(_ entry: String?) -> [String] { entry?.split(separator: " ").map(String.init) ?? [] }
 
     /// Card id -> digest of the file the inbox wrote. Throws when the list exists but cannot be read, so it is
     /// never saved over with one entry.
@@ -1175,7 +1278,7 @@ public struct CaptureInbox: Sendable {
         return names.filter { $0.hasSuffix(".json") && ProposalStore.isValidID(String($0.dropLast(5))) }.sorted().compactMap { name in
             let id = String(name.dropLast(5))
             guard case .ok(let data) = SafeFile.read(unfiledDir.appendingPathComponent(name)),
-                  digests[id] == Self.digest(data),
+                  Self.accepted(digests[id]).contains(Self.digest(data)),
                   case .object(let o)? = try? JSONParser.parse(data).value, o["id"]?.stringValue == id else { return nil }
             return Proposal(raw: o)
         }

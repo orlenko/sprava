@@ -45,6 +45,7 @@ extension IntakeWatcher {
         var outcome = ReadingOutcome()
         let store = IntakeReadings(support: support)
         guard var e = store.load(entry.id), e.state == "attempt" else { return outcome }
+        let loaded = e
         let folder = URL(fileURLWithPath: e.binder, isDirectory: true)
         // The clerk's card is built on the code-built card's ops, so only a card still as Sprava wrote it is used;
         // one another program changed stays as it is, unverified, and is never carried into a trusted card.
@@ -91,10 +92,16 @@ extension IntakeWatcher {
         if !built.already.isEmpty { provenance.set("already_in_binder", .array(built.already.map(JSONValue.string))) }
         if !built.rejected.isEmpty { provenance.set("left_out", .array(built.rejected.map(JSONValue.string))) }
         provenance.set("filed_by", .str("clerk"))
+        // The card it replaces, so a scan can finish a replacement a crash cut short.
+        provenance.set("replaces", .string(tier0.id))
         let shown = ops.first?["args"]?["document"]?["title"]?.stringValue ?? e.name
         let title = built.ops.isEmpty ? "File \u{201C}\(shown)\u{201D}"
             : "File \u{201C}\(shown)\u{201D} and add \(built.ops.count) item\(built.ops.count == 1 ? "" : "s")"
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
+        // A card an earlier commit made before it was cut short is never followed by anything: it goes.
+        for (p, _) in ProposalStore.list(in: folder) where p.state == "proposed" && p.raw["provenance"]?["replaces"] == .string(tier0.id) {
+            try? TekaStore(folder: folder).reject(p, reason: "replaced by the clerk's reading", now: now)
+        }
         do {
             try ProposalStore.save(proposal, in: folder)
             try commands.trustProposals([proposal.id], in: folder)
@@ -103,21 +110,32 @@ extension IntakeWatcher {
             try? store.save(e)
             return outcome
         }
-        try? TekaStore(folder: folder).reject(tier0, reason: "replaced by the clerk's reading", now: now)
-        // The watcher follows the new card, so a file that changes or goes withdraws it. A cursor that cannot be
-        // read is left as it is; the intake job reports it.
-        let key = folder.standardizedFileURL.path
-        if var state = try? load(), var seen = state[key], var s = seen[e.name], s.card == tier0.id {
-            s.card = proposal.id
-            seen[e.name] = s
-            state[key] = seen
-            try? save(state)
-        }
+        // The reading names the new card, then the watcher follows it, so a file that changes or goes withdraws it;
+        // only then does the code-built card go. When either cannot be written, the new card is taken back and the
+        // reading is tried again; a crash in between is finished by the next scan (`finishReplacement`).
         e.card = proposal.id
         e.state = "read"
-        try? store.save(e)
+        guard (try? store.save(e)) != nil, follow(e.name, in: folder, from: tier0.id, to: proposal.id) else {
+            try? TekaStore(folder: folder).reject(proposal, reason: "the intake cursor could not follow it", now: now)
+            var back = loaded
+            back.state = loaded.attempts >= 2 ? "kept" : "pending"
+            try? store.save(back)
+            return ReadingOutcome()
+        }
+        try? TekaStore(folder: folder).reject(tier0, reason: "replaced by the clerk's reading", now: now)
         outcome.replaced = true
         return outcome
+    }
+
+    /// Points the cursor's entry for `name` from the code-built card to its replacement. False when the cursor
+    /// cannot be read or written, or no longer follows the code-built card (the file changed or went).
+    func follow(_ name: String, in folder: URL, from old: String, to new: String) -> Bool {
+        let key = folder.standardizedFileURL.path
+        guard var state = try? load(), var seen = state[key], var s = seen[name], s.card == old else { return false }
+        s.card = new
+        seen[name] = s
+        state[key] = seen
+        return (try? save(state)) != nil
     }
 
     /// The model failed on this reading: it is tried once more on the next run, then the code-built card stays.

@@ -54,6 +54,8 @@ public struct IntakeWatcher: Sendable {
         public var cursorUnsaved = false
         /// The cursor exists but cannot be read: nothing was scanned, and nothing was written over it.
         public var cursorUnreadable = false
+        /// Intake folders that exist but could not be listed: their cards and their cursor were kept as they are.
+        public var unreadableFolders = 0
 
         package init() {}
     }
@@ -81,17 +83,31 @@ public struct IntakeWatcher: Sendable {
 
     /// The files of `intake/` worth a card: plain files of this user, not dot names, not `_converted/`; and in
     /// `mail/`, each message (`.md` from a mail monitor, or `.eml`) with its `<name> attachments/` folder.
-    /// A mail monitor's `.env` and `state.json` are never read (binder-v0 §3.3).
-    public static func candidates(in folder: URL) -> [Candidate] {
+    /// A mail monitor's `.env` and `state.json` are never read (binder-v0 §3.3). Empty when any folder cannot be listed.
+    public static func candidates(in folder: URL) -> [Candidate] { (try? listCandidates(in: folder)) ?? [] }
+
+    /// A folder of intake that exists but cannot be listed: not an empty one.
+    struct UnlistedFolder: Error { let path: String }
+
+    /// The contents of a folder that exists, or a throw when it cannot be listed.
+    static func contents(_ url: URL) throws -> [String] {
+        do { return try FileManager.default.contentsOfDirectory(atPath: url.path) } catch { throw UnlistedFolder(path: url.path) }
+    }
+
+    /// `candidates`, or a throw when `intake/`, `intake/mail/` or an attachments folder exists but cannot be listed, so
+    /// a folder briefly out of reach never reads as one whose files all went.
+    static func listCandidates(in folder: URL) throws -> [Candidate] {
         let intake = folder.appendingPathComponent("intake")
-        guard folderTime(intake) != nil, let names = try? FileManager.default.contentsOfDirectory(atPath: intake.path) else { return [] }
+        guard folderTime(intake) != nil else { return [] }
+        let names = try contents(intake)
         var out: [Candidate] = names.sorted().compactMap { name in
             guard !name.hasPrefix("."), !["_converted", "mail"].contains(name), DocumentPaths.isIntake("intake/" + name),
                   let f = plainFile(intake.appendingPathComponent(name)) else { return nil }
             return Candidate(name: name, size: f.size, mtime: f.mtime)
         }
         let mail = intake.appendingPathComponent("mail")
-        guard folderTime(mail) != nil, let messages = try? FileManager.default.contentsOfDirectory(atPath: mail.path) else { return out }
+        guard folderTime(mail) != nil else { return out }
+        let messages = try contents(mail)
         for name in messages.sorted() {
             let ext = (name as NSString).pathExtension.lowercased()
             guard ["md", "eml"].contains(ext), !name.hasPrefix("."), DocumentPaths.isIntake("intake/mail/" + name),
@@ -100,7 +116,8 @@ public struct IntakeWatcher: Sendable {
             let stem = (name as NSString).deletingPathExtension
             for folderName in [stem + " attachments", name + " attachments"] {
                 let dir = mail.appendingPathComponent(folderName)
-                guard let t = folderTime(dir), let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
+                guard let t = folderTime(dir) else { continue }
+                let files = try contents(dir)
                 c.mtime = max(c.mtime, t)
                 for file in files.sorted() where !file.hasPrefix(".") && DocumentPaths.isIntake("intake/mail/\(folderName)/\(file)") {
                     guard let a = plainFile(dir.appendingPathComponent(file)) else { continue }
@@ -134,7 +151,7 @@ public struct IntakeWatcher: Sendable {
         var out = Prepared()
         for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
             let seen = state[row.folder.standardizedFileURL.path] ?? [:]
-            for c in Self.candidates(in: row.folder) {
+            for c in (try? Self.listCandidates(in: row.folder)) ?? [] {
                 guard let e = seen[c.name], e.card == nil || e.readingMissing == true, e.size == c.size, e.mtime == c.mtime else { continue }
                 if read && Date().timeIntervalSince(started) > budget { return out }
                 let file = row.folder.appendingPathComponent("intake/" + c.name)
@@ -161,9 +178,14 @@ public struct IntakeWatcher: Sendable {
             let key = row.folder.standardizedFileURL.path
             var seen = state[key] ?? [:]
             var next: [String: Seen] = [:]
+            // An intake folder that cannot be listed is not an empty one: its cards and its cursor stay as they are.
+            guard let files = try? Self.listCandidates(in: row.folder) else {
+                result.unreadableFolders += 1
+                continue
+            }
             // Cards already waiting for a file, matched by name and digest, are never made twice.
-            let waiting = ProposalStore.list(in: row.folder).map(\.0).filter { $0.state == "proposed" && $0.raw["provenance"]?["intake"] != nil }
-            for file in Self.candidates(in: row.folder) {
+            var waiting = ProposalStore.list(in: row.folder).map(\.0).filter { $0.state == "proposed" && $0.raw["provenance"]?["intake"] != nil }
+            for file in files {
                 var entry = seen.removeValue(forKey: file.name)
                 if let e = entry, e.size == file.size, e.mtime == file.mtime {
                     if e.card == nil {
@@ -192,6 +214,7 @@ public struct IntakeWatcher: Sendable {
                             }
                         }
                     } else {
+                        if let card = e.card { entry?.card = finishReplacement(card, waiting: &waiting, in: row.folder, now: now) }
                         if e.readingMissing == true, let card = e.card {
                             entry?.readingMissing = retryReading(prepared, file: file, card: card, in: row, commands: commands, now: now) ? nil : true
                         }
@@ -376,6 +399,22 @@ public struct IntakeWatcher: Sendable {
         guard let reading = prepared.readings[path], let sha = prepared.digests[path],
               sha == p.raw["provenance"]?["intake"]?["sha256"]?.stringValue else { return false }
         return saveReading(reading, file: file, sha: sha, card: card, in: row, now: now)
+    }
+
+    /// Finishes a replacement of a file's card by the clerk's reading that a crash cut short (`commitReading`): a
+    /// clerk's card whose reading names it takes over from the card it replaces, and a card it replaces that still
+    /// waits is withdrawn. Returns the card the cursor follows now.
+    func finishReplacement(_ card: String, waiting: inout [Proposal], in folder: URL, now: Date) -> String {
+        var followed = card
+        let readings = IntakeReadings(support: support)
+        if let next = waiting.first(where: { $0.raw["provenance"]?["replaces"] == .string(card) }), readings.forCard(next.id)?.state == "read" {
+            followed = next.id
+        }
+        guard let mine = waiting.first(where: { $0.id == followed }), let old = mine.raw["provenance"]?["replaces"]?.stringValue,
+              waiting.contains(where: { $0.id == old }) else { return followed }
+        withdraw(old, in: folder, now: now)
+        waiting.removeAll { $0.id == old }
+        return followed
     }
 
     func withdraw(_ id: String, in folder: URL, now: Date) {
