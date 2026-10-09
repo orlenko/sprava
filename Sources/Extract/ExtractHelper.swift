@@ -104,6 +104,14 @@ public enum ExtractHelper {
         case .missing: throw Self.missing
         case .inProcess: return Extractor.extract(data, name: name)
         }
+        return try launch(helper, data: data, name: name, timeout: timeout)
+    }
+
+    /// Whether the bytes reached the helper whole; set by the writer before it signals, read after.
+    private final class Delivery: @unchecked Sendable { var failed = false }
+
+    /// Runs a helper already checked: the bytes on standard input, JSON back on standard output.
+    static func launch(_ helper: URL, data: Data, name: String, timeout: TimeInterval) throws -> Extractor.Result {
         let task = Process()
         task.executableURL = helper
         task.arguments = [name]
@@ -112,17 +120,26 @@ public enum ExtractHelper {
         task.standardInput = input
         task.standardOutput = output
         task.standardError = FileHandle.nullDevice
+        // A helper that exits, or is stopped by the timeout, before it read every byte closes the pipe: the write
+        // then fails with EPIPE instead of raising SIGPIPE, which would end the caller (the runtime) with it.
+        let writer = input.fileHandleForWriting
+        guard fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { throw Failure(message: "the reader could not be started") }
         try task.run()
         let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+        let delivery = Delivery(), delivered = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
-            try? input.fileHandleForWriting.write(contentsOf: data)
-            try? input.fileHandleForWriting.close()
+            do { try writer.write(contentsOf: data) } catch { delivery.failed = true }
+            try? writer.close()
+            delivered.signal()
         }
         let out = output.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
         killer.cancel()
-        guard task.terminationStatus == 0, let v = try? JSONParser.parse(out).value else {
+        // The helper is gone, so its end of the pipe is closed and the write has ended or fails at once; a writer
+        // still stuck after a short wait is abandoned, and the file is not read.
+        let whole = delivered.wait(timeout: .now() + 5) == .success && !delivery.failed
+        guard whole, task.terminationStatus == 0, let v = try? JSONParser.parse(out).value else {
             throw Failure(message: task.terminationReason == .uncaughtSignal ? "the reader stopped on this file" : "the reader failed on this file")
         }
         var r = Extractor.Result(kind: v["kind"]?.stringValue ?? "unknown", text: v["text"]?.stringValue ?? "",

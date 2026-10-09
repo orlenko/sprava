@@ -217,4 +217,29 @@ import Testing
             #expect(r.problem?.contains("sheet1.xml") == true, "\(cell): \(r.problem ?? "read")")
         }
     }
+
+    // MARK: - 7. A helper that stops before reading its input fails the reading, never the caller
+
+    /// A stand-in helper: a shell script, run directly (the sandbox check sits in `run`, before `launch`).
+    func stubHelper(_ script: String) throws -> URL {
+        let helper = temp("stub").appendingPathComponent("sprava-extract")
+        try Data("#!/bin/sh\n\(script)\n".utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        return helper
+    }
+
+    @Test func aHelperThatExitsWithoutReadingFailsTheReading() throws {
+        // Far more than a pipe holds, so the write is still going when the helper is gone.
+        let big = Data(repeating: UInt8(ascii: "a"), count: 4 * 1024 * 1024)
+        let quits = try stubHelper(#"echo '{"kind":"text","text":"read"}'; exit 0"#)
+        #expect(throws: ExtractHelper.Failure.self) { try ExtractHelper.launch(quits, data: big, name: "note.txt", timeout: 30) }
+        // A helper that hangs without reading is stopped by the timeout, and the reading fails the same way.
+        let hangs = try stubHelper("exec /bin/sleep 30")
+        let started = Date()
+        #expect(throws: ExtractHelper.Failure.self) { try ExtractHelper.launch(hangs, data: big, name: "note.txt", timeout: 1) }
+        #expect(Date().timeIntervalSince(started) < 20)
+        // A helper that reads everything still works through the same path.
+        let reads = try stubHelper(#"/bin/cat > /dev/null; echo '{"kind":"text","text":"read","text_from":"parsed"}'"#)
+        #expect(try ExtractHelper.launch(reads, data: big, name: "note.txt", timeout: 30).text == "read")
+    }
 }
