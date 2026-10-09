@@ -3,9 +3,10 @@ import Foundation
 import SpravaKit
 
 /// The privacy ratchet (architecture 4.5 step 5; binder-v0 §5.5, §6.7): an outside edit that narrows what a binder
-/// shows takes effect at once; one that widens it (`meta.disclosure` raised, `redact` cleared, `slice_title` removed
-/// or changed) does not. The hub slice and MCP keep projecting with the last values the person confirmed until a
-/// privacy card is approved.
+/// shows takes effect at once; one that loosens it does not. Every loosening binder-v0 §5.5 names is held back:
+/// `meta.disclosure` raised, `redact` cleared, `slice_title` added, removed or changed, a tag added to a redacted
+/// item, or the kind removed from one. The hub slice and MCP keep projecting with the last values the person
+/// confirmed until a privacy card is approved.
 ///
 /// In the MVP the confirmed values are kept unsealed (mvp.md section 4): they are the values Sprava itself last
 /// applied, read from the binder's op log, which records every op Sprava applied and every outside edit apart.
@@ -27,29 +28,42 @@ public enum PrivacyRatchet {
     /// What Sprava itself last applied: the latest `import_snapshot`, then every later op Sprava applied, skipping
     /// aborted ones; an `external_edit` never counts. A redaction is confirmed by any op that sets it and lifted
     /// only by the person's own op (architecture 4.5, 7.3). So is a hub title: any op may give an item one where it
-    /// had none, but only the person's own op changes or removes it.
+    /// had none, but only the person's own op changes or removes it. Every item Sprava knows has a confirmed hub
+    /// title or a confirmed absence of one, so a title added outside is held back as well. Tags and kind stand as
+    /// the ops set them; only the person's own op removes a kind.
     public struct Confirmed: Equatable {
         public var disclosure: String
         /// Items whose redaction stands, by the id's canonical text.
         public var redacted: Set<String>
-        /// The `slice_title` that stands for each item, by the id's canonical text.
+        /// The `slice_title` that stands for each item that has one, by the id's canonical text.
         public var sliceTitles: [String: JSONValue] = [:]
+        /// Every item Sprava applied or adopted, by the id's canonical text: one of them without an entry in
+        /// `sliceTitles` has no hub title, confirmed.
+        public var known: Set<String> = []
+        /// The tags and the kind that stand for each item Sprava knows.
+        public var tags: [String: Set<JSONValue>] = [:]
+        public var kinds: [String: JSONValue] = [:]
     }
 
     /// A `slice_title` that counts: a truthy value, as the projection reads it.
     static func sliceTitle(_ value: JSONValue?) -> JSONValue? { value.flatMap { ItemRules.isTruthy($0) ? $0 : nil } }
+
+    static func key(_ id: JSONValue?) -> String? { id.flatMap { try? Canonical.serialize($0) } }
 
     public static func confirmed(opLog ops: [JSONObject]) -> Confirmed? {
         guard let start = ops.lastIndex(where: { $0["op"] == .str("import_snapshot") }) else { return nil }
         let aborted = Set(ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
         let snapshot = ops[start]["args"]?["catalog"]
         var c = Confirmed(disclosure: level(snapshot?["meta"]?["disclosure"]), redacted: [])
-        func key(_ id: JSONValue?) -> String? { id.flatMap { try? Canonical.serialize($0) } }
-        for item in snapshot?["open_items"]?.arrayValue ?? [] {
-            guard let k = key(item["id"]) else { continue }
-            if item["redact"] == .bool(true) { c.redacted.insert(k) }
-            if let t = sliceTitle(item["slice_title"]) { c.sliceTitles[k] = t }
+        func record(_ item: JSONValue?) {
+            guard let k = key(item?["id"]) else { return }
+            c.known.insert(k)
+            if item?["redact"] == .bool(true) { c.redacted.insert(k) }
+            if let t = sliceTitle(item?["slice_title"]) { c.sliceTitles[k] = t }
+            c.tags[k] = Set(item?["tags"]?.arrayValue ?? [])
+            if let kind = item?["kind"] { c.kinds[k] = kind }
         }
+        for item in snapshot?["open_items"]?.arrayValue ?? [] { record(item) }
         for op in ops.dropFirst(start + 1) where !aborted.contains(op["id"]?.stringValue ?? "") {
             let args = op["args"]
             let byUser = op["actor"]?["kind"] == .str("user")
@@ -61,22 +75,23 @@ public enum PrivacyRatchet {
                     c.disclosure = step["op"] == .str("remove") ? "full" : level(step["value"])
                 }
             case "add_item"?, "reopen"?:
-                guard let k = key(args?["item"]?["id"]) else { continue }
-                if args?["item"]?["redact"] == .bool(true) { c.redacted.insert(k) }
-                if let t = sliceTitle(args?["item"]?["slice_title"]) { c.sliceTitles[k] = t }
+                record(args?["item"])
             case "update_item"?:
                 guard let k = key(args?["id"]) else { continue }
+                let unset = args?["unset"]?.arrayValue ?? []
                 if args?["set"]?["redact"] == .bool(true) {
                     c.redacted.insert(k)
-                } else if byUser, args?["set"]?["redact"] != nil
-                            || args?["unset"]?.arrayValue?.contains(.str("redact")) == true {
+                } else if byUser, args?["set"]?["redact"] != nil || unset.contains(.str("redact")) {
                     c.redacted.remove(k)
                 }
                 let title = args?["set"]?["slice_title"]
-                if byUser || c.sliceTitles[k] == nil, title != nil
-                    || args?["unset"]?.arrayValue?.contains(.str("slice_title")) == true {
+                if byUser || c.sliceTitles[k] == nil, title != nil || unset.contains(.str("slice_title")) {
                     c.sliceTitles[k] = sliceTitle(title)
                 }
+                if let tags = args?["set"]?["tags"] { c.tags[k] = Set(tags.arrayValue ?? []) }
+                if unset.contains(.str("tags")) { c.tags[k] = [] }
+                if let kind = args?["set"]?["kind"] { c.kinds[k] = kind }
+                if byUser, unset.contains(.str("kind")) { c.kinds[k] = nil }
             default:
                 break
             }
@@ -93,45 +108,95 @@ public enum PrivacyRatchet {
         public var widenedTo: String?
         /// Open items whose redaction an outside edit cleared, waiting for a card.
         public var lifted: [JSONValue]
-        /// Open items whose `slice_title` an outside edit removed or changed, waiting for a card: the hub keeps the
-        /// confirmed title until then.
+        /// Open items whose `slice_title` an outside edit added, removed or changed, waiting for a card: the hub keeps
+        /// the confirmed title, or none, until then.
         public var retitled: [Retitled] = []
-        /// The confirmed hub title of every item that has one, by the id's canonical text, closed items included:
-        /// the hub never sees another title for them until the person allows it.
+        /// The hub title of every item whose title stands apart from the found one, by the id's canonical text,
+        /// closed items included: the confirmed `slice_title`, or, where none is confirmed but one was added
+        /// outside, the title the projection gives without one (`[redacted]` for a redacted item). The hub never
+        /// sees another title for them until the person allows it.
         public var titles: [String: JSONValue] = [:]
+        /// Redacted items that gained a tag outside, and redacted items whose kind was removed outside, waiting for
+        /// a card. A tag waiting holds the binder at disclosure `title` at most, where a redacted item's tags are
+        /// not published (binder-v0 §5.5); the slice at `full` carries no kind, and `kinds` keeps the confirmed one.
+        public var retagged: [Retagged] = []
+        public var unkinded: [JSONValue] = []
+        public var kinds: [String: JSONValue] = [:]
     }
 
     public struct Retitled: Equatable {
         public var id: JSONValue
-        /// The title the hub keeps, and the one found in the catalog (nil when removed).
-        public var confirmed: JSONValue
+        /// The title the hub keeps (nil when none is confirmed), and the one found in the catalog (nil when removed).
+        public var confirmed: JSONValue?
         public var found: JSONValue?
+    }
+
+    public struct Retagged: Equatable {
+        public var id: JSONValue
+        public var found: JSONValue
     }
 
     /// The view of an adopted binder. An op log that cannot be read fails closed: disclosure `none`.
     public static func view(folder: URL, catalog: JSONObject) -> View {
         let found = level(catalog["meta"]?["disclosure"])
         let items = catalog["open_items"]?.arrayValue ?? []
-        let foundRedacted = Set(items.filter { $0["redact"] == .bool(true) }.compactMap { $0["id"].flatMap { try? Canonical.serialize($0) } })
+        let foundRedacted = Set(items.filter { $0["redact"] == .bool(true) }.compactMap { key($0["id"]) })
         guard let ops = try? TekaStore(folder: folder).readOpLog().ops else {
             return View(disclosure: "none", redacted: foundRedacted, widenedTo: nil, lifted: [])
         }
         guard let confirmed = confirmed(opLog: ops) else {
             return View(disclosure: found, redacted: foundRedacted, widenedTo: nil, lifted: [])
         }
+        let redacted = foundRedacted.union(confirmed.redacted)
         let disclosure = narrower(found, confirmed.disclosure)
         let lifted = items.compactMap { it -> JSONValue? in
-            guard let id = it["id"], let k = try? Canonical.serialize(id), confirmed.redacted.contains(k), it["redact"] != .bool(true) else { return nil }
+            guard let id = it["id"], let k = key(id), confirmed.redacted.contains(k), it["redact"] != .bool(true) else { return nil }
             return id
         }
-        let retitled = items.compactMap { it -> Retitled? in
-            guard let id = it["id"], let k = try? Canonical.serialize(id), let kept = confirmed.sliceTitles[k],
-                  sliceTitle(it["slice_title"]) != kept else { return nil }
-            return Retitled(id: id, confirmed: kept, found: sliceTitle(it["slice_title"]))
+
+        // Titles: an item Sprava knows keeps its confirmed hub title, or its confirmed absence of one.
+        var titles = confirmed.sliceTitles
+        var retitled: [Retitled] = []
+        func heldTitle(_ k: String, found: JSONValue?, title: JSONValue?, redact: Bool) -> Bool {
+            guard confirmed.known.contains(k), found != confirmed.sliceTitles[k] else { return false }
+            if confirmed.sliceTitles[k] == nil { titles[k] = redact || redacted.contains(k) ? .str("[redacted]") : title ?? .null }
+            return true
         }
-        return View(disclosure: disclosure, redacted: foundRedacted.union(confirmed.redacted),
-                    widenedTo: disclosure == found ? nil : found, lifted: lifted, retitled: retitled,
-                    titles: confirmed.sliceTitles)
+        for it in items {
+            guard let id = it["id"], let k = key(id) else { continue }
+            let foundTitle = sliceTitle(it["slice_title"])
+            if heldTitle(k, found: foundTitle, title: it["title"], redact: it["redact"] == .bool(true)) {
+                retitled.append(Retitled(id: id, confirmed: confirmed.sliceTitles[k], found: foundTitle))
+            }
+        }
+        // An item closed with a title or tags added outside is shown to the hub once more as closed: held the same.
+        var closedTags: [String: Set<JSONValue>] = [:]
+        for entry in catalog["processing_log"]?.arrayValue ?? [] where ["done", "dropped"].contains(entry["action"]?.stringValue ?? "") {
+            guard let k = key(entry["id"]) else { continue }
+            let final = entry["final"]
+            _ = heldTitle(k, found: sliceTitle(final?["slice_title"]), title: entry["title"], redact: final?["redact"] == .bool(true))
+            closedTags[k] = Set(final?["tags"]?.arrayValue ?? [])
+        }
+
+        // Tags and kind of redacted items.
+        var retagged: [Retagged] = []
+        var unkinded: [JSONValue] = []
+        var kinds: [String: JSONValue] = [:]
+        for it in items {
+            guard let id = it["id"], let k = key(id), confirmed.known.contains(k), redacted.contains(k) else { continue }
+            let tags = it["tags"]?.arrayValue ?? []
+            if !Set(tags).isSubset(of: confirmed.tags[k] ?? []) { retagged.append(Retagged(id: id, found: .array(tags))) }
+            if it["kind"] == nil, let kind = confirmed.kinds[k] {
+                unkinded.append(id)
+                kinds[k] = kind
+            }
+        }
+        let closedRetagged = closedTags.contains { k, tags in
+            confirmed.known.contains(k) && confirmed.redacted.contains(k) && !tags.isSubset(of: confirmed.tags[k] ?? [])
+        }
+        let held = retagged.isEmpty && !closedRetagged ? disclosure : narrower(disclosure, "title")
+        return View(disclosure: held, redacted: redacted, widenedTo: disclosure == found ? nil : found, lifted: lifted,
+                    retitled: retitled, titles: titles, retagged: retagged, unkinded: unkinded, kinds: kinds)
     }
 
     /// The disclosure every cross-binder surface uses for a binder read from `folder` (a Shelf row's folder and binder).
@@ -140,34 +205,40 @@ public enum PrivacyRatchet {
         return teka.isAdopted ? view(folder: folder, catalog: catalog).disclosure : level(catalog["meta"]?["disclosure"])
     }
 
-    /// The privacy card for a widening made outside Sprava: the person's own `set_disclosure` and `update_item`
+    /// The privacy card for a loosening made outside Sprava: the person's own `set_disclosure` and `update_item`
     /// ops, which make the found values the confirmed ones once approved. A card already waiting for the same
-    /// change is kept; none is made when nothing widened. Returns the id of a card it wrote.
+    /// change is kept; none is made when nothing loosened. Returns the id of a card it wrote.
     public static func ensureCard(folder: URL, client: String = "sprava/0.1", now: Date = Date()) throws -> String? {
         let teka = Teka.read(folder)
         guard teka.isAdopted, let catalog = teka.catalog else { return nil }
         let v = view(folder: folder, catalog: catalog)
+        func update(_ id: JSONValue, _ change: (String, JSONValue)) -> JSONObject {
+            JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", id), change]))])
+        }
         var ops: [JSONObject] = []
+        var what: [String] = []
         if let wider = v.widenedTo {
             ops.append(JSONObject([(key: "op", value: .str("set_disclosure")), (key: "args", value: .obj([("disclosure", .string(wider))]))]))
+            what.append("Disclosure was raised to \(wider)")
         }
-        for id in v.lifted {
-            ops.append(JSONObject([(key: "op", value: .str("update_item")),
-                                   (key: "args", value: .obj([("id", id), ("unset", .array([.str("redact")]))]))]))
-        }
+        for id in v.lifted { ops.append(update(id, ("unset", .array([.str("redact")])))) }
+        if !v.lifted.isEmpty { what.append("Redaction was removed") }
         for r in v.retitled {
-            let change: (String, JSONValue) = r.found.map { ("set", .obj([("slice_title", $0)])) } ?? ("unset", .array([.str("slice_title")]))
-            ops.append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", r.id), change]))]))
+            ops.append(update(r.id, r.found.map { ("set", .obj([("slice_title", $0)])) } ?? ("unset", .array([.str("slice_title")]))))
         }
+        if !v.retitled.isEmpty { what.append("A hub title was added, changed or removed") }
+        for r in v.retagged { ops.append(update(r.id, ("set", .obj([("tags", r.found)])))) }
+        if !v.retagged.isEmpty { what.append("A tag was added to a redacted item") }
+        for id in v.unkinded { ops.append(update(id, ("unset", .array([.str("kind")])))) }
+        if !v.unkinded.isEmpty { what.append("The kind of a redacted item was removed") }
         guard !ops.isEmpty else { return nil }
         let waiting = ProposalStore.list(in: folder).contains { p, _ in
             p.state == "proposed" && p.raw["provenance"]?["privacy_widening"] == .bool(true) && p.ops == ops
         }
         guard !waiting else { return nil }
         let user = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
-        let title = v.widenedTo.map { "Disclosure was raised to \($0) outside Sprava. Allow it? Until then the hub and brains see \(v.disclosure)" }
-            ?? (v.lifted.isEmpty ? "A hub title was changed or removed outside Sprava. Allow it? Until then the hub keeps the one you confirmed"
-                : "Redaction was removed outside Sprava. Allow it? Until then the hub keeps it redacted")
+        let title = what.joined(separator: "; ") + " outside Sprava. Allow it? Until then the hub "
+            + (v.widenedTo != nil || !v.retagged.isEmpty ? "and brains see \(v.disclosure) and " : "") + "keeps what you confirmed"
         let card = Proposal.make(title: title, actor: user, ops: ops,
                                  provenance: JSONObject([(key: "privacy_widening", value: .bool(true))]), now: now)
         try ProposalStore.save(card, in: folder)

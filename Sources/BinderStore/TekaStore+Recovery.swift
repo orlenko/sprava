@@ -188,20 +188,25 @@ extension TekaStore {
 
     /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item or a
     /// filed document gets a placeholder, because its old id was used once and is never reused; later ops that named
-    /// it name the placeholder. A filing is recorded where the file already is, without `from`. A reopening reopens
-    /// as a new item again. Settings and log entries are written again as they were; a privacy level, a rename or a
-    /// migration is not (those go through their own cards). When any lost op cannot be rebuilt, the card lists them
-    /// all and asks for a repair by hand; it is never a part of the batch (binder-v0 §6.7 step 6).
+    /// it name the placeholder, a log entry's `item` or `document` included. Items and documents are renamed apart,
+    /// since an item and a document may have the same id. A filing is recorded where the file already is, without
+    /// `from`. A reopening reopens as a new item again. Settings and log entries are written again as they were; a
+    /// privacy level, a rename or a migration is not (those go through their own cards). When any lost op cannot be
+    /// rebuilt, the card lists them all and asks for a repair by hand; it is never a part of the batch (binder-v0
+    /// §6.7 step 6).
     package static func reapplyCard(_ ops: [JSONObject], client: String, now: Date) -> Proposal? {
         var n = 0
-        var renamed: [JSONValue: JSONValue] = [:]
+        var renamed: [String: [JSONValue: JSONValue]] = ["item": [:], "document": [:]]
         var rebuilt = true
         func fresh(_ key: String, in args: inout JSONObject) {
             guard var record = args[key]?.objectValue else { return }
             n += 1
-            if let old = record["id"] { renamed[old] = .string("$new:\(n)") }
+            if let old = record["id"] { renamed[key]?[old] = .string("$new:\(n)") }
             record.set("id", .string("$new:\(n)"))
             args.set(key, .object(record))
+        }
+        func rename(_ field: String, of object: inout JSONObject, as kind: String) {
+            if let id = object[field], let placeholder = renamed[kind]?[id] { object.set(field, placeholder) }
         }
         let bodies: [JSONObject] = ops.compactMap { op in
             guard let type = op["op"]?.stringValue, var args = op["args"]?.objectValue else { return nil }
@@ -211,14 +216,22 @@ extension TekaStore {
             case "add_item":
                 fresh("item", in: &args)
             case "reopen":
-                if let id = args["id"], let placeholder = renamed[id] { args.set("id", placeholder) }
+                rename("id", of: &args, as: "item")
                 fresh("item", in: &args)
             case "file_document":
                 fresh("document", in: &args)
                 args.remove("from")
-            case "update_item", "set_status", "complete", "drop", "dismiss", "undismiss", "update_document":
-                if let id = args["id"], let placeholder = renamed[id] { args.set("id", placeholder) }
-            case "set_meta", "add_log_entry":
+            case "update_item", "set_status", "complete", "drop", "dismiss", "undismiss":
+                rename("id", of: &args, as: "item")
+            case "update_document":
+                rename("id", of: &args, as: "document")
+            case "add_log_entry":
+                if var entry = args["entry"]?.objectValue {
+                    rename("item", of: &entry, as: "item")
+                    rename("document", of: &entry, as: "document")
+                    args.set("entry", .object(entry))
+                }
+            case "set_meta":
                 break
             default:
                 rebuilt = false

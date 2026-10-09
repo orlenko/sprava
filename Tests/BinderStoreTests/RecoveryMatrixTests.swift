@@ -55,6 +55,9 @@ import Testing
             ("mixed", [update("estate-example-2026-007", [("title", .str("Invented title B"))]), simple("dismiss", "estate-example-2026-008"),
                        add("Invented mixed task"), simple("undismiss", "estate-example-2026-011"),
                        updateNew(0, [("priority", .str("high"))])]),
+            ("add, log entry", [add("Invented logged task"),
+                                { c in [self.op("add_log_entry", [("entry", .obj([("item", .string(c[0])), ("action", .str("note")),
+                                                                                  ("note", .str("Invented note"))]))])] }]),
         ]
     }
 
@@ -100,10 +103,15 @@ import Testing
     }
 
     /// The catalog with what recovery cannot repeat left out: times and op ids, and the ids minted for records
-    /// made again (`new`). Arrays are sorted, since a change made again lands after the ones that survived, and the
-    /// result is canonical text, since a field put back lands at the end of its record.
+    /// made again, which become `new:` and the title of the record they name, so a reference to a record made again
+    /// must name the new record. Arrays are sorted, since a change made again lands after the ones that survived,
+    /// and the result is canonical text, since a field put back lands at the end of its record.
     func normalized(_ c: JSONObject, original: Set<JSONValue>) -> String {
-        func fix(_ v: JSONValue?) -> JSONValue? { v.map { original.contains($0) ? $0 : .str("new") } }
+        var titles: [JSONValue: String] = [:]
+        for key in ["open_items", "documents", "processing_log"] {
+            for r in c[key]?.arrayValue ?? [] { if let id = r["id"], let t = r["title"]?.stringValue { titles[id] = t } }
+        }
+        func fix(_ v: JSONValue?) -> JSONValue? { v.map { original.contains($0) ? $0 : .string("new:" + (titles[$0] ?? "?")) } }
         func clean(_ r: JSONValue, drop: Set<String>) -> JSONValue {
             guard case .object(var o) = r else { return r }
             o = JSONObject(o.entries.filter { !drop.contains($0.key) })
@@ -167,8 +175,8 @@ import Testing
     }
 
     /// One sequence per argument, so the sequences run side by side: every catalog along the way saved back.
-    @Test(arguments: 0..<10) func everyOldCopyIsRecoveredWhole(_ index: Int) throws {
-        try #require(sequences.count == 10)
+    @Test(arguments: 0..<11) func everyOldCopyIsRecoveredWhole(_ index: Int) throws {
+        try #require(sequences.count == 11)
         let (name, steps) = sequences[index]
         for k in 0..<steps.count {
             try check("\(name), copy \(k)", steps, outside: { $0[k] })
@@ -176,7 +184,7 @@ import Testing
     }
 
     /// The last catalog saved back without one optional field an approval wrote: the field comes back.
-    @Test(arguments: 0..<10) func aDroppedApprovedFieldComesBack(_ index: Int) throws {
+    @Test(arguments: 0..<11) func aDroppedApprovedFieldComesBack(_ index: Int) throws {
         let (name, steps) = sequences[index]
         let (folder, store) = try adopted()
         let copies = try run(steps, store: store, folder: folder).map { try #require(try JSONParser.parse($0).value.objectValue) }

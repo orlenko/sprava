@@ -113,6 +113,13 @@ public enum Placeholders {
             guard case .object(var args)? = op["args"] else { out.append(op); continue }
             // An op that names a record by `id` may name one an earlier op of the batch created.
             if case .string(let ref)? = args["id"], let real = minted[ref] { args.set("id", real) }
+            // So may a log entry, by its `item` or `document`.
+            if op["op"]?.stringValue == "add_log_entry", case .object(var entry)? = args["entry"] {
+                for key in ["item", "document"] {
+                    if case .string(let ref)? = entry[key], let real = minted[ref] { entry.set(key, real) }
+                }
+                args.set("entry", .object(entry))
+            }
             // `add_item` and `reopen` both create an item, which gets a new id and the op's time (binder-v0 §6.3).
             if ["add_item", "reopen"].contains(op["op"]?.stringValue), case .object(var item)? = args["item"] {
                 if case .string(let id)? = item["id"], id.hasPrefix("$new:") {
