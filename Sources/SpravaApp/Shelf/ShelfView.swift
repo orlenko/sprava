@@ -16,7 +16,7 @@ final class ShelfModel: ObservableObject {
     /// away under the pointer.
     @Published var selection: URL? {
         didSet {
-            if let s = selection, s.isFileURL, s != oldValue { RecentBinders().touch(s) }
+            if let s = selection, s.isFileURL, s != oldValue { try? RecentBinders().touch(s) }
         }
     }
     @Published var note: String?

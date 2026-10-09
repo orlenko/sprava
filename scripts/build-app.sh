@@ -42,8 +42,17 @@ restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
 [ -f "$restic_license" ] && cp "$restic_license" "$bundle/Contents/Resources/restic-LICENSE.txt"
 codesign --force --sign - --identifier ca.orlenko.sprava.restic "$bundle/Contents/MacOS/restic"
 codesign --force --sign - --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
-codesign --force --sign - --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \
-    "$bundle/Contents/MacOS/sprava-extract"
+# The runtime refuses a helper that does not run sandboxed, so a helper signed without its entitlement stops the build.
+plutil -lint Resources/sprava-extract.entitlements
+if ! codesign --force --sign - --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \
+    "$bundle/Contents/MacOS/sprava-extract"; then
+    echo "build-app: signing the extraction helper failed" >&2
+    exit 1
+fi
+if ! codesign -d --entitlements - --xml "$bundle/Contents/MacOS/sprava-extract" 2>/dev/null | grep -q com.apple.security.app-sandbox; then
+    echo "build-app: the extraction helper carries no sandbox entitlement after signing" >&2
+    exit 1
+fi
 codesign --force --sign - --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
 codesign --force --sign - --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
 codesign --force --sign - --identifier ca.orlenko.sprava "$bundle"
