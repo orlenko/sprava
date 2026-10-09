@@ -23,7 +23,13 @@ extension Commands {
             }
             try list.set(f, entry)
         }
-        return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
+        // An adoption cut short leaves Adoption's marker (`.sprava/adoption-unfinished`, a plain file); running the
+        // adopt command again finishes it, so the app offers that.
+        var marker = stat()
+        let unfinished = lstat(f.appendingPathComponent(".sprava/adoption-unfinished").path, &marker) == 0
+            && marker.st_mode & S_IFMT == S_IFREG
+        return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing)),
+                           (key: "adoption_unfinished", value: .bool(unfinished))])
     }
 
     func doctor(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {

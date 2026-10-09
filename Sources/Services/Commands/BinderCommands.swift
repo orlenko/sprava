@@ -1,5 +1,6 @@
 import BinderFormat
 import BinderStore
+import Capture
 import Foundation
 import Shelf
 import SpravaKit
@@ -65,9 +66,16 @@ extension Commands {
                 guard op["op"] == .str("update_item"), p.raw["provenance"]?["repair"] != nil, let id = op["args"]?["id"],
                       let item = catalog?["open_items"]?.arrayValue?.first(where: { $0["id"] == id }) else { return nil }
                 func text(_ key: String, _ fallback: String) -> JSONValue { .string(item[key]?.stringValue ?? fallback) }
+                // `missing` names what the card asks for (its findings' fields or codes), so the app can tell a value
+                // the item lacks from a default it shows, and send what the person confirmed.
                 return .obj([("index", .int(i)), ("title", text("title", "")), ("due", text("due", "")),
-                             ("priority", text("priority", "normal")), ("waiting_on", text("waiting_on", ""))])
+                             ("priority", text("priority", "normal")), ("waiting_on", text("waiting_on", "")),
+                             ("kind", text("kind", "")), ("missing", p.raw["provenance"]?["repair"] ?? .array([]))])
             }))
+            // What links a card to the one it took over from (the capture events both came from, or the card an intake
+            // card replaces), so the app can carry unsaved edits over to it.
+            if let events = p.raw["provenance"]?["events"] { o.set("events", events) }
+            if let replaced = p.raw["provenance"]?["replaces"] { o.set("replaces", replaced) }
             if let c = p.raw["confidence"] { o.set("confidence", c) }
             if let intake = p.raw["provenance"]?["intake"] { o.set("intake", intake) }
             if let folder = p.ops.first(where: { $0["op"] == .str("file_document") })?["args"]?["document"]?["path"]?.stringValue {
@@ -96,9 +104,17 @@ extension Commands {
             expected = recorded
         }
         guard expected == seen else { throw Failure(message: "this card changed since it was shown; reload it") }
-        let proposal = try ProposalStore.load(id, in: f, expectedDigest: expected)
+        var proposal = try ProposalStore.load(id, in: f, expectedDigest: expected)
         let store = TekaStore(folder: f, client: client)
         if command == "approve" {
+            // Capture's approval gate: it first settles the capture work this binder is owed (a raise to private, a
+            // retraction, a card withdrawn), then gives the card as it may be approved now, rewritten redacted when it
+            // comes from a chain that is private. Only that card is approved; nil refuses the approval.
+            guard let gated = inbox.cardForApproval(id, in: f, commands: self, now: now) else {
+                throw Failure(message: "this card cannot be approved now: capture work for this binder is not finished, "
+                              + "its record cannot be read, or the card was withdrawn; reload it and try again")
+            }
+            proposal = gated
             // A brain's card stays withdrawn once the brain is disconnected, even when its rejection was not saved.
             if try brainDisconnected(proposal) {
                 throw Failure(message: "the brain that made this card was disconnected; the card can only be rejected")
@@ -144,9 +160,16 @@ extension Commands {
             }
             let applied = try store.approve(proposal, edited: edited, now: now)
             // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
-            let stamp = (try? Adoption.offerStamp(f, client: client, now: now)) ?? nil
+            // The approval stands when the stamp cannot be offered (its op log unreadable); the reply says so.
+            var stamp: String?
+            var stampError: String?
+            do { stamp = try Adoption.offerStamp(f, client: client, now: now) } catch { stampError = "\(error)" }
             try trustWritten([id] + store.createdProposals + (stamp.map { [$0] } ?? []), in: f)
-            return JSONObject([(key: "applied", value: .int(applied.count))])
+            var reply = JSONObject([(key: "applied", value: .int(applied.count))])
+            if let stampError {
+                reply.set("stamp_error", .string("Approved, but the binder's stamp could not be offered: \(stampError)"))
+            }
+            return reply
         }
         try store.reject(proposal, reason: r["reason"]?.stringValue, now: now)
         try trustWritten([id], in: f)

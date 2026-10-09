@@ -16,4 +16,16 @@ public enum BackupJob {
         guard backup.key != nil else { return .error(code: "backup_key_unavailable", culprit: "the backup key is not in the Keychain") }
         return nil
     }
+
+    /// The scheduled work's outcome, from `Backup.Maintenance`: Sprava's own state snapshot, retention and the check
+    /// fail the job as a binder does (docs/backup.md §3.3), and so does a copied binder that holds another binder's
+    /// backup id (`sharedBackupIDs`), which is never backed up until it has its own. Counts only, never names.
+    /// Without a failure, the outcome of the request the job ran first.
+    public static func outcome(failed: Int, failedParts: [String], sharedBackupIDs: Int, requests: JobOutcome) -> JobOutcome {
+        guard failed > 0 else { return requests }
+        var parts = failedParts
+        if sharedBackupIDs > 0 { parts.append("\(sharedBackupIDs) copied binder(s) holding another binder's backup id") }
+        return .error(code: "backup_failed",
+                      culprit: "\(failed) failure(s)" + (parts.isEmpty ? " in binder backups" : ", including " + parts.joined(separator: ", ")))
+    }
 }

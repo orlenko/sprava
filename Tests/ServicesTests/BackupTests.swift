@@ -23,6 +23,17 @@ import Testing
         try JSONParser.parse(c.handle(JSONWriter.compact(.obj(fields)), now: now, today: today)).value
     }
 
+    /// A key created for the person and then not wanted is forgotten, so an existing key can be set up instead.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SPRAVA_BACKUP_KEY_FILE"] != nil))
+    func aCreatedKeyCanBeForgottenForAnExistingOne() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-backup-key-\(UUID().uuidString)")
+        let c = Commands(support: support, deviceID: "dev")
+        _ = try #require(try call(c, [("command", .str("backup_new_key"))])["key"]?.stringValue)
+        #expect(try call(c, [("command", .str("backup_status"))])["pending_key"] == .bool(true))
+        #expect(try call(c, [("command", .str("backup_forget_new_key"))])["ok"] == .bool(true))
+        #expect(try call(c, [("command", .str("backup_status"))])["pending_key"] == .bool(false))
+    }
+
     @Test(.enabled(if: BackupTests.hasRestic && ProcessInfo.processInfo.environment["SPRAVA_BACKUP_KEY_FILE"] != nil))
     func setUpOffloadAndRestoreThroughCommands() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-backup-cmd-\(UUID().uuidString)")

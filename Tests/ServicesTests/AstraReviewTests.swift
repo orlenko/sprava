@@ -43,7 +43,9 @@ import Testing
         try bAddItem(s, id: "estate-example-2026-030", title: "Ask about the invented deed")
         try bAddItem(s, id: "estate-example-2026-031", title: "Return the invented keys")
         try bAddItem(s, id: "estate-example-2026-032", title: "Sort the invented letters")
-        let event = "01a10000-0000-7000-8000-0000000000b2"
+        // The card comes from a note the inbox took in: approval refuses a card whose events the cursor does not know.
+        let event = try note(s, "Three invented changes to the estate items")
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
         let ops = [
             op("set_status", [("id", .str("estate-example-2026-030")), ("status", .str("waiting")),
                               ("waiting_on", .str("Invented Notary Office")), ("follow_up_at", .str("2026-10-20"))]),

@@ -529,6 +529,45 @@ import Testing
         #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
     }
 
+    /// The card lists what it asks for and the item's kind, so the app can tell a missing value from a default it
+    /// shows; "no deadline" and a kind from the closed list complete the item.
+    @Test func aRepairCardSaysWhatItAsksForAndTakesNoDeadlineAndAKind() throws {
+        let c = commands()
+        let (folder, listed) = try adoptCatalog(c, name: "shed-sample", """
+        {"meta": {"schema_version": 2, "name": "shed-sample"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "shed-sample-2026-001", "title": "Order the roof panels", "status": "open", "priority": "normal",
+                         "kind": "chore"}]}
+        """)
+        let repair = try #require(listed.first { $0["title"] == .str("Fill in what this item is missing") })
+        let entry = try #require(repair["editable"]?.arrayValue?.first)
+        let missing = Set(entry["missing"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+        #expect(missing.contains("dateless") && missing.contains("kind"), "\(missing)")
+        #expect(entry["kind"] == .str("chore"))
+        let r = try approve(c, folder, repair, edits: .array([.obj([("index", .int(0)), ("due", .str("")), ("kind", .str("decision"))])]))
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let item = try #require(Teka.read(folder).items.first?.raw)
+        #expect(item["no_deadline"] == .bool(true) && item["kind"] == .str("decision") && item["due"] == nil)
+    }
+
+    /// An adoption cut short leaves its marker; the settings reply says so, and adopting again finishes it.
+    @Test func anUnfinishedAdoptionIsReportedAndFinishedByAdoptingAgain() throws {
+        let c = commands()
+        let (folder, _) = try adoptCatalog(c, name: "porch-sample", """
+        {"meta": {"schema_version": 2, "name": "porch-sample"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "porch-sample-2026-001", "title": "Sand the porch steps", "status": "open", "priority": "normal"}]}
+        """)
+        func unfinished() throws -> JSONValue? {
+            try call(c, [("command", .str("binder_settings")), ("binder", .string(folder.path))])["adoption_unfinished"]
+        }
+        #expect(try unfinished() == .bool(false))
+        // As if the adoption stopped after its import snapshot, before every card was saved.
+        try Data().write(to: folder.appendingPathComponent(".sprava/adoption-unfinished"))
+        #expect(try unfinished() == .bool(true))
+        let r = try call(c, [("command", .str("adopt")), ("binder", .string(folder.path))])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        #expect(try unfinished() == .bool(false))
+    }
+
     @Test func aLifeprojV1CatalogIsOfferedTheStamp() throws {   // qJwVl
         let c = commands()
         let (folder, listed) = try adoptCatalog(c, name: "tax-2026", """

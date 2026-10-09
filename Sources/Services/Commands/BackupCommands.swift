@@ -9,6 +9,8 @@ extension Commands {
     static let backupCommands: [String: Handler] = [
         "backup_status": { c, _, r, now, today in try c.backupStatus(r, now: now, today: today) },
         "backup_new_key": { c, _, r, now, today in try c.backupNewKey(r, now: now, today: today) },
+        // The person chose to use an existing key after all: the key created for them is forgotten.
+        "backup_forget_new_key": { _, _, _, _, _ in BackupKey.clearPending(); return JSONObject() },
         "backup_setup": { c, _, r, now, today in try c.backupSetup(r, now: now, today: today) },
         "backup_second": { c, _, r, now, today in try c.backupSecond(r, now: now, today: today) },
         "backup_request": { c, _, r, now, today in try c.backupRequest(r, now: now, today: today) },
@@ -25,6 +27,16 @@ extension Commands {
         // Read only, and never through a link: a status never makes a binder's backup id.
         let names = Dictionary(rows.compactMap { row in Backup.existingBackupID(row.folder).map { ($0, row.name) } },
                                uniquingKeysWith: { a, _ in a })
+        // Folders on the Shelf that hold the same backup id: one was copied from the other with its `.sprava`, and the
+        // copy is not backed up until it has an id of its own (Backup.SharedBackupID).
+        let held = Dictionary(grouping: rows.compactMap { row in Backup.existingBackupID(row.folder).map { (id: $0, row: row) } },
+                              by: \.id)
+        let shared: [JSONValue] = held.keys.sorted().flatMap { id -> [JSONValue] in
+            let holders = held[id] ?? []
+            guard Set(holders.map { $0.row.folder.standardizedFileURL.path }).count > 1 else { return [] }
+            return holders.map { .obj([("backup_id", .string(id)), ("name", .string($0.row.name)),
+                                       ("folder", .string($0.row.folder.standardizedFileURL.path))]) }
+        }
         var upload: JSONValue = .null
         switch st.upload {
         case .uploaded?: upload = .str("uploaded")
@@ -38,6 +50,8 @@ extension Commands {
             (key: "pending_key", value: .bool(BackupKey.loadPending() != nil)),
             (key: "upload", value: upload), (key: "last_check", value: st.lastCheck.map(JSONValue.string) ?? .null),
             (key: "last_drill", value: st.lastDrill.map(JSONValue.string) ?? .null),
+            (key: "last_second_check", value: st.lastSecondCheck.map(JSONValue.string) ?? .null),
+            (key: "shared_backup_ids", value: .array(shared)),
             (key: "binders", value: .array(st.binders.map { b in .obj([("name", .string(names[b.id] ?? "a binder not on the Shelf")),
                                                                         ("at", b.at.map(JSONValue.string) ?? .null),
                                                                         ("error", b.error.map(JSONValue.string) ?? .null)]) })),

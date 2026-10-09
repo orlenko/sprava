@@ -289,11 +289,9 @@ extension Runtime {
         guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         let m = backup.maintain(rows: rows, deviceID: commands.deviceID)
         if m.snapshots > 0 || m.failed > 0 || m.retention || m.checked {
-            log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) failed_parts=\(m.failedParts.joined(separator: ",")) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
+            log("backup snapshots=\(m.snapshots) unchanged=\(m.unchanged) failed=\(m.failed) failed_parts=\(m.failedParts.joined(separator: ",")) shared_backup_ids=\(m.sharedBackupIDs.count) state=\(m.stateSnapshot) retention=\(m.retention) checked=\(m.checked)")
         }
-        // Sprava's own state snapshot, retention and the check fail the job as a binder does (docs/backup.md §3.3).
-        let culprit = "\(m.failed) failure(s)" + (m.failedParts.isEmpty ? " in binder backups" : ", including " + m.failedParts.joined(separator: ", "))
-        return m.failed > 0 ? .error(code: "backup_failed", culprit: culprit) : requestOutcome
+        return BackupJob.outcome(failed: m.failed, failedParts: m.failedParts, sharedBackupIDs: m.sharedBackupIDs.count, requests: requestOutcome)
     }
 
     /// The Shelf for a job: one that cannot be read fails the job, never reads as an empty Shelf.
