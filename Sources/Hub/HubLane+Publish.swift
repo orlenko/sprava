@@ -160,8 +160,88 @@ extension HubLane {
             : .notPublished("disclosure \(level) is not published in this version; the slice was withdrawn")
     }
 
-    /// The publish proper, at disclosure `full`, under the binder lock.
+    /// The publish proper, at disclosure `full`, under the binder lock. When it fails or is refused, the slice on the
+    /// spool is withdrawn if it shows more than the binder now allows (`showsMore`): a narrowing never waits for a
+    /// publish that a broken item, a blocked binder or a failed write keeps from happening.
     static func publishLocked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool) throws -> PublishResult {
+        let note = "the slice was withdrawn, since it showed more than the binder now allows"
+        let result: PublishResult
+        do {
+            result = try publishChecked(teka, inbox: inbox, now: now, force: force, nameCollides: nameCollides)
+        } catch {
+            guard (try? withdrawIfShowingMore(teka, inbox: inbox, nameCollides: nameCollides)) == true else { throw error }
+            throw TekaStore.Refused(reason: "\((error as? TekaStore.Refused)?.reason ?? String(describing: error)); \(note)")
+        }
+        if case .notPublished(let why) = result, (try? withdrawIfShowingMore(teka, inbox: inbox, nameCollides: nameCollides)) == true {
+            return .notPublished("\(why); \(note)")
+        }
+        return result
+    }
+
+    /// What a publish projects with, worked out from the catalog, the privacy ratchet, the cursors and the op log.
+    struct Plan {
+        var closures: [(id: JSONValue, entry: JSONObject)]
+        /// The items closed since the last publish, as `project` takes them: the id, and `redact` from the closure.
+        var closedOnce: [JSONObject]
+        var keepRedacted: Set<String>
+        var allowTags: [String: Set<String>]
+        var logCount: Int
+        var opCount: Int
+    }
+
+    static func plan(_ catalog: JSONObject, folder: URL, cursors: Cursors, privacy: PrivacyRatchet.View) -> Plan {
+        // Items closed since the last publish are shown once more with status done, so the hub drops them; the
+        // next publish leaves them out. The first publish takes the log as found as its baseline. A
+        // `closed-duplicate` entry closes its `item` (binder-v0 §6.8); each id shows once.
+        let log = catalog["processing_log"]?.arrayValue ?? []
+        let baseline = cursors.sliceHash == nil && cursors.lastLogCount == 0 ? log.count : cursors.lastLogCount
+        var closedKeys = Set<String>()
+        let closures: [(id: JSONValue, entry: JSONObject)] = log.dropFirst(min(baseline, log.count)).compactMap { entry in
+            guard case .object(let e) = entry else { return nil }
+            let id: JSONValue?
+            switch e["action"]?.stringValue {
+            case "done"?, "dropped"?: id = e["id"]
+            case "closed-duplicate"?: id = e["item"]
+            default: id = nil
+            }
+            guard let id, closedKeys.insert((try? Canonical.serialize(id)) ?? idText(id)).inserted else { return nil }
+            return (id, e)
+        }
+        // Only the id and the redaction are read from a closure: a closed item publishes nothing else (binder-v0
+        // §8.2), so a tag or title an outside edit gave it before it closed never reaches the hub.
+        let closedOnce: [JSONObject] = closures.map { id, e in
+            var item = JSONObject()
+            item.set("id", id)
+            if e["final"]?["redact"] == .bool(true) { item.set("redact", .bool(true)) }
+            return item
+        }
+
+        // Items published redacted stay redacted unless the person lifted it with an op since then; a redaction an
+        // outside edit removed stays until the person approves the privacy card (architecture 4.5). This covers the
+        // items closed once as well as the open ones, for their ids. A redacted item shows only the tags the hub
+        // already saw for it and the ones the person set since; one the hub never saw shows its tags as found. An
+        // aborted op lifts and sets nothing, as in `PrivacyRatchet.confirmed` (binder-v0 §6.9).
+        let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
+        let aborted = Set(ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+        var lifted = Set<String>()
+        var userTags: [String: Set<String>] = [:]
+        for op in ops.dropFirst(min(cursors.opCount ?? 0, ops.count)) where op["op"] == .str("update_item")
+            && op["actor"]?["kind"] == .str("user") && !aborted.contains(op["id"]?.stringValue ?? "") {
+            guard let id = op["args"]?["id"], let k = try? Canonical.serialize(id) else { continue }
+            let unset = op["args"]?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            if unset.contains("redact") || op["args"]?["set"]?["redact"] == .bool(false) { lifted.insert(k) }
+            if let tags = op["args"]?["set"]?["tags"]?.arrayValue {
+                userTags[k, default: []].formUnion(tags.compactMap { try? Canonical.serialize($0) })
+            }
+        }
+        var allowTags: [String: Set<String>] = [:]
+        for (k, seen) in cursors.tags ?? [:] { allowTags[k] = Set(seen).union(userTags[k] ?? []) }
+        return Plan(closures: closures, closedOnce: closedOnce,
+                    keepRedacted: Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted),
+                    allowTags: allowTags, logCount: log.count, opCount: ops.count)
+    }
+
+    static func publishChecked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool) throws -> PublishResult {
         let folder = teka.folder
         guard let catalog = teka.catalog else { return .notPublished("not adopted") }
         guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
@@ -180,68 +260,72 @@ extension HubLane {
             overwritten = hash != last
         }
 
-        // Items closed since the last publish are shown once more with status done, so the hub drops them; the
-        // next publish leaves them out. The first publish takes the log as found as its baseline. A
-        // `closed-duplicate` entry closes its `item` (binder-v0 §6.8); each id shows once.
-        let log = catalog["processing_log"]?.arrayValue ?? []
-        if cursors.sliceHash == nil && cursors.lastLogCount == 0 { cursors.lastLogCount = log.count }
-        var closedKeys = Set<String>()
-        let newClosures: [(id: JSONValue, entry: JSONObject)] = log.dropFirst(min(cursors.lastLogCount, log.count)).compactMap { entry in
-            guard case .object(let e) = entry else { return nil }
-            let id: JSONValue?
-            switch e["action"]?.stringValue {
-            case "done"?, "dropped"?: id = e["id"]
-            case "closed-duplicate"?: id = e["item"]
-            default: id = nil
-            }
-            guard let id, closedKeys.insert((try? Canonical.serialize(id)) ?? idText(id)).inserted else { return nil }
-            return (id, e)
-        }
-        // Only the id and the redaction are read from a closure: a closed item publishes nothing else (binder-v0
-        // §8.2), so a tag or title an outside edit gave it before it closed never reaches the hub.
-        let closedOnce: [JSONObject] = newClosures.map { id, e in
-            var item = JSONObject()
-            item.set("id", id)
-            if e["final"]?["redact"] == .bool(true) { item.set("redact", .bool(true)) }
-            return item
-        }
-
-        // Items published redacted stay redacted unless the person lifted it with an op since then; a redaction an
-        // outside edit removed stays until the person approves the privacy card (architecture 4.5). This covers the
-        // items closed once as well as the open ones, for their ids. An aborted op lifts nothing,
-        // as in `PrivacyRatchet.confirmed` (binder-v0 §6.9).
-        let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
-        let aborted = Set(ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
-        var lifted = Set<String>()
-        for op in ops.dropFirst(min(cursors.opCount ?? 0, ops.count)) where op["op"] == .str("update_item")
-            && op["actor"]?["kind"] == .str("user") && !aborted.contains(op["id"]?.stringValue ?? "") {
-            let unset = op["args"]?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            if unset.contains("redact") || op["args"]?["set"]?["redact"] == .bool(false), let id = op["args"]?["id"] {
-                lifted.insert((try? Canonical.serialize(id)) ?? "")
-            }
-        }
-        let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted)
+        let plan = plan(catalog, folder: folder, cursors: cursors, privacy: privacy)
         let key = try sliceKey(folder)
-        let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
-                                       key: key, now: now, alsoRedact: keepRedacted, keepTitles: privacy.titles,
-                                       lastSeen: cursors.published)
+        let projection = try projection(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: plan.closedOnce,
+                                        key: key, now: now, alsoRedact: plan.keepRedacted, keepTitles: privacy.titles,
+                                        lastSeen: cursors.published, allowTags: plan.allowTags, strict: true)
+        let slice = projection.slice
         let hash = try Canonical.hash(stripGenerated(slice))
-        if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
-        try removeFormerSlice(cursors, teka: teka, inbox: inbox)
-        try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
+        let unchanged = !force && targetCurrent && hash == cursors.sliceHash
+        if !unchanged {
+            try removeFormerSlice(cursors, teka: teka, inbox: inbox)
+            try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
+        }
+        // The cursors are kept even when the slice is unchanged: the redactions it kept and the ops it read are what
+        // the next publish starts from, so a lift it consumed is never applied again to a redaction made since.
+        let before = cursors
         cursors.sliceHash = hash
         cursors.sliceName = teka.name
-        cursors.published.merge(ids) { _, new in new }
-        cursors.closedOnce = newClosures.map { (try? Canonical.serialize($0.id)) ?? "" }
-        cursors.lastLogCount = log.count
-        cursors.opCount = ops.count
+        cursors.published.merge(projection.ids) { _, new in new }
+        cursors.closedOnce = plan.closures.map { (try? Canonical.serialize($0.id)) ?? "" }
+        cursors.lastLogCount = plan.logCount
+        cursors.opCount = plan.opCount
+        cursors.tags = projection.tags
         let items = catalog["open_items"]?.arrayValue ?? []
         cursors.redacted = items.compactMap { it -> String? in
             guard let id = it["id"], let k = try? Canonical.serialize(id) else { return nil }
-            return it["redact"] == .bool(true) || keepRedacted.contains(k) ? k : nil
+            return it["redact"] == .bool(true) || plan.keepRedacted.contains(k) ? k : nil
         }
-        try saveCursors(cursors, folder)
-        return .published(items: slice["items"]?.arrayValue?.count ?? 0, overwrittenByOther: overwritten)
+        if cursors != before { try saveCursors(cursors, folder) }
+        return unchanged ? .unchanged : .published(items: slice["items"]?.arrayValue?.count ?? 0, overwrittenByOther: overwritten)
+    }
+
+    /// Withdraws the slice when it shows more than the binder now allows; true when it did.
+    static func withdrawIfShowingMore(_ teka: Teka, inbox: URL, nameCollides: Bool) throws -> Bool {
+        guard try showsMore(teka, inbox: inbox) else { return false }
+        return try withdraw(teka, inbox: inbox, recordedOnly: nameCollides)
+    }
+
+    /// Whether the slice Sprava last wrote shows more than the binder allows now, judged against a projection made
+    /// without the checks that only publishing needs: an open item that is gone or shown as `done`, a title, party or
+    /// link that differs, or a tag no longer shown. Nothing recorded, or nothing readable on the spool, shows
+    /// nothing. A catalog that cannot be read, or whose `open_items` or `processing_log` is not a list, has no items
+    /// to judge against: the last slice stays, as for any refused publish (a narrowed disclosure is withdrawn before
+    /// this, by `withdrawIfNarrowed`).
+    static func showsMore(_ teka: Teka, inbox: URL) throws -> Bool {
+        let cursors = try readCursors(teka.folder)
+        guard cursors.sliceHash != nil else { return false }
+        let url = try spoolFile(inbox, cursors.sliceName ?? teka.folder.lastPathComponent, ".agenda.json")
+        guard case .ok(let data) = SafeFile.read(url), let shown = try? JSONParser.parse(data).value else { return false }
+        guard let catalog = teka.catalog else { return false }
+        guard let key = try existingSliceKey(teka.folder) else { return true }
+        let privacy = PrivacyRatchet.view(folder: teka.folder, catalog: catalog)
+        let plan = plan(catalog, folder: teka.folder, cursors: cursors, privacy: privacy)
+        guard let allowed = try? projection(catalog: catalog, folderName: teka.folder.lastPathComponent, closedOnce: plan.closedOnce,
+                                            key: key, now: Date(), alsoRedact: plan.keepRedacted, keepTitles: privacy.titles,
+                                            lastSeen: cursors.published, allowTags: plan.allowTags, strict: false) else { return false }
+        var open: [String: JSONValue] = [:]
+        for it in allowed.slice["items"]?.arrayValue ?? [] where it["status"] != .str("done") {
+            if let id = it["id"]?.stringValue, open[id] == nil { open[id] = it }
+        }
+        for old in shown["items"]?.arrayValue ?? [] where old["status"] != .str("done") {
+            guard let id = old["id"]?.stringValue, let now = open[id] else { return true }
+            if ["title", "waiting_on", "link"].contains(where: { old[$0] != now[$0] }) { return true }
+            let tags = Set(now["tags"]?.arrayValue ?? [])
+            if !(old["tags"]?.arrayValue ?? []).allSatisfy(tags.contains) { return true }
+        }
+        return false
     }
 
     /// One binder's hub pass, as the runtime runs it: drain, then publish.

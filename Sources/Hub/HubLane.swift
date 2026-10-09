@@ -61,7 +61,7 @@ extension HubLane {
         case notPublished(String)
     }
 
-    package struct Cursors: Codable {
+    package struct Cursors: Codable, Equatable {
         package var sliceHash: String?
         /// Canonical id text -> the slice id the hub last saw.
         var published: [String: String] = [:]
@@ -75,6 +75,9 @@ extension HubLane {
         var opCount: Int? = 0
         /// The binder name the slice was last written under, so a withdrawal finds it without trusting the catalog.
         package var sliceName: String?
+        /// The tags the hub last saw for each open item, by canonical id text: a redacted item shows no other tag
+        /// until the person sets it with their own op (architecture 4.5). Each tag is its canonical JSON text.
+        var tags: [String: [String]]?
     }
 
     static func cursorsURL(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/cursors.json") }
@@ -139,9 +142,12 @@ extension HubLane {
         return "\(teka)-r-" + mac.map { String(format: "%02x", $0) }.joined().prefix(12)
     }
 
+    /// The recommended form is `<prefix>-<year>-<number>`, where the prefix is the one `IDMint` mints with for the
+    /// binder's name (binder-v0 §5.6), not the name itself.
     static func isRecommended(_ id: JSONValue, teka: String) -> Bool {
         guard case .string(let s) = id else { return false }
-        return s.wholeMatch(of: try! Regex("^\(NSRegularExpression.escapedPattern(for: teka))-\\d{4}-\\d{3,}$")) != nil
+        let prefix = IDMint.prefix(for: teka)
+        return s.wholeMatch(of: try! Regex("^\(NSRegularExpression.escapedPattern(for: prefix))-\\d{4}-\\d{3,}$")) != nil
     }
 
     /// The slice id: prefixed with `<binder>-` unless it already starts with it (lifeproj's plain string test), or an
@@ -166,6 +172,19 @@ extension HubLane {
                                key: SymmetricKey, now: Date, alsoRedact: Set<String> = [],
                                keepTitles: [String: JSONValue] = [:],
                                lastSeen: [String: String] = [:]) throws -> (slice: JSONValue, ids: [String: String]) {
+        let p = try projection(catalog: catalog, folderName: folderName, closedOnce: closedOnce, key: key, now: now,
+                               alsoRedact: alsoRedact, keepTitles: keepTitles, lastSeen: lastSeen, allowTags: [:], strict: true)
+        return (p.slice, p.ids)
+    }
+
+    /// `project`, plus the tags shown for each open item. `allowTags` limits a redacted item's tags to those listed
+    /// for it (by canonical text), when it is listed. `strict` false skips what only publishing needs, lifeproj's item
+    /// rules and the unique slice ids, so the slice the binder allows now can be judged even when it cannot be
+    /// published.
+    static func projection(catalog: JSONObject, folderName: String, closedOnce: [JSONObject], key: SymmetricKey, now: Date,
+                           alsoRedact: Set<String>, keepTitles: [String: JSONValue], lastSeen: [String: String],
+                           allowTags: [String: Set<String>], strict: Bool)
+        throws -> (slice: JSONValue, ids: [String: String], tags: [String: [String]]) {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
         let teka = meta["name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? folderName
         var chapters: [JSONValue]
@@ -189,10 +208,11 @@ extension HubLane {
         }
         let rawItems = try list("open_items")
         let findings = ItemRules.check(items: rawItems, log: try list("processing_log"), v0: false)
-        if !findings.isEmpty { throw TekaStore.Refused(reason: "open_items fail lifeproj's rules; nothing published") }
+        if strict, !findings.isEmpty { throw TekaStore.Refused(reason: "open_items fail lifeproj's rules; nothing published") }
         let items = rawItems.compactMap(\.objectValue)
 
         var ids: [String: String] = [:]
+        var shownTags: [String: [String]] = [:]
         var projected: [JSONValue] = []
         var seen = Set<String>()
         func project(_ it: JSONObject, closed: Bool = false) throws {
@@ -200,7 +220,10 @@ extension HubLane {
             let k = (try? Canonical.serialize(id)) ?? idText(id)
             let redacted = it["redact"] == .bool(true) || alsoRedact.contains(k)
             let sid = (closed ? lastSeen[k] : nil) ?? sliceID(id, redacted: redacted, teka: teka, key: key)
-            guard seen.insert(sid).inserted else { throw TekaStore.Refused(reason: "two items project to the same slice id") }
+            guard seen.insert(sid).inserted else {
+                if strict { throw TekaStore.Refused(reason: "two items project to the same slice id") }
+                return
+            }
             ids[k] = sid
             if closed {
                 projected.append(.obj([
@@ -209,12 +232,17 @@ extension HubLane {
                 ]))
                 return
             }
+            var tags = it["tags"] ?? .array([])
+            if redacted, let allowed = allowTags[k], case .array(let found) = tags {
+                tags = .array(found.filter { allowed.contains((try? Canonical.serialize($0)) ?? "") })
+            }
+            shownTags[k] = (tags.arrayValue ?? []).compactMap { try? Canonical.serialize($0) }
             let title: JSONValue = keepTitles[k]
                 ?? (redacted ? .str("[redacted]") : it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil } ?? it["title"] ?? .null)
             projected.append(.obj([
                 ("id", .string(sid)), ("title", title), ("status", it["status"] ?? .null),
                 ("priority", it["priority"] ?? .null), ("due", it["due"] ?? .null),
-                ("no_deadline", .bool(it["no_deadline"] == .bool(true))), ("tags", it["tags"] ?? .array([])),
+                ("no_deadline", .bool(it["no_deadline"] == .bool(true))), ("tags", tags),
                 ("waiting_on", redacted ? .str("[party]") : it["waiting_on"] ?? .null),
                 ("link", redacted ? .null : it["link"] ?? .null),
             ]))
@@ -226,7 +254,7 @@ extension HubLane {
             ("teka", .string(teka)), ("lifecycle", meta["lifecycle"] ?? .null), ("active_chapter", activeChapter),
             ("active_chapters", .array(chapters)), ("generated", .string(generated)), ("items", .array(projected)),
         ])
-        return (slice, ids)
+        return (slice, ids, shownTags)
     }
 
     package static func stripGenerated(_ slice: JSONValue) -> JSONValue {

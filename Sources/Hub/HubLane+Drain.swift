@@ -64,7 +64,15 @@ extension HubLane {
         var result = DrainResult()
         guard let data = try readOutbox(file) else { return result }
         guard case .object(let outbox) = try JSONParser.parse(data).value else { throw TekaStore.Refused(reason: "outbox is not a JSON object") }
-        let completions = (outbox["completions"]?.arrayValue ?? []).compactMap(\.objectValue)
+        // A missing list is an empty one; anything else that is not a list is malformed and reported, never read as
+        // empty, as the acknowledgement does.
+        let found: [JSONValue]
+        switch outbox["completions"] {
+        case nil: found = []
+        case .array(let a)?: found = a
+        default: throw TekaStore.Refused(reason: "the outbox's completions is not a list; it was left as it is")
+        }
+        let completions = found.compactMap(\.objectValue)
         guard !completions.isEmpty else { return result }
 
         // Read again for each outbox: the one before may have closed items.
