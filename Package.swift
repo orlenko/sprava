@@ -7,6 +7,7 @@ let package = Package(
     platforms: [.macOS("27.0")],
     products: [
         .executable(name: "sprava-extract", targets: ["sprava-extract"]),
+        .executable(name: "sprava-mcp", targets: ["sprava-mcp"]),
     ],
     targets: [
         // Layer 0: JSON, atomic files, state files, dates, ids, paths.
@@ -45,8 +46,12 @@ let package = Package(
         .target(name: "Backup", dependencies: ["Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "BackupTests", dependencies: ["Backup", "Hub", "Shelf", "BinderStore", "BinderFormat",
                                                         "SpravaTestSupport", "SpravaKit"]),
+        .target(name: "Brains", dependencies: ["Capture", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "BrainsTests", dependencies: ["Brains", "CaptureTestSupport", "Capture", "Extract", "Shelf",
+                                                        "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Layer 6: executables.
+        .executableTarget(name: "sprava-mcp", dependencies: ["Brains", "SpravaKit"]),
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
