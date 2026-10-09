@@ -2,14 +2,17 @@ import SpravaKit
 
 /// Step 3 of capture-event-v0 §6.4 (architecture 8, step 4): is a new item one already in its binder?
 extension Clerk {
-    static let completionWords: Set<String> = ["paid", "sent", "done", "finished", "received", "signed", "filed", "submitted",
+    static let completionWords: Set<String> = ["paid", "sent", "done", "finished", "completed", "received", "signed", "filed", "submitted",
                                                "fait", "payé", "payée", "envoyé", "envoyée", "reçu", "reçue", "signé", "terminé"]
 
     func checkDuplicates(_ interp: inout Interpretation, filing: [FilingBinder], today: CalendarDate, locale: String) async {
         for i in interp.items.indices {
             guard let name = interp.items[i].binder, let binder = filing.first(where: { $0.name == name }) else { continue }
             let words = FilingBinder.significantWords(interp.items[i].sentence.text + " " + interp.items[i].title)
-            let found = binder.openItems.map { ($0, $0.words.intersection(words).count) }.filter { $0.1 >= 1 }
+            // An id the model could not tell apart from another (7 and "7") is never offered, so a relation never
+            // lands on the wrong item.
+            let found = binder.openItems.filter { c in binder.openItems.filter { $0.key == c.key }.count == 1 }
+                .map { ($0, $0.words.intersection(words).count) }.filter { $0.1 >= 1 }
                 .sorted { $0.1 > $1.1 }.prefix(8).map(\.0)
             guard !found.isEmpty else { continue }
             let list = found.map { c in

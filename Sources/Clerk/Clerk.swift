@@ -65,7 +65,8 @@ public struct Clerk: Sendable {
     static let actionVerbs: Set<String> = ["call", "pay", "send", "email", "write", "book", "file", "sign", "ask", "check", "review",
                                            "remind", "renew", "submit", "buy", "order", "fix", "schedule", "meet", "decide", "chase",
                                            "appeler", "payer", "envoyer", "écrire", "signer", "demander", "vérifier", "relancer",
-                                           "réserver", "commander", "prendre", "rappeler"]
+                                           "réserver", "commander", "prendre", "rappeler", "reply", "respond", "confirm",
+                                           "répondre", "confirmer"]
 
     /// The capture's own calendar day and the offset it was written with (capture-event-v0 §4.3).
     public static func captureDay(_ capturedAt: String) -> CalendarDate? {
@@ -147,9 +148,10 @@ public struct Clerk: Sendable {
                     if interp.items.contains(where: { $0.sentence == item.sentence && $0.action == item.action && Self.similar($0.title, item.title) }) { continue }
                     interp.items.append(item)
                 }
-                interp.items.sort { $0.sentence.start < $1.sentence.start }
             }
         }
+        // The model's list is in no set order: neighbours (check 5) are read in the text's order.
+        interp.items.sort { $0.sentence.start < $1.sentence.start }
         for s in uncovered() {
             interp.unfiled.append((s, "not_covered"))
             interp.outcome = "partial"
@@ -176,7 +178,7 @@ public struct Clerk: Sendable {
             if let used = await model.tokens(instructions: instructions, prompt: window.text, task: .extraction),
                used + reserve > model.contextSize {
                 if let halves = Self.halves(window, in: text), maySplit { queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0) }
-                else { interp.unfiled.append((window, "too_long")) }
+                else { interp.unfiled.append((window, "too_long")); interp.outcome = "partial" }
                 continue
             }
             do {

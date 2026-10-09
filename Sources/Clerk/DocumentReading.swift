@@ -327,7 +327,10 @@ extension Clerk {
         if let binder { await checkDuplicates(&interp, filing: [binder], today: today, locale: locale) }
         doc.items = interp.items
         doc.calls += interp.calls
-        if doc.unread > 0 || interp.outcome == "partial" || !doc.notCovered.isEmpty || found > Self.documentItems { doc.outcome = "partial" }
+        // An item that failed code's checks is a part not read (§4.4), so the reading is partial and escalated.
+        if doc.unread > 0 || doc.dropped > 0 || interp.outcome == "partial" || !doc.notCovered.isEmpty || found > Self.documentItems {
+            doc.outcome = "partial"
+        }
 
         // §4.4: when a careful reading by a smarter model is worth it. Code decides, from what is known.
         if doc.documentClass == "unsure" { doc.escalate.append("the clerk is not sure what it is") }
@@ -335,6 +338,7 @@ extension Clerk {
         if doc.replyNeeded || facts.signals.contains("reply") { doc.escalate.append("a reply may be needed") }
         if facts.words > 3000 || (reading.pages ?? 0) > 10 { doc.escalate.append("it is long") }
         if doc.unread > 0 { doc.escalate.append("the clerk could not read all of it") }
+        if doc.dropped > 0 { doc.escalate.append("the clerk listed things code could not find in it") }
         if found > Self.documentItems { doc.escalate.append("it asks for more than the clerk lists") }
         if !doc.notCovered.isEmpty { doc.escalate.append("parts of it ask for something the clerk did not list") }
         return doc

@@ -7,10 +7,16 @@ extension Clerk {
         let options = filing.map { "\($0.name): \($0.description)" }.joined(separator: "\n")
         let opening = CaptureText.sentences(text).first?.text ?? ""
         for i in interp.items.indices {
+            // A hint files only into a binder on the filing list; any other name stays a guess on a "not sure" card.
             if let hint {
-                interp.items[i].binder = hint
-                interp.items[i].signals = ["hint"]
-                interp.items[i].band = "high"
+                if names.contains(hint) {
+                    interp.items[i].binder = hint
+                    interp.items[i].signals = ["hint"]
+                    interp.items[i].band = "high"
+                } else {
+                    interp.items[i].guess = hint
+                    interp.items[i].flags.append("the binder named with the note is not on the filing list")
+                }
                 continue
             }
             guard !filing.isEmpty else { continue }

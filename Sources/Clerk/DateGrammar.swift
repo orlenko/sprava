@@ -184,14 +184,14 @@ public enum DateGrammar {
     /// The role from the words before the time expression in its sentence (capture-event-v0 §6.6).
     public static func role(sentence: String, whenText: String, waiting: Bool) -> Role {
         let s = sentence.lowercased().replacingOccurrences(of: "’", with: "'")
-        guard let r = s.range(of: whenText.lowercased()) else { return waiting ? .expected : .due }
+        let lowerWhen = whenText.lowercased().replacingOccurrences(of: "’", with: "'")
+        guard let r = s.range(of: lowerWhen) else { return waiting ? .expected : .due }
         let before = s[..<r.lowerBound].split(whereSeparator: { $0 == " " || $0 == "," }).suffix(6).map(String.init)
         func inOrder(_ pattern: [String]) -> Bool {
             var i = 0
             for w in before where i < pattern.count && w == pattern[i] { i += 1 }
             return i == pattern.count
         }
-        let lowerWhen = whenText.lowercased()
         if inOrder(["if", "not", "by"]) || inOrder(["if", "nothing", "by"]) || s.contains("follow up") || s.contains("relancer") { return .follow_up }
         if inOrder(["at", "the", "latest"]) || inOrder(["au", "plus", "tard"]) || s.contains("at the latest") || s.contains("au plus tard") { return .due }
         if ["until", "within", "jusqu'à"].contains(where: { before.contains($0) || lowerWhen.hasPrefix($0) }) || inOrder(["should", "arrive"]) { return .expected }

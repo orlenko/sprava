@@ -91,7 +91,7 @@ extension Clerk {
                     // What a private capture writes into an existing item is redacted with it (capture-event-v0 §3.3).
                     if event.isPrivate {
                         set.set("redact", .bool(true))
-                        if candidate.kind == nil { set.set("kind", .str("other")) }
+                        if candidate.kind == nil { set.set("kind", t["kind"] ?? .str("other")) }
                     }
                     if !set.entries.isEmpty {
                         var args = JSONObject([(key: "id", value: candidate.id), (key: "set", value: .object(set))])
