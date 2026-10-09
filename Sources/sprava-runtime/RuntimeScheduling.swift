@@ -99,6 +99,15 @@ extension Runtime {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms, threshold: threshold)
         let after = records.jobs[key]?.breaker
+        if key == "summary" {
+            // Starting moved the next run to tomorrow; a failed run is tried again today (`SummaryRetry`).
+            let now = Date()
+            let day = CalendarDate.today(now: now).description
+            if summaryFailures.day != day { summaryFailures = (day, 0) }
+            if final != .ok, final != .skipped, final != .idle { summaryFailures.count += 1 }
+            nextSummary = SummaryRetry.next(after: final, now: now, failedToday: summaryFailures.count)
+            if nextSummary < nextClockTime(hour: 8, minute: 0, after: now) { log("summary retry_in_s=\(Int(SummaryRetry.delay))") }
+        }
         if !["heartbeat", "capture", "intake", "clerk", "dashboard", "backup"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }

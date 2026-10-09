@@ -112,6 +112,28 @@ public func nextSummaryTime(now: Date, lastSent: String?, calendar: Calendar = .
     return nextClockTime(hour: 8, minute: 0, after: now, calendar: calendar)
 }
 
+/// When the daily summary runs again after a run that ended with `outcome`. Handled (sent, or skipped on purpose,
+/// as when today's was already sent): the next 08:00. Failed (no sentinel report, the notification refused, a
+/// timeout): again after `delay`, at most `maxRetries` times a day and never past midnight, so a passing failure no
+/// longer skips the whole day and a lasting one does not retry forever. The job's breaker still gates every run.
+public enum SummaryRetry {
+    public static let delay: TimeInterval = 600
+    public static let maxRetries = 6
+
+    /// `failedToday` counts the failed runs today, this one included.
+    public static func next(after outcome: JobOutcome, now: Date, failedToday: Int, calendar: Calendar = .current) -> Date {
+        let tomorrow = nextClockTime(hour: 8, minute: 0, after: now, calendar: calendar)
+        switch outcome {
+        case .ok, .skipped, .idle:
+            return tomorrow
+        case .error, .timeout:
+            let retry = now.addingTimeInterval(delay)
+            guard failedToday <= maxRetries, calendar.isDate(retry, inSameDayAs: now) else { return tomorrow }
+            return retry
+        }
+    }
+}
+
 /// What the daily summary does when today's sentinel report is missing: compute it itself, unless the
 /// sentinel's breaker is open, which a direct call would get around (and a wedge there would be blamed on the
 /// summary).
@@ -271,10 +293,19 @@ public final class TrustBacklog: @unchecked Sendable {
         // on disk against the digest first. The first failure to record keeps that card and every one after it.
         var kept: [String: String] = [:]
         var recordError: Error?
+        var accessError: Error?
         for (key, digest) in pending.sorted(by: { $0.key < $1.key }) {
             guard let (folder, id) = Self.split(key) else { continue }
-            // A card whose file no longer holds the bytes Sprava wrote (changed or removed) is never recorded.
-            guard (try? ProposalStore.load(id, in: folder, expectedDigest: digest)) != nil else { continue }
+            // A card whose file no longer holds the bytes Sprava wrote (changed or removed) is never recorded. A card
+            // that cannot be reached now (its binder's disk is away) is kept for a later pass, and the pass fails.
+            switch Self.check(id, in: folder, digest: digest) {
+            case .same: break
+            case .changedOrGone: continue
+            case .unreachable(let error):
+                kept[key] = digest
+                if accessError == nil { accessError = error }
+                continue
+            }
             if recordError == nil {
                 do { try commands.trustChecked(id, digest: digest, in: folder); continue } catch { recordError = error }
             }
@@ -289,6 +320,27 @@ public final class TrustBacklog: @unchecked Sendable {
         }
         if let recordError { throw recordError }
         if let backlogError { throw backlogError }
+        if let accessError { throw accessError }
+    }
+
+    enum CardCheck {
+        case same, changedOrGone, unreachable(Error)
+    }
+
+    /// Whether the card's file still holds the bytes Sprava wrote. Only a file read with other bytes (or refused as
+    /// not a regular file) or a file missing from a proposals folder that is there is changed or gone; anything
+    /// else (the binder or its .sprava folder not reachable, a read error) may pass, so the card is kept.
+    static func check(_ id: String, in folder: URL, digest: String) -> CardCheck {
+        do {
+            _ = try ProposalStore.load(id, in: folder, expectedDigest: digest)
+            return .same
+        } catch is ProposalStore.Tampered {
+            return .changedOrGone
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return .changedOrGone
+        } catch {
+            return .unreachable(error)
+        }
     }
 }
 

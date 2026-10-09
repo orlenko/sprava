@@ -39,6 +39,8 @@ final class Runtime: @unchecked Sendable {
     var lastSummaryDate: String?
     var deadlines = JobDeadlines()
     var nextSummary: Date
+    /// Failed summary runs on one day (`SummaryRetry`): the day, and how many.
+    var summaryFailures: (day: String, count: Int) = ("", 0)
     var timeouts: [String: Date] = [:]   // job key -> when it overran
     var runGeneration: [String: Int] = [:]
     var timers: [DispatchSourceTimer] = []
