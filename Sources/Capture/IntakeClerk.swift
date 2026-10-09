@@ -115,6 +115,15 @@ extension IntakeWatcher {
         let title = built.ops.isEmpty ? "File \u{201C}\(shown)\u{201D}"
             : "File \u{201C}\(shown)\u{201D} and add \(built.ops.count) item\(built.ops.count == 1 ? "" : "s")"
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
+        // The binder may have changed since the reading was queued: one whose writes are blocked now, or that another
+        // Mac owns now, is not written; the reading waits (and is tried again, under the attempts rule).
+        let binderNow = Teka.read(folder)
+        guard binderNow.isAdopted, !binderNow.writesBlocked, Owner.device(of: folder) == commands.deviceID else {
+            var back = loaded
+            back.state = "pending"
+            try? store.save(back)
+            return ReadingOutcome()
+        }
         // A card an earlier commit made before it was cut short is never followed by anything: it goes.
         for (p, _) in ProposalStore.list(in: folder) where p.state == "proposed" && p.raw["provenance"]?["replaces"] == .string(tier0.id) {
             try? TekaStore(folder: folder).reject(p, reason: "replaced by the clerk's reading", now: now)

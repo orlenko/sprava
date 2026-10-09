@@ -81,6 +81,16 @@ public struct CaptureProducer: Sendable {
         // A clock state that exists but cannot be read is never written over (capture-event-v0 §5.3); a missing or
         // rolled-back one is raised to the highest stamp already published from this folder (§4.2).
         let node = deviceID.replacingOccurrences(of: "-", with: "")
+        // The read, the increment and the durable write happen under one lock on a file beside the state, so two
+        // processes of this producer never take the same stamp or write an older one over a newer (§4.2).
+        try AtomicFile.makePrivateFolder(stateURL.deletingLastPathComponent())
+        let lockPath = stateURL.path + ".lock"
+        let lock = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw AtomicFile.Failure(step: "open clock lock", code: errno) }
+        defer { close(lock) }   // closing it releases the lock
+        while flock(lock, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw AtomicFile.Failure(step: "lock clock", code: errno) }
+        }
         let stored = try StateFile.read(HLC.self, from: stateURL)
         // A stored stamp outside what a reader accepts is unreadable too: every note after it would be quarantined.
         guard stored.map(\.isValid) ?? true else { throw StateFile.Unreadable(path: stateURL.path) }
@@ -199,6 +209,8 @@ public struct CaptureEvent: Sendable {
     public let url: URL
     /// `sha256:<hex>` of the file's bytes, matched against the app's notices.
     public let digest: String
+    /// Copied media that had not arrived (path -> bytes) when the event was taken in after its grace period.
+    public internal(set) var missingMedia: [String: Int] = [:]
 
     /// An event held in memory, for the clerk's developer runs and tests; files are read with `check`.
     public init(raw: JSONObject, url: URL, digest: String) {
@@ -319,8 +331,14 @@ public struct CaptureEvent: Sendable {
             }
             if let r = o["retracted"], r != .bool(true), r != .bool(false) { return (.quarantined("retracted is not true or false"), nil) }
         }
+        var missing: [String: Int] = [:]   // copied media not there yet, or not at their size: path -> bytes
+        if let m = o["media"], m.arrayValue == nil { return (.quarantined("media is not a list"), nil) }
         for media in o["media"]?.arrayValue ?? [] {
-            guard let path = media["path"]?.stringValue else { continue }
+            guard let path = media["path"]?.stringValue else {
+                // A media entry is a copied file (`path`) or a reuse of an earlier event's (`of`), never neither.
+                if media["of"]?.stringValue == nil { return (.quarantined("media entry has neither path nor of"), nil) }
+                continue
+            }
             guard path.hasPrefix("\(stem)."), !path.hasSuffix(".tmp"), !path.contains("/") else {
                 return (.quarantined("media path does not belong to the event"), nil)
             }
@@ -329,11 +347,19 @@ public struct CaptureEvent: Sendable {
                 return (.quarantined("media bytes missing or not an integer"), nil)
             }
             var st = stat()
-            guard lstat(deviceFolder.appendingPathComponent(path).path, &st) == 0 else { return (.pending, nil) }
+            guard lstat(deviceFolder.appendingPathComponent(path).path, &st) == 0 else { missing[path] = Int(expected); continue }
             guard st.st_mode & S_IFMT == S_IFREG, st.st_uid == getuid() else { return (.quarantined("media is not a plain file of this user"), nil) }
-            if Int(expected) != Int(st.st_size) { return (.pending, nil) }
+            if Int(expected) != Int(st.st_size) { missing[path] = Int(expected) }
+        }
+        // Media still arriving keep the event pending; after the grace period (an hour without change) it is taken in
+        // with its media marked missing, so its words reach a card, and the media are looked for again (§5.3).
+        if !missing.isEmpty {
+            var st = stat()
+            guard lstat(url.path, &st) == 0, Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) > 3600 else { return (.pending, nil) }
         }
         let digest = "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        return (.complete(kind), CaptureEvent(raw: o, url: url, digest: digest))
+        var event = CaptureEvent(raw: o, url: url, digest: digest)
+        event.missingMedia = missing
+        return (.complete(kind), event)
     }
 }

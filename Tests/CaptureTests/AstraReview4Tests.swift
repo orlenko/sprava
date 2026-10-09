@@ -21,17 +21,16 @@ import Testing
         let s = try t.setup()
         try t.write(s, "credentials.json", #"{"password": "INVENTED-SECRET-4410"}"#)
         let result = t.card(s)
-        #expect(result.carded == 1 && result.held == 1)
-        let card = try #require(t.open(s).first)
-        #expect(card.title.hasPrefix("Held:"))
-        let intake = card.raw["provenance"]?["intake"]
-        #expect(intake?["held"]?.stringValue?.contains("key or credential file") == true)
-        #expect(intake?["preview"] == nil && intake?["facts"] == nil)
-        #expect(!JSONWriter.compact(.object(card.raw)).contains("INVENTED-SECRET"))
-        // Nothing waits for the clerk or a brain. A key or credential file is never filed (binder-v0 §3.3; the
-        // transaction guard refuses it), so the held card names it and moves nothing.
+        // A key or credential file is never filed (binder-v0 §3.3; the transaction guard refuses it). With nothing
+        // else to file, a card would have no change to approve, so none is made: Health counts the file as held.
+        #expect(result.carded == 0 && result.heldWithoutCard == 1)
+        #expect(t.open(s).isEmpty)
+        // Nothing waits for the clerk or a brain, and the file's words are nowhere.
         #expect(IntakeReadings(support: s.support).all().isEmpty)
-        #expect(card.ops.isEmpty)
+        let cursor = try String(contentsOf: s.support.appendingPathComponent("capture/intake.json"), encoding: .utf8)
+        #expect(!cursor.contains("INVENTED-SECRET"))
+        // It stays so on every scan.
+        #expect(t.card(s).heldWithoutCard == 1 && t.open(s).isEmpty)
     }
 
     @Test func aKeyFileInAMessagesAttachmentsFolderHoldsTheMessage() throws {

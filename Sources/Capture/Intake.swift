@@ -48,6 +48,9 @@ public struct IntakeWatcher: Sendable {
         public var waiting = 0
         public var replaced = 0
         public var held = 0
+        /// Key or credential files in some intake/ with nothing else to file: never carded, never read; shown on
+        /// Health so the person can move them out.
+        public var heldWithoutCard = 0
         /// Files that sat in some intake/ for more than 7 days without being filed (mvp.md 1.2, currency).
         public var stale = 0
         /// The cursor could not be written: every file would look new on every scan, so the job reports it.
@@ -202,6 +205,13 @@ public struct IntakeWatcher: Sendable {
                 var entry = seen.removeValue(forKey: file.name)
                 if let e = entry, e.size == file.size, e.mtime == file.mtime {
                     if e.card == nil {
+                        // Nothing here may ever be filed (only key or credential files, binder-v0 §3.3): a card would
+                        // have no change to approve, so none is made; Health counts the file as held.
+                        if ([file.name] + file.attachments).allSatisfy(DocumentPaths.isKeyFile) {
+                            result.heldWithoutCard += 1
+                            next[file.name] = entry
+                            continue
+                        }
                         let path = row.folder.appendingPathComponent("intake/" + file.name).path
                         let reading = prepared.readings[path]
                         if requireReading && reading == nil { result.waiting += 1; next[file.name] = entry; continue }

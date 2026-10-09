@@ -37,6 +37,7 @@ extension CaptureInbox {
         payDebts(binders, state: &state, commands: commands, now: now)
         // A hand-off to the clerk's cards cut short is finished or taken back, so no capture waits twice.
         settleHandoffs(state: &state, commands: commands, now: now)
+        lookForMissingMedia(state: &state)
         guard let devices = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
             if (try? save(state)) == nil { result.unsaved = "state.json" }
             return result
@@ -99,6 +100,11 @@ extension CaptureInbox {
                     state.paths = (state.paths ?? [:]).merging([stem: key]) { $1 }
                     ingest(event, device: deviceName, producer: producers[deviceName], notice: notices[stem], size: size,
                            state: &state, result: &result, binders: binders, commands: commands, now: now)
+                    // Media that never arrived are marked missing and looked for again on every sweep (§5.3).
+                    if !event.missingMedia.isEmpty, state.ingested[stem] != nil, state.missingMedia?[stem] == nil {
+                        state.missingMedia = (state.missingMedia ?? [:]).merging([stem: event.missingMedia]) { $1 }
+                        journal([("event", logged), ("stage", .str("media_missing")), ("files", .int(event.missingMedia.count))])
+                    }
                     // A cursor that cannot be written stops the sweep: nothing more is made that it would not hold.
                     if result.unsaved != nil { break devices }
                 }
@@ -112,6 +118,25 @@ extension CaptureInbox {
         if (try? save(state)) == nil { result.unsaved = "state.json" }
         return result
     }
+
+    /// Looks again for media an event was taken in without: once every one is there at its size, it is no longer
+    /// marked missing.
+    func lookForMissingMedia(state: inout State) {
+        for (id, files) in state.missingMedia ?? [:] {
+            guard let device = state.paths?[id]?.split(separator: "/").first.map(String.init) else { continue }
+            let folder = root.appendingPathComponent(device, isDirectory: true)
+            let arrived = files.allSatisfy { path, bytes in
+                var st = stat()
+                return lstat(folder.appendingPathComponent(path).path, &st) == 0 && st.st_mode & S_IFMT == S_IFREG && Int(st.st_size) == bytes
+            }
+            guard arrived else { continue }
+            state.missingMedia?[id] = nil
+            journal([("event", .string(id)), ("stage", .str("media_arrived"))])
+        }
+    }
+
+    /// Ids of events taken in with media still missing (capture-event-v0 §5.3).
+    package func eventsMissingMedia() -> [String] { (loadState().missingMedia ?? [:]).keys.sorted() }
 
     /// How a deferred file is recorded: with the format versions this reader knows, so a reader that knows more
     /// reads it again. Change it whenever `CaptureEvent.check` learns a new `format_version`.
@@ -237,6 +262,8 @@ extension CaptureInbox {
             state.apps[id] = event.app
             state.texts = (state.texts ?? [:]).merging([id: textHash]) { $1 }
             state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
+            // The file's digest as taken in: the clerk later reads it again and must find the same bytes.
+            state.eventDigests = (state.eventDigests ?? [:]).merging([id: event.digest]) { $1 }
             if member { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
         }
         // A private event's chain owes its privacy pass from the save that first holds the event, so no crash after it

@@ -49,6 +49,16 @@ extension CaptureInbox {
             // An event file that cannot be read now is read again later; only one found not to be a capture is kept.
             if check == .pending { continue }
             guard case .complete(.capture) = check, let event = checked else { clerk[id] = "kept"; continue }
+            // An event file is never changed after it is published (CE-12): one whose bytes differ from those taken in
+            // is not read, so its code-built card, made from the words taken in, stays. It goes to quarantine for Health.
+            let unchanged = state.eventDigests?[id].map { $0 == event.digest }
+                ?? state.texts?[id].map { $0 == Self.digest(Data(event.text.utf8)) } ?? true
+            guard unchanged else {
+                clerk[id] = "kept"
+                quarantine(device.appendingPathComponent(parts[1]), device: parts[0], reason: "changed after it was taken in")
+                journal([("event", .string(id)), ("stage", .str("changed_after_ingest"))])
+                continue
+            }
             attempts[id, default: 0] += 1
             // The attempt is on disk before any model call, or there is no call this run (the poison rule).
             state.clerk = clerk

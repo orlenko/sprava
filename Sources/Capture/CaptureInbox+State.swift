@@ -21,6 +21,8 @@ extension CaptureInbox {
         var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
         var clocks: [String: String]? = [:]           // id -> its HLC as sortable text, to find a chain's current event
         var approx: [String]? = []                    // ids whose revision is an `approx:` one (capture-event-v0 §3.2, 7.8)
+        var missingMedia: [String: [String: Int]]? = [:]   // id -> copied media not there when it was taken in (path -> bytes)
+        var eventDigests: [String: String]? = [:]     // id -> sha256 of the event file as taken in
         package var raises: [String: [String]]? = [:]         // as older cursors kept raises (by event); read once into `debts`
         package var debts: [String]? = []                     // chain keys that owe a complete privacy pass (CaptureInbox+Privacy)
         var privates: [String]? = []                  // ids raised to private, or private by their chain (capture-event-v0 §3.3)
