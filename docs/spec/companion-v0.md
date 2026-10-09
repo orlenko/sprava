@@ -185,7 +185,8 @@ The owner rotates after it revokes a device, and when the person asks:
    finishes any of its decision records still `deciding` (section 9.6); if one cannot be finished now, the
    revocation waits and the person is told why. Then it marks the device revoked in its own records, in the
    same durable write retires its outcome work (section 9.9), releases the lock, deletes that device's `Kd`
-   from the Keychain, and calls `DELETE /v0/devices/{D}`. A request of a revoked device is never decided
+   from the Keychain, and calls `DELETE /v0/devices/{D}`, repeating it, after a restart too, until it gets
+   `204`. A request of a revoked device is never decided
    afterwards (section 9.3, check 3).
 2. It takes the owner's **key lock** (section 5.2, step 4), makes a new `K` with epoch `e + 1` and a new
    `Kb` for every shown binder (binder ids stay), and stores
@@ -611,7 +612,12 @@ marker:
 4. it deletes the record of every pending device (neither an activation nor a revocation marker) whose pairing
    is missing or past its `expires_at`. A write begun before a crash can land after this cleanup, so the relay
    also applies this rule before counting devices against the limit of section 7.3: an orphaned pending record
-   never holds a device slot.
+   never holds a device slot;
+5. a device with a revocation marker but no stored `revocation` was being deleted by the owner (a
+   self-revocation stores its `revocation` before its marker), so the relay deletes the rest of its parts, as
+   `DELETE /v0/devices/{D}` does, keeping the marker. A device with both may be self-revoked and waiting for
+   the owner, or in an owner deletion a crash cut short: the relay keeps it, and the Mac, which repeats its
+   `DELETE /v0/devices/{D}` until it gets `204` (section 4.4), finishes it.
 
 ## 8. Payloads
 
@@ -747,6 +753,8 @@ the app shows that view's age (section 10.4).
 when it was adopted but needs migration (binder-v0 §9.6) or its processing log holds legacy entries. The Mac
 projects every value as follows, so that what it publishes is always valid:
 
+- `name`, in the index entry and the view's `binder`: `meta.name` when it is a non-empty string, else the
+  binder folder's name, as binder-v0 §3.1 says for a binder without one, then shortened as section 8.4 says.
 - `status`: `open`, `waiting` and `blocked` as they are; a missing or unknown status is published as `open`,
   as binder-v0 §5.2 buckets it. An item in `open_items[]` with status `done` is not in `items`: it is in
   `closed`, with `how` `done` and `closed_at` `null`, after every dated entry, as binder-v0 §5.2 lists it.
