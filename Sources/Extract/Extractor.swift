@@ -84,7 +84,10 @@ public enum Extractor {
     /// Text that carries MIME parts (a multipart type or a named part) at the start of a line. It did not read as a
     /// message, so it is held: its parts, a key file among them, are never passed on as plain text.
     static func carriesMIMEParts(_ text: String) -> Bool {
-        text.range(of: #"(?im)^content-(type|disposition)[ \t]*:[^\n]*(multipart/|name\*?[0-9]*\*?[ \t]*=)"#, options: .regularExpression) != nil
+        // Folded header lines are unfolded first (RFC 5322 section 2.2.3), so a type or a name on a continuation
+        // line is found as well.
+        let unfolded = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: #"\n[ \t]+"#, with: " ", options: .regularExpression)
+        return unfolded.range(of: #"(?im)^content-(type|disposition)[ \t]*:[^\n]*(multipart/|name\*?[0-9]*\*?[ \t]*=)"#, options: .regularExpression) != nil
     }
 
     // MARK: - The entry point

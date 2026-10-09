@@ -3,7 +3,8 @@ import Foundation
 import Testing
 
 /// Regressions from the third review of the Shelf and Extract layer: a message read as HTML, a forwarded message's
-/// own attachments, an archive past the entry limit. Invented data only.
+/// own attachments, an archive past the entry limit, linked folders inside intake, folded MIME headers, malformed
+/// worksheet cells. Invented data only.
 @Suite(.serialized) struct LayerReview3Tests {
     func temp(_ name: String) -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-layer06c-\(name)-\(UUID().uuidString)")
@@ -122,5 +123,74 @@ import Testing
         // At the limit the archive still reads, every sheet in it.
         let small = Extractor.extract(Self.storedZip(Array(files.prefix(2)) + [files.last!]), name: "ledger.xlsx")
         #expect(small.problem == nil && small.text.contains("INVENTED-ROW-1") && small.text.contains("INVENTED-ROW-2"), "\(small.text)")
+    }
+
+    // MARK: - 4. A folder inside the binder that is a link is never read through
+
+    @Test func aLinkedFolderInsideIntakeIsNotFollowed() throws {
+        let root = temp("links")
+        let outside = root.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("user: invented password: INVENTED-SECRET-8840".utf8).write(to: outside.appendingPathComponent("notes.txt"))
+        let binder = root.appendingPathComponent("Invented Binder")
+        let intake = binder.appendingPathComponent("intake")
+        try FileManager.default.createDirectory(at: intake, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: intake.appendingPathComponent("mail"), withDestinationURL: outside)
+        let linked = IntakeReading.read(intake.appendingPathComponent("mail/notes.txt"), channel: "email", reader: .inProcess)
+        #expect(linked.held?.contains("symbolic link") == true, "\(linked.held ?? "read")")
+        #expect(!linked.text.contains("INVENTED-SECRET"))
+        // An attachments folder that is a link is refused the same way.
+        try FileManager.default.createDirectory(at: binder.appendingPathComponent("intake/real"), withIntermediateDirectories: true)
+        let message = intake.appendingPathComponent("real/message.txt")
+        try Data("The invented notice is attached.".utf8).write(to: message)
+        try FileManager.default.createSymbolicLink(at: intake.appendingPathComponent("real/message attachments"), withDestinationURL: outside)
+        let r = IntakeReading.read(message, attachments: [intake.appendingPathComponent("real/message attachments/notes.txt")],
+                                   channel: "email", reader: .inProcess)
+        #expect(!r.text.contains("INVENTED-SECRET") && r.text.contains("The invented notice"))
+        #expect(r.notes.contains { $0.contains("symbolic link") }, "\(r.notes)")
+        // intake itself linked elsewhere is refused too.
+        let other = root.appendingPathComponent("Other Binder")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: other.appendingPathComponent("intake"), withDestinationURL: outside)
+        #expect(IntakeReading.read(other.appendingPathComponent("intake/notes.txt"), channel: "other", reader: .inProcess).held != nil)
+        // A binder reached through a link above it (the temporary folder is one) still reads.
+        #expect(IntakeReading.read(message, channel: "other", reader: .inProcess).held == nil)
+    }
+
+    // MARK: - 5. Folded MIME headers are unfolded before the parts check
+
+    @Test func foldedPartHeadersAreHeld() {
+        let text = """
+        Forwarded below.
+        MIME-Version: 1.0
+        Content-Type:
+         multipart/mixed; boundary="XYZ"
+
+        --XYZ
+        Content-Type: text/plain
+
+        The invented access details are attached.
+        --XYZ
+        Content-Type: text/plain
+        Content-Disposition: attachment;
+         filename="credentials.txt"
+
+        user: invented password: INVENTED-SECRET-8850
+        --XYZ--
+        """
+        let r = Extractor.extract(Data(text.utf8), name: "forwarded.txt")
+        #expect(r.problem != nil && !r.text.contains("INVENTED-SECRET"))
+        let crlf = Extractor.extract(Data(text.replacingOccurrences(of: "\n", with: "\r\n").utf8), name: "forwarded.txt")
+        #expect(crlf.problem != nil && !crlf.text.contains("INVENTED-SECRET"))
+    }
+
+    // MARK: - 6. A malformed worksheet cell holds the document instead of crashing
+
+    @Test func aMalformedWorksheetCellIsHeld() {
+        for cell in ["<c></v><v>1</c>", #"<c t="inlineStr"><is></t><t>INVENTED</is></c>"#, "<c><v>1</c>"] {
+            let sheet = "<worksheet><sheetData><row>\(cell)</row></sheetData></worksheet>"
+            let r = Extractor.extract(Self.storedZip([("xl/workbook.xml", "<workbook/>"), ("xl/worksheets/sheet1.xml", sheet)]), name: "ledger.xlsx")
+            #expect(r.problem?.contains("sheet1.xml") == true, "\(cell): \(r.problem ?? "read")")
+        }
     }
 }

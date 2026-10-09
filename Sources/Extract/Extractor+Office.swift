@@ -42,7 +42,8 @@ extension Extractor {
             let shared = xml("xl/sharedStrings.xml").map { xmlStrings($0, tag: "t") } ?? []
             var rows: [String] = []
             for e in entries.filter({ $0.name.hasPrefix("xl/worksheets/sheet") }).sorted(by: { $0.name < $1.name }) {
-                rows += sheetRows(read(e), shared: shared)
+                guard let sheet = sheetRows(read(e), shared: shared) else { unread = unread ?? e.name; continue }
+                rows += sheet
             }
             text = rows.joined(separator: "\n")
         } else if names.contains(where: { $0.hasPrefix("ppt/slides/slide") }) {
@@ -93,22 +94,29 @@ extension Extractor {
         }
     }
 
-    static func sheetRows(_ sheet: String, shared: [String]) -> [String] {
-        sheet.components(separatedBy: "</row>").compactMap { row in
+    /// The rows of a worksheet, one tab-separated line each; nil when a cell's value is not closed after it opens,
+    /// so a malformed sheet holds the document instead of passing as read.
+    static func sheetRows(_ sheet: String, shared: [String]) -> [String]? {
+        var rows: [String] = []
+        for row in sheet.components(separatedBy: "</row>") {
             var cells: [String] = []
             // A cell opens as `<c ...>` or plain `<c>`.
             let normalized = row.replacingOccurrences(of: "<c>", with: "<c >")
             for c in normalized.components(separatedBy: "<c ").dropFirst() {
                 let isShared = c.contains("t=\"s\"")
-                guard let v = c.range(of: "<v>"), let e = c.range(of: "</v>") else {
-                    if let t = c.range(of: "<t>"), let te = c.range(of: "</t>") { cells.append(decode(String(c[t.upperBound..<te.lowerBound]))) }
-                    continue
+                // A closing tag is looked for only after its opening tag.
+                if let v = c.range(of: "<v>") {
+                    guard let e = c[v.upperBound...].range(of: "</v>") else { return nil }
+                    let raw = String(c[v.upperBound..<e.lowerBound])
+                    cells.append(isShared ? (Int(raw).flatMap { shared.indices.contains($0) ? shared[$0] : nil } ?? raw) : raw)
+                } else if let t = c.range(of: "<t>") {
+                    guard let te = c[t.upperBound...].range(of: "</t>") else { return nil }
+                    cells.append(decode(String(c[t.upperBound..<te.lowerBound])))
                 }
-                let raw = String(c[v.upperBound..<e.lowerBound])
-                cells.append(isShared ? (Int(raw).flatMap { shared.indices.contains($0) ? shared[$0] : nil } ?? raw) : raw)
             }
-            return cells.isEmpty ? nil : cells.joined(separator: "\t")
+            if !cells.isEmpty { rows.append(cells.joined(separator: "\t")) }
         }
+        return rows
     }
 
     static func decode(_ s: String) -> String {

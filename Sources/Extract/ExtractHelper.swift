@@ -29,15 +29,59 @@ public enum ExtractHelper {
         public var description: String { message }
     }
 
-    public static func run(_ file: URL, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
+    /// Reads `file` and runs the helper on its bytes. `root` is the folder the file is anchored to (the binder for a
+    /// file in its intake); by default the binder of the nearest `intake` folder above the file, else its own folder.
+    public static func run(_ file: URL, under root: URL? = nil, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
         if reader == .missing { throw Self.missing }
         // Never through a link, which could lead a harmless name to a credential file, and never anything but a
         // regular file of this user within the size limit, so a FIFO or a device cannot stall the read.
-        switch SafeFile.read(file, limit: Extractor.Limits().bytes) {
+        switch read(file, under: root ?? anchor(of: file), limit: Extractor.Limits().bytes) {
         case .ok(let data): return try run(data, name: file.lastPathComponent, reader: reader, timeout: timeout)
         case .refused(let why): throw Failure(message: "the file was not opened: it is \(why)")
         case .missing: throw Failure(message: "the file is not there")
         case .unreadable(let why): throw Failure(message: "the file cannot be read now (\(why))")
+        }
+    }
+
+    /// The binder holding the nearest `intake` folder above a file, else the file's own folder.
+    static func anchor(of file: URL) -> URL {
+        let folder = file.standardizedFileURL.deletingLastPathComponent()
+        var probe = folder
+        while probe.pathComponents.count > 1 {
+            if probe.lastPathComponent == "intake" { return probe.deletingLastPathComponent() }
+            probe = probe.deletingLastPathComponent()
+        }
+        return folder
+    }
+
+    /// A file below `root`, opened from `root` down with no symbolic link anywhere on the way (`O_NOFOLLOW_ANY`):
+    /// `intake/mail` linked to a folder elsewhere never leads a read out of the binder. Only regular files of this
+    /// user within the limit are read, as `SafeFile.read` does.
+    static func read(_ file: URL, under root: URL, limit: Int) -> SafeFile.Outcome {
+        let base = root.standardizedFileURL.pathComponents, path = file.standardizedFileURL.pathComponents
+        guard path.count > base.count, Array(path.prefix(base.count)) == base else { return .refused("outside the folder it is read from") }
+        let dir = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard dir >= 0 else { return errno == ENOENT || errno == ENOTDIR ? .missing : .unreadable(String(cString: strerror(errno))) }
+        defer { close(dir) }
+        var fd: Int32
+        repeat { fd = openat(dir, path.dropFirst(base.count).joined(separator: "/"), O_RDONLY | O_NOFOLLOW_ANY | O_CLOEXEC | O_NONBLOCK) }
+        while fd < 0 && errno == EINTR
+        if fd < 0 {
+            switch errno {
+            case ENOENT, ENOTDIR: return .missing
+            case ELOOP: return .refused("a symbolic link, or inside a folder that is one")
+            case EACCES, EPERM: return .refused("not readable by this user")
+            default: return .unreadable(String(cString: strerror(errno)))
+            }
+        }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { return .unreadable(String(cString: strerror(errno))) }
+        guard st.st_mode & S_IFMT == S_IFREG else { return .refused("not a plain file") }
+        guard st.st_uid == getuid() else { return .refused("owned by another user") }
+        guard st.st_size <= limit else { return .refused("larger than \(limit) bytes") }
+        do { return .ok(try FileHandle(fileDescriptor: fd, closeOnDealloc: false).read(upToCount: limit) ?? Data()) } catch {
+            return .unreadable(error.localizedDescription)
         }
     }
 
