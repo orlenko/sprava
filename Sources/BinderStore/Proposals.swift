@@ -365,13 +365,14 @@ public enum ProposalStore {
         return d
     }
 
-    /// Every proposal in the binder, with its file digest. Unreadable files are skipped, and so is a file whose
-    /// name is not `<id>.json` for the id inside it; a linked folder lists nothing.
+    /// Every proposal in the binder, with its file digest. Unreadable files are skipped, and so are links, FIFOs and
+    /// anything else that is not a regular file, and a file whose name is not `<id>.json` for the id inside it; a
+    /// linked folder lists nothing.
     public static func list(in folder: URL) -> [(Proposal, String)] {
         guard let dir = try? checkedDir(folder, create: false),
               let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
         return names.filter { $0.hasSuffix(".json") && isValidID(String($0.dropLast(5))) }.sorted().compactMap { name in
-            guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
+            guard case .ok(let data) = SafeFile.read(dir.appendingPathComponent(name)),
                   case .object(let o)? = try? JSONParser.parse(data).value,
                   o["id"]?.stringValue == String(name.dropLast(5)) else { return nil }
             return (Proposal(raw: o), digest(data))
@@ -380,7 +381,14 @@ public enum ProposalStore {
 
     public static func load(_ id: String, in folder: URL, expectedDigest: String?) throws -> Proposal {
         guard isValidID(id) else { throw BadID() }
-        let data = try Data(contentsOf: try checkedDir(folder, create: false).appendingPathComponent("\(id).json"))
+        // Never through a link and never blocking on a FIFO: only a regular file in the binder is a card (§3.6).
+        let data: Data
+        switch SafeFile.read(try checkedDir(folder, create: false).appendingPathComponent("\(id).json")) {
+        case .ok(let d): data = d
+        case .missing: throw CocoaError(.fileReadNoSuchFile)
+        case .refused: throw Tampered(id: id)
+        case .unreadable: throw CocoaError(.fileReadUnknown)
+        }
         if let expectedDigest, digest(data) != expectedDigest { throw Tampered(id: id) }
         guard case .object(let o) = try JSONParser.parse(data).value, o["id"]?.stringValue == id else { throw Tampered(id: id) }
         return Proposal(raw: o)

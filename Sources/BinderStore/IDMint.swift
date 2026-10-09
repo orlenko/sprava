@@ -26,7 +26,8 @@ public enum IDMint {
 
     /// Every record id the op log has ever seen, so a minted id is never one of them (binder-v0 §5.6): the records
     /// of each `import_snapshot`, the new records of `add_item`, `reopen` and `file_document`, and the records an
-    /// `external_edit` or `migrate` patch wrote (the `id`, `item` and `document` of every object in its values).
+    /// `external_edit` or `migrate` patch wrote (the `id`, `item` and `document` of every object in its values, and
+    /// a value a step writes straight to such a field, as an outside rename of an item writes `/open_items/0/id`).
     public static func usedIDs(opLog: [JSONObject]) -> [JSONValue] {
         var out: [JSONValue] = []
         func scan(_ value: JSONValue) {
@@ -47,7 +48,12 @@ public enum IDMint {
                 let catalog = args?["catalog"]
                 for key in ["open_items", "documents", "processing_log"] { (catalog?[key]?.arrayValue ?? []).forEach(scan) }
             case "external_edit"?, "migrate"?:
-                for step in args?["patch"]?.arrayValue ?? [] { if let v = step["value"] { scan(v) } }
+                for step in args?["patch"]?.arrayValue ?? [] {
+                    guard let v = step["value"] else { continue }
+                    let field = step["path"]?.stringValue?.split(separator: "/").last.map(String.init) ?? ""
+                    if ["id", "item", "document"].contains(field), v.stringValue != nil || v.numberValue != nil { out.append(v) }
+                    scan(v)
+                }
             default:
                 if let id = args?["item"]?["id"] { out.append(id) }
                 if let id = args?["document"]?["id"] { out.append(id) }
@@ -114,8 +120,9 @@ public enum Placeholders {
                     minted[id] = real
                     item.set("id", real)
                 }
-                if item["created_at"] == nil { item.set("created_at", .string(at)) }
-                if item["updated_at"] == nil { item.set("updated_at", .string(at)) }
+                // This op's time, even on an item copied from an earlier op, as an "apply again" card holds one.
+                item.set("created_at", .string(at))
+                item.set("updated_at", .string(at))
                 args.set("item", .object(item))
                 var items = working["open_items"]?.arrayValue ?? []
                 items.append(.object(item))
