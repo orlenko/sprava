@@ -5,9 +5,12 @@
 //
 // - every write is preceded by a check, at most `checkMs` old, that no lease ranks above its own; once one does,
 //   the process is fenced for good: every later write fails with 503 and the process exits;
-// - a new process that finds an earlier lease waits `warmupMs` before it reads its state or writes anything,
-//   longer than the staleness of a check plus the longest write (the S3 client's attempts and retries), so any
-//   write the old process began before it noticed has ended first. Until then it serves only health.
+// - every new process waits `warmupMs` and checks again before it reads its state or writes anything, so that a
+//   process starting at the same moment is seen and only the higher lease goes on, and an older process has
+//   noticed and stopped. Until then it serves only health.
+//
+// The lease keeps in-memory state single; it is not what keeps a late write from replacing stored bytes. That is
+// the intent each write-once object records first (store.ts), which holds whenever the late write lands.
 //
 // A lease's content is empty and its name says everything, so a late write of a lease changes nothing.
 import { randomBytes } from 'node:crypto';
@@ -16,6 +19,8 @@ import type { Log } from './log.ts';
 import type { Store } from './store/store.ts';
 
 export const LEASE_TIMING = { checkMs: 5_000, warmupMs: 50_000 };
+
+export class InconsistentStore extends Error {}
 
 export class FencedError extends HttpError {
     constructor() {
@@ -54,6 +59,11 @@ export class Lease {
         const highest = existing.reduce((n, key) => Math.max(n, Number(NAME.exec(key)![1])), 0);
         const name = `${PREFIX}${String(highest + 1).padStart(16, '0')}-${randomBytes(16).toString('hex')}`;
         await store.put(name, new Uint8Array());
+        // §13: the store must show a completed write in every later read and listing. Its own lease is the first
+        // thing a process can check that on; a store that does not refuses to start rather than run unfenced.
+        if (!(await store.has(name)) || !(await store.list(PREFIX)).includes(name)) {
+            throw new InconsistentStore('The store did not show a write it had just completed; it must be strongly consistent.');
+        }
         const lease = new Lease(store, name, log, timing, onFenced);
         await lease.check();
         lease.#timer = setInterval(() => void lease.check().catch(() => undefined), timing.checkMs);
@@ -70,7 +80,11 @@ export class Lease {
         const started = performance.now();
         const names = (await this.#store.list(PREFIX)).filter((key) => NAME.test(key));
         if (names.some((other) => other > this.name)) this.#fence();
-        else this.#checkedAt = started;
+        else if (!names.includes(this.name)) {
+            // Its own lease is gone with none above it: only a store that lost or hid a completed write does that.
+            this.#log.event('store-inconsistent');
+            this.#fence();
+        } else this.#checkedAt = started;
     }
 
     /** Before every write: throws once fenced, and checks again when the last check is too old. */

@@ -25,9 +25,11 @@ export interface S3Stub {
     close(): Promise<void>;
 }
 
-export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSize?: number } = {}): Promise<S3Stub> {
+/** `listLagMs`: listings leave out objects written within that time, as an eventually consistent store does. */
+export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSize?: number; listLagMs?: number } = {}): Promise<S3Stub> {
     const bucket = 'bucket-example';
     const objects = new Map<string, Uint8Array>();
+    const written = new Map<string, number>();
     const requests: string[] = [];
     let failures = 0;
     let holding: ((key: string) => boolean) | null = null;
@@ -54,7 +56,10 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
             listBody = null;
             return reply(200, body);
         }
-        if (req.method === 'GET' && key === '') return reply(200, list(objects, url.searchParams, options.pageSize ?? 3));
+        if (req.method === 'GET' && key === '') {
+            const visible = new Map([...objects].filter(([k]) => Date.now() - (written.get(k) ?? 0) >= (options.listLagMs ?? 0)));
+            return reply(200, list(visible, url.searchParams, options.pageSize ?? 3));
+        }
         const stored = objects.get(key);
         switch (req.method) {
             case 'GET':
@@ -68,6 +73,7 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
                 }
                 if (stored && req.headers['if-none-match'] === '*' && !options.ignoreIfNoneMatch) return reply(412);
                 objects.set(key, body);
+                written.set(key, Date.now());
                 return reply(200);
             case 'DELETE':
                 objects.delete(key);

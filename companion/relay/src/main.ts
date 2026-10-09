@@ -1,6 +1,7 @@
 // Starts the relay from its environment (companion-v0 §13). One instance only (§7).
 import { createServer } from 'node:http';
 import { ConfigError, readConfig, type Config } from './config.ts';
+import { InconsistentStore } from './lease.ts';
 import { jsonLog } from './log.ts';
 import { startRelay } from './relay.ts';
 import { FsStore } from './store/fs.ts';
@@ -33,7 +34,7 @@ async function main(): Promise<void> {
         });
     } catch (error) {
         // A configuration error is a plain sentence naming the variable, never its value.
-        const sentence = error instanceof ConfigError ? error.message : 'The relay could not start.';
+        const sentence = error instanceof ConfigError || error instanceof InconsistentStore ? error.message : 'The relay could not start.';
         process.stderr.write(`sprava-relay: ${sentence}\n`);
         process.exit(1);
     }

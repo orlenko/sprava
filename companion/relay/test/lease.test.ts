@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { FencedError, Lease, sleep } from '../src/lease.ts';
+import { FencedError, InconsistentStore, Lease, sleep } from '../src/lease.ts';
 import { silentLog } from '../src/log.ts';
 import { S3Store } from '../src/store/s3.ts';
-import { scoped } from '../src/store/store.ts';
+import { scoped, writeOnce, type Store } from '../src/store/store.ts';
 import { INSTANCE, startTestRelay } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
 
@@ -67,3 +67,84 @@ test('a restarted relay waits out the old one: it serves only health until then,
     await assert.rejects(old.relay.store.put('again', new Uint8Array([1])), FencedError);
     await fresh.close();
 });
+
+test('two first starts at the same moment: after the wait, only the higher lease admits writes (§7)', async () => {
+    const { raw } = await bucket();
+    const store = scoped(raw, INSTANCE);
+    // Both list the empty prefix before either writes its lease.
+    let listed = 0;
+    let release: () => void = () => {};
+    const barrier = new Promise<void>((r) => (release = r));
+    const gated: Store = {
+        ...bindStore(store),
+        list: async (prefix) => {
+            const keys = await store.list(prefix);
+            if (prefix === 'leases/' && listed < 2) {
+                if (++listed === 2) release();
+                await barrier;
+            }
+            return keys;
+        },
+    };
+    const timing = { checkMs: 20, warmupMs: 100 };
+    const [x, y] = await Promise.all([Lease.take(gated, silentLog, timing), Lease.take(gated, silentLog, timing)]);
+    assert.equal(x.hadPredecessor || y.hadPredecessor, false, 'both found nothing before them');
+    await sleep(timing.warmupMs);
+    await Promise.all([x.lease.check(), y.lease.check()]);
+    assert.equal([x.lease.fenced, y.lease.fenced].filter((f) => !f).length, 1, 'exactly one may write');
+    const loser = x.lease.fenced ? x : y;
+    await assert.rejects(loser.lease.fenceStore().put('k', new Uint8Array([1])), FencedError);
+    x.lease.stop();
+    y.lease.stop();
+});
+
+test('two relays started together: one becomes ready, the other is fenced before it reads or writes', async () => {
+    const { raw } = await bucket();
+    const timing = { checkMs: 20, warmupMs: 150 };
+    const [a, b] = await Promise.all([
+        startTestRelay({ raw, lease: timing, waitReady: false }),
+        startTestRelay({ raw, lease: timing, waitReady: false }),
+    ]);
+    const outcomes = await Promise.allSettled([a.ready, b.ready]);
+    assert.equal(outcomes.filter((o) => o.status === 'fulfilled').length, 1);
+    assert.ok(outcomes.some((o) => o.status === 'rejected' && o.reason instanceof FencedError));
+    await a.close();
+    await b.close();
+});
+
+test('a write that lands after the next process is ready cannot replace what that process stored (§7.5)', async () => {
+    const { stub, raw } = await bucket();
+    const old = await startTestRelay({ raw });
+    stub.hold((key) => key.endsWith('/objects/index/1')); // the object itself, not its intent
+    await assert.rejects(old.relay.lock.run(() => writeOnce(old.relay.store, 'objects/index/1', Buffer.from('A'))), /status 500/);
+    await old.close();
+    stub.hold(() => false);
+
+    const fresh = await startTestRelay({ raw });
+    assert.equal(await fresh.relay.lock.run(() => writeOnce(fresh.relay.store, 'objects/index/1', Buffer.from('B'))), 'different');
+    stub.landHeld(); // after the new process is ready
+    assert.equal(Buffer.from((await fresh.relay.store.get('objects/index/1'))!).toString(), 'A');
+    assert.equal(await fresh.relay.lock.run(() => writeOnce(fresh.relay.store, 'objects/index/1', Buffer.from('A'))), 'same');
+    await fresh.relay.store.delete('objects/index/1');
+    assert.deepEqual(await fresh.relay.store.list('intents/objects/index/1/'), [], 'deleting a key deletes its intents');
+    await fresh.close();
+});
+
+test('a store that does not show a completed write in its listings is refused at start (§13)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true, listLagMs: 60_000 });
+    stubs.push(stub);
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    await assert.rejects(startTestRelay({ raw }), InconsistentStore);
+});
+
+function bindStore(store: Store): Store {
+    return {
+        get: (k) => store.get(k),
+        has: (k) => store.has(k),
+        put: (k, b) => store.put(k, b),
+        putIfAbsent: (k, b) => store.putIfAbsent(k, b),
+        sync: (k) => store.sync(k),
+        delete: (k) => store.delete(k),
+        list: (p) => store.list(p),
+    };
+}

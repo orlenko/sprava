@@ -52,12 +52,19 @@ HTTP is only for `localhost`.
 Hosts that redeploy by starting the new container before stopping the old one (App Platform does, with no
 option to stop first) briefly run two. The relay guards against that itself (`src/lease.ts`): each process takes
 a lease in the bucket, ranked above every earlier one, and checks before every write that no newer lease exists;
-an older process that finds one stops writing (`503`) and exits. A process that finds an earlier lease waits 50
-seconds before it reads its state or writes anything, so whatever the old one began has ended. During that wait
-it answers `/v0/health` and nothing else (`503` with `Retry-After`), so a restart or a deploy makes the relay
-unavailable for about a minute. Keep the health check on `/v0/health`, which answers throughout.
+an older process that finds one stops writing (`503`) and exits. Every new process waits 50 seconds and checks
+again before it reads its state or writes anything, so of two processes starting together only the higher one
+goes on. During that wait it answers `/v0/health` and nothing else (`503` with `Retry-After`), so a start, a
+restart or a deploy makes the relay unavailable for about a minute. Keep the health check on `/v0/health`, which
+answers throughout. A write that lands after its process stopped cannot replace stored bytes either way: each
+write-once object records its bytes' intent first (`src/store/store.ts`).
 
-1. Make a private bucket and an access key limited to it.
+1. Make a private bucket and an access key limited to it. The store must be **strongly consistent**: a write,
+   once completed, shows in every later read and listing (spec section 13). Amazon S3 promises this; with
+   another S3-compatible store, check that its documentation does. The lease, the claims, the ordinal
+   reservations and every create-if-absent check depend on it. A relay whose store does not show its own lease
+   right after writing it refuses to start, and one whose lease disappears stops writing; neither can catch
+   every lapse.
 2. Generate the two values only you should know. Keep them out of any file in a repository:
    ```sh
    openssl rand -hex 16       # SPRAVA_INSTANCE

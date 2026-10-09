@@ -4,7 +4,7 @@ import { ConfigError, isSetupCode, type Config } from './config.ts';
 import { createHandler, type Principal, type Route } from './http.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
-import { Mutex, type Store } from './store/store.ts';
+import { Mutex, withIntents, type Store } from './store/store.ts';
 
 export interface Relay {
     readonly config: Config;
@@ -47,11 +47,11 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         throw new ConfigError('SPRAVA_SETUP_CODE is required until the relay is claimed: 44 characters, as `openssl rand -base64 32` prints.');
     }
     const timing = options.lease ?? LEASE_TIMING;
-    const { lease, hadPredecessor } = await Lease.take(store, options.log, timing, options.onFenced);
+    const { lease } = await Lease.take(store, options.log, timing, options.onFenced);
     const timers: NodeJS.Timeout[] = [];
     const relay: Relay = {
         config,
-        store: lease.fenceStore(),
+        store: withIntents(lease.fenceStore()),
         log: options.log,
         lock: new Mutex(),
         now: options.now ?? Date.now,
@@ -65,7 +65,10 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
     let isReady = false;
     const ready = (async () => {
         // Whatever an earlier process began writing has ended before this one reads anything (lease.ts).
-        if (hadPredecessor) await sleep(timing.warmupMs);
+        // Always, even when no earlier lease was listed: another process may be starting at the same moment, and
+        // after the wait each sees the other's lease and only the higher one goes on.
+        await sleep(timing.warmupMs);
+        await lease.check();
         await lease.assertHeld();
         relay.claimed = await relay.store.has('owner.json');
         await lease.retireEarlier();
