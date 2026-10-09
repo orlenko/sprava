@@ -935,11 +935,11 @@ floor and its ordinal reservations, so a self-revoked device's pending requests 
 while its record and revocation stay until the owner deletes the device (section 7.4).
 
 **What bounds each kind.** Every object the relay keeps is bounded by live data: what the owner keeps published,
-the devices it keeps paired, the pairings open now and the requests pending. The exceptions are owner-driven, one
-small object each, because a late write could otherwise bring back their device, pairing or binder, and their
-number grows only with what the owner itself makes: a removed binder's views floor; a removed device's revocation
-marker and revocation tombstone; a deleted pairing's tombstone; and one claim intent and owner record per claim
-sent with the setup code.
+the devices it keeps paired, the pairings made in the last 10 minutes and the requests pending. The exceptions are
+owner-driven, one small object each, because a late write could otherwise bring back their device, pairing or
+binder, and their number grows only with what the owner itself makes: a removed binder's views floor; a removed
+device's revocation marker and revocation tombstone; a deleted pairing's tombstone; and one claim intent and owner
+record per claim sent with the setup code.
 
 | Object | Bound |
 |---|---|
@@ -947,7 +947,7 @@ sent with the setup code.
 | `leases/{rank}-{id}` | one per process alive; a ready process deletes every lower one (section 7.9) |
 | `devices/{D}/record.json`, `tokens/`, `active`, `last_seen`, `revocation`, with their intents | per device kept: at most 20 pending and active, plus self-revoked ones until the owner deletes them; deleted with the device |
 | `devices/{D}/revoked` and its intent, `tombstones/devices/{D}/revocation` | **exception**: one each per device id the owner ever removed, or abandoned while pending |
-| `pairings/{P}/` parts, with their intents | per pairing open (at most 3, for 10 minutes); deleted with the pairing |
+| `pairings/{P}/` parts, with their intents | per pairing made in the last 10 minutes, whatever its state (at most 3 of them still `open` at once); deleted with the pairing |
 | `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
 | `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
 | `tombstones/objects/...`, `intents/objects/...` | per prefix, the names at or above its floor: what is published, uploads in progress, the owner's failed uploads, which only the owner can make and the Mac deletes (section 9.7), and names deleted out of order above the lowest kept; the floor deletes everything below it |
@@ -1280,8 +1280,8 @@ below from its own records, whatever the relay says.
   space; it then raises `tombstone_floor` to one above the highest `seq` it pruned, in the same write.
 - For each device, its outcomes counters and revisions (section 9.9).
 - For each shown binder, its snapshot record and its view versions, each `uploading` or `uploaded`; and, for
-  as long as the relay instance is in use, the id of every binder recorded as `removed`, a few bytes each
-  (section 9.7).
+  as long as the relay instance is in use, the id of every binder recorded as `removed`, a few bytes each, with
+  its highest reserved version until its cleanup mark has passed it (section 9.7).
 - For each object prefix it publishes under, its cleanup mark (section 9.7).
 - The last index revision assigned, and `published_revision`, the last one whose upload completed; and for
   each shown binder its `highest_indexed_version`, the highest version of it named by any index whose bytes
