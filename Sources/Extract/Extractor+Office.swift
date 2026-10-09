@@ -15,7 +15,11 @@ extension Extractor {
 
     /// Text of an HTML page with no network: tags dropped, scripts and styles removed, entities decoded.
     public static func htmlText(_ html: String) -> String {
-        var s = html.replacingOccurrences(of: #"(?is)<(script|style|head)[^>]*>.*?</\1>"#, with: " ", options: .regularExpression)
+        // An element whose content is never page text goes whole: opened in any case, with or without attributes,
+        // and closed by its end tag in any form the HTML tokenizer accepts (`</script >`, `</SCRIPT foo>`), or, when
+        // it is never closed, by the end of the page.
+        var s = html.replacingOccurrences(of: #"(?is)<(script|style|noscript|template|head)(?=[\s/>])[^>]*>.*?(?:</\1(?=[\s/>])[^>]*>|\z)"#,
+                                          with: " ", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(?i)<(br|/p|/div|/li|/tr|/h[1-6])[^>]*>"#, with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
         for (e, c) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {

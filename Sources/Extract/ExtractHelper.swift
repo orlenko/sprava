@@ -107,12 +107,50 @@ public enum ExtractHelper {
         return try launch(helper, data: data, name: name, timeout: timeout)
     }
 
+    enum AnswerEnding { case closed, timedOut, overflow }
+
+    /// Reads a pipe until its other end closes, `deadline` passes or more than `max` bytes came, waiting in `poll`
+    /// so the deadline holds even when nothing arrives.
+    static func readAnswer(_ fd: Int32, until deadline: Date, max: Int) -> (Data, AnswerEnding) {
+        var out = Data()
+        var buffer = [UInt8](repeating: 0, count: 1 << 16)
+        while true {
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0 else { return (out, .timedOut) }
+            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&p, 1, Int32(min(left, 1) * 1000) + 1)
+            if ready < 0, errno != EINTR { return (out, .closed) }
+            guard ready > 0 else { continue }
+            let n = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            if n < 0 { if errno == EINTR || errno == EAGAIN { continue }; return (out, .closed) }
+            if n == 0 { return (out, .closed) }
+            out.append(contentsOf: buffer[0..<n])
+            if out.count > max { return (out, .overflow) }
+        }
+    }
+
+    /// Stops a helper: SIGTERM, then SIGKILL, which cannot be caught or ignored, if it is still there after `grace`,
+    /// then a last bounded wait for it to go.
+    static func stop(_ task: Process, grace: TimeInterval) {
+        guard task.isRunning else { return }
+        task.terminate()
+        var until = Date() + grace
+        while task.isRunning, Date() < until { usleep(10_000) }
+        guard task.isRunning else { return }
+        kill(task.processIdentifier, SIGKILL)
+        until = Date() + grace
+        while task.isRunning, Date() < until { usleep(10_000) }
+    }
+
     /// Whether the bytes reached the helper whole; set by the writer before it signals, read after.
     private final class Delivery: @unchecked Sendable { var failed = false }
 
     /// Runs a helper already checked: the bytes on standard input, JSON back on standard output.
+    /// Nothing here waits without a bound: the answer is read until `timeout`, and a helper that is still there then,
+    /// or that answers past `maxAnswer`, is sent SIGTERM, then SIGKILL after `grace`. A helper that ignores SIGTERM,
+    /// or a process it left holding the pipe open, never wedges the caller.
     static func launch(_ helper: URL, data: Data, name: String, timeout: TimeInterval,
-                       maxAnswer: Int = 2 * Extractor.Limits().bytes) throws -> Extractor.Result {
+                       maxAnswer: Int = 2 * Extractor.Limits().bytes, grace: TimeInterval = 2) throws -> Extractor.Result {
         let task = Process()
         task.executableURL = helper
         task.arguments = [name]
@@ -125,9 +163,8 @@ public enum ExtractHelper {
         // then fails with EPIPE instead of raising SIGPIPE, which would end the caller (the runtime) with it.
         let writer = input.fileHandleForWriting
         guard fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { throw Failure(message: "the reader could not be started") }
+        let deadline = Date() + timeout
         try task.run()
-        let killer = DispatchWorkItem { if task.isRunning { task.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
         let delivery = Delivery(), delivered = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             do { try writer.write(contentsOf: data) } catch { delivery.failed = true }
@@ -136,14 +173,23 @@ public enum ExtractHelper {
         }
         // The answer is read up to a bound, twice the input limit (attachments come back in base64): a helper a file
         // took over cannot fill this unsandboxed process's memory.
-        var out = Data(), overflow = false
-        while let chunk = try? output.fileHandleForReading.read(upToCount: 1 << 20), !chunk.isEmpty {
-            out.append(chunk)
-            if out.count > maxAnswer { overflow = true; task.terminate(); break }
+        let reader = output.fileHandleForReading
+        let (out, ending) = readAnswer(reader.fileDescriptor, until: deadline, max: maxAnswer)
+        try? reader.close()   // nothing reads it any more, so a process still holding the other end cannot block us
+        switch ending {
+        case .overflow:
+            stop(task, grace: grace)
+            throw Failure(message: "the reader's answer was larger than the limit")
+        case .timedOut:
+            stop(task, grace: grace)
+            throw Failure(message: "the reader took longer than \(Int(timeout)) seconds on this file and was stopped")
+        case .closed:
+            // The answer is complete; the helper is given its time to exit, and then stopped.
+            let exitBy = Date() + grace
+            while task.isRunning, Date() < exitBy { usleep(10_000) }
+            stop(task, grace: grace)
         }
-        task.waitUntilExit()
-        killer.cancel()
-        if overflow { throw Failure(message: "the reader's answer was larger than the limit") }
+        guard !task.isRunning else { throw Failure(message: "the reader did not stop") }
         // The helper is gone, so its end of the pipe is closed and the write has ended or fails at once; a writer
         // still stuck after a short wait is abandoned, and the file is not read.
         let whole = delivered.wait(timeout: .now() + 5) == .success && !delivery.failed
