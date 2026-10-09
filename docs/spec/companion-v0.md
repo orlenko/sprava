@@ -406,55 +406,82 @@ too, until the claim is confirmed: `POST /v0/claim` answered `204`, and `GET /v0
 later answers its owner token with `401` while `GET /v0/health` says `"claimed": false` for the same instance
 (a process that read its state before a claim it was not part of landed, sections 6 and 7.9), it sends the
 recorded body again, which that process adopts (step 2 below). If the relay's instance changes meanwhile, the
-claim is void and the owner starts over:
+claim is void and the owner starts over.
+
+**A relay that needs a reset.** Another claim is binding (below) when the relay answers the recorded body with
+`409`, or answers the owner token with `401` while `GET /v0/health` says `"claimed": true` for the same instance.
+Neither changes back: the binding claim never moves to a claim that lost. This happens only when a second claim
+body was sent with the setup code, which is outside the threat model (below). The Mac then stops calling the relay,
+except for health, and shows on its Health line, and in Settings › Phone, that the relay needs a reset: a new
+`SPRAVA_INSTANCE` and a new setup code, then claiming again (**Re-claiming**, below). The body is:
 
 ```
 {"setup_code": "...", "owner_token_sha256": "<64 lowercase hex>"}
 ```
 
-`POST /v0/claim` with that body, of at most 1 KiB → `204`. The **owner record** `owner.json` (section 7.8) is
-derived from the body and nothing else: exactly the bytes `{"owner_token_sha256":"<hex>"}`, with no
-whitespace. It holds no time or other value the relay chooses, so any two writes for the same
-claim are identical. A correct setup code is never refused because of anyone else's failures. The relay:
+`POST /v0/claim` with that body, of at most 1 KiB → `204`. The **owner record** (section 7.8) is derived from
+the body and nothing else: exactly the bytes `{"owner_token_sha256":"<hex>"}`, with no whitespace. It holds no
+time or other value the relay chooses, so any two writes for the same claim are identical. The claim's
+**digest** is the SHA-256 of those bytes, in lowercase hex. Its **intent** is `claims/{digest}`, empty, and its
+record is `owner/{digest}`: both are named by the digest, so a late write of either repeats the same name and
+bytes. A correct setup code is never refused because of anyone else's failures.
+
+**The binding claim** is the lowest-named claim intent under `claims/`, and the relay's owner is its record, when
+that exists. The record of any other claim is never an owner, and never adopted. A claim intent is never voided
+or deleted, by time or by lease rank: a client's timeout cannot prove that a write it sent will never land, so
+once a claim's intent is written, the relay accepts no claim with another digest unless that one's intent sorts
+lower, which only a second claim body can bring. The relay:
 
 1. **Paces.** It processes at most 10 claim requests per second for the whole relay, one at a time. A request
    beyond that waits; one that has waited 5 seconds is answered `503` with `Retry-After: 1`. This bounds load,
    whatever the codes; it never depends on failures, and the Mac simply retries.
 2. **Already claimed.** If the relay knows its owner: `204` if the owner token's hash is exactly the one this
    body carries (a retry of the claim that won; the relay never discloses the owner token's hash), and `409`
-   otherwise, whatever the code. A process that knows its owner, because it read the claim at start or accepted
-   it since, never becomes claimable again: an owner record that later goes missing or cannot be read changes
-   nothing. A process that started unclaimed and finds a claim in the bucket that landed since (a write begun
-   before a restart) treats it the same way: `204` and the claim adopted if it is this body's, `409` otherwise.
+   otherwise, whatever the code. A process that knows its owner, because it read it at start or accepted the
+   claim since, never changes it in memory and never becomes claimable again: an owner record that later goes
+   missing or cannot be read changes nothing. A process that started unclaimed and finds the binding claim's
+   record in the bucket, landed since (a write begun before a restart), treats it the same way: `204` and the
+   owner adopted if it is this body's, made durable first (section 7.8), and `409` otherwise.
 3. **Checks the code first.** `sha256` of the submitted code is compared in constant time with `sha256` of the
    configured code. A correct code goes on to step 5, whatever has happened before. A relay with no setup code
    (the variable removed or empty after the claim) matches no code; an empty code never matches.
 4. **Throttles failures by address.** A wrong code is a failure, counted per client address (the address the
    relay's host reports for the connection; forwarding headers, which a client can forge, are not read) over the
    last 10 minutes. Up to 5 failures are answered `403`; later failures from that address are answered `429`,
-   after a 2-second delay that holds only that response, not the relay's processing of other claims. Counts live
-   in memory. Behind a proxy that terminates TLS, as most hosts run one, every client has the proxy's address, so
-   the count is in effect relay-wide: after five wrong codes from anyone, every wrong code is `429` for a while.
-   A correct code is never refused because of it, because step 3 comes first.
-5. **Create if absent.** Under the creation lock, the relay first writes the **claim** `claims/{hash}`, named by
-   the owner token's hash and holding the owner record's bytes (section 7.8), then lists `claims/`. If any other
-   claim is there, it refuses with `409`. Otherwise it writes the owner record, and the relay is claimed. Each
-   write is create-if-absent. The relay runs as exactly one writer (section 7.9), so it makes this atomic in its
-   own process: claims, pairing joins and request creation take an in-process lock, check that the object is
-   absent, record the write's intent, then write (section 7.8); the intent holds across processes and restarts,
-   where the lock cannot. It also sends `If-None-Match: *` on S3 and treats a `412` as "already exists", as a
-   second guard on stores that honour it; it does not depend on it, because some S3-compatible stores
-   (DigitalOcean Spaces among them) accept the header and overwrite anyway. On the filesystem it writes a
-   temporary file in the same directory and `link`s it to the final name, which fails if the name exists.
+   after a 2-second delay that holds only that response, not the relay's processing of other claims. Every wrong
+   code counts, one answered `429` too, so an address that keeps sending them stays throttled; the relay keeps
+   only the times of the last five per address, for at most 10,000 addresses, dropping the least recent first.
+   Counts live in memory. Behind a proxy that terminates TLS, as most hosts run one, every client has the proxy's
+   address, so the count is in effect relay-wide: after five wrong codes from anyone, every wrong code is `429`
+   for a while. A correct code is never refused because of it, because step 3 comes first.
+5. **Records the intent, then the owner.** Under the creation lock, the relay writes the claim's intent
+   `claims/{digest}` and waits until the store confirms it. Then it lists `claims/`. If its own intent is not the
+   lowest-named at that moment, it refuses with `409`. Otherwise it writes the owner record `owner/{digest}`,
+   and once the store confirms it, the relay is claimed and answers `204`. A claim, first try or retry, is
+   acknowledged only this way: when its own intent is the lowest under the creation lock.
 
-A write the relay started before a crash may land after it restarts (section 7.9). For a claim this is
-harmless or fails closed. A late write of the same claim repeats the same name and bytes. A late write of
-another claim, possible only when two different bodies were sent with the correct code, shows as a second name
-under `claims/`. **A relay refuses to start** when it holds more than one claim, an owner record with no claim
-behind it, or an owner record whose bytes differ from its claim's. A running relay that already knows its
-owner keeps serving it; the conflict shows at its next start. The deployer then starts over with a new
-instance (below). A claim whose owner record is missing is finished at start: the relay writes `owner.json`
-from it.
+The relay runs as exactly one writer (section 7.9), so it makes every create-if-absent write atomic in its own
+process: pairing joins, request creation and every other write-once object take an in-process lock, check that
+the object is absent, record the write's intent, then write (section 7.8); the intent holds across processes and
+restarts, where the lock cannot. A claim's names need no intent of their own, since each is the digest of the
+record. The relay also sends `If-None-Match: *` on S3 and treats a `412` as "already exists", as a second guard
+on stores that honour it; it does not depend on it, because some S3-compatible stores (DigitalOcean Spaces among
+them) accept the header and overwrite anyway. On the filesystem it writes a temporary file in the same directory
+and `link`s it to the final name, which fails if the name exists.
+
+A write the relay started before a crash may land after it restarts (section 7.9). A late write of the same claim
+repeats the same names and bytes. A late intent of another claim, possible only when two different bodies were
+sent with the correct code, adds a name under `claims/`: above the binding one it changes nothing; below it, it
+becomes the binding claim, and the claim that was acknowledged is no longer the owner at the next start. **One
+claimer retrying always ends as the owner**: the Mac keeps its claim body and resends it (above), and all its
+attempts have one digest. Two different holders of the setup code racing a claim with delayed writes is outside
+the threat model, since the setup code is held by one person, and whoever holds it could simply claim first; the
+Mac whose claim lost sees its owner token refused, or its body answered `409`, and shows the relay as needing a
+reset (above). Nothing is silently lost. The same reset applies when the binding claim's holder never retries:
+claiming is a one-time setup. A binding claim whose record is missing leaves the relay unclaimed, and only that
+claim's own retry can finish it. **A relay refuses to start** only when the binding claim's owner record cannot be
+read, or its bytes are not exactly an owner record whose SHA-256 is its name; the deployer then starts over with a
+new instance (below).
 
 After the claim, the relay ignores `SPRAVA_SETUP_CODE`; the deployer should remove it. Every other claim is
 refused with `409`, even after a restart or a change of the variable. While unclaimed, the relay serves
@@ -613,18 +640,28 @@ the record and the token's own marker, then, for anything but the device's own p
   informative. `last_seen` is rounded down to the hour.
   The relay holds no label; the Mac keeps labels in its own records.
 - `DELETE /v0/devices/{D}` → `204`, for any well-formed id, also one the relay does not know. The relay writes
-  the device's revocation marker, so its token stops working at once and for good, then deletes its record,
-  token markers, pending requests, and keys and outcomes objects. It takes the device's lock with priority,
+  the device's revocation marker, so its token stops working at once and for good. Then it writes the tombstone
+  of the device's stored revocation, `tombstones/devices/{D}/revocation` (section 7.8), durably, and only then
+  deletes the stored revocation, so a self-revocation's late write can never bring the proof back. Then it deletes
+  its record, token markers, pending requests, and keys and outcomes objects, with their intents, tombstones,
+  floors and ordinal reservations (section 7.8). It takes the device's lock with priority,
   ahead of the device's own queued calls (section 7). No cleanup ever deletes the marker; it stays until the
   instance is retired, so no late write can bring the device back. For an id it does not know, the relay writes
   the marker all the same, so no pairing can later make a device under that id (section 7.3).
 - `DELETE /v0/devices/self` (an active device, about itself), body bytes: its sealed revocation (section 8.8), at
   most 1 KiB → `204`. The relay stores the revocation at `devices/{D}/revocation`, then writes the calling
   device's revocation marker exactly as above, so its token stops working at once, and deletes its pending
-  requests. It keeps the device's record and the revocation until the owner deletes the device. The relay cannot
-  read or forge the revocation; the Mac acts only on one that opens with the device's `Kd` (section 9.2).
+  requests. It writes the marker only once this revocation is the one stored: if another revocation of the device
+  holds the name, or has an intent for other bytes (an earlier attempt whose outcome the relay does not know,
+  section 7.8), the call is `409` and writes no marker; that earlier revocation, should it land, revokes the
+  device all the same (section 7.8, start rule 1), and the device treats `409` as a failed call (section 9.8,
+  step 4). What a crash cuts short of the deletion of its pending requests, the start and the hourly sweep finish
+  (section 7.8). It keeps the device's record and the revocation until the owner deletes the device. The relay
+  cannot read or forge the revocation; the Mac acts only on one that opens with the device's `Kd` (section 9.2).
 - `GET /v0/devices/{D}/revocation` (owner) → bytes, the stored revocation, or `404`. The revocation is kept
-  until the owner's `DELETE /v0/devices/{D}`, which deletes it with the rest.
+  until the owner's `DELETE /v0/devices/{D}`, which deletes it with the rest, behind its tombstone. The relay
+  checks that tombstone before it serves anything, so a copy a late write brings back after that deletion is
+  never served.
 
 ### 7.5 Objects
 
@@ -645,10 +682,11 @@ integers of at least 1, in decimal without leading zeros. Nothing else is accept
   part of the value). A request whose `If-None-Match` is exactly that value gets `304` with the same `ETag` and
   no body. Since an object never changes under its name, the tag never goes stale.
 - `DELETE /v0/objects/{name}` → `204`, also when the name does not exist. The relay writes the name's tombstone,
-  durably, then deletes the object (section 7.8). Then it raises the prefix's floor to the lowest number still
-  published under it, and deletes what the floor covers. A deleted name is never served (`404`) or listed, even
-  when a late write brings a copy back; such a copy is deleted when a listing meets it, and an hourly sweep
-  compacts every object prefix, so one no listing meets goes too.
+  durably, then deletes the object (section 7.8). Then it raises the prefix's floor to the lowest number under it
+  that the owner has not deleted, an upload that failed included (section 7.8, "Floors"), and deletes what the
+  floor covers. A deleted name is never served (`404`) or listed, even when a late write brings a copy back; such a
+  copy is deleted when a listing meets it, and an hourly sweep compacts every object prefix, so one no listing
+  meets goes too.
 - `GET /v0/objects?prefix=<p>[&limit=<n>][&below=<number>]` → `{"names": ["index/42", ...], "next":
   <number>|null}`. `<p>` is one of `index/`, `views/{id}/`, `devices/{D}/keys/` and `devices/{D}/outcomes/`; any
   other is `400`. A device listing a prefix it may not list (section 7.1) gets `404`. The names under it come
@@ -670,7 +708,11 @@ verify only costs the reader those tries.
   calling device. If a request under that `R` is in the device's mailbox (section 7.8) and the relay has just read
   its stored copy and made it durable, it refuses with `409` and keeps the stored bytes; a device treats `409` as
   success, because it means its earlier attempt was stored. At most 120 requests per device per hour (`429`
-  beyond), and at most 1,000 pending per device (`507` beyond).
+  beyond), at most 1,000 pending per device, and at most 10,000 request names per device above its floor, pending
+  ones and ones deleted out of order counted together (`507` beyond either). The floor rises only to the device's
+  lowest pending ordinal (section 7.8), so while an old request stays pending, the names deleted above it keep
+  their tombstones; this bounds them, whatever the rate or the restarts. A device at that bound gets `507` until
+  the Mac collects its oldest request (section 9.3, check 4) or it expires.
 - **Ordinals.** Under the device's lock (section 7), the relay gives each request it stores the next **ordinal**
   of its device: an unsigned integer, above every ordinal it has given that device, and stores the request with it
   in its name (section 7.8). **An ordinal is never given twice**, even across restarts, and even when the lease of
@@ -716,7 +758,16 @@ verify only costs the reader those tries.
   never order them. A device sends its next request only after the previous one was stored (section 9.8), so for an
   honest relay ordinal order is the device's sequence order. `received_at` is the time the device's mailbox
   keeps for the request (section 7.8), to the second; it is informative and not trusted.
-- `GET /v0/requests/{D}/{R}` → bytes. `DELETE /v0/requests/{D}/{R}` → `204`.
+- `GET /v0/requests/{D}/{R}` → bytes.
+- `DELETE /v0/requests/{D}/{R}` → `204`, also when the request does not exist. Under the device's lock, the relay
+  takes the request's name from the mailbox or, when the mailbox lacks it, from the bucket (its copy or its
+  intent). It writes the request's tombstone, durably; only then does the request leave the mailbox, and only then
+  are its copy and its intents deleted and the device's floor raised (section 7.8). It answers `204` only once the
+  tombstone is durable: a step that fails after it leaves the request out of every listing, and the next listing,
+  sweep or retry finishes it. A retry finds the name in the bucket when the mailbox no longer holds it, so `204` is
+  never answered from memory alone. When the relay finds no copy, intent or tombstone of `R` for that device, the
+  request was never stored or is already wholly deleted, and it answers `204` without writing anything: every
+  request's intent is written before its bytes (section 7.8), and the Mac deletes only requests it has listed.
 - A request not collected within 30 days of its `received_at` is deleted.
 
 ### 7.7 Cross-origin requests
@@ -739,29 +790,28 @@ The web app runs at another origin, set in `SPRAVA_WEB_ORIGIN` (section 13). The
 ### 7.8 What the relay keeps in the bucket
 
 A write the relay started may land after it gave up on it, even after a restart (section 7.9), and so may a
-deletion. So every object it keeps is one of three kinds:
+deletion. So every object it keeps is one of two kinds:
 
 - **write-once**: content fixed by its first writer. Most are derived alike by every writer, so a late write
   repeats the same bytes, or named uniquely for one writer, so a late write adds a name and replaces nothing.
-  Every one (but a lease, an intent, a tombstone or a floor, whose name is its content) is also fenced by an
+  Every one (but a lease, a claim's intent or owner record, an intent, a tombstone or a floor, whose name is its
+  content or the SHA-256 of it) is also fenced by an
   **intent** recorded before its bytes are sent (below), so a late write can only bring the bytes its name was
   promised. There is no exception: `joined.json`, which every join writes differently, is fixed by its intent
   (section 7.3, "A late join"). A name is never reused for other bytes, and a deletion is final: a name that could
   be written again is deleted behind a **tombstone** (below);
-- **informative**: never used to decide anything;
-- **derived**: rebuilt from write-once objects, and written again from them at start, so a missing copy is
-  restored and a late one repeats the same bytes.
+- **informative**: never used to decide anything (`last_seen`).
 
 | Object, under the prefix `SPRAVA_INSTANCE/` | Kind | Holds, and its rule |
 |---|---|---|
-| `claims/{hash}` | write-once, named by the owner token's hash; never deleted | the owner record's bytes. Written before `owner.json`; more than one claim, and the relay refuses to start (section 6) |
-| `owner.json` | derived from its claim | exactly `{"owner_token_sha256":"<hash>"}` (section 6); written after the claim, and again at start if missing; one that has no claim, or differs from it, and the relay refuses to start |
+| `claims/{digest}` | write-once, empty; the name says everything; never voided or deleted | nothing: a claim's intent, named by the SHA-256 of its owner record (section 6). The lowest-named one is the binding claim |
+| `owner/{digest}` | write-once, named by the SHA-256 of its bytes; never deleted | exactly `{"owner_token_sha256":"<hash>"}` (section 6), written after its claim's intent, and only while that intent is the lowest. Only the binding claim's record is the owner; one that cannot be read, or whose bytes do not match its name, and the relay refuses to start |
 | `leases/{rank}-{id}` | write-once, empty; the name says everything | one process's lease (section 7.9). Deleted by the process that outranks it, once that process is ready |
 | `devices/{D}/record.json` | write-once, at join, alike for every join of the pairing | the pairing id, and nothing else |
 | `devices/{D}/tokens/{sha256}` | write-once, at join, one per token the relay made, named by the token's hash (section 3) | `{"joined_at": time}`, when the token was made, informative. A token is admitted only while its marker exists; a late marker names a token nobody holds |
 | `devices/{D}/active` | write-once marker, at key installation, before the key | nothing |
 | `devices/{D}/revoked` | write-once marker, at removal, before any deletion, and before a pending device is deleted with its pairing or as an orphan; never cleaned up | nothing |
-| `devices/{D}/revocation` | write-once, at a device's self-revocation, before the marker; kept until the owner deletes the device | the device's sealed revocation |
+| `devices/{D}/revocation` | write-once, at a device's self-revocation, before the marker; kept until the owner deletes the device, which writes its tombstone `tombstones/devices/{D}/revocation` first (section 7.4) | the device's sealed revocation |
 | `devices/{D}/last_seen` | informative | the hour the device was last seen; a late write can only set it back an hour |
 | `pairings/{P}/created.json` | write-once | `A`, `D`, the secret's hash, `expires_at` |
 | `pairings/{P}/joined.json` | write-once; its intent consumes the pairing (section 7.3) | `B` and the sealed hello |
@@ -771,9 +821,9 @@ deletion. So every object it keeps is one of three kinds:
 | `pairings/{P}/deleted` | write-once marker, the pairing's tombstone, written before any other part is deleted; never deleted | nothing. A pairing that has it is missing for every route, whatever else is left beside it, and its other parts are deleted (by the deletion, its retry, the sweep or the start) |
 | `objects/{name}` | write-once (section 7.5) | a sealed object |
 | `requests/{D}/{ordinal}-{R}` | write-once, named uniquely by its ordinal | a sealed request |
-| `ordinals/{D}/{block}` | write-once, written before any ordinal in the block is given; deleted, with its intents, only once it ends at or below the device's floor, and never the device's highest | the name of the reserving process's lease, `leases/{rank}-{id}`: it reserves the ordinals `1,024 × block` to `1,024 × block + 1,023` for that process alone (section 7.6) |
-| `intents/{name}/{sha256}` | write-once, empty; the name says everything | the intent to write the object `{name}` (any name above but a lease's, a tombstone's or a floor's) with the bytes whose SHA-256, in lowercase hex, is `{sha256}`. Written and confirmed before those bytes are sent. Deleted once nothing needs it: with its request, after the tombstone; once a floor covers its name; with a deleted device or pairing (but the intent of a device's revocation marker); with its ordinal reservation |
-| `tombstones/{name}` | write-once, empty | nothing: the object `{name}` (an object or a request) was deleted. Written, durably, before the object is deleted. Deleted once the floor of its scope covers it |
+| `ordinals/{D}/{block}` | write-once, written before any ordinal in the block is given; deleted, with its intents, once it ends at or below the device's floor, but never the device's highest while the device is kept, and with a revoked or deleted device | the name of the reserving process's lease, `leases/{rank}-{id}`: it reserves the ordinals `1,024 × block` to `1,024 × block + 1,023` for that process alone (section 7.6) |
+| `intents/{name}/{sha256}` | write-once, empty; the name says everything | the intent to write the object `{name}` (any name above but a lease's, a claim's, an owner record's, a tombstone's or a floor's) with the bytes whose SHA-256, in lowercase hex, is `{sha256}`. Written and confirmed before those bytes are sent. Deleted once nothing needs it: with its request, after the tombstone; once a floor covers its name; with a deleted device or pairing (but the intent of a device's revocation marker); with its ordinal reservation |
+| `tombstones/{name}` | write-once, empty | nothing: the object `{name}` (an object, a request, or a device's stored revocation) was deleted. Written, durably, before the object is deleted. Deleted once the floor of its scope covers it, or with its device; a deleted device's revocation tombstone stays, as its marker does |
 | `floors/{scope}/{n}` | write-once, empty; the name says everything | nothing: every name of the scope numbered below its highest floor counts as deleted. The scopes are `requests/{D}` (by ordinal) and, for each object prefix (section 7.5), `objects/{prefix}` without its last `/` (by revision, version or epoch). Written, durably, before anything it covers is deleted; lower floors are then deleted |
 
 A pairing is `open` when only `created.json` exists, `joined` with `joined.json`, `keyed` with `key.sha256`, and
@@ -783,8 +833,9 @@ are not padded: they are the API's names (section 7.5), so the store lists them 
 order, and a listing of an object prefix reads every name under it and sorts the numbers itself. This is a
 known cost, kept small by the owner's cleanup (section 9.7), which leaves few objects under each prefix.
 
-**Intents.** The relay writes every write-once or derived object but a lease, an intent, a tombstone or a floor in
-these steps, under the lock that guards its name (those four are written directly: their name is their content):
+**Intents.** The relay writes every write-once object but a lease, a claim's intent or owner record, an intent, a
+tombstone or a floor in these steps, under the lock that guards its name (those are written directly: their name
+is their content, or the SHA-256 of it):
 
 1. It checks the name's tombstone: a deleted name takes no bytes again, not even the same ones. For an object
    the answer is `410` (section 7.5), not the refusal below.
@@ -810,71 +861,111 @@ else refuses every late write to its name: with a request, after its tombstone; 
 with a deleted pairing, behind its tombstone; and with its ordinal reservation. So a name never takes other bytes,
 even after its object is deleted. An intent holds nothing but a hash of bytes the relay was given.
 
-**Tombstones.** An object the owner deletes (section 7.5) and a request that is deleted (section 7.6) could
-otherwise be written again by a late write. So the relay first writes the name's tombstone `tombstones/{name}`,
-durably, then deletes the object. (These are the relay's; the Mac's outcome tombstones, section 9.1, are another
-thing.) From then on the name is dead: every write to it is refused (step 1 above), and every reader treats a copy
-that a late write brings back as deleted: it is never served or listed. Such a copy is deleted again when a
-listing meets it, and an hourly sweep deletes any no listing meets. A late deletion then only removes what is
-already dead. A pairing has its own tombstone, `pairings/{P}/deleted`, written before any of its other parts is
-deleted; a device needs none, since its revocation marker is never deleted (section 7.4). A tombstone is deleted
-once its scope's floor covers it (below).
+**Tombstones.** An object the owner deletes (section 7.5), a request that is deleted (section 7.6) and a device's
+stored revocation when the owner deletes the device (section 7.4) could otherwise be written again by a late
+write. So the relay first writes the name's tombstone `tombstones/{name}`, durably, then deletes the object.
+(These are the relay's; the Mac's outcome tombstones, section 9.1, are another thing.) From then on the name is
+dead: every write to it is refused (step 1 above), and every reader treats a copy that a late write brings back as
+deleted: it is never served or listed. Such a copy is deleted again when a listing meets it, and an hourly sweep
+deletes any no listing meets. A late deletion then only removes what is already dead. A pairing has its own
+tombstone, `pairings/{P}/deleted`, written before any of its other parts is deleted; a device needs none, since its
+revocation marker is never deleted (section 7.4), and the tombstone of its stored revocation stays with the marker.
+Every other tombstone is deleted once its scope's floor covers it (below), or with its device.
 
 **Floors.** Deletions would otherwise leave a tombstone, an intent or an ordinal reservation behind for every
 request and every object ever made. So each numbered scope has a **floor**, `floors/{scope}/{n}`: every name of
 the scope numbered below its highest floor counts as deleted, tombstone or not, so a copy or an intent a late
-write brings back below it is never listed or served, and is deleted again. The relay writes a floor durably
-before it deletes anything the floor covers, and then deletes the lower floors and what the new one covers: the
-tombstones, intents and late copies below it. A late write of a lower floor changes nothing. A device's requests
-have the floor `floors/requests/{D}/{ordinal}`: when the owner deletes a request, and at every sweep, the relay,
-holding the device's lock, which every request's creation also holds from its ordinal to its place in the mailbox
-(section 7.6), raises it to the device's lowest pending ordinal (or, with nothing pending, the next ordinal it
-would give), and also deletes the ordinal reservations, with their intents, that end at or below it, but never the
-device's highest reservation; ordinals still never go back, since a process starts at or above the floor (section
-7.6). Each object prefix (section 7.5) has the floor `floors/objects/{prefix}{n}`, such as
-`floors/objects/index/{n}`: when the owner deletes an object, and at the hourly sweep, under the creation lock,
-the relay raises it to the lowest number still published under the prefix, or, with nothing published there any
-more (a binder removed, section 9.7), above every number the prefix has held. That floor stays, so late copies of
-the prefix stay deleted. The owner only publishes above what it keeps (section 9.7), so a name below an object
-floor is never written again (section 7.5).
+write brings back below it is never listed or served, and is deleted again. A device's requests have the floor
+`floors/requests/{D}/{ordinal}`, and each object prefix (section 7.5) the floor `floors/objects/{prefix}{n}`, such
+as `floors/objects/index/{n}`. Every floor follows one protocol:
+
+- **Who raises it, and when.** Only the relay, after a deletion and in the hourly sweep: a request floor under the
+  device's lock, which every request's creation also holds from its ordinal to its place in the mailbox (section
+  7.6); an object floor under the creation lock, which every `PUT` and `DELETE` of an object takes.
+- **To what.** Never above a name that was not deleted: the relay never retires a request or an object on its own.
+  A request floor rises to the device's lowest pending ordinal (or, with nothing pending, the next ordinal it
+  would give). An object floor rises only past names the owner deleted, or names that never had an intent or a
+  copy: to the lowest number of the prefix that has an intent or a copy and no tombstone, or, with none, above
+  every number the prefix has held (a binder removed, section 9.7). Every upload records its intent first, and
+  only the floor removes it, so a copy the store has lost for a while, or an upload that failed, keeps its name
+  live until the owner deletes it (below). A floor never exceeds 2^53 − 1, the highest valid number (section 3);
+  that name's own tombstone then stays.
+- **In what order.** The floor is raised in memory, then written durably, then the lower floors (never a higher
+  one) and the names it covers are deleted: their tombstones, intents and late copies, and, for a request floor,
+  the ordinal reservations, with their intents, that end at or below it, but never the device's highest
+  reservation. Every name it covers was deleted or never existed, so refusing them before the floor is durable
+  loses nothing, and a cleanup step that fails leaves every live name live. A late write of a lower floor changes
+  nothing.
+- **Monotonic.** Within a process a floor only rises: a reader merges what it reads with what it knows by taking
+  the higher, so a read that finishes after a raise never lowers it. The relay keeps in memory only the object
+  prefixes that have a floor, which only the owner's deletions make, so a device asking about names that do not
+  exist adds nothing; a removed device's go with it.
+- **What readers do.** A write checks the tombstone and the floor under the same lock as the raise, and refuses
+  a deleted name (`410` for an object, section 7.5; `503` for a request, section 7.6). A read takes the bytes
+  first, then checks the tombstone, then the floor, so a tombstone deleted by a raise meanwhile is always covered
+  by the floor it then sees. A copy that counts as deleted is deleted when met.
+
+Ordinals never go back, since a process starts at or above the device's floor (section 7.6). The owner only
+publishes above what it keeps (section 9.7), so a name below an object floor is never written again (section
+7.5): `index/`, `views/{id}/` and `devices/{D}/outcomes/` hold revisions the owner publishes in rising order and
+deletes from below once a newer one is named, and `devices/{D}/keys/` holds epochs, which only rise. A removed
+binder's views floor stays, so late copies of its views stay deleted. A removed device's prefixes, floors
+included, go with it.
+
+**A failed upload holds its prefix's floor** until the owner deletes that revision: its intent keeps the name
+live, because the relay never declares deleted an object the owner did not delete, and the tombstones above it
+wait for the floor meanwhile. Only the owner uploads objects, and the Mac deletes every revision it assigned,
+stored or not (section 9.7, "Cleanup"), so this growth is bounded by the owner's own behaviour; no device can
+cause it. This is a settled trade-off, as the binding claim is (section 6).
 
 The relay keeps in memory, for each device, a **mailbox**: a map from `R` to its ordinal and its `received_at`
 (when the relay stored it, or the last-modified time the bucket reports for the copy or, when the copy is missing,
 for its intent), so `requests/{D}/{R}` in the API finds the object. It rebuilds the map at start from the listings
 of `requests/{D}/` and of the requests' intents, and updates it from every such listing it reads for `GET
 /v0/requests/{D}`, so a request whose write began before a restart is found as soon as its intent or its copy is
-listed. A copy with a tombstone is not taken into the map, and is deleted again. An entry leaves the map only when
-the owner deletes the request, the device is revoked or the request expires, by the `received_at` the map keeps
-(section 7.6). One whose copy is missing stays listed, across restarts, and its `GET` answers `404`, until the
-device's retry stores it (section 7.6) or it leaves; the Mac skips it meanwhile (section 9.3, check 4). When two
-stored copies hold the same `R` (the same bytes, section 7.6), the relay keeps the one with the lower ordinal and
-deletes the other, behind its tombstone. An intent without a copy never displaces a stored copy: it enters the map
-only for an `R` the map does not hold.
+listed. Every listing and every sweep finishes a request name that is tombstoned or below the floor: it is never
+taken into the map, or leaves it, and its copy and intents are deleted, so a deletion cut short after its
+tombstone is completed. One listing reads the device's tombstones once. An entry leaves the map only when the
+owner deletes the request (once its tombstone is durable, section 7.6), the device is revoked or the request
+expires, by the `received_at` the map keeps (section 7.6). One whose copy is missing stays listed, across
+restarts, and its `GET` answers `404`, until the device's retry stores it (section 7.6) or it leaves; the Mac
+skips it meanwhile (section 9.3, check 4). When two stored copies hold the same `R` (the same bytes, section 7.6),
+the relay keeps the one with the lower ordinal and deletes the other, behind its tombstone. An intent without a
+copy never displaces a stored copy: it enters the map only for an `R` the map does not hold. A revoked device
+keeps nothing here: every listing and sweep that meets it deletes its requests, their intents and tombstones, its
+floor and its ordinal reservations, so a self-revoked device's pending requests go at the start and by the sweep,
+while its record and revocation stay until the owner deletes the device (section 7.4).
 
 **What bounds each kind.** Every object the relay keeps is bounded by live data: what the owner keeps published,
-the devices it keeps paired, the pairings made in the last 10 minutes and the requests pending. Two kinds of
-marker are the exception, one empty object each, because a late write could otherwise bring their device or
-pairing back; they grow only with the pairings the owner itself makes. So, in the same way, does the floor of a
-removed binder's views, one empty object per binder ever shown, which keeps late copies of its views deleted.
+the devices it keeps paired, the pairings made in the last 10 minutes and the requests pending. The exceptions are
+owner-driven, one small object each, because a late write could otherwise bring back their device, pairing or
+binder, and their number grows only with what the owner itself makes: a removed binder's views floor; a removed
+device's revocation marker and revocation tombstone; a deleted pairing's tombstone; and one claim intent and owner
+record per claim sent with the setup code.
 
 | Object | Bound |
 |---|---|
-| `claims/{hash}`, `owner.json` | one each; a second claim fails the start (section 6) |
+| `claims/{digest}`, `owner/{digest}` | **exception**: one each per claim sent with the setup code; only the person who deployed the relay makes them (section 6) |
 | `leases/{rank}-{id}` | one per process alive; a ready process deletes every lower one (section 7.9) |
 | `devices/{D}/record.json`, `tokens/`, `active`, `last_seen`, `revocation`, with their intents | per device kept: at most 20 pending and active, plus self-revoked ones until the owner deletes them; deleted with the device |
-| `devices/{D}/revoked` and its intent | **exception**: one per device id the owner ever removed, or abandoned while pending |
-| `pairings/{P}/` parts, with their intents | per pairing made in the last 10 minutes, whatever its state (at most 3 of them open at once); deleted with the pairing |
+| `devices/{D}/revoked` and its intent, `tombstones/devices/{D}/revocation` | **exception**: one each per device id the owner ever removed, or abandoned while pending |
+| `pairings/{P}/` parts, with their intents | per pairing made in the last 10 minutes, whatever its state (at most 3 of them still `open` at once); deleted with the pairing |
 | `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
 | `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
-| `tombstones/objects/...`, `intents/objects/...` | per prefix, the names above its floor: what is published, plus names deleted out of order above the lowest one kept |
-| `floors/objects/...` | one per prefix: the index, each binder ever shown (a removed binder's floor stays, one empty object, owner-driven like the two exceptions), and each device kept (a removed device's go with it) |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, the names at or above its floor: what is published, uploads in progress, the owner's failed uploads, which only the owner can make and the Mac deletes (section 9.7), and names deleted out of order above the lowest kept; the floor deletes everything below it |
+| `floors/objects/...` | one per prefix in use: the index, each binder shown, each device kept; **exception**: a removed binder's views floor stays, one per binder ever shown (its id is never reused, so nothing new arrives under it, and only the floor refuses a late copy). A removed device's go with it |
 | `requests/{D}/...`, `intents/requests/{D}/...` | pending requests: at most 1,000 per device |
-| `tombstones/requests/{D}/...` | names deleted above the device's floor: at most the requests made since its oldest pending one (120 an hour, for at most 30 days) |
-| `floors/requests/{D}/...` | one per device |
-| `ordinals/{D}/{block}`, with their intents | the blocks above the device's floor, plus its highest: at most the pending span over 1,024, plus one |
+| `tombstones/requests/{D}/...` | names deleted out of order above the device's floor: with its pending requests, at most 10,000 names per device, whatever the rate or the restarts (a device at the bound gets `507` until the Mac collects its oldest request, section 7.6) |
+| `floors/requests/{D}/...` | one per device kept |
+| `ordinals/{D}/{block}`, with their intents | the blocks above the device's floor, plus its highest, which a live device always keeps (it says where the next process starts). Each process start that gives the device an ordinal reserves a fresh block, so while an old request stays pending the blocks number at most its pending span over 1,024, plus one per start since it was made; the request expires within 30 days, and every start takes the warm-up (section 7.9) |
 
-At start, after its warm-up (section 7.9) and before serving anything but health, the relay reads its claims
-and writes `owner.json` from the claim if it is missing (section 6). Then it repairs and cleans up, in this
+A revoked or deleted device keeps none of its reservations, request floor, request tombstones or intents: they
+are deleted with it (section 7.4), and for a self-revoked device by the listings and sweeps above. Folders of the
+local store are removed once empty.
+
+At start, after its warm-up (section 7.9) and before serving anything but health, the relay reads its binding
+claim and its owner record (section 6), and makes that record durable again, since a write may have failed after
+it became readable. Then it repairs and cleans up, in this
 order, and never deletes a revocation marker. First, a pairing that has its tombstone loses every other part,
 and counts as missing for every rule below. Then:
 
@@ -896,11 +987,15 @@ and counts as missing for every rule below. Then:
 6. a device with a revocation marker but no stored `revocation` was being deleted by the owner (a
    self-revocation stores its `revocation` before its marker), so the relay deletes the rest of its parts, as
    `DELETE /v0/devices/{D}` does, keeping the marker. A device with both may be self-revoked and waiting for
-   the owner, or in an owner deletion a crash cut short: the relay keeps it, and the Mac, which repeats its
+   the owner, or in an owner deletion a crash cut short (its revocation's tombstone then already hides the
+   revocation, section 7.4): the relay keeps its record and revocation, deletes its pending requests (a
+   self-revocation a crash cut short before it deleted them), and the Mac, which repeats its
    `DELETE /v0/devices/{D}` until it gets `204` (section 4.4), finishes it.
 
 Then it reads every device's token markers, reads every mailbox (deleting requests older than 30 days, section
-7.6), and deletes the leases below its own. It reads every mailbox again, and expires requests, once an hour.
+7.6, and everything of a revoked device there, above), and deletes the leases below its own. Once an hour it reads
+every mailbox again, expires requests and raises the request floors, and compacts every object prefix (section
+7.5), deleting a revoked device's objects, tombstones and floors.
 
 ### 7.9 One writer at a time
 
@@ -915,7 +1010,8 @@ with a **lease**:
 2. **Checking it.** Before every write or deletion, the process checks that no lease ranks above its own,
    using a check (a listing of `leases/`) begun at most 10 seconds earlier; when the last one is older, it
    checks again first. It also checks every 5 seconds in the background.
-3. **Fenced.** Once a check finds a lease above its own, the process is fenced for good: every write fails, and
+3. **Fenced.** Once a check finds a lease above its own, or finds its own lease gone (only a store that lost or
+   hid a completed write does that, section 13), the process is fenced for good: every write fails, and
    the call that needed it is answered `503` with `Retry-After`; it answers `503` to everything but
    `GET /v0/health` and preflights (section 7.7), stops accepting connections, and exits.
 4. **Warm-up.** After writing its lease, every process waits about 50 seconds before it reads the state it
@@ -942,7 +1038,8 @@ failed join's late write take the device count above 20 (section 7.3). Every obj
 and every write-once object its intent, which was durable before the write was sent, so no late or stale write
 replaces another's content, `joined.json` included (section 7.3). Two processes never hold one block of ordinals
 (section 7.6), so no ordinal is given twice; and should a relay list two equal ordinals all the same, a listing
-never ends a page between them, so paging by ordinal skips nothing. Claims fail closed (section 6). And the Mac
+never ends a page between them, so paging by ordinal skips nothing. A claim binds only while its intent is the
+lowest, and one claimer retrying always ends as the owner (section 6). And the Mac
 decides every request from its own records (section 9): a copy is a duplicate, a request of a revoked device is
 discarded, and a request taken out of `seq` order is rejected, never applied twice or applied after a later one;
 the device then shows it as refused (section 9.8). A restart or a deploy makes the relay unavailable for about a
@@ -1185,8 +1282,9 @@ below from its own records, whatever the relay says.
   space; it then raises `tombstone_floor` to one above the highest `seq` it pruned, in the same write.
 - For each device, its outcomes counters and revisions (section 9.9).
 - For each shown binder, its snapshot record and its view versions, each `uploading` or `uploaded`; and, for
-  as long as the relay instance is in use, the id of every binder recorded as `removed`, a few bytes each
-  (section 9.7).
+  as long as the relay instance is in use, the id of every binder recorded as `removed`, a few bytes each, with
+  its highest reserved version until its cleanup mark has passed it (section 9.7).
+- For each object prefix it publishes under, its cleanup mark (section 9.7).
 - The last index revision assigned, and `published_revision`, the last one whose upload completed; and for
   each shown binder its `highest_indexed_version`, the highest version of it named by any index whose bytes
   the Mac recorded (section 9.7, publishing step 1), uploaded or not, superseded or not: starting at 0, raised
@@ -1265,6 +1363,12 @@ until the next day, its requests wait on the relay, and the Health line says so.
 
 A rejected or discarded request is neither: it never stops anything.
 
+**The owner token refused.** A `401` to the owner token, in a drain or any other call, ends the drain. The Mac
+reads `GET /v0/health` and acts as section 6 says: for another instance, the claim is void; with `"claimed":
+false`, it sends its recorded claim body again and goes on once that is answered `204`; with `"claimed": true`, or
+when the body is answered `409`, the relay needs a reset (section 6, "A relay that needs a reset"), and the Mac
+makes no further calls to it but health until the person resets it.
+
 ### 9.3 Checks before opening
 
 In order; the first that fails decides. A request that fails a check up to step 6 either has not been shown to
@@ -1281,23 +1385,29 @@ outcome and no journal line of its own. Only an authenticated request is ever de
    cut short is a job failure (section 9.2). A listed request the relay answers `404` for, again after the drain's
    last listing (section 9.2, step 2.3), is **lost** for this drain: the relay lists a request from its intent, so
    its copy was never stored or is gone (section 7.6). The Mac skips it, records nothing and goes on with the
-   device's other requests; it never waits for a lost request, and never deletes one, because the device may still
-   store it again under its ordinal (section 7.6), and a later drain then decides it in its turn. This never lets
-   a later request overtake it: the device sends a request only after the one before was stored (section 9.8), so
-   a later request the drain listed was stored after this one's retry, and the fetch after the last listing finds
-   it. A device that was told it was stored has dropped its bytes: its `seq` is a gap (section 9.4), the relay
-   drops it when it expires, and the device shows the action unresolved after 30 days (section 9.8, step 3). A
-   copy that lands late after all is decided as section 9.4 says: rejected once a later request was decided, never
-   applied out of order. A lost request with a later request of its device listed after it is **confirmed lost**:
-   the device sent that later one only after this one was stored, so it will never send this one again, and only a
-   late copy could still bring it. The Mac remembers, in memory, the requests it has confirmed lost; it never
-   fetches them again, and they count toward no budget. An entry is dropped when a listing that covers its ordinal
-   no longer shows it (the request expired, or the device was revoked), and all are dropped when the Mac restarts.
-   Since the relay lists at most 1,000 pending requests per device, that is the most the Mac keeps; should it
-   still have no room, it forgets its oldest entry, which then costs two fetches again in a later drain. So each
-   drain gets past the lost requests it confirmed before, and a run of lost requests longer than one drain's fetch
-   budget is passed over a few drains. A copy of a confirmed-lost request that lands after all is not fetched, and
-   stays unresolved on the device. The Health line names a device with lost requests.
+   device's other requests; it never waits for a lost request, and never deletes one it has not confirmed lost
+   (below), because the device may still store it again under its ordinal (section 7.6), and a later drain then
+   decides it in its turn. This never lets a later request overtake it: the device sends a request only after the
+   one before was stored (section 9.8), so a later request the drain listed was stored after this one's retry, and
+   the fetch after the last listing finds it. A device that was told it was stored has dropped its bytes: its `seq`
+   is a gap (section 9.4), the relay drops it when it expires, and the device shows the action unresolved after 30
+   days (section 9.8, step 3). A copy that lands late after all is decided as section 9.4 says: rejected once a
+   later request was decided, never applied out of order. A lost request with a later request of its device listed
+   after it is **confirmed lost**: the device sent that later one only after this one was stored, so it will never
+   send this one again, and only a late copy could still bring it. The Mac deletes a confirmed-lost request from
+   the relay (`DELETE /v0/requests/{D}/{R}`) before it records the outcome of, or deletes, any request listed after
+   it, with no decision record, tombstone or outcome, so that the device's floor rises past it (section 7.8) and an
+   old lost request never holds the device at the relay's bound of 10,000 names (section 7.6); a late copy is then
+   refused or deleted behind the relay's tombstone. A deletion that fails is a job failure (section 9.2), and the
+   next drain deletes it before it decides or deletes anything listed after it. The Mac remembers, in memory, the
+   requests it has confirmed lost; it never fetches them again, and they count toward no budget. An entry is
+   dropped when a listing that covers its ordinal no longer shows it (the request expired, or the device was
+   revoked), and all are dropped when the Mac restarts. Since the relay lists at most 1,000 pending requests per
+   device, that is the most the Mac keeps; should it still have no room, it forgets its oldest entry, which then
+   costs two fetches again in a later drain. So each drain gets past the lost requests it confirmed before, and a
+   run of lost requests longer than one drain's fetch budget is passed over a few drains. A copy of a
+   confirmed-lost request that lands after all is not fetched, and stays unresolved on the device. The Health line
+   names a device with lost requests.
 5. The bytes are strict JSON (section 3.1) and a sealed object without `s`, with `kid` `"device"` and an `e`
    from 1 to the current epoch, and they open with `Kd` of `D` under the name `requests/{D}/{R}`. Otherwise
    **discarded** (`unreadable`). From here on the request is authenticated.
@@ -1514,9 +1624,15 @@ The index's revision never goes back, across rotations. A device that reads an i
 place retries (section 10.3).
 
 **Cleanup.** Nothing is ever overwritten, so cleanup only deletes what nothing can use any more, always behind a
-newer revision recorded as published. It runs after each publication and at the end of each drain, works from
-listings of the relay (section 7.5), is idempotent, and simply repeats; a `404` on delete is success, and an old
-object that a late write brings back is hidden by the relay's tombstone (section 7.5) and never listed again.
+newer revision recorded as published. It runs after each publication and at the end of each drain, is idempotent,
+and simply repeats. It deletes by name every number the Mac assigned below what the rules below keep, whether or
+not its upload succeeded: a failed upload may have left on the relay its intent and no copy, which no listing
+shows but which holds its prefix's floor until the owner deletes it (section 7.8, "A failed upload"). So for each
+prefix the Mac keeps, durably, a **cleanup mark**: the lowest number there it has not yet deleted, starting at the
+first it assigned. It deletes upward from the mark and raises the mark after each deletion answered `204`. It
+also works from listings of the relay (section 7.5), for what a late write brings back; a `404` on delete is
+success, and an old object that a late write brings back is hidden by the relay's tombstone (section 7.5) and
+never listed again.
 Under the publish lock, and each binder's upload lock while it works on that binder, it deletes:
 
 - `index/{r'}` for every `r'` below `published_revision`;
@@ -1812,7 +1928,9 @@ The relay reads only environment variables. None has a default that points anywh
 shows in every later read and listing of the store (strong read-after-write and list-after-write consistency,
 which Amazon S3 gives).
 A deployer using another S3-compatible store checks that its documentation promises the same; the local
-folder store gives it.
+folder store gives it. The relay checks what it can: a process whose store does not show its own lease right after
+writing it, in a read and in a listing, refuses to start, and one whose lease disappears with none above it is
+fenced (section 7.9). Neither check can catch every lapse.
 
 The relay is deployed as exactly one instance (section 7). A host that starts the new instance before it
 stops the old one briefly runs two; the lease of section 7.9 fences the old one, and every new process serves
@@ -1854,7 +1972,10 @@ A vector, once committed, changes only with the protocol version. The cases:
    `630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd`, is the wrong reading.) The hash in uppercase
    hex must be refused as `owner_token_sha256`, and the token with `=` padding as a bearer value. The relay names
    the token's marker by this hash, `devices/{D}/tokens/<hash>` (section 7.8), so the marker for this token ends
-   in `ea866a75` … `17afffd0`, all 64 characters.
+   in `ea866a75` … `17afffd0`, all 64 characters. A claim carrying this hash has the owner record
+   `{"owner_token_sha256":"ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"}` and the digest
+   `902f7e708b77be292b985cc0c486c7fa6070c7e582beeb0abf928cd87a41477c`, its SHA-256, so its intent is
+   `claims/902f7e70` … `7a41477c` and its record `owner/902f7e70` … `7a41477c`, all 64 characters (section 6).
 10. `signature`: the RFC 8032 §7.1 test 1 key, message and signature verify in both implementations. A signed
     index made by the Mac verifies in the web app; the same object fails when its name, `kid`, `e`, nonce, one
     byte of `c` or one bit of `s` changes, and when `s` is removed.
