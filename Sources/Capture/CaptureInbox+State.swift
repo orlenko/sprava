@@ -43,15 +43,34 @@ extension CaptureInbox {
         }
 
         package init() {}
+
+        /// Brings clock keys an older cursor kept as `wall:counter:id` to `wall:counter:node:id` (`clockKey`), so every
+        /// key compares the same way: the node is the device folder the event was read from (its `hlc.node` is that
+        /// folder's name without hyphens, check 3 of capture-event-v0 §5.3). One whose folder is not known gets the
+        /// node `-`, which sorts below every real one (hex digits and letters): it never outranks an event with the
+        /// same wall time and counter from a known node, so such an event is taken in, never dropped as stale.
+        mutating func migrateClocks() {
+            guard let old = clocks, old.values.contains(where: { $0.split(separator: ":", omittingEmptySubsequences: false).count == 3 }) else { return }
+            clocks = old.mapValues { _ in "" }
+            for (id, key) in old {
+                let parts = key.split(separator: ":", omittingEmptySubsequences: false)
+                guard parts.count == 3 else { clocks?[id] = key; continue }
+                let node = paths?[id]?.split(separator: "/").first.map { $0.replacingOccurrences(of: "-", with: "") } ?? "-"
+                clocks?[id] = "\(parts[0]):\(parts[1]):\(node):\(parts[2])"
+            }
+        }
     }
 
     /// The cursor, for readers: empty when it cannot be read.
     package func loadState() -> State { (try? readState()) ?? State() }
 
     /// The cursor, for writers: a fresh one only when `state.json` does not exist. One that cannot be read throws,
-    /// so it is never rebuilt over and no capture gets a second card (capture-event-v0 §5.3).
+    /// so it is never rebuilt over and no capture gets a second card (capture-event-v0 §5.3). Clock keys an older
+    /// cursor kept are brought to the current form as it is read, before anything ranks them.
     package func readState() throws -> State {
-        try StateFile.read(State.self, from: stateURL) ?? State()
+        var state = try StateFile.read(State.self, from: stateURL) ?? State()
+        state.migrateClocks()
+        return state
     }
 
     package func save(_ s: State) throws {

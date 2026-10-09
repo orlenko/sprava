@@ -170,6 +170,40 @@ import Testing
         #expect((pOpen(s) + s.inbox.unfiled()).contains { from($0, second) })
     }
 
+    /// A revision taken in by an older Sprava, whose cursor kept its clock as `wall:counter:id`, then the next revision
+    /// with the same stamp from a device whose node sorts higher and whose id sorts lower.
+    func olderCursorThenRevision(_ s: PSetup, knownFolder: Bool) throws -> String {
+        let low = "11111111-2222-4333-8444-5555555555fc"   // `adapter`
+        let high = "22222222-2222-4333-8444-5555555555fc"
+        try s.inbox.registerProducer(folder: high, app: "adapter")
+        let first = "80000000-0000-4000-8000-000000000001", second = "f0000000-0000-4000-8000-000000000002"
+        try event(s, device: low, id: first, ref: "M1", revision: "rev1", text: "Call the invented roofer", wall: 1_791_360_000_000, counter: 9)
+        sweep(s)
+        var state = try s.inbox.readState()
+        state.clocks?[first] = String(format: "%016lld:%08lld:", 1_791_360_000_000, 9) + first
+        if !knownFolder { state.paths?[first] = nil }
+        try s.inbox.save(state)
+        try event(s, device: high, id: second, ref: "M1", revision: "rev2", text: "Call the invented roofer Monday",
+                  wall: 1_791_360_000_000, counter: 9)
+        sweep(s)
+        return second
+    }
+
+    @Test func anOlderCursorsClocksAreBroughtToTheNewFormBeforeRanking() throws {
+        let s = try setup()
+        let second = try olderCursorThenRevision(s, knownFolder: true)
+        #expect(try s.inbox.readState().ingested[second] != "stale_revision", "the corrected words are not dropped")
+        #expect((pOpen(s) + s.inbox.unfiled()).contains { from($0, second) })
+        #expect(try s.inbox.readState().clocks?.values.allSatisfy { $0.split(separator: ":", omittingEmptySubsequences: false).count == 4 } == true)
+    }
+
+    @Test func anOldClockWhoseFolderIsUnknownNeverOutranksTheSameStampFromAKnownNode() throws {
+        let s = try setup()
+        let second = try olderCursorThenRevision(s, knownFolder: false)
+        #expect(try s.inbox.readState().ingested[second] != "stale_revision")
+        #expect((pOpen(s) + s.inbox.unfiled()).contains { from($0, second) })
+    }
+
     // MARK: - Issues small enough to fix here
 
     @Test func anEventWithAnEmptyRefIsQuarantined() throws {
