@@ -107,4 +107,154 @@ import Testing
         #expect(again.acknowledged == 1 && again.applied == 0)
         #expect(!FileManager.default.fileExists(atPath: outbox.path))
     }
+
+    // MARK: - The review of the hub layer
+
+    func adoptedTax(_ root: URL, items: [String] = ["a-1", "a-2"]) throws -> (URL, URL) {
+        let f = try binder(root, name: "tax", catalog: lifeproj(name: "tax", items: items.map { item($0) }))
+        try TekaStore(folder: f).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
+        let s = try spool(root)
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { throw TekaStore.Refused(reason: "first publish failed") }
+        return (f, s)
+    }
+
+    /// An outside edit of `meta.disclosure`, which narrows at once.
+    func narrowOutside(_ f: URL, to level: String) throws {
+        var c = try cat(f)
+        var meta = c["meta"]?.objectValue ?? JSONObject()
+        meta.set("disclosure", .string(level))
+        c.set("meta", .object(meta))
+        try Data(JSONWriter.pretty(.object(c)).utf8).write(to: f.appendingPathComponent("catalog.json"))
+    }
+
+    func openIDs(_ f: URL) throws -> [JSONValue] { try cat(f)["open_items"]?.arrayValue?.compactMap { $0["id"] } ?? [] }
+
+    // Hub 1. Each matching rule is tried across every item before the next: `demo-demo-a` closes that item, never
+    // `demo-a` by the prefix rule, and once it is closed a repeat of it is acknowledged without touching `demo-a`.
+    @Test func aRawIDMatchWinsOverAnotherItemsPrefixedID() throws {
+        let root = try scratch()
+        let f = try binder(root, name: "demo", catalog: lifeproj(name: "demo", items: [item("demo-a"), item("demo-demo-a")]))
+        try TekaStore(folder: f).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
+        let s = try spool(root)
+        let outbox = s.appendingPathComponent("outbox/demo.intake.json")
+        let body = Data(#"{"completions":[{"id":"demo-demo-a","action":"done","at":"2026-10-07T09:00:00Z"}]}"#.utf8)
+        try body.write(to: outbox)
+        #expect(try HubLane.drain(f, root: s, now: now).applied == 1)
+        #expect(try openIDs(f) == [.str("demo-a")])
+        try body.write(to: outbox)
+        let again = try HubLane.drain(f, root: s, now: now)
+        #expect(again.applied == 0 && again.acknowledged == 1)
+        #expect(try openIDs(f) == [.str("demo-a")])
+    }
+
+    func rename(_ f: URL, to name: String) throws -> URL {
+        let moved = f.deletingLastPathComponent().appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.moveItem(at: f, to: moved)
+        let args = JSONObject([(key: "name", value: .string(name)), (key: "former", value: .string(f.lastPathComponent)),
+                               (key: "until", value: .str("2027-01-01"))])
+        try TekaStore(folder: moved).apply([.init(op: "rename_teka", args: args, actor: user)], now: now)
+        return moved
+    }
+
+    // Hub 2. After a rename the slice under the former name goes when the new one is published, and the former
+    // name's outbox is still drained, with ids prefixed by the former name.
+    @Test func aRenameMovesTheSliceAndDrainsTheFormerOutbox() throws {
+        let root = try scratch()
+        let (old, s) = try adoptedTax(root)
+        let f = try rename(old, to: "tax-new")
+        #expect(try HubLane.publish(f, root: s, now: now) == .published(items: 2, overwrittenByOther: false))
+        #expect(FileManager.default.fileExists(atPath: s.appendingPathComponent("inbox/tax-new.agenda.json").path))
+        #expect(!FileManager.default.fileExists(atPath: s.appendingPathComponent("inbox/tax.agenda.json").path))
+
+        let former = s.appendingPathComponent("outbox/tax.intake.json")
+        try Data(#"{"completions":[{"id":"tax-a-1","action":"done","at":"2026-10-07T09:00:00Z"}]}"#.utf8).write(to: former)
+        #expect(try HubLane.drain(f, root: s, now: now).applied == 1)
+        #expect(try openIDs(f) == [.str("a-2")])
+        #expect(!FileManager.default.fileExists(atPath: former.path))
+    }
+
+    // Hub 2. A narrowing right after a rename withdraws the slice still under the former name.
+    @Test func aWithdrawalAfterARenameRemovesTheFormerSlice() throws {
+        let root = try scratch()
+        let (old, s) = try adoptedTax(root)
+        let f = try rename(old, to: "tax-new")
+        try narrowOutside(f, to: "none")
+        #expect(try HubLane.publish(f, root: s, now: now) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: s.appendingPathComponent("inbox/tax.agenda.json").path))
+    }
+
+    final class Outcome: @unchecked Sendable {
+        var result: Result<HubLane.PublishResult, Error>?
+    }
+
+    // Hub 3. A publish reads the binder under its lock: one that starts while another program holds the lock sees
+    // the narrowing made meanwhile and withdraws, instead of writing what it would have read before.
+    @Test func aPublishWaitsForTheLockAndSeesTheNarrowing() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        let fd = open(f.appendingPathComponent(".teka.lock").path, O_RDWR | O_CREAT, 0o600)
+        #expect(fd >= 0 && flock(fd, LOCK_EX) == 0)
+        let outcome = Outcome()
+        let done = DispatchSemaphore(value: 0)
+        let (folder, spool, at) = (f, s, now)
+        Thread.detachNewThread {
+            outcome.result = Result { try HubLane.publish(folder, root: spool, now: at, force: true) }
+            done.signal()
+        }
+        usleep(300_000)
+        try narrowOutside(f, to: "none")
+        flock(fd, LOCK_UN)
+        close(fd)
+        done.wait()
+        #expect(try outcome.result?.get() == .removed)
+        #expect(!FileManager.default.fileExists(atPath: s.appendingPathComponent("inbox/tax.agenda.json").path))
+    }
+
+    // Hub 3. A binder whose lock cannot be taken still withdraws.
+    @Test func aDamagedLockStillWithdraws() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        let lock = f.appendingPathComponent(".teka.lock")
+        try? FileManager.default.removeItem(at: lock)
+        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
+        try narrowOutside(f, to: "none")
+        #expect(try HubLane.publish(f, root: s, now: now) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: s.appendingPathComponent("inbox/tax.agenda.json").path))
+    }
+
+    // Hub 4. A completion the hub adds while the replacement is written and flushed survives: the outbox is
+    // compared just before the rename, and the acknowledgement starts again from the hub's version.
+    @Test func aHubWriteDuringTheFlushSurvivesTheAcknowledgement() throws {
+        let root = try scratch()
+        let file = root.appendingPathComponent("tax.intake.json")
+        let applied: [(String, JSONValue?)] = [("tax-a-1", .str("2026-10-07T09:00:00Z"))]
+        for items in [#""items":[{"title":"routed capture"}],"#, ""] {
+            let first = #"{"id":"tax-a-1","action":"done","at":"2026-10-07T09:00:00Z"}"#
+            let added = #"{"id":"tax-a-2","action":"done","at":"2026-10-07T09:05:00Z"}"#
+            try Data(#"{\#(items)"completions":[\#(first)]}"#.utf8).write(to: file)
+            var calls = 0
+            let removed = try HubLane.acknowledge(file: file, applied: applied) {
+                calls += 1
+                if calls == 1 { try? Data(#"{\#(items)"completions":[\#(first),\#(added)]}"#.utf8).write(to: file) }
+            }
+            #expect(removed == 1 && calls == 2)
+            let left = try JSONParser.parse(try Data(contentsOf: file)).value
+            #expect(left["completions"]?.arrayValue?.compactMap { $0["id"] } == [.str("tax-a-2")])
+        }
+    }
+
+    // Hub 5. A collection an outside edit made other than a list of objects refuses the publish; the last slice stays.
+    @Test func aMalformedItemCollectionIsNotPublishedAsEmpty() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        let original = try cat(f)
+        for bad: JSONValue in [.obj([("a", .str("b"))]), .array((original["open_items"]?.arrayValue ?? []) + [.str("junk")])] {
+            var c = original
+            c.set("open_items", bad)
+            try Data(JSONWriter.pretty(.object(c)).utf8).write(to: f.appendingPathComponent("catalog.json"))
+            #expect(throws: TekaStore.Refused.self) { try HubLane.publish(f, root: s, now: now, force: true) }
+            let slice = try JSONParser.parse(try Data(contentsOf: s.appendingPathComponent("inbox/tax.agenda.json"))).value
+            #expect(slice["items"]?.arrayValue?.count == 2)
+        }
+    }
 }

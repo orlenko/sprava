@@ -157,10 +157,20 @@ extension HubLane {
         var activeChapter = meta["active_chapter"] ?? .null
         if activeChapter == .null, chapters.count == 1 { activeChapter = chapters[0] }
 
-        let items = (catalog["open_items"]?.arrayValue ?? []).compactMap(\.objectValue)
-        // lifeproj validates strictly before publishing, whatever the schema_version.
-        let findings = ItemRules.check(items: items.map(JSONValue.object), log: catalog["processing_log"]?.arrayValue ?? [], v0: false)
+        // lifeproj validates strictly before publishing, whatever the schema_version. The collections are checked as
+        // found: one an outside edit made something other than a list, or an entry that is not an object, refuses the
+        // publish instead of passing as an empty or shorter slice.
+        func list(_ key: String) throws -> [JSONValue] {
+            switch catalog[key] {
+            case nil: return []
+            case .array(let a)?: return a
+            default: throw TekaStore.Refused(reason: "\(key) is not a list; nothing published")
+            }
+        }
+        let rawItems = try list("open_items")
+        let findings = ItemRules.check(items: rawItems, log: try list("processing_log"), v0: false)
         if !findings.isEmpty { throw TekaStore.Refused(reason: "open_items fail lifeproj's rules; nothing published") }
+        let items = rawItems.compactMap(\.objectValue)
 
         var ids: [String: String] = [:]
         var projected: [JSONValue] = []
@@ -250,10 +260,28 @@ extension HubLane {
         }
         try removeSlice(try spoolFile(inbox, name, ".agenda.json"))
         guard var cursors = byRecord ? own : try readCursors(teka.folder) else { return true }
+        if !byRecord { try removeFormerSlice(cursors, teka: teka, inbox: inbox) }
         cursors.sliceHash = nil
         cursors.sliceName = nil
         try saveCursors(cursors, teka.folder)
         return true
+    }
+
+    /// The canonical hash of a slice on the spool, `generated` left out; nil when it cannot be read as JSON.
+    static func sliceHash(at url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url), let value = try? JSONParser.parse(data).value else { return nil }
+        return try? Canonical.hash(stripGenerated(value))
+    }
+
+    /// After a rename the slice Sprava recorded writing under the former name goes, before anything is published or
+    /// withdrawn under the new one, so its contents never stay on the hub (binder-v0 §8.3). It goes when the name is
+    /// one of the binder's former names or the file is still the one Sprava wrote; a file another program wrote
+    /// under a name the binder no longer lists may be another binder's now, and stays.
+    static func removeFormerSlice(_ cursors: Cursors, teka: Teka, inbox: URL) throws {
+        guard let former = cursors.sliceName, former != teka.name, cursors.sliceHash != nil else { return }
+        let url = try spoolFile(inbox, former, ".agenda.json")
+        let listed = (teka.catalog?["meta"]?["former_names"]?.arrayValue ?? []).contains { $0["name"]?.stringValue == former }
+        if listed || sliceHash(at: url) == cursors.sliceHash { try removeSlice(url) }
     }
 
     /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root. The level used is the
@@ -262,6 +290,11 @@ extension HubLane {
     /// slice is withdrawn too. A withdrawal comes before the checks that only publishing needs (`withdraw`). A
     /// binder whose name collides with another's (`nameCollides`, from `collidingFolders`) never publishes, but its
     /// withdrawal still runs, by the slice its own cursors recorded.
+    ///
+    /// The binder lock is held from the reading of the catalog, the privacy state and the cursors through the
+    /// writing of the slice and the cursors (binder-v0 §4.9), so a publish that read before a narrowing can never
+    /// write after the withdrawal that narrowing caused. A binder whose lock cannot be taken (a damaged lock or
+    /// `.sprava`, or a lock held too long) still withdraws, without it; it never publishes.
     public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false,
                                nameCollides: Bool = false) throws -> PublishResult {
         var rootInfo = stat()
@@ -270,17 +303,37 @@ extension HubLane {
         let inbox = root.appendingPathComponent("inbox", isDirectory: true)
         try checkFolder(inbox, create: true)
 
-        let teka = Teka.read(folder)
-        guard teka.isAdopted else { return .notPublished("not adopted") }
-
-        // A narrowing takes effect at once: the slice goes before any check that refuses publishing (a broken
-        // stamp, a linked DASHBOARD.md, an unreadable catalog) can keep it on the hub.
-        let disclosure = teka.catalog.map { PrivacyRatchet.view(folder: folder, catalog: $0).disclosure } ?? confirmedDisclosure(folder)
-        if disclosure != "full" {
-            guard try withdraw(teka, inbox: inbox, recordedOnly: nameCollides) else { return .notPublished("the binder needs attention") }
-            return disclosure == "none" ? .removed
-                : .notPublished("disclosure \(disclosure) is not published in this version; the slice was withdrawn")
+        // The lock file is made only in a binder Sprava adopted.
+        guard Teka.read(folder).isAdopted else { return .notPublished("not adopted") }
+        var locked = false
+        do {
+            return try TekaStore(folder: folder).withLock {
+                locked = true
+                let teka = Teka.read(folder)
+                guard teka.isAdopted else { return .notPublished("not adopted") }
+                return try withdrawIfNarrowed(teka, inbox: inbox, nameCollides: nameCollides)
+                    ?? publishLocked(teka, inbox: inbox, now: now, force: force, nameCollides: nameCollides)
+            }
+        } catch where !locked {
+            guard let withdrawn = try withdrawIfNarrowed(Teka.read(folder), inbox: inbox, nameCollides: nameCollides) else { throw error }
+            return withdrawn
         }
+    }
+
+    /// A narrowing takes effect at once: the slice goes before any check that refuses publishing (a broken stamp, a
+    /// linked DASHBOARD.md, an unreadable catalog) can keep it on the hub. Nil at disclosure `full`.
+    static func withdrawIfNarrowed(_ teka: Teka, inbox: URL, nameCollides: Bool) throws -> PublishResult? {
+        let folder = teka.folder
+        let disclosure = teka.catalog.map { PrivacyRatchet.view(folder: folder, catalog: $0).disclosure } ?? confirmedDisclosure(folder)
+        guard disclosure != "full" else { return nil }
+        guard try withdraw(teka, inbox: inbox, recordedOnly: nameCollides) else { return .notPublished("the binder needs attention") }
+        return disclosure == "none" ? .removed
+            : .notPublished("disclosure \(disclosure) is not published in this version; the slice was withdrawn")
+    }
+
+    /// The publish proper, at disclosure `full`, under the binder lock.
+    static func publishLocked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool) throws -> PublishResult {
+        let folder = teka.folder
         guard let catalog = teka.catalog else { return .notPublished("not adopted") }
         guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
         guard !nameCollides else { return .notPublished("another binder has the same name") }
@@ -289,17 +342,13 @@ extension HubLane {
         var cursors = try readCursors(folder)
 
         // Someone else published this binder since our last write, or removed or damaged the slice: say so, then
-        // publish over it.
+        // publish over it. After a rename there is nothing under the new name to compare yet.
         var targetCurrent = false
         var overwritten = false
-        if let last = cursors.sliceHash {
-            if let data = try? Data(contentsOf: target), let value = try? JSONParser.parse(data).value,
-               let hash = try? Canonical.hash(stripGenerated(value)) {
-                targetCurrent = hash == last
-                overwritten = hash != last
-            } else {
-                overwritten = true
-            }
+        if let last = cursors.sliceHash, (cursors.sliceName ?? teka.name) == teka.name {
+            let hash = sliceHash(at: target)
+            targetCurrent = hash == last
+            overwritten = hash != last
         }
 
         // Items closed since the last publish are shown once more with status done, so the hub drops them; the
@@ -346,6 +395,7 @@ extension HubLane {
                                        key: key, now: now, alsoRedact: keepRedacted, keepTitles: privacy.titles)
         let hash = try Canonical.hash(stripGenerated(slice))
         if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
+        try removeFormerSlice(cursors, teka: teka, inbox: inbox)
         try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
         cursors.sliceHash = hash
         cursors.sliceName = teka.name
@@ -420,17 +470,44 @@ extension HubLane {
         }
     }
 
+    /// Drains the outbox under the binder's name and, until each one's `until` date, the outboxes under its former
+    /// names, where the hub may still write after a rename (binder-v0 §8.3).
     public static func drain(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), client: String = "sprava/0.1") throws -> DrainResult {
         var result = DrainResult()
         var rootInfo = stat()
         guard lstat(root.path, &rootInfo) == 0 else { return result }
         let teka = Teka.read(folder)
-        guard teka.isAdopted, let catalog = teka.catalog, !teka.federationBlocked else { return result }
+        guard teka.isAdopted, teka.catalog != nil, !teka.federationBlocked else { return result }
         let outboxDir = root.appendingPathComponent("outbox", isDirectory: true)
         var info = stat()
         guard lstat(outboxDir.path, &info) == 0 else { return result }
         try checkFolder(outboxDir, create: false)
-        let file = try spoolFile(outboxDir, teka.name, ".intake.json")
+        // A former name without a readable `until` counts as unexpired, as in `collidingFolders`, which keeps every
+        // such name from another binder.
+        let today = CalendarDate.today(now: now)
+        var outboxNames = [teka.name]
+        for former in teka.catalog?["meta"]?["former_names"]?.arrayValue ?? [] {
+            guard let name = former["name"]?.stringValue, isSafeSegment(name) else { continue }
+            if let until = former["until"]?.stringValue.flatMap({ CalendarDate.strict(String($0.prefix(10))) }), until < today { continue }
+            guard !outboxNames.contains(where: { foldedName($0) == foldedName(name) }) else { continue }
+            outboxNames.append(name)
+        }
+        for name in outboxNames {
+            let one = try drainOutbox(folder, file: try spoolFile(outboxDir, name, ".intake.json"),
+                                      names: name == teka.name ? [name] : [teka.name, name], now: now, client: client)
+            result.applied += one.applied
+            result.acknowledged += one.acknowledged
+            result.skipped += one.skipped
+            result.waitingForYou += one.waitingForYou
+            result.createdProposals += one.createdProposals
+        }
+        return result
+    }
+
+    /// Drains one outbox file. `names` are the binder names its completion ids may be prefixed or aliased with: the
+    /// current one, and in a former name's outbox that name too (binder-v0 §8.3).
+    static func drainOutbox(_ folder: URL, file: URL, names: [String], now: Date, client: String) throws -> DrainResult {
+        var result = DrainResult()
         // No outbox is nothing to do; an outbox that cannot be read is a failure, so the breaker sees it.
         var fileInfo = stat()
         if lstat(file.path, &fileInfo) != 0 {
@@ -442,19 +519,33 @@ extension HubLane {
         let completions = (outbox["completions"]?.arrayValue ?? []).compactMap(\.objectValue)
         guard !completions.isEmpty else { return result }
 
-        let teka_ = teka.name
+        // Read again for each outbox: the one before may have closed items.
+        let teka = Teka.read(folder)
+        guard teka.isAdopted, let catalog = teka.catalog, !teka.federationBlocked else { return result }
         let key = try sliceKey(folder)
         let cursors = try readCursors(folder)
         let items = (catalog["open_items"]?.arrayValue ?? []).compactMap(\.objectValue)
         let log = catalog["processing_log"]?.arrayValue ?? []
 
-        /// Resolves a completion id: raw id, `<binder>-<raw>`, an alias, then the id last published.
-        func resolve(_ cid: String) -> JSONObject? {
-            for it in items {
-                guard let id = it["id"] else { continue }
-                let text = idText(id)
-                if text == cid || "\(teka_)-\(text)" == cid || alias(id, teka: teka_, key: key) == cid { return it }
-                if cursors.published[(try? Canonical.serialize(id)) ?? ""] == cid { return it }
+        // Open items, then the ids already closed: an id is never reused, so a completion for a closed one is
+        // acknowledged, as lifeproj does by id, for example after an earlier drain whose acknowledgement was lost.
+        let candidates: [(id: JSONValue, item: JSONObject?)] = items.compactMap { it in it["id"].map { ($0, it) } }
+            + log.compactMap { e in
+                guard let id = e["id"], ["done", "dropped"].contains(e["action"]?.stringValue ?? "") else { return nil }
+                return (id, nil)
+            }
+        /// Resolves a completion id in the order of binder-v0 §8.3, each rule across every item before the next: the
+        /// raw id, `<binder>-<raw>`, an alias, then the id last published. The first match wins, so `demo-demo-a`
+        /// reaches the item `demo-demo-a`, never `demo-a` by the looser prefix rule.
+        func resolve(_ cid: String) -> (id: JSONValue, item: JSONObject?)? {
+            let rules: [(JSONValue) -> Bool] = [
+                { idText($0) == cid },
+                { id in names.contains { "\($0)-\(idText(id))" == cid } },
+                { id in names.contains { alias(id, teka: $0, key: key) == cid } },
+                { cursors.published[(try? Canonical.serialize($0)) ?? ""] == cid },
+            ]
+            for rule in rules {
+                if let found = candidates.first(where: { rule($0.id) }) { return found }
             }
             return nil
         }
@@ -469,19 +560,12 @@ extension HubLane {
                 result.skipped += 1
                 continue
             }
-            guard let item = resolve(cid) else {
-                // Already closed, for example by an earlier drain whose acknowledgement was lost: an id is never
-                // reused, so a completion for a closed id is acknowledged, as lifeproj does by id.
-                if log.contains(where: { e in
-                    guard let id = e["id"], ["done", "dropped"].contains(e["action"]?.stringValue ?? "") else { return false }
-                    let text = idText(id)
-                    return text == cid || "\(teka_)-\(text)" == cid || alias(id, teka: teka_, key: key) == cid
-                        || cursors.published[(try? Canonical.serialize(id)) ?? ""] == cid
-                }) {
-                    toAck.append((cid, c["at"]))
-                } else {
-                    result.skipped += 1
-                }
+            guard let found = resolve(cid) else {
+                result.skipped += 1
+                continue
+            }
+            guard let item = found.item else {
+                toAck.append((cid, c["at"]))
                 continue
             }
             if item["recurrence"] != nil {
@@ -490,7 +574,7 @@ extension HubLane {
                 continue
             }
             var args = JSONObject()
-            args.set("id", item["id"]!)
+            args.set("id", found.id)
             let atValue: JSONValue = c["at"].flatMap { $0.stringValue != nil ? $0 : nil } ?? .null
             args.set("closed_at", atValue)
             args.set("source", c["source"].flatMap { $0.stringValue != nil ? $0 : nil } ?? .str("osavul"))
@@ -526,9 +610,10 @@ extension HubLane {
         return result
     }
 
-    /// Steps 1 to 4 of binder-v0 §8.3: re-read, remove only what was applied (by id and at), and rename only when the
-    /// file did not change in between; delete the file only when nothing else is in it.
-    static func acknowledge(file: URL, applied: [(String, JSONValue?)]) throws -> Int {
+    /// Steps 1 to 4 of binder-v0 §8.3: re-read, remove only what was applied (by id and at), write and flush the
+    /// replacement, and rename it only when the file did not change since the re-read; delete the file only when
+    /// nothing else is in it. `beforeRename` is for tests: it runs where a write by the hub could land.
+    static func acknowledge(file: URL, applied: [(String, JSONValue?)], beforeRename: (() -> Void)? = nil) throws -> Int {
         for _ in 0..<5 {
             guard let data = try? Data(contentsOf: file), case .object(var fresh) = try JSONParser.parse(data).value else { return 0 }
             let before = SHA256.hash(data: data)
@@ -542,15 +627,55 @@ extension HubLane {
             fresh.set("completions", .array(kept))
             let onlyKnown = Set(fresh.keys).isSubset(of: ["teka", "generated", "completions", "items", "format_version"])
             let empty = kept.isEmpty && (fresh["items"]?.arrayValue ?? []).isEmpty && onlyKnown
-            let again = try? Data(contentsOf: file)
-            guard let again, SHA256.hash(data: again) == before else { continue }
-            if empty {
-                try FileManager.default.removeItem(at: file)
-            } else {
-                try AtomicFile.write(Data(JSONWriter.pretty(.object(fresh)).utf8), to: file)
+            func unchanged() -> Bool {
+                beforeRename?()
+                return (try? Data(contentsOf: file)).map { SHA256.hash(data: $0) == before } ?? false
             }
-            return removed
+            if empty {
+                guard unchanged() else { continue }
+                try FileManager.default.removeItem(at: file)
+                return removed
+            }
+            if try replace(file, with: Data(JSONWriter.pretty(.object(fresh)).utf8), if: unchanged) { return removed }
         }
         throw TekaStore.Refused(reason: "the outbox kept changing; acknowledgement retried later")
+    }
+
+    /// `AtomicFile.write` with one more check between the flush and the rename: when `stillCurrent` says the file
+    /// changed meanwhile, the temporary file goes, nothing is replaced, and the result is false. The slow part, the
+    /// write and its `F_FULLFSYNC`, so comes before the last look at the file, not after it.
+    static func replace(_ url: URL, with data: Data, if stillCurrent: () -> Bool) throws -> Bool {
+        let folder = url.deletingLastPathComponent()
+        let temp = folder.appendingPathComponent(".\(UUID().uuidString.lowercased()).tmp")
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw AtomicFile.Failure(step: "create temp", code: errno) }
+        var renamed = false
+        defer {
+            if !renamed { unlink(temp.path) }
+        }
+        do {
+            defer { close(fd) }
+            try data.withUnsafeBytes { buffer in
+                var offset = 0
+                while offset < buffer.count {
+                    let n = Darwin.write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                    if n < 0 {
+                        if errno == EINTR { continue }
+                        throw AtomicFile.Failure(step: "write", code: errno)
+                    }
+                    offset += n
+                }
+            }
+            if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 { throw AtomicFile.Failure(step: "fsync", code: errno) }
+        }
+        guard stillCurrent() else { return false }
+        guard rename(temp.path, url.path) == 0 else { throw AtomicFile.Failure(step: "rename", code: errno) }
+        renamed = true
+        let dirfd = open(folder.path, O_RDONLY | O_CLOEXEC)
+        if dirfd >= 0 {
+            fsync(dirfd)
+            close(dirfd)
+        }
+        return true
     }
 }
