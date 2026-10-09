@@ -16,7 +16,22 @@ public enum AtomicFile {
         }
     }
 
+    /// The flushing system calls, replaceable in tests to make them fail.
+    struct Flush: Sendable {
+        var fullSync: @Sendable (Int32) -> Int32 = { fcntl($0, F_FULLFSYNC) }
+        var sync: @Sendable (Int32) -> Int32 = { fsync($0) }
+        var openFolder: @Sendable (String) -> Int32 = { open($0, O_RDONLY | O_CLOEXEC) }
+    }
+
     public static func write(_ data: Data, to url: URL, mode: mode_t = 0o600) throws {
+        try write(data, to: url, mode: mode, flush: Flush())
+    }
+
+    /// Every flush is required: plain `fsync` does not reach stable storage on macOS, so a failed `F_FULLFSYNC`
+    /// fails the write, and so does a folder that cannot be opened or flushed after the rename (binder-v0 §4.9).
+    /// The one exception is a volume without `F_FULLFSYNC` (exFAT, FAT, SMB, AFP): there `fsync` is the best
+    /// flush there is, and only its failure fails the write.
+    static func write(_ data: Data, to url: URL, mode: mode_t, flush: Flush) throws {
         let folder = url.deletingLastPathComponent()
         let temp = folder.appendingPathComponent(".\(UUID().uuidString.lowercased()).tmp")
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode)
@@ -38,14 +53,35 @@ public enum AtomicFile {
                     offset += n
                 }
             }
-            if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 { throw Failure(step: "fsync", code: errno) }
+            try flushToDisk(fd, step: "fsync", flush: flush)
         }
         guard rename(temp.path, url.path) == 0 else { throw Failure(step: "rename", code: errno) }
         ok = true
-        let dirfd = open(folder.path, O_RDONLY | O_CLOEXEC)
-        if dirfd >= 0 {
-            fsync(dirfd)
-            close(dirfd)
+        var dirfd: Int32 = -1
+        try retrying("open folder") {
+            dirfd = flush.openFolder(folder.path)
+            return dirfd
+        }
+        defer { close(dirfd) }
+        try flushToDisk(dirfd, step: "fsync folder", flush: flush)
+    }
+
+    /// `F_FULLFSYNC`, or `fsync` when the volume does not support it; any other failure is reported.
+    private static func flushToDisk(_ fd: Int32, step: String, flush: Flush) throws {
+        while flush.fullSync(fd) < 0 {
+            let code = errno
+            if code == EINTR { continue }
+            guard code == ENOTSUP || code == EINVAL || code == ENOTTY else { throw Failure(step: step, code: code) }
+            try retrying(step) { flush.sync(fd) }
+            return
+        }
+    }
+
+    /// Runs a call that returns -1 and sets `errno` on failure, again while it is interrupted.
+    private static func retrying(_ step: String, _ call: () -> Int32) throws {
+        while call() < 0 {
+            let code = errno
+            if code != EINTR { throw Failure(step: step, code: code) }
         }
     }
 

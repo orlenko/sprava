@@ -33,16 +33,52 @@ public enum JSONPatch {
         public var description: String { message }
     }
 
+    /// Splits a pointer by Unicode scalars, never by characters: a key that starts with a combining mark would
+    /// otherwise join the `/` before it into one character and hide the separator.
     public static func tokens(_ pointer: String) throws -> [String] {
         if pointer.isEmpty { return [] }
-        guard pointer.hasPrefix("/") else { throw Failure(message: "pointer must start with /: \(pointer)") }
-        return pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false).map {
-            $0.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~")
+        let scalars = pointer.unicodeScalars
+        guard scalars.first == "/" else { throw Failure(message: "pointer must start with /: \(pointer)") }
+        var toks: [String] = []
+        var current = String.UnicodeScalarView()
+        var it = scalars.dropFirst().makeIterator()
+        while let c = it.next() {
+            switch c {
+            case "/":
+                toks.append(String(current))
+                current = String.UnicodeScalarView()
+            case "~":
+                switch it.next() {
+                case "0"?: current.append("~")
+                case "1"?: current.append("/")
+                default: throw Failure(message: "bad ~ escape in pointer: \(pointer)")
+                }
+            default:
+                current.append(c)
+            }
         }
+        toks.append(String(current))
+        return toks
     }
 
     public static func escape(_ token: String) -> String {
-        token.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1")
+        var out = String.UnicodeScalarView()
+        for c in token.unicodeScalars {
+            switch c {
+            case "~": out.append(contentsOf: "~0".unicodeScalars)
+            case "/": out.append(contentsOf: "~1".unicodeScalars)
+            default: out.append(c)
+            }
+        }
+        return String(out)
+    }
+
+    /// An array index as RFC 6901 writes it: `0` or digits without a leading zero, no sign. `-` is not an index.
+    static func index(_ token: String) -> Int? {
+        let bytes = token.utf8
+        guard let first = bytes.first, first != UInt8(ascii: "0") || bytes.count == 1,
+              bytes.allSatisfy({ $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }) else { return nil }
+        return Int(token)
     }
 
     /// The value at a pointer, or nil; `/-` names nothing.
@@ -52,7 +88,7 @@ public enum JSONPatch {
         for t in toks {
             switch node {
             case .object(let o): guard let next = o[t] else { return nil }; node = next
-            case .array(let a): guard let i = Int(t), a.indices.contains(i) else { return nil }; node = a[i]
+            case .array(let a): guard let i = index(t), a.indices.contains(i) else { return nil }; node = a[i]
             default: return nil
             }
         }
@@ -113,18 +149,18 @@ public enum JSONPatch {
                 switch mode {
                 case .add(let v):
                     if head == "-" { a.append(v); return .array(a) }
-                    guard let i = Int(head), i >= 0, i <= a.count else { throw Failure(message: "bad index \(head)") }
+                    guard let i = index(head), i <= a.count else { throw Failure(message: "bad index \(head)") }
                     a.insert(v, at: i)
                 case .replace(let v):
-                    guard let i = Int(head), a.indices.contains(i) else { throw Failure(message: "bad index \(head)") }
+                    guard let i = index(head), a.indices.contains(i) else { throw Failure(message: "bad index \(head)") }
                     a[i] = v
                 case .remove:
-                    guard let i = Int(head), a.indices.contains(i) else { throw Failure(message: "bad index \(head)") }
+                    guard let i = index(head), a.indices.contains(i) else { throw Failure(message: "bad index \(head)") }
                     a.remove(at: i)
                 }
                 return .array(a)
             }
-            guard let i = Int(head), a.indices.contains(i) else { throw Failure(message: "bad index \(head)") }
+            guard let i = index(head), a.indices.contains(i) else { throw Failure(message: "bad index \(head)") }
             a[i] = try edit(a[i], rest, mode: mode)
             return .array(a)
         default:
