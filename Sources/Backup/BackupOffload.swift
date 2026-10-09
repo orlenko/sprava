@@ -39,14 +39,23 @@ extension Backup {
         // Nothing may wait in intake/ or outgoing/. In intake/, `_converted/` is regenerable text, and `mail/` is
         // looked into: its messages and their attachment folders wait like any file, while a mail monitor's `.env`
         // and `state.json` are never filed (binder-v0 §3.3).
-        func waiting(_ sub: String, except: Set<String>) -> Bool {
-            let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent(sub).path)) ?? []
+        // Only a folder that is not there is empty; one that cannot be listed may hold anything.
+        func waiting(_ sub: String, except: Set<String>) throws -> Bool {
+            let url = folder.appendingPathComponent(sub)
+            var info = stat()
+            if lstat(url.path, &info) != 0 {
+                guard errno == ENOENT else { throw Failure(message: "\(sub)/ cannot be checked; nothing was removed") }
+                return false
+            }
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
+                throw Failure(message: "\(sub)/ cannot be listed; nothing was removed")
+            }
             return names.contains { !$0.hasPrefix(".") && !except.contains($0) }
         }
-        if waiting("intake", except: ["mail", "_converted"]) || waiting("intake/mail", except: ["state.json"]) {
+        if try waiting("intake", except: ["mail", "_converted"]) || waiting("intake/mail", except: ["state.json"]) {
             throw Failure(message: "files are waiting in intake/; deal with them first")
         }
-        if waiting("outgoing", except: []) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
+        if try waiting("outgoing", except: []) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
         let open = teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }
         if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open.map(\.title)) }
 
@@ -61,7 +70,8 @@ extension Backup {
         // its snapshot was verified (or never got that far) starts over, so what leaves the Mac is what the backups hold.
         // So does one whose snapshot is in a mirror the person has since replaced.
         // The folder's own metadata is part of the binder too (`RootMetadata`).
-        let root = try Self.rootMetadata(folder)
+        // Kept inside the binder, so both backups hold it and their verification compares it (`keepRootMetadata`).
+        let root = try Self.keepRootMetadata(folder)
         if try job.stage == "snapshotted"
             || (job.stage != "start" && (job.manifestSHA != Self.digest(Self.manifest(folder)) || job.root != root || job.repository != s.primary)) {
             if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
@@ -180,7 +190,12 @@ extension Backup {
                 guard try Self.digest(restoredManifest(copy.id, from: second, id: id)) == job.manifestSHA else {
                     throw Failure(message: "the copy in the second backup does not match the binder; nothing was removed. Check the second backup before offloading again")
                 }
-                try? second.addTag("offloaded", to: copy.id)
+                // The copy carries the snapshot's tags, `offloaded` among them, which keeps it from retention. Tagging
+                // it here would give it a new id (restic rewrites a snapshot to change its tags), so one without the
+                // pin is refused instead, never recorded as pinned.
+                guard copy.tags.contains("offloaded") else {
+                    throw Failure(message: "the copy in the second backup is not pinned against retention; nothing was removed")
+                }
                 job.secondSnapshot = copy.id
                 job.secondRepository = s.second
             }
@@ -237,7 +252,9 @@ extension Backup {
             }
             step("offload.removed")
         }
-        try? ShelfStore(supportDirectory: support).remove(folder)
+        // A Shelf that still lists the folder would later refuse its restore there ("a binder on the Shelf"), so a
+        // failure here stops, and the retry finishes from the record (the folder is gone by then).
+        try ShelfStore(supportDirectory: support).remove(folder)
         step("offload.unshelved")
         st.offloads[id] = nil
         st.restored[id] = nil

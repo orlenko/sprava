@@ -60,9 +60,14 @@ extension Backup {
         if let path = st.restoredContents[id]?.path ?? st.restoring[id], other(path) {
             throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: path)
         }
-        if let recorded = st.binders[id]?.path, Self.realPath(URL(fileURLWithPath: recorded)) != Self.realPath(folder),
-           (try? Self.storedBackupID(URL(fileURLWithPath: recorded, isDirectory: true))) == id {
-            throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded)
+        // The record moves only once the recorded folder is seen not to hold the id: it is gone, or holds no id or
+        // another one. One whose id cannot be read may still hold it, so it keeps it.
+        if let recorded = st.binders[id]?.path, Self.realPath(URL(fileURLWithPath: recorded)) != Self.realPath(folder) {
+            let held: String?
+            do { held = try Self.storedBackupID(URL(fileURLWithPath: recorded, isDirectory: true)) } catch {
+                throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded + " (its backup id cannot be read)")
+            }
+            if held == id { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded) }
         }
         st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
         return id
@@ -139,6 +144,7 @@ extension Backup {
         try save(st)
         step("backup.claimed")
         do {
+            try Self.keepRootMetadata(folder)
             let before = Self.writeMark(folder)
             let result = try engine(settings().primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
             afterSnapshot?()
@@ -230,15 +236,18 @@ extension Backup {
         guard let walker = FileManager.default.enumerator(at: repository, includingPropertiesForKeys: keys) else { return .notInICloud }
         var pending = 0
         var ubiquitous = false
+        // A file whose upload state cannot be read is not counted as uploaded.
+        var unknown = 0
         for case let url as URL in walker {
-            guard let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { continue }
+            guard let v = try? url.resourceValues(forKeys: Set(keys)) else { unknown += 1; continue }
+            guard v.isRegularFile == true else { continue }
             if v.isUbiquitousItem == true {
                 ubiquitous = true
                 if v.ubiquitousItemIsUploaded != true { pending += 1 }
             }
         }
         if !ubiquitous { return .notInICloud }
-        return pending == 0 ? .uploaded : .waiting(pending)
+        return pending + unknown == 0 ? .uploaded : .waiting(pending + unknown)
     }
 
     // MARK: - Manifests
@@ -369,6 +378,41 @@ extension Backup {
         return RootMetadata(mode: Int(info.st_mode & 0o7777), attributes: values)
     }
 
+    /// Where a binder keeps its own folder's metadata, so every snapshot holds it beside the entries (restic takes
+    /// the folder's entries, not the folder): a restore reads it back from the snapshot itself, and needs no record.
+    static let folderMetadataPath = ".sprava/folder-metadata.json"
+
+    /// The folder's own metadata, written into `folderMetadataPath` when it differs from what is there, before a
+    /// snapshot is taken. A `.sprava` that is not a real folder is refused (never written through a link).
+    @discardableResult
+    static func keepRootMetadata(_ folder: URL) throws -> RootMetadata {
+        let metadata = try rootMetadata(folder)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(metadata)
+        let url = folder.appendingPathComponent(folderMetadataPath)
+        if case .ok(let kept) = SafeFile.read(url), kept == data { return metadata }
+        var info = stat()
+        guard lstat(url.deletingLastPathComponent().path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+            throw Failure(message: "the binder's .sprava folder is missing or not a folder; nothing was backed up")
+        }
+        try AtomicFile.write(data, to: url)
+        return metadata
+    }
+
+    /// The folder metadata a restored snapshot holds, nil when it holds none (snapshots taken before it was kept).
+    static func keptRootMetadata(in folder: URL) throws -> RootMetadata? {
+        switch SafeFile.read(folder.appendingPathComponent(folderMetadataPath)) {
+        case .ok(let data):
+            guard let metadata = try? JSONDecoder().decode(RootMetadata.self, from: data) else {
+                throw Failure(message: "the binder folder's kept settings cannot be read; restore again")
+            }
+            return metadata
+        case .missing: return nil
+        case .refused(let why), .unreadable(let why): throw Failure(message: "the binder folder's kept settings cannot be read (\(why)); restore again")
+        }
+    }
+
     /// Puts a binder folder's own metadata back, as it was offloaded.
     static func apply(_ metadata: RootMetadata, to folder: URL) throws {
         for (name, value) in metadata.attributes {
@@ -396,6 +440,7 @@ extension Backup {
         var claimed = try state()
         let id = try claim(folder, &claimed)
         try save(claimed)
+        try Self.keepRootMetadata(folder)
         _ = try primary.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes, skipIfUnchanged: false)
         guard let snap = try primary.snapshots(tag: "binder:\(id)").last?.id else { throw Failure(message: "no snapshot to restore") }
         let target = dir.appendingPathComponent("verify/drill-\(id)", isDirectory: true)

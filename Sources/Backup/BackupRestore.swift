@@ -66,8 +66,10 @@ extension Backup {
             throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
         try? FileManager.default.removeItem(at: staging.appendingPathComponent(".teka.lock"))
-        // The binder folder's own metadata comes from the record: its snapshots hold only what is inside it.
-        if let root = record.rootMetadata { try Self.apply(root, to: staging) }
+        // The binder folder's own metadata comes from the snapshot itself (`folderMetadataPath`), or for a snapshot
+        // taken before it was kept there, from the record.
+        let root = try Self.keptRootMetadata(in: staging) ?? record.rootMetadata
+        if let root { try Self.apply(root, to: staging) }
         // The baseline a later offload compares with (§6.4) is the snapshot's own entries, as restic restored and
         // verified them. Without the snapshot's listing, or a folder that can be read whole, there is no baseline,
         // and the next offload takes a new snapshot.
@@ -76,7 +78,7 @@ extension Backup {
             baseline = State.Restored(snapshot: record.snapshot, repository: record.repository, secondSnapshot: record.secondSnapshot,
                                       secondRepository: record.secondRepository ?? s.second,
                                       manifest: all.filter { held.contains($0.key) }, bytes: record.bytes,
-                                      rootEntry: record.rootMetadata == nil ? nil : (try? Self.rootMetadata(staging))?.entry)
+                                      rootEntry: root == nil ? nil : (try? Self.rootMetadata(staging))?.entry)
         }
         st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: baseline, staging: staging.path)
         try save(st)
@@ -141,7 +143,9 @@ extension Backup {
             try AtomicFile.makePrivateFolder(verify)
             defer { try? FileManager.default.removeItem(at: verify) }
             try r.restore(snapshot, into: verify)
-            return (try Self.manifest(verify), try? Data(contentsOf: verify.appendingPathComponent(".sprava/ops.ndjson")))
+            // A snapshot without an op log has no history to compare; one whose op log cannot be read throws.
+            let log = verify.appendingPathComponent(".sprava/ops.ndjson")
+            return (try Self.manifest(verify), FileManager.default.fileExists(atPath: log.path) ? try Data(contentsOf: log) : nil)
         }
         let current: [String: String]
         do { current = try Self.manifest(destination) } catch { throw conflict("cannot be read whole") }
