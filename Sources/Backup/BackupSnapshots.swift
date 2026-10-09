@@ -18,12 +18,58 @@ extension Backup {
     /// none is there (`storedBackupID`).
     public static func backupID(_ folder: URL) throws -> String {
         if let id = try storedBackupID(folder) { return id }
-        let id = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let id = newBackupID()
         let url = folder.appendingPathComponent(".sprava/backup-id")
         try AtomicFile.makePrivateFolder(url.deletingLastPathComponent())
         try AtomicFile.write(Data((id + "\n").utf8), to: url)
         return id
     }
+
+    /// A folder holds another binder's backup id: it was copied, with `.sprava/backup-id`, from a binder that is still
+    /// there. It is not backed up, offloaded or forgotten in until it has its own (`giveOwnBackupID`).
+    public struct SharedBackupID: Error, CustomStringConvertible {
+        public let folder: String
+        public let holder: String
+        public var description: String {
+            "\(URL(fileURLWithPath: folder).lastPathComponent) has the backup id of another binder (\(holder)), so its backups would mix "
+                + "with that binder's; nothing was changed. If it is a copy, give it its own backup id"
+        }
+    }
+
+    /// The backup id `folder` holds, checked against the folder the records name for it, which becomes `folder` when
+    /// it is free. A copy of a binder carries the binder's id; while the binder still holds it at its recorded place,
+    /// the copy is refused, so the two never share snapshots under one tag, and forgetting a document in one never
+    /// rewrites the other's backups. A binder that moved (nothing holds the id at the recorded place) takes the
+    /// record with it. The caller saves `st`.
+    func claim(_ folder: URL, _ st: inout State) throws -> String {
+        let id = try Self.backupID(folder)
+        if let recorded = st.binders[id]?.path, Self.realPath(URL(fileURLWithPath: recorded)) != Self.realPath(folder),
+           (try? Self.storedBackupID(URL(fileURLWithPath: recorded, isDirectory: true))) == id {
+            throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded)
+        }
+        st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
+        return id
+    }
+
+    /// Gives a copied binder a backup id of its own, so it is backed up apart from the binder it was copied from.
+    /// Refused for the folder the records name as the id's holder, whose snapshots and records the id ties
+    /// together, and for a binder an offload is taking away.
+    @discardableResult
+    public func giveOwnBackupID(_ folder: URL) throws -> String {
+        guard let old = try Self.storedBackupID(folder) else { return try Self.backupID(folder) }
+        let st = try state()
+        if let recorded = st.binders[old]?.path, Self.realPath(URL(fileURLWithPath: recorded)) == Self.realPath(folder) {
+            throw Failure(message: "this binder's backups are kept under its backup id; only a copy gets a new one")
+        }
+        if let job = st.offloads[old], Self.realPath(URL(fileURLWithPath: job.path)) == Self.realPath(folder) {
+            throw Failure(message: "this binder is being offloaded; finish or cancel that first")
+        }
+        let id = Self.newBackupID()
+        try AtomicFile.write(Data((id + "\n").utf8), to: folder.appendingPathComponent(".sprava/backup-id"))
+        return id
+    }
+
+    static func newBackupID() -> String { UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "") }
 
     /// A binder's backup id when it already has one, for pages that only show it (the app's Health page). Never
     /// creates one, and refuses a `.sprava` folder or `backup-id` file that is a symbolic link: nil then.
@@ -61,12 +107,13 @@ extension Backup {
 
     @discardableResult
     public func backUp(_ folder: URL, now: Date = Date()) throws -> Restic.BackupResult {
-        let id = try Self.backupID(folder)
         var st = try state()
+        let id = try claim(folder, &st)
         do {
             let before = Self.writeMark(folder)
             let result = try engine(settings().primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
             afterSnapshot?()
+            step("backup.snapshotted")
             var rec = st.binders[id] ?? State.BinderRecord()
             if let snap = result.snapshot { rec.snapshot = snap }
             // restic reads one file at a time, so a write that landed during the run may be only partly in this
@@ -105,19 +152,39 @@ extension Backup {
         try save(st)
     }
 
-    /// Weekly structure check; monthly, one twelfth of the data read back, rotating.
+    /// Weekly structure check; monthly, one twelfth of the data read back, rotating. The second backup holds the only
+    /// other copy of an offloaded binder, so it is checked too (§5), with its own date: one that is away or damaged
+    /// stays due and fails the check, while the mirror's check still counts.
     public func check(readData: Bool, now: Date = Date()) throws {
+        try check(readData: readData, primary: true, second: true, now: now)
+    }
+
+    func check(readData: Bool, primary: Bool, second: Bool, now: Date) throws {
+        let s = try settings()
         var st = try state()
-        let r = try engine(settings().primary)
-        if readData {
-            st.readDataPart = st.readDataPart % 12 + 1
-            try r.check(readDataSubset: "\(st.readDataPart)/12")
-            st.lastReadData = ISOTime.string(now)
-        } else {
-            try r.check()
+        let part = st.readDataPart % 12 + 1
+        func run(_ r: Restic) throws {
+            if readData { try r.check(readDataSubset: "\(part)/12") } else { try r.check() }
         }
-        st.lastCheck = ISOTime.string(now)
+        var failure: Error?
+        if primary {
+            do {
+                try run(try engine(s.primary))
+                if readData {
+                    st.readDataPart = part
+                    st.lastReadData = ISOTime.string(now)
+                }
+                st.lastCheck = ISOTime.string(now)
+            } catch { failure = error }
+        }
+        if second, s.second != nil {
+            do {
+                try run(try engine(s.second))
+                st.lastSecondCheck = ISOTime.string(now)
+            } catch { failure = failure ?? Failure(message: "the second backup failed its check (\(error))") }
+        }
         try save(st)
+        if let failure { throw failure }
     }
 
     // MARK: - Is it in iCloud?
@@ -194,7 +261,9 @@ extension Backup {
     /// Backs the binder up, restores the snapshot into a private temporary folder, compares, and cleans up.
     public func drill(_ folder: URL, now: Date = Date()) throws {
         let primary = try engine(settings().primary)
-        let id = try Self.backupID(folder)
+        var claimed = try state()
+        let id = try claim(folder, &claimed)
+        try save(claimed)
         _ = try primary.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes, skipIfUnchanged: false)
         guard let snap = try primary.snapshots(tag: "binder:\(id)").last?.id else { throw Failure(message: "no snapshot to restore") }
         let target = dir.appendingPathComponent("verify/drill-\(id)", isDirectory: true)
@@ -220,6 +289,9 @@ extension Backup {
         /// What failed apart from the binders, by name (`backup_settings` or `backup_state` unreadable,
         /// `state_snapshot`, `retention`, `check`, `offload`, `forget`): each also counts in `failed` and stays due, so the next run tries it again.
         public var failedParts: [String] = []
+        /// Folders not backed up because they hold another binder's backup id (`SharedBackupID`); each also counts
+        /// in `failed`.
+        public var sharedBackupIDs: [String] = []
     }
 
     /// Hourly snapshots of each live binder this Mac manages (skipped when unchanged), Sprava's state daily,
@@ -250,6 +322,8 @@ extension Backup {
         for (id, job) in st.offloads where job.stage == "leaving" {
             if (try? continueOffload(id, now: now)) == nil { fail("offload") }
         }
+        // So is a restore whose files were all in place: only its bookkeeping is left.
+        for id in st.restoredContents.keys.sorted() where (try? finishRestore(id)) == nil { fail("restore") }
         for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
             guard let id = try? Self.backupID(row.folder) else {
                 m.failed += 1
@@ -262,6 +336,9 @@ extension Backup {
             do {
                 let r = try backUp(row.folder, now: now)
                 if r.snapshot == nil { m.unchanged += 1 } else { m.snapshots += 1 }
+            } catch let shared as SharedBackupID {
+                m.failed += 1
+                m.sharedBackupIDs.append(shared.folder)
             } catch {
                 m.failed += 1
             }
@@ -272,6 +349,7 @@ extension Backup {
         }
         // A document deleted for good that a backup still holds is tried again until neither does.
         if st.forgetting.contains(where: { $0.done == nil }), (try? forgetPending(now: now)) != 0 { fail("forget") }
+        if var current = try? state(), !current.rewrites.isEmpty, (try? reconcileRewrites(&current)) == nil { fail("forget") }
         // Sprava's own state holds the offload records and other recovery state: a failed snapshot of it is a
         // failure like a binder's, and so is a failed retention run. Neither moves its date, so both stay due.
         if due(\.stateSnapshotAt, 86_400) {
@@ -280,9 +358,15 @@ extension Backup {
         if due(\.lastForget, 7 * 86_400) {
             if (try? applyRetention(now: now)) != nil { m.retention = true } else { fail("retention") }
         }
-        if due(\.lastCheck, 7 * 86_400) {
+        let primaryDue = due(\.lastCheck, 7 * 86_400)
+        let secondDue = ((try? settings())?.second != nil) && due(\.lastSecondCheck, 7 * 86_400)
+        if primaryDue || secondDue {
             let readData = due(\.lastReadData, 30 * 86_400)
-            if (try? check(readData: readData, now: now)) != nil { m.checked = true } else { fail("check") }
+            if (try? check(readData: readData, primary: primaryDue, second: secondDue, now: now)) != nil {
+                m.checked = true
+            } else {
+                fail("check")
+            }
         }
         return m
     }

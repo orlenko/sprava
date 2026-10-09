@@ -81,7 +81,7 @@ import Testing
 
     // MARK: - A former slice is read as the hub reads one
 
-    @Test func aFIFOAtTheFormerSliceDoesNotStallTheOffload() throws {
+    @Test(.timeLimit(.minutes(1))) func aFIFOAtTheFormerSliceDoesNotStallTheOffload() throws {
         let e = try bb.env()
         let b = try bb.settingsOnly(e)
         let inbox = e.spool.appendingPathComponent("inbox")
@@ -96,20 +96,9 @@ import Testing
         let teka = Teka.read(e.folder)
         #expect(!teka.federationBlocked)
 
-        let done = DispatchSemaphore(value: 0)
-        let failure = BugbotBackupTests.Switch(false)
-        DispatchQueue.global().async {
-            do { try b.removeHubSlice(teka) } catch { failure.on = true }
-            done.signal()
-        }
-        if done.wait(timeout: .now() + 10) == .timedOut {
-            Issue.record("removing the hub slice waited on a FIFO")
-            // Let the stalled reader go: a writer that opens and closes gives it an end of file.
-            let fd = open(former.path, O_WRONLY | O_NONBLOCK)
-            if fd >= 0 { close(fd) }
-            done.wait()
-        }
-        #expect(!failure.on)
+        // Run in place: a reader that waited for a writer would hang here, and the time limit would fail the test. (A
+        // reader on a dispatch queue, watched with a timeout, could itself be starved of a thread under load.)
+        try b.removeHubSlice(teka)
         #expect(!FileManager.default.fileExists(atPath: own.path))
         // Not listed and not the file Sprava wrote: it may be another binder's, so it stays.
         var st = stat()

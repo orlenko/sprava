@@ -13,11 +13,31 @@ extension Backup {
 
     /// Restores an offloaded binder to its original folder (or `target`), from the mirror, else the second backup.
     /// An attempt that failed partway is resumed in the same folder: restic skips what it already restored.
+    ///
+    /// Once every file is in place and verified, that is recorded before the binder goes on the Shelf. From then on a
+    /// retry only finishes the bookkeeping, at the folder already restored whatever `target` says: the binder may be
+    /// live by then, and restic would overwrite whatever the person changed since. Nor is anything ever restored into
+    /// a folder the Shelf lists.
     public func restore(_ backupID: String, to target: URL? = nil, now: Date = Date()) throws -> URL {
         var st = try state()
+        if !st.rewrites.isEmpty { try? reconcileRewrites(&st) }
+        if st.restoredContents[backupID] != nil { return try finishRestore(backupID) }
         guard let record = st.offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
         let s = try settings()
         let destination = (target ?? URL(fileURLWithPath: record.originalPath, isDirectory: true)).standardizedFileURL
+        let live = ShelfStore(supportDirectory: support).rows(includeArchived: true)
+            .contains { Self.realPath($0.folder) == Self.realPath(destination) }
+        if live {
+            // An older restore that put the binder on the Shelf and stopped before its records were saved: the binder
+            // is live and may have changed, so only the records are finished, with no baseline (the next offload
+            // takes a new snapshot). Any other binder on the Shelf there is refused.
+            guard st.restoring[backupID] == destination.path else {
+                throw Failure(message: "\(destination.lastPathComponent) is a binder on the Shelf; choose another place")
+            }
+            st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: nil)
+            try save(st)
+            return try finishRestore(backupID)
+        }
         // restic overwrites what is in its way, so only a missing place or a folder seen to be empty is restored
         // into, unless this restore is being resumed. One that cannot be listed may hold anything.
         if st.restoring[backupID] != destination.path {
@@ -34,6 +54,7 @@ extension Backup {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         st.restoring[backupID] = destination.path
         try save(st)
+        step("restore.started")
         let held: Set<String>?
         do {
             held = try fromBackups(record, s) { r, snapshot in
@@ -44,32 +65,49 @@ extension Backup {
             throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
         try? FileManager.default.removeItem(at: destination.appendingPathComponent(".teka.lock"))
-        // The binder is back only once the Shelf lists it. Until then its record and the restore under way stay, so
-        // it is never in neither section of the Shelf, and restoring again resumes here and adds it.
-        do { try ShelfStore(supportDirectory: support).add(destination) } catch {
-            throw Failure(message: "\(destination.lastPathComponent) is restored but could not be put on the Shelf (\(error)); restore again to finish")
-        }
         // The baseline a later offload compares with (§6.4) is the snapshot's own entries, as restic restored and
         // verified them, never the whole folder: a resumed restore keeps whatever was added to the folder in the
         // meantime, and no snapshot holds that, so the binder no longer counts as unchanged. Without the
         // snapshot's listing, or a folder that can be read whole, there is no baseline, and the next offload takes
         // a new snapshot.
+        var baseline: State.Restored?
         if let held, let all = try? Self.manifest(destination) {
-            st.restored[backupID] = State.Restored(snapshot: record.snapshot, repository: record.repository, secondSnapshot: record.secondSnapshot,
-                                                   secondRepository: record.secondRepository ?? s.second,
-                                                   manifest: all.filter { held.contains($0.key) })
-        } else {
-            st.restored[backupID] = nil
+            baseline = State.Restored(snapshot: record.snapshot, repository: record.repository, secondSnapshot: record.secondSnapshot,
+                                      secondRepository: record.secondRepository ?? s.second,
+                                      manifest: all.filter { held.contains($0.key) }, bytes: record.bytes)
         }
+        st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: baseline)
+        try save(st)
+        step("restore.contents")
+        return try finishRestore(backupID)
+    }
+
+    /// The bookkeeping after a restore's files are in place: the binder goes on the Shelf, then its records change.
+    /// The binder is back only once the Shelf lists it; until then its record and the restore under way stay, so it
+    /// is never in neither section of the Shelf, and restoring again (or the scheduled run) finishes here. Never
+    /// touches the binder's files.
+    @discardableResult
+    func finishRestore(_ backupID: String) throws -> URL {
+        var st = try state()
+        guard let done = st.restoredContents[backupID] else { throw Failure(message: "no restore to finish") }
+        let destination = URL(fileURLWithPath: done.path, isDirectory: true)
+        do { try ShelfStore(supportDirectory: support).add(destination) } catch {
+            throw Failure(message: "\(destination.lastPathComponent) is restored but could not be put on the Shelf (\(error)); restore again to finish")
+        }
+        step("restore.shelved")
+        st.restored[backupID] = done.baseline
         st.offloaded.removeAll { $0.backupID == backupID }
         st.restoring[backupID] = nil
+        st.restoredContents[backupID] = nil
         try save(st)
         return destination
     }
 
     /// One document of an offloaded binder, into a private temporary folder (`cleanPeeks` removes it a day later).
     public func peek(_ backupID: String, path: String) throws -> URL {
-        guard let record = try state().offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
+        var st = try state()
+        if !st.rewrites.isEmpty { try? reconcileRewrites(&st) }
+        guard let record = st.offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
         guard record.documents.contains(where: { $0.path == path }), DocumentPaths.isSafe(path, forFiling: false) else {
             throw Failure(message: "that document is not in the binder")
         }

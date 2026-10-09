@@ -25,7 +25,13 @@ extension Backup {
     public func forgetDocument(in folder: URL, path: String, now: Date = Date()) throws -> Bool {
         guard DocumentPaths.isSafe(path, forFiling: false) else { throw Failure(message: "that document is not in the binder") }
         // A binder never backed up has no snapshot to hold the document.
-        guard let id = try Self.storedBackupID(folder) else { return true }
+        guard try Self.storedBackupID(folder) != nil else { return true }
+        // Forgetting rewrites every snapshot under the binder's backup id: a copy that carries another live binder's
+        // id would rewrite that binder's backups too, so it is refused (`claim`).
+        var st = try state()
+        let id = try claim(folder, &st)
+        try save(st)
+        step("forget.claimed")
         return try forget(id, path: path, now: now)
     }
 
@@ -34,6 +40,7 @@ extension Backup {
         if !st.forgetting.contains(where: { $0.backupID == id && $0.path == path && $0.done == nil }) {
             st.forgetting.append(Forgetting(backupID: id, path: path, at: ISOTime.string(now)))
             try save(st)
+            step("forget.recorded")
         }
         try forgetPending(now: now)
         return try !state().forgetting.contains { $0.backupID == id && $0.path == path && $0.done == nil }
@@ -57,8 +64,17 @@ extension Backup {
             do {
                 for repo in repositories {
                     let r = try engine(repo)
-                    st.rename(try r.rewrite(tag: "binder:\(f.backupID)", excluding: f.path))
+                    let tag = "binder:\(f.backupID)"
+                    // The snapshots are journaled before restic replaces them, and renamed in the records only from
+                    // what the repository shows afterwards, so a rewrite cut off at any point is reconciled later.
+                    try reconcileRewrites(&st, in: repo)
+                    st.rewrites.append(State.Rewrite(repository: repo, tag: tag, before: try r.snapshots(tag: tag).map(\.id)))
                     try save(st)
+                    step("forget.journaled")
+                    try r.rewrite(tag: tag, excluding: f.path)
+                    step("forget.rewritten")
+                    try reconcileRewrites(&st, in: repo)
+                    step("forget.renamed")
                     try r.prune()
                 }
                 st.forgetting[i].done = ISOTime.string(now)
@@ -69,6 +85,18 @@ extension Backup {
             try save(st)
         }
         return st.forgetting.filter { $0.done == nil }.count
+    }
+
+    /// Renames, in every record, the snapshots that journaled rewrites replaced (in `repository` only, when given),
+    /// then drops those journals. restic names the replaced snapshot in each new one's `original`, so this works
+    /// whether the rewrite finished, was cut off partway (the rest are rewritten next time), or never started. A
+    /// repository that cannot be read keeps its journal, and throws.
+    func reconcileRewrites(_ st: inout State, in repository: String? = nil) throws {
+        for journal in st.rewrites where repository == nil || journal.repository == repository {
+            st.rename(try engine(journal.repository).replacements(of: Set(journal.before), tag: journal.tag))
+            st.rewrites.removeAll { $0 == journal }
+            try save(st)
+        }
     }
 }
 
@@ -87,11 +115,17 @@ extension Backup.State {
             job.secondSnapshot = renamed(job.secondSnapshot)
             return job
         }
-        restored = restored.mapValues { r in
+        func renamed(_ r: Restored) -> Restored {
             var r = r
             r.snapshot = ids[r.snapshot] ?? r.snapshot
             r.secondSnapshot = renamed(r.secondSnapshot)
             return r
+        }
+        restored = restored.mapValues(renamed)
+        restoredContents = restoredContents.mapValues { c in
+            var c = c
+            c.baseline = c.baseline.map(renamed)
+            return c
         }
         binders = binders.mapValues { b in
             var b = b
