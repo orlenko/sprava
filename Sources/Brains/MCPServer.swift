@@ -430,16 +430,16 @@ public final class MCPServer: @unchecked Sendable {
             }
             if Proposal.hasDuplicatePlaceholders(bodies) { return Self.toolError("each new record needs its own placeholder name") }
             let requestID = args["request_id"]?.stringValue
-            if let requestID, let (p, _) = ProposalStore.list(in: row.folder).first(where: {
+            if let requestID, let (p, digest) = ProposalStore.list(in: row.folder).first(where: {
                 $0.0.actor["kind"] == .str("brain") && $0.0.actor["model"]?.stringValue == client.id && $0.0.raw["request_id"]?.stringValue == requestID }) {
                 // A retry after a lost reply. A proposal whose digest was never recorded (the runtime stopped between
-                // storing and recording it) is trusted now only when it holds exactly what this request asks for;
-                // the bytes on disk alone are never trusted.
+                // storing and recording it) is trusted now only when it holds exactly what this request asks for,
+                // and by the digest of the very bytes compared: a file replaced since is refused.
                 if p.state == "proposed", !isRecorded(p.id, in: row.folder) {
                     let same = p.title == title
                         && (try? Canonical.serialize(.array(p.ops.map(JSONValue.object)))) == (try? Canonical.serialize(.array(bodies.map(JSONValue.object))))
                     guard same else { return Self.toolError("a proposal with this request_id exists and differs from this request; use a new request_id") }
-                    try? commands.trustProposals([p.id], in: row.folder)
+                    try? commands.trustChecked(p.id, digest: digest, in: row.folder)
                     guard isRecorded(p.id, in: row.folder) else { return Self.toolError("the proposal could not be recorded as written by Sprava; try again") }
                 }
                 // The reading the card answers may still be waiting (its update failed, or the runtime stopped before

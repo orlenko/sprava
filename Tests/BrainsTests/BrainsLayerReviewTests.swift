@@ -145,4 +145,28 @@ import Testing
         guard case .line(let line) = exact.next(limit: MCPListener.preambleLimit) else { Issue.record("a line at the limit was refused"); return }
         #expect(line.utf8.count == MCPListener.preambleLimit)
     }
+
+    // MARK: - 5. A retried card an earlier runtime stored is trusted by the digest of the bytes compared
+
+    @Test func aRetriedCardFromAnEarlierRuntimeIsTrustedByItsCheckedDigest() throws {
+        let (server, folder, commands) = try setup()
+        // Written as a runtime that stopped before recording it would have left it: not by this process.
+        let actor = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .string(commands.client)),
+                                (key: "model", value: .str("claude-code-1"))])
+        let body = JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: addItem["args"] ?? .obj([]))])
+        var card = Proposal.make(title: "Earlier card", actor: actor, ops: [body], now: now)
+        card.raw.set("request_id", .str("invented-request-2"))
+        let dir = ProposalStore.dir(folder)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(JSONWriter.pretty(.object(card.raw)).utf8).write(to: dir.appendingPathComponent("\(card.id).json"))
+        #expect(!server.isRecorded(card.id, in: folder))
+
+        let r = try tool(server, "propose_ops", [("binder", .str("estate-example")), ("title", .str("Earlier card")), ("ops", .array([addItem])),
+                                                 ("request_id", .str("invented-request-2"))])
+        #expect(r["isError"] == .bool(false))
+        #expect(r["structuredContent"]?["proposal_id"]?.stringValue == card.id)
+        #expect(server.isRecorded(card.id, in: folder))
+        let (_, digest) = try #require(ProposalStore.list(in: folder).first { $0.0.id == card.id })
+        #expect(try commands.loadDigests()[commands.key(folder, card.id)] == digest)
+    }
 }
