@@ -191,6 +191,8 @@ extension HubLane {
         var closedOnce: [JSONObject]
         var keepRedacted: Set<String>
         var allowTags: [String: Set<String>]
+        /// The `slice_title` the person confirmed for each item that has one: all a redacted item may show as its title.
+        var confirmedTitles: [String: JSONValue]
         var logCount: Int
         var opCount: Int
     }
@@ -250,7 +252,8 @@ extension HubLane {
         for k in known { allowTags[k] = Set((confirmed?.tags[k] ?? []).compactMap { try? Canonical.serialize($0) }) }
         return Plan(closures: closures, closedOnce: closedOnce,
                     keepRedacted: Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted),
-                    allowTags: allowTags, logCount: log.count, opCount: ops.count)
+                    allowTags: allowTags, confirmedTitles: confirmed?.sliceTitles ?? [:], logCount: log.count,
+                    opCount: ops.count)
     }
 
     static func publishChecked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool) throws -> PublishResult {
@@ -276,7 +279,8 @@ extension HubLane {
         let key = try sliceKey(folder)
         let projection = try projection(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: plan.closedOnce,
                                         key: key, now: now, alsoRedact: plan.keepRedacted, keepTitles: privacy.titles,
-                                        lastSeen: cursors.published, allowTags: plan.allowTags, strict: true)
+                                        confirmedTitles: plan.confirmedTitles, lastSeen: cursors.published,
+                                        allowTags: plan.allowTags, strict: true)
         let slice = projection.slice
         let hash = try Canonical.hash(stripGenerated(slice))
         let unchanged = !force && targetCurrent && hash == cursors.sliceHash
@@ -311,7 +315,9 @@ extension HubLane {
 
     /// Whether the slice Sprava last wrote shows more than the binder allows now, judged against a projection made
     /// without the checks that only publishing needs: an open item that is gone or shown as `done`, a title, party or
-    /// link that differs, or a tag no longer shown. Nothing recorded, or nothing readable on the spool, shows
+    /// link that differs, or a tag no longer shown. An item left in `open_items` with status `done` is judged the
+    /// same way (it may stay done); only the rows shown once for closed items, which carry nothing but their id, are
+    /// passed over. Nothing recorded, or nothing readable on the spool, shows
     /// nothing. A catalog that cannot be read, or whose `open_items` or `processing_log` is not a list, has no items
     /// to judge against: the last slice stays, as for any refused publish (a narrowed disclosure is withdrawn before
     /// this, by `withdrawIfNarrowed`).
@@ -326,13 +332,27 @@ extension HubLane {
         let plan = plan(catalog, folder: teka.folder, cursors: cursors, privacy: privacy)
         guard let allowed = try? projection(catalog: catalog, folderName: teka.folder.lastPathComponent, closedOnce: plan.closedOnce,
                                             key: key, now: Date(), alsoRedact: plan.keepRedacted, keepTitles: privacy.titles,
-                                            lastSeen: cursors.published, allowTags: plan.allowTags, strict: false) else { return false }
+                                            confirmedTitles: plan.confirmedTitles, lastSeen: cursors.published,
+                                            allowTags: plan.allowTags, strict: false) else { return false }
         var open: [String: JSONValue] = [:]
-        for it in allowed.slice["items"]?.arrayValue ?? [] where it["status"] != .str("done") {
-            if let id = it["id"]?.stringValue, open[id] == nil { open[id] = it }
+        var any: [String: JSONValue] = [:]
+        for it in allowed.slice["items"]?.arrayValue ?? [] {
+            guard let id = it["id"]?.stringValue else { continue }
+            if any[id] == nil { any[id] = it }
+            if it["status"] != .str("done"), open[id] == nil { open[id] = it }
         }
-        for old in shown["items"]?.arrayValue ?? [] where old["status"] != .str("done") {
-            guard let id = old["id"]?.stringValue, let now = open[id] else { return true }
+        // A row shown once for an item closed (`project`'s `closedOnce`) carries only the id the hub already saw. Any
+        // other row with status `done` is an item an outside edit left in `open_items` as done, published with its
+        // title, party, link and tags like an open one, and judged like one.
+        let closedIDs = Set(cursors.closedOnce.compactMap { cursors.published[$0] })
+        func closure(_ row: JSONValue) -> Bool {
+            guard let id = row["id"]?.stringValue, closedIDs.contains(id) else { return false }
+            return row["status"] == .str("done") && row["title"] == .str("[closed]") && row["tags"] == .array([])
+                && row["waiting_on"] == .null && row["link"] == .null
+        }
+        for old in shown["items"]?.arrayValue ?? [] where !closure(old) {
+            let done = old["status"] == .str("done")
+            guard let id = old["id"]?.stringValue, let now = done ? any[id] : open[id] else { return true }
             if ["title", "waiting_on", "link"].contains(where: { old[$0] != now[$0] }) { return true }
             let tags = Set(now["tags"]?.arrayValue ?? [])
             if !(old["tags"]?.arrayValue ?? []).allSatisfy(tags.contains) { return true }

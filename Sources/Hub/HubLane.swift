@@ -160,8 +160,10 @@ extension HubLane {
 
     /// The agenda slice at disclosure level `full`: lifeproj's nine keys per item, in order, nothing else
     /// (binder-v0 §8.2; the v1 additions stay off in the MVP). `keepTitles` holds the hub titles the privacy ratchet
-    /// keeps, by the id's canonical text; they stand in for the found ones. A redacted item shows only such a title,
-    /// never a `slice_title` the person did not confirm, else `[redacted]`.
+    /// keeps, by the id's canonical text; they stand in for the found ones. `confirmedTitles` holds the `slice_title`
+    /// the person confirmed for each item that has one (`PrivacyRatchet.Confirmed.sliceTitles`). A redacted item shows
+    /// only its confirmed `slice_title`, else `[redacted]`: never a title the ratchet keeps in place of one, which may
+    /// be the item's own title when the ratchet does not see the redaction the hub keeps.
     ///
     /// An item in `closedOnce` (its id, and `redact` when its closure's `final` had it) is shown once with status
     /// `done` (architecture 13, item 35), carrying only what binder-v0 §8.2 lets a closure carry, `{id, action}`: no
@@ -170,10 +172,11 @@ extension HubLane {
     /// canonical text), else projected as an item id.
     public static func project(catalog: JSONObject, folderName: String, closedOnce: [JSONObject],
                                key: SymmetricKey, now: Date, alsoRedact: Set<String> = [],
-                               keepTitles: [String: JSONValue] = [:],
+                               keepTitles: [String: JSONValue] = [:], confirmedTitles: [String: JSONValue] = [:],
                                lastSeen: [String: String] = [:]) throws -> (slice: JSONValue, ids: [String: String]) {
         let p = try projection(catalog: catalog, folderName: folderName, closedOnce: closedOnce, key: key, now: now,
-                               alsoRedact: alsoRedact, keepTitles: keepTitles, lastSeen: lastSeen, allowTags: [:], strict: true)
+                               alsoRedact: alsoRedact, keepTitles: keepTitles, confirmedTitles: confirmedTitles,
+                               lastSeen: lastSeen, allowTags: [:], strict: true)
         return (p.slice, p.ids)
     }
 
@@ -182,7 +185,8 @@ extension HubLane {
     /// rules and the unique slice ids, so the slice the binder allows now can be judged even when it cannot be
     /// published.
     static func projection(catalog: JSONObject, folderName: String, closedOnce: [JSONObject], key: SymmetricKey, now: Date,
-                           alsoRedact: Set<String>, keepTitles: [String: JSONValue], lastSeen: [String: String],
+                           alsoRedact: Set<String>, keepTitles: [String: JSONValue], confirmedTitles: [String: JSONValue],
+                           lastSeen: [String: String],
                            allowTags: [String: Set<String>], strict: Bool)
         throws -> (slice: JSONValue, ids: [String: String], tags: [String: [String]]) {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
@@ -237,8 +241,9 @@ extension HubLane {
                 tags = .array(found.filter { allowed.contains((try? Canonical.serialize($0)) ?? "") })
             }
             shownTags[k] = (tags.arrayValue ?? []).compactMap { try? Canonical.serialize($0) }
-            let title: JSONValue = keepTitles[k]
-                ?? (redacted ? .str("[redacted]") : it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil } ?? it["title"] ?? .null)
+            let title: JSONValue = redacted
+                ? confirmedTitles[k] ?? .str("[redacted]")
+                : keepTitles[k] ?? it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil } ?? it["title"] ?? .null
             projected.append(.obj([
                 ("id", .string(sid)), ("title", title), ("status", it["status"] ?? .null),
                 ("priority", it["priority"] ?? .null), ("due", it["due"] ?? .null),
