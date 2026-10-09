@@ -125,8 +125,9 @@ extension HubLane {
         let url = sliceKeyURL(folder)
         // A key is made only when there is none: rotating it would change every alias the hub knows (binder-v0 §5.6).
         if let key = try existingSliceKey(folder) { return key }
+        // arc4random_buf cannot fail; SecRandomCopyBytes can, and an ignored failure would leave an all-zero key.
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
+        arc4random_buf(&bytes, bytes.count)
         try AtomicFile.write(Data(bytes), to: url)
         return SymmetricKey(data: bytes)
     }
@@ -152,11 +153,19 @@ extension HubLane {
     }
 
     /// The agenda slice at disclosure level `full`: lifeproj's nine keys per item, in order, nothing else
-    /// (binder-v0 §8.2; the v1 additions stay off in the MVP). `keepTitles` holds the confirmed hub titles an outside
-    /// edit removed or changed, by the id's canonical text; they stand in for the found ones.
+    /// (binder-v0 §8.2; the v1 additions stay off in the MVP). `keepTitles` holds the hub titles the privacy ratchet
+    /// keeps, by the id's canonical text; they stand in for the found ones. A redacted item shows only such a title,
+    /// never a `slice_title` the person did not confirm, else `[redacted]`.
+    ///
+    /// An item in `closedOnce` (its id, and `redact` when its closure's `final` had it) is shown once with status
+    /// `done` (architecture 13, item 35), carrying only what binder-v0 §8.2 lets a closure carry, `{id, action}`: no
+    /// title, tags, due date, party or link of its own, so nothing about a closed item reaches the hub that the
+    /// person did not see published while it was open. Its id is the one the hub last saw (`lastSeen`, by the id's
+    /// canonical text), else projected as an item id.
     public static func project(catalog: JSONObject, folderName: String, closedOnce: [JSONObject],
                                key: SymmetricKey, now: Date, alsoRedact: Set<String> = [],
-                               keepTitles: [String: JSONValue] = [:]) throws -> (slice: JSONValue, ids: [String: String]) {
+                               keepTitles: [String: JSONValue] = [:],
+                               lastSeen: [String: String] = [:]) throws -> (slice: JSONValue, ids: [String: String]) {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
         let teka = meta["name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? folderName
         var chapters: [JSONValue]
@@ -186,17 +195,24 @@ extension HubLane {
         var ids: [String: String] = [:]
         var projected: [JSONValue] = []
         var seen = Set<String>()
-        func project(_ it: JSONObject, status: JSONValue? = nil) throws {
+        func project(_ it: JSONObject, closed: Bool = false) throws {
             let id = it["id"] ?? .null
-            let redacted = it["redact"] == .bool(true) || alsoRedact.contains((try? Canonical.serialize(id)) ?? "")
-            let sid = sliceID(id, redacted: redacted, teka: teka, key: key)
+            let k = (try? Canonical.serialize(id)) ?? idText(id)
+            let redacted = it["redact"] == .bool(true) || alsoRedact.contains(k)
+            let sid = (closed ? lastSeen[k] : nil) ?? sliceID(id, redacted: redacted, teka: teka, key: key)
             guard seen.insert(sid).inserted else { throw TekaStore.Refused(reason: "two items project to the same slice id") }
-            ids[(try? Canonical.serialize(id)) ?? idText(id)] = sid
-            let title: JSONValue = keepTitles[(try? Canonical.serialize(id)) ?? ""]
-                ?? it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil }
-                ?? (redacted ? .str("[redacted]") : it["title"] ?? .null)
+            ids[k] = sid
+            if closed {
+                projected.append(.obj([
+                    ("id", .string(sid)), ("title", .str("[closed]")), ("status", .str("done")), ("priority", .str("normal")),
+                    ("due", .null), ("no_deadline", .bool(true)), ("tags", .array([])), ("waiting_on", .null), ("link", .null),
+                ]))
+                return
+            }
+            let title: JSONValue = keepTitles[k]
+                ?? (redacted ? .str("[redacted]") : it["slice_title"].flatMap { ItemRules.isTruthy($0) ? $0 : nil } ?? it["title"] ?? .null)
             projected.append(.obj([
-                ("id", .string(sid)), ("title", title), ("status", status ?? it["status"] ?? .null),
+                ("id", .string(sid)), ("title", title), ("status", it["status"] ?? .null),
                 ("priority", it["priority"] ?? .null), ("due", it["due"] ?? .null),
                 ("no_deadline", .bool(it["no_deadline"] == .bool(true))), ("tags", it["tags"] ?? .array([])),
                 ("waiting_on", redacted ? .str("[party]") : it["waiting_on"] ?? .null),
@@ -204,7 +220,7 @@ extension HubLane {
             ]))
         }
         for it in items where it["dismissed"] != .bool(true) { try project(it) }
-        for it in closedOnce { try project(it, status: .str("done")) }
+        for it in closedOnce { try project(it, closed: true) }
         let generated = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         let slice = JSONValue.obj([
             ("teka", .string(teka)), ("lifecycle", meta["lifecycle"] ?? .null), ("active_chapter", activeChapter),

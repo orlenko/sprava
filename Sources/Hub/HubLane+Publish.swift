@@ -139,9 +139,15 @@ extension HubLane {
         }
     }
 
-    /// The level a publish uses: the narrower of the catalog's and the confirmed one.
+    /// The level a publish uses: the narrower of the catalog's and the confirmed one. A stamped catalog without a
+    /// valid `meta.disclosure` has no level that says what may leave it (binder-v0 §4.2), so it counts as `none`
+    /// and its slice is withdrawn, as one with an unknown level is; lifeproj's "absent is full" is for unstamped
+    /// catalogs only.
     static func disclosure(_ teka: Teka) -> String {
-        teka.catalog.map { PrivacyRatchet.view(folder: teka.folder, catalog: $0).disclosure } ?? confirmedDisclosure(teka.folder)
+        guard let catalog = teka.catalog else { return confirmedDisclosure(teka.folder) }
+        let meta = catalog["meta"]
+        if meta?["format"] != nil, !["full", "title", "kind", "none"].contains(meta?["disclosure"]?.stringValue ?? "") { return "none" }
+        return PrivacyRatchet.view(folder: teka.folder, catalog: catalog).disclosure
     }
 
     /// A narrowing takes effect at once: the slice goes before any check that refuses publishing (a broken stamp, a
@@ -191,18 +197,18 @@ extension HubLane {
             guard let id, closedKeys.insert((try? Canonical.serialize(id)) ?? idText(id)).inserted else { return nil }
             return (id, e)
         }
+        // Only the id and the redaction are read from a closure: a closed item publishes nothing else (binder-v0
+        // §8.2), so a tag or title an outside edit gave it before it closed never reaches the hub.
         let closedOnce: [JSONObject] = newClosures.map { id, e in
-            var item = e["final"]?.objectValue ?? JSONObject()
+            var item = JSONObject()
             item.set("id", id)
-            item.set("title", e["title"] ?? .str(""))
-            if item["priority"] == nil { item.set("priority", .str("normal")) }
-            if item["due"] == nil, item["no_deadline"] == nil { item.set("no_deadline", .bool(true)) }
+            if e["final"]?["redact"] == .bool(true) { item.set("redact", .bool(true)) }
             return item
         }
 
         // Items published redacted stay redacted unless the person lifted it with an op since then; a redaction an
-        // outside edit removed stays until the person approves the privacy card (architecture 4.5). Both this and
-        // the confirmed hub titles cover the items closed once as well as the open ones. An aborted op lifts nothing,
+        // outside edit removed stays until the person approves the privacy card (architecture 4.5). This covers the
+        // items closed once as well as the open ones, for their ids. An aborted op lifts nothing,
         // as in `PrivacyRatchet.confirmed` (binder-v0 §6.9).
         let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
         let aborted = Set(ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
@@ -217,7 +223,8 @@ extension HubLane {
         let keepRedacted = Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted)
         let key = try sliceKey(folder)
         let (slice, ids) = try project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: closedOnce,
-                                       key: key, now: now, alsoRedact: keepRedacted, keepTitles: privacy.titles)
+                                       key: key, now: now, alsoRedact: keepRedacted, keepTitles: privacy.titles,
+                                       lastSeen: cursors.published)
         let hash = try Canonical.hash(stripGenerated(slice))
         if !force, targetCurrent, hash == cursors.sliceHash { return .unchanged }
         try removeFormerSlice(cursors, teka: teka, inbox: inbox)

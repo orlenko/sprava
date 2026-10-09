@@ -227,9 +227,9 @@ extension HubLane {
 
     /// `AtomicFile.write` with one more check between the flush and the rename: when `stillCurrent` says the file
     /// changed meanwhile, the temporary file goes, nothing is replaced, and the result is false. The slow part, the
-    /// write and its `F_FULLFSYNC`, so comes before the last look at the file, not after it. Every flush is checked
-    /// as `AtomicFile` checks it: a failed `F_FULLFSYNC` fails the write unless the volume lacks it, and so does a
-    /// folder that cannot be opened or flushed after the rename (binder-v0 §4.9).
+    /// write and its `F_FULLFSYNC`, so comes before the last look at the file, not after it. Every flush uses
+    /// `AtomicFile`'s one flush rule: a failed `F_FULLFSYNC` fails the write unless the volume lacks it, and so does
+    /// a folder that cannot be opened or flushed after the rename (binder-v0 §4.9).
     static func replace(_ url: URL, with data: Data, if stillCurrent: () -> Bool, flush: Flush = Flush()) throws -> Bool {
         let folder = url.deletingLastPathComponent()
         let temp = folder.appendingPathComponent(".\(UUID().uuidString.lowercased()).tmp")
@@ -252,37 +252,13 @@ extension HubLane {
                     offset += n
                 }
             }
-            try flushToDisk(fd, step: "fsync", flush: flush)
+            try AtomicFile.flushToDisk(fd, step: "fsync", fullSync: flush.fullSync, sync: flush.sync)
         }
         guard stillCurrent() else { return false }
         guard rename(temp.path, url.path) == 0 else { throw AtomicFile.Failure(step: "rename", code: errno) }
         renamed = true
-        var dirfd: Int32 = -1
-        try retrying("open folder") {
-            dirfd = flush.openFolder(folder.path)
-            return dirfd
-        }
-        defer { close(dirfd) }
-        try flushToDisk(dirfd, step: "fsync folder", flush: flush)
+        try AtomicFile.flushFolder(folder, step: "fsync folder", openStep: "open folder", open: flush.openFolder,
+                                   fullSync: flush.fullSync, sync: flush.sync)
         return true
-    }
-
-    /// `F_FULLFSYNC`, or `fsync` when the volume does not support it; any other failure is reported.
-    private static func flushToDisk(_ fd: Int32, step: String, flush: Flush) throws {
-        while flush.fullSync(fd) < 0 {
-            let code = errno
-            if code == EINTR { continue }
-            guard code == ENOTSUP || code == EINVAL || code == ENOTTY else { throw AtomicFile.Failure(step: step, code: code) }
-            try retrying(step) { flush.sync(fd) }
-            return
-        }
-    }
-
-    /// Runs a call that returns -1 and sets `errno` on failure, again while it is interrupted.
-    private static func retrying(_ step: String, _ call: () -> Int32) throws {
-        while call() < 0 {
-            let code = errno
-            if code != EINTR { throw AtomicFile.Failure(step: step, code: code) }
-        }
     }
 }
