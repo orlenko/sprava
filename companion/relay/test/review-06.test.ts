@@ -646,3 +646,106 @@ test('deleting a request the relay has no trace of answers 204 and writes nothin
         if (fresh) await relay.close();
     }
 });
+
+/** A store whose next `count` puts of keys containing `part` fail before writing anything. */
+function failingPuts(fs: Store): { raw: Store; fail: (part: string, count?: number) => void } {
+    let failing: { part: string; count: number } | null = null;
+    const raw = new Proxy(fs, {
+        get(target, name: keyof Store) {
+            if (name === 'put') {
+                return async (key: string, body: Uint8Array) => {
+                    if (failing !== null && failing.count > 0 && key.includes(failing.part)) {
+                        failing.count--;
+                        throw new Error('injected put failure');
+                    }
+                    return target.put(key, body);
+                };
+            }
+            const value = target[name];
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
+    return { raw, fail: (part, count = 1) => void (failing = { part, count }) };
+}
+
+test('deleting a name that never existed retires no other name, even the highest valid one (§7.5)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    const call = (method: string, name: string) =>
+        fetch(`${t.url}/v0/objects/${name}`, { method, headers: bearer(owner), ...(method === 'PUT' ? { body: new Uint8Array([1]) } : {}) });
+    assert.equal((await call('DELETE', 'index/100')).status, 204);
+    assert.equal((await call('DELETE', 'index/9007199254740991')).status, 204);
+    assert.deepEqual(await store.list('floors/objects/index/'), [], 'no floor from names that never existed');
+    for (const n of [1, 99, 101]) assert.equal((await call('PUT', `index/${n}`)).status, 204, `index/${n} was never deleted`);
+    assert.equal((await call('PUT', 'index/100')).status, 410, 'the deleted name itself stays deleted');
+    // Once uploaded names are deleted, the floor passes them and the never-uploaded names below them.
+    for (const n of [1, 99, 101]) assert.equal((await call('DELETE', `index/${n}`)).status, 204);
+    assert.equal((await call('PUT', 'index/50')).status, 410);
+    assert.equal((await call('PUT', 'index/102')).status, 204);
+    await t.close();
+});
+
+test('a deletion whose tombstone write failed refuses every upload of the name until it is finished, across a restart (§7.5)', async () => {
+    const { raw: fs } = await freshStore();
+    const { raw, fail } = failingPuts(fs);
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const first = await startTestRelay({ raw });
+    const call = (url: string, method: string, name: string) =>
+        fetch(`${url}/v0/objects/${name}`, { method, headers: bearer(owner), ...(method === 'PUT' ? { body: new Uint8Array([5]) } : {}) });
+    assert.equal((await call(first.url, 'PUT', 'index/5')).status, 204);
+    fail('/tombstones/objects/', 2);
+    assert.equal((await call(first.url, 'DELETE', 'index/5')).status, 500, 'its tombstone failed');
+    assert.equal((await call(first.url, 'DELETE', 'index/7')).status, 500, 'a name never uploaded: its tombstone failed too');
+    for (const name of ['index/5', 'index/7']) assert.equal((await call(first.url, 'PUT', name)).status, 410, `${name} takes no upload`);
+    await first.close();
+    const second = await startTestRelay({ raw });
+    for (const name of ['index/5', 'index/7']) assert.equal((await call(second.url, 'PUT', name)).status, 410, `${name}, after a restart`);
+    // The tombstones' writes land late: nothing acknowledged is hidden. The retries finish the deletions.
+    for (const name of ['index/5', 'index/7']) await store.put(`tombstones/objects/${name}`, new Uint8Array());
+    for (const name of ['index/5', 'index/7']) assert.equal((await call(second.url, 'DELETE', name)).status, 204);
+    assert.equal((await call(second.url, 'GET', 'index/5')).status, 404);
+    await second.close();
+});
+
+test('a request whose tombstone lands late is not served from a mailbox read before (§7.6)', async () => {
+    const { raw: fs } = await freshStore();
+    const { raw, fail } = failingPuts(fs);
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const r = newId();
+    assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    const read = () => fetch(`${t.url}/v0/requests/${device.id}/${r}`, { headers: bearer(owner) });
+    assert.equal((await read()).status, 200);
+    fail('/tombstones/requests/');
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${r}`, { method: 'DELETE', headers: bearer(owner) })).status, 500);
+    const [key] = await store.list(`requests/${device.id}/`);
+    await store.put(`tombstones/${key}`, new Uint8Array()); // the failed write lands
+    assert.equal((await read()).status, 404);
+    await t.close();
+});
+
+test('a late copy below a mailbox floor is deleted without leaving a tombstone (§7.6)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const [a, b] = [newId(), newId()];
+    for (const r of [a, b]) {
+        assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    }
+    const [keyA] = (await store.list(`requests/${device.id}/`)).filter((k) => k.endsWith(a));
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), [], 'the floor rose over A');
+    await store.put(keyA!, new Uint8Array([1])); // a late copy of A, below the floor
+    await t.close();
+    const again = await startTestRelay({ raw }); // its start reads every mailbox
+    const { requests } = (await (await fetch(`${again.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+    assert.deepEqual(requests.map((x) => x.request_id), [b]);
+    assert.ok(!(await store.list(`requests/${device.id}/`)).some((k) => k.endsWith(a)), 'the late copy of A is deleted');
+    assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), [], 'no tombstone for a name the floor covers');
+    await again.close();
+});

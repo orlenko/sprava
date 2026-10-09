@@ -172,7 +172,7 @@ adds what is particular to each endpoint.
 | `DELETE /v0/devices/{D}` | `revoked`, then deletions | an empty marker, never deleted | the device's lock |
 | `DELETE /v0/devices/self` | `revocation`, then `revoked` | the marker only once this revocation is the one stored | the device's lock (guard), after the body |
 | `GET /v0/devices/{D}/revocation` | nothing | | |
-| `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its tombstone, then the object, then the prefix's floor | revision names; a deleted name, or one below the floor, refuses every PUT with 410 (409 means other bytes are stored), and a copy brought back is never served or listed, and is deleted when met | the creation lock |
+| `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its marker `intents/objects/{name}/deleting`, its tombstone, then the object, then the prefix's floor | revision names; a deleted name, one below the floor, or one whose deletion has begun (its marker written, so a tombstone that lands late hides no upload acknowledged meanwhile) refuses every PUT with 410 (409 means other bytes are stored), and a copy brought back is never served or listed, and is deleted when met | the creation lock |
 | `GET /v0/objects...` | nothing | | the device's lock (guard), so no revoked device reads |
 | `POST /v0/requests/{R}` | `ordinals/{D}/{block}`, the request | a block holds one process's lease name; an ordinal is never given twice; 409 only when the stored copy is there and synced | the device's lock (guard), after the body |
 | `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | a DELETE answers 204 only once the tombstone is durable, and finds the name in the bucket when memory lacks it, so a retry after any failure finishes the deletion, and a name with no copy, intent or tombstone is 204 with nothing written; the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/requests/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
@@ -187,9 +187,11 @@ counts as deleted, so the tombstones, intents and copies below it can be deleted
   locks every write to those names takes.
 - **To what.** Never above a name not deleted: the relay never retires an object on its own. A request floor
   rises to the device's lowest pending ordinal (or its next, with none pending). An object floor rises to the
-  lowest name of the prefix that has an intent or a copy and no tombstone: every upload writes its intent first and
-  only the floor removes it, so a copy the store has lost for a while, or an upload that failed, keeps its name live
-  until the owner deletes it. A floor never exceeds the highest valid number (§3); that name's own tombstone then
+  lowest uploaded name of the prefix (one with an upload's intent or a copy) that has no tombstone, or, with none,
+  just above the highest uploaded name: every upload writes its intent first and only the floor removes it, so a
+  copy the store has lost for a while, or an upload that failed, keeps its name live until the owner deletes it. A
+  name never uploaded is passed only below an uploaded one, so deleting a name that never existed retires nothing
+  else. A floor never exceeds the highest valid number (§3); that name's own tombstone then
   stays.
 - **In what order.** The floor is raised in memory, then written durably, then the lower floors (never a higher
   one) and everything it covers are deleted. Every name it covers was deleted by the owner or never existed, so
@@ -222,7 +224,7 @@ the owner itself makes (devices paired, pairings opened, binders shown).
 | `pairings/{P}/` parts (and their intents) | per pairing open (at most 3, for 10 minutes); deleted with the pairing |
 | `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
 | `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
-| `tombstones/objects/...`, `intents/objects/...` | per prefix, names at or above its floor: what is published, uploads in progress, and the owner's failed uploads, which only the owner can make and which the Mac deletes (spec section 9.7), so no device can grow them, and names deleted out of order above the lowest kept; the floor deletes everything below it |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, names at or above its floor: what is published, uploads in progress, deletions' markers, and the owner's failed uploads, which only the owner can make and which the Mac deletes (spec section 9.7), so no device can grow them, names deleted out of order above the lowest kept, and names the owner deleted above every uploaded one; the floor deletes everything below it |
 | `floors/objects/{prefix}` | one per prefix in use: the index, each binder shown, each device kept; **exception**: a removed binder's views floor stays, one per binder ever shown (its id is never reused, so nothing new arrives under it, and a late copy is refused only by it). A removed device's go with it |
 | `requests/{D}/`, `intents/requests/{D}/` | pending requests: at most 1,000 per device |
 | `tombstones/requests/{D}/` | names deleted out of order above the device's floor: with its pending requests, at most 10,000 names per device, whatever the rate or the restarts (a device at the bound gets 507 until the Mac collects its oldest request) |

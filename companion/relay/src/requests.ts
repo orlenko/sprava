@@ -5,7 +5,7 @@ import { HttpError, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Devices } from './devices.ts';
 import type { Relay } from './relay.ts';
-import { deleteForGood, forget, forgetAll, INTENTS, intentsOf, raiseFloor, readFloor, tombstoneOf, writeOnce } from './store/store.ts';
+import { deleteForGood, forget, forgetAll, INTENTS, intentsOf, isDeleted, raiseFloor, readFloor, tombstoneOf, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const PER_HOUR = 120;
@@ -80,8 +80,13 @@ export function requests(relay: Relay, devices: Devices) {
             if (match === null || match[1] !== d) continue;
             highest = Math.max(highest, Number(match[2]));
             // A copy a late write brought back after the owner deleted it stays deleted (invariant 5): below the
-            // floor every name is deleted, and above it the tombstone says so.
-            if (Number(match[2]) < floor || deleted(key)) {
+            // floor every name is deleted, and the floor stands for it, so it goes without a tombstone; above it,
+            // the tombstone says so.
+            if (Number(match[2]) < floor) {
+                await forget(store, key);
+                continue;
+            }
+            if (deleted(key)) {
                 await retire(key);
                 continue;
             }
@@ -340,7 +345,9 @@ export function requests(relay: Relay, devices: Devices) {
                 const bytes = await relay.deviceLocks.run(d, async () => {
                     const mailbox = (await devices.revokedLocked(d)) || !mailboxes.has(d) ? await refreshLocked(d) : mailboxes.get(d)!;
                     const entry = mailbox.get(call.params.R!);
-                    return entry === undefined ? null : store.get(entry.key);
+                    const bytes = entry === undefined ? null : await store.get(entry.key);
+                    // Then whether it was deleted meanwhile: a tombstone that landed late, or the floor (README).
+                    return bytes === null || (await isDeleted(store, entry!.key)) || entry!.ordinal < (await floorLocked(d)) ? null : bytes;
                 });
                 if (bytes === null) throw new HttpError(404, 'There is no such request.');
                 return { status: 200, bytes };

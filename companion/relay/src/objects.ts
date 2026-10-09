@@ -4,13 +4,15 @@ import { HttpError, type Call, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Relay } from './relay.ts';
 import type { Devices } from './devices.ts';
-import { deleteAll, deleteForGood, FLOORS, forget, forgetAll, INTENTS, isDeleted, raiseFloor, readFloor, TOMBSTONES, writeOnce } from './store/store.ts';
+import { deleteAll, deleteForGood, FLOORS, forget, forgetAll, INTENTS, intentsOf, isDeleted, raiseFloor, readFloor, TOMBSTONES, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const READS_PER_HOUR = 600;
 
 /** A revision, version or epoch in a name: an unsigned integer of at least 1, without leading zeros. */
 const isRevision = (text: string | undefined): boolean => text !== undefined && (parseUnsigned(text) ?? 0) >= 1;
+/** A deletion's marker among a name's intents: written before its tombstone, so the name takes no upload again. */
+const DELETING = 'deleting';
 
 /** §7.5: `index/{r}`, `views/{id}/{version}`, `devices/{D}/keys/{e}`, `devices/{D}/outcomes/{r}`; nothing else. */
 export function parseName(name: string): { prefix: string; device: string | null } | null {
@@ -64,22 +66,40 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
     }
 
     /**
-     * Raises a prefix's floor to the lowest name the owner has not deleted: the lowest with an intent or a copy and
-     * no tombstone. Every upload writes its intent first and only the floor removes it, so a copy the store has lost
-     * for a while, or an upload that failed, keeps its name live until the owner deletes it: the relay never retires
-     * an object on its own. Never above the highest valid name, whose tombstone the floor then leaves in place.
-     * Copies that count as deleted are deleted. Under the creation lock, like every PUT and DELETE.
+     * A copy that counts as deleted goes. Below the floor its intents go with it; above, they stay until the floor
+     * covers the name, since they show it was uploaded, which lets the floor pass it (compactLocked).
+     */
+    async function dropCopy(prefix: string, n: number): Promise<void> {
+        const key = `objects/${prefix}${n}`;
+        await (n < (await floorOf(prefix)) ? forget(store, key) : store.delete(key));
+    }
+
+    /**
+     * Raises a prefix's floor to the lowest name the owner has not deleted: the lowest uploaded name (one with an
+     * upload's intent or a copy) that has no tombstone; with none, just above the highest uploaded name. Every
+     * upload writes its intent first and only the floor removes it, so a copy the store has lost for a while, or an
+     * upload that failed, keeps its name live until the owner deletes it: the relay never retires an object on its
+     * own. A name never uploaded is passed only below an uploaded one: a deletion of a name that never existed, a
+     * lone tombstone, never retires the names below it. Never above the highest valid name, whose tombstone the
+     * floor then leaves in place. Copies that count as deleted are deleted. Under the creation lock, like every PUT
+     * and DELETE.
      */
     async function compactLocked(prefix: string): Promise<void> {
         const floor = await floorOf(prefix);
         const copies = new Set(await numbersUnder(`objects/${prefix}`));
         const tombstoned = new Set(await numbersUnder(`${TOMBSTONES}objects/${prefix}`));
-        const intents = new Set(await numbersUnder(`${INTENTS}objects/${prefix}`));
-        for (const n of copies) if (n < floor || tombstoned.has(n)) await forget(store, `objects/${prefix}${n}`);
-        const live = [...new Set([...copies, ...intents])].filter((n) => n >= floor && !tombstoned.has(n));
-        const known = [...copies, ...intents, ...tombstoned];
-        if (known.length === 0) return;
-        const next = Math.min(live.length > 0 ? Math.min(...live) : Math.max(floor - 1, ...known) + 1, Number.MAX_SAFE_INTEGER);
+        // Uploads' intents, and deletions' markers (`intents/objects/{name}/deleting`), which are not uploads.
+        const intents = new Set<number>();
+        const marked = new Set<number>();
+        for (const key of await store.list(`${INTENTS}objects/${prefix}`)) {
+            const [n, last] = key.slice(`${INTENTS}objects/${prefix}`.length).split('/');
+            if (isRevision(n)) (last === DELETING ? marked : intents).add(Number(n));
+        }
+        for (const n of copies) if (n < floor || tombstoned.has(n)) await dropCopy(prefix, n);
+        const uploaded = [...new Set([...copies, ...intents])].filter((n) => n >= floor);
+        if (uploaded.length === 0) return;
+        const live = uploaded.filter((n) => !tombstoned.has(n));
+        const next = Math.min(live.length > 0 ? Math.min(...live) : Math.max(...uploaded) + 1, Number.MAX_SAFE_INTEGER);
         if (next <= floor) return;
         // Known to every reader and writer first: every name below `next` was deleted by the owner or never existed,
         // so refusing them before the floor is durable loses nothing, and if writing it fails, the floor may still
@@ -87,7 +107,7 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
         remember(prefix, next);
         await raiseFloor(store, scopeOf(prefix), next);
         for (const n of tombstoned) if (n < next) await store.delete(`${TOMBSTONES}objects/${prefix}${n}`);
-        for (const n of intents) if (n < next) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
+        for (const n of new Set([...intents, ...marked])) if (n < next) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
     }
 
     /** Hourly: every prefix is compacted, so a late copy no listing meets is still deleted; a revoked device's go. */
@@ -148,7 +168,7 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
                 // A copy a late write brought back after its deletion is not listed, and is deleted (invariant 5).
                 const numbers: number[] = [];
                 for (const n of listed) {
-                    if (await dead(prefix, n)) await forget(store, `objects/${prefix}${n}`);
+                    if (await dead(prefix, n)) await dropCopy(prefix, n);
                     else numbers.push(n);
                 }
                 numbers.sort((a, b) => b - a);
@@ -187,7 +207,10 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
                 // deleted name, tombstoned or below the prefix's floor, takes no bytes again: 410, so the owner can
                 // tell a name it superseded and deleted from a relay that holds bytes it never sent.
                 const number = Number(key.slice(key.lastIndexOf('/') + 1));
-                const result = await relay.lock.run(async () => ((await dead(prefix, number)) ? 'deleted' : writeOnce(store, key, call.body)));
+                // A deletion begun (its marker written) refuses it too, even while its tombstone may still land.
+                const result = await relay.lock.run(async () =>
+                    (await dead(prefix, number)) || (await store.has(intentsOf(key) + DELETING)) ? 'deleted' : writeOnce(store, key, call.body),
+                );
                 if (result === 'deleted') throw new HttpError(410, 'This name was deleted, and is never written again.');
                 if (result === 'different') throw new HttpError(409, 'Another object already has this name.');
                 return { status: 204 };
@@ -203,6 +226,9 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
                 // change what was acknowledged, and a PUT of it is 409 from then on (invariant 5).
                 const { key, prefix } = named(call);
                 await relay.lock.run(async () => {
+                    // Its marker first, durably: from then on the name takes no upload, so a tombstone whose write
+                    // failed but lands later can never hide an upload acknowledged meanwhile. A retry finishes it.
+                    await store.put(intentsOf(key) + DELETING, new Uint8Array());
                     await deleteForGood(store, key);
                     await compactLocked(prefix);
                 });
