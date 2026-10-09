@@ -208,9 +208,14 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
                 // tell a name it superseded and deleted from a relay that holds bytes it never sent.
                 const number = Number(key.slice(key.lastIndexOf('/') + 1));
                 // A deletion begun (its marker written) refuses it too, even while its tombstone may still land.
-                const result = await relay.lock.run(async () =>
-                    (await dead(prefix, number)) || (await store.has(intentsOf(key) + DELETING)) ? 'deleted' : writeOnce(store, key, call.body),
-                );
+                const marked = (): Promise<boolean> => store.has(intentsOf(key) + DELETING);
+                const result = await relay.lock.run(async () => {
+                    if ((await dead(prefix, number)) || (await marked())) return 'deleted';
+                    const written = await writeOnce(store, key, call.body);
+                    // writeOnce refuses whenever its listing of the name's intents shows another, the second one
+                    // (after its own intent) included: a marker that landed late there is a deletion, so 410.
+                    return written === 'different' && (await marked()) ? 'deleted' : written;
+                });
                 if (result === 'deleted') throw new HttpError(410, 'This name was deleted, and is never written again.');
                 if (result === 'different') throw new HttpError(409, 'Another object already has this name.');
                 return { status: 204 };

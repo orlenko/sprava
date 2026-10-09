@@ -677,6 +677,8 @@ test('deleting a name that never existed retires no other name, even the highest
     assert.equal((await call('DELETE', 'index/100')).status, 204);
     assert.equal((await call('DELETE', 'index/9007199254740991')).status, 204);
     assert.deepEqual(await store.list('floors/objects/index/'), [], 'no floor from names that never existed');
+    assert.deepEqual(await store.list('tombstones/objects/index/'), ['tombstones/objects/index/100', 'tombstones/objects/index/9007199254740991'], 'their tombstones stay');
+    assert.deepEqual(await store.list('intents/objects/index/'), ['intents/objects/index/100/deleting', 'intents/objects/index/9007199254740991/deleting'], 'and their markers');
     for (const n of [1, 99, 101]) assert.equal((await call('PUT', `index/${n}`)).status, 204, `index/${n} was never deleted`);
     assert.equal((await call('PUT', 'index/100')).status, 410, 'the deleted name itself stays deleted');
     // Once uploaded names are deleted, the floor passes them and the never-uploaded names below them.
@@ -748,4 +750,31 @@ test('a late copy below a mailbox floor is deleted without leaving a tombstone (
     assert.ok(!(await store.list(`requests/${device.id}/`)).some((k) => k.endsWith(a)), 'the late copy of A is deleted');
     assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), [], 'no tombstone for a name the floor covers');
     await again.close();
+});
+
+test('a deletion marker that lands while an upload is being written refuses it with 410, never 204 (§7.5)', async () => {
+    const { raw: fs } = await freshStore();
+    // The upload's own intent lands, and right after it a marker from an earlier DELETE whose write timed out.
+    const raw = new Proxy(fs, {
+        get(target, name: keyof Store) {
+            if (name === 'put') {
+                return async (key: string, body: Uint8Array) => {
+                    await target.put(key, body);
+                    if (key.includes('/intents/objects/index/9/') && !key.endsWith('/deleting')) {
+                        await target.put(key.slice(0, key.lastIndexOf('/') + 1) + 'deleting', new Uint8Array());
+                    }
+                };
+            }
+            const value = target[name];
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    const put = () => fetch(`${t.url}/v0/objects/index/9`, { method: 'PUT', body: new Uint8Array([9]), headers: bearer(owner) });
+    assert.equal((await put()).status, 410, 'refused at its second listing of the intents');
+    assert.equal(await store.get('objects/index/9'), null, 'nothing stored');
+    assert.equal((await put()).status, 410, 'and from then on');
+    await t.close();
 });
