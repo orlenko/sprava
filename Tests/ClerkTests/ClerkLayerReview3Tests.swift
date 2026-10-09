@@ -81,6 +81,66 @@ import Testing
         #expect(doc.escalate.contains("it asks for more than the clerk lists"))
     }
 
+    // MARK: - 8. Two changes to one item both reach the card
+
+    func change(_ title: String, _ action: String, _ sentence: TextSpan, _ candidate: FilingBinder.Candidate, people: [String] = [],
+                due: CalendarDate? = nil) -> ClerkItem {
+        var it = ClerkItem(title: title, action: action, sentence: sentence, people: people)
+        it.binder = "estate-example"
+        it.band = "high"
+        it.match = ClerkItem.Match(candidate: candidate, relation: "update")
+        if let due { it.whenResolved = due; it.whenText = "November 1"; it.whenRole = .due }
+        return it
+    }
+
+    func ops(_ items: [ClerkItem], _ text: String) -> [JSONObject] {
+        let input = ClerkInput(id: "evt-review3", text: text, locale: "en", captureDay: today, estimated: false, isPrivate: false,
+                               sourceKind: nil, app: "test")
+        let interp = Interpretation(id: "interp-review3", event: "evt-review3", model: "scripted", items: items)
+        return Clerk.itemOps(items, event: input, today: today, actor: JSONObject(), interp: interp, now: now).ops
+    }
+
+    @Test func twoDifferentChangesToOneItemAreMerged() {
+        let text = "The permit report is due November 1. Now wait for the permit report from Example Inspector."
+        let s = CaptureText.sentences(text)
+        let report = FilingBinder.Candidate(id: .str("estate-example-2026-011"), title: "Get the permit report", waitingOn: "Example Office",
+                                            words: [], status: "waiting")
+        let items = [change("Get the permit report", "other", s[0], report, due: nov1),
+                     change("Wait for the permit report", "wait", s[1], report, people: ["Example Inspector"])]
+        let built = ops(items, text)
+        #expect(built.count == 1)
+        #expect(built.first?["op"] == .str("update_item"))
+        #expect(built.first?["args"]?["set"] == .obj([("due", .str("2026-11-01")), ("waiting_on", .str("Example Inspector"))]))
+        #expect(built.first?["spans"]?.arrayValue?.count == 2)
+
+        // A wait that starts on an open item after a date change follows it as its own op.
+        var open = report
+        open.status = "open"
+        open.waitingOn = nil
+        let started = ops([change("Get the permit report", "other", s[0], open, due: nov1),
+                           change("Wait for the permit report", "wait", s[1], open, people: ["Example Inspector"])], text)
+        #expect(started.compactMap { $0["op"]?.stringValue } == ["update_item", "set_status"])
+        #expect(started.last?["args"]?["waiting_on"] == .str("Example Inspector"))
+
+        // The same change twice is still one change.
+        let twice = ops([change("Get the permit report", "other", s[0], report, due: nov1),
+                         change("Get the permit report", "other", s[0], report, due: nov1)], text)
+        #expect(twice.count == 1)
+    }
+
+    @Test func twoConflictingChangesToOneItemAreBothShown() {
+        let text = "Now wait for Example Inspector. Now wait for Example Surveyor."
+        let s = CaptureText.sentences(text)
+        let report = FilingBinder.Candidate(id: .str("estate-example-2026-012"), title: "Get the permit report", waitingOn: "Example Office",
+                                            words: [], status: "waiting")
+        let built = ops([change("Wait for the report", "wait", s[0], report, people: ["Example Inspector"]),
+                         change("Wait for the report", "wait", s[1], report, people: ["Example Surveyor"])], text)
+        #expect(built.compactMap { $0["args"]?["set"]?["waiting_on"]?.stringValue } == ["Example Inspector", "Example Surveyor"])
+        for o in built {
+            #expect(o["card"]?["flags"]?.arrayValue?.contains(.str("another sentence changes the same item differently")) == true)
+        }
+    }
+
     // MARK: - 6 and 7. Teen cents; "ce soir"
 
     @Test func teenCentsAreCents() {

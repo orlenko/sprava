@@ -56,7 +56,7 @@ extension Clerk {
         var already: [String] = []
         var rejectedItems: [String] = []
         var number = firstNumber - 1
-        var joins: [String: Int] = [:]   // an existing item's key: the op a later sentence about it joins
+        var joins: [String: [Int]] = [:]   // an existing item's key: the ops a later sentence about it joins
         var completed: Set<String> = []
         func op(_ name: String, _ args: JSONObject) -> JSONObject {
             JSONObject([(key: "op", value: .string(name)), (key: "args", value: .object(args))])
@@ -130,22 +130,8 @@ extension Clerk {
                 built = [op("add_item", JSONObject([(key: "item", value: .object(new))]))]
             }
             let span = JSONValue.obj([("event", .string(event.id)), ("start", .int(item.sentence.start)), ("end", .int(item.sentence.end))])
-            // One existing item gets one change: a second sentence about it ("Paid the permit fee. The permit fee is
-            // paid.") adds its span to the change already built, since a second completion would find the item gone
-            // and block the whole card. A completion after an update still follows it; the first update wins.
-            if let key = item.match?.candidate.key, relation == "done" || relation == "update" {
-                if let i = joins[key], relation == "update" || completed.contains(key) {
-                    ops[i].set("spans", .array((ops[i]["spans"]?.arrayValue ?? []) + [span]))
-                    var card = ops[i]["card"]?.objectValue ?? JSONObject()
-                    let flag = JSONValue.str("another sentence speaks of the same item")
-                    if card["flags"]?.arrayValue?.contains(flag) != true { card.set("flags", .array((card["flags"]?.arrayValue ?? []) + [flag])) }
-                    ops[i].set("card", .object(card))
-                    continue
-                }
-                joins[key] = ops.count
-                if relation == "done" { completed.insert(key) }
-            }
-            for var o in built {
+            let decorated = built.map { b -> JSONObject in
+                var o = b
                 if let amount = item.amountText { o.set("note", .string(amount)) }
                 o.set("confidence", .number(JSONNumber(text: String(format: "%.2f", confidence[item.band] ?? 0.5))))
                 o.set("spans", .array([span]))
@@ -157,10 +143,91 @@ extension Clerk {
                 if !item.flags.isEmpty { card.set("flags", .array(item.flags.map(JSONValue.string))) }
                 if let w = item.whenText, item.whenResolved == nil { card.set("when_text", .string(w)) }
                 o.set("card", .object(card))
-                ops.append(o)
+                return o
             }
+            // One existing item gets one change: a second sentence about it ("Paid the permit fee. The permit fee is
+            // paid.") adds its span to the change already built, since a second completion would find the item gone
+            // and block the whole card. A completion after an update still follows it. A second update is merged
+            // into the first when they agree; when they set one field differently, both stay on the card, flagged.
+            if let key = item.match?.candidate.key, relation == "done" || relation == "update" {
+                if let first = joins[key], completed.contains(key) {
+                    flag(&ops[first[0]], "another sentence speaks of the same item", span: span)
+                    continue
+                }
+                if let first = joins[key], relation == "update" {
+                    if let merged = merged(decorated, into: first.map { ops[$0] }) {
+                        for (i, o) in zip(first, merged) { ops[i] = o }
+                        for o in merged.dropFirst(first.count) { joins[key]?.append(ops.count); ops.append(o) }
+                    } else {
+                        for i in first { flag(&ops[i], "another sentence changes the same item differently") }
+                        for var o in decorated {
+                            flag(&o, "another sentence changes the same item differently")
+                            joins[key]?.append(ops.count)
+                            ops.append(o)
+                        }
+                    }
+                    continue
+                }
+                joins[key] = Array(ops.count..<(ops.count + decorated.count))
+                if relation == "done" { completed.insert(key) }
+            }
+            ops += decorated
         }
         return (ops, already, rejectedItems)
+    }
+
+    /// Adds a flag to an op's card once, and a span to its spans.
+    static func flag(_ o: inout JSONObject, _ text: String, span: JSONValue? = nil) {
+        if let span { o.set("spans", .array((o["spans"]?.arrayValue ?? []) + [span])) }
+        var card = o["card"]?.objectValue ?? JSONObject()
+        let flag = JSONValue.string(text)
+        if card["flags"]?.arrayValue?.contains(flag) != true { card.set("flags", .array((card["flags"]?.arrayValue ?? []) + [flag])) }
+        o.set("card", .object(card))
+    }
+
+    /// The fields a change to an existing item writes: `update_item`'s set, or `set_status`'s waiting fields.
+    static func written(_ o: JSONObject) -> [(key: String, value: JSONValue)] {
+        let args = o["args"]?.objectValue ?? JSONObject()
+        if o["op"] == .str("update_item") { return args["set"]?.objectValue?.entries ?? [] }
+        return args.entries.filter { !["id", "derived"].contains($0.key) }
+    }
+
+    /// A second sentence's changes to one item merged into the first's (`old`): each op joins the op of its kind,
+    /// or follows. Nil when the two set one field to different values, so neither is silently lost.
+    static func merged(_ new: [JSONObject], into old: [JSONObject]) -> [JSONObject]? {
+        var out = old
+        for n in new {
+            let before = out.flatMap(written)
+            if written(n).contains(where: { w in before.contains { $0.key == w.key && $0.value != w.value } }) { return nil }
+            guard let j = out.firstIndex(where: { $0["op"] == n["op"] }) else { out.append(n); continue }
+            var o = out[j]
+            var args = o["args"]?.objectValue ?? JSONObject()
+            let add = n["args"]?.objectValue ?? JSONObject()
+            if n["op"] == .str("update_item") {
+                var set = args["set"]?.objectValue ?? JSONObject()
+                for e in add["set"]?.objectValue?.entries ?? [] { set.set(e.key, e.value) }
+                args.set("set", .object(set))
+                var unset = args["unset"]?.arrayValue ?? []
+                for u in add["unset"]?.arrayValue ?? [] where !unset.contains(u) { unset.append(u) }
+                if unset.contains(where: { $0.stringValue.map { set[$0] != nil } ?? false }) { return nil }
+                if !unset.isEmpty { args.set("unset", .array(unset)) }
+            } else {
+                // A field either sentence names is no longer derived; one only derived stays derived.
+                let oldDerived = Set(args["derived"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+                let newDerived = Set(add["derived"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+                let derived = oldDerived.subtracting(Set(written(n).map(\.key)).subtracting(newDerived))
+                    .union(newDerived.subtracting(Set(written(o).map(\.key)).subtracting(oldDerived)))
+                for e in add.entries where e.key != "derived" { args.set(e.key, e.value) }
+                if derived.isEmpty { args.remove("derived") } else { args.set("derived", .array(derived.sorted().map(JSONValue.string))) }
+            }
+            o.set("args", .object(args))
+            if let note = n["note"]?.stringValue, o["note"]?.stringValue != note {
+                o.set("note", .string([o["note"]?.stringValue, note].compactMap { $0 }.joined(separator: "; ")))
+            }
+            for s in n["spans"]?.arrayValue ?? [] { flag(&o, "another sentence speaks of the same item", span: s) }
+            out[j] = o
+        }
+        return out
     }
 
     /// The binder item for one clerk item (capture-event-v0 §6.5).
