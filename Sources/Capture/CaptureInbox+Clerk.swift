@@ -177,7 +177,7 @@ extension CaptureInbox {
         // The cards are taken back when the hand-off fails; a record whose cards could not all be taken back stays
         // for the next sweep, so the clerk's cards never wait beside the code-built one.
         func giveUp(_ stage: String, next: String) -> ClerkOutcome {
-            if takeBack(planned, now: now) {
+            if takeBack(planned, commands: commands, now: now) {
                 state.handoffs?[id] = nil
                 state.committed?.removeAll { $0 == id }
             }

@@ -6,22 +6,23 @@ import SpravaKit
 
 // Withdrawing what waits from a chain, and retractions (capture-event-v0 §3.2).
 extension CaptureInbox {
-    /// Withdraws what still waits from a chain, and ends the clerk's work on it. A card that only redacts stays: a
-    /// raise to private holds whatever comes after it, and so does the removal card of `retraction`, the one being
-    /// resumed. Returns false when a card could not be withdrawn.
+    /// Withdraws what still waits from a chain, through the gate (`withdraw(_:reason:replacement:)`): what the cards
+    /// hold of the chain's current words is carried first. A card that only redacts stays: a raise to private holds
+    /// whatever comes after it, and so does the removal card of `retraction`, the one being resumed. Ends the clerk's
+    /// work on the chain. Returns false when a card could not be withdrawn, or when the current words cannot be read
+    /// (nil `replacement`: nothing is withdrawn).
     @discardableResult
-    func withdraw(chain: [String], reason: String, keeping retraction: String? = nil, state: inout State, binders: [ShelfRow],
-                  deviceID: String, now: Date) -> Bool {
+    func withdraw(chain: [String], reason: String, keeping retraction: String? = nil, replacement: Replacement?, state: inout State,
+                  binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
         // Cards that cannot all be read now are not all withdrawn: the work stays owed.
-        var complete = cardsListedCompletely(binders: binders, deviceID: deviceID)
-        for (folder, p) in withdrawable(chain: chain, binders: binders, deviceID: deviceID)
-        where retraction == nil || p.raw["provenance"]?["retraction"]?.stringValue != retraction {
-            if let folder {
-                if (try? TekaStore(folder: folder).reject(p, reason: reason, now: now)) == nil { complete = false }
-            } else if let file = unfiledFile(p.id), (try? FileManager.default.removeItem(at: file)) == nil,
-                      FileManager.default.fileExists(atPath: file.path) {
-                complete = false
-            }
+        var complete = cardsListedCompletely(binders: binders, deviceID: commands.deviceID)
+        let cards = withdrawable(chain: chain, binders: binders, deviceID: commands.deviceID).filter { _, p in
+            retraction == nil || p.raw["provenance"]?["retraction"]?.stringValue != retraction
+        }
+        if let replacement {
+            if !withdraw(cards, reason: reason, replacement: replacement, state: state, binders: binders, commands: commands, now: now) { complete = false }
+        } else if !cards.isEmpty {
+            complete = false
         }
         var clerk = state.clerk ?? [:]
         for id in chain where clerk[id] != nil { clerk[id] = "superseded" }
@@ -52,8 +53,9 @@ extension CaptureInbox {
     /// it does only what is left, and never makes a second card.
     func retract(chain: [String], retraction: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
         // A retry never withdraws the removal card this retraction already made: that is the person's to decide.
-        var complete = withdraw(chain: chain, reason: "the note was deleted where it was taken", keeping: retraction, state: &state,
-                                binders: binders, deviceID: commands.deviceID, now: now)
+        // What stands after the retraction (a restore taken in first) keeps what the withdrawn cards held of its words.
+        var complete = withdraw(chain: chain, reason: "the note was deleted where it was taken", keeping: retraction,
+                                replacement: wordsAfter(retraction, state: state), state: &state, binders: binders, commands: commands, now: now)
         var clerk = state.clerk ?? [:]
         for id in chain {
             clerk[id] = "retracted"

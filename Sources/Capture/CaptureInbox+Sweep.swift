@@ -212,8 +212,9 @@ extension CaptureInbox {
                 // A binder out of reach now gets this when it is back, worked out from the chain as it is then.
                 if registered, !absorbed.isEmpty { deferWork(of: id, chain: members, binders: binders, commands: commands, state: &state) }
                 if registered, !absorbed.isEmpty, !outdated.isEmpty {
-                    if !withdraw(chain: outdated, reason: "replaced by a corrected note", keeping: retractedNow ? standing : nil, state: &state,
-                                  binders: binders, deviceID: commands.deviceID, now: now) {
+                    let words: Replacement? = retractedNow ? .carried(nil) : standing.map { s in self.words(s, chain: members + [id], state: state).map { .carried($0) } } ?? .carried(nil)
+                    if !withdraw(chain: outdated, reason: "replaced by a corrected note", keeping: retractedNow ? standing : nil, replacement: words,
+                                 state: &state, binders: binders, commands: commands, now: now) {
                         // Left for each binder this Mac writes, finished there by the next sweep or before an approval.
                         owe(id, binders: binders, commands: commands, state: &state)
                     }
@@ -275,14 +276,9 @@ extension CaptureInbox {
                     journal([("event", .string(id)), ("stage", .str("cards_unreadable"))])
                     return
                 }
-                for (folder, p) in withdrawable(chain: [id], binders: binders, deviceID: commands.deviceID)
-                where p.raw["provenance"]?["events"] == .array([.string(id)]) {
-                    let gone: Bool
-                    if let folder { gone = (try? TekaStore(folder: folder).reject(p, reason: "replaced by a corrected note", now: now)) != nil }
-                    else if let file = unfiledFile(p.id) { gone = (try? FileManager.default.removeItem(at: file)) != nil }
-                    else { gone = true }
-                    if !gone { return }
-                }
+                let own = withdrawable(chain: [id], binders: binders, deviceID: commands.deviceID).filter { $0.1.raw["provenance"]?["events"] == .array([.string(id)]) }
+                guard let words = currentWords(chain, state: state),
+                      withdraw(own, reason: "replaced by a corrected note", replacement: words, state: state, binders: binders, commands: commands, now: now) else { return }
             }
             state.ingested[id] = "stale_revision"
             journal([("event", .string(id)), ("stage", .str("stale_revision"))])
@@ -342,13 +338,17 @@ extension CaptureInbox {
                 journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
                 return
             }
-            // What waits from the earlier words must go; when some of it cannot (its binder is read-only now), the stage stays
-            // "ingested" and the next sweep tries again: the cards this correction made are found again, never made twice.
-            guard withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, deviceID: commands.deviceID, now: now) else {
-                journal([("event", .string(id)), ("stage", .str("withdraw_failed"))])
-                return
-            }
             if let made = corrections {
+                // What waits from the earlier words must go, once what it holds of the new words is carried (the
+                // change cards above, or a card the gate makes where it waited); when some of it cannot go (its binder
+                // is read-only now), the stage stays "ingested" and the next sweep tries again: the cards this
+                // correction made are found again, never made twice.
+                let current: Replacement? = words(id, text: event.text, chain: chain + [id], state: state).map { .carried($0) }
+                guard withdraw(chain: chain, reason: "replaced by a corrected note", replacement: current, state: &state, binders: binders,
+                               commands: commands, now: now) else {
+                    journal([("event", .string(id)), ("stage", .str("withdraw_failed"))])
+                    return
+                }
                 if let (folder, card) = made.first {
                     state.cards[id] = card
                     if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
@@ -380,6 +380,13 @@ extension CaptureInbox {
         // The clerk reads it next; private captures too, on the device.
         state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
         state.ingested[id] = filedTo == nil ? "unfiled" : "proposed"
+        // A new revision of a chain with nothing filed: its own card reads all its words, and what waits from the
+        // earlier ones gives way to it from the same save on, as work owed to every place (finished at the end of the
+        // sweep, or when a binder out of reach is back).
+        if replaces != nil {
+            owe(id, binders: binders, commands: commands, state: &state)
+            for e in chain where state.clerk?[e] != nil { state.clerk?[e] = "superseded" }
+        }
         _ = checkpoint(state, &result)   // the card's id reaches the cursor now, not at the end of the sweep
         if filedTo == nil { result.unfiled += 1 } else { result.filed += 1 }
         if let end = event.endedAt { result.latencies.append(max(0, now.timeIntervalSince(end))) }
@@ -431,6 +438,9 @@ extension CaptureInbox {
         if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
         state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
         state.ingested[id] = folder == nil ? "unfiled" : "proposed"
+        // A revision's own card replaces what waits from the earlier words: that is owed to every place, as its sweep
+        // would have recorded it.
+        if chain.contains(where: { $0 != id }) { owe(id, binders: binders, commands: commands, state: &state) }
         journal([("event", .string(id)), ("stage", .str("card_recovered"))])
         let stored = storedEvent(id, paths: state.paths ?? [:])?["sensitivity"]
         let carded = (folder.map { f in ProposalStore.list(in: f).map(\.0) } ?? unfiled()).first { $0.id == card }

@@ -223,28 +223,27 @@ extension CaptureInbox {
         }
     }
 
-    /// The chain's work in the Inbox, worked out from the chain as it is now: its cards there are made private when the
-    /// chain is, and each one made from words that are no longer the chain's current ones goes. True once done.
+    /// The chain's work in the Inbox, worked out from the chain as it is now: each card made from words that are no
+    /// longer the chain's current ones goes, through the gate. True once done.
     func finishInInbox(_ id: String, state: inout State, commands: Commands, now: Date) -> Bool {
         let chain = state.chainsByKey?.values.first(where: { $0.contains(id) }) ?? [id]
         guard !chain.contains(where: { state.ingested[$0] == "ingested" }),
               Self.cardsReadable(in: unfiledDir), (try? unfiledDigests()) != nil else { return false }
         guard let newest = Self.standing(chain, state: state) else { return true }
-        var complete = true
+        guard let current = currentWords(chain, state: state) else { return false }
         let retracted = ["retracted", "retracting"].contains(state.ingested[newest] ?? "")
-        for p in unfiled() {
+        let outdated = unfiled().filter { p in
             let events = p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            guard events.count == 1, chain.contains(events[0]), retracted || state.texts?[events[0]] != state.texts?[newest],
-                  let file = unfiledFile(p.id) else { continue }
-            if (try? FileManager.default.removeItem(at: file)) == nil, FileManager.default.fileExists(atPath: file.path) { complete = false }
+            return events.count == 1 && chain.contains(events[0]) && (retracted || state.texts?[events[0]] != state.texts?[newest])
         }
-        return complete
+        return withdraw(outdated.map { (nil, $0) }, reason: "replaced by a corrected note", replacement: current, state: state,
+                        binders: [], commands: commands, now: now)
     }
 
     /// The chain's work in one binder, worked out from the chain as it is now: a retracted chain is retracted there
-    /// (its waiting cards withdrawn, its filed items offered for removal, redacted first when private); otherwise a
-    /// private chain is raised there, and each waiting card made from words that are no longer the chain's current
-    /// ones is withdrawn. True once all of it is done.
+    /// (its waiting cards withdrawn, its filed items offered for removal, redacted first when private); otherwise each
+    /// waiting card made from words that are no longer the chain's current ones is withdrawn through the gate, what it
+    /// holds of the current words carried first. True once all of it is done.
     func finishDeferred(_ id: String, in row: ShelfRow, state: inout State, commands: Commands, now: Date) -> Bool {
         // An event in no chain is its own: its cards in this binder still get the work.
         let chain = state.chainsByKey?.values.first(where: { $0.contains(id) })
@@ -256,14 +255,17 @@ extension CaptureInbox {
         if ["retracted", "retracting"].contains(state.ingested[newest] ?? "") {
             return retract(chain: chain.filter { $0 != newest }, retraction: newest, state: &state, binders: [row], commands: commands, now: now)
         }
-        var complete = Self.cardsReadable(in: ProposalStore.dir(row.folder))
-        let current = state.texts?[newest]
-        for (p, _) in ProposalStore.list(in: row.folder) where p.state == "proposed" && !Self.onlyRedacts(p)
-            && p.raw["provenance"]?["retraction"] == nil {
+        // Withdrawn only through the gate: what a card holds of the current words is carried first, so a line it held
+        // that the correction (made while this binder was away) could not see is not lost. Until that is done here,
+        // the work stays owed to this binder.
+        guard Self.cardsReadable(in: ProposalStore.dir(row.folder)), let current = currentWords(chain, state: state) else { return false }
+        let text = state.texts?[newest]
+        let outdated = ProposalStore.list(in: row.folder).map(\.0).filter { p in
+            guard p.state == "proposed", !Self.onlyRedacts(p), p.raw["provenance"]?["retraction"] == nil else { return false }
             let events = p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            guard events.count == 1, chain.contains(events[0]), state.texts?[events[0]] != current else { continue }
-            if (try? TekaStore(folder: row.folder).reject(p, reason: "replaced by a corrected note", now: now)) == nil { complete = false }
+            return events.count == 1 && chain.contains(events[0]) && state.texts?[events[0]] != text
         }
-        return complete
+        return withdraw(outdated.map { (row.folder, $0) }, reason: "replaced by a corrected note", replacement: current, state: state,
+                        binders: [row], commands: commands, now: now)
     }
 }

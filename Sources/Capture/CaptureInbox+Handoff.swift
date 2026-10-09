@@ -16,15 +16,21 @@ extension CaptureInbox {
         if let binder {
             let folder = URL(fileURLWithPath: binder, isDirectory: true)
             guard let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == card }) else { return .withdrawn }
+            // The clerk's cards read the same words again: what it makes no item of and that looks actionable it lists
+            // as not filed yet (capture-event-v0 §6.4), so they carry what the code-built card held.
             switch p.state {
-            case "proposed": return (try? TekaStore(folder: folder).reject(p, reason: "replaced by the clerk's reading", now: now)) != nil ? .withdrawn : .failed
+            case "proposed":
+                return withdraw([(folder, p)], reason: "replaced by the clerk's reading", replacement: .sameReading, binders: [],
+                                commands: commands, now: now) ? .withdrawn : .failed
             case "rejected": return .withdrawn
             default: return .acted
             }
         }
         guard let file = unfiledFile(card) else { return .withdrawn }
         if FileManager.default.fileExists(atPath: file.path) {
-            return (try? FileManager.default.removeItem(at: file)) != nil ? .withdrawn : .failed
+            guard let p = unfiled().first(where: { $0.id == card }) else { return .failed }
+            return withdraw([(nil, p)], reason: "replaced by the clerk's reading", replacement: .sameReading, binders: [],
+                            commands: commands, now: now) ? .withdrawn : .failed
         }
         // Gone from the Inbox: filed by the person (it is trusted in a binder now), else discarded or withdrawn.
         let filed = (try? commands.loadDigests())?.keys.contains { $0.hasSuffix("#" + card) } ?? true
@@ -45,20 +51,25 @@ extension CaptureInbox {
     static let takenBack = "the clerk's cards could not all be saved"
 
     /// Takes back the clerk's cards that still wait, in a binder or the Inbox (a binder save falls back to the
-    /// Inbox). Returns true once none of them waits.
-    func takeBack(_ cards: [State.Replacement], now: Date) -> Bool {
+    /// Inbox). Returns true once none of them waits. They go through the gate as the same words read again: the
+    /// code-built card stays in their place, waiting or acted on by the person.
+    func takeBack(_ cards: [State.Replacement], commands: Commands, now: Date) -> Bool {
         var complete = true
         for r in cards {
             if let binder = r.binder {
                 let folder = URL(fileURLWithPath: binder, isDirectory: true)
                 if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == r.card }), p.state == "proposed",
-                   (try? TekaStore(folder: folder).reject(p, reason: Self.takenBack, now: now)) == nil {
+                   !withdraw([(folder, p)], reason: Self.takenBack, replacement: .sameReading, binders: [], commands: commands, now: now) {
                     complete = false
                 }
             }
-            if let file = unfiledFile(r.card), (try? FileManager.default.removeItem(at: file)) == nil,
-               FileManager.default.fileExists(atPath: file.path) {
-                complete = false
+            if let file = unfiledFile(r.card), FileManager.default.fileExists(atPath: file.path) {
+                if let p = unfiled().first(where: { $0.id == r.card }) {
+                    if !withdraw([(nil, p)], reason: Self.takenBack, replacement: .sameReading, binders: [], commands: commands, now: now) { complete = false }
+                } else if (try? FileManager.default.removeItem(at: file)) == nil, FileManager.default.fileExists(atPath: file.path) {
+                    // A card file that cannot be read as one (cut short as it was written) holds nothing to carry.
+                    complete = false
+                }
             }
         }
         return complete
@@ -110,7 +121,7 @@ extension CaptureInbox {
                     break
                 }
             }
-            guard takeBack(cards, now: now) else { continue }
+            guard takeBack(cards, commands: commands, now: now) else { continue }
             state.handoffs?[id] = nil
             state.committed?.removeAll { $0 == id }
             journal([("event", .string(id)), ("stage", .str("clerk_handoff_taken_back"))])

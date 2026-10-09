@@ -76,7 +76,9 @@ import Testing
         defer { readOnly(s, false) }
         let revision = try event(s, ref: "W1", revision: "rev2", text: "Call the invented roofer Monday")
         sweep(s)
-        #expect(try s.inbox.readState().ingested[revision] == "ingested")
+        // The revision's own card is made first; the old card's withdrawal stays owed to its binder.
+        #expect(try s.inbox.readState().ingested[revision] == "unfiled")
+        #expect(s.inbox.hasDeferredWork(in: s.folder))
         #expect(pOpen(s).contains { $0.id == old.id })
         readOnly(s, false)
         sweep(s)
