@@ -34,7 +34,6 @@ function parsePrefix(prefix: string): { device: string | null } | null {
  * `floors/objects/{prefix}`, following the floor protocol of the README: raised only under the creation lock, only
  * to the lowest name the owner has not deleted, and durable before anything it covers is deleted.
  */
-export const ABANDONED_UPLOAD_MS = 24 * 3_600_000;
 const FLOOR_CACHE = 1024;
 
 export function objects(relay: Relay, devices: Devices): { routes: Route[]; sweep: () => Promise<void> } {
@@ -68,39 +67,27 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
     }
 
     /**
-     * Raises a prefix's floor to the lowest name the owner has not deleted. A name is known by its intent, which every
-     * upload writes first and only the floor removes, so a copy the store has lost for a while is never taken for
-     * a deletion. One exception keeps an abandoned upload from holding the floor forever: a name with an intent, no
-     * copy and no tombstone, older than a day and below a name that has a copy, is deleted for good first. Copies
-     * that count as deleted are deleted. Under the creation lock, like every PUT and DELETE.
+     * Raises a prefix's floor to the lowest name the owner has not deleted: the lowest with an intent or a copy and
+     * no tombstone. Every upload writes its intent first and only the floor removes it, so a copy the store has lost
+     * for a while, or an upload that failed, keeps its name live until the owner deletes it: the relay never retires
+     * an object on its own. Never above the highest valid name, whose tombstone the floor then leaves in place.
+     * Copies that count as deleted are deleted. Under the creation lock, like every PUT and DELETE.
      */
     async function compactLocked(prefix: string): Promise<void> {
         const floor = await floorOf(prefix);
         const copies = new Set(await numbersUnder(`objects/${prefix}`));
         const tombstoned = new Set(await numbersUnder(`${TOMBSTONES}objects/${prefix}`));
-        const intents = new Map<number, number>();
-        for (const { key, modified } of await store.listTimes(`${INTENTS}objects/${prefix}`)) {
-            const n = key.slice(`${INTENTS}objects/${prefix}`.length).split('/')[0]!;
-            if (isRevision(n)) intents.set(Number(n), Math.max(modified, intents.get(Number(n)) ?? 0));
-        }
+        const intents = new Set(await numbersUnder(`${INTENTS}objects/${prefix}`));
         for (const n of copies) if (n < floor || tombstoned.has(n)) await forget(store, `objects/${prefix}${n}`);
-        const highestCopy = Math.max(0, ...[...copies].filter((n) => n >= floor && !tombstoned.has(n)));
-        for (const [n, modified] of intents) {
-            const abandoned = !copies.has(n) && !tombstoned.has(n) && n >= floor && n < highestCopy && modified < relay.now() - ABANDONED_UPLOAD_MS;
-            if (abandoned) {
-                await deleteForGood(store, `objects/${prefix}${n}`);
-                tombstoned.add(n);
-            }
-        }
-        const live = [...new Set([...copies, ...intents.keys()])].filter((n) => n >= floor && !tombstoned.has(n));
-        const known = [...copies, ...intents.keys(), ...tombstoned];
+        const live = [...new Set([...copies, ...intents])].filter((n) => n >= floor && !tombstoned.has(n));
+        const known = [...copies, ...intents, ...tombstoned];
         if (known.length === 0) return;
-        const next = live.length > 0 ? Math.min(...live) : Math.max(floor - 1, ...known) + 1;
+        const next = Math.min(live.length > 0 ? Math.min(...live) : Math.max(floor - 1, ...known) + 1, Number.MAX_SAFE_INTEGER);
         if (next <= floor) return;
         await raiseFloor(store, scopeOf(prefix), next); // durable first
         remember(prefix, next); // then known to every reader, before anything it covers goes
         for (const n of tombstoned) if (n < next) await store.delete(`${TOMBSTONES}objects/${prefix}${n}`);
-        for (const n of intents.keys()) if (n < next) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
+        for (const n of intents) if (n < next) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
     }
 
     /** Hourly: every prefix is compacted, so a late copy no listing meets is still deleted; a revoked device's go. */

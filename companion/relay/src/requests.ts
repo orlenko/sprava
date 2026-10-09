@@ -154,7 +154,7 @@ export function requests(relay: Relay, devices: Devices) {
     async function compactLocked(d: string): Promise<void> {
         const mailbox = mailboxes.get(d);
         if (mailbox === undefined) return;
-        const lowest = Math.min(nextOrdinal.get(d) ?? 1, ...[...mailbox.values()].map((e) => e.ordinal));
+        const lowest = Math.min(nextOrdinal.get(d) ?? 1, Number.MAX_SAFE_INTEGER, ...[...mailbox.values()].map((e) => e.ordinal));
         if (lowest <= (await floorLocked(d))) return;
         await raiseFloor(store, `requests/${d}`, lowest); // durable before anything it covers goes
         floors.set(d, lowest);

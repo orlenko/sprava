@@ -233,7 +233,9 @@ export async function readFloor(store: Store, scope: string): Promise<number> {
     return Math.max(0, ...listed.filter(Number.isSafeInteger));
 }
 
-export async function raiseFloor(store: Store, scope: string, floor: number): Promise<void> {
+export async function raiseFloor(store: Store, scope: string, wanted: number): Promise<void> {
+    // At most the highest valid number (§3): that name's own tombstone, or its liveness, then still decides it.
+    const floor = Math.min(wanted, Number.MAX_SAFE_INTEGER);
     const mine = `${FLOORS}${scope}/${pad16(floor)}`;
     await store.put(mine, new Uint8Array());
     for (const key of await store.list(`${FLOORS}${scope}/`)) if (key !== mine) await store.delete(key);

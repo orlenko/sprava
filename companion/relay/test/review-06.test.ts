@@ -400,7 +400,7 @@ test('a floor read that finishes late never lowers a floor raised meanwhile (§7
     await t.close();
 });
 
-test('an upload abandoned for a day below a later object is retired, so it never holds the floor (§7.5)', async () => {
+test('an upload that failed keeps its name live until the owner deletes it; the floor never passes it alone (§7.5)', async () => {
     const { raw, store } = await freshStore();
     const owner = await seedOwner(store);
     const clock = { now: Date.now() };
@@ -408,14 +408,32 @@ test('an upload abandoned for a day below a later object is retired, so it never
     const call = (method: string, n: number, body?: Uint8Array) =>
         fetch(`${t.url}/v0/objects/index/${n}`, { method, headers: bearer(owner), ...(body ? { body } : {}) });
     assert.equal((await call('PUT', 1, new Uint8Array([1]))).status, 204);
-    await store.put(`intents/objects/index/2/${'0'.repeat(64)}`, new Uint8Array()); // an upload whose copy never landed
+    const digest = '0'.repeat(64);
+    await store.put(`intents/objects/index/2/${digest}`, new Uint8Array()); // an upload whose copy never landed
     assert.equal((await call('PUT', 3, new Uint8Array([3]))).status, 204);
+    clock.now += 30 * 24 * 3_600_000;
     assert.equal((await call('DELETE', 1)).status, 204);
-    assert.deepEqual(await store.list('floors/objects/index/'), ['floors/objects/index/0000000000000002'], 'a young upload holds it');
-    clock.now += 25 * 3_600_000;
-    assert.equal((await call('DELETE', 1)).status, 204, 'compaction runs again');
+    assert.deepEqual(await store.list('floors/objects/index/'), ['floors/objects/index/0000000000000002'], 'however old');
+    assert.deepEqual(await store.list('intents/objects/index/2/'), [`intents/objects/index/2/${digest}`]);
+    assert.equal((await call('DELETE', 2)).status, 204, 'the owner deletes it');
     assert.deepEqual(await store.list('floors/objects/index/'), ['floors/objects/index/0000000000000003']);
     assert.deepEqual(await store.list('intents/objects/index/2/'), []);
-    assert.equal((await call('PUT', 2, new Uint8Array([2]))).status, 410, 'gone');
     await t.close();
+});
+
+test('the highest valid revision keeps its deletion across a restart (§3, §7.5)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const top = '9007199254740991';
+    const first = await startTestRelay({ raw });
+    const call = (url: string, method: string, body?: Uint8Array) =>
+        fetch(`${url}/v0/objects/index/${top}`, { method, headers: bearer(owner), ...(body ? { body } : {}) });
+    assert.equal((await call(first.url, 'PUT', new Uint8Array([1]))).status, 204);
+    assert.equal((await call(first.url, 'DELETE')).status, 204);
+    await first.close();
+    await store.put(`objects/index/${top}`, new Uint8Array([1])); // a late copy lands
+    const second = await startTestRelay({ raw });
+    assert.equal((await call(second.url, 'GET')).status, 404);
+    assert.equal((await call(second.url, 'PUT', new Uint8Array([1]))).status, 410);
+    await second.close();
 });
