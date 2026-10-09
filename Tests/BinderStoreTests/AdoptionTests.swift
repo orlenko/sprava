@@ -283,6 +283,32 @@ import Testing
         #expect(teka.catalog?["meta"]?["legacy_disclosure_2"] == .obj([("hub", .str("invented setting"))]))
     }
 
+    // Layer 5 second calibrated review, finding 1: a stamp card that moves a meta value aside is refused once the
+    // person changed that value, never erasing it, and is made again from the catalog as it is.
+    @Test func aStampCardNeverErasesAMetaValueChangedSince() throws {
+        let plain = #"{"id":"p-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01"}"#
+        let folder = try lifeproj([plain])
+        let url = folder.appendingPathComponent("catalog.json")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        try Data(text.replacingOccurrences(of: #""name":"tax""#, with: #""name":"tax","lifecycle":"legacy""#).utf8).write(to: url)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        let stamp = try #require(result.proposals.first { $0.raw["provenance"]?["adoption"] == .str("stamp") })
+        // The person corrects the lifecycle in an editor before approving.
+        let edited = try String(contentsOf: url, encoding: .utf8)
+        #expect(edited.contains(#""lifecycle":"legacy""#))
+        try Data(edited.replacingOccurrences(of: #""lifecycle":"legacy""#, with: #""lifecycle":"finite""#).utf8).write(to: url)
+        #expect(throws: TekaStore.Refused.self) { try TekaStore(folder: folder).approve(stamp, now: now) }
+        #expect(Teka.read(folder).catalog?["meta"]?["lifecycle"] == .str("finite"))
+        // The stale card is replaced by one made from the corrected catalog, which keeps the new value.
+        let id = try #require(try Adoption.offerStamp(folder, now: now))
+        #expect(ProposalStore.list(in: folder).first { $0.0.id == stamp.id }?.0.state == "rejected")
+        try TekaStore(folder: folder).approve(try ProposalStore.load(id, in: folder, expectedDigest: nil), now: now)
+        let teka = Teka.read(folder)
+        #expect(teka.state == .ready, "\(teka.reasons)")
+        #expect(teka.catalog?["meta"]?["lifecycle"] == .str("finite"))
+        #expect(teka.catalog?["meta"]?["legacy_lifecycle"] == nil)
+    }
+
     // Layer 5 second calibrated review, finding 2: a pre-lifeproj schema version stays in the catalog under the next
     // free legacy name when `legacy_schema_version` is taken.
     @Test func anOldSchemaVersionIsKeptBesideATakenLegacyKey() throws {

@@ -109,14 +109,20 @@ extension Adoption {
     }
 
     /// After the person approves a card in a binder that is adopted but not yet stamped, offers the stamp once the
-    /// catalog would pass, unless a stamp card is already waiting. Returns the id of a card it wrote.
+    /// catalog would pass, unless a stamp card is already waiting. A waiting stamp card made before a value it moves
+    /// aside was changed is rejected and made again from the catalog as it is. Returns the id of a card it wrote.
     public static func offerStamp(_ folder: URL, client: String = "sprava/0.1", now: Date = Date()) throws -> String? {
-        let level = Teka.read(folder).level
-        guard level == .lifeprojV1 || level == .lifeprojV2 else { return nil }
+        let teka = Teka.read(folder)
+        guard teka.level == .lifeprojV1 || teka.level == .lifeprojV2 else { return nil }
+        let store = TekaStore(folder: folder)
+        for (p, _) in ProposalStore.list(in: folder)
+        where p.state == "proposed" && p.raw["provenance"]?["adoption"] == .str("stamp") && !p.changedSince(catalog: teka.catalog).isEmpty {
+            try store.reject(p, reason: "the binder settings changed since this card was made", now: now)
+        }
         let waiting = ProposalStore.list(in: folder).contains { p, _ in
             p.state == "proposed" && (p.raw["provenance"]?["adoption"] == .str("stamp") || p.ops.contains { $0["op"] == .str("migrate") })
         }
-        guard !waiting, let ops = try? TekaStore(folder: folder).readOpLog().ops,
+        guard !waiting, let ops = try? store.readOpLog().ops,
               let survey = ops.last(where: { $0["op"] == .str("import_snapshot") })?["args"]?["survey"]?.objectValue,
               let card = stampProposal(folder, survey: survey, pending: [], client: client, now: now) else { return nil }
         try ProposalStore.save(card, in: folder)
