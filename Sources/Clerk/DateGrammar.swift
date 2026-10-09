@@ -64,7 +64,8 @@ public enum DateGrammar {
             return Found(text: raw, date: numericDate(t, locale: locale))
         }
         switch t {
-        case "today", "tonight", "aujourd'hui", "ce soir": return Found(text: raw, date: today)
+        case "today", "tonight", "aujourd'hui": return Found(text: raw, date: today)
+        case "soir" where wasThis: return Found(text: raw, date: today)   // "ce soir", after "ce" is stripped
         case "tomorrow", "demain": return Found(text: raw, date: today.checkedAdding(days: 1))
         case "day after tomorrow", "après-demain": return Found(text: raw, date: today.checkedAdding(days: 2))
         case "next week", "semaine prochaine":

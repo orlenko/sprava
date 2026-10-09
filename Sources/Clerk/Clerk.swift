@@ -224,9 +224,11 @@ public struct Clerk: Sendable {
         return String(cut[..<(cut.lastIndex(of: " ") ?? cut.endIndex)])
     }
 
+    /// Whether two titles name the same task, read both ways: a title with a word the other lacks is another task
+    /// ("Pay rent" and "Pay rent deposit"), so neither is dropped as a repeat of the other.
     static func similar(_ a: String, _ b: String) -> Bool {
         let x = FilingBinder.significantWords(a), y = FilingBinder.significantWords(b)
         guard !x.isEmpty, !y.isEmpty else { return a.lowercased() == b.lowercased() }
-        return Double(x.intersection(y).count) / Double(min(x.count, y.count)) >= 0.8
+        return Double(x.intersection(y).count) / Double(max(x.count, y.count)) >= 0.8
     }
 }

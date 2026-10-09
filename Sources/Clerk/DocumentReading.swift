@@ -97,13 +97,16 @@ extension Clerk {
     /// Whether `next`, which dates an item that has no date, is about the same obligation, so the date is the item's.
     /// The same action is no evidence ("Pay the inspection fee. Pay the insurance premium by November 1."). It is
     /// when `next` names nothing else, shares a word with the item, or only says when the item's amount is due
-    /// ("Your share is $1,240. The levy is due November 1.").
+    /// ("Your share is $1,240. The levy is due November 1."). An amount alone is no evidence: only a sentence that
+    /// states an amount and asks for nothing leaves its task to the next ("Pay the inspection fee of $100. The
+    /// insurance premium is due November 1." are two payments).
     static func sameObligation(_ item: ClerkItem, next: String, dateText: String) -> Bool {
         let own = FilingBinder.significantWords(next).subtracting(FilingBinder.significantWords(dateText))
             .subtracting(taskVerbs).subtracting(plainWords)
         if own.isEmpty || !own.isDisjoint(with: FilingBinder.significantWords(item.sentence.text + " " + item.title)) { return true }
-        let words = Set(next.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
-        return item.amount != nil && words.isDisjoint(with: taskVerbs) && Amounts.scan(next) == nil
+        func words(_ s: String) -> Set<String> { Set(s.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)) }
+        return item.amount != nil && words(item.sentence.text).isDisjoint(with: taskVerbs) && words(next).isDisjoint(with: taskVerbs)
+            && Amounts.scan(next) == nil
     }
 
     func documentInstructions() -> String {
@@ -298,25 +301,33 @@ extension Clerk {
         }
         // An item that took its date from the next sentence and an item read from that sentence with the same
         // date and the same task are one ("Your share is $1,240." / "The levy is due November 1."): the first, with
-        // its amount, stays. A shared date alone is no evidence: a different task in that sentence stays.
+        // its amount, stays. A shared date and action are no evidence: the second must also name nothing the first
+        // does not, or the first sentence must ask for nothing itself, so a different payment there stays.
         for item in interp.items where item.flags.contains("date taken from the next sentence") {
             guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
+            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.title)
+            let asksNothing = Set(item.sentence.text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: Self.taskVerbs)
             interp.items.removeAll {
                 $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
-                    && ($0.action == item.action || Self.similar($0.title, item.title))
+                    && (Self.similar($0.title, item.title) || $0.action == item.action
+                        && (asksNothing || FilingBinder.significantWords($0.title).subtracting(Self.taskVerbs).subtracting(Self.plainWords).isSubset(of: mine)))
             }
         }
         // What still asks something by a date and no item covers, after the second reading, is kept and makes the
         // reading partial (§4.4): an item that took its date from the next sentence covers that sentence too.
         let borrowed = interp.items.filter { $0.flags.contains("date taken from the next sentence") }
             .compactMap { sentences.firstIndex(of: $0.sentence) }.filter { $0 + 1 < sentences.count }.map { sentences[$0 + 1] }
-        doc.notCovered = sentences.filter { s in !interp.items.contains(where: { $0.sentence == s }) && !borrowed.contains(s) && asksByDate(s) }
+        // Items past the cap leave their sentences uncovered too, so the reading is partial and names them.
         let found = interp.items.count
+        let cut = interp.items.dropFirst(Self.documentItems).map(\.sentence)
         interp.items = Array(interp.items.prefix(Self.documentItems))
+        doc.notCovered = sentences.filter { s in
+            !interp.items.contains(where: { $0.sentence == s }) && (cut.contains(s) || !borrowed.contains(s) && asksByDate(s))
+        }
         if let binder { await checkDuplicates(&interp, filing: [binder], today: today, locale: locale) }
         doc.items = interp.items
         doc.calls += interp.calls
-        if doc.unread > 0 || interp.outcome == "partial" || !doc.notCovered.isEmpty { doc.outcome = "partial" }
+        if doc.unread > 0 || interp.outcome == "partial" || !doc.notCovered.isEmpty || found > Self.documentItems { doc.outcome = "partial" }
 
         // §4.4: when a careful reading by a smarter model is worth it. Code decides, from what is known.
         if doc.documentClass == "unsure" { doc.escalate.append("the clerk is not sure what it is") }

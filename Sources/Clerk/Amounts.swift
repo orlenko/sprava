@@ -68,7 +68,8 @@ public enum Amounts {
         guard add(current, &total) else { return nil }
         var value = Double(total)
         // English "cents" is money, not a hundred: "fifty cents" is half a dollar ("deux cents" stays 200).
-        let english = words.contains { ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "twenty", "thirty",
+        let english = words.contains { ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+                                        "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
                                         "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand"].contains($0) }
         if english, words.last == "cents" || words.last == "cent", !words.contains("dollars"), !words.contains("dollar") {
             guard let whole = wordsValue(words.dropLast()) else { return nil }
