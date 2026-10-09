@@ -32,10 +32,18 @@ extension CaptureInbox {
     /// in a binder unless it only redacts.
     func withdrawable(chain: [String], binders: [ShelfRow], deviceID: String) -> [(URL?, Proposal)] {
         let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: deviceID)
-        func onlyRedacts(_ p: Proposal) -> Bool {
-            !p.ops.isEmpty && p.ops.allSatisfy { $0["op"] == .str("update_item") && $0["args"]?["set"]?["redact"] == .bool(true) }
+        return unfiled.map { (nil, $0) } + filed.filter { !Self.onlyRedacts($0.1) }.map { ($0.0, $0.1) }
+    }
+
+    /// Whether a card only narrows privacy: every op an `update_item` that sets `redact: true`, with at most the
+    /// kind `other` a redaction needs, and changes nothing else (no title, date or status, nothing unset). Only such a
+    /// card outlives a later correction or retraction of its chain; any other is out of date once the chain moves on.
+    package static func onlyRedacts(_ p: Proposal) -> Bool {
+        !p.ops.isEmpty && p.ops.allSatisfy { op in
+            guard op["op"] == .str("update_item"), let args = op["args"]?.objectValue, let set = args["set"]?.objectValue,
+                  set["redact"] == .bool(true), (args["unset"]?.arrayValue ?? []).isEmpty else { return false }
+            return set.entries.allSatisfy { $0.key == "redact" || ($0.key == "kind" && $0.value == .str("other")) }
         }
-        return unfiled.map { (nil, $0) } + filed.filter { !onlyRedacts($0.1) }.map { ($0.0, $0.1) }
     }
 
     /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items
@@ -55,12 +63,22 @@ extension CaptureInbox {
         }
         state.clerk = clerk
         let ids = Set(chain)
+        // A private chain closes nothing in the clear: the closure keeps the item's title, so each item is redacted
+        // first in the same card, as a private correction does (capture-event-v0 §3.3).
+        let isPrivate = !ids.union([retraction]).isDisjoint(with: state.privates ?? [])
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
-            let filed = row.teka.items.compactMap { item -> JSONObject? in
+            let filed = row.teka.items.flatMap { item -> [JSONObject] in
                 guard let o = item.object, let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue),
-                      events.contains(where: ids.contains), let itemID = o["id"] else { return nil }
-                return JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
-                    ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))])
+                      events.contains(where: ids.contains), let itemID = o["id"] else { return [] }
+                var ops: [JSONObject] = []
+                if isPrivate, o["redact"] != .bool(true) {
+                    var redact = JSONObject([(key: "redact", value: .bool(true))])
+                    if o["kind"] == nil { redact.set("kind", .str("other")) }
+                    ops.append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(redact))]))]))
+                }
+                ops.append(JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
+                    ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))]))
+                return ops
             }
             guard !filed.isEmpty else { continue }
             // A card this retraction already made, waiting or acted on, is kept; a leftover that was never trusted

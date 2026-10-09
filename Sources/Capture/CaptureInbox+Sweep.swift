@@ -118,17 +118,22 @@ extension CaptureInbox {
         let registered = producer != nil && producer == event.app
         let new = state.ingested[id] == nil
         var earlierCopy = new ? earlierCapture(event, state: state) : nil
+        // Where the event stands in its chain: its own stamp, or the one it took over from an earlier copy.
+        var clock = state.clocks?[id] ?? Self.clockKey(event)
         // An earlier copy of the same capture that crashed before its card was made (and got none) holds nothing yet:
-        // this copy carries the capture, and the earlier one counts as its duplicate from now on, out of the chain.
+        // this copy carries the capture in the earlier one's place in the chain, and the earlier one counts as its
+        // duplicate from now on.
         if let earlier = earlierCopy, earlier != id, state.ingested[earlier] == "ingested",
            !adoptOrphanCard(earlier, state: &state, binders: binders, deviceID: commands.deviceID) {
             state.ingested[earlier] = "duplicate"
             journal([("event", .string(earlier)), ("stage", .str("duplicate")), ("of", .string(id))])
+            clock = state.clocks?[earlier] ?? clock
             earlierCopy = nil
         }
-        let chain = registered ? chainIDs(of: event, state: state).filter { $0 != id && state.ingested[$0] != "duplicate" } : []
+        let chain = registered ? chainIDs(of: event, state: state).filter { $0 != id } : []
         // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision older than
-        // it changes nothing.
+        // it changes nothing. Duplicates count here: a second retraction taken for a copy of the first, because the
+        // restore between them had not arrived yet, still makes that restore stale when it does.
         let clocks = state.clocks ?? [:]
         let current = chain.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
         // What this revision is compared with is the newest event whose words are held by a card or a settled stage.
@@ -139,13 +144,15 @@ extension CaptureInbox {
         let currentRetracted = baseline.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
         // A deletion after the chain's current event, or a restore after its deletion, changes what the chain is:
         // neither repeats an earlier event of the same triple, so neither is taken for a duplicate (§3.2).
-        let transition = baseline.map { (clocks[$0] ?? "") < Self.clockKey(event) } == true && event.retracted != currentRetracted
+        let transition = baseline.map { (clocks[$0] ?? "") < clock } == true && event.retracted != currentRetracted
 
         if new {
             if let earlier = earlierCopy, !transition {
                 // The same capture again: only a raise of sensitivity is applied (capture-event-v0 §3.2).
                 result.duplicates += 1
                 state.ingested[id] = "duplicate"
+                state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
+                if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
                 if registered, event.isPrivate { raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
                 journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
                 return
@@ -154,7 +161,7 @@ extension CaptureInbox {
             state.captures = (state.captures ?? [:]).merging([event.dedupeKey: id]) { $1 }
             state.apps[id] = event.app
             state.texts = (state.texts ?? [:]).merging([id: textHash]) { $1 }
-            state.clocks = (state.clocks ?? [:]).merging([id: Self.clockKey(event)]) { $1 }
+            state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
             if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
         }
         // Ingesting is one durable step, recorded before anything else happens: no card is made from an event the
@@ -167,9 +174,14 @@ extension CaptureInbox {
 
         // Sensitivity only goes up, whatever order a chain's events arrive in: a private event raises the chain even
         // when it is stale, empty or a retraction (§3.3).
-        if event.isPrivate, current != nil { raise(chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+        // The first event of a chain records its privacy too, before any return below (empty, retracted), so a later
+        // revision marked otherwise is still filed private.
+        if event.isPrivate {
+            if current != nil { raise(chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+            else { markPrivate([id], state: &state) }
+        }
         // A revision that arrives late but is older than what the chain already has changes nothing else.
-        if let current, (clocks[current] ?? "") > Self.clockKey(event) {
+        if let current, (clocks[current] ?? "") > clock {
             state.ingested[id] = "stale_revision"
             journal([("event", .string(id)), ("stage", .str("stale_revision"))])
             return

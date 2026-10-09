@@ -179,7 +179,8 @@ import Testing
         state = try s.inbox.readState()
         let key = try #require(CaptureEvent.check(s.producer.root.appendingPathComponent(early).appendingPathComponent("\(revised).json"),
                                                   deviceFolder: s.producer.root.appendingPathComponent(early)).1).chainKey
-        #expect(state.chainsByKey?[key] == [piped, revised])
+        // The stored chain, its copy (kept in the chain for its stamp), then the revision.
+        #expect(state.chainsByKey?[key]?.first == piped && state.chainsByKey?[key]?.last == revised && state.chainsByKey?[key]?.count == 3)
         #expect(!s.inbox.unfiled().contains { fromEvent($0, piped) })
     }
 

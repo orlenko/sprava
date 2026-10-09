@@ -1,3 +1,4 @@
+import BinderStore
 import Foundation
 import SpravaKit
 
@@ -23,6 +24,7 @@ extension CaptureInbox {
         var privates: [String]? = []                  // ids raised to private, or private by their chain (capture-event-v0 §3.3)
         package var examined: [String: Examined] = [:]        // device/name -> last seen
         var handoffs: [String: [Replacement]]? = [:]  // id -> the clerk's cards, named before any is saved, until its Tier 0 card gives way
+        var committed: [String]? = []                 // ids whose clerk cards were all saved: the hand-off only goes forward now
         package struct Examined: Codable, Equatable {
             var size: Int
             var mtime: Double
@@ -47,7 +49,28 @@ extension CaptureInbox {
     }
 
     package func save(_ s: State) throws {
+        guard CursorCrash.allows(stateURL) else { throw Commands.Failure(message: "the cursor's save was stopped (a test's crash point)") }
         try AtomicFile.makePrivateFolder(dir)
         try AtomicFile.write(try JSONEncoder().encode(s), to: stateURL)
+    }
+}
+
+/// A crash point for tests: the cursor's saves fail after a given number of them, as if the process stopped right
+/// after its last durable write, so the inbox's recovery can be exercised at every checkpoint. Keyed by the cursor's
+/// path, so tests running side by side never meet; nothing in the app sets it.
+enum CursorCrash {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var left: [String: Int] = [:]
+
+    /// Lets `saves` more saves of the cursor at `url` through, then fails every one; nil lifts the crash point.
+    static func after(_ saves: Int?, cursor url: URL) { lock.withLock { left[url.path] = saves } }
+
+    static func allows(_ url: URL) -> Bool {
+        lock.withLock {
+            guard let n = left[url.path] else { return true }
+            guard n > 0 else { return false }
+            left[url.path] = n - 1
+            return true
+        }
     }
 }

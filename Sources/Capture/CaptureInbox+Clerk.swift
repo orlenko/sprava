@@ -159,7 +159,10 @@ extension CaptureInbox {
         // The cards are taken back when the hand-off fails; a record whose cards could not all be taken back stays
         // for the next sweep, so the clerk's cards never wait beside the code-built one.
         func giveUp(_ stage: String, next: String) -> ClerkOutcome {
-            if takeBack(planned, now: now) { state.handoffs?[id] = nil }
+            if takeBack(planned, now: now) {
+                state.handoffs?[id] = nil
+                state.committed?.removeAll { $0 == id }
+            }
             clerk[id] = next
             outcome = ClerkOutcome(items: outcome.items)
             log(stage)
@@ -182,6 +185,13 @@ extension CaptureInbox {
                 outcome.unsure += proposal.ops.count
             }
         }
+        // Every card is saved: from here the hand-off only goes forward, so a crash before it is cleared never takes
+        // back a card the person may already have acted on once the code-built card is gone (`settleHandoffs`).
+        state.committed = Array(Set(state.committed ?? []).union([id])).sorted()
+        state.clerk = clerk
+        guard (try? save(state)) != nil else {
+            return giveUp("clerk_write_failed", next: (state.attempts?[id] ?? 0) >= 2 ? "kept" : "retry")
+        }
         // The code-built card gives way to the clerk's reading; the reading counts as done only once it has. When it
         // cannot, or the person acted on it meanwhile, the clerk's cards are taken back instead.
         switch withdrawTier0(work.tier0, binder: work.tier0Binder, commands: commands, now: now) {
@@ -193,6 +203,7 @@ extension CaptureInbox {
             return giveUp("clerk_withdraw_failed", next: (state.attempts?[id] ?? 0) >= 2 ? "kept" : "retry")
         }
         state.handoffs?[id] = nil
+        state.committed?.removeAll { $0 == id }
         outcome.replaced = true
         clerk[id] = "done"
         log("clerk")

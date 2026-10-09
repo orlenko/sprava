@@ -170,6 +170,23 @@ extension CaptureInbox {
                 }
             }
         }
+        // A line that no item holds and nothing above proposes is proposed once, like an added line, when its words
+        // changed (a line never filed, or declined, is new words now), or when only a withdrawn card held it, as a new
+        // title for an item that now keeps another line. A withdrawn card that listed it as not filed yet keeps it so.
+        let withdrawnTitles = Set(withdrawn.flatMap { $0.1.ops }.compactMap { op -> String? in
+            (op["op"] == .str("add_item") ? op["args"]?["item"]?["title"] : op["args"]?["set"]?["title"])?.stringValue
+        })
+        for (c, fate) in (step?.fates ?? []).enumerated() {
+            let j: Int
+            switch fate {
+            case .changed(let k): j = k
+            case .same(let k) where withdrawnTitles.contains(String(currentLines?[c].text.prefix(200) ?? "")): j = k
+            default: continue
+            }
+            guard placedAt[j] == nil, propose[j] == nil, notFiled[j] == nil else { continue }
+            let before = placedAt.keys.filter { $0 < j }.max(), after = placedAt.keys.filter { $0 > j }.min()
+            propose[j] = .some(before.flatMap { placedAt[$0] } ?? after.flatMap { placedAt[$0] })
+        }
         for j in propose.keys.sorted().dropFirst(10) { notFiled[j] = (propose[j]!, "more_lines") }
         func unfiledSpans(_ target: URL?) -> [JSONValue] {
             notFiled.keys.sorted().filter { notFiled[$0]!.target == target }.map { j in

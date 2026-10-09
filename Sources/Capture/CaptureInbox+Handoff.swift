@@ -38,6 +38,9 @@ extension CaptureInbox {
         return unfiled().contains { $0.id == r.card }
     }
 
+    /// The reason on a clerk's card Sprava took back itself, never the person.
+    static let takenBack = "the clerk's cards could not all be saved"
+
     /// Takes back the clerk's cards that still wait, in a binder or the Inbox (a binder save falls back to the
     /// Inbox). Returns true once none of them waits.
     func takeBack(_ cards: [State.Replacement], now: Date) -> Bool {
@@ -46,7 +49,7 @@ extension CaptureInbox {
             if let binder = r.binder {
                 let folder = URL(fileURLWithPath: binder, isDirectory: true)
                 if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == r.card }), p.state == "proposed",
-                   (try? TekaStore(folder: folder).reject(p, reason: "the clerk's cards could not all be saved", now: now)) == nil {
+                   (try? TekaStore(folder: folder).reject(p, reason: Self.takenBack, now: now)) == nil {
                     complete = false
                 }
             }
@@ -58,20 +61,50 @@ extension CaptureInbox {
         return complete
     }
 
-    /// Settles each hand-off cut short by a crash or a failure. When every card the clerk kept waits as written, the
-    /// code-built card gives way, as the commit would have done; otherwise the clerk's cards go, the code-built card
-    /// stays, and the capture is read again under the poison rule. One that cannot be settled now stays recorded.
+    /// Whether a card the clerk kept was written: it waits as written, or the person already approved or rejected it
+    /// in its binder, or filed it there from the Inbox. A card never written, one saved but never trusted, and one
+    /// Sprava took back itself were not.
+    func written(_ r: State.Replacement, commands: Commands) -> Bool {
+        if waits(r, commands: commands) { return true }
+        // Saved in its binder: the person approved it, or rejected it (a rejection by Sprava's own take-back is not theirs).
+        if let binder = r.binder,
+           let (p, _) = ProposalStore.list(in: URL(fileURLWithPath: binder, isDirectory: true)).first(where: { $0.0.id == r.card }) {
+            return p.state == "applied" || (p.state == "rejected" && p.raw["rejected_reason"] != .string(Self.takenBack))
+        }
+        // Kept in the Inbox, then filed by the person into a binder, where Sprava trusted it.
+        return (try? commands.loadDigests())?.keys.contains { $0.hasSuffix("#" + r.card) } ?? false
+    }
+
+    /// Settles each hand-off cut short by a crash or a failure. It goes forward, and the code-built card gives way as
+    /// the commit would have done, when the commit had saved every card (recorded in the cursor), when every card is
+    /// found written (waiting, or already acted on by the person), or when the code-built card is already gone: the
+    /// clerk's cards then hold the capture, and none of them is taken back. Otherwise the clerk's cards go, the
+    /// code-built card stays, and the capture is read again under the poison rule. When the person acted on the
+    /// code-built card itself, its content is theirs and the clerk's cards still waiting go. One that cannot be
+    /// settled now stays recorded.
     func settleHandoffs(state: inout State, commands: Commands, now: Date) {
         for (id, cards) in (state.handoffs ?? [:]).sorted(by: { $0.key < $1.key }) {
-            if let tier0 = state.cards[id], cards.allSatisfy({ waits($0, commands: commands) }),
-               case .withdrawn = withdrawTier0(tier0, binder: state.cardBinder?[id], commands: commands, now: now) {
-                state.handoffs?[id] = nil
-                state.clerk = (state.clerk ?? [:]).merging([id: "done"]) { $1 }
-                journal([("event", .string(id)), ("stage", .str("clerk_handoff_finished"))])
-                continue
+            let tier0 = state.cards[id]
+            let binder = state.cardBinder?[id]
+            let forward = state.committed?.contains(id) == true || tier0.map { !tier0Pending($0, binder: binder) } ?? true
+                || cards.allSatisfy { written($0, commands: commands) }
+            if forward {
+                switch tier0.map({ withdrawTier0($0, binder: binder, commands: commands, now: now) }) ?? .withdrawn {
+                case .withdrawn:
+                    state.handoffs?[id] = nil
+                    state.committed?.removeAll { $0 == id }
+                    state.clerk = (state.clerk ?? [:]).merging([id: "done"]) { $1 }
+                    journal([("event", .string(id)), ("stage", .str("clerk_handoff_finished"))])
+                    continue
+                case .failed:
+                    continue
+                case .acted:
+                    break
+                }
             }
             guard takeBack(cards, now: now) else { continue }
             state.handoffs?[id] = nil
+            state.committed?.removeAll { $0 == id }
             journal([("event", .string(id)), ("stage", .str("clerk_handoff_taken_back"))])
         }
     }

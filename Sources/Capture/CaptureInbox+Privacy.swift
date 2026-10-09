@@ -56,8 +56,10 @@ extension CaptureInbox {
         // card waiting from the chain already does (a retry after a partial failure).
         let ids = Set(chain)
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            // Only a card that does nothing but redact covers an item: any other card of the chain is withdrawn by its
+            // next correction or retraction, and its redaction would go with it.
             let waiting = filed.filter { folder, p in
-                folder.standardizedFileURL == row.folder.standardizedFileURL && commands.isTrusted(p.id, in: folder)
+                folder.standardizedFileURL == row.folder.standardizedFileURL && commands.isTrusted(p.id, in: folder) && Self.onlyRedacts(p)
             }.map { _, p in
                 p.raw["provenance"]?["private"] == .bool(true) ? p : Self.privateCopy(p, catalog: row.teka.catalog)
             }
