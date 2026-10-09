@@ -86,8 +86,8 @@ import Testing
             case .backup: try b.backUp(e.folder, now: now)
             case .offload, .offloadAgain: _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
             case .restore: _ = try b.restore(id, now: now)
-            case .expunge: try b.forgetDocument(in: e.folder, path: Self.letter, now: now)
-            case .forgetOffloaded: _ = try b.forget(id, path: Self.letter, now: now)
+            case .expunge: try b.forgetDocument(in: e.folder, path: Self.letter, request: "invented-deletion-1", now: now)
+            case .forgetOffloaded: _ = try b.forget(id, path: Self.letter, request: "invented-deletion-1", now: now)
             }
         }
         try run(b)
@@ -122,6 +122,8 @@ import Testing
         let st = try b.state()
         let primary = try ids(b, e.primary), second = try ids(b, e.second)
         #expect(st.rewrites.isEmpty && st.restoredContents.isEmpty && st.restoring.isEmpty, "\(key)")
+        // The binder's backup id is never left without an owner a copy could step into.
+        #expect(BackupIdentityTests.ownerGap(b, id) == nil, "\(key): \(BackupIdentityTests.ownerGap(b, id) ?? "")")
         // Every record names snapshots that exist.
         for r in st.offloaded {
             #expect(primary.contains(r.snapshot), "\(key): the record's snapshot is gone")

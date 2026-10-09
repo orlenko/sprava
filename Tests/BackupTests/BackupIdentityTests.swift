@@ -19,9 +19,20 @@ import Testing
     var letter: String { Self.letter }
 
     enum Case: String, CaseIterable, CustomTestStringConvertible, Sendable {
-        case copyBeforeOffload, copyAfterRestore, partialRestoreOnTheShelf, anotherBinderOnTheShelf,
-             forgetWithARepositoryAway, forgetAfterDestinationsChanged
+        case copyBeforeOffload, copyAfterRestore, copyAfterRestoringElsewhere, partialRestoreOnTheShelf, anotherBinderOnTheShelf,
+             forgetWithARepositoryAway, aSecondDeletionAtTheSamePath, forgetAfterDestinationsChanged
         var testDescription: String { rawValue }
+    }
+
+    /// Why a backup id has no owner, or nil when it has one: an offloaded record, an offload or a restore under way,
+    /// or a recorded folder that still holds the id. A copy can take an id only in such a gap (`Backup.claim`).
+    static func ownerGap(_ b: Backup, _ id: String) -> String? {
+        guard let st = try? b.state() else { return "the state cannot be read" }
+        if st.offloaded.contains(where: { $0.backupID == id }) || st.offloads[id] != nil || st.restoring[id] != nil
+            || st.restoredContents[id] != nil { return nil }
+        guard let path = st.binders[id]?.path else { return "no folder is recorded for \(id)" }
+        let holds = (try? Backup.storedBackupID(URL(fileURLWithPath: path, isDirectory: true))) == id
+        return holds ? nil : "\(path) no longer holds \(id), and nothing else reserves it"
     }
 
     /// Every snapshot of every binder in a repository, with whether it holds `path`.
@@ -61,10 +72,13 @@ import Testing
         let other = try bystander(b)
         let otherID = try Backup.backupID(other)
         let otherSnapshots = try Set(b.engine(e.primary.path).snapshots(tag: "binder:\(otherID)").map(\.id))
+        let id = try Backup.backupID(e.folder)
         defer {
-            // Whatever happened, the other binder's backups are as they were.
+            // Whatever happened, the other binder's backups are as they were, and both ids still have an owner.
             let now = (try? Set(b.engine(e.primary.path).snapshots(tag: "binder:\(otherID)").map(\.id))) ?? []
             #expect(now == otherSnapshots, "\(c): another binder's backups changed")
+            #expect(Self.ownerGap(b, id) == nil, "\(c): \(Self.ownerGap(b, id) ?? "")")
+            #expect(Self.ownerGap(b, otherID) == nil, "\(c): \(Self.ownerGap(b, otherID) ?? "")")
         }
 
         switch c {
@@ -78,7 +92,7 @@ import Testing
             let record = try offload(b, e.folder)
             let before = try holding(b, e.primary, letter)
             #expect(throws: Backup.SharedBackupID.self) { try b.backUp(copy, now: now) }
-            #expect(throws: Backup.SharedBackupID.self) { try b.forgetDocument(in: copy, path: letter, now: now) }
+            #expect(throws: Backup.SharedBackupID.self) { try b.forgetDocument(in: copy, path: letter, request: "invented-deletion-1", now: now) }
             #expect(throws: Backup.SharedBackupID.self) { _ = try b.offload(copy, deviceID: "dev", confirmOpenItems: true, now: now) }
             #expect(try holding(b, e.primary, letter) == before)
             #expect(try b.state().forgetting.isEmpty)
@@ -97,9 +111,62 @@ import Testing
             try FileManager.default.copyItem(at: e.folder, to: copy)
             let before = try holding(b, e.primary, letter)
             #expect(throws: Backup.SharedBackupID.self) { try b.backUp(copy, now: now) }
-            #expect(throws: Backup.SharedBackupID.self) { try b.forgetDocument(in: copy, path: letter, now: now) }
+            #expect(throws: Backup.SharedBackupID.self) { try b.forgetDocument(in: copy, path: letter, request: "invented-deletion-1", now: now) }
             #expect(try holding(b, e.primary, letter) == before)
             try b.backUp(e.folder, now: now)
+
+        case .copyAfterRestoringElsewhere:
+            // Restored into another place, then copied before that place's first backup: the restored folder owns the
+            // id from the moment the restore ends.
+            let record = try offload(b, e.folder)
+            let elsewhere = e.base.appendingPathComponent("restored/\(e.folder.lastPathComponent)", isDirectory: true)
+            try FileManager.default.createDirectory(at: elsewhere.deletingLastPathComponent(), withIntermediateDirectories: true)
+            #expect(try b.restore(record.backupID, to: elsewhere, now: now) == elsewhere.standardizedFileURL)
+            #expect(Self.ownerGap(b, id) == nil)
+            #expect(try b.state().binders[id]?.path == elsewhere.standardizedFileURL.path)
+            let copy = e.base.appendingPathComponent("copies/\(e.folder.lastPathComponent)", isDirectory: true)
+            try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: elsewhere, to: copy)
+            let before = try holding(b, e.primary, letter)
+            #expect(throws: Backup.SharedBackupID.self) { try b.backUp(copy, now: now) }
+            #expect(throws: Backup.SharedBackupID.self) {
+                try b.forgetDocument(in: copy, path: letter, request: "invented-deletion-1", now: now)
+            }
+            #expect(try holding(b, e.primary, letter) == before)
+            // A copy given its own id has an owner from the save before it holds it.
+            let own = try b.giveOwnBackupID(copy)
+            #expect(Self.ownerGap(b, own) == nil)
+            #expect(try b.state().binders[own]?.path == copy.standardizedFileURL.path)
+
+        case .aSecondDeletionAtTheSamePath:
+            // A letter is deleted for good while the second backup is away; a new letter is filed at the same path,
+            // backed up, and deleted for good too, then a third is filed and backed up. Each deletion forgets only
+            // the snapshots made before it, and the third letter stays.
+            let record = try offload(b, e.folder)
+            _ = try b.restore(record.backupID, now: now)
+            try FileManager.default.removeItem(at: e.folder.appendingPathComponent(letter))
+            let away = e.second.deletingLastPathComponent().appendingPathComponent("invented-away")
+            try FileManager.default.moveItem(at: e.second, to: away)
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now) == false)
+            try Data("invented second letter".utf8).write(to: e.folder.appendingPathComponent(letter))
+            let second = try #require(try b.backUp(e.folder, now: now.addingTimeInterval(3600)).snapshot)
+            try FileManager.default.removeItem(at: e.folder.appendingPathComponent(letter))
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-2", now: now) == false)
+            #expect(try b.state().forgetting.count == 2)
+            // Asking again for the first deletion retries it; it adds no request.
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now) == false)
+            #expect(try b.state().forgetting.count == 2)
+            try Data("invented third letter".utf8).write(to: e.folder.appendingPathComponent(letter))
+            let third = try #require(try b.backUp(e.folder, now: now.addingTimeInterval(7200)).snapshot)
+            try FileManager.default.moveItem(at: away, to: e.second)
+            _ = b.maintain(rows: [], deviceID: "dev", now: now.addingTimeInterval(9000))
+            #expect(try b.state().forgetting.allSatisfy { $0.done != nil })
+            let primary = try holding(b, e.primary, letter)
+            #expect(primary[third] == true, "the snapshot made after both deletions was rewritten")
+            #expect(primary[second] == nil, "the second letter's snapshot still holds it")
+            let mine = try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").map(\.id).filter { $0 != third }
+            #expect(!mine.isEmpty && mine.allSatisfy { primary[$0] == false })
+            #expect(try holding(b, e.second, letter).values.allSatisfy { !$0 })
 
         case .partialRestoreOnTheShelf, .anotherBinderOnTheShelf:
             let record = try offload(b, e.folder)
@@ -137,7 +204,7 @@ import Testing
             try FileManager.default.removeItem(at: e.folder.appendingPathComponent(letter))
             let away = e.second.deletingLastPathComponent().appendingPathComponent("invented-away")
             try FileManager.default.moveItem(at: e.second, to: away)
-            #expect(try b.forgetDocument(in: e.folder, path: letter, now: now) == false)
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now) == false)
             let pending = try #require(try b.state().forgetting.first)
             #expect(pending.scopes.first { $0.repository == e.primary.path }?.done == true)
             #expect(pending.scopes.first { $0.repository == e.second.path }?.done == false)
@@ -165,7 +232,7 @@ import Testing
             let newSecond = e.base.appendingPathComponent("external/Sprava Second 2", isDirectory: true)
             try b.setUp(primary: newPrimary, iCloudKeychain: false)
             try b.setSecond(newSecond)
-            #expect(try b.forgetDocument(in: e.folder, path: letter, now: now))
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now))
             let scopes = try #require(try b.state().forgetting.first?.scopes).map(\.repository)
             #expect(Set(scopes).isSuperset(of: [e.primary.path, e.second.path, newPrimary.path, newSecond.path]))
             let id = record.backupID

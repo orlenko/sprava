@@ -74,7 +74,7 @@ extension Backup {
     @discardableResult
     public func giveOwnBackupID(_ folder: URL) throws -> String {
         guard let old = try Self.storedBackupID(folder) else { return try Self.backupID(folder) }
-        let st = try state()
+        var st = try state()
         if let recorded = st.binders[old]?.path, Self.realPath(URL(fileURLWithPath: recorded)) == Self.realPath(folder) {
             throw Failure(message: "this binder's backups are kept under its backup id; only a copy gets a new one")
         }
@@ -84,7 +84,12 @@ extension Backup {
         if let path = st.restoredContents[old]?.path ?? st.restoring[old], Self.realPath(URL(fileURLWithPath: path)) == Self.realPath(folder) {
             throw Failure(message: "this binder is being restored; finish the restore first")
         }
+        // The folder owns the new id before it holds it: a crash between the two leaves a record of an id no folder
+        // holds, never an id no record reserves.
         let id = Self.newBackupID()
+        st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
+        try save(st)
+        step("ownid.recorded")
         try AtomicFile.write(Data((id + "\n").utf8), to: folder.appendingPathComponent(".sprava/backup-id"))
         return id
     }
