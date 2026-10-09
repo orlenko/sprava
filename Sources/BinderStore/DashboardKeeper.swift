@@ -30,8 +30,18 @@ public struct DashboardKeeper: Sendable {
     package var testHookBeforeSwap: (@Sendable () -> Void)?
 
     /// The saved state; nil when there is none. A state file that exists but cannot be read or decoded throws, so an
-    /// enabled dashboard never silently stops being kept and the file is never saved over.
-    func load() throws -> State? { try StateFile.read(State.self, from: stateURL) }
+    /// enabled dashboard never silently stops being kept and the file is never saved over. It is opened without
+    /// following a link and must be a regular file of this user (binder-v0 §3.6), so a link cannot stand in for
+    /// the approved switch.
+    func load() throws -> State? {
+        switch SafeFile.read(stateURL, limit: 1024 * 1024) {
+        case .missing: return nil
+        case .ok(let data):
+            guard let state = try? JSONDecoder().decode(State.self, from: data) else { throw StateFile.Unreadable(path: stateURL.path) }
+            return state
+        case .refused, .unreadable: throw StateFile.Unreadable(path: stateURL.path)
+        }
+    }
 
     /// For display only: false when the state cannot be read; `refresh` and `switchOn` report that instead.
     public var isSwitched: Bool { ((try? load()) ?? nil)?.switched == true }
@@ -191,8 +201,11 @@ public struct DashboardKeeper: Sendable {
         guard var state = try load(), state.switched else { return .notSwitched }
         return try TekaStore(folder: folder).withLock {
             let teka = Teka.read(folder)
-            guard let catalog = teka.catalog else { return .unchanged }
             try Self.checkWritable(teka)
+            // A catalog that is gone or cannot be read is reported, so a stale dashboard never passes for a current one.
+            guard let catalog = teka.catalog else {
+                throw TekaStore.Refused(reason: "catalog.json cannot be read; DASHBOARD.md was left as it is")
+            }
             let hash = try Canonical.hash(.object(catalog))
             let outcome: Refresh = try rewrite(now: now) { found in
                 if hash == state.catalogHash, today.description == state.day, let found, !Dashboard.editedOutsideNotes(found) {

@@ -23,15 +23,21 @@ public enum Adoption {
         var s = JSONObject()
         s.set("state", .string(teka.state.label))
         s.set("level", .string(teka.level?.label ?? "none"))
-        if let data = try? Data(contentsOf: folder.appendingPathComponent("catalog_check.py")) {
+        let checkerURL = folder.appendingPathComponent("catalog_check.py")
+        if let data = readInside(folder, "catalog_check.py", limit: 1024 * 1024) {
             let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             s.set("checker", .string(checkerVersions[hex] ?? "modified-or-unknown"))
         } else {
-            s.set("checker", .str("none"))
+            var st = stat()
+            s.set("checker", .str(lstat(checkerURL.path, &st) == 0 ? "modified-or-unknown" : "none"))
         }
         let items = teka.items
+        // A status outside the closed list is counted as `unknown`, never by its text, which may be anything.
         var byStatus: [String: Int] = [:]
-        for item in items { byStatus[item.object?["status"]?.stringValue ?? "missing", default: 0] += 1 }
+        for item in items {
+            let status = item.object?["status"]
+            byStatus[status == nil ? "missing" : item.declaredStatus?.rawValue ?? "unknown", default: 0] += 1
+        }
         s.set("items_by_status", .obj(byStatus.sorted { $0.key < $1.key }.map { ($0.key, .int($0.value)) }))
         s.set("done_in_open_items", .int(items.filter { $0.declaredStatus == .done }.count))
         s.set("waiting_without_follow_up_at", .int(items.filter {
@@ -41,7 +47,7 @@ public enum Adoption {
         let prefix = teka.name
         let recommended = ids.allSatisfy { ($0.stringValue ?? "").wholeMatch(of: try! Regex("^\(NSRegularExpression.escapedPattern(for: prefix))-\\d{4}-\\d{3,}$")) != nil }
         s.set("ids", .string(ids.isEmpty ? "none" : recommended ? "teka-year-seq" : "opaque"))
-        if let raw = try? String(contentsOf: folder.appendingPathComponent("catalog.json"), encoding: .utf8) {
+        if let data = readInside(folder, "catalog.json", limit: 64 * 1024 * 1024), let raw = String(data: data, encoding: .utf8) {
             s.set("escaped_non_ascii", .bool(raw.contains("\\u")))
             s.set("foreign_absolute_paths", .int(raw.components(separatedBy: "\"/Users/").count - 1
                                                     + raw.components(separatedBy: "\"/home/").count - 1
@@ -54,28 +60,41 @@ public enum Adoption {
         s.set("modules_found", .array(modules.map(JSONValue.string)))
         // lifeproj reaches the binder when it is registered, equipped, or when the binder's agent notes tell an
         // agent to run lifeproj's publish or drain.
-        let notes = ["CLAUDE.md", "AGENTS.md"].compactMap { try? String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8) }
-            .map(withoutAddendum)
+        let notes = ["CLAUDE.md", "AGENTS.md"].compactMap { readInside(folder, $0, limit: 1024 * 1024) }
+            .map { withoutAddendum(String(decoding: $0, as: UTF8.self)) }
         let notesRunLifeproj = notes.contains { text in
             text.range(of: #"lifeproj\s+(publish|drain)"#, options: .regularExpression) != nil
         }
         s.set("lifeproj_can_reach", .bool(inRegistry || notesRunLifeproj
                                           || fm.fileExists(atPath: folder.appendingPathComponent("catalog_check.py").path)))
-        s.set("hooks_may_send_data", .bool(((try? String(contentsOf: folder.appendingPathComponent(".claude/settings.json"), encoding: .utf8)) ?? "").contains("\"hooks\"")))
+        let settings = readInside(folder, ".claude/settings.json", limit: 1024 * 1024).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        s.set("hooks_may_send_data", .bool(settings.contains("\"hooks\"")))
         s.set("credentials_files", .int(["scripts/mail/.env", "intake/mail/.env"].filter { fm.fileExists(atPath: folder.appendingPathComponent($0).path) }.count))
         s.set("old_email_intake_layout", .bool(fm.fileExists(atPath: folder.appendingPathComponent("intake/mail/state.json").path)))
         s.set("synced_location", .bool(syncedLocation(folder)))
         return s
     }
 
+    /// A file of the binder, read for the survey without leaving the binder (binder-v0 §3.6): a link is followed
+    /// only to a regular file of this user inside the binder, and nothing else is opened, so a link to a device or a
+    /// named pipe never hangs the survey. nil for a file that is missing or may not be read.
+    static func readInside(_ folder: URL, _ path: String, limit: Int) -> Data? {
+        let root = folder.resolvingSymlinksInPath().path
+        let real = folder.appendingPathComponent(path).resolvingSymlinksInPath()
+        guard real.path.hasPrefix(root + "/") else { return nil }
+        if case .ok(let data) = SafeFile.read(real, limit: limit) { return data }
+        return nil
+    }
+
     /// A manual without Sprava's own addendum, which names `lifeproj publish` only to forbid it: from the marker
-    /// line to the next `## ` heading after the addendum's own, or to the end.
+    /// line to the next `## ` heading after the addendum's own, or to the end. The marker counts only as a line of its
+    /// own, as `ManualAddendum.isPresent` reads it: a manual that mentions it in its prose keeps all of its text.
     static func withoutAddendum(_ text: String) -> String {
         var out: [Substring] = []
         var inAddendum = false
         var sawHeading = false
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.contains(ManualAddendum.marker) {
+            if line.trimmingCharacters(in: .whitespaces) == ManualAddendum.marker {
                 inAddendum = true
                 sawHeading = false
                 continue
@@ -92,11 +111,15 @@ public enum Adoption {
     /// iCloud Drive, File Provider folders, and Desktop or Documents (which iCloud may sync): adoption is refused
     /// there (architecture 2.3; spike e confirms the Desktop and Documents detection).
     public static func syncedLocation(_ folder: URL) -> Bool {
-        let path = folder.resolvingSymlinksInPath().path
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path.hasPrefix(home + "/Library/Mobile Documents") || path.hasPrefix(home + "/Library/CloudStorage") { return true }
+        if inSyncRoot(folder.resolvingSymlinksInPath().path, home: FileManager.default.homeDirectoryForCurrentUser.path) { return true }
         if let values = try? folder.resourceValues(forKeys: [.isUbiquitousItemKey]), values.isUbiquitousItem == true { return true }
         return false
+    }
+
+    /// Whether `path` is iCloud Drive or a File Provider folder, or inside one, matched by whole path components, so a
+    /// sibling such as `CloudStorageBackup` is not taken for `CloudStorage`.
+    static func inSyncRoot(_ path: String, home: String) -> Bool {
+        [home + "/Library/Mobile Documents", home + "/Library/CloudStorage"].contains { path == $0 || path.hasPrefix($0 + "/") }
     }
 
     public struct Result {

@@ -140,8 +140,10 @@ extension Adoption {
         let waiting = ProposalStore.list(in: folder).contains { p, _ in
             p.state == "proposed" && (p.raw["provenance"]?["adoption"] == .str("stamp") || p.ops.contains { $0["op"] == .str("migrate") })
         }
-        guard !waiting, let ops = try? store.readOpLog().ops,
-              let survey = ops.last(where: { $0["op"] == .str("import_snapshot") })?["args"]?["survey"]?.objectValue,
+        guard !waiting else { return nil }
+        // An op log that cannot be read is reported, never taken for a binder with nothing to stamp.
+        let ops = try store.readOpLog().ops
+        guard let survey = ops.last(where: { $0["op"] == .str("import_snapshot") })?["args"]?["survey"]?.objectValue,
               let card = stampProposal(folder, survey: survey, pending: [], client: client, now: now) else { return nil }
         try ProposalStore.save(card, in: folder)
         return card.id
