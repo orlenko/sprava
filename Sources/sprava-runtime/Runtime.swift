@@ -504,6 +504,11 @@ final class Runtime: @unchecked Sendable {
         }
         if result.cursorUnreadable { return .error(code: "intake_state_unreadable", culprit: "capture/intake.json") }
         if result.cursorUnsaved { return .error(code: "intake_state_unwritable", culprit: "capture/intake.json") }
+        // A binder's intake folder that cannot be listed: its state is left alone and it is counted, never named.
+        if result.unreadableFolders > 0 {
+            log("intake unreadable_folders=\(result.unreadableFolders)")
+            return .error(code: "intake_folder_unreadable", culprit: "\(result.unreadableFolders) binder(s)")
+        }
         return .ok
     }
 
