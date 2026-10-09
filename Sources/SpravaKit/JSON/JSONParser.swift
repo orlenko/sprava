@@ -2,7 +2,14 @@ import Foundation
 
 /// Problems that make a catalog unsafe to read one way only (binder-v0 §4.8). Reading still succeeds; the
 /// binder then needs attention and nothing is written until the user approves a repair.
+///
+/// Each list keeps at most `maxEntries` paths and each path at most `maxPathBytes` bytes (longer ones end in
+/// "..."), so a small hostile file, such as a long member name above many unsafe numbers, cannot make the
+/// report itself exhaust memory. `isSafe` stays exact: a list is never empty once its kind of problem occurred.
 public struct JSONSafetyReport: Sendable, Equatable {
+    package static let maxEntries = 100
+    package static let maxPathBytes = 1024
+
     /// JSON paths of objects that hold the same member name twice, with that name.
     public var duplicateKeys: [String] = []
     /// JSON paths of strings that held a lone surrogate escape such as `\ud800`.
@@ -33,7 +40,24 @@ public struct JSONParser {
     private static let maxDepth = 128
     /// The path to the current value, as segments; the string is built only when something is reported.
     private var segments: [String] = []
-    private var currentPath: String { "$" + segments.joined() }
+
+    /// Records a problem at the current path (plus `suffix`), within the report's bounds; past `maxEntries`
+    /// nothing is built, and the path is cut at `maxPathBytes` before the segments are joined.
+    private mutating func record(_ list: WritableKeyPath<JSONSafetyReport, [String]>, suffix: String? = nil) {
+        guard report[keyPath: list].count < JSONSafetyReport.maxEntries else { return }
+        var path: [UInt8] = [UInt8(ascii: "$")]
+        for segment in segments + (suffix.map { [$0] } ?? []) {
+            path.append(contentsOf: segment.utf8.prefix(JSONSafetyReport.maxPathBytes + 1 - path.count))
+            if path.count > JSONSafetyReport.maxPathBytes { break }
+        }
+        if path.count > JSONSafetyReport.maxPathBytes {
+            // Cut on a scalar boundary so the path stays valid text.
+            var end = JSONSafetyReport.maxPathBytes - 3
+            while end > 0, path[end] & 0xC0 == 0x80 { end -= 1 }
+            path = Array(path[..<end]) + Array("...".utf8)
+        }
+        report[keyPath: list].append(String(decoding: path, as: UTF8.self))
+    }
 
     /// Parses UTF-8 data. Throws on invalid UTF-8 or invalid JSON; a byte-order mark is refused.
     public static func parse(_ data: Data) throws -> (value: JSONValue, safety: JSONSafetyReport) {
@@ -101,7 +125,7 @@ public struct JSONParser {
             skipWhitespace()
             guard peek() == UInt8(ascii: "\"") else { throw error("expected a member name") }
             let key = try parseString()
-            if !seen.insert(Array(key.utf8)).inserted { report.duplicateKeys.append("\(currentPath).\(key)") }
+            if !seen.insert(Array(key.utf8)).inserted { record(\.duplicateKeys, suffix: "." + key) }
             skipWhitespace()
             guard peek() == UInt8(ascii: ":") else { throw error("expected ':'") }
             index += 1
@@ -166,7 +190,7 @@ public struct JSONParser {
             switch byte {
             case UInt8(ascii: "\""):
                 index += 1
-                if hadLoneSurrogate { report.loneSurrogates.append(currentPath) }
+                if hadLoneSurrogate { record(\.loneSurrogates) }
                 return String(decoding: out, as: UTF8.self)
             case UInt8(ascii: "\\"):
                 index += 1
@@ -237,9 +261,9 @@ public struct JSONParser {
         }
         let number = JSONNumber(text: String(decoding: bytes[start..<index], as: UTF8.self))
         if number.isIntegerLiteral {
-            if number.safeInteger == nil { report.unsafeNumbers.append(currentPath) }
+            if number.safeInteger == nil { record(\.unsafeNumbers) }
         } else if let d = number.doubleValue, !d.isFinite {
-            report.unsafeNumbers.append(currentPath)
+            record(\.unsafeNumbers)
         }
         return number
     }

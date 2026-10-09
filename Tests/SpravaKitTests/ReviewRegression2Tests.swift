@@ -12,4 +12,24 @@ import Testing
         #expect(try Canonical.hash(v) != (try Canonical.hash(w)))
         #expect(try Canonical.serialize(v) == "{\"e\u{0301}\":2,\"\u{00E9}\":1}")
     }
+
+    // Third review: a long member name above many unsafe values made the safety report hold a full copy of
+    // that name per problem (gigabytes from a file of about a megabyte). The report is now bounded.
+    @Test func safetyReportStaysBoundedUnderALongParentKey() throws {
+        let key = String(repeating: "\u{00E9}", count: 128 * 1024)  // 256 KiB of two-byte scalars
+        let numbers = Array(repeating: "9007199254740993", count: 2_000).joined(separator: ",")
+        let surrogates = Array(repeating: "\"\\ud800\"", count: 2_000).joined(separator: ",")
+        let duplicates = Array(repeating: "{\"k\":1,\"k\":2}", count: 200).joined(separator: ",")
+        let text = "{\"\(key)\":{\"n\":[\(numbers)],\"s\":[\(surrogates)],\"d\":[\(duplicates)]}}"
+        let safety = try JSONParser.parse(Data(text.utf8)).safety
+        #expect(!safety.isSafe)
+        for list in [safety.unsafeNumbers, safety.loneSurrogates, safety.duplicateKeys] {
+            #expect(list.count == JSONSafetyReport.maxEntries)
+            #expect(list.allSatisfy { $0.utf8.count <= JSONSafetyReport.maxPathBytes && $0.hasSuffix("...") })
+            #expect(list.allSatisfy { $0.hasPrefix("$.\u{00E9}") })
+        }
+        // Short paths are still reported whole.
+        let small = try JSONParser.parse(Data("{\"a\":{\"b\":[1,9007199254740993]}}".utf8)).safety
+        #expect(small.unsafeNumbers == ["$.a.b[1]"])
+    }
 }
