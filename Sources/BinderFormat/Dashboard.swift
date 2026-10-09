@@ -11,24 +11,37 @@ public enum Dashboard {
     /// Markdown punctuation backslashed, so no raw HTML or remote image ever comes from the catalog.
     public static func escape(_ s: String) -> String {
         var out = String.UnicodeScalarView()
+        for scalar in flatten(s).unicodeScalars {
+            if "\\`*_[]()<>!#|".unicodeScalars.contains(scalar) { out.append("\\") }
+            out.append(scalar)
+        }
+        return String(out)
+    }
+
+    /// One line of plain text: newlines and tabs to spaces, control and bidirectional characters removed.
+    static func flatten(_ s: String) -> String {
+        var out = String.UnicodeScalarView()
         for scalar in s.unicodeScalars {
             switch scalar.value {
             case 0x0A, 0x0D, 0x09: out.append(" ")
             case 0x00...0x1F, 0x7F...0x9F, 0x202A...0x202E, 0x2066...0x2069: continue
-            default:
-                if "\\`*_[]()<>!#|".unicodeScalars.contains(scalar) { out.append("\\") }
-                out.append(scalar)
+            default: out.append(scalar)
             }
         }
         return String(out)
     }
 
-    /// An id as a CommonMark code span: a fence one backtick longer than the longest run inside.
-    public static func codeSpan(_ id: String) -> String {
+    /// An id as a CommonMark code span: a fence one backtick longer than the longest run inside. Line breaks and
+    /// tabs become spaces and control and bidirectional characters are removed first, as for every catalog string:
+    /// a line break would let an id end the span and start a block of its own, an image or a false `## Notes`.
+    public static func codeSpan(_ raw: String) -> String {
+        let id = flatten(raw)
+        // Counted by scalars, as CommonMark counts: a backtick followed by a combining mark is still a backtick.
+        let scalars = id.unicodeScalars
         var longest = 0, run = 0
-        for c in id { if c == "`" { run += 1; longest = max(longest, run) } else { run = 0 } }
+        for s in scalars { if s == "`" { run += 1; longest = max(longest, run) } else { run = 0 } }
         let fence = String(repeating: "`", count: longest + 1)
-        let pad = id.hasPrefix("`") || id.hasSuffix("`") ? " " : ""
+        let pad = scalars.first == "`" || scalars.last == "`" ? " " : ""
         return fence + pad + id + pad + fence
     }
 

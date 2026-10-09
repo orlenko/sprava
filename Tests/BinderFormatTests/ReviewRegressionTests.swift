@@ -68,3 +68,151 @@ import Testing
         #expect(teka.reasons.contains { $0.contains("duplicate ids in open_items") })
     }
 }
+
+/// One test per confirmed finding of the binder-format layer review: ids that leave their code span, special files
+/// and unreadable op logs, ids compared by scalars, and the v0 types of `waiting_on` and `recurrence`. Invented data only.
+@Suite(.serialized) struct BinderFormatReviewTests {
+    func folder(_ catalog: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-bf-\(UUID().uuidString)/estate-example")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".sprava"), withIntermediateDirectories: true)
+        try Data(catalog.utf8).write(to: folder.appendingPathComponent("catalog.json"))
+        return folder
+    }
+
+    let v0 = #"{"meta": {"schema_version": 2, "name": "estate-example", "format": "teka", "format_version": "0", "disclosure": "none"}, "documents": [], "open_items": [], "processing_log": []}"#
+    let opLine = Data("{\"op\":\"import_snapshot\"}\n".utf8)
+
+    func check(_ item: String, log: [String] = []) throws -> [RuleFinding.Code] {
+        ItemRules.check(items: [try JSONParser.parse(item).value], log: try log.map { try JSONParser.parse($0).value }, v0: true).map(\.code)
+    }
+
+    // MARK: - 1. An id never leaves its code span
+
+    @Test func idsWithLineBreaksStayOnOneLine() throws {
+        let image = "x\n\n![x](https://tracker.example/p.png)\n\nx"
+        #expect(Dashboard.codeSpan(image) == "`x  ![x](https://tracker.example/p.png)  x`")
+        #expect(Dashboard.codeSpan("a\t\u{202E}b\r\u{07}") == "`a b `")
+        #expect(Dashboard.codeSpan("a`\u{301}b") == "``a`\u{301}b``")
+
+        let catalog = try JSONParser.parse("""
+        {"meta": {"name": "estate-example"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "a\\n## Notes\\nb", "title": "Call the notary", "status": "open", "priority": "normal", "no_deadline": true},
+                        {"id": "x\\n\\n![x](https://tracker.example/p.png)\\n\\nx", "title": "t", "status": "open", "priority": "normal", "no_deadline": true}]}
+        """).value.objectValue!
+        let text = Dashboard.render(catalog: catalog, folderName: "estate-example", today: today, timeZone: utc,
+                                    hasManual: false, notes: nil, impl: "sprava/test")
+        #expect(text.components(separatedBy: "\n").filter { $0 == Dashboard.notesLine }.count == 1)
+        #expect(!text.contains("\n![x]"))
+        #expect(!Dashboard.editedOutsideNotes(text))
+        #expect(Dashboard.split(text).1 == "\(Dashboard.notesLine)\n\n")
+    }
+
+    // MARK: - 2. Special files never block a read
+
+    @Test func aFIFOOpLogNeitherBlocksNorCountsAsAbsent() throws {
+        let f = try folder(v0)
+        #expect(mkfifo(f.appendingPathComponent(".sprava/ops.ndjson").path, 0o600) == 0)
+        let teka = Teka.read(f)
+        #expect(teka.reasons.contains(".sprava/ops.ndjson is not a regular file"))
+        #expect(teka.isAdopted && teka.writesBlocked)
+
+        let fifo = f.appendingPathComponent("letter.pdf")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+        #expect(DocumentPaths.sha256(of: fifo) == nil)
+    }
+
+    @Test func aFIFOCatalogIsNeverOpenedForReading() throws {
+        let f = try folder(v0)
+        try FileManager.default.removeItem(at: f.appendingPathComponent("catalog.json"))
+        #expect(mkfifo(f.appendingPathComponent("catalog.json").path, 0o600) == 0)
+        #expect(Teka.read(f).writesBlocked)
+        #expect(Teka.readRegular("catalog.json", in: f) == nil)
+    }
+
+    @Test func theOpLogIsNeverReadThroughALink() throws {
+        let f = try folder(v0)
+        let elsewhere = f.deletingLastPathComponent().appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try opLine.write(to: elsewhere.appendingPathComponent("ops.ndjson"))
+
+        try FileManager.default.createSymbolicLink(at: f.appendingPathComponent(".sprava/ops.ndjson"),
+                                                   withDestinationURL: elsewhere.appendingPathComponent("ops.ndjson"))
+        let a = Teka.read(f)
+        #expect(a.reasons.contains(".sprava/ops.ndjson is a symbolic link"))
+        #expect(a.writesBlocked)
+
+        try FileManager.default.removeItem(at: f.appendingPathComponent(".sprava"))
+        try FileManager.default.createSymbolicLink(at: f.appendingPathComponent(".sprava"), withDestinationURL: elsewhere)
+        #expect(Teka.opLog(in: f) == .notRegular(symlink: true))
+        let b = Teka.read(f)
+        #expect(b.reasons.contains(".sprava is a symbolic link"))
+        #expect(!b.reasons.contains { $0.hasPrefix(".sprava/ops.ndjson") })
+        #expect(b.writesBlocked)
+    }
+
+    // MARK: - 3. An unreadable op log is not an absent one
+
+    @Test func anUnreadableOpLogBlocksWrites() throws {
+        let f = try folder(v0)
+        let log = f.appendingPathComponent(".sprava/ops.ndjson")
+        try opLine.write(to: log)
+        #expect(Teka.opLog(in: f) == .complete)
+        #expect(Teka.read(f).state == .ready)
+        #expect(chmod(log.path, 0) == 0)
+        defer { chmod(log.path, 0o600) }
+        let teka = Teka.read(f)
+        #expect(teka.reasons.contains(".sprava/ops.ndjson unreadable"))
+        #expect(teka.isAdopted && teka.writesBlocked && teka.state == .needsAttention)
+    }
+
+    @Test func emptyAndTornLogsAreNotAdopted() throws {
+        let f = try folder(v0)
+        #expect(Teka.opLog(in: f) == .absent)
+        let log = f.appendingPathComponent(".sprava/ops.ndjson")
+        try Data().write(to: log)
+        #expect(Teka.opLog(in: f) == .incomplete)
+        try Data(repeating: 0x7B, count: 200_000).write(to: log)              // one torn line longer than a chunk
+        #expect(Teka.opLog(in: f) == .incomplete)
+        try (Data("{}\n".utf8) + Data(repeating: 0x7B, count: 200_000)).write(to: log)
+        #expect(Teka.opLog(in: f) == .complete)
+        #expect(!Teka.read(f).writesBlocked)
+    }
+
+    // MARK: - 4. Ids compare by scalars
+
+    @Test func nfcAndNfdIdsAreDifferentIDs() throws {
+        #expect(ItemID.string("caf\u{e9}") != ItemID.string("cafe\u{301}"))
+        #expect(Set([ItemID.string("caf\u{e9}"), ItemID.string("cafe\u{301}")]).count == 2)
+        #expect(ItemID.string("7") != ItemID.integer(7))
+        let nfc = #"{"id":"café","title":"t","status":"open","priority":"normal","no_deadline":true}"#
+        let nfd = #"{"id":"café","title":"t","status":"open","priority":"normal","no_deadline":true}"#
+        #expect(try check(nfc, log: [#"{"id":"café","action":"done"}"#]).isEmpty)
+        let both = try [nfc, nfd].map { try JSONParser.parse($0).value }
+        #expect(ItemRules.check(items: both, log: [], v0: true).isEmpty)
+    }
+
+    // MARK: - 5. v0 types of waiting_on and recurrence
+
+    @Test func waitingOnMustBeANonEmptyString() throws {
+        let base = #""id":"a","title":"t","priority":"normal","due":"2026-11-01""#
+        #expect(try check(#"{\#(base),"status":"waiting","waiting_on":7,"follow_up_at":"2026-10-20"}"#) == [.badWaitingOn])
+        #expect(try check(#"{\#(base),"status":"open","waiting_on":""}"#) == [.badWaitingOn])
+        #expect(try check(#"{\#(base),"status":"waiting","waiting_on":"","follow_up_at":"2026-10-20"}"#) == [.waitingWithoutParty])
+        #expect(try check(#"{\#(base),"status":"waiting","waiting_on":"the notary","follow_up_at":"2026-10-20"}"#).isEmpty)
+    }
+
+    @Test func recurrenceHasItsShapeAndADue() throws {
+        let due = #""id":"a","title":"t","status":"open","priority":"normal","due":"2026-11-14""#
+        let none = #""id":"a","title":"t","status":"open","priority":"normal","no_deadline":true"#
+        #expect(try check(#"{\#(due),"recurrence":{"freq":"monthly","day":14}}"#).isEmpty)
+        #expect(try check(#"{\#(due),"recurrence":{"freq":"monthly","day":14.0,"note":"kept"}}"#).isEmpty)
+        #expect(try check(#"{\#(due),"recurrence":{"freq":"yearly","month":7,"day":30}}"#).isEmpty)
+        for bad in [#"{"freq":"monthly","day":0}"#, #"{"freq":"monthly","day":32}"#, #"{"freq":"weekly","day":1}"#,
+                    #"{"freq":"monthly","day":"14"}"#, #"{"freq":"yearly","day":30}"#, #"{"freq":"yearly","month":13,"day":1}"#,
+                    #"{"freq":"monthly","month":0,"day":1}"#, #"{"day":1}"#, #""monthly""#, "[]"] {
+            #expect(try check(#"{\#(due),"recurrence":\#(bad)}"#) == [.badRecurrence], "\(bad)")
+        }
+        #expect(try check(#"{\#(none),"recurrence":{"freq":"monthly","day":0}}"#) == [.badRecurrence, .recurrenceWithoutDue])
+        #expect(try check(#"{\#(none),"recurrence":{"freq":"monthly","day":1}}"#) == [.recurrenceWithoutDue])
+    }
+}

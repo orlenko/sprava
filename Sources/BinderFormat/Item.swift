@@ -17,6 +17,27 @@ public enum ItemID: Sendable, Hashable, CustomStringConvertible {
         }
     }
 
+    /// Strings compare by Unicode scalars, as `JSONValue` does: Swift's `==` treats an NFC and an NFD spelling as
+    /// one string, but they are two ids, and only one of them may be closed in the processing log.
+    public static func == (lhs: ItemID, rhs: ItemID) -> Bool {
+        switch (lhs, rhs) {
+        case let (.string(a), .string(b)): a.unicodeScalars.elementsEqual(b.unicodeScalars)
+        case let (.integer(a), .integer(b)): a == b
+        default: false
+        }
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        switch self {
+        case .string(let s):
+            hasher.combine(0)
+            for scalar in s.unicodeScalars { hasher.combine(scalar.value) }
+        case .integer(let i):
+            hasher.combine(1)
+            hasher.combine(i)
+        }
+    }
+
     /// The text lifeproj's `str()` gives; also the canonical JSON text used for sorting.
     public var description: String {
         switch self {

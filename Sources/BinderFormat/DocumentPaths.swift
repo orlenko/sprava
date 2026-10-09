@@ -66,9 +66,10 @@ public enum DocumentPaths {
         return text.isEmpty ? "file" : text
     }
 
-    /// `sha256:`-less lowercase hex of a file, read without following a symbolic link.
+    /// `sha256:`-less lowercase hex of a file, read without following a symbolic link or blocking on a FIFO: the
+    /// open never waits for a writer, and anything but a regular file is refused before a byte is read.
     public static func sha256(of url: URL) -> String? {
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
         var st = stat()

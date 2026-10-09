@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SpravaKit
 
@@ -36,12 +37,12 @@ public struct Teka: Sendable {
     public var state: TekaState { states.keys.min() ?? .ready }
     public var reasons: [String] { states.sorted { $0.key < $1.key }.flatMap(\.value) }
 
-    /// A symlink problem, unsafe JSON or a broken stamp blocks every write until the person approves a repair;
-    /// a name mismatch also blocks publishing and draining (binder-v0 §9.6).
+    /// A symlink problem, unsafe JSON, a broken stamp or an op log that cannot be read blocks every write until the
+    /// person approves a repair; a name mismatch also blocks publishing and draining (binder-v0 §9.6).
     public var writesBlocked: Bool {
         state < .needsAttention || (states[.needsAttention] ?? []).contains { r in
             r.contains("symbolic link") || r.contains("is not a regular") || r.contains("unsafe JSON")
-                || r.hasPrefix("broken stamp") || r == "catalog.json unreadable"
+                || r.hasPrefix("broken stamp") || r == "catalog.json unreadable" || r == ".sprava/ops.ndjson unreadable"
         }
     }
 
@@ -67,21 +68,101 @@ public struct Teka: Sendable {
         NowPage(items: items, log: log, today: today, timeZone: timeZone)
     }
 
-    /// Adopted once the op log holds a whole line (binder-v0 §6.9): a log a crash during adoption left empty or torn
-    /// is not, so Adopt is offered again (adoption reads such a log as empty and cuts the torn tail).
-    static func hasCompleteLine(_ url: URL) -> Bool {
-        guard let handle = FileHandle(forReadingAtPath: url.path) else { return false }
-        defer { try? handle.close() }
-        let chunk: UInt64 = 64 * 1024
-        guard let size = try? handle.seekToEnd(), size > 0 else { return false }
-        // The tail first: one read for any log whose last line is short.
-        if (try? handle.seek(toOffset: size > chunk ? size - chunk : 0)) != nil,
-           let tail = try? handle.read(upToCount: Int(chunk)), tail.contains(0x0A) { return true }
-        guard size > chunk, (try? handle.seek(toOffset: 0)) != nil else { return false }
-        while let data = try? handle.read(upToCount: Int(chunk)), !data.isEmpty {
-            if data.contains(0x0A) { return true }
+    /// What `.sprava/ops.ndjson` holds (binder-v0 §6.9). Adopted once it holds a whole line: a log a crash during
+    /// adoption left empty or torn is not, so Adopt is offered again (adoption reads such a log as empty and cuts
+    /// the torn tail). A log that is there but cannot be read is never taken for an absent one.
+    enum OpLog: Equatable {
+        case absent, incomplete, complete
+        /// `.sprava` or the log is a link, a special file or a folder; nothing was read through it.
+        case notRegular(symlink: Bool)
+        case unreadable
+    }
+
+    /// Reads the op log without following a link anywhere inside the binder and without blocking: `.sprava` is
+    /// opened as a real folder first, the log with `O_NONBLOCK`, and anything but a regular file is refused before
+    /// a byte is read, so a FIFO cannot hang the read.
+    static func opLog(in folder: URL) -> OpLog {
+        let dir = open(folder.path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC)
+        guard dir >= 0 else { return errno == ENOENT ? .absent : .unreadable }
+        defer { close(dir) }
+        let sprava = openat(dir, ".sprava", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard sprava >= 0 else {
+            switch errno {
+            case ENOENT: return .absent
+            case ELOOP, ENOTDIR:
+                // macOS answers ENOTDIR for a link under O_DIRECTORY | O_NOFOLLOW; lstat tells them apart.
+                var st = stat()
+                let link = fstatat(dir, ".sprava", &st, AT_SYMLINK_NOFOLLOW) == 0 && st.st_mode & S_IFMT == S_IFLNK
+                return .notRegular(symlink: link)
+            default: return .unreadable
+            }
         }
-        return false
+        defer { close(sprava) }
+        let fd = openat(sprava, "ops.ndjson", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else {
+            switch errno {
+            case ENOENT: return .absent
+            case ELOOP: return .notRegular(symlink: true)
+            default: return .unreadable
+            }
+        }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { return .unreadable }
+        guard st.st_mode & S_IFMT == S_IFREG else { return .notRegular(symlink: false) }
+        let size = Int64(st.st_size)
+        guard size > 0 else { return .incomplete }
+        let chunk: Int64 = 64 * 1024
+        var buffer = [UInt8](repeating: 0, count: Int(chunk))
+        /// Whether the bytes from `offset` up to `count` hold a newline; nil when a read fails or comes up short.
+        func newline(at offset: Int64, count: Int64) -> Bool? {
+            var done: Int64 = 0
+            while done < count {
+                let n = buffer.withUnsafeMutableBytes { pread(fd, $0.baseAddress, Int(count - done), off_t(offset + done)) }
+                if n < 0 { if errno == EINTR { continue }; return nil }
+                if n == 0 { return nil }
+                if buffer[0..<n].contains(0x0A) { return true }
+                done += Int64(n)
+            }
+            return false
+        }
+        // The tail first: one read for any log whose last line is short.
+        let tailStart = max(0, size - chunk)
+        switch newline(at: tailStart, count: size - tailStart) {
+        case nil: return .unreadable
+        case true?: return .complete
+        case false?: break
+        }
+        var offset: Int64 = 0
+        while offset < tailStart {
+            switch newline(at: offset, count: min(chunk, tailStart - offset)) {
+            case nil: return .unreadable
+            case true?: return .complete
+            case false?: offset += chunk
+            }
+        }
+        return .incomplete
+    }
+
+    /// The bytes of a regular file directly in the binder folder, opened without following a link or blocking on
+    /// a special file; nil for anything else.
+    static func readRegular(_ name: String, in folder: URL) -> Data? {
+        let dir = open(folder.path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC)
+        guard dir >= 0 else { return nil }
+        defer { close(dir) }
+        let fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1 << 20)
+        while true {
+            let n = Darwin.read(fd, &buffer, buffer.count)
+            if n < 0 { if errno == EINTR { continue }; return nil }
+            if n == 0 { return data }
+            data.append(contentsOf: buffer[0..<n])
+        }
     }
 
     /// Reads the folder. Never throws: a problem becomes a state.
@@ -90,8 +171,6 @@ public struct Teka: Sendable {
         let catalogURL = folder.appendingPathComponent("catalog.json")
         var states: [TekaState: [String]] = [:]
         func flag(_ state: TekaState, _ reason: String) { states[state, default: []].append(reason) }
-
-        let adopted = hasCompleteLine(folder.appendingPathComponent(".sprava/ops.ndjson"))
 
         // Containment: these must be regular files or folders, never symlinks (binder-v0 §3.6).
         for (name, wantDirectory) in [("catalog.json", false), ("DASHBOARD.md", false), (".teka.lock", false), (".sprava", true)] {
@@ -105,13 +184,26 @@ public struct Teka: Sendable {
             }
         }
 
+        // The op log, read only through a real `.sprava` folder. Anything standing where history lives counts as
+        // adopted, so Adopt is never offered over it, and blocks writes until it is repaired.
+        let history = opLog(in: folder)
+        let adopted = history != .absent && history != .incomplete
+        if states[.needsAttention]?.contains(where: { $0.hasPrefix(".sprava is") }) != true {
+            switch history {
+            case .notRegular(let symlink):
+                flag(.needsAttention, symlink ? ".sprava/ops.ndjson is a symbolic link" : ".sprava/ops.ndjson is not a regular file")
+            case .unreadable: flag(.needsAttention, ".sprava/ops.ndjson unreadable")
+            default: break
+            }
+        }
+
         guard let attrs = try? fm.attributesOfItem(atPath: catalogURL.path) else {
             return Teka(folder: folder, states: [.notATeka: ["no catalog.json"]], level: nil, catalog: nil,
                         safety: .init(), findings: [], isAdopted: adopted, modified: nil)
         }
         let modified = attrs[.modificationDate] as? Date
         guard states[.needsAttention]?.contains(where: { $0.hasPrefix("catalog.json") }) != true,
-              let data = try? Data(contentsOf: catalogURL) else {
+              let data = readRegular("catalog.json", in: folder) else {
             return Teka(folder: folder, states: states.merging([.needsAttention: ["catalog.json unreadable"]]) { $0 + $1 },
                         level: nil, catalog: nil, safety: .init(), findings: [], isAdopted: adopted, modified: modified)
         }

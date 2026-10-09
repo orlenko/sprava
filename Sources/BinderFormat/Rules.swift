@@ -27,6 +27,9 @@ public struct RuleFinding: Sendable, Equatable, CustomStringConvertible {
         case nullValue = "null-value"
         case badID = "bad-id"
         case badTitle = "bad-title"
+        case badWaitingOn = "bad-waiting-on"
+        case badRecurrence = "bad-recurrence"
+        case recurrenceWithoutDue = "recurrence-without-due"
     }
 
     public let code: Code
@@ -101,9 +104,43 @@ public enum ItemRules {
             for field in ["follow_up_at", "expected_by"] {
                 if let d = o[field], d.stringValue.flatMap(CalendarDate.strict) == nil { add(.badDate, field) }
             }
+            // `waiting_on` is a non-empty string whatever the status (item.schema.json); a falsy one on a waiting
+            // item is already `waiting-without-waiting-on`, and a null one is `null-value`.
+            if let party = o["waiting_on"], party != .null, (party.stringValue ?? "").isEmpty, !(waiting && !isTruthy(party)) {
+                add(.badWaitingOn, "waiting_on")
+            }
+            // `recurrence` (binder-v0 §5.4): monthly with a day, or yearly with a month and a day, and a `due` that
+            // holds the next occurrence.
+            if let recurrence = o["recurrence"], recurrence != .null {
+                if !isRecurrence(recurrence) { add(.badRecurrence, "recurrence") }
+                if !hasDue { add(.recurrenceWithoutDue, "due") }
+            }
             for entry in o.entries where entry.value == .null { add(.nullValue, entry.key) }
         }
         return findings
+    }
+
+    /// The shape of `recurrence` in item.schema.json: `freq` monthly or yearly, an integer `day` in 1...31, and an
+    /// integer `month` in 1...12, required when yearly and checked when present. Other keys are allowed.
+    static func isRecurrence(_ value: JSONValue) -> Bool {
+        guard case .object(let r) = value else { return false }
+        func integer(_ key: String, in range: ClosedRange<Int64>) -> Bool? {
+            guard let v = r[key] else { return nil }
+            guard let n = v.numberValue, let i = n.safeInteger ?? n.doubleValue.flatMap(exactInteger) else { return false }
+            return range.contains(i)
+        }
+        let freq = r["freq"]?.stringValue
+        guard freq == "monthly" || freq == "yearly", integer("day", in: 1...31) == true else { return false }
+        switch integer("month", in: 1...12) {
+        case false?: return false
+        case nil: return freq == "monthly"
+        case true?: return true
+        }
+    }
+
+    /// A number such as `14.0` is an integer to JSON Schema.
+    static func exactInteger(_ d: Double) -> Int64? {
+        d.rounded() == d && abs(d) <= 1e15 ? Int64(d) : nil
     }
 
     /// Python truthiness of a JSON value, as lifeproj's `not it.get(field)` tests it.
