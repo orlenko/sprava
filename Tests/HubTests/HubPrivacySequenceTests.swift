@@ -130,6 +130,57 @@ import Testing
         #expect(HubLane.sliceID(.str("tax-2026-001"), redacted: true, teka: "Tax", key: key) == "Tax-tax-2026-001")
     }
 
+    // Round 2, MUST-FIX 2. A lock that cannot be taken (a folder in its place) still withdraws a slice that shows
+    // more than the binder allows now, such as an item redacted since; with nothing narrowed the slice stays and the
+    // publish fails.
+    @Test func aDamagedLockWithdrawsAnItemRedactedSince() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        let lock = f.appendingPathComponent(".teka.lock")
+        try? FileManager.default.removeItem(at: lock)
+        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
+        #expect(throws: (any Error).self) { try HubLane.publish(f, root: s, now: now, force: true) }
+        #expect(FileManager.default.fileExists(atPath: sliceURL(s).path))
+        try editOutside(f, "a-1") { $0.set("redact", .bool(true)) }
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(f, root: s, now: now, force: true) }
+        #expect(!FileManager.default.fileExists(atPath: sliceURL(s).path))
+    }
+
+    // Round 2, MUST-FIX 2, the busy lock kept apart: another program's lock may be a publish that read the wider
+    // state, so an item redacted since is withdrawn only once the lock is free, and the publish says so meanwhile.
+    @Test func aBusyLockWithdrawsAnItemRedactedSinceOnceFree() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        let fd = open(f.appendingPathComponent(".teka.lock").path, O_RDWR | O_CREAT, 0o600)
+        #expect(fd >= 0 && flock(fd, LOCK_EX) == 0)
+        func publish() throws -> HubLane.PublishResult {
+            try HubLane.publish(f, root: s, now: now, force: true, nameCollides: false, lockTimeout: 0.2)
+        }
+        #expect(throws: TekaStore.Busy.self) { try publish() }
+        try editOutside(f, "a-1") { $0.set("redact", .bool(true)) }
+        #expect(throws: TekaStore.Refused.self) { try publish() }
+        #expect(FileManager.default.fileExists(atPath: sliceURL(s).path))
+        flock(fd, LOCK_UN)
+        close(fd)
+        _ = try publish()
+        #expect(try slice(s)["items"]?.arrayValue?.first?["title"] == .str("[redacted]"))
+    }
+
+    // Round 2, ISSUE 3. A completion whose `at` or `source` is not a string is applied with them normalized, and
+    // the values it had are kept in the op's note (binder-v0 §8.3).
+    @Test func aNormalizedCompletionKeepsItsValuesInTheNote() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        let outbox = s.appendingPathComponent("outbox/tax.intake.json")
+        try Data(#"{"completions":[{"id":"tax-a-1","action":"done","at":1791360000,"source":{"app":"invented"}}]}"#.utf8).write(to: outbox)
+        #expect(try HubLane.drain(f, root: s, now: now).applied == 1)
+        let op = try TekaStore(folder: f).readOpLog().ops.last { $0["op"] == .str("complete") }
+        #expect(op?["args"]?["closed_at"] == .null && op?["args"]?["source"] == .str("osavul"))
+        let note = op?["note"]?.stringValue ?? ""
+        #expect(note.contains("at was 1791360000") && note.contains(#"source was {"app":"invented"}"#))
+        #expect(!FileManager.default.fileExists(atPath: outbox.path))
+    }
+
     // MARK: - Random sequences
 
     struct SplitMix: RandomNumberGenerator {

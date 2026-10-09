@@ -100,7 +100,8 @@ extension HubLane {
     /// The binder lock is held from the reading of the catalog, the privacy state and the cursors through the
     /// writing of the slice and the cursors (binder-v0 §4.9), so a publish that read before a narrowing can never
     /// write after the withdrawal that narrowing caused. A binder whose lock cannot be taken at all (a damaged lock
-    /// or `.sprava`) still withdraws, without it; it never publishes. A lock another program holds too long may be
+    /// or `.sprava`) still withdraws, without it, when its disclosure narrowed or its slice shows more than it allows
+    /// now (an item redacted since, for example); it never publishes. A lock another program holds too long may be
     /// a publish that read the wider level: a withdrawal beside it could be undone by that publish's write, so it
     /// waits for the lock, and the publish fails saying so until then.
     public static func publish(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), force: Bool = false,
@@ -129,13 +130,17 @@ extension HubLane {
                     ?? publishLocked(teka, inbox: inbox, now: now, force: force, nameCollides: nameCollides)
             }
         } catch where !locked {
+            // Narrowed means a lower disclosure, or a slice that shows more than the binder allows now (`showsMore`),
+            // such as an item redacted since the last publish.
             let teka = Teka.read(folder)
             if error is TekaStore.Busy {
-                guard disclosure(teka) != "full" else { throw error }
+                guard disclosure(teka) != "full" || (try? showsMore(teka, inbox: inbox)) == true else { throw error }
                 throw TekaStore.Refused(reason: "another program holds the binder lock; the slice is withdrawn once it is free")
             }
-            guard let withdrawn = try withdrawIfNarrowed(teka, inbox: inbox, nameCollides: nameCollides) else { throw error }
-            return withdrawn
+            if let withdrawn = try withdrawIfNarrowed(teka, inbox: inbox, nameCollides: nameCollides) { return withdrawn }
+            guard try withdrawIfShowingMore(teka, inbox: inbox, nameCollides: nameCollides) else { throw error }
+            let why = (error as? TekaStore.Refused)?.reason ?? String(describing: error)
+            throw TekaStore.Refused(reason: "the binder lock cannot be taken (\(why)); \(withdrawnNote)")
         }
     }
 
@@ -160,20 +165,21 @@ extension HubLane {
             : .notPublished("disclosure \(level) is not published in this version; the slice was withdrawn")
     }
 
+    static let withdrawnNote = "the slice was withdrawn, since it showed more than the binder now allows"
+
     /// The publish proper, at disclosure `full`, under the binder lock. When it fails or is refused, the slice on the
     /// spool is withdrawn if it shows more than the binder now allows (`showsMore`): a narrowing never waits for a
     /// publish that a broken item, a blocked binder or a failed write keeps from happening.
     static func publishLocked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool) throws -> PublishResult {
-        let note = "the slice was withdrawn, since it showed more than the binder now allows"
         let result: PublishResult
         do {
             result = try publishChecked(teka, inbox: inbox, now: now, force: force, nameCollides: nameCollides)
         } catch {
             guard (try? withdrawIfShowingMore(teka, inbox: inbox, nameCollides: nameCollides)) == true else { throw error }
-            throw TekaStore.Refused(reason: "\((error as? TekaStore.Refused)?.reason ?? String(describing: error)); \(note)")
+            throw TekaStore.Refused(reason: "\((error as? TekaStore.Refused)?.reason ?? String(describing: error)); \(withdrawnNote)")
         }
         if case .notPublished(let why) = result, (try? withdrawIfShowingMore(teka, inbox: inbox, nameCollides: nameCollides)) == true {
-            return .notPublished("\(why); \(note)")
+            return .notPublished("\(why); \(withdrawnNote)")
         }
         return result
     }

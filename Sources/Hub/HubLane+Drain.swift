@@ -135,6 +135,14 @@ extension HubLane {
             let atValue: JSONValue = c["at"].flatMap { $0.stringValue != nil ? $0 : nil } ?? .null
             args.set("closed_at", atValue)
             args.set("source", c["source"].flatMap { $0.stringValue != nil ? $0 : nil } ?? .str("osavul"))
+            // An `at` or `source` that was not a string is kept in the op's note, so acknowledging the completion
+            // never loses it (binder-v0 §8.3).
+            let replaced = [("at", c["at"]), ("source", c["source"])].compactMap { field, value -> String? in
+                guard let value, value != .null, value.stringValue == nil else { return nil }
+                return "\(field) was \((try? Canonical.serialize(value)) ?? "not a string")"
+            }
+            let extra: [(String, JSONValue)] = replaced.isEmpty ? []
+                : [("note", .string("the hub's completion: " + replaced.joined(separator: "; ")))]
             let op = action == "done" ? "complete" : "drop"
             // Each completion is checked on its own; one bad completion never blocks the others.
             var line = JSONObject()
@@ -145,7 +153,7 @@ extension HubLane {
             line.set("args", .object(args))
             if let next = try? TransactionGuard.check([line], on: trial) {
                 trial = next.catalog
-                bodies.append(.init(op: op, args: args, actor: actor))
+                bodies.append(.init(op: op, args: args, actor: actor, extra: extra))
                 toAck.append((cid, c["at"]))
             } else {
                 result.skipped += 1
