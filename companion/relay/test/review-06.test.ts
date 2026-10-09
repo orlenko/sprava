@@ -561,3 +561,88 @@ test('a deletion is acknowledged only once its tombstone is durable; a retry aft
     assert.deepEqual(await list(third.url), [c]);
     await third.close();
 });
+
+test('a request body that lands after its device was deleted is never served, even from a mailbox read before (§7.4)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const r = newId();
+    assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([7]), headers: bearer(device.token) })).status, 201);
+    const [key] = await store.list(`requests/${device.id}/`);
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${r}`, { headers: bearer(owner) })).status, 200, 'read once, so the mailbox is in memory');
+    assert.equal((await fetch(`${t.url}/v0/devices/${device.id}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    await store.put(key!, new Uint8Array([7])); // the body's delayed write lands after the deletion
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${r}`, { headers: bearer(owner) })).status, 404);
+    assert.deepEqual(await store.list(`requests/${device.id}/`), [], 'and what landed is deleted');
+    await t.close();
+});
+
+test('a mailbox left with only a tombstone, its floor not yet raised, is found by the sweep and compacted (§7.6)', async () => {
+    const { raw: fs } = await freshStore();
+    let failFloors = 0;
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
+        sync: (k) => fs.sync(k),
+        list: (p) => fs.list(p),
+        listTimes: (p) => fs.listTimes(p),
+        delete: (k) => fs.delete(k),
+        put: async (k, b) => {
+            if (failFloors > 0 && k.includes('/floors/requests/')) {
+                failFloors--;
+                throw new Error('injected floor failure');
+            }
+            return fs.put(k, b);
+        },
+    };
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const first = await startTestRelay({ raw });
+    const r = newId();
+    assert.equal((await fetch(`${first.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    failFloors = 1;
+    assert.equal((await fetch(`${first.url}/v0/requests/${device.id}/${r}`, { method: 'DELETE', headers: bearer(owner) })).status, 500, 'deleted, but its floor failed');
+    await first.close();
+    assert.equal((await store.list(`tombstones/requests/${device.id}/`)).length, 1);
+    assert.deepEqual(await store.list(`requests/${device.id}/`), []);
+    assert.deepEqual(await store.list(`intents/requests/${device.id}/`), []);
+    const second = await startTestRelay({ raw }); // its start sweeps every mailbox
+    assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), [], 'the floor rose over it');
+    assert.equal((await store.list(`floors/requests/${device.id}/`)).length, 1);
+    await second.close();
+});
+
+test('deleting a request the relay has no trace of answers 204 and writes nothing (§7.6)', async () => {
+    const { raw: fs } = await freshStore();
+    const writes: string[] = [];
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        sync: (k) => fs.sync(k),
+        list: (p) => fs.list(p),
+        listTimes: (p) => fs.listTimes(p),
+        putIfAbsent: (k, b) => (writes.push(k), fs.putIfAbsent(k, b)),
+        put: (k, b) => (writes.push(k), fs.put(k, b)),
+        delete: (k) => (writes.push(k), fs.delete(k)),
+    };
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const r = newId();
+    assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    for (const fresh of [false, true]) {
+        // With the mailbox in memory, and with none (a new process, which reads it from the bucket first).
+        if (fresh) await t.close();
+        const relay = fresh ? await startTestRelay({ raw }) : t;
+        writes.length = 0;
+        const unknown = newId();
+        assert.equal((await fetch(`${relay.url}/v0/requests/${device.id}/${unknown}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+        assert.deepEqual(writes.filter((k) => !k.includes('/leases/') && !k.includes('/last-seen')), [], 'nothing written for it');
+        assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), []);
+        if (fresh) await relay.close();
+    }
+});

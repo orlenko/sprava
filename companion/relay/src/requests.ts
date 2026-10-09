@@ -222,10 +222,13 @@ export function requests(relay: Relay, devices: Devices) {
 
     /** At start, and hourly: every mailbox is read again, and requests older than 30 days are deleted (§7.6). */
     async function sweep(): Promise<void> {
-        // A device whose copies are all missing still has intents: it is found from them too.
+        // A device whose copies are all missing still has intents: it is found from them too; and one whose last
+        // deletion stopped before its floor rose, from its tombstones and reservations.
         const listed = [
             ...(await store.list('requests/')).map((key) => key.split('/')[1]!),
             ...(await store.list(INTENTS_PREFIX)).map((key) => key.split('/')[2]!),
+            ...(await store.list('tombstones/requests/')).map((key) => key.split('/')[2]!),
+            ...(await store.list(RESERVED)).map((key) => key.split('/')[1]!),
         ];
         for (const d of new Set([...listed, ...mailboxes.keys()].filter((id) => isId(id)))) {
             await relay.deviceLocks.run(d, async () => {
@@ -331,8 +334,14 @@ export function requests(relay: Relay, devices: Devices) {
             access: ['owner'],
             browser: false,
             async handle(call) {
-                const entry = mailboxes.get(ids(call.params.D, call.params.R))?.get(call.params.R!);
-                const bytes = entry === undefined ? null : await store.get(entry.key);
+                const d = ids(call.params.D, call.params.R);
+                // Under the device's lock, which every revocation takes, and only while the device is not revoked:
+                // a body whose late write landed after the revocation's deletions is never served (§7.4).
+                const bytes = await relay.deviceLocks.run(d, async () => {
+                    const mailbox = (await devices.revokedLocked(d)) || !mailboxes.has(d) ? await refreshLocked(d) : mailboxes.get(d)!;
+                    const entry = mailbox.get(call.params.R!);
+                    return entry === undefined ? null : store.get(entry.key);
+                });
                 if (bytes === null) throw new HttpError(404, 'There is no such request.');
                 return { status: 200, bytes };
             },
@@ -357,8 +366,9 @@ export function requests(relay: Relay, devices: Devices) {
                         await store.put(tombstoneOf(key), new Uint8Array());
                         mailboxes.get(d)?.delete(r);
                         await retire(key);
+                        await compactLocked(d);
                     }
-                    await compactLocked(d);
+                    // No copy, intent or tombstone of R: nothing to delete, and nothing is written (§7.6).
                 });
                 return { status: 204 };
             },
