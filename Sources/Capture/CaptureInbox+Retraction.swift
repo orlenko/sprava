@@ -1,0 +1,125 @@
+import BinderFormat
+import BinderStore
+import Foundation
+import Shelf
+import SpravaKit
+
+// Withdrawing what waits from a chain, and retractions (capture-event-v0 §3.2).
+extension CaptureInbox {
+    /// Withdraws what still waits from a chain, through the gate (`withdraw(_:reason:replacement:)`): what the cards
+    /// hold of the chain's current words is carried first. A card that only redacts stays: a raise to private holds
+    /// whatever comes after it, and so does the removal card of `retraction`, the one being resumed. Ends the clerk's
+    /// work on the chain. Returns false when a card could not be withdrawn, or when the current words cannot be read
+    /// (nil `replacement`: nothing is withdrawn).
+    @discardableResult
+    func withdraw(chain: [String], reason: String, keeping retraction: String? = nil, replacement: Replacement?, state: inout State,
+                  binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
+        // Cards that cannot all be read now are not all withdrawn: the work stays owed.
+        var complete = cardsListedCompletely(binders: binders, deviceID: commands.deviceID)
+        let cards = withdrawable(chain: chain, binders: binders, deviceID: commands.deviceID).filter { _, p in
+            retraction == nil || p.raw["provenance"]?["retraction"]?.stringValue != retraction
+        }
+        if let replacement {
+            if !withdraw(cards, reason: reason, replacement: replacement, state: state, binders: binders, commands: commands, now: now) { complete = false }
+        } else if !cards.isEmpty {
+            complete = false
+        }
+        var clerk = state.clerk ?? [:]
+        for id in chain where clerk[id] != nil { clerk[id] = "superseded" }
+        state.clerk = clerk
+        return complete
+    }
+
+    /// The cards `withdraw` would take from a chain, without touching them: every unfiled one, and each one waiting
+    /// in a binder unless it only redacts.
+    func withdrawable(chain: [String], binders: [ShelfRow], deviceID: String) -> [(URL?, Proposal)] {
+        let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: deviceID)
+        return unfiled.map { (nil, $0) } + filed.filter { !Self.onlyRedacts($0.1) }.map { ($0.0, $0.1) }
+    }
+
+    /// Whether a card only narrows privacy: every op an `update_item` that sets `redact: true`, with at most the
+    /// kind `other` a redaction needs, and changes nothing else (no title, date or status, nothing unset). Only such a
+    /// card outlives a later correction or retraction of its chain; any other is out of date once the chain moves on.
+    package static func onlyRedacts(_ p: Proposal) -> Bool {
+        !p.ops.isEmpty && p.ops.allSatisfy { op in
+            guard op["op"] == .str("update_item"), let args = op["args"]?.objectValue, let set = args["set"]?.objectValue,
+                  set["redact"] == .bool(true), (args["unset"]?.arrayValue ?? []).isEmpty else { return false }
+            return set.entries.allSatisfy { $0.key == "redact" || ($0.key == "kind" && $0.value == .str("other")) }
+        }
+    }
+
+    /// A retraction (capture-event-v0 §3.2): what waits is withdrawn, Sprava's own copies are forgotten, and items
+    /// already filed get a card that offers to drop them. Returns false when any of it could not be done; run again,
+    /// it does only what is left, and never makes a second card.
+    func retract(chain: [String], retraction: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
+        // A retry never withdraws the removal card this retraction already made: that is the person's to decide.
+        // What stands after the retraction (a restore taken in first) keeps what the withdrawn cards held of its words.
+        var complete = withdraw(chain: chain, reason: "the note was deleted where it was taken", keeping: retraction,
+                                replacement: wordsAfter(retraction, state: state), state: &state, binders: binders, commands: commands, now: now)
+        var clerk = state.clerk ?? [:]
+        for id in chain {
+            clerk[id] = "retracted"
+            // The capture's readings (a folder of them by their ids; one file, as an older inbox kept it).
+            for interpretation in [dir.appendingPathComponent("interpretations/\(id)", isDirectory: true), dir.appendingPathComponent("interpretations/\(id).json")] {
+                if (try? FileManager.default.removeItem(at: interpretation)) == nil, FileManager.default.fileExists(atPath: interpretation.path) {
+                    complete = false
+                }
+            }
+        }
+        state.clerk = clerk
+        let ids = Set(chain)
+        // A private chain closes nothing in the clear: the closure keeps the item's title, so each item is redacted
+        // first in the same card, as a private correction does (capture-event-v0 §3.3).
+        let isPrivate = !ids.union([retraction]).isDisjoint(with: state.privates ?? [])
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            // A binder whose catalog cannot be read shows no items, which is not "nothing to remove".
+            if row.teka.writesBlocked {
+                complete = false
+                continue
+            }
+            let filed = row.teka.items.flatMap { item -> [JSONObject] in
+                guard let o = item.object, let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue),
+                      events.contains(where: ids.contains), let itemID = o["id"] else { return [] }
+                var ops: [JSONObject] = []
+                if isPrivate, o["redact"] != .bool(true) {
+                    var redact = JSONObject([(key: "redact", value: .bool(true))])
+                    if o["kind"] == nil { redact.set("kind", .str("other")) }
+                    ops.append(JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(redact))]))]))
+                }
+                ops.append(JSONObject([(key: "op", value: .str("drop")), (key: "args", value: .obj([
+                    ("id", itemID), ("closed_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))), ("source", .str("capture"))]))]))
+                return ops
+            }
+            guard !filed.isEmpty else { continue }
+            // A card this retraction already made, waiting or acted on, is kept; a leftover that was never trusted
+            // could not be approved, so it goes and the card is made again.
+            let leftover = "its digest could not be kept"
+            var made = false
+            for (p, _) in ProposalStore.list(in: row.folder) where p.raw["provenance"]?["retraction"] == .string(retraction) {
+                if p.state == "proposed", !commands.isTrusted(p.id, in: row.folder) {
+                    if (try? BinderWrite.reject(p, in: row.folder, reason: leftover, deviceID: commands.deviceID, now: now)) == nil { complete = false }
+                } else if p.raw["rejected_reason"] != .string(leftover) {
+                    made = true
+                }
+            }
+            guard !made else { continue }
+            let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+            let card = Proposal.make(title: "A note was deleted where it was taken. Remove what was filed from it?", actor: actor, ops: filed,
+                                     provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))),
+                                                             (key: "retraction", value: .string(retraction)),
+                                                             (key: "remains", value: .str("the event files in the capture folder, the titles in this binder's history, and backups"))]),
+                                     now: now)
+            do {
+                try BinderWrite.save(card, in: row.folder, deviceID: commands.deviceID)
+            } catch {
+                complete = false
+                continue
+            }
+            if (try? commands.trustProposals([card.id], in: row.folder)) == nil {
+                BinderWrite.takeBackUntrusted(card, in: row.folder, deviceID: commands.deviceID, now: now)
+                complete = false
+            }
+        }
+        return complete
+    }
+}
