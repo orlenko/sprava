@@ -68,6 +68,11 @@ public struct IntakeReading: Sendable, Equatable {
         // what passes it is cut, the rest is not read, and the card is held as the message alone would be.
         let limit = limits.textChars
         var length = r.text.unicodeScalars.count, full = false
+        // The file's own reading first: it was capped by the reader's limit, which may be larger than this one.
+        if length > limit {
+            r.text = String(String.UnicodeScalarView(r.text.unicodeScalars.prefix(limit)))
+            full = true
+        }
         for (name, read) in parts {
             r.attachments.append(name)
             if full { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: the reading reached the text limit"); continue }
@@ -90,7 +95,7 @@ public struct IntakeReading: Sendable, Equatable {
             }
         }
         if full, r.held == nil {
-            r.held = "longer than the text limit (\(limit) characters) with its attachments; only the start was read"
+            r.held = "longer than the text limit (\(limit) characters)\(parts.isEmpty ? "" : " with its attachments"); only the start was read"
         }
         if r.held == nil, r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             r.notes.append(r.kind == "image" ? "no text found in the picture" : "no text found")

@@ -39,15 +39,61 @@ extension Extractor {
         return Result(kind: "pdf", text: parts.joined(separator: "\n\n"), textFrom: from, pages: count)
     }
 
-    /// Whether a page draws an image declared past `limit` pixels: inline in its content, among its XObjects and
-    /// patterns, in its annotations' appearances, and inside the forms and patterns those draw. The search has a
-    /// budget of objects; one that runs out of it counts as too large, never as clean.
+    /// Whether a page draws an image declared past `limit` pixels: inline in its content, among the XObjects and
+    /// patterns of the resources it draws with (its own or inherited), in its annotations' appearances, and inside
+    /// the forms and patterns those draw. Every walk is bounded; one that runs out of its bound counts as too large,
+    /// never as clean.
     static func drawsImagePast(_ limit: Int, _ page: CGPDFPage) -> Bool {
         guard let dict = page.dictionary else { return false }
+        var walk = PDFWalk(limit: Double(limit))
+        let (resources, exhausted) = inheritedResources(dict)
+        if exhausted { return true }
         let content = CGPDFContentStreamCreateWithPage(page)
-        if inlineImagePast(Double(limit), in: content) { return true }
-        var visits = 0
-        return imagePast(Double(limit), in: dict, parent: content, depth: 0, visits: &visits)
+        if inlineImagePast(walk.limit, in: content) { return true }
+        if let resources, resourcesPast(resources, parent: content, depth: 0, walk: &walk) { return true }
+        // Drawing a page draws its annotations' normal appearances too: a stream, or one per state.
+        var annotations: CGPDFArrayRef?
+        guard CGPDFDictionaryGetArray(dict, "Annots", &annotations), let annotations else { return false }
+        guard CGPDFArrayGetCount(annotations) <= PDFWalk.budget else { return true }
+        var drawn: [CGPDFStreamRef] = []
+        for i in 0..<CGPDFArrayGetCount(annotations) {
+            var annotation: CGPDFDictionaryRef?, appearance: CGPDFDictionaryRef?, normal: CGPDFObjectRef?
+            guard CGPDFArrayGetDictionary(annotations, i, &annotation), let annotation,
+                  CGPDFDictionaryGetDictionary(annotation, "AP", &appearance), let appearance,
+                  CGPDFDictionaryGetObject(appearance, "N", &normal), let normal else { continue }
+            var stream: CGPDFStreamRef?, states: CGPDFDictionaryRef?
+            if CGPDFObjectGetValue(normal, .stream, &stream), let stream { drawn.append(stream) }
+            else if CGPDFObjectGetValue(normal, .dictionary, &states), let states, !streams(in: states, into: &drawn) { return true }
+            if drawn.count > PDFWalk.budget { return true }
+        }
+        return streamsPast(drawn, inherited: resources, parent: content, depth: 0, walk: &walk)
+    }
+
+    /// The resources a page draws with: its own, else the nearest ancestor's in the page tree, which a page inherits
+    /// (PDF 32000-1 section 7.7.3.4; of the other inheritable attributes, MediaBox and CropBox are read by PDFKit,
+    /// which resolves them itself, and Rotate does not change the pixel count). `exhausted` past 64 levels.
+    private static func inheritedResources(_ page: CGPDFDictionaryRef) -> (resources: CGPDFDictionaryRef?, exhausted: Bool) {
+        var node = page
+        for _ in 0..<64 {
+            var resources: CGPDFDictionaryRef?, parent: CGPDFDictionaryRef?
+            if CGPDFDictionaryGetDictionary(node, "Resources", &resources), let resources { return (resources, false) }
+            guard CGPDFDictionaryGetDictionary(node, "Parent", &parent), let parent else { return (nil, false) }
+            node = parent
+        }
+        return (nil, true)
+    }
+
+    /// Adds the streams among a dictionary's values; false when they are more than the walk's budget.
+    private static func streams(in container: CGPDFDictionaryRef, into drawn: inout [CGPDFStreamRef]) -> Bool {
+        var found: [CGPDFStreamRef] = [], over = false
+        CGPDFDictionaryApplyBlock(container, { _, object, _ in
+            var stream: CGPDFStreamRef?
+            if CGPDFObjectGetValue(object, .stream, &stream), let stream { found.append(stream) }
+            if found.count > PDFWalk.budget { over = true; return false }
+            return true
+        }, nil)
+        drawn += found
+        return !over
     }
 
     /// Whether a content stream holds an inline image (`BI` ... `ID` ... `EI`) declared past `limit` pixels.
@@ -70,44 +116,27 @@ extension Extractor {
         return found.past
     }
 
-    private static func imagePast(_ limit: Double, in dict: CGPDFDictionaryRef, parent: CGPDFContentStreamRef, depth: Int,
-                                  visits: inout Int) -> Bool {
+    /// Whether the XObjects or patterns of a resource dictionary draw an image past the limit. A dictionary already
+    /// looked through is not looked through again, so shared and circular resources cost one visit.
+    private static func resourcesPast(_ resources: CGPDFDictionaryRef, parent: CGPDFContentStreamRef, depth: Int, walk: inout PDFWalk) -> Bool {
+        guard walk.seen.insert(resources.rawValue).inserted else { return false }
+        guard depth < 16 else { return true }
         var drawn: [CGPDFStreamRef] = []
-        func streams(in container: CGPDFDictionaryRef) {
-            CGPDFDictionaryApplyBlock(container, { _, object, _ in
-                var stream: CGPDFStreamRef?
-                if CGPDFObjectGetValue(object, .stream, &stream), let stream { drawn.append(stream) }
-                return true
-            }, nil)
+        for key in ["XObject", "Pattern"] {
+            var container: CGPDFDictionaryRef?
+            if CGPDFDictionaryGetDictionary(resources, key, &container), let container, !streams(in: container, into: &drawn) { return true }
         }
-        var resources: CGPDFDictionaryRef?
-        if CGPDFDictionaryGetDictionary(dict, "Resources", &resources), let resources {
-            for key in ["XObject", "Pattern"] {
-                var container: CGPDFDictionaryRef?
-                if CGPDFDictionaryGetDictionary(resources, key, &container), let container { streams(in: container) }
-            }
-        }
-        // Drawing a page draws its annotations' normal appearances too: a stream, or one per state.
-        var annotations: CGPDFArrayRef?
-        if CGPDFDictionaryGetArray(dict, "Annots", &annotations), let annotations {
-            for i in 0..<min(CGPDFArrayGetCount(annotations), 10_000) {
-                var annotation: CGPDFDictionaryRef?, appearance: CGPDFDictionaryRef?, normal: CGPDFObjectRef?
-                guard CGPDFArrayGetDictionary(annotations, i, &annotation), let annotation,
-                      CGPDFDictionaryGetDictionary(annotation, "AP", &appearance), let appearance,
-                      CGPDFDictionaryGetObject(appearance, "N", &normal), let normal else { continue }
-                var stream: CGPDFStreamRef?, states: CGPDFDictionaryRef?
-                if CGPDFObjectGetValue(normal, .stream, &stream), let stream { drawn.append(stream) }
-                else if CGPDFObjectGetValue(normal, .dictionary, &states), let states { streams(in: states) }
-            }
-        }
+        return streamsPast(drawn, inherited: resources, parent: parent, depth: depth, walk: &walk)
+    }
+
+    private static func streamsPast(_ drawn: [CGPDFStreamRef], inherited: CGPDFDictionaryRef?, parent: CGPDFContentStreamRef,
+                                    depth: Int, walk: inout PDFWalk) -> Bool {
         for stream in drawn {
-            visits += 1
-            guard visits <= 10_000, depth < 16 else { return true }
-            guard let d = CGPDFStreamGetDictionary(stream) else { continue }
+            guard walk.visit() else { return true }
+            guard walk.seen.insert(stream.rawValue).inserted, let d = CGPDFStreamGetDictionary(stream) else { continue }
             var subtype: UnsafePointer<CChar>?
             let kind = CGPDFDictionaryGetName(d, "Subtype", &subtype) ? subtype.map { String(cString: $0) } : nil
-            switch kind {
-            case "Image":
+            if kind == "Image" {
                 // The image, and the soft mask or mask image drawn with it, each decoded at its own size.
                 var images: [CGPDFDictionaryRef] = [d]
                 for key in ["SMask", "Mask"] {
@@ -117,17 +146,17 @@ extension Extractor {
                 for m in images {
                     var w: CGPDFInteger = 0, h: CGPDFInteger = 0
                     guard CGPDFDictionaryGetInteger(m, "Width", &w), CGPDFDictionaryGetInteger(m, "Height", &h) else { continue }
-                    if Double(w) * Double(h) > limit { return true }
+                    if Double(w) * Double(h) > walk.limit { return true }
                 }
-            default:
-                // A form, a tiling pattern or an appearance: its own content, and whatever it draws, are looked
-                // through the same way.
-                var own: CGPDFDictionaryRef?
-                let resources = CGPDFDictionaryGetDictionary(d, "Resources", &own) ? own ?? d : d
-                let content = CGPDFContentStreamCreateWithStream(stream, resources, parent)
-                if inlineImagePast(limit, in: content) { return true }
-                if imagePast(limit, in: d, parent: content, depth: depth + 1, visits: &visits) { return true }
+                continue
             }
+            // A form, a tiling pattern or an appearance: its own content, and the resources it draws with. One with
+            // no resources of its own draws by name from those already being looked through.
+            var own: CGPDFDictionaryRef?
+            _ = CGPDFDictionaryGetDictionary(d, "Resources", &own)
+            let content = CGPDFContentStreamCreateWithStream(stream, own ?? inherited ?? d, parent)
+            if inlineImagePast(walk.limit, in: content) { return true }
+            if let own, resourcesPast(own, parent: content, depth: depth + 1, walk: &walk) { return true }
         }
         return false
     }
@@ -206,4 +235,20 @@ private final class InlineImages {
     let limit: Double
     var past = false
     init(limit: Double) { self.limit = limit }
+}
+
+/// One walk through what a PDF page draws: the pixel limit, the objects visited against a budget, and what was
+/// already looked through.
+private struct PDFWalk {
+    static let budget = 10_000
+    let limit: Double
+    var visits = 0
+    var seen = Set<OpaquePointer>()
+    init(limit: Double) { self.limit = limit }
+
+    /// Counts one more object; false once the budget is spent, which the caller treats as too large.
+    mutating func visit() -> Bool {
+        visits += 1
+        return visits <= Self.budget
+    }
 }

@@ -53,7 +53,7 @@ import Testing
 
     // MARK: - PDF pages: an image the page draws is checked before drawing
 
-    enum Route: CaseIterable { case page, form, annotation, inline, inlineInForm }
+    enum Route: CaseIterable { case page, form, annotation, inline, inlineInForm, inherited, circular }
 
     /// A one-page PDF with no text layer whose page draws an image declared at `width` by `height`: from its own
     /// resources, through a form, or in an annotation's appearance. Offsets are computed, so it opens without repair.
@@ -79,7 +79,23 @@ import Testing
             objects += ["<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /X1 5 0 R >> >> /Contents 4 0 R >>",
                         stream("", "q 612 0 0 792 0 0 cm /X1 Do Q"),
                         stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", "BI /Width \(width) /Height \(height) /ColorSpace /DeviceGray /BitsPerComponent 8 ID x EI")]
+        case .inherited:
+            // The page has no resources of its own: it draws with its parent page-tree node's.
+            objects[1] = "<< /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /XObject << /X1 5 0 R >> >> >>"
+            objects += ["<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+                        stream("", "q 612 0 0 792 0 0 cm /X1 Do Q"), image]
+        case .circular:
+            // One resource dictionary shared by the page and the form it draws, which lists the form itself.
+            objects += ["<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources 6 0 R /Contents 4 0 R >>",
+                        stream("", "q 612 0 0 792 0 0 cm /X1 Do Q"),
+                        stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources 6 0 R", "/Im1 Do"),
+                        "<< /XObject << /X1 5 0 R /Im1 7 0 R >> >>", image]
         }
+        return pdf(objects)
+    }
+
+    /// A PDF of the given objects, numbered from 1, the first being the catalog.
+    static func pdf(_ objects: [String]) -> Data {
         var pdf = "%PDF-1.4\n"
         var offsets: [Int] = []
         for (i, body) in objects.enumerated() {
@@ -102,6 +118,31 @@ import Testing
             let small = Extractor.extract(Self.pdfDrawing(width: 40, height: 40, via: route), name: "scan.pdf")
             #expect(small.problem == nil, "\(route): \(String(describing: small.problem))")
         }
+    }
+
+    @Test func aPDFWalkThatRunsOutOfBudgetHolds() {
+        func page(_ extra: String, objects more: [String] = []) -> Data {
+            Self.pdf(["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \(extra) /Contents 4 0 R >>",
+                      "<< /Length 0 >>\nstream\n\nendstream"] + more)
+        }
+        let small = "<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\nx\nendstream"
+        // More annotations than the budget: held, whatever the ones past it would draw.
+        let annotations = Array(repeating: "<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>", count: 10_001).joined(separator: " ")
+        #expect(Extractor.extract(page("/Annots [\(annotations)]"), name: "scan.pdf").problem?.contains("pixel limit") == true)
+        let fewer = Array(repeating: "<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>", count: 100).joined(separator: " ")
+        #expect(Extractor.extract(page("/Annots [\(fewer)]"), name: "scan.pdf").problem?.contains("pixel limit") != true)
+        // More XObjects than the budget, all the same small picture: held too.
+        let names = (0...10_000).map { "/I\($0) 5 0 R" }.joined(separator: " ")
+        #expect(Extractor.extract(page("/Resources << /XObject << \(names) >> >>", objects: [small]), name: "scan.pdf")
+            .problem?.contains("pixel limit") == true)
+        // A chain of parents that never ends (the root names itself as its parent): the search for inherited
+        // resources stops at its bound and holds, never treats the page as having none.
+        let loop = Self.pdf(["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 /Parent 2 0 R >>",
+                             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+                             "<< /Length 0 >>\nstream\n\nendstream"])
+        let looped = Extractor.extract(loop, name: "scan.pdf")
+        #expect(looped.problem?.contains("pixel limit") == true, "\(String(describing: looped.problem))")
     }
 
     // MARK: - Archives: one budget for everything unpacked
@@ -164,6 +205,16 @@ import Testing
         let whole = IntakeReading.read(message, in: dir, attachments: files, channel: "email", reader: .inProcess)
         #expect(whole.held == nil)
         #expect(whole.text.contains(String(repeating: "3", count: 150)))
+    }
+
+    @Test func theFilesOwnReadingKeepsToTheSuppliedCap() throws {
+        let url = temp("own-cap").appendingPathComponent("note.txt")
+        try Data(String(repeating: "Invented note. ", count: 30).utf8).write(to: url)   // 450 characters
+        var tight = Extractor.Limits()
+        tight.textChars = 300
+        let r = IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "other", reader: .inProcess, limits: tight)
+        #expect(r.text.unicodeScalars.count <= 300)
+        #expect(r.held == "longer than the text limit (300 characters); only the start was read", "\(String(describing: r.held))")
     }
 
     // MARK: - The reader's answer is read up to a bound
