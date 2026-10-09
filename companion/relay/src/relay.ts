@@ -1,20 +1,31 @@
 // The relay: its shared state, what it checks before serving, and its routes (companion-v0 §7).
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { CLAIM_TIMING, claimRoute, ownerIn, UnreadableOwner } from './claim.ts';
 import { ConfigError, isSetupCode, type Config } from './config.ts';
-import { createHandler, type Principal, type Route } from './http.ts';
+import { deviceRoutes, Devices } from './devices.ts';
+import { sha256Hex } from './encoding.ts';
+import { createHandler, type Route } from './http.ts';
+import { OWNERS, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
-import { Mutex, type Store } from './store/store.ts';
+import { repairAtStart } from './startup.ts';
+import { KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
 
 export interface Relay {
     readonly config: Config;
     /** The store, already scoped to `SPRAVA_INSTANCE/` (§7.8). */
     readonly store: Store;
     readonly log: Log;
-    /** §6 step 5: claims, pairing joins, object and request creation take this one lock. */
+    /**
+     * §6 step 5: the creation lock, for claims, pairing joins and object writes. Lock order (devices.ts): a device's
+     * lock first, then this one; code holding this one never takes a device lock.
+     */
     readonly lock: Mutex;
+    /** One lock per device, held for every action of the device and every change to it (devices.ts). */
+    readonly deviceLocks: KeyedMutex;
     now(): number;
-    claimed: boolean;
+    /** The owner token's hash once the relay is claimed (§6), else null. */
+    ownerHash: string | null;
     /** Runs `work` every `ms` until the relay stops; a failure is logged by name only. */
     repeat(ms: number, name: string, work: () => Promise<void>): void;
 }
@@ -26,6 +37,7 @@ export interface RelayOptions {
     lease?: typeof LEASE_TIMING;
     /** Called once another process has taken over (lease.ts); the process should then exit. */
     onFenced?: () => void;
+    claimTiming?: typeof CLAIM_TIMING;
 }
 
 export type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -39,11 +51,25 @@ export interface Started {
     stop(): void;
 }
 
+export class ClaimConflict extends Error {}
+
+/** The owner (claim.ts, ownerIn); only an owner record that cannot be read fails the start. */
+async function readOwner(store: Store): Promise<string | null> {
+    try {
+        return await ownerIn(store);
+    } catch (error) {
+        if (error instanceof UnreadableOwner) {
+            throw new ClaimConflict('The owner record is unreadable; start over with a new SPRAVA_INSTANCE and setup code.');
+        }
+        throw error;
+    }
+}
+
 /** Checks what must hold before serving, takes the lease, and builds the handler; the rest happens in `ready`. */
 export async function startRelay(config: Config, store: Store, options: RelayOptions): Promise<Started> {
-    const claimed = await store.has('owner.json');
+    const ownerHash = await readOwner(store);
     // §6: an unclaimed relay refuses to start without a well-formed setup code.
-    if (!claimed && (config.setupCode === null || !isSetupCode(config.setupCode))) {
+    if (ownerHash === null && (config.setupCode === null || !isSetupCode(config.setupCode))) {
         throw new ConfigError('SPRAVA_SETUP_CODE is required until the relay is claimed: 44 characters, as `openssl rand -base64 32` prints.');
     }
     const timing = options.lease ?? LEASE_TIMING;
@@ -54,14 +80,16 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         store: lease.fenceStore(),
         log: options.log,
         lock: new Mutex(),
+        deviceLocks: new KeyedMutex(),
         now: options.now ?? Date.now,
-        claimed,
+        ownerHash,
         repeat(ms, name, work) {
             const timer = setInterval(() => void work().catch(() => options.log.event('error', { kind: name })), ms);
             timer.unref();
             timers.push(timer);
         },
     };
+    const devices = new Devices(relay);
     let isReady = false;
     const ready = (async () => {
         // Whatever an earlier process began writing has ended before this one reads anything (lease.ts).
@@ -70,18 +98,24 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         await sleep(timing.warmupMs);
         await lease.check();
         await lease.assertHeld();
-        relay.claimed = await relay.store.has('owner.json');
+        relay.ownerHash = await readOwner(relay.store);
+        // The owner record made durable (a write may have failed after it became readable). Claim intents are never
+        // deleted: one binds the slot to its claim for good (README, accepted trade-off A).
+        if (relay.ownerHash !== null) await relay.store.sync(`${OWNERS}${sha256Hex(ownerRecord(relay.ownerHash))}`);
+        await repairAtStart(relay, devices);
+        await devices.load();
         await lease.retireEarlier();
         isReady = true;
         options.log.event('ready');
     })();
-    const routes: Route[] = [health(relay)];
+    const routes: Route[] = [health(relay), claimRoute(relay, options.claimTiming), ...deviceRoutes(relay, devices)];
     const handler = createHandler({
         routes,
         webOrigin: config.webOrigin,
         log: options.log,
-        authenticate: async (): Promise<Principal | null> => null,
-        isClaimed: () => relay.claimed,
+        authenticate: (token) => devices.authenticate(token),
+        guard: (principal, action, signal) => devices.guard(principal, action, signal),
+        isClaimed: () => relay.ownerHash !== null,
         isReady: () => isReady && !lease.fenced,
         ...(options.bodyTimeoutMs === undefined ? {} : { bodyTimeoutMs: options.bodyTimeoutMs }),
     });
@@ -104,6 +138,6 @@ function health(relay: Relay): Route {
         access: ['public'],
         browser: true,
         unclaimed: true,
-        handle: async () => ({ status: 200, json: { protocol: 0, claimed: relay.claimed, instance: relay.config.instance } }),
+        handle: async () => ({ status: 200, json: { protocol: 0, claimed: relay.ownerHash !== null, instance: relay.config.instance } }),
     };
 }

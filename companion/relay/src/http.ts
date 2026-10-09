@@ -7,7 +7,8 @@ import type { Log } from './log.ts';
 
 export type Access = 'public' | 'owner' | 'active' | 'pending';
 
-export type Principal = { kind: 'owner' } | { kind: 'device'; id: string; active: boolean; pairing: string };
+/** A device principal names the hash of the token it presented, so `guard` can check that token again. */
+export type Principal = { kind: 'owner' } | { kind: 'device'; id: string; active: boolean; pairing: string; token: string };
 
 export interface Call {
     params: Record<string, string>;
@@ -19,6 +20,8 @@ export interface Call {
     json: JsonObject;
     /** The client address the host reports for the connection (§6, step 4). */
     address: string;
+    /** Aborted when the client goes away before its answer, so work queued for it can be dropped. */
+    signal: AbortSignal;
 }
 
 export interface Reply {
@@ -57,6 +60,11 @@ export interface HttpOptions {
     log: Log;
     authenticate(token: string): Promise<Principal | null>;
     isClaimed(): boolean;
+    /**
+     * Runs a device's action once its body has arrived, under the lock its revocation also takes, after checking its
+     * authorization again (devices.ts). Without it, a device revoked while its body was in flight would still act.
+     */
+    guard?(principal: Principal & { kind: 'device' }, action: () => Promise<Reply>, signal: AbortSignal): Promise<Reply>;
     /** False while the relay starts or once it is fenced (lease.ts): only health is served then. */
     isReady?(): boolean;
     /** §7: a body that has not fully arrived within this time is dropped. */
@@ -68,6 +76,8 @@ export const JSON_LIMIT = 4096;
 
 class Dropped extends Error {}
 
+const signals = new WeakMap<IncomingMessage, AbortSignal>();
+
 export function createHandler(options: HttpOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
     const timeoutMs = options.bodyTimeoutMs ?? 60_000;
     return async (req, res) => {
@@ -75,6 +85,11 @@ export function createHandler(options: HttpOptions): (req: IncomingMessage, res:
         const origin = req.headers.origin;
         const cors = origin !== undefined && origin === options.webOrigin;
         const matched = { pattern: 'unmatched' };
+        const gone = new AbortController();
+        res.on('close', () => {
+            if (!res.writableFinished) gone.abort();
+        });
+        signals.set(req, gone.signal);
         let reply: Reply;
         try {
             reply = await route(req, options, timeoutMs, matched);
@@ -159,7 +174,9 @@ async function run(req: IncomingMessage, r: Route, params: Record<string, string
             throw error;
         }
     }
-    return r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '' });
+    const signal = signals.get(req) ?? new AbortController().signal;
+    const action = (): Promise<Reply> => r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '', signal });
+    return principal?.kind === 'device' && options.guard ? options.guard(principal, action, signal) : action();
 }
 
 /** Matches `/v0/a/:x/*rest` against the split path; null when it does not match. */

@@ -84,10 +84,19 @@ write-once object records its bytes' intent first (`src/store/store.ts`).
 
 4. Point the host's health check at `GET /v0/health`. It answers `200` with
    `{"protocol":0,"claimed":false,"instance":"..."}` until the Mac claims the relay.
-5. In the Mac app, Settings › Phone: the relay's address and the setup code.
+5. In the Mac app, Settings › Phone: the relay's address and the setup code. The Mac claims the relay
+   (`POST /v0/claim`, spec section 6) and `/v0/health` then says `"claimed":true`. From then on the relay
+   ignores the setup code and refuses every other claim, even after a restart; remove `SPRAVA_SETUP_CODE` from
+   the host's settings. Until it is claimed, the relay serves nothing but health and claim.
+
+Wrong setup codes are answered `403`, and after five from one address within ten minutes, `429`. Behind a
+proxy that hides client addresses (App Platform's included) every client shares one address, so the count is
+in effect relay-wide; a correct code is never refused because of it.
 
 Starting over means a new `SPRAVA_INSTANCE` and a new setup code; the old data stays behind under the old
-prefix, which you may delete by hand.
+prefix, which you may delete by hand. It is also the only way out when a claim was begun and its body lost: once
+a claim's intent is written, the relay accepts no other claim (trade-off A below), and the Mac keeps its claim
+body and resends it until the claim is confirmed (spec section 6).
 
 **DigitalOcean App Platform**, as one example: [`deploy/digitalocean-app.yaml`](deploy/digitalocean-app.yaml)
 is an app spec with placeholders. Copy it outside the repository, fill it in (or leave the values empty and set
@@ -122,11 +131,33 @@ endpoint is checked against them:
    tombstones, reservations, markers, folders) is removed once nothing needs it, or covered by a floor that
    stands for everything below it; a folder left empty is removed.
 
+**Accepted trade-offs.** These are settled; they follow from the invariants and are not defects:
+
+- **A. A claim binds the slot for good.** A client's timeout cannot prove that a write it sent will never land, so
+  a claim intent is never voided or deleted, by time or by lease rank. A claim's intent (`claims/{digest}`) and
+  its owner record (`owner/{digest}`) are both named by the SHA-256 of the record. The binding claim is the
+  lowest-named claim intent, and the owner is its record, when that exists. A claim, first try or retry, is
+  acknowledged only when its own intent is the lowest at that moment, under the creation lock; a record of any
+  other claim is never adopted, and that claim gets 409.
+
+  The guarantee is that one claimer retrying always ends as the owner: the Mac keeps its claim body and resends it
+  (spec section 6), and its claims all have one digest. Two different holders of the setup code racing a claim with
+  delayed writes is outside the threat model, since the setup code is held by one person, and whoever holds it
+  could simply claim first. In that race a later, lower claim can still become binding; the Mac then sees its owner
+  token refused (401) and shows the relay as needing a reset, a new `SPRAVA_INSTANCE`. Nothing is silently lost.
+  The same reset applies if the binding claim's holder never retries: claiming is a one-time setup.
+
 ## Layout
 
 - `src/main.ts`: reads the environment, opens the store, serves.
 - `src/relay.ts`: the relay's shared state, what it checks before serving, and its routes.
 - `src/lease.ts`: one writer at a time, even while a host runs two containers.
+- `src/claim.ts`: claiming the relay (section 6).
+- `src/devices.ts`: admitting device tokens, listing and revoking devices (sections 7.3, 7.4), and the lock
+  order: every action of a device runs under that device's lock, its authorization checked again there; a
+  device's lock comes before the creation lock, and code holding the creation lock never takes a device lock.
+- `src/startup.ts`: the repairs and cleanups before serving (section 7.8).
+- `src/layout.ts`: the names of what the relay keeps (section 7.8); `src/limits.ts`: in-memory counts.
 - `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.
 - `src/log.ts`: structured logs without content (section 12).
 - `src/encoding.ts`: b64, ids, tokens and their hashes, times (section 3).
