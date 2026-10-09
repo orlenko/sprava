@@ -40,9 +40,10 @@ extension CaptureInbox {
 
     /// A raise to private (capture-event-v0 §3.2, §3.3): waiting cards from the chain become private and redacted
     /// at once; cards in binders are rewritten by Sprava and trusted again. Returns false when any rewrite or
-    /// redaction card could not be saved.
+    /// redaction card could not be saved, and when not every card or item could be seen: a card file that cannot be
+    /// read now, a binder whose catalog or op log cannot be read. The raise then stays owed until it can.
     package func raisePrivacy(chain: [String], binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
-        var complete = true
+        var complete = cardsListedCompletely(binders: binders, deviceID: commands.deviceID)
         let (unfiled, filed) = pendingCards(chain: chain, binders: binders, deviceID: commands.deviceID)
         for p in unfiled where p.raw["provenance"]?["private"] != .bool(true) {
             if (try? writeUnfiled(Self.privateCopy(p, catalog: nil).raw)) == nil { complete = false }
@@ -72,7 +73,11 @@ extension CaptureInbox {
                 guard op["op"] == .str("update_item"), op["args"]?["set"]?["redact"] == .bool(true), let id = op["args"]?["id"] else { return nil }
                 return canonicalText(id)
             })
-            let touched = Self.itemsTouched(by: ids, in: row.folder)
+            // A binder whose catalog or op log cannot be read shows no items, which is not "nothing to redact".
+            guard !row.teka.writesBlocked, let touched = Self.itemsTouched(by: ids, in: row.folder) else {
+                complete = false
+                continue
+            }
             let ops = row.teka.items.compactMap { item -> JSONObject? in
                 guard let o = item.object, o["redact"] != .bool(true), let itemID = o["id"], !covered.contains(canonicalText(itemID)) else { return nil }
                 let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
@@ -102,11 +107,13 @@ extension CaptureInbox {
     /// by an update, a status change, a completion or a drop. Read from the binder's op log, so it is what was applied
     /// (with the person's edits), not what a card proposed; an item a capture changed keeps the provenance of the one
     /// that made it, so its own `events` never name the capture that changed it.
-    static func itemsTouched(by events: Set<String>, in folder: URL) -> Set<String> {
+    /// Nil when the op log cannot be read and a card of the chain was approved: what it changed is not known.
+    static func itemsTouched(by events: Set<String>, in folder: URL) -> Set<String>? {
         let cards = Set(ProposalStore.list(in: folder).map(\.0).filter { p in
             p.state == "applied" && p.raw["provenance"]?["events"]?.arrayValue?.contains { events.contains($0.stringValue ?? "") } == true
         }.map(\.id))
-        guard !cards.isEmpty, let log = try? TekaStore(folder: folder).readOpLog().ops else { return [] }
+        guard !cards.isEmpty else { return [] }
+        guard let log = try? TekaStore(folder: folder).readOpLog().ops else { return nil }
         let itemOps: Set<String> = ["add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss"]
         return Set(log.compactMap { line -> String? in
             guard let proposal = line["proposal"]?.stringValue, cards.contains(proposal), itemOps.contains(line["op"]?.stringValue ?? ""),

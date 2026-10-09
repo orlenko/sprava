@@ -59,6 +59,7 @@ import Testing
         var written = 0
         var away = false
         var unwritable = false
+        var unreadable: URL?      // a card file made unreadable for a while
         var privateEvents = Set<String>()
 
         func current(_ chain: Int) -> Event { events[chains[chain].last!]! }
@@ -136,7 +137,8 @@ import Testing
             let chain = rng.below(m.chains.count)
             let old = m.current(chain).text.split(separator: "\n").compactMap { Int($0.split(separator: " ").last ?? "") }
             var numbers = text(chain, &rng, from: old)
-            if numbers.isEmpty { numbers = [1] }
+            // Sometimes the words are all taken out (a revision with no text, not a retraction).
+            if rng.chance(8) { numbers = [] } else if numbers.isEmpty { numbers = [1] }
             let isPrivate = rng.chance(10)
             let id = try publish(s, m, chain: chain, revision: "r\(m.chains[chain].count + 1)", text: numbers.map { line(chain, $0) }.joined(separator: "\n"),
                                  private: isPrivate, retracted: false, device: rng.pick(devices))
@@ -161,7 +163,7 @@ import Testing
         case 50..<62:  // a sweep that stops at a random cursor save: one that fails, or the process killed right after one
             let saves = rng.below(6)
             // (No kill while the binder's cards are read-only: its files could not be put back.)
-            if rng.chance(50) || m.unwritable {
+            if rng.chance(50) || m.unwritable || m.unreadable != nil {
                 CursorCrash.after(saves, cursor: s.inbox.stateURL)
                 defer { CursorCrash.after(nil, cursor: s.inbox.stateURL) }
                 _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
@@ -176,7 +178,7 @@ import Testing
             let interp = await Clerk(model: RecordingModel([.obj([("items", .array(answer))])]))
                 .read(work.event, filing: [bFiling(s)], hint: work.hint, now: pNow)
             let crash = rng.chance(40) ? rng.below(3) : nil
-            if crash != nil, rng.chance(50), !m.unwritable {
+            if crash != nil, rng.chance(50), !m.unwritable, m.unreadable == nil {
                 let at = try killAtAnySave(s, m, &rng) {
                     _ = s.inbox.commitClerk(work, interp, filing: [bFiling(s)], rows: pRows(s), commands: s.commands, seconds: 1, now: pNow)
                 }
@@ -230,10 +232,13 @@ import Testing
                 m.log.append("reject \(card.id)")
             }
         case 86..<89:  // the binder's volume goes away, or comes back
-            guard !m.unwritable else { return false }
+            guard !m.unwritable, m.unreadable == nil else { return false }
             try toggleAway(s, m)
+        case 95..<97:  // one waiting card's file cannot be read for a while (a raise or a withdrawal cannot see it), or can again
+            guard !m.away, !m.unwritable else { return false }
+            toggleUnreadable(s, m, &rng)
         case 89..<91:  // the binder's cards cannot be written for a while (a raise then fails and stays pending), or can again
-            guard !m.away else { return false }
+            guard !m.away, m.unreadable == nil else { return false }
             toggleUnwritable(s, m)
         case 91..<95:  // a capture's card changes an existing item (as the clerk's update of a matching item does)
             // Only for a revision the inbox has taken in and carded, as the clerk reads only those.
@@ -260,7 +265,7 @@ import Testing
         default:       // a clean sweep
             _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
             m.log.append("sweep")
-            return !m.away && !m.unwritable
+            return !m.away && !m.unwritable && m.unreadable == nil
         }
         return false
     }
@@ -348,6 +353,25 @@ import Testing
         chmod(proposals.path, m.unwritable ? 0o700 : 0o500)
         m.unwritable.toggle()
         m.log.append(m.unwritable ? "binder cards unwritable" : "binder cards writable")
+    }
+
+    /// One waiting card's file, in the binder or the Inbox, becomes unreadable, or readable again. No invariant is checked
+    /// at a sweep meanwhile; approvals are still asked for.
+    func toggleUnreadable(_ s: PSetup, _ m: Model, _ rng: inout Rng) {
+        if let file = m.unreadable {
+            chmod(file.path, 0o600)
+            m.unreadable = nil
+            m.log.append("card file readable again")
+            return
+        }
+        let inBinder = pOpen(s).map { ProposalStore.dir(s.folder).appendingPathComponent("\($0.id).json") }
+        let inInbox = s.inbox.unfiled().map { s.inbox.unfiledDir.appendingPathComponent("\($0.id).json") }
+        let files = (inBinder + inInbox).sorted { $0.path < $1.path }
+        guard !files.isEmpty else { return }
+        let file = files[rng.below(files.count)]
+        chmod(file.path, 0o000)
+        m.unreadable = file
+        m.log.append("card file unreadable: \(file.lastPathComponent)")
     }
 
     /// Invariant 2 at an approval: when the card's chain is known to be private (one of its private events was taken
@@ -455,6 +479,7 @@ import Testing
         for _ in 0..<steps {
             if try await step(s, m, &rng) { check(s, m, seed: seed) }
         }
+        if m.unreadable != nil { toggleUnreadable(s, m, &rng) }
         if m.unwritable { toggleUnwritable(s, m) }
         if m.away { try toggleAway(s, m) }
         // Whatever happened, two clean sweeps settle everything.
@@ -464,7 +489,7 @@ import Testing
         check(s, m, seed: seed)
     }
 
-    @Test(arguments: [UInt64(1203), 1432, 1520, 1703])
+    @Test(arguments: [UInt64(1203), 1432, 1520, 1903])
     func randomSequencesKeepEveryCaptureAccountedFor(seed: UInt64) async throws {
         try await run(seed: seed, steps: 120)
     }

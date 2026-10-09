@@ -247,11 +247,17 @@ extension CaptureInbox {
             journal([("event", .string(id)), ("stage", .str("stale_revision"))])
             return
         }
-        if event.retracted {
+        // A later revision with no words, of a chain whose words are held, says none of them any more: like a retraction,
+        // what waits from the chain is withdrawn and what was filed from it is offered for removal. Only a chain that
+        // held nothing yet takes the shortcut below. (A document whose text could not be read comes through intake,
+        // never as a revision of a chain, so it never empties one.)
+        let emptied = !event.retracted && event.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && baseline != nil && !currentRetracted
+        if event.retracted || emptied {
             // Every part of a retraction is done, or the stage says so and the next sweep does the rest.
             let done = chain.isEmpty || retract(chain: chain, retraction: id, state: &state, binders: binders, commands: commands, now: now)
             state.ingested[id] = done ? "retracted" : "retracting"
-            journal([("event", .string(id)), ("stage", .str(done ? "retracted" : "retract_failed"))])
+            journal([("event", .string(id)), ("stage", .str(done ? (emptied ? "emptied" : "retracted") : "retract_failed"))])
             return
         }
         if event.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -280,6 +286,12 @@ extension CaptureInbox {
             // Items already filed from the earlier version get a change card, never new items beside them (§6.5). What
             // waits from the chain is withdrawn only once those cards are kept: when one cannot be saved or trusted,
             // nothing changed, the stage stays "ingested", and the next sweep tries again from the same place.
+            // The change cards carry over what the waiting cards held, so they are made only once every card can be read:
+            // one missed now would lose its lines for good. Until then the stage stays "ingested".
+            guard cardsListedCompletely(binders: binders, deviceID: commands.deviceID) else {
+                journal([("event", .string(id)), ("stage", .str("cards_unreadable"))])
+                return
+            }
             let withdrawing = withdrawable(chain: chain, binders: binders, deviceID: commands.deviceID)
             let corrections: [(URL?, String)]?
             do {
@@ -312,7 +324,7 @@ extension CaptureInbox {
         let made: (String, URL?)
         do {
             // A card made before a crash, whose id never reached the cursor, is kept, never made twice (§5.3).
-            made = try orphanCard(id, binders: binders, deviceID: commands.deviceID)
+            made = try orphanCard(id, binders: binders, commands: commands, now: now)
                 ?? card(for: filedAs, hint: hint, verified: verified, producer: producer ?? event.app,
                         replaces: replaces, binders: binders, commands: commands, now: now)
         } catch {
@@ -343,16 +355,29 @@ extension CaptureInbox {
     }
 
     /// The Tier 0 card event `id` got before a crash kept its id from the cursor: one still waiting, unfiled or in a
-    /// binder, or one the person already approved or rejected; nil when there is none.
-    func orphanCard(_ id: String, binders: [ShelfRow], deviceID: String) -> (String, URL?)? {
+    /// binder, or one the person already approved or rejected; nil when there is none. A card waiting in a binder counts
+    /// only when it is trusted: one saved but whose digest was never kept (the crash came in between) could never be
+    /// approved, so it is taken back here, and the event's card is made again from the event as checked now.
+    func orphanCard(_ id: String, binders: [ShelfRow], commands: Commands, now: Date) -> (String, URL?)? {
         // Only a card of this event's own words: made from it alone, and not one that only redacts or removes (a raise
         // or a retraction of its chain names every event of the chain).
+        // A correction's cards are no Tier 0 card: they are made before the cards they replace are withdrawn, so the
+        // event they came from is finished by its own sweep (which finds them again), never adopted here.
         func own(_ p: Proposal) -> Bool {
             p.raw["provenance"]?["events"] == .array([.string(id)]) && !Self.onlyRedacts(p) && p.raw["provenance"]?["retraction"] == nil
+                && p.raw["provenance"]?["supersedes"]?.arrayValue == nil
         }
-        let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders, deviceID: deviceID)
+        let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders, deviceID: commands.deviceID)
         if let p = waitingUnfiled.first(where: own) { return (p.id, nil) }
-        if let (folder, p) = waitingFiled.first(where: { own($0.1) }) ?? actedOnCard(id, binders: binders, deviceID: deviceID) { return (p.id, folder) }
+        var trusted: (URL, Proposal)?
+        for (folder, p) in waitingFiled where own(p) {
+            if commands.isTrusted(p.id, in: folder) {
+                if trusted == nil { trusted = (folder, p) }
+            } else {
+                try? TekaStore(folder: folder).reject(p, reason: "its digest could not be kept", now: now)
+            }
+        }
+        if let (folder, p) = trusted ?? actedOnCard(id, binders: binders, deviceID: commands.deviceID) { return (p.id, folder) }
         return nil
     }
 
@@ -360,7 +385,7 @@ extension CaptureInbox {
     /// when it has none. The clerk reads the event next. A private event raises its chain as its own sweep would have,
     /// since that sweep's record of the raise was lost with the crash (capture-event-v0 §3.3).
     func adoptOrphanCard(_ id: String, chain: [String], state: inout State, binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
-        guard state.ingested[id] == "ingested", let (card, folder) = orphanCard(id, binders: binders, deviceID: commands.deviceID) else { return false }
+        guard state.ingested[id] == "ingested", let (card, folder) = orphanCard(id, binders: binders, commands: commands, now: now) else { return false }
         state.cards[id] = card
         if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
         state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
@@ -417,7 +442,9 @@ extension CaptureInbox {
     func actedOnCard(_ id: String, binders: [ShelfRow], deviceID: String) -> (URL, Proposal)? {
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == deviceID {
             for (p, _) in ProposalStore.list(in: row.folder) where ["applied", "rejected"].contains(p.state)
-                && p.raw["provenance"]?["events"] == .array([.string(id)]) && p.raw["provenance"]?["producer"] != nil {
+                && p.raw["provenance"]?["events"] == .array([.string(id)]) && p.raw["provenance"]?["producer"] != nil
+                // One Sprava took back itself, never trusted, was not the person's to act on.
+                && p.raw["rejected_reason"] != .str("its digest could not be kept") {
                 return (row.folder, p)
             }
         }
@@ -433,6 +460,31 @@ extension CaptureInbox {
 
     /// Pending cards built from any event of a chain: unfiled ones, and proposals waiting in the binders this Mac
     /// manages (a binder another Mac owns is read-only here, mvp.md feature 1).
+    /// Whether every card file in `dir` can be read now: a folder that is not there holds none; one that cannot be
+    /// listed, or a card that cannot be read (no permission, an I/O error, another owner), means the cards were not
+    /// all seen, and work that has to reach all of them is not done. A link or a special file is never a card.
+    static func cardsReadable(in dir: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDirectory) else { return true }
+        guard isDirectory.boolValue, let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return false }
+        for name in names where name.hasSuffix(".json") && ProposalStore.isValidID(String(name.dropLast(5))) {
+            switch SafeFile.read(dir.appendingPathComponent(name)) {
+            case .ok, .missing: continue
+            case .refused(let why) where why == "a symbolic link" || why == "not a plain file": continue
+            default: return false
+            }
+        }
+        return true
+    }
+
+    /// Whether `pendingCards` sees every card: the Inbox's (and its digest list) and those of every binder it lists.
+    /// When not, an empty answer is not "nothing waits": work that must reach every card stays owed.
+    func cardsListedCompletely(binders: [ShelfRow], deviceID: String) -> Bool {
+        guard Self.cardsReadable(in: unfiledDir), (try? unfiledDigests()) != nil else { return false }
+        return binders.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == deviceID }
+            .allSatisfy { Self.cardsReadable(in: ProposalStore.dir($0.folder)) }
+    }
+
     func pendingCards(chain: [String], binders: [ShelfRow], deviceID: String) -> (unfiled: [Proposal], filed: [(URL, Proposal)]) {
         let ids = Set(chain)
         func fromChain(_ p: Proposal) -> Bool {

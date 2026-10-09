@@ -134,9 +134,9 @@ extension CaptureInbox {
         if ["retracted", "retracting"].contains(state.ingested[newest] ?? "") {
             return retract(chain: chain.filter { $0 != newest }, retraction: newest, state: &state, binders: [row], commands: commands, now: now)
         }
-        var complete = true
+        var complete = Self.cardsReadable(in: ProposalStore.dir(row.folder))
         if chain.contains(where: Set(state.privates ?? []).contains) {
-            complete = raisePrivacy(chain: chain, binders: [row], commands: commands, now: now)
+            complete = raisePrivacy(chain: chain, binders: [row], commands: commands, now: now) && complete
         }
         let current = state.texts?[newest]
         for (p, _) in ProposalStore.list(in: row.folder) where p.state == "proposed" && !Self.onlyRedacts(p)

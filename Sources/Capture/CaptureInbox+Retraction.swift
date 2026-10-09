@@ -12,7 +12,8 @@ extension CaptureInbox {
     @discardableResult
     func withdraw(chain: [String], reason: String, keeping retraction: String? = nil, state: inout State, binders: [ShelfRow],
                   deviceID: String, now: Date) -> Bool {
-        var complete = true
+        // Cards that cannot all be read now are not all withdrawn: the work stays owed.
+        var complete = cardsListedCompletely(binders: binders, deviceID: deviceID)
         for (folder, p) in withdrawable(chain: chain, binders: binders, deviceID: deviceID)
         where retraction == nil || p.raw["provenance"]?["retraction"]?.stringValue != retraction {
             if let folder {
@@ -67,6 +68,11 @@ extension CaptureInbox {
         // first in the same card, as a private correction does (capture-event-v0 §3.3).
         let isPrivate = !ids.union([retraction]).isDisjoint(with: state.privates ?? [])
         for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            // A binder whose catalog cannot be read shows no items, which is not "nothing to remove".
+            if row.teka.writesBlocked {
+                complete = false
+                continue
+            }
             let filed = row.teka.items.flatMap { item -> [JSONObject] in
                 guard let o = item.object, let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue),
                       events.contains(where: ids.contains), let itemID = o["id"] else { return [] }

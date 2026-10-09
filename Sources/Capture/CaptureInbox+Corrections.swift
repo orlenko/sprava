@@ -72,6 +72,9 @@ extension CaptureInbox {
             })
         }.filter { !$0.1.isEmpty }
         guard !filed.isEmpty else { return nil }
+        // Without the current words (their file cannot be read now) nothing can be compared: the new revision is carded
+        // whole instead, so none of its lines is lost.
+        guard currentLines != nil else { return nil }
 
         let closedAt = JSONValue.string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
         var ops: [URL: [JSONObject]] = [:]
