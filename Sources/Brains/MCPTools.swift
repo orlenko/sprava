@@ -64,7 +64,9 @@ extension MCPServer {
         .obj([("name", .str("finish_reading")), ("title", .str("Finish a careful reading")),
               ("description", .str("Takes a document off list_readings when a careful reading found nothing to propose. Use propose_ops with reading_id instead when there is something to change.")),
               ("inputSchema", schema([("binder", .obj([("type", .str("string"))])), ("reading_id", .obj([("type", .str("string"))])),
-                                      ("note", .obj([("type", .str("string"))]))], required: ["binder", "reading_id"])),
+                                      ("note", .obj([("type", .str("string")), ("maxLength", .int(2_000)),
+                                                     ("description", .str("Optional: why nothing needs doing, kept with the reading for the person."))]))],
+                                     required: ["binder", "reading_id"])),
               ("annotations", annotations(readOnly: false, idempotent: true))]),
     ]
 }

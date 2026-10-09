@@ -23,32 +23,51 @@ extension MCPServer {
         var paths: Set<String> = []
 
         func covers(_ e: IntakeReadings.Entry) -> Bool {
-            digests.contains(e.sha256.lowercased()) || paths.contains(DocumentPaths.fold("intake/" + e.name))
+            MCPServer.digest(.string(e.sha256)).map(digests.contains) == true || paths.contains(DocumentPaths.fold("intake/" + e.name))
         }
+    }
+
+    /// A document digest as compared here: 64 lowercase hex characters, a `sha256:` prefix dropped; nil for anything
+    /// else, which can match nothing.
+    static func digest(_ value: JSONValue?) -> String? {
+        guard var s = value?.stringValue?.lowercased() else { return nil }
+        if s.hasPrefix("sha256:") { s.removeFirst(7) }
+        return s.wholeMatch(of: /[0-9a-f]{64}/) == nil ? nil : s
     }
 
     /// The private documents of a binder: those its catalog marks private now (a narrowing counts at once), and those
     /// Sprava last applied as private (a widening an outside edit made waits for the person: only the person's own
-    /// op lowers a marker). Nil when the op log cannot be read: then nothing in the binder is shown.
+    /// op lowers a marker). Nil when the op log cannot be read, or when a record marked private cannot be told apart
+    /// from the documents readings are of: then nothing in the binder is shown.
     static func privateDocuments(catalog: JSONObject?, folder: URL) -> PrivateDocuments? {
         guard let ops = try? TekaStore(folder: folder).readOpLog().ops else { return nil }
         return privateDocuments(catalog: catalog, ops: ops)
     }
 
-    static func privateDocuments(catalog: JSONObject?, ops: [JSONObject]) -> PrivateDocuments {
+    static func privateDocuments(catalog: JSONObject?, ops: [JSONObject]) -> PrivateDocuments? {
         func key(_ id: JSONValue?) -> String? { id.flatMap { try? Canonical.serialize($0) } }
-        // Every digest and path each document id has had, from the catalog and the log.
+        // Every digest and path each document id has had, from the catalog and the log: ids only carry a marker to
+        // where the document was before.
         var digests: [String: Set<String>] = [:]
         var paths: [String: Set<String>] = [:]
         func note(_ id: String, _ doc: JSONValue?, from: JSONValue? = nil) {
-            if let sha = doc?["sha256"]?.stringValue { digests[id, default: []].insert(sha.lowercased()) }
+            if let sha = digest(doc?["sha256"]) { digests[id, default: []].insert(sha) }
             for p in [doc?["path"], from].compactMap({ $0?.stringValue }) { paths[id, default: []].insert(DocumentPaths.fold(p)) }
         }
-        var marked = Set<String>()   // private as found in the catalog
+        var out = PrivateDocuments()
+        var marked = Set<String>()   // private as found in the catalog, by id
+        var unplaced: [String?] = []   // private records with neither a digest nor a path, by id
         for doc in catalog?["documents"]?.arrayValue ?? [] {
-            guard let k = key(doc["id"]) else { continue }
-            note(k, doc)
-            if isPrivate(doc["sensitivity"]) { marked.insert(k) }
+            let k = key(doc["id"])
+            if let k { note(k, doc) }
+            guard isPrivate(doc["sensitivity"]) else { continue }
+            // A private record counts by its own digest and path whatever its id says: an id that is missing, or
+            // names another document, never takes the marker off this one.
+            let sha = digest(doc["sha256"]), path = doc["path"]?.stringValue
+            if let sha { out.digests.insert(sha) }
+            if let path { out.paths.insert(DocumentPaths.fold(path)) }
+            if let k { marked.insert(k) }
+            if sha == nil && path == nil { unplaced.append(k) }
         }
         // As Sprava last applied it: from the latest import_snapshot, skipping aborted ops; an external_edit never counts.
         var confirmed = Set<String>()
@@ -81,10 +100,29 @@ extension MCPServer {
                 break
             }
         }
-        var out = PrivateDocuments()
-        for k in marked.union(confirmed) {
+        // A private record with neither a digest nor a path is placed only by what its id had before; without that,
+        // no reading in the binder can be shown to be of another document, so none is shown.
+        for k in unplaced {
+            guard let k, !(digests[k] ?? []).isEmpty || !(paths[k] ?? []).isEmpty else { return nil }
+        }
+        // Every id marked or confirmed private brings what it had before; then every id that ever had a private digest
+        // or path does too, until nothing more joins: a record whose id is missing or wrong is still tied to the
+        // document (and the intake file) it was filed from.
+        var ids = marked.union(confirmed)
+        for k in ids {
             out.digests.formUnion(digests[k] ?? [])
             out.paths.formUnion(paths[k] ?? [])
+        }
+        var grew = true
+        while grew {
+            grew = false
+            for k in Set(digests.keys).union(paths.keys) where !ids.contains(k) {
+                guard !(digests[k] ?? []).isDisjoint(with: out.digests) || !(paths[k] ?? []).isDisjoint(with: out.paths) else { continue }
+                ids.insert(k)
+                out.digests.formUnion(digests[k] ?? [])
+                out.paths.formUnion(paths[k] ?? [])
+                grew = true
+            }
         }
         return out
     }

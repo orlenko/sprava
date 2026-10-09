@@ -80,6 +80,9 @@ extension MCPServer {
         return Self.toolResult(.obj(o))
     }
 
+    /// The longest note finish_reading keeps.
+    static let noteLimit = 2_000
+
     func finishReading(_ args: JSONObject) -> JSONValue {
         // Taking a reading off the shared queue is a change: it needs the same rights as propose_ops.
         guard let (row, level) = binder(args) else { return missing(args) }
@@ -88,7 +91,16 @@ extension MCPServer {
             return Self.toolError("this binder is managed by another Sprava; it is read-only here")
         }
         guard var e = reading(args, in: row) else { return Self.toolError("not found") }
-        if let note = args["note"]?.stringValue, let problem = Self.unsafeText(note) { return Self.toolError("note holds \(problem)") }
+        if let note = args["note"] {
+            // Why nothing needs doing, kept with the reading's outcome for the person; never logged.
+            guard case .string(let text) = note else { return Self.toolError("note is text") }
+            guard text.count <= Self.noteLimit else { return Self.toolError("note: at most \(Self.noteLimit) characters") }
+            if let problem = Self.unsafeText(text) { return Self.toolError("note holds \(problem)") }
+            // The reading's file has no field of its own for it yet, so it goes beside the clerk's reading.
+            var result = e.result ?? JSONObject()
+            result.set("brain_note", .obj([("client", .string(client.id)), ("text", .string(text))]))
+            e.result = result
+        }
         e.escalation = "answered"
         e.answer = "none"
         guard (try? IntakeReadings(support: commands.support).save(e)) != nil else {

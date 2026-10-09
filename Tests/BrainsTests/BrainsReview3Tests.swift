@@ -30,6 +30,10 @@ import Testing
         case loweredByThePerson       // filed private, then the person's own op removed the marker
         case markedPrivateOutside     // filed plain, then marked private by an outside edit (a narrowing)
         case unknownSensitivity       // a sensitivity value Sprava does not know
+        case privateWithoutID         // marked private outside, its id dropped (path and digest kept)
+        case privateWrongIDSamePath   // marked private outside under another id and digest, same path
+        case privateSameDigestMoved   // marked private outside, moved and its id dropped (digest kept)
+        case privateRecordUnplaced    // an outside record marked private with neither id, digest nor path
         case cardPrivate              // the filing card is private (a private capture, a raise)
         case cardFilesItPrivate       // the filing card files the document as private
         case cardChangedOutside       // the filing card is no longer as Sprava wrote it
@@ -120,6 +124,22 @@ import Testing
         case .unknownSensitivity:
             try file(e, sensitivity: nil)
             try editDocument(s.folder) { $0["sensitivity"] = "confidential" }
+        case .privateWithoutID:
+            try file(e, sensitivity: nil)
+            try editDocument(s.folder) { $0["sensitivity"] = "private"; $0["id"] = nil }
+        case .privateWrongIDSamePath:
+            try file(e, sensitivity: nil)
+            try editDocument(s.folder) { d in
+                d["sensitivity"] = "private"; d["id"] = "estate-example-doc-2026-999"; d["sha256"] = String(repeating: "cd", count: 32)
+            }
+        case .privateSameDigestMoved:
+            try file(e, sensitivity: nil)
+            try editDocument(s.folder) { $0["sensitivity"] = "private"; $0["id"] = nil; $0["path"] = "documents/moved.pdf" }
+        case .privateRecordUnplaced:
+            let url = s.folder.appendingPathComponent("catalog.json")
+            var catalog = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            catalog["documents"] = (catalog["documents"] as? [[String: Any]] ?? []) + [["title": "Invented note", "sensitivity": "private"]]
+            try JSONSerialization.data(withJSONObject: catalog, options: [.prettyPrinted]).write(to: url)
         case .cardChangedOutside:
             var raw = card.raw
             raw.set("title", .str("File the invented letter, changed"))
@@ -161,36 +181,80 @@ import Testing
         }
     }
 
-    @Test func privateDocumentsFollowTheRatchet() {
+    @Test func privateDocumentsFollowTheRatchet() throws {
         // An outside edit that removes a marker Sprava applied waits; one that adds a marker counts at once; only the
         // person's own op lowers it; an aborted op confirms nothing.
+        let a = String(repeating: "ab", count: 32), other = String(repeating: "cd", count: 32)
         let doc = { (sens: String?) -> JSONValue in
-            var o: [(String, JSONValue)] = [("id", .str("d-1")), ("path", .str("documents/a.pdf")), ("sha256", .str("AB"))]
+            var o: [(String, JSONValue)] = [("id", .str("d-1")), ("path", .str("documents/a.pdf")), ("sha256", .string(a.uppercased()))]
             if let sens { o.append(("sensitivity", .string(sens))) }
             return .obj(o)
         }
-        let catalogWith = { (d: JSONValue) in JSONObject([(key: "documents", value: .array([d]))]) }
+        let catalogWith = { (d: [JSONValue]) in JSONObject([(key: "documents", value: .array(d))]) }
         let snapshot = JSONObject([(key: "id", value: .str("o-0")), (key: "op", value: .str("import_snapshot")),
                                    (key: "args", value: .obj([("catalog", .obj([("documents", .array([]))]))]))])
-        let filePrivate = JSONObject([(key: "id", value: .str("o-1")), (key: "op", value: .str("file_document")),
-                                      (key: "actor", value: .obj([("kind", .str("clerk"))])),
-                                      (key: "args", value: .obj([("document", doc("private")), ("from", .str("intake/a.pdf"))]))])
+        let fileAs = { (sens: String?) in JSONObject([(key: "id", value: .str("o-1")), (key: "op", value: .str("file_document")),
+                                                      (key: "actor", value: .obj([("kind", .str("clerk"))])),
+                                                      (key: "args", value: .obj([("document", doc(sens)), ("from", .str("intake/a.pdf"))]))]) }
         let lowerBy = { (kind: String) in JSONObject([(key: "id", value: .str("o-2")), (key: "op", value: .str("update_document")),
                                                       (key: "actor", value: .obj([("kind", .string(kind))])),
                                                       (key: "args", value: .obj([("id", .str("d-1")), ("unset", .array([.str("sensitivity")]))]))]) }
         let abort = JSONObject([(key: "id", value: .str("o-3")), (key: "op", value: .str("abort")),
                                 (key: "args", value: .obj([("ops", .array([.str("o-1")]))]))])
+        func docs(_ d: [JSONValue], _ ops: [JSONObject]) throws -> MCPServer.PrivateDocuments {
+            try #require(MCPServer.privateDocuments(catalog: catalogWith(d), ops: ops))
+        }
 
-        let removedOutside = MCPServer.privateDocuments(catalog: catalogWith(doc(nil)), ops: [snapshot, filePrivate])
-        #expect(removedOutside.digests == ["ab"])
+        let removedOutside = try docs([doc(nil)], [snapshot, fileAs("private")])
+        #expect(removedOutside.digests == [a])
         #expect(removedOutside.paths.contains(DocumentPaths.fold("intake/a.pdf")))
-        #expect(MCPServer.privateDocuments(catalog: catalogWith(doc(nil)), ops: [snapshot, filePrivate, lowerBy("brain")]).digests == ["ab"])
-        #expect(MCPServer.privateDocuments(catalog: catalogWith(doc(nil)), ops: [snapshot, filePrivate, lowerBy("user")]).digests.isEmpty)
-        #expect(MCPServer.privateDocuments(catalog: catalogWith(doc(nil)), ops: [snapshot, filePrivate, abort]).digests.isEmpty)
-        #expect(MCPServer.privateDocuments(catalog: catalogWith(doc("private")), ops: [snapshot]).digests == ["ab"])
-        #expect(MCPServer.privateDocuments(catalog: catalogWith(doc("unmarked")), ops: [snapshot]).digests.isEmpty)
+        #expect(try docs([doc(nil)], [snapshot, fileAs("private"), lowerBy("brain")]).digests == [a])
+        #expect(try docs([doc(nil)], [snapshot, fileAs("private"), lowerBy("user")]).digests.isEmpty)
+        #expect(try docs([doc(nil)], [snapshot, fileAs("private"), abort]).digests.isEmpty)
+        #expect(try docs([doc("private")], [snapshot]).digests == [a])
+        #expect(try docs([doc("unmarked")], [snapshot]).digests.isEmpty)
         #expect(MCPServer.isPrivate(.str("anything else")))
         #expect(!MCPServer.isPrivate(nil) && !MCPServer.isPrivate(.null))
+        #expect(MCPServer.digest(.string("sha256:" + a.uppercased())) == a && MCPServer.digest(.str("ab")) == nil)
+
+        // A private record counts by its own digest and path, whatever its id says (filed plain by Sprava first).
+        let filed = [snapshot, fileAs(nil)]
+        let noID = JSONValue.obj([("path", .str("documents/a.pdf")), ("sha256", .string(a)), ("sensitivity", .str("private"))])
+        #expect(try docs([noID], filed).digests.contains(a))
+        #expect(try docs([noID], filed).paths.contains(DocumentPaths.fold("intake/a.pdf")))
+        let wrongIDSamePath = JSONValue.obj([("id", .str("d-9")), ("path", .str("documents/a.pdf")), ("sha256", .string(other)),
+                                             ("sensitivity", .str("private"))])
+        // Tied by its path to d-1, filed from intake/a.pdf with digest a.
+        #expect(try docs([wrongIDSamePath], filed).digests.isSuperset(of: [a, other]))
+        let sameDigestOtherPath = JSONValue.obj([("path", .str("documents/moved.pdf")), ("sha256", .string(a)), ("sensitivity", .str("private"))])
+        #expect(try docs([sameDigestOtherPath], filed).paths.contains(DocumentPaths.fold("intake/a.pdf")))
+        // A private record with neither a digest nor a path: placed by its id's history, or nothing is shown.
+        let bare = JSONValue.obj([("id", .str("d-1")), ("title", .str("Invented")), ("sensitivity", .str("private"))])
+        #expect(try docs([bare], filed).digests.contains(a))
+        let unknown = JSONValue.obj([("title", .str("Invented")), ("sensitivity", .str("private"))])
+        #expect(MCPServer.privateDocuments(catalog: catalogWith([unknown]), ops: filed) == nil)
+        let unknownID = JSONValue.obj([("id", .str("d-7")), ("sha256", .int(1)), ("sensitivity", .str("private"))])
+        #expect(MCPServer.privateDocuments(catalog: catalogWith([unknownID]), ops: filed) == nil)
+    }
+
+    // MARK: - finish_reading keeps its note
+
+    @Test func finishReadingKeepsItsNote() throws {
+        let e = try env(.plain)
+        let s = e.s
+        let ref = { (note: JSONValue) in JSONValue.obj([("binder", .str("estate-example")), ("reading_id", .str("reading-1")), ("note", note)]) }
+        let readings = IntakeReadings(support: s.commands.support)
+        #expect(try bb.tool(s.server, "finish_reading", ref(.int(3)))["isError"] == .bool(true))
+        #expect(try bb.tool(s.server, "finish_reading", ref(.string(String(repeating: "x", count: MCPServer.noteLimit + 1))))["isError"] == .bool(true))
+        #expect(readings.load("reading-1")?.escalation == "waiting")
+
+        let r = try bb.tool(s.server, "finish_reading", ref(.str("An invented letter that needs no reply.")))
+        #expect(r["isError"] == .bool(false))
+        let kept = try #require(readings.load("reading-1"))
+        #expect(kept.escalation == "answered" && kept.answer == "none")
+        #expect(kept.result?["brain_note"]?["text"]?.stringValue == "An invented letter that needs no reply.")
+        #expect(kept.result?["brain_note"]?["client"]?.stringValue == "claude-code-1")
+        #expect(kept.result?["summary"]?.stringValue == "An invented summary.")
     }
 
     // MARK: - 2. A card file that is a FIFO or a link never holds or misleads a retry
