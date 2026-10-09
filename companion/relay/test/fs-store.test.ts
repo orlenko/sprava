@@ -30,7 +30,7 @@ test('fs: a write is acknowledged only after its file and folder are synced, new
     });
     await store.put('a/b/c', new Uint8Array([1]));
     events.push('put done');
-    assert.deepEqual(events, ['sync .', 'sync a', 'sync a/b', 'put done']);
+    assert.deepEqual(events, ['sync ..', 'sync .', 'sync a', 'sync a/b', 'put done'], "the root's own entry first");
     events.length = 0;
     await store.putIfAbsent('a/b/d', new Uint8Array([1]));
     await store.putIfAbsent('a/b/d', new Uint8Array([2]));
@@ -49,6 +49,18 @@ test('fs: a failed write leaves no temporary file, and listings stay inside the 
         await assert.rejects(store.list(prefix), /invalid store prefix/, prefix);
     }
     assert.deepEqual(await store.list(''), ['a/b']);
+});
+
+test('fs: a root made by the store is durable before its first write is acknowledged', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    const synced: string[] = [];
+    const store = new FsStore(join(base, 'new', 'root'), {
+        syncDir: async (dir) => {
+            synced.push(relative(base, dir) || '.');
+        },
+    });
+    await store.put('k', new Uint8Array([1]));
+    assert.deepEqual(synced, ['.', 'new', 'new/root'], 'each made folder in its parent, then the root itself holds k');
 });
 
 test('fs: a folder whose sync failed is synced again on the next write, not taken as durable', async () => {

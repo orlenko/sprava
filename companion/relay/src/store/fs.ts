@@ -20,6 +20,7 @@ export class FsStore implements Store {
     readonly #syncDir: (dir: string) => Promise<void>;
     /** Folders whose entries are known durable, up to a bound; one not in it is synced in its parent again. */
     readonly #durable = new Set<string>();
+    #rootDurable = false;
 
     /** `syncDir` is for tests that watch the order of writes and folder syncs; it defaults to fsync. */
     constructor(root: string, options: { syncDir?: (dir: string) => Promise<void> } = {}) {
@@ -131,7 +132,24 @@ export class FsStore implements Store {
     }
 
     /** Every folder from the root down to `folder` exists, and its entry is durable in its parent. */
+    /**
+     * The root itself, made and durable before the first write: every folder created for it, and the root's own
+     * entry, synced in its parent, since an earlier process may have made it and stopped before syncing.
+     */
+    async #ensureRoot(): Promise<void> {
+        if (this.#rootDurable) return;
+        const first = await mkdir(this.root, { recursive: true });
+        const made: string[] = [];
+        for (let dir = this.root; first !== undefined; dir = dirname(dir)) {
+            made.unshift(dir);
+            if (dir === first || dirname(dir) === dir) break;
+        }
+        for (const dir of made.length > 0 ? made : [this.root]) await this.#syncDir(dirname(dir));
+        this.#rootDurable = true;
+    }
+
     async #ensureFolder(folder: string): Promise<void> {
+        await this.#ensureRoot();
         const chain: string[] = [];
         for (let dir = folder; dir !== this.root && !this.#durable.has(dir); dir = dirname(dir)) {
             if (dirname(dir) === dir) throw new Error('a store folder outside its root');
