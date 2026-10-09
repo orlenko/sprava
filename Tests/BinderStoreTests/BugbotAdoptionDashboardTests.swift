@@ -66,6 +66,10 @@ import Testing
         // The addendum itself, on its own line, still hides its own `lifeproj publish`.
         try Data(("# Invented binder\n\n" + ManualAddendum.text).utf8).write(to: folder.appendingPathComponent("CLAUDE.md"))
         #expect(Adoption.survey(folder, inRegistry: false)["lifeproj_can_reach"] == .bool(false))
+        // Saved by an editor with CRLF endings, the addendum is still recognized as one.
+        let crlf = ("# Invented binder\n\n" + ManualAddendum.text).replacingOccurrences(of: "\n", with: "\r\n")
+        try Data(crlf.utf8).write(to: folder.appendingPathComponent("CLAUDE.md"))
+        #expect(Adoption.survey(folder, inRegistry: false)["lifeproj_can_reach"] == .bool(false))
     }
 
     @Test func syncRootsMatchWholePathComponents() {

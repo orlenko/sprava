@@ -93,7 +93,7 @@ public enum Adoption {
         var out: [Substring] = []
         var inAddendum = false
         var sawHeading = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             if line.trimmingCharacters(in: .whitespaces) == ManualAddendum.marker {
                 inAddendum = true
                 sawHeading = false
