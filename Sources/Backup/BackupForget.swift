@@ -22,6 +22,10 @@ extension Backup {
         /// Each repository that may hold the binder's snapshots, with the snapshots the request covers there and
         /// whether it is done there. Kept with the request, so a repository that was away is still done later.
         public var scopes: [Scope] = []
+        /// The deletion this request is for (the caller's id for it, such as its op's id): asking again for the same
+        /// deletion retries it, and a later deletion at the same path is a request of its own, with its own cutoff
+        /// (nil in older requests).
+        public var request: String?
 
         public struct Scope: Codable, Sendable, Equatable {
             public var repository: String
@@ -31,12 +35,13 @@ extension Backup {
             public var error: String?
         }
 
-        init(backupID: String, path: String, at: String, requested: Double?, scopes: [Scope]) {
+        init(backupID: String, path: String, at: String, requested: Double?, scopes: [Scope], request: String) {
             self.backupID = backupID
             self.path = path
             self.at = at
             self.requested = requested
             self.scopes = scopes
+            self.request = request
         }
 
         public init(from decoder: Decoder) throws {
@@ -48,6 +53,7 @@ extension Backup {
             error = try c.decodeIfPresent(String.self, forKey: .error)
             requested = try c.decodeIfPresent(Double.self, forKey: .requested)
             scopes = try c.decodeIfPresent([Scope].self, forKey: .scopes) ?? []
+            request = try c.decodeIfPresent(String.self, forKey: .request)
         }
 
         /// The latest snapshot time the request covers.
@@ -59,8 +65,12 @@ extension Backup {
     /// snapshots it covers, before restic runs, so one that fails (a disconnected disk) is retried by `maintain`, and
     /// `status().forgetting` tells the person when the backups no longer hold the document. Returns true once they
     /// do not.
+    ///
+    /// `request` names the deletion (the id of the op that deleted the document): calling again with it retries
+    /// that request, whose cutoff stays the first call's; a later deletion at the same path passes its own, so a
+    /// document filed there in between is forgotten too, by its own request.
     @discardableResult
-    public func forgetDocument(in folder: URL, path: String, now: Date = Date()) throws -> Bool {
+    public func forgetDocument(in folder: URL, path: String, request: String, now: Date = Date()) throws -> Bool {
         guard DocumentPaths.isSafe(path, forFiling: false) else { throw Failure(message: "that document is not in the binder") }
         // A binder never backed up has no snapshot to hold the document.
         guard try Self.storedBackupID(folder) != nil else { return true }
@@ -70,12 +80,17 @@ extension Backup {
         let id = try claim(folder, &st)
         try save(st)
         step("forget.claimed")
-        return try forget(id, path: path, now: now)
+        return try forget(id, path: path, request: request, now: now)
     }
 
-    func forget(_ id: String, path: String, now: Date) throws -> Bool {
+    func forget(_ id: String, path: String, request: String, now: Date) throws -> Bool {
+        guard !request.isEmpty else { throw Failure(message: "a deletion to forget needs its id") }
         var st = try state()
-        if !st.forgetting.contains(where: { $0.backupID == id && $0.path == path && $0.done == nil }) {
+        let mine = { (f: Forgetting) in f.request == request && f.backupID == id && f.path == path }
+        if let other = st.forgetting.first(where: { $0.request == request && !mine($0) }) {
+            throw Failure(message: "request \(request) already forgets \(other.path) in another binder")
+        }
+        if !st.forgetting.contains(where: mine) {
             let requested = Date()
             // The snapshots each reachable repository holds now; one that is away gets its share by time, later.
             let scopes = repositories(for: id, try settings(), st).map { repo in
@@ -83,12 +98,13 @@ extension Backup {
                                  done: false)
             }
             st.forgetting.append(Forgetting(backupID: id, path: path, at: ISOTime.string(now), requested: requested.timeIntervalSince1970,
-                                            scopes: scopes))
+                                            scopes: scopes, request: request))
             try save(st)
             step("forget.recorded")
         }
         try forgetPending(now: now)
-        return try !state().forgetting.contains { $0.backupID == id && $0.path == path && $0.done == nil }
+        // A finished request is shown for 30 days, then dropped: one no longer listed was done long ago.
+        return try state().forgetting.first(where: mine).map { $0.done != nil } ?? true
     }
 
     /// Every repository that may hold a binder's snapshots: the current two, and every one a record names for it

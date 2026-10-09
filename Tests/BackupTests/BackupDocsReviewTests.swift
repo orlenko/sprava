@@ -81,7 +81,7 @@ import Testing
         try FileManager.default.removeItem(at: e.folder.appendingPathComponent(secret))
         let away = e.base.appendingPathComponent("away-second")
         try FileManager.default.moveItem(at: e.second, to: away)
-        #expect(try !b.forgetDocument(in: e.folder, path: secret, now: now))
+        #expect(try !b.forgetDocument(in: e.folder, path: secret, request: "invented-deletion-1", now: now))
         #expect(b.status(checkUpload: false).forgetting.first?.error != nil)
         #expect(try holders(b, e.primary, id: id).allSatisfy { !$0.contains(secret) && $0.contains("correspondence/notary/letter.pdf") })
 
@@ -102,7 +102,7 @@ import Testing
         guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
             Issue.record("not done"); return
         }
-        #expect(try b.forget(record.backupID, path: secret, now: now))
+        #expect(try b.forget(record.backupID, path: secret, request: "invented-deletion-1", now: now))
         let renamed = try #require(try b.offloaded().first)
         #expect(renamed.snapshot != record.snapshot && renamed.secondSnapshot != record.secondSnapshot)
 

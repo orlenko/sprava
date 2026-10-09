@@ -127,6 +127,9 @@ extension Backup {
         }
         step("restore.shelved")
         st.restored[backupID] = done.baseline
+        // The restored folder holds the id from the save that ends the reservations, so no moment is left in which
+        // a copy carrying the id could claim it (`claim`).
+        st.binders[backupID, default: State.BinderRecord()].path = destination.standardizedFileURL.path
         st.offloaded.removeAll { $0.backupID == backupID }
         st.restoring[backupID] = nil
         st.restoredContents[backupID] = nil

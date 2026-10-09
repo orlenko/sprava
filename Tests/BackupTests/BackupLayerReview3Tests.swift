@@ -105,7 +105,7 @@ import Testing
         let copy = try copy(e)
 
         #expect(throws: Backup.SharedBackupID.self) { try b.backUp(copy, now: now) }
-        #expect(throws: Backup.SharedBackupID.self) { try b.forgetDocument(in: copy, path: letter, now: now) }
+        #expect(throws: Backup.SharedBackupID.self) { try b.forgetDocument(in: copy, path: letter, request: "invented-deletion-1", now: now) }
         #expect(throws: Backup.SharedBackupID.self) { try b.drill(copy, now: now) }
         #expect(try b.state().forgetting.isEmpty)
         #expect(try b.state().binders[id]?.path == e.folder.standardizedFileURL.path)
@@ -148,7 +148,7 @@ import Testing
         let images = BackupCrashTests.Images([e.base, e.folder.deletingLastPathComponent()])
         var cut = b
         cut.atStep = { images.take($0) }
-        _ = try cut.forget(record.backupID, path: letter, now: now)
+        _ = try cut.forget(record.backupID, path: letter, request: "invented-deletion-1", now: now)
         try images.restore("forget.rewritten#1")
         defer { try? FileManager.default.removeItem(at: images.store) }
         let stale = try b.state()
