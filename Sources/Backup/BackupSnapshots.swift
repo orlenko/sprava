@@ -297,6 +297,19 @@ extension Backup {
     /// A digest of an entry's extended attributes, names and values, without following a link; "" when it has none
     /// that count, nil when they cannot be read.
     static func attributesDigest(_ path: String) -> String? {
+        guard let values = attributes(path) else { return nil }
+        if values.isEmpty { return "" }
+        var hasher = SHA256()
+        for name in values.keys.sorted() {
+            let value = values[name] ?? Data()
+            hasher.update(data: Data(name.utf8) + [0] + withUnsafeBytes(of: UInt64(value.count).bigEndian) { Data($0) } + value)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// An entry's extended attributes that count (all but `volatileAttributes`), by name, without following a link;
+    /// nil when they cannot be read.
+    static func attributes(_ path: String) -> [String: Data]? {
         func list() -> [String]? {
             for _ in 0..<3 {
                 let size = listxattr(path, nil, 0, XATTR_NOFOLLOW)
@@ -309,9 +322,8 @@ extension Backup {
             }
             return nil
         }
-        guard let names = list()?.filter({ !volatileAttributes.contains($0) }).sorted() else { return nil }
-        if names.isEmpty { return "" }
-        var hasher = SHA256()
+        guard let names = list()?.filter({ !volatileAttributes.contains($0) }) else { return nil }
+        var out: [String: Data] = [:]
         for name in names {
             var value: [UInt8]?
             for _ in 0..<3 {
@@ -324,9 +336,50 @@ extension Backup {
                 break
             }
             guard let value else { return nil }
-            hasher.update(data: Data(name.utf8) + [0] + withUnsafeBytes(of: UInt64(value.count).bigEndian) { Data($0) } + value)
+            out[name] = Data(value)
         }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return out
+    }
+
+    // MARK: - The binder folder's own metadata
+
+    /// The binder folder's own permission bits and extended attributes (a Finder tag or comment on the binder).
+    /// restic backs a binder up from inside it, so its snapshots hold the folder's entries but not the folder: an
+    /// offload keeps these in its record instead, and a restore puts them back on the folder.
+    public struct RootMetadata: Codable, Equatable, Sendable {
+        public var mode: Int
+        public var attributes: [String: Data]
+
+        /// How the change checks compare it, as `manifest` does an entry's metadata.
+        var entry: String {
+            var hasher = SHA256()
+            for name in attributes.keys.sorted() {
+                let value = attributes[name] ?? Data()
+                hasher.update(data: Data(name.utf8) + [0] + withUnsafeBytes(of: UInt64(value.count).bigEndian) { Data($0) } + value)
+            }
+            return "mode:" + String(mode, radix: 8) + (attributes.isEmpty ? "" : " xattr:" + hasher.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+    }
+
+    static func rootMetadata(_ folder: URL) throws -> RootMetadata {
+        var info = stat()
+        guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, let values = attributes(folder.path) else {
+            throw Failure(message: "the binder folder's own settings cannot be read; nothing was removed")
+        }
+        return RootMetadata(mode: Int(info.st_mode & 0o7777), attributes: values)
+    }
+
+    /// Puts a binder folder's own metadata back, as it was offloaded.
+    static func apply(_ metadata: RootMetadata, to folder: URL) throws {
+        for (name, value) in metadata.attributes {
+            let set = value.withUnsafeBytes { setxattr(folder.path, name, $0.baseAddress, value.count, 0, XATTR_NOFOLLOW) }
+            guard set == 0 else {
+                throw Failure(message: "the binder folder's \(name) could not be put back (\(String(cString: strerror(errno)))); restore again")
+            }
+        }
+        guard chmod(folder.path, mode_t(metadata.mode & 0o7777)) == 0 else {
+            throw Failure(message: "the binder folder's permissions could not be put back; restore again")
+        }
     }
 
     /// One digest for a whole manifest, to tell later whether the binder still matches it.

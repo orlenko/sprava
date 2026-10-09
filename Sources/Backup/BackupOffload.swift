@@ -60,7 +60,10 @@ extension Backup {
         // The binder stays writable while an offload waits for iCloud, which can take hours. One that changed since
         // its snapshot was verified (or never got that far) starts over, so what leaves the Mac is what the backups hold.
         // So does one whose snapshot is in a mirror the person has since replaced.
-        if try job.stage == "snapshotted" || (job.stage != "start" && (job.manifestSHA != Self.digest(Self.manifest(folder)) || job.repository != s.primary)) {
+        // The folder's own metadata is part of the binder too (`RootMetadata`).
+        let root = try Self.rootMetadata(folder)
+        if try job.stage == "snapshotted"
+            || (job.stage != "start" && (job.manifestSHA != Self.digest(Self.manifest(folder)) || job.root != root || job.repository != s.primary)) {
             if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
             job = InProgress(path: job.path, stage: "start")
         }
@@ -70,7 +73,9 @@ extension Backup {
             // is in, and still holds it: a mirror the person has since replaced does not, so it is taken again.
             let primary = try engine(s.primary)
             let current = try Self.manifest(folder)
-            let baseline = st.restored[id].flatMap { $0.repository != nil && $0.repository == s.primary && $0.manifest == current ? $0 : nil }
+            let baseline = st.restored[id].flatMap {
+                $0.repository != nil && $0.repository == s.primary && $0.manifest == current && $0.rootEntry == root.entry ? $0 : nil
+            }
             let unchanged = try baseline.map { b in try primary.snapshots(tag: "binder:\(id)").contains { $0.id == b.snapshot } } ?? false
             if !open.isEmpty, !unchanged {
                 // The person's confirmation goes into the binder's history before the snapshot, once: an offload cut
@@ -91,6 +96,7 @@ extension Backup {
             job.openItemsConfirmed = open.count
             let manifest = try Self.manifest(folder)
             job.manifestSHA = Self.digest(manifest)
+            job.root = root
             job.repository = s.primary
             if unchanged, let restored = st.restored[id] {
                 // No new snapshot, but the backups are checked now, before the folder leaves on them (§6.4): each must
@@ -194,7 +200,7 @@ extension Backup {
                 guard let p = d["path"]?.stringValue else { return nil }
                 return .init(title: d["title"]?.stringValue ?? p, path: p)
             },
-            openItemsConfirmed: job.openItemsConfirmed)
+            openItemsConfirmed: job.openItemsConfirmed, rootMetadata: job.root)
         // The hub stops showing it, as for a binder at disclosure none.
         try removeHubSlice(teka)
         step("offload.unpublished")
@@ -281,7 +287,8 @@ extension Backup {
 
     /// Stops an offload whose binder changed after its snapshot was verified: the job starts over next time.
     func refuseIfChanged(_ id: String, folder: URL, _ job: InProgress, _ st: inout State) throws {
-        guard job.manifestSHA != Self.digest(try Self.manifest(folder)) else { return }
+        let manifest = try Self.manifest(folder), root = try Self.rootMetadata(folder)
+        guard job.manifestSHA != Self.digest(manifest) || job.root != root else { return }
         st.offloads[id] = nil
         st.offloaded.removeAll { $0.backupID == id }
         try save(st)

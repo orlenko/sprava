@@ -66,6 +66,8 @@ extension Backup {
             throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
         try? FileManager.default.removeItem(at: staging.appendingPathComponent(".teka.lock"))
+        // The binder folder's own metadata comes from the record: its snapshots hold only what is inside it.
+        if let root = record.rootMetadata { try Self.apply(root, to: staging) }
         // The baseline a later offload compares with (§6.4) is the snapshot's own entries, as restic restored and
         // verified them. Without the snapshot's listing, or a folder that can be read whole, there is no baseline,
         // and the next offload takes a new snapshot.
@@ -73,7 +75,8 @@ extension Backup {
         if let held, let all = try? Self.manifest(staging) {
             baseline = State.Restored(snapshot: record.snapshot, repository: record.repository, secondSnapshot: record.secondSnapshot,
                                       secondRepository: record.secondRepository ?? s.second,
-                                      manifest: all.filter { held.contains($0.key) }, bytes: record.bytes)
+                                      manifest: all.filter { held.contains($0.key) }, bytes: record.bytes,
+                                      rootEntry: record.rootMetadata == nil ? nil : (try? Self.rootMetadata(staging))?.entry)
         }
         st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: baseline, staging: staging.path)
         try save(st)
