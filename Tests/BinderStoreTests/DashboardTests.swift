@@ -61,4 +61,68 @@ import Testing
         #expect(after.filter { $0.hasPrefix("DASHBOARD-") }.count == 2)
         #expect(!(try String(contentsOf: folder.appendingPathComponent("DASHBOARD.md"), encoding: .utf8)).contains("(hand)"))
     }
+
+    func dashboard(_ folder: URL) throws -> String { try String(contentsOf: folder.appendingPathComponent("DASHBOARD.md"), encoding: .utf8) }
+
+    func touchCatalog(_ folder: URL, _ priority: String) throws {
+        try TekaStore(folder: folder).apply([.init(op: "update_item", args: JSONObject([(key: "id", value: .str("estate-example-2026-007")),
+                                                                                        (key: "set", value: .obj([("priority", .string(priority))]))]),
+                                                   actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
+    }
+
+    // Layer 5 review, finding 3: Notes an editor saves while the dashboard is rendered are kept.
+    @Test func notesSavedDuringARefreshAreKept() throws {
+        let folder = try adopted()
+        var keeper = DashboardKeeper(folder: folder)
+        try keeper.switchOn(today: today, timeZone: utc, now: now)
+        try touchCatalog(folder, "low")
+        let fired = StopFlag()
+        let url = folder.appendingPathComponent("DASHBOARD.md")
+        keeper.testHookBeforeWrite = {
+            guard !fired.get() else { return }
+            fired.set()
+            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            try? Data((text + "An invented fact saved meanwhile\n").utf8).write(to: url)
+        }
+        #expect(try keeper.refresh(today: today, timeZone: utc, now: now) == .rendered(editedOutsideNotes: false))
+        let text = try dashboard(folder)
+        #expect(Dashboard.split(text).1?.contains("An invented fact saved meanwhile") == true)
+        #expect(!Dashboard.editedOutsideNotes(text))
+    }
+
+    // Layer 5 review, finding 4: copies kept in the same second never replace one another.
+    @Test func copiesKeptInOneSecondAreAllKept() throws {
+        let folder = try adopted()
+        try Data("# Invented old dashboard\n".utf8).write(to: folder.appendingPathComponent("DASHBOARD.md"))
+        let keeper = DashboardKeeper(folder: folder)
+        try keeper.switchOn(today: today, timeZone: utc, now: now)
+        for mark in ["first", "second"] {
+            let edited = try dashboard(folder).replacingOccurrences(of: "## Overdue", with: "## Overdue (\(mark))")
+            try Data(edited.utf8).write(to: folder.appendingPathComponent("DASHBOARD.md"))
+            #expect(try keeper.refresh(today: today, timeZone: utc, now: now) == .rendered(editedOutsideNotes: true))
+        }
+        let dir = folder.appendingPathComponent(".sprava/adopted")
+        let copies = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("DASHBOARD-") }
+        #expect(copies.count == 3)
+        let texts = try copies.map { try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8) }
+        #expect(texts.contains { $0.contains("(first)") } && texts.contains { $0.contains("(second)") })
+        #expect(texts.contains { $0.hasPrefix("# Invented old dashboard") })
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath: dir.path)).contains { $0.hasSuffix(".tmp") })
+    }
+
+    // Layer 5 review, finding 6: a dashboard state file that cannot be read is reported and never saved over.
+    @Test func anUnreadableStateIsReported() throws {
+        let folder = try adopted()
+        let keeper = DashboardKeeper(folder: folder)
+        try keeper.switchOn(today: today, timeZone: utc, now: now)
+        let stateURL = folder.appendingPathComponent(".sprava/dashboard.json")
+        try Data(#"{"switched":tr"#.utf8).write(to: stateURL)
+        try touchCatalog(folder, "low")
+        #expect(throws: StateFile.Unreadable.self) { try keeper.refresh(today: today, timeZone: utc, now: now) }
+        #expect(throws: StateFile.Unreadable.self) { try keeper.switchOn(today: today, timeZone: utc, now: now) }
+        #expect(try Data(contentsOf: stateURL) == Data(#"{"switched":tr"#.utf8))
+        // A missing state still means not switched.
+        try FileManager.default.removeItem(at: stateURL)
+        #expect(try keeper.refresh(today: today, timeZone: utc, now: now) == .notSwitched)
+    }
 }

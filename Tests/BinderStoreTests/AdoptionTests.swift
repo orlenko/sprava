@@ -76,4 +76,57 @@ import Testing
             try ProposalStore.load(result.proposals[0].id, in: folder, expectedDigest: digest)
         }
     }
+
+    /// A lifeproj binder named `tax` holding `items`, at `schema_version`.
+    func lifeproj(_ items: [String], schemaVersion: Int = 2) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-adopt-\(UUID().uuidString)/tax", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(#"{"meta":{"schema_version":\#(schemaVersion),"name":"tax"},"documents":[],"open_items":[\#(items.joined(separator: ","))],"processing_log":[]}"#.utf8)
+            .write(to: folder.appendingPathComponent("catalog.json"))
+        return folder
+    }
+
+    // Layer 5 review, finding 2: a follow-up date written after the survey is never overwritten by a mechanical fix.
+    @Test func aMechanicalFixSeesAnEditMadeAfterTheSurvey() throws {
+        let waiting = #"{"id":"w-1","title":"Invented wait","status":"waiting","priority":"normal","due":"2026-11-01","waiting_on":"an invented office"}"#
+        let folder = try lifeproj([waiting])
+        let store = TekaStore(folder: folder)
+        try store.adopt(survey: JSONObject(), owner: JSONObject(), now: now)
+        // The person supplies the date in an editor between the survey and the fix.
+        let url = folder.appendingPathComponent("catalog.json")
+        let edited = waiting.replacingOccurrences(of: #""waiting_on""#, with: #""follow_up_at":"2026-10-30","waiting_on""#)
+        let text = try String(contentsOf: url, encoding: .utf8).replacingOccurrences(of: waiting, with: edited)
+        #expect(text.contains("2026-10-30"))
+        store.testHookBeforeLock = {
+            try? Data(text.utf8).write(to: url)
+            store.testHookBeforeLock = nil
+        }
+        let actor = JSONObject([(key: "kind", value: .str("import")), (key: "client", value: .str("t"))])
+        let applied = Adoption.applyMechanicalFixes(store: store, ids: [.str("w-1")], today: today, actor: actor, now: now)
+        #expect(applied.isEmpty)
+        let item = Teka.read(folder).items.first { $0.idText == "w-1" }
+        #expect(item?.followUpAt?.description == "2026-10-30")
+        #expect(item?.derived == nil || item?.derived == [])
+        #expect(try store.readOpLog().ops.contains { $0["op"] == .str("external_edit") })
+    }
+
+    // Layer 5 review, finding 5: an item that passes lifeproj's rules but not v0's gets a repair card, so adoption
+    // always has a way to the stamp.
+    @Test func itemsThatBreakOnlyTheV0RulesGetRepairCards() throws {
+        let redacted = #"{"id":"r-1","title":"Invented private matter","status":"open","priority":"normal","due":"2026-11-01","redact":true}"#
+        let plain = #"{"id":"p-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01"}"#
+        let v2 = try lifeproj([redacted, plain])
+        #expect(Teka.read(v2).findings.isEmpty)
+        let result = try Adoption.adopt(v2, inRegistry: false, deviceID: "t", today: today, now: now)
+        let repairs = result.proposals.filter { $0.raw["provenance"]?["repair"] != nil }
+        #expect(repairs.count == 1)
+        #expect(repairs.first?.raw["provenance"]?["repair"] == .array([.str("kind")]))
+        #expect(repairs.first?.ops.first?["args"]?["id"] == .str("r-1"))
+        #expect(!result.proposals.contains { $0.raw["provenance"]?["adoption"] == .str("stamp") })
+
+        // A v1 catalog has no item rules of its own; an item without a priority still needs one for v0.
+        let v1 = try lifeproj([#"{"id":"q-1","title":"Invented question","status":"open","due":"2026-11-01"}"#], schemaVersion: 1)
+        let r1 = try Adoption.adopt(v1, inRegistry: false, deviceID: "t", today: today, now: now)
+        #expect(r1.proposals.contains { $0.raw["provenance"]?["repair"] == .array([.str("priority")]) })
+    }
 }

@@ -134,47 +134,11 @@ public enum Adoption {
         for item in items { if let id = item["id"] { seenIDs[id, default: 0] += 1 } }
 
         // Step 3: mechanical, lossless fixes (binder-v0 §9.4).
-        var bodies: [TekaStore.OpBody] = []
-        for (i, item) in items.enumerated() {
-            guard case .object(let o) = item, let id = o["id"], !broken.contains("open_items[\(i)]"), seenIDs[id] == 1 else { continue }
-            var set = JSONObject()
-            var unset: [String] = []
-            var derived = o["derived"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            var notes: [String] = []
-            for key in ["due", "waiting_on", "link"] where o[key] == .null { unset.append(key) }
-            if o["no_deadline"] == .bool(true), o["due"] == .str("") { unset.append("due") }
-            if case .string(let due)? = o["due"], !due.isEmpty, CalendarDate.strict(due) == nil, let d = CalendarDate.lenient(due) {
-                set.set("due", .string(d.description))
-                derived.append("due")
-                notes.append("due was written \(due)")
-            }
-            let status = o["status"]?.stringValue
-            if (status == "waiting" || status == "blocked"), o["follow_up_at"] == nil {
-                let expected = o["expected_by"]?.stringValue.flatMap(CalendarDate.strict)
-                let base = expected?.adding(days: 1) ?? today.adding(days: 7)
-                var follow = base
-                if let due = (set["due"] ?? o["due"])?.stringValue.flatMap(CalendarDate.strict), due < follow { follow = due }
-                if follow < today { follow = today }
-                set.set("follow_up_at", .string(follow.description))
-                derived.append("follow_up_at")
-            }
-            guard !set.entries.isEmpty || !unset.isEmpty else { continue }
-            if !derived.isEmpty, set.entries.contains(where: { ["due", "follow_up_at"].contains($0.key) }) {
-                set.set("derived", .array(derived.map(JSONValue.string)))
-            }
-            var args = JSONObject()
-            args.set("id", id)
-            if !set.entries.isEmpty { args.set("set", .object(set)) }
-            if !unset.isEmpty { args.set("unset", .array(unset.map(JSONValue.string))) }
-            var extra: [(String, JSONValue)] = []
-            if !notes.isEmpty { extra.append(("note", .string(notes.joined(separator: "; ")))) }
-            bodies.append(.init(op: "update_item", args: args, actor: importActor, extra: extra))
+        let fixable = items.enumerated().compactMap { i, item -> JSONValue? in
+            guard let id = item["id"], !broken.contains("open_items[\(i)]"), seenIDs[id] == 1 else { return nil }
+            return id
         }
-        // Each fix is guarded on its own, so one the guard refuses never blocks the others or the proposals.
-        var mechanical: [JSONObject] = []
-        for body in bodies {
-            if let applied = try? store.apply([body], now: now) { mechanical += applied }
-        }
+        let mechanical = applyMechanicalFixes(store: store, ids: fixable, today: today, actor: importActor, now: now)
 
         // Step 4: proposals for what changes meaning.
         var proposals: [Proposal] = []
@@ -199,13 +163,22 @@ public enum Adoption {
 
         // One repair card per item that breaks its level's rules: a migration cannot invent a date or a party, so
         // the person fills them in on the card (binder-v0 §9.4 step 4). Closures and shared ids are handled above.
+        // A lifeproj catalog is judged by the v0 rules, after the mechanical fixes, since those are what the stamp
+        // needs: a redacted item without a kind passes lifeproj's rules, and a v1 catalog has none, yet neither stamps.
         let handled: Set<RuleFinding.Code> = [.doneInOpenItems, .reusedID, .duplicateID]
+        let fixed = Teka.read(folder).catalog ?? catalog
+        let towardV0 = teka.level == .lifeprojV1 || teka.level == .lifeprojV2
+        let repairItems = towardV0 ? fixed["open_items"]?.arrayValue ?? [] : items
+        let findings = towardV0 ? ItemRules.check(items: repairItems, log: fixed["processing_log"]?.arrayValue ?? [], v0: true)
+                                : teka.findings
+        var repairIDs: [JSONValue: Int] = [:]
+        for item in repairItems { if let id = item["id"] { repairIDs[id, default: 0] += 1 } }
         var repaired = Set<String>()
-        for finding in teka.findings where !handled.contains(finding.code) {
-            guard let index = Int(finding.location.dropFirst("open_items[".count).dropLast()), items.indices.contains(index),
-                  case .object(let o) = items[index], let id = o["id"], seenIDs[id] == 1,
+        for finding in findings where !handled.contains(finding.code) {
+            guard let index = Int(finding.location.dropFirst("open_items[".count).dropLast()), repairItems.indices.contains(index),
+                  case .object(let o) = repairItems[index], let id = o["id"], repairIDs[id] == 1,
                   repaired.insert(finding.location).inserted else { continue }
-            let missing = teka.findings.filter { $0.location == finding.location && !handled.contains($0.code) }
+            let missing = findings.filter { $0.location == finding.location && !handled.contains($0.code) }
                 .map { $0.field.map { "\($0)" } ?? $0.code.rawValue }
             var set = JSONObject()
             let status = o["status"]?.stringValue
@@ -247,6 +220,64 @@ public enum Adoption {
         if let stamp = stampProposal(folder, survey: survey, pending: closeOps, client: client, now: now) { proposals.append(stamp) }
         for p in proposals { try ProposalStore.save(p, in: folder) }
         return Result(mechanical: mechanical, proposals: proposals)
+    }
+
+    struct NothingToFix: Error {}
+
+    /// Applies the mechanical fix of each item in `ids`, one batch per item. Each fix is built from the item as read
+    /// under the lock, after outside edits were absorbed, so a value someone wrote after the survey (a follow-up date,
+    /// say) is seen and never overwritten. Each is guarded on its own, so one the guard refuses never blocks the
+    /// others or the proposals.
+    static func applyMechanicalFixes(store: TekaStore, ids: [JSONValue], today: CalendarDate, actor: JSONObject,
+                                     now: Date) -> [JSONObject] {
+        var mechanical: [JSONObject] = []
+        for id in ids {
+            let applied = try? store.apply(building: { catalog, _ in
+                let found = (catalog["open_items"]?.arrayValue ?? []).filter { $0["id"] == id }
+                guard found.count == 1, case .object(let o) = found[0],
+                      let body = mechanicalFix(o, today: today, actor: actor) else { throw NothingToFix() }
+                return [body]
+            }, now: now)
+            mechanical += applied ?? []
+        }
+        return mechanical
+    }
+
+    /// The lossless fixes of binder-v0 §9.4 step 3 for one item, as one `update_item`; nil when it needs none.
+    static func mechanicalFix(_ o: JSONObject, today: CalendarDate, actor: JSONObject) -> TekaStore.OpBody? {
+        guard let id = o["id"] else { return nil }
+        var set = JSONObject()
+        var unset: [String] = []
+        var derived = o["derived"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        var notes: [String] = []
+        for key in ["due", "waiting_on", "link"] where o[key] == .null { unset.append(key) }
+        if o["no_deadline"] == .bool(true), o["due"] == .str("") { unset.append("due") }
+        if case .string(let due)? = o["due"], !due.isEmpty, CalendarDate.strict(due) == nil, let d = CalendarDate.lenient(due) {
+            set.set("due", .string(d.description))
+            derived.append("due")
+            notes.append("due was written \(due)")
+        }
+        let status = o["status"]?.stringValue
+        if (status == "waiting" || status == "blocked"), o["follow_up_at"] == nil {
+            let expected = o["expected_by"]?.stringValue.flatMap(CalendarDate.strict)
+            let base = expected?.adding(days: 1) ?? today.adding(days: 7)
+            var follow = base
+            if let due = (set["due"] ?? o["due"])?.stringValue.flatMap(CalendarDate.strict), due < follow { follow = due }
+            if follow < today { follow = today }
+            set.set("follow_up_at", .string(follow.description))
+            derived.append("follow_up_at")
+        }
+        guard !set.entries.isEmpty || !unset.isEmpty else { return nil }
+        if !derived.isEmpty, set.entries.contains(where: { ["due", "follow_up_at"].contains($0.key) }) {
+            set.set("derived", .array(derived.map(JSONValue.string)))
+        }
+        var args = JSONObject()
+        args.set("id", id)
+        if !set.entries.isEmpty { args.set("set", .object(set)) }
+        if !unset.isEmpty { args.set("unset", .array(unset.map(JSONValue.string))) }
+        var extra: [(String, JSONValue)] = []
+        if !notes.isEmpty { extra.append(("note", .string(notes.joined(separator: "; ")))) }
+        return .init(op: "update_item", args: args, actor: actor, extra: extra)
     }
 
     /// The stamp card of binder-v0 §9.4 step 6, when the catalog, after the `pending` ops, would be a clean v0

@@ -24,6 +24,16 @@ public enum Undo {
         func itemBefore(_ id: JSONValue) -> JSONObject? {
             stateBefore["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
         }
+        func currentItem(_ id: JSONValue) -> JSONObject? {
+            catalog["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
+        }
+        // The item's `derived` with the names of `fields` as they were before the target and every other name as it
+        // is now, so a field confirmed since is never marked inferred again.
+        func derivedRestored(_ id: JSONValue, before: JSONObject, fields: [String]) -> [JSONValue] {
+            func names(_ o: JSONObject?) -> [String] { o?["derived"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
+            let kept = names(currentItem(id)).filter { !fields.contains($0) } + names(before).filter { fields.contains($0) }
+            return kept.map(JSONValue.string)
+        }
         func unchangedSince(_ id: JSONValue, _ fields: [String]) throws {
             guard let stateAfter else { return }
             let then = stateAfter["open_items"]?.arrayValue?.first { $0["id"] == id }
@@ -52,23 +62,29 @@ public enum Undo {
             for key in set.keys + unset {
                 if let old = before[key] { restore.set(key, old) } else { remove.append(key) }
             }
-            if let derived = before["derived"] { restore.set("derived", derived) } else if !restore.contains("derived") { remove.append("derived") }
+            // An edit that wrote `derived` itself gets it back whole (the loop above). Otherwise only the names of the
+            // restored fields change, and the array is supplied, since setting a field would otherwise drop its name.
+            if !(set.keys + unset).contains("derived") {
+                let derived = derivedRestored(id, before: before, fields: set.keys + unset)
+                if !derived.isEmpty || currentItem(id)?["derived"] != nil { restore.set("derived", .array(derived)) }
+            }
             var a = JSONObject()
             a.set("id", id)
             if !restore.entries.isEmpty { a.set("set", .object(restore)) }
-            let current = catalog["open_items"]?.arrayValue?.first { $0["id"] == id }
+            let current = currentItem(id)
             let reallyRemove = remove.filter { current?[$0] != nil && !restore.contains($0) }
             if !reallyRemove.isEmpty { a.set("unset", .array(reallyRemove.map(JSONValue.string))) }
             return ("update_item", a)
 
         case "set_status":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
-            try unchangedSince(id, ["status", "waiting_on", "follow_up_at", "expected_by"])
+            let fields = ["status", "waiting_on", "follow_up_at", "expected_by"]
+            try unchangedSince(id, fields)
             var a = JSONObject()
             a.set("id", id)
             a.set("status", before["status"] ?? .str("open"))
             for key in ["waiting_on", "follow_up_at", "expected_by"] { if let v = before[key] { a.set(key, v) } }
-            a.set("derived", before["derived"] ?? .array([]))
+            a.set("derived", .array(derivedRestored(id, before: before, fields: fields)))
             return ("set_status", a)
 
         case "dismiss", "undismiss":
@@ -77,6 +93,8 @@ public enum Undo {
 
         case "complete" where args["next_due"] != nil:
             guard let id = args["id"], let due = args["occurrence_due"] else { throw Unsupported(message: "no occurrence") }
+            // A later completion advanced the series again; setting this occurrence back would erase that one too.
+            try unchangedSince(id, ["due"])
             return ("update_item", JSONObject([(key: "id", value: id), (key: "set", value: .obj([("due", due)]))]))
 
         case "complete", "drop":
