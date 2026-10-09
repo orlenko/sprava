@@ -18,7 +18,7 @@ import Testing
     func readMessage(_ eml: String) throws -> IntakeReading {
         let url = temp("eml").appendingPathComponent("message.eml")
         try Data(eml.utf8).write(to: url)
-        return IntakeReading.read(url, channel: "email", reader: .inProcess)
+        return IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "email", reader: .inProcess)
     }
 
     @Test func aKeyFileNamedInlinePartIsSkippedWithANote() throws {

@@ -40,7 +40,7 @@ import Testing
         """
         let url = folder.appendingPathComponent("message.eml")
         try Data(eml.utf8).write(to: url)
-        let r = IntakeReading.read(url, channel: "email", reader: .inProcess)
+        let r = IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "email", reader: .inProcess)
         #expect(r.held == nil)
         #expect(!r.text.contains("INVENTED-SECRET"))
         #expect(r.text.contains("Invented notice text"))

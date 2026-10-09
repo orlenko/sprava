@@ -17,7 +17,7 @@ import Testing
     func readMessage(_ eml: String) throws -> IntakeReading {
         let url = temp("eml").appendingPathComponent("message.eml")
         try Data(eml.utf8).write(to: url)
-        return IntakeReading.read(url, channel: "email", reader: .inProcess)
+        return IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "email", reader: .inProcess)
     }
 
     // MARK: - 1. A harmless name linked to a credential file, or a FIFO, is never read
@@ -28,20 +28,20 @@ import Testing
         try Data("user: invented password: INVENTED-SECRET-9101".utf8).write(to: secret)
         let notice = dir.appendingPathComponent("notice.txt")
         try FileManager.default.createSymbolicLink(at: notice, withDestinationURL: secret)
-        let r = IntakeReading.read(notice, channel: "other", reader: .inProcess)
+        let r = IntakeReading.read(notice, in: notice.deletingLastPathComponent(), channel: "other", reader: .inProcess)
         #expect(r.held?.contains("symbolic link") == true)
         #expect(!r.text.contains("INVENTED-SECRET"))
 
         let letter = dir.appendingPathComponent("letter.txt")
         try Data("An invented letter about the levy.".utf8).write(to: letter)
-        let withLink = IntakeReading.read(letter, attachments: [notice], channel: "email", reader: .inProcess)
+        let withLink = IntakeReading.read(letter, in: letter.deletingLastPathComponent(), attachments: [notice], channel: "email", reader: .inProcess)
         #expect(!withLink.text.contains("INVENTED-SECRET"))
         #expect(withLink.notes.contains { $0.contains("notice.txt") && $0.contains("symbolic link") })
 
         // A FIFO with no writer is refused at once, not waited on.
         let fifo = dir.appendingPathComponent("scan.pdf")
         #expect(mkfifo(fifo.path, 0o600) == 0)
-        #expect(IntakeReading.read(fifo, channel: "other", reader: .inProcess).held?.contains("not a plain file") == true)
+        #expect(IntakeReading.read(fifo, in: fifo.deletingLastPathComponent(), channel: "other", reader: .inProcess).held?.contains("not a plain file") == true)
     }
 
     // MARK: - 2. A multipart entity named like a key file is skipped whole

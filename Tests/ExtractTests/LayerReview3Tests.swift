@@ -37,7 +37,7 @@ import Testing
         #expect(!r.text.contains("INVENTED-SECRET"))
         let url = temp("html").appendingPathComponent("forwarded.txt")
         try Data(text.utf8).write(to: url)
-        let reading = IntakeReading.read(url, channel: "other", reader: .inProcess)
+        let reading = IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "other", reader: .inProcess)
         #expect(reading.held != nil && !reading.text.contains("INVENTED-SECRET"))
         // An ordinary page still reads.
         let page = Extractor.extract(Data("<html><body><p>The invented meeting is on November 3.</p></body></html>".utf8), name: "page.html")
@@ -85,7 +85,7 @@ import Testing
         """
         let url = temp("fwd").appendingPathComponent("message.eml")
         try Data(eml.utf8).write(to: url)
-        let r = IntakeReading.read(url, channel: "email", reader: .inProcess)
+        let r = IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "email", reader: .inProcess)
         #expect(r.attachments == ["forwarded.eml"])
         #expect(r.text.contains("The invoice is attached."))
         #expect(r.notes.contains { $0.contains("forwarded.eml") && $0.contains("of its own that were not read") }, "\(r.notes)")
@@ -136,7 +136,7 @@ import Testing
         let intake = binder.appendingPathComponent("intake")
         try FileManager.default.createDirectory(at: intake, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: intake.appendingPathComponent("mail"), withDestinationURL: outside)
-        let linked = IntakeReading.read(intake.appendingPathComponent("mail/notes.txt"), channel: "email", reader: .inProcess)
+        let linked = IntakeReading.read(intake.appendingPathComponent("mail/notes.txt"), in: binder, channel: "email", reader: .inProcess)
         #expect(linked.held?.contains("symbolic link") == true, "\(linked.held ?? "read")")
         #expect(!linked.text.contains("INVENTED-SECRET"))
         // An attachments folder that is a link is refused the same way.
@@ -144,7 +144,7 @@ import Testing
         let message = intake.appendingPathComponent("real/message.txt")
         try Data("The invented notice is attached.".utf8).write(to: message)
         try FileManager.default.createSymbolicLink(at: intake.appendingPathComponent("real/message attachments"), withDestinationURL: outside)
-        let r = IntakeReading.read(message, attachments: [intake.appendingPathComponent("real/message attachments/notes.txt")],
+        let r = IntakeReading.read(message, in: binder, attachments: [intake.appendingPathComponent("real/message attachments/notes.txt")],
                                    channel: "email", reader: .inProcess)
         #expect(!r.text.contains("INVENTED-SECRET") && r.text.contains("The invented notice"))
         #expect(r.notes.contains { $0.contains("symbolic link") }, "\(r.notes)")
@@ -152,9 +152,33 @@ import Testing
         let other = root.appendingPathComponent("Other Binder")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: other.appendingPathComponent("intake"), withDestinationURL: outside)
-        #expect(IntakeReading.read(other.appendingPathComponent("intake/notes.txt"), channel: "other", reader: .inProcess).held != nil)
-        // A binder reached through a link above it (the temporary folder is one) still reads.
-        #expect(IntakeReading.read(message, channel: "other", reader: .inProcess).held == nil)
+        #expect(IntakeReading.read(other.appendingPathComponent("intake/notes.txt"), in: other, channel: "other", reader: .inProcess).held != nil)
+        // A binder reached through a link above it still reads: the binder is the folder the caller trusts.
+        #expect(IntakeReading.read(message, in: binder, channel: "other", reader: .inProcess).held == nil)
+        let via = root.appendingPathComponent("via")
+        try FileManager.default.createSymbolicLink(at: via, withDestinationURL: root)
+        let throughLink = via.appendingPathComponent("Invented Binder")
+        #expect(IntakeReading.read(throughLink.appendingPathComponent("intake/real/message.txt"), in: throughLink, channel: "other",
+                                   reader: .inProcess).text.contains("The invented notice"))
+        // A file outside the binder it is read for is refused.
+        #expect(IntakeReading.read(outside.appendingPathComponent("notes.txt"), in: binder, channel: "other", reader: .inProcess).held?
+            .contains("outside") == true)
+    }
+
+    /// A link inside one binder's intake to another binder, read through that binder's own `intake`: the path holds a
+    /// folder named `intake` below the link, which must not become the folder the read starts from.
+    @Test func aNestedIntakeBehindALinkIsNotFollowed() throws {
+        let root = temp("nested")
+        let a = root.appendingPathComponent("Binder A"), b = root.appendingPathComponent("Binder B")
+        try FileManager.default.createDirectory(at: a.appendingPathComponent("intake"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b.appendingPathComponent("intake"), withIntermediateDirectories: true)
+        try Data("An invented notice for binder B only: INVENTED-SECRET-8860".utf8).write(to: b.appendingPathComponent("intake/notice.txt"))
+        try FileManager.default.createSymbolicLink(at: a.appendingPathComponent("intake/link"), withDestinationURL: b)
+        let r = IntakeReading.read(a.appendingPathComponent("intake/link/intake/notice.txt"), in: a, channel: "other", reader: .inProcess)
+        #expect(r.held?.contains("symbolic link") == true, "\(r.held ?? "read")")
+        #expect(!r.text.contains("INVENTED-SECRET"))
+        // The same file read for its own binder reads.
+        #expect(IntakeReading.read(b.appendingPathComponent("intake/notice.txt"), in: b, channel: "other", reader: .inProcess).text.contains("INVENTED-SECRET"))
     }
 
     // MARK: - 5. Folded MIME headers are unfolded before the parts check

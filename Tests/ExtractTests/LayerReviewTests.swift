@@ -26,7 +26,7 @@ import Testing
     func readMessage(_ eml: String, name: String = "message.eml") throws -> IntakeReading {
         let url = temp("eml").appendingPathComponent(name)
         try Data(eml.utf8).write(to: url)
-        return IntakeReading.read(url, channel: "email", reader: .inProcess)
+        return IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "email", reader: .inProcess)
     }
 
     // MARK: - 1. A helper without its sandbox never receives a document
@@ -44,7 +44,7 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: received.path))
         let file = dir.appendingPathComponent("note.txt")
         try Data("An invented note.".utf8).write(to: file)
-        #expect(IntakeReading.read(file, channel: "other", reader: .helper(helper)).held?.contains("sandbox") == true)
+        #expect(IntakeReading.read(file, in: file.deletingLastPathComponent(), channel: "other", reader: .helper(helper)).held?.contains("sandbox") == true)
         #expect(!FileManager.default.fileExists(atPath: received.path))
     }
 
@@ -148,7 +148,7 @@ import Testing
         // At the real limit: a long file with a deadline at its end is held, not read as if it were whole.
         let url = temp("long").appendingPathComponent("long.txt")
         try Data((String(repeating: "x", count: Extractor.Limits().textChars) + "\nPay by November 9, 2026.").utf8).write(to: url)
-        let r = IntakeReading.read(url, channel: "other", reader: .inProcess)
+        let r = IntakeReading.read(url, in: url.deletingLastPathComponent(), channel: "other", reader: .inProcess)
         #expect(r.held?.contains("text limit") == true)
     }
 

@@ -29,15 +29,16 @@ public struct IntakeReading: Sendable, Equatable {
 
     /// Reads a file and, for a message, the files of its attachments folder, each in the sandboxed helper. Without
     /// the helper the file is held, saying the reader is missing. A key or credential file (binder-v0 §3.3), alone or
-    /// in the attachments folder, is never opened: the whole card is held, and the person can still file it.
-    public static func read(_ file: URL, attachments: [URL] = [], channel: String, reader: ExtractHelper.Reader) -> IntakeReading {
+    /// in the attachments folder, is never opened: the whole card is held, and the person can still file it. Every
+    /// file is opened from `binder`, the folder the caller trusts, down, never through a link below it.
+    public static func read(_ file: URL, in binder: URL, attachments: [URL] = [], channel: String, reader: ExtractHelper.Reader) -> IntakeReading {
         if let key = ([file] + attachments).first(where: { DocumentPaths.isKeyFile($0.lastPathComponent) }) {
             return IntakeReading(kind: "unknown", textFrom: "parsed", text: "",
                                  held: "\u{201C}\(DocumentPaths.safeName(key.lastPathComponent))\u{201D} looks like a key or credential file and is not read",
                                  channel: channel)
         }
         let result: Extractor.Result
-        do { result = try ExtractHelper.run(file, reader: reader) } catch {
+        do { result = try ExtractHelper.run(file, under: binder, reader: reader) } catch {
             return IntakeReading(kind: "unknown", textFrom: "parsed", text: "", held: "\(error)", channel: channel)
         }
         var r = IntakeReading(kind: result.email != nil ? "email" : result.kind, textFrom: result.textFrom, pages: result.pages,
@@ -56,7 +57,7 @@ public struct IntakeReading: Sendable, Equatable {
             }
             parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, reader: reader) }))
         }
-        for url in attachments { parts.append((url.lastPathComponent, Result { try ExtractHelper.run(url, reader: reader) })) }
+        for url in attachments { parts.append((url.lastPathComponent, Result { try ExtractHelper.run(url, under: binder, reader: reader) })) }
         for (name, outcome) in parts {
             r.attachments.append(name)
             switch outcome {

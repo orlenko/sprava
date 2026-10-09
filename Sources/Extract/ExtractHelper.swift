@@ -29,29 +29,19 @@ public enum ExtractHelper {
         public var description: String { message }
     }
 
-    /// Reads `file` and runs the helper on its bytes. `root` is the folder the file is anchored to (the binder for a
-    /// file in its intake); by default the binder of the nearest `intake` folder above the file, else its own folder.
-    public static func run(_ file: URL, under root: URL? = nil, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
+    /// Reads `file` and runs the helper on its bytes. `root` is the folder the caller trusts (the binder, for a file
+    /// in its intake): the file is opened from it down, and one outside it is refused. It is never guessed from the
+    /// file's path, which a link below the binder could shape.
+    public static func run(_ file: URL, under root: URL, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
         if reader == .missing { throw Self.missing }
         // Never through a link, which could lead a harmless name to a credential file, and never anything but a
         // regular file of this user within the size limit, so a FIFO or a device cannot stall the read.
-        switch read(file, under: root ?? anchor(of: file), limit: Extractor.Limits().bytes) {
+        switch read(file, under: root, limit: Extractor.Limits().bytes) {
         case .ok(let data): return try run(data, name: file.lastPathComponent, reader: reader, timeout: timeout)
         case .refused(let why): throw Failure(message: "the file was not opened: it is \(why)")
         case .missing: throw Failure(message: "the file is not there")
         case .unreadable(let why): throw Failure(message: "the file cannot be read now (\(why))")
         }
-    }
-
-    /// The binder holding the nearest `intake` folder above a file, else the file's own folder.
-    static func anchor(of file: URL) -> URL {
-        let folder = file.standardizedFileURL.deletingLastPathComponent()
-        var probe = folder
-        while probe.pathComponents.count > 1 {
-            if probe.lastPathComponent == "intake" { return probe.deletingLastPathComponent() }
-            probe = probe.deletingLastPathComponent()
-        }
-        return folder
     }
 
     /// A file below `root`, opened from `root` down with no symbolic link anywhere on the way (`O_NOFOLLOW_ANY`):
