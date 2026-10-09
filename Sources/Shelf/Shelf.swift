@@ -155,19 +155,36 @@ public struct RecentBinders: Sendable {
         file = supportDirectory.appendingPathComponent("recent.json")
     }
 
-    public func opened() -> [String: Date] {
-        guard let data = try? Data(contentsOf: file), case .object(let o)? = try? JSONParser.parse(data).value else { return [:] }
+    /// When each binder was opened, for display: none when the file cannot be read (`touch` uses `readOpened`).
+    public func opened() -> [String: Date] { (try? readOpened()) ?? [:] }
+
+    /// When each binder was opened. A missing file is none; a file that exists but is not an object of dates, one
+    /// entry being wrong included, throws (`StateFile.Unreadable`), so nothing ever saves over it.
+    public func readOpened() throws -> [String: Date] {
+        var st = stat()
+        if lstat(file.path, &st) != 0 {
+            if errno == ENOENT { return [:] }
+            throw StateFile.Unreadable(path: file.path)
+        }
+        guard let data = try? Data(contentsOf: file), case .object(let o)? = try? JSONParser.parse(data).value else {
+            throw StateFile.Unreadable(path: file.path)
+        }
         var out: [String: Date] = [:]
-        for e in o.entries { if let d = e.value.stringValue.flatMap(ISOTime.date) { out[e.key] = d } }
+        for e in o.entries {
+            guard let d = e.value.stringValue.flatMap(ISOTime.date) else { throw StateFile.Unreadable(path: file.path) }
+            out[e.key] = d
+        }
         return out
     }
 
-    public func touch(_ folder: URL, now: Date = Date()) {
-        var all = opened()
+    /// Records that the person opened a binder now. Throws when recent.json cannot be read, leaving its bytes as
+    /// they are, or cannot be written.
+    public func touch(_ folder: URL, now: Date = Date()) throws {
+        var all = try readOpened()
         all[folder.standardizedFileURL.path] = now
         let o = JSONObject(all.sorted { $0.key < $1.key }.map { (key: $0.key, value: JSONValue.string(ISOTime.string($0.value))) })
-        try? AtomicFile.makePrivateFolder(file.deletingLastPathComponent())
-        try? AtomicFile.write(Data(JSONWriter.pretty(.object(o)).utf8), to: file)
+        try AtomicFile.makePrivateFolder(file.deletingLastPathComponent())
+        try AtomicFile.write(Data(JSONWriter.pretty(.object(o)).utf8), to: file)
     }
 
     /// Opened binders first, most recent on top; then the others, most recently changed first.

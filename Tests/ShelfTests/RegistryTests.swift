@@ -64,11 +64,11 @@ import Testing
         let a = try makeTeka(fixture: "sprava-v0"), b = try makeTeka(fixture: "sprava-v0"), c = try makeTeka(fixture: "sprava-v0")
         let rows = Shelf.rows(registry: nil, picked: [a, b, c])
         let t = Date(timeIntervalSince1970: 1_791_360_000)
-        recent.touch(a, now: t)
-        recent.touch(c, now: t.addingTimeInterval(60))
+        try recent.touch(a, now: t)
+        try recent.touch(c, now: t.addingTimeInterval(60))
         let ordered = RecentBinders.order(rows, opened: recent.opened()).map(\.folder.standardizedFileURL)
         #expect(ordered == [c, a, b].map(\.standardizedFileURL))
-        recent.touch(b, now: t.addingTimeInterval(120))
+        try recent.touch(b, now: t.addingTimeInterval(120))
         #expect(RecentBinders.order(rows, opened: recent.opened()).first?.folder.standardizedFileURL == b.standardizedFileURL)
     }
 }

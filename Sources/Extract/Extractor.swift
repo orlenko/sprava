@@ -64,11 +64,34 @@ public enum Extractor {
         guard let text = String(data: data.prefix(64 * 1024), encoding: .utf8) ?? String(data: data.prefix(64 * 1024), encoding: .isoLatin1) else { return .unknown }
         let lower = text.lowercased()
         if text.hasPrefix("---\n"), lower.contains("\nsubject:"), lower.contains("\nfrom:") { return .markdownEmail }
-        if lower.range(of: #"^(received|return-path|from|message-id|mime-version|date|subject|to|delivered-to):"#, options: .regularExpression) != nil,
-           lower.contains("\nsubject:") || lower.hasPrefix("subject:") { return .eml }
+        if isMessage(lower) { return .eml }
         if lower.contains("<html") || lower.contains("<!doctype html") { return .html }
         if data.prefix(4096).contains(0) { return .unknown }
         return .text
+    }
+
+    /// Whether text starts as a mail message: a header block of fields only, ending at the first empty line, with
+    /// a field only mail carries. Any field may come first and none is required, so a message without a subject, or
+    /// one that opens with a signature header, is still read as a message.
+    static func isMessage(_ lower: String) -> Bool {
+        let block = lower.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n\n").first ?? ""
+        var fields = Set<String>()
+        for line in block.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.first == " " || line.first == "\t" { if fields.isEmpty { return false }; continue }
+            // A field name is printable ASCII other than the colon (RFC 5322 section 2.2).
+            guard let colon = line.firstIndex(of: ":"), colon > line.startIndex,
+                  line[..<colon].unicodeScalars.allSatisfy({ (0x21...0x7E).contains($0.value) }) else { return false }
+            fields.insert(String(line[..<colon]))
+        }
+        let mail: Set<String> = ["from", "received", "return-path", "message-id", "mime-version", "delivered-to", "dkim-signature",
+                                 "arc-seal", "authentication-results", "in-reply-to", "references"]
+        return fields.count >= 2 && !fields.isDisjoint(with: mail)
+    }
+
+    /// Text that carries MIME parts (a multipart type or a named part) at the start of a line. It did not read as a
+    /// message, so it is held: its parts, a key file among them, are never passed on as plain text.
+    static func carriesMIMEParts(_ text: String) -> Bool {
+        text.range(of: #"(?im)^content-(type|disposition)[ \t]*:[^\n]*(multipart/|name\*?[0-9]*\*?[ \t]*=)"#, options: .regularExpression) != nil
     }
 
     // MARK: - The entry point
@@ -81,17 +104,24 @@ public enum Extractor {
         var result: Result
         switch sniffed {
         case .pdf: result = pdf(data, limits: limits)
-        case .png, .jpeg, .heic, .tiff: result = image(data)
+        case .png, .jpeg, .heic, .tiff: result = image(data, limits: limits)
         case .zip: result = office(data, name: name)
         case .rtf: result = rtf(data)
         case .html: result = Result(kind: "text", text: htmlText(String(decoding: data, as: UTF8.self)), textFrom: "parsed")
         case .markdownEmail: result = markdownEmail(String(decoding: data, as: UTF8.self))
         case .eml: result = eml(data)
-        case .text: result = Result(kind: "text", text: String(decoding: data, as: UTF8.self), textFrom: "parsed")
+        case .text:
+            let text = String(decoding: data, as: UTF8.self)
+            result = carriesMIMEParts(text)
+                ? Result(kind: "text", text: "", textFrom: "parsed", problem: "it looks like a mail message, but its headers do not read as one")
+                : Result(kind: "text", text: text, textFrom: "parsed")
         case .ole: result = Result(kind: "document", text: "", textFrom: "parsed", problem: "an old Office or Outlook format that is not read yet")
         case .unknown: result = Result(kind: "unknown", text: "", textFrom: "parsed", problem: "not a kind of file Sprava reads")
         }
-        result.text = normalize(result.text, limit: limits.textChars)
+        let (text, cut) = normalized(result.text, limit: limits.textChars)
+        result.text = text
+        // A reading stopped by the text limit is held, never passed on as if it were whole (adaptation-layer §2).
+        if cut, result.problem == nil { result.problem = "longer than the text limit (\(limits.textChars) characters); only the start was read" }
         result.mismatch = nameMismatch(name, sniffed)
         return result
     }
@@ -107,7 +137,10 @@ public enum Extractor {
     }
 
     /// NFC, control and bidirectional characters removed, white space tidied, capped (adaptation-layer §3.1).
-    public static func normalize(_ text: String, limit: Int) -> String {
+    public static func normalize(_ text: String, limit: Int) -> String { normalized(text, limit: limit).text }
+
+    /// The same, and whether the cap cut the text.
+    static func normalized(_ text: String, limit: Int) -> (text: String, cut: Bool) {
         var out = String.UnicodeScalarView()
         for s in text.precomposedStringWithCanonicalMapping.unicodeScalars {
             switch s.value {
@@ -120,7 +153,7 @@ public enum Extractor {
         var s = String(out)
         while s.contains("\n\n\n") { s = s.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return s.count > limit ? String(s.prefix(limit)) : s
+        return s.count > limit ? (String(s.prefix(limit)), true) : (s, false)
     }
 
     // MARK: - PDF: the text layer, OCR for pages without one, every page
@@ -161,13 +194,23 @@ public enum Extractor {
         return ctx.makeImage()
     }
 
-    // MARK: - Images: OCR on the device
+    // MARK: - Images: OCR on the device, every page of a multi-page TIFF
 
-    static func image(_ data: Data) -> Result {
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil), let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+    static func image(_ data: Data, limits: Limits) -> Result {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(src) > 0 else {
             return Result(kind: "image", text: "", textFrom: "ocr", problem: "the image does not open")
         }
-        return Result(kind: "image", text: ocr(img), textFrom: "ocr", pages: 1)
+        let count = CGImageSourceGetCount(src)
+        guard count <= limits.pages else { return Result(kind: "image", text: "", textFrom: "ocr", pages: count, problem: "more pages than the limit (\(count))") }
+        var parts: [String] = []
+        for i in 0..<count {
+            // A page that does not open holds the whole file: the other pages alone are not the document.
+            guard let img = CGImageSourceCreateImageAtIndex(src, i, nil) else {
+                return Result(kind: "image", text: "", textFrom: "ocr", pages: count, problem: "page \(i + 1) of the image does not open")
+            }
+            parts.append(ocr(img))
+        }
+        return Result(kind: "image", text: parts.joined(separator: "\n\n"), textFrom: "ocr", pages: count)
     }
 
     public static func ocr(_ image: CGImage) -> String {
@@ -209,7 +252,14 @@ public enum Extractor {
     static func office(_ data: Data, name: String) -> Result {
         guard let entries = Zip.entries(data) else { return Result(kind: "document", text: "", textFrom: "parsed", problem: "the archive does not open") }
         let names = Set(entries.map(\.name))
-        func xml(_ n: String) -> String? { entries.first { $0.name == n }.flatMap { Zip.read($0, in: data) }.map { String(decoding: $0, as: UTF8.self) } }
+        // A content part that is listed but does not read holds the whole document: the parts that did read are not
+        // the document, and a reading never passes as whole when it is not.
+        var unread: String?
+        func read(_ e: Zip.Entry) -> String {
+            guard let bytes = Zip.read(e, in: data) else { unread = unread ?? e.name; return "" }
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        func xml(_ n: String) -> String? { entries.first { $0.name == n }.map(read) }
         var text = ""
         if let doc = xml("word/document.xml") {
             text = xmlText(doc, paragraph: "w:p", run: "w:t")
@@ -217,15 +267,13 @@ public enum Extractor {
             let shared = xml("xl/sharedStrings.xml").map { xmlStrings($0, tag: "t") } ?? []
             var rows: [String] = []
             for e in entries.filter({ $0.name.hasPrefix("xl/worksheets/sheet") }).sorted(by: { $0.name < $1.name }) {
-                guard let sheet = Zip.read(e, in: data).map({ String(decoding: $0, as: UTF8.self) }) else { continue }
-                rows += sheetRows(sheet, shared: shared)
+                rows += sheetRows(read(e), shared: shared)
             }
             text = rows.joined(separator: "\n")
         } else if names.contains(where: { $0.hasPrefix("ppt/slides/slide") }) {
             let slides = entries.filter { $0.name.hasPrefix("ppt/slides/slide") && $0.name.hasSuffix(".xml") }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            text = slides.compactMap { Zip.read($0, in: data) }.map { xmlText(String(decoding: $0, as: UTF8.self), paragraph: "a:p", run: "a:t") }
-                .joined(separator: "\n\n")
+            text = slides.map { xmlText(read($0), paragraph: "a:p", run: "a:t") }.joined(separator: "\n\n")
         } else if let content = xml("content.xml") {
             text = xmlText(content, paragraph: "text:p", run: nil)
         } else if names.contains(where: { $0.hasSuffix(".iwa") }) {
@@ -233,6 +281,7 @@ public enum Extractor {
         } else {
             return Result(kind: "document", text: "", textFrom: "parsed", problem: "an archive, not a document Sprava reads")
         }
+        if let unread { return Result(kind: "document", text: "", textFrom: "parsed", problem: "a part of the document (\(unread)) does not read") }
         return Result(kind: "document", text: text, textFrom: "parsed")
     }
 
@@ -245,7 +294,11 @@ public enum Extractor {
                 var rest = Substring(p)
                 while let open = rest.range(of: "<\(run)") {
                     guard let gt = rest[open.upperBound...].firstIndex(of: ">") else { break }
-                    if rest[rest.index(before: gt)] == "/" { rest = rest[rest.index(after: gt)...]; continue }
+                    // The whole element name: `<w:t>` or `<w:t xml:space=...>`, never `<w:tbl>` or `<w:tab/>`.
+                    let next = rest[open.upperBound]
+                    if rest[rest.index(before: gt)] == "/" || !(next == ">" || next == "/" || next.isWhitespace) {
+                        rest = rest[rest.index(after: gt)...]; continue
+                    }
                     guard let close = rest[gt...].range(of: "</\(run)>") else { break }
                     pieces.append(String(rest[rest.index(after: gt)..<close.lowerBound]))
                     rest = rest[close.upperBound...]
@@ -336,11 +389,34 @@ public enum Extractor {
         return (headers, parts.dropFirst().joined(separator: "\n\n"))
     }
 
+    /// The parameters after a header's value, as (lowercased key, value) pairs. A quoted value is one value whatever
+    /// it holds, a semicolon included, and a backslash in it escapes the next character (RFC 2045 section 5.1).
+    static func parameters(_ header: String) -> [(key: String, value: String)] {
+        var fields: [String] = [], field = "", quoted = false, escaped = false
+        for c in header {
+            if escaped { field.append(c); escaped = false; continue }
+            if quoted, c == "\\" { field.append(c); escaped = true; continue }
+            if c == "\"" { quoted.toggle() }
+            if c == ";", !quoted { fields.append(field); field = ""; continue }
+            field.append(c)
+        }
+        fields.append(field)
+        return fields.dropFirst().compactMap { field in
+            guard let eq = field.firstIndex(of: "=") else { return nil }
+            let key = field[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+            let raw = field[field.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            guard raw.hasPrefix("\"") else { return (key, raw) }
+            var value = "", escaped = false
+            for c in raw.dropFirst() {
+                if escaped { value.append(c); escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { break } else { value.append(c) }
+            }
+            return (key, value)
+        }
+    }
+
     static func param(_ header: String?, _ name: String) -> String? {
-        guard let header, let r = header.range(of: name + "=", options: .caseInsensitive) else { return nil }
-        var v = header[r.upperBound...].prefix { $0 != ";" }.trimmingCharacters(in: .whitespaces)
-        if v.hasPrefix("\"") { v = String(v.dropFirst().prefix { $0 != "\"" }) }
-        return v
+        guard let header else { return nil }
+        return parameters(header).first { $0.key == name.lowercased() }?.value
     }
 
     /// A file name parameter in any form a mail program writes: plain (`name="a.txt"`), RFC 2231 extended
@@ -349,11 +425,8 @@ public enum Extractor {
         guard let header else { return nil }
         var plain: String?
         var pieces: [(Int, String)] = []
-        for field in header.split(separator: ";").dropFirst() {
-            guard let eq = field.firstIndex(of: "=") else { continue }
-            let key = field[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
-            var value = field[field.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if value.hasPrefix("\"") { value = String(value.dropFirst().prefix { $0 != "\"" }) }
+        for (key, parameter) in parameters(header) {
+            var value = parameter
             if key == name { plain = plain ?? value; continue }
             guard key.hasPrefix(name + "*") else { continue }
             var rest = key.dropFirst(name.count + 1)

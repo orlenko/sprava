@@ -1,10 +1,12 @@
 import Foundation
+import Security
 import SpravaKit
 
 /// Runs the sandboxed `sprava-extract` helper on one file (architecture 2.1): the bytes go in on standard input,
 /// JSON comes back; a crash or a hang ends only the helper.
 public enum ExtractHelper {
-    /// The helper beside the running executable (the app bundle, or a development build's products).
+    /// The helper beside the running executable (the app bundle, or a development build's products). `run` refuses one
+    /// that is not signed with its sandbox, such as one built by `swift build`.
     public static func locate() -> URL? {
         let candidates = [Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/sprava-extract"),
                           Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("sprava-extract")].compactMap { $0 }
@@ -34,12 +36,31 @@ public enum ExtractHelper {
     }
 
     static let missing = Failure(message: "Sprava's document reader (sprava-extract) is missing, so the file was not opened; reinstall Sprava")
+    static let unsandboxed = Failure(message: "Sprava's document reader (sprava-extract) is not signed with its sandbox, so the file was not opened; "
+                                              + "reinstall Sprava, or build the app with scripts/build-app.sh")
+
+    /// Whether a helper carries a valid code signature whose entitlements are the App Sandbox and nothing else
+    /// (Resources/sprava-extract.entitlements). A development build from `swift build` is signed without them,
+    /// so it never receives a document's bytes.
+    public static func isSandboxed(_ helper: URL) -> Bool {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(helper as CFURL, [], &code) == errSecSuccess, let code,
+              SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), nil) == errSecSuccess else { return false }
+        var info: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation | kSecCSRequirementInformation)
+        guard SecCodeCopySigningInformation(code, flags, &info) == errSecSuccess,
+              let entitlements = (info as? [String: Any])?[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else { return false }
+        return entitlements.count == 1 && entitlements["com.apple.security.app-sandbox"] as? Bool == true
+    }
 
     /// The same for bytes already in memory, such as an attachment inside an email file.
     public static func run(_ data: Data, name: String, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
         let helper: URL
         switch reader {
-        case .helper(let url): helper = url
+        case .helper(let url):
+            // The sandbox is checked before any byte leaves this process (architecture 2.1).
+            guard isSandboxed(url) else { throw Self.unsandboxed }
+            helper = url
         case .missing: throw Self.missing
         case .inProcess: return Extractor.extract(data, name: name)
         }
