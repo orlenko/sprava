@@ -161,7 +161,7 @@ adds what is particular to each endpoint.
 | Endpoint | What it writes | Fixed by (1, 3) | Under (4) |
 |---|---|---|---|
 | `GET /v0/health` | nothing | | |
-| `POST /v0/claim` | `owner.json` | one slot: its intent is confirmed before its bytes, so a second claim is refused while the first may still land; a known owner never changes in memory | the claim queue, then the creation lock |
+| `POST /v0/claim` | `claims/{digest}`, then `owner/{digest}` | names are the record's SHA-256; the lowest owner record is the owner, and with none the lowest claim intent binds (trade-off A); a known owner never changes in memory | the claim queue, then the creation lock |
 | `POST /v0/pairings` | `created.json` under a new random id | a new name | the device's lock, then the creation lock |
 | `POST /v0/pairings/{P}/join` | a token marker, `record.json`, `joined.json` | the token's own name; a record every join writes alike; an earlier transcript's intent consumes the pairing | the device's lock, then the creation lock (device count) |
 | `GET /v0/pairings/{P}` | an expired pairing's deletion | its tombstone `deleted` first, kept for good | the device's lock |
@@ -215,7 +215,7 @@ the owner itself makes (devices paired, pairings opened, binders shown).
 
 | Object | Bound |
 |---|---|
-| `owner.json` (and its intents) | one record; the intent of a claim refused or never sent is cleared at start |
+| `claims/{digest}`, `owner/{digest}` | one per claim sent with the setup code: only the person who deployed the relay makes them |
 | `leases/{rank}-{id}` | one per process alive; a ready process deletes every lower one |
 | `devices/{D}/record.json`, `tokens/`, `active`, `last_seen`, `revocation` | per device kept (at most 20 pending and active, plus self-revoked ones until the owner deletes them); deleted, intents included, with the device |
 | `devices/{D}/revoked` (and its intent), `tombstones/devices/{D}/revocation` | **exception**: one each per device id the owner ever removed or abandoned |
@@ -227,7 +227,7 @@ the owner itself makes (devices paired, pairings opened, binders shown).
 | `requests/{D}/`, `intents/requests/{D}/` | pending requests: at most 1,000 per device |
 | `tombstones/requests/{D}/` | names deleted out of order above the device's floor: with its pending requests, at most 10,000 names per device, whatever the rate or the restarts (a device at the bound gets 507 until the Mac collects its oldest request) |
 | `floors/requests/{D}/` | one per device kept; deleted with the device, as is everything of a revoked device here |
-| `ordinals/{D}/{block}` (and their intents) | the blocks above the device's floor plus its highest, which a device kept always keeps (it says where the next process starts): at most 10,000 / 1,024 + 2 per device; all go with the device |
+| `ordinals/{D}/{block}` (and their intents) | the blocks above the device's floor plus its highest, which a device kept always keeps (it says where the next process starts). Each process start that gives the device an ordinal reserves a fresh block, so while an old request stays pending the blocks number at most its pending span over 1,024 plus one per start since it was made; the request expires within 30 days, and every start takes the warm-up. All go with the device |
 | folders (local store) | only those holding an object; a folder left empty is removed |
 
 ## Layout

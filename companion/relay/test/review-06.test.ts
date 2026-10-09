@@ -474,3 +474,35 @@ test('a floor raise whose cleanup fails never lets a covered name be accepted an
     assert.equal((await call(second.url, 'GET', 3)).status, 404);
     await second.close();
 });
+
+test('a request deletion cut short never blocks the mailbox: the next listing finishes it (§7.6, §9.2)', async () => {
+    const { raw: fs } = await freshStore();
+    let failIntents = false;
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        put: (k, b) => fs.put(k, b),
+        putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
+        sync: (k) => fs.sync(k),
+        list: (p) => fs.list(p),
+        listTimes: (p) => fs.listTimes(p),
+        delete: async (k) => {
+            if (failIntents && k.includes('/intents/requests/')) throw new Error('injected delete failure');
+            return fs.delete(k);
+        },
+    };
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const device = await seedDevice(scoped(raw, INSTANCE), { active: true });
+    const t = await startTestRelay({ raw });
+    const [a, b] = [newId(), newId()];
+    for (const r of [a, b]) {
+        assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    }
+    failIntents = true;
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) })).status, 500, 'tombstone and copy gone; intents not');
+    failIntents = false;
+    const listing = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+    assert.deepEqual(listing.requests.map((x) => x.request_id), [b], 'A never blocks B');
+    assert.deepEqual(await scoped(raw, INSTANCE).list(`intents/requests/${device.id}/`).then((k) => k.filter((x) => x.includes(a))), [], 'and A is finished');
+    await t.close();
+});

@@ -97,8 +97,21 @@ export function requests(relay: Relay, devices: Devices) {
                 await store.delete(intent);
                 continue;
             }
-            if (bodies.has(key) || mailbox.has(match[3]!) || (await isDeleted(store, key))) continue;
+            if (bodies.has(key)) continue;
+            if (await isDeleted(store, key)) {
+                await retire(key); // a deletion cut short after the tombstone: finished now
+                continue;
+            }
+            if (mailbox.has(match[3]!)) continue;
             mailbox.set(match[3]!, { ordinal: Number(match[2]), key, received: modified, digest: match[4]! });
+        }
+        // An entry whose name is deleted (its tombstone written, or below the floor) is finished and leaves, whatever
+        // a deletion cut short left of it: the next listing never shows a request that was deleted.
+        for (const [r, entry] of mailbox) {
+            if (entry.ordinal < floor || (await isDeleted(store, entry.key))) {
+                mailbox.delete(r);
+                await retire(entry.key);
+            }
         }
         mailboxes.set(d, mailbox);
         let next = Math.max(nextOrdinal.get(d) ?? 1, highest + 1);
@@ -321,8 +334,10 @@ export function requests(relay: Relay, devices: Devices) {
                 await relay.deviceLocks.run(d, async () => {
                     if (!mailboxes.has(d)) await refreshLocked(d);
                     const entry = mailboxes.get(d)?.get(call.params.R!);
-                    if (entry !== undefined) await retire(entry.key);
+                    // Out of the mailbox first: if a step of the deletion fails, the tombstone, once written, keeps it
+                    // out of every listing, and the next listing or sweep finishes it.
                     mailboxes.get(d)?.delete(call.params.R!);
+                    if (entry !== undefined) await retire(entry.key);
                     await compactLocked(d);
                 });
                 return { status: 204 };
