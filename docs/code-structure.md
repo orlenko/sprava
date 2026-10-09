@@ -22,22 +22,31 @@ reappeared in about fifteen places, because each module wrote its own file handl
 Each box is a SwiftPM target. A target may depend only on targets in lower layers; SwiftPM refuses a cycle and
 the compiler refuses an undeclared import, so the boundaries are enforced rather than remembered.
 
-| Layer | Target | Owns | Depends on |
+| Layer | Target | Owns | Depends on (direct) |
 |---|---|---|---|
-| 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateFile` (section 4), dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
-| 1 | `BinderFormat` | reading a binder: `Teka`, items, buckets, rules, catalog levels, the dashboard text, document path rules | SpravaKit |
-| 2 | `BinderStore` | writing a binder: op log, transaction guard, op applier, proposals and their store, undo, owner record, adoption, templates, the dashboard keeper | BinderFormat |
-| 3 | `Shelf` | which binders exist here: the shelf, lifeproj's registry, recent order, the filing list and binder settings | BinderFormat |
-| 3 | `Extract` | type sniffing and text extraction, the sandboxed helper's protocol, `IntakeReading` | SpravaKit |
-| 3 | `Clerk` | the model seam, date grammar, amounts, code facts, note and document readings, the proposals they become | BinderStore, Extract |
-| 4 | `Capture` | capture events, the inbox, the intake watcher, the readings store | Clerk, Extract, Shelf, BinderStore |
-| 4 | `Hub` | slices, publish and drain, the outbox | Shelf, BinderStore |
-| 4 | `Backup` | restic, keys, snapshots, offload, restore, peek | Shelf, BinderStore |
-| 4 | `Brains` | MCP server and clients; later, the conversation runners (`claude -p`, `codex exec`, `agy -p`, a local model) | Capture, Shelf, BinderStore |
-| 5 | `Services` | the command layer: one handler file per area, plus the doctor, measures and sentinel that read across areas | everything below |
-| 6 | executables | `sprava-runtime` (job scheduling and wiring only), `SpravaApp` (screens), `sprava` (CLI), `sprava-mcp`, `sprava-extract` | Services, and `Extract` for the helper |
+| 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateFile` (section 4), `SafeFile`, dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
+| 1 | `BinderFormat` | reading a binder: `Teka`, items, buckets, rules, catalog levels, the dashboard text, document path rules, the hub's naming rules | SpravaKit |
+| 2 | `BinderStore` | writing a binder: op log, transaction guard, op applier, proposals and their store, the record of trusted cards, ids, the privacy ratchet, undo, owner record, adoption, templates, the dashboard keeper | BinderFormat |
+| 3 | `Shelf` | which binders exist here: the shelf, lifeproj's registry, recent order, the filing list and binder settings | BinderStore |
+| 3 | `Extract` | type sniffing and text extraction, the sandboxed helper's protocol, `IntakeReading` | BinderFormat |
+| 4 | `Clerk` | the model seam, date grammar, amounts, code facts, note and document readings, the proposals they become | Extract, Shelf |
+| 5 | `Capture` | capture events, the inbox, the intake watcher, the readings store | Clerk |
+| 4 | `Hub` | slices, publish and drain, the outbox | Shelf |
+| 5 | `Backup` | restic, keys, snapshots, offload, restore, peek | Hub |
+| 6 | `Brains` | MCP server and clients; later, the conversation runners (`claude -p`, `codex exec`, `agy -p`, a local model) | Capture |
+| 7 | `Services` | the command layer: one handler file per area, behind a command table, plus jobs, the lease, the heartbeat, the doctor, measures and sentinel that read across areas | Brains, Backup, Hub, Capture |
+| 8 | executables | `sprava-runtime` (job scheduling and wiring only), `SpravaApp` (screens), `sprava` (CLI), `sprava-mcp`, `sprava-extract` | Services; `sprava-mcp` only Brains; `sprava-extract` only Extract |
 
-Two moves that break today's cycles:
+Each target also lists the lower targets it imports directly; the column shows the nearest ones. Where this
+differs from the first plan, the reason is a real use, not convenience:
+- `Shelf` sits on `BinderStore`, because binder settings and the filing list are written through the store.
+- `Extract` needs `BinderFormat` for the document path rules (the key-file rule among them).
+- `Clerk` reads the filing list, which lives in `Shelf`.
+- `Backup` removes a binder's hub slice before offloading it, so it sits on `Hub`.
+- `BinderStore` arrived as two PRs (the writer, then adoption, undo, templates and the dashboard keeper)
+  because approving a card needs id minting and the privacy ratchet from the first part.
+
+Moves that broke the earlier cycles:
 - The clerk takes a small `ClerkInput` (text, locale, capture day, privacy, id) instead of `CaptureEvent`, so
   `Clerk` never imports `Capture`.
 - `IntakeReading` moves to `Extract`, and `IntakeFacts` to `Clerk`.
