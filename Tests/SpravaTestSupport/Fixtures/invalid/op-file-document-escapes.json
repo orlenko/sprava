@@ -1,0 +1,22 @@
+{
+  "id": "01a11417-e73a-73f6-84b8-f7c72fdd2600",
+  "at": "2026-10-06T14:03:11Z",
+  "actor": {
+    "kind": "brain",
+    "client": "x"
+  },
+  "proposal": "01a11417-e73a-73f6-84b8-f7c72fdd2601",
+  "approved_by": "user",
+  "before_hash": "sha256:024ac81593f51713e972a2fe295aad4ded68c59f7f155907ecc487a7b4ea6cbd",
+  "after_hash": "sha256:024ac81593f51713e972a2fe295aad4ded68c59f7f155907ecc487a7b4ea6cbd",
+  "op": "file_document",
+  "args": {
+    "from": "../../.ssh/id_ed25519",
+    "document": {
+      "id": "d1",
+      "title": "Notary letter",
+      "path": ".claude/settings.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

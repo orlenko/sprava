@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "schema_version": 2,
+    "name": "rental-elm-street",
+    "domain": "tenancy",
+    "lifecycle": "ongoing",
+    "created": "2026-06-28",
+    "next_doc_id": 1,
+    "next_item_id": 1,
+    "profile": {},
+    "active_chapters": [
+      "tenancy-2026"
+    ]
+  },
+  "documents": [
+    {
+      "id": "doc-0001",
+      "title": "Lease, signed",
+      "path": "chapters/tenancy-2026/2026-07-01_lease-signed.pdf",
+      "date": "2026-07-01"
+    }
+  ],
+  "open_items": [
+    {
+      "id": "item-0003",
+      "title": "Send the annual rent notice to the tenant",
+      "status": "open",
+      "priority": "high",
+      "due": "2026-10-20",
+      "tags": [
+        "notice"
+      ],
+      "link": "chapters/tenancy-2026/"
+    },
+    {
+      "id": "rental-elm-street-2026-004",
+      "title": "Furnace inspection quote",
+      "status": "waiting",
+      "priority": "normal",
+      "due": "2026-09-30",
+      "waiting_on": "the furnace contractor",
+      "notes": "Called twice; they promised a quote by end of September."
+    },
+    {
+      "id": "item-0005",
+      "title": "Renew the insurance policy",
+      "status": "done",
+      "priority": "normal",
+      "due": "2026-09-15"
+    },
+    {
+      "id": "item-0006",
+      "title": "Звіт для бухгалтера",
+      "status": "open",
+      "priority": "low",
+      "no_deadline": true,
+      "link": "/Users/someone/personal/rental-elm-street/ledger/"
+    }
+  ],
+  "processing_log": [
+    {
+      "id": "item-0001",
+      "title": "Deposit the first month's rent",
+      "action": "done",
+      "closed_at": "2026-07-03T14:00:00Z",
+      "source": "google-tasks-via-osavul",
+      "via": "lifeproj drain"
+    },
+    {
+      "id": "item-0002",
+      "title": "Ask about parking",
+      "action": "dropped",
+      "closed_at": null,
+      "source": "osavul",
+      "via": "lifeproj drain"
+    },
+    {
+      "date": "2026-07-01",
+      "action": "filed",
+      "what": "lease signed, moved from intake/ to the chapter folder"
+    }
+  ]
+}
