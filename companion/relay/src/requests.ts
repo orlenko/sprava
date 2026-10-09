@@ -10,6 +10,11 @@ import { deleteForGood, forget, forgetAll, INTENTS, intentsOf, isDeleted, raiseF
 const HOUR = 3_600_000;
 const PER_HOUR = 120;
 const MAX_PENDING = 1000;
+/**
+ * At most this many request names above a device's floor, pending or deleted out of order: the bound on what its
+ * mailbox keeps (invariant 6), whatever the rate of requests and however often the relay restarts.
+ */
+const MAX_NAMES = 10_000;
 export const REQUEST_EXPIRY_MS = 30 * 24 * HOUR;
 const RESERVED = 'ordinals/';
 const TOMBSTONE = /^tombstones\/requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})$/;
@@ -39,6 +44,8 @@ export function requests(relay: Relay, devices: Devices) {
     const sent = new SlidingWindow(HOUR, PER_HOUR);
     /** Per device, the end (exclusive) of the block of ordinals this process reserved and may use. */
     const reservedUpTo = new Map<string, number>();
+    /** Per device, how many of its request names above its floor are tombstoned (bounded by MAX_NAMES). */
+    const deadAbove = new Map<string, number>();
     /** Per device, its floor (§7.6): read once from the bucket, raised only by this process. */
     const floors = new Map<string, number>();
 
@@ -58,6 +65,7 @@ export function requests(relay: Relay, devices: Devices) {
             // A revoked device keeps nothing here: what a late write left after its deletion goes too.
             for (const prefix of [`requests/${d}/`, `tombstones/requests/${d}/`, `floors/requests/${d}/`, `${RESERVED}${d}/`]) await forgetAll(store, prefix);
             mailboxes.set(d, new Map());
+            deadAbove.delete(d);
             return mailboxes.get(d)!;
         }
         const mailbox = mailboxes.get(d) ?? new Map<string, Entry>();
@@ -121,6 +129,20 @@ export function requests(relay: Relay, devices: Devices) {
     async function retire(key: string): Promise<void> {
         await deleteForGood(store, key);
         for (const intent of await store.list(intentsOf(key))) await store.delete(intent);
+        const match = NAME.exec(key);
+        if (match !== null && deadAbove.has(match[1]!)) deadAbove.set(match[1]!, deadAbove.get(match[1]!)! + 1);
+    }
+
+    /** Counts a device's tombstones at or above its floor; the device's lock must be held. */
+    async function countDeadLocked(d: string): Promise<number> {
+        const floor = await floorLocked(d);
+        let count = 0;
+        for (const key of await store.list(`tombstones/requests/${d}/`)) {
+            const match = TOMBSTONE.exec(key);
+            if (match !== null && Number(match[2]) >= floor) count++;
+        }
+        deadAbove.set(d, count);
+        return count;
     }
 
     /**
@@ -140,6 +162,7 @@ export function requests(relay: Relay, devices: Devices) {
             const match = TOMBSTONE.exec(key);
             if (match !== null && Number(match[2]) < lowest) await store.delete(key);
         }
+        await countDeadLocked(d);
         const blocks = await store.list(`${RESERVED}${d}/`);
         for (const key of blocks.slice(0, -1)) {
             if ((Number(key.slice(`${RESERVED}${d}/`.length)) + 1) * BLOCK <= lowest) await forget(store, key);
@@ -228,6 +251,10 @@ export function requests(relay: Relay, devices: Devices) {
                 }
                 if (!sent.admit(d, relay.now())) throw new HttpError(429, 'Too many requests; wait and try again.');
                 if (mailbox.size >= MAX_PENDING) throw new HttpError(507, 'Too many requests are waiting for the Mac.');
+                const deadCount = deadAbove.get(d) ?? (await countDeadLocked(d));
+                if (mailbox.size + deadCount >= MAX_NAMES) {
+                    throw new HttpError(507, 'Too many requests wait behind an older one; the Mac must collect it first.');
+                }
                 const ordinal = await takeOrdinalLocked(d);
                 const key = `requests/${d}/${pad(ordinal)}-${r}`;
                 let written;

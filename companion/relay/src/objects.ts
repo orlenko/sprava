@@ -31,45 +31,76 @@ function parsePrefix(prefix: string): { device: string | null } | null {
 
 /**
  * Each object prefix (`index/`, `views/{id}/`, `devices/{D}/keys/`, `devices/{D}/outcomes/`) has a floor (store.ts),
- * `floors/objects/{prefix}`, raised to its lowest live number once the owner deletes below it: every name under it
- * counts as deleted, and the tombstones, intents and late copies it covers are deleted. The owner only ever
- * publishes above what it keeps (§9.7), so a PUT below the floor is 409.
+ * `floors/objects/{prefix}`, following the floor protocol of the README: raised only under the creation lock, only
+ * to the lowest name the owner has not deleted, and durable before anything it covers is deleted.
  */
+export const ABANDONED_UPLOAD_MS = 24 * 3_600_000;
+const FLOOR_CACHE = 1024;
+
 export function objects(relay: Relay, devices: Devices): { routes: Route[]; sweep: () => Promise<void> } {
     const { store } = relay;
     const reads = new SlidingWindow(HOUR, READS_PER_HOUR);
+    /**
+     * Floors known above 0, at most FLOOR_CACHE of them, least recently used dropped first; a dropped or absent one
+     * is read from the bucket again. Values only ever rise: a read that finishes after a raise never lowers one.
+     */
     const floors = new Map<string, number>();
     const scopeOf = (prefix: string): string => `objects/${prefix.slice(0, -1)}`;
+    const remember = (prefix: string, floor: number): number => {
+        const known = Math.max(floor, floors.get(prefix) ?? 0);
+        floors.delete(prefix);
+        if (known > 0) {
+            floors.set(prefix, known);
+            if (floors.size > FLOOR_CACHE) floors.delete(floors.keys().next().value!);
+        }
+        return known;
+    };
     const floorOf = async (prefix: string): Promise<number> => {
-        if (!floors.has(prefix)) floors.set(prefix, await readFloor(store, scopeOf(prefix)));
-        return floors.get(prefix)!;
+        const cached = floors.get(prefix);
+        return cached !== undefined ? remember(prefix, cached) : remember(prefix, await readFloor(store, scopeOf(prefix)));
     };
     const numbersUnder = async (root: string): Promise<number[]> =>
         (await store.list(root)).map((key) => key.slice(root.length).split('/')[0]!).filter((n) => isRevision(n)).map(Number);
 
+    /** Whether a name counts as deleted: tombstoned, or below its prefix's floor. The floor is read last (README). */
+    async function dead(prefix: string, n: number): Promise<boolean> {
+        return (await isDeleted(store, `objects/${prefix}${n}`)) || n < (await floorOf(prefix));
+    }
+
     /**
-     * Deletes the copies under a prefix that count as deleted (a late write's), then raises the floor to the lowest
-     * live number and deletes what it covers. Under the creation lock, like every PUT.
+     * Raises a prefix's floor to the lowest name the owner has not deleted. A name is known by its intent, which every
+     * upload writes first and only the floor removes, so a copy the store has lost for a while is never taken for
+     * a deletion. One exception keeps an abandoned upload from holding the floor forever: a name with an intent, no
+     * copy and no tombstone, older than a day and below a name that has a copy, is deleted for good first. Copies
+     * that count as deleted are deleted. Under the creation lock, like every PUT and DELETE.
      */
     async function compactLocked(prefix: string): Promise<void> {
-        let floor = await floorOf(prefix);
-        const copies = await numbersUnder(`objects/${prefix}`);
+        const floor = await floorOf(prefix);
+        const copies = new Set(await numbersUnder(`objects/${prefix}`));
         const tombstoned = new Set(await numbersUnder(`${TOMBSTONES}objects/${prefix}`));
-        const live: number[] = [];
-        for (const n of copies) {
-            if (n < floor || tombstoned.has(n)) await forget(store, `objects/${prefix}${n}`);
-            else live.push(n);
+        const intents = new Map<number, number>();
+        for (const { key, modified } of await store.listTimes(`${INTENTS}objects/${prefix}`)) {
+            const n = key.slice(`${INTENTS}objects/${prefix}`.length).split('/')[0]!;
+            if (isRevision(n)) intents.set(Number(n), Math.max(modified, intents.get(Number(n)) ?? 0));
         }
-        if (live.length === 0 && copies.length === 0 && tombstoned.size === 0) return;
-        const next = live.length > 0 ? Math.min(...live) : Math.max(floor - 1, ...copies, ...tombstoned) + 1;
+        for (const n of copies) if (n < floor || tombstoned.has(n)) await forget(store, `objects/${prefix}${n}`);
+        const highestCopy = Math.max(0, ...[...copies].filter((n) => n >= floor && !tombstoned.has(n)));
+        for (const [n, modified] of intents) {
+            const abandoned = !copies.has(n) && !tombstoned.has(n) && n >= floor && n < highestCopy && modified < relay.now() - ABANDONED_UPLOAD_MS;
+            if (abandoned) {
+                await deleteForGood(store, `objects/${prefix}${n}`);
+                tombstoned.add(n);
+            }
+        }
+        const live = [...new Set([...copies, ...intents.keys()])].filter((n) => n >= floor && !tombstoned.has(n));
+        const known = [...copies, ...intents.keys(), ...tombstoned];
+        if (known.length === 0) return;
+        const next = live.length > 0 ? Math.min(...live) : Math.max(floor - 1, ...known) + 1;
         if (next <= floor) return;
-        await raiseFloor(store, scopeOf(prefix), next);
-        floors.set(prefix, next);
-        floor = next;
-        for (const n of tombstoned) if (n < floor) await store.delete(`${TOMBSTONES}objects/${prefix}${n}`);
-        for (const n of new Set(await numbersUnder(`${INTENTS}objects/${prefix}`))) {
-            if (n < floor) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
-        }
+        await raiseFloor(store, scopeOf(prefix), next); // durable first
+        remember(prefix, next); // then known to every reader, before anything it covers goes
+        for (const n of tombstoned) if (n < next) await store.delete(`${TOMBSTONES}objects/${prefix}${n}`);
+        for (const n of intents.keys()) if (n < next) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
     }
 
     /** Hourly: every prefix is compacted, so a late copy no listing meets is still deleted; a revoked device's go. */
@@ -127,11 +158,9 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
                     .map(Number)
                     .filter((n) => n < below);
                 // A copy a late write brought back after its deletion is not listed, and is deleted (invariant 5).
-                const floor = await floorOf(prefix);
                 const numbers: number[] = [];
                 for (const n of listed) {
-                    const key = `objects/${prefix}${n}`;
-                    if (n < floor || (await isDeleted(store, key))) await forget(store, key);
+                    if (await dead(prefix, n)) await forget(store, `objects/${prefix}${n}`);
                     else numbers.push(n);
                 }
                 numbers.sort((a, b) => b - a);
@@ -147,9 +176,9 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
             async handle(call) {
                 const { key, device, prefix } = named(call);
                 mayRead(call, device, prefix, false);
-                const number = Number(key.slice(key.lastIndexOf('/') + 1));
-                const dead = number < (await floorOf(prefix)) || (await isDeleted(store, key));
-                const bytes = dead ? null : await store.get(key);
+                // The bytes first, then whether the name counts as deleted: a floor raised meanwhile is seen.
+                const fetched = await store.get(key);
+                const bytes = fetched !== null && !(await dead(prefix, Number(key.slice(key.lastIndexOf('/') + 1)))) ? fetched : null;
                 if (bytes === null) throw new HttpError(404, 'There is no such object.');
                 // Objects never change under a name, so their hash is a strong ETag (§7.7 exposes it).
                 const etag = `"${sha256Hex(bytes)}"`;
@@ -170,9 +199,7 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
                 // deleted name, tombstoned or below the prefix's floor, takes no bytes again: 410, so the owner can
                 // tell a name it superseded and deleted from a relay that holds bytes it never sent.
                 const number = Number(key.slice(key.lastIndexOf('/') + 1));
-                const result = await relay.lock.run(async () =>
-                    number < (await floorOf(prefix)) || (await isDeleted(store, key)) ? 'deleted' : writeOnce(store, key, call.body),
-                );
+                const result = await relay.lock.run(async () => ((await dead(prefix, number)) ? 'deleted' : writeOnce(store, key, call.body)));
                 if (result === 'deleted') throw new HttpError(410, 'This name was deleted, and is never written again.');
                 if (result === 'different') throw new HttpError(409, 'Another object already has this name.');
                 return { status: 204 };

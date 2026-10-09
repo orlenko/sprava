@@ -8,7 +8,7 @@ import { mkdtemp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FsStore } from '../src/store/fs.ts';
-import { Mutex, scoped, writeOnce } from '../src/store/store.ts';
+import { Mutex, scoped, writeOnce, type Store } from '../src/store/store.ts';
 import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, slowRequest, startTestRelay, type Seeded } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
 
@@ -337,5 +337,85 @@ test('a late copy of a deleted object is deleted when met, and the floor covers 
     assert.deepEqual(((await (await call('GET', '/v0/objects?prefix=index/')).json()) as { names: string[] }).names, ['index/2']);
     assert.equal(await store.has('objects/index/1'), false, 'met, and deleted');
     assert.equal(await store.has('objects/index/3'), false);
+    await t.close();
+});
+
+test('a floor never covers a live object: a view still kept below a deleted one, or one whose copy is missing, stays (§7.5)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    const id = newId();
+    const call = (method: string, n: number, body?: Uint8Array) =>
+        fetch(`${t.url}/v0/objects/views/${id}/${n}`, { method, headers: bearer(owner), ...(body ? { body } : {}) });
+    for (const n of [1, 2, 3]) assert.equal((await call('PUT', n, new Uint8Array([n]))).status, 204);
+    assert.equal((await call('DELETE', 2)).status, 204, 'a later version deleted first');
+    assert.equal((await call('GET', 1)).status, 200, 'the earlier one is still live');
+    const [copy] = await store.list(`objects/views/${id}/1`);
+    await store.delete(copy!); // the store loses view 1 for a while
+    assert.equal((await call('DELETE', 3)).status, 204, 'compaction runs');
+    const floors = (await store.list(`floors/objects/views/${id}/`)).map((key) => Number(key.split('/').at(-1)));
+    assert.ok(floors.every((f) => f <= 1), 'a missing copy is not a deletion: no floor above 1');
+    await store.put(`objects/views/${id}/1`, new Uint8Array([1])); // its copy is back
+    assert.equal((await call('GET', 1)).status, 200);
+    assert.equal((await call('PUT', 1, new Uint8Array([1]))).status, 204, 'a retry of the same bytes is fine, not gone');
+    await t.close();
+});
+
+test('a floor read that finishes late never lowers a floor raised meanwhile (§7.5)', async () => {
+    const { raw: fs } = await freshStore();
+    let gate: Promise<void> | null = null;
+    let open: () => void = () => {};
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        put: (k, b) => fs.put(k, b),
+        putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
+        sync: (k) => fs.sync(k),
+        delete: (k) => fs.delete(k),
+        listTimes: (p) => fs.listTimes(p),
+        list: async (p) => {
+            const keys = await fs.list(p);
+            if (p.endsWith('/floors/objects/index/') && gate !== null) {
+                const wait = gate;
+                gate = null; // only the first read is held
+                await wait;
+            }
+            return keys;
+        },
+    };
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const device = await seedDevice(scoped(raw, INSTANCE), { active: true });
+    const t = await startTestRelay({ raw });
+    const call = (method: string, path: string, token: string, body?: Uint8Array) =>
+        fetch(t.url + path, { method, headers: bearer(token), ...(body ? { body } : {}) });
+    for (const n of [1, 2]) assert.equal((await call('PUT', `/v0/objects/index/${n}`, owner, new Uint8Array([n]))).status, 204);
+    gate = new Promise((r) => (open = r));
+    const reading = call('GET', '/v0/objects/index/1', device.token); // its floor read is held
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await call('DELETE', '/v0/objects/index/1', owner)).status, 204, 'raises the floor to 2');
+    open();
+    assert.equal((await reading).status, 404, 'the late read sees the raised floor');
+    await scoped(raw, INSTANCE).put('objects/index/1', new Uint8Array([1])); // a late copy lands
+    assert.equal((await call('GET', '/v0/objects/index/1', device.token)).status, 404);
+    await t.close();
+});
+
+test('an upload abandoned for a day below a later object is retired, so it never holds the floor (§7.5)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const clock = { now: Date.now() };
+    const t = await startTestRelay({ raw, now: () => clock.now });
+    const call = (method: string, n: number, body?: Uint8Array) =>
+        fetch(`${t.url}/v0/objects/index/${n}`, { method, headers: bearer(owner), ...(body ? { body } : {}) });
+    assert.equal((await call('PUT', 1, new Uint8Array([1]))).status, 204);
+    await store.put(`intents/objects/index/2/${'0'.repeat(64)}`, new Uint8Array()); // an upload whose copy never landed
+    assert.equal((await call('PUT', 3, new Uint8Array([3]))).status, 204);
+    assert.equal((await call('DELETE', 1)).status, 204);
+    assert.deepEqual(await store.list('floors/objects/index/'), ['floors/objects/index/0000000000000002'], 'a young upload holds it');
+    clock.now += 25 * 3_600_000;
+    assert.equal((await call('DELETE', 1)).status, 204, 'compaction runs again');
+    assert.deepEqual(await store.list('floors/objects/index/'), ['floors/objects/index/0000000000000003']);
+    assert.deepEqual(await store.list('intents/objects/index/2/'), []);
+    assert.equal((await call('PUT', 2, new Uint8Array([2]))).status, 410, 'gone');
     await t.close();
 });
