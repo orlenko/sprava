@@ -88,9 +88,13 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
      * tombstone comes first, durably, so a deletion cut short or a late write can never reopen it (invariant 5).
      */
     async function expireLocked(pairing: Pairing): Promise<void> {
-        await store.put(pairingKeys(pairing.id).deleted, new Uint8Array());
+        // A device that never became active goes with its pairing, revoked for good before anything is deleted, so
+        // a late write of its token, record or activation can never bring it back (invariant 5). Its id is never
+        // used again (§5.2). Then the pairing's tombstone, while created.json still names the device for a retry.
         const d = pairing.created.device_id;
-        const pending = (await store.has(deviceKeys(d).record)) && !(await store.has(deviceKeys(d).active)) && !(await store.has(deviceKeys(d).revoked));
+        const pending = !(await store.has(deviceKeys(d).active));
+        if (pending) await devices.markRevokedLocked(d);
+        await store.put(pairingKeys(pairing.id).deleted, new Uint8Array());
         if (pending) await devices.deletePartsLocked(d);
         await finishDeleted(pairing.id);
         failedJoins.delete(pairing.id);
@@ -111,11 +115,11 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
     }
 
     /** The pending devices whose pairing is gone or expired (§7.8 rule 5). */
-    async function orphans(live: Pairing[]): Promise<{ orphaned: string[]; counted: number }> {
+    async function orphans(live: Pairing[], joining: string | null = null): Promise<{ orphaned: string[]; counted: number }> {
         const orphaned: string[] = [];
         let counted = 0;
         for (const [d, parts] of groupParts(await store.list('devices/'), 'devices')) {
-            if (!parts.has('record.json') || parts.has('revoked')) continue;
+            if (!parts.has('record.json') || parts.has('revoked') || d === joining) continue;
             if (!parts.has('active')) {
                 const record = readRecord<DeviceRecord>(await store.get(deviceKeys(d).record));
                 if (record === null || !live.some((p) => p.id === record.pairing_id)) {
@@ -134,7 +138,10 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
         for (const d of orphaned) {
             await relay.deviceLocks.run(d, async () => {
                 const { orphaned: still } = await orphans((await allPairings()).filter((p) => !p.expired));
-                if (still.includes(d) && !(await store.has(deviceKeys(d).active))) await devices.deletePartsLocked(d);
+                if (still.includes(d) && !(await store.has(deviceKeys(d).active))) {
+                    await devices.markRevokedLocked(d);
+                    await devices.deletePartsLocked(d);
+                }
             });
         }
     }
@@ -161,7 +168,9 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                 }
                 return relay.lock.run(async () => {
                     // §7.3: at most 20 devices, pending and active, counted under the creation lock at the join.
-                    if ((await orphans((await allPairings()).filter((p) => !p.expired))).counted >= MAX_DEVICES) {
+                    // The joining device itself is left out: an earlier attempt of this join may have written its
+                    // record, and finishing the join adds no device.
+                    if ((await orphans((await allPairings()).filter((p) => !p.expired), d)).counted >= MAX_DEVICES) {
                         throw new HttpError(507, 'There are too many devices.');
                     }
                     return completeJoin(pairing, d, b, hello);

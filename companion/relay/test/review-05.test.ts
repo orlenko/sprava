@@ -237,3 +237,43 @@ test('a flood of public joins is bounded: few admitted, a short queue, 503 beyon
     await Promise.all(leaving);
     await t.close();
 });
+
+test('a pending device deleted with its pairing stays deleted when its activation lands late, across a restart (§7.3)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    stubs.push(stub);
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const first = await startTestRelay({ raw });
+    const c = client(first, owner);
+    const { pairing_id: p, secret } = await c.open();
+    const { device_id: d, device_token: token } = (await (await c.join(p, secret)).json()) as { device_id: string; device_token: string };
+    stub.hold((key) => key.endsWith(`/devices/${d}/active`)); // the activation, after its intent
+    assert.equal((await c.call('PUT', `/v0/pairings/${p}/key`, owner, KEY)).status, 500);
+    stub.hold(() => false);
+    assert.equal((await c.call('DELETE', `/v0/pairings/${p}`, owner)).status, 204);
+    stub.landHeld(); // the activation lands after the deletion
+    await first.close();
+    const second = await startTestRelay({ raw });
+    const self = await fetch(`${second.url}/v0/devices/self`, { method: 'DELETE', body: new Uint8Array([1]), headers: bearer(token) });
+    assert.equal(self.status, 401, 'its token never works again');
+    assert.ok(await scoped(raw, INSTANCE).has(deviceKeys(d).revoked));
+    await second.close();
+});
+
+test('a join retried after its record was written is not counted against itself at 20 devices (§7.3)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    stubs.push(stub);
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    for (let i = 0; i < 19; i++) await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const c = client(t, owner);
+    const { pairing_id: p, secret } = await c.open();
+    stub.hold((key) => key.includes(`/intents/pairings/${p}/joined.json/`)); // the transcript's intent fails
+    assert.equal((await c.join(p, secret)).status, 500, 'its token and record are written, its transcript is not');
+    stub.hold(() => false);
+    const retry = await c.join(p, secret);
+    assert.equal(retry.status, 200, 'the joining device is not counted against itself');
+    await t.close();
+});

@@ -48,7 +48,11 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
         const record = created.get(p);
         if (record === undefined || !expired(p)) continue;
         const d = record.device_id;
-        if (has(d, 'record.json') && !has(d, 'active') && !has(d, 'revoked')) await devices.deleteParts(d);
+        if (!has(d, 'active') && !has(d, 'revoked')) {
+            // Revoked first, as a deletion with its pairing does, so no late write can bring it back.
+            await devices.markRevoked(d);
+            await devices.deleteParts(d);
+        }
         for (const part of parts) await store.delete(`pairings/${p}/${part}`);
         pairingParts.delete(p);
     }
@@ -70,7 +74,10 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
     for (const [d, parts] of deviceParts) {
         if (!parts.has('record.json') || parts.has('active') || parts.has('revoked')) continue;
         const record = readRecord<DeviceRecord>(await store.get(deviceKeys(d).record));
-        if (record === null || !pairingParts.has(record.pairing_id) || expired(record.pairing_id)) await devices.deleteParts(d);
+        if (record === null || !pairingParts.has(record.pairing_id) || expired(record.pairing_id)) {
+            await devices.markRevoked(d);
+            await devices.deleteParts(d);
+        }
     }
 
     // 6. A marker without a stored revocation is an owner deletion a crash cut short: finish it.

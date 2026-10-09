@@ -132,7 +132,7 @@ test('the owner deletes a pairing, and its device if pending; a device uses only
     assert.equal((await s.call('DELETE', `/v0/pairings/${one.pairing_id}`, s.owner)).status, 204);
     assert.equal((await s.call('DELETE', `/v0/pairings/${one.pairing_id}`, s.owner)).status, 204);
     assert.equal((await s.call('GET', `/v0/pairings/${one.pairing_id}/key`, device.device_token)).status, 401);
-    assert.deepEqual(await s.store.list(`devices/${one.d}/`), []);
+    assert.deepEqual(await s.store.list(`devices/${one.d}/`), [`devices/${one.d}/revoked`], 'revoked for good, nothing else');
     assert.equal((await s.call('PUT', `/v0/pairings/${two.pairing_id}/key`, s.owner, KEY)).status, 409, 'nobody joined it');
     assert.equal((await s.call('GET', `/v0/pairings/${newToken().slice(0, 22)}`, s.owner)).status, 404);
     await s.t.close();
