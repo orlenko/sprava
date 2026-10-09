@@ -166,7 +166,7 @@ test('a join beyond 20 devices is refused, however many pairings were opened bef
     await t.close();
 });
 
-test('a deletion cut short is finished by its retry: created.json goes last', async () => {
+test('a deletion cut short leaves the pairing deleted for good, and its retry finishes it', async () => {
     const { raw: fs } = await freshStore();
     let failOnce = true;
     const raw: Store = {
@@ -189,9 +189,17 @@ test('a deletion cut short is finished by its retry: created.json goes last', as
     const c = client(t, owner);
     const { pairing_id: p, secret } = await c.open();
     assert.equal((await c.join(p, secret)).status, 200);
+    assert.equal((await c.call('PUT', `/v0/pairings/${p}/key`, owner, KEY)).status, 204, 'the device is active');
     assert.equal((await c.call('DELETE', `/v0/pairings/${p}`, owner)).status, 500);
-    assert.ok(await scoped(raw, INSTANCE).has(`pairings/${p}/created.json`), 'still readable');
-    assert.equal((await c.call('DELETE', `/v0/pairings/${p}`, owner)).status, 204);
-    assert.deepEqual(await scoped(raw, INSTANCE).list(`pairings/${p}/`), []);
+    // The QR code's secret cannot open the pairing again, before or after a restart.
+    const other = { secret, device_public_key: encodeB64(new Uint8Array(32).fill(9)), hello: HELLO };
+    assert.equal((await c.call('POST', `/v0/pairings/${p}/join`, null, other)).status, 404);
+    assert.equal((await c.call('GET', `/v0/pairings/${p}`, owner)).status, 404);
     await t.close();
+    const again = await startTestRelay({ raw });
+    const c2 = client(again, owner);
+    assert.equal((await c2.call('POST', `/v0/pairings/${p}/join`, null, other)).status, 404);
+    assert.equal((await c2.call('DELETE', `/v0/pairings/${p}`, owner)).status, 204);
+    assert.deepEqual(await scoped(raw, INSTANCE).list(`pairings/${p}/`), [`pairings/${p}/deleted`], 'only its tombstone stays');
+    await again.close();
 });

@@ -75,7 +75,7 @@ test('a wrong secret is 403, and the fifth deletes the pairing (§7.3)', async (
     const wrong = encodeB64(new Uint8Array(16));
     for (let i = 0; i < 5; i++) assert.equal((await s.join(p, wrong)).status, 403);
     assert.equal((await s.join(p, secret)).status, 404);
-    assert.deepEqual(await s.store.list(`pairings/${p}/`), []);
+    assert.deepEqual(await s.store.list(`pairings/${p}/`), [`pairings/${p}/deleted`], 'only its tombstone stays');
     await s.t.close();
 });
 

@@ -40,6 +40,8 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
     async function read(p: string | undefined): Promise<Pairing | null> {
         if (!isId(p)) return null;
         const parts = new Set((await store.list(`pairings/${p}/`)).map((k) => k.slice(`pairings/${p}/`.length)));
+        // A deleted pairing stays deleted, whatever a late write or a deletion cut short left beside its tombstone.
+        if (parts.has('deleted')) return null;
         const created = parts.has('created.json') ? readRecord<PairingCreated>(await store.get(pairingKeys(p).created)) : null;
         if (created === null) return null;
         return { id: p, created, parts, state: stateOf(parts), expired: !(Date.parse(created.expires_at) > relay.now()) };
@@ -70,14 +72,22 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
     }
 
     /** §7.3: a pairing is deleted 10 minutes after it was made, with its device if that is still pending. */
+    /**
+     * §7.3: a pairing is deleted 10 minutes after it was made, with its device if that is still pending. Its
+     * tombstone comes first, durably, so a deletion cut short or a late write can never reopen it (invariant 5).
+     */
     async function expireLocked(pairing: Pairing): Promise<void> {
+        await store.put(pairingKeys(pairing.id).deleted, new Uint8Array());
         const d = pairing.created.device_id;
         const pending = (await store.has(deviceKeys(d).record)) && !(await store.has(deviceKeys(d).active)) && !(await store.has(deviceKeys(d).revoked));
         if (pending) await devices.deletePartsLocked(d);
-        // created.json last: a deletion cut short leaves the pairing readable, so a retry or the sweep finishes it.
-        for (const part of [...pairing.parts].filter((p) => p !== 'created.json')) await store.delete(`pairings/${pairing.id}/${part}`);
-        await store.delete(pairingKeys(pairing.id).created);
+        await finishDeleted(pairing.id);
         failedJoins.delete(pairing.id);
+    }
+
+    /** Deletes what is left beside a pairing's tombstone; the parts are dead, so no lock is needed. */
+    async function finishDeleted(p: string): Promise<void> {
+        for (const key of await store.list(`pairings/${p}/`)) if (key !== pairingKeys(p).deleted) await store.delete(key);
     }
 
     async function allPairings(): Promise<Pairing[]> {
@@ -140,9 +150,10 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
     };
 
     const sweep = async (): Promise<void> => {
-        // Parts without created.json are unreachable by every route (read() needs it); they only need deleting.
+        // A deleted pairing's leftovers, and parts without created.json, are unreachable by every route (read()
+        // refuses them); they only need deleting. Tombstones stay.
         for (const [p, parts] of groupParts(await store.list('pairings/'), 'pairings')) {
-            if (!parts.has('created.json')) for (const part of parts) await store.delete(`pairings/${p}/${part}`);
+            if (parts.has('deleted') || !parts.has('created.json')) await finishDeleted(p);
         }
         for (const pairing of await allPairings()) {
             if (!pairing.expired) continue;
@@ -314,6 +325,7 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                     await withPairing(call.params.P, (pairing) => expireLocked(pairing));
                 } catch (error) {
                     if (!(error instanceof HttpError && error.status === 404)) throw error;
+                    await finishDeleted(call.params.P); // a deletion cut short is finished by its retry
                 }
                 return { status: 204 };
             },

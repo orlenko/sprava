@@ -27,6 +27,8 @@ export const pairingKeys = (p: string) => ({
     keySha: `pairings/${p}/key.sha256`,
     key: `pairings/${p}/key`,
     ack: `pairings/${p}/ack`,
+    /** The pairing's tombstone: written before any part is deleted, never deleted itself. */
+    deleted: `pairings/${p}/deleted`,
 });
 
 /** Everything of a device outside `devices/{D}/`: its pending requests, keys and outcomes objects. */

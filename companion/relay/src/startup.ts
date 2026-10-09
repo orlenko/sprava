@@ -11,6 +11,12 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
     const now = relay.now();
     let deviceParts = groupParts(await store.list('devices/'), 'devices');
     const pairingParts = groupParts(await store.list('pairings/'), 'pairings');
+    // 0. A deleted pairing keeps only its tombstone; it counts as missing for every rule below.
+    for (const [p, parts] of pairingParts) {
+        if (!parts.has('deleted')) continue;
+        for (const part of parts) if (part !== 'deleted') await store.delete(`pairings/${p}/${part}`);
+        pairingParts.delete(p);
+    }
     const created = new Map<string, PairingCreated>();
     for (const [p, parts] of pairingParts) {
         const record = parts.has('created.json') ? readRecord<PairingCreated>(await store.get(pairingKeys(p).created)) : null;
