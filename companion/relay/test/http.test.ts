@@ -22,13 +22,28 @@ test('health says the protocol, whether the relay is claimed, and its instance; 
     await t.close();
 });
 
+/** A GET that sends the path exactly as written; fetch would normalize dot segments away first. */
+function rawGet(url: string): Promise<{ status: number; type: string; body: string }> {
+    const { origin, pathname } = new URL(url);
+    const path = url.slice(origin.length) || pathname;
+    return new Promise((resolve, reject) => {
+        const req = request(origin, { path }, (res) => {
+            let body = '';
+            res.on('data', (c) => (body += c));
+            res.on('end', () => resolve({ status: res.statusCode ?? 0, type: String(res.headers['content-type'] ?? ''), body }));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
 test('`/` and every path outside /v0/ are 404 (§13)', async () => {
     const t = await startTestRelay();
-    for (const path of ['/', '/index.html', '/v1/health', '/v0', '/v0/nothing']) {
-        const res = await fetch(t.url + path);
+    for (const path of ['/', '/index.html', '/v1/health', '/v0', '/v0/nothing', '/outside/../v0/health', '/v0/../v0/health', '/v0/%2e%2E/v0/health', '/v0/./health']) {
+        const res = await rawGet(t.url + path);
         assert.equal(res.status, 404, path);
-        assert.match(res.headers.get('content-type') ?? '', /application\/json/);
-        assert.ok(typeof ((await res.json()) as { error: unknown }).error === "string");
+        assert.match(res.type, /application\/json/);
+        assert.ok(typeof (JSON.parse(res.body) as { error: unknown }).error === 'string');
     }
     await t.close();
 });

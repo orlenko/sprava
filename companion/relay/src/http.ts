@@ -99,7 +99,11 @@ async function route(req: IncomingMessage, options: HttpOptions, timeoutMs: numb
     if (origin !== undefined && origin !== options.webOrigin) throw new HttpError(403, 'This origin may not call the relay.');
     const url = new URL(req.url ?? '/', 'http://relay.invalid');
     // §13: `/` and any path outside `/v0/` are 404.
-    if (!url.pathname.startsWith('/v0/')) throw new HttpError(404, 'There is nothing here.');
+    // The path as sent, before URL normalization removes dot segments (`/x/../v0/health` stays outside /v0/).
+    const raw = (req.url ?? '').split('?')[0]!;
+    if (!raw.startsWith('/v0/') || /(^|\/)(\.|%2e){1,2}(\/|$)/i.test(raw) || !url.pathname.startsWith('/v0/')) {
+        throw new HttpError(404, 'There is nothing here.');
+    }
     if (req.method === 'OPTIONS') {
         if (origin === undefined) throw new HttpError(404, 'There is nothing here.');
         matched.pattern = 'OPTIONS';
