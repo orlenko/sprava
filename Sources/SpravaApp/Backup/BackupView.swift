@@ -32,7 +32,13 @@ final class BackupModel: ObservableObject {
     @Published var typedKey = ""
     @Published var iCloudKeychain = false
     @Published var message: String?
-    let client = RuntimeClient()
+    /// What became of the last request made from a binder's page, by binder, for that page to show.
+    @Published var binderMessages: [URL: String] = [:]
+    let client: RuntimeClient
+
+    init(client: RuntimeClient = RuntimeClient()) {
+        self.client = client
+    }
 
     func load() async {
         do {
@@ -94,18 +100,32 @@ final class BackupModel: ObservableObject {
 
     func request(_ kind: String, binder: URL? = nil, backupID: String? = nil, confirm: Bool = false) {
         Task {
-            do {
-                var fields: [(String, JSONValue)] = [("kind", .string(kind)), ("confirm_open_items", .bool(confirm))]
-                if let backupID { fields.append(("backup_id", .string(backupID))) }
-                if let binder {
-                    _ = try await client.command("backup_request", binder: binder, fields)
-                } else {
-                    _ = try await client.global("backup_request", fields)
-                }
-                message = "Started. It continues in the background; this page shows its progress."
-                await load()
-            } catch { message = "\(error)" }
+            if await send(kind, binder: binder, backupID: backupID, confirm: confirm) { await load() }
         }
+    }
+
+    /// Queues one request and says what became of it: on the Backup page, and on the binder's page when it was
+    /// made there. Returns whether the runtime took it.
+    func send(_ kind: String, binder: URL? = nil, backupID: String? = nil, confirm: Bool = false) async -> Bool {
+        if let binder { binderMessages[binder.standardizedFileURL] = "Asking Sprava's background part…" }
+        let said: String
+        var took = false
+        do {
+            var fields: [(String, JSONValue)] = [("kind", .string(kind)), ("confirm_open_items", .bool(confirm))]
+            if let backupID { fields.append(("backup_id", .string(backupID))) }
+            if let binder {
+                _ = try await client.command("backup_request", binder: binder, fields)
+            } else {
+                _ = try await client.global("backup_request", fields)
+            }
+            took = true
+            said = "Started. It continues in the background; " + (binder == nil ? "this page shows its progress." : "Backup in the sidebar shows its progress.")
+        } catch {
+            said = "Not started: \(error)"
+        }
+        message = said
+        if let binder { binderMessages[binder.standardizedFileURL] = said }
+        return took
     }
 
     func peek(_ o: Offloaded, path: String) {
@@ -236,6 +256,9 @@ struct OffloadSection: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Offload…") { confirm() }
+            }
+            if let said = backup.binderMessages[folder.standardizedFileURL] {
+                Text(said).foregroundStyle(said.hasPrefix("Not started") ? .red : .secondary)
             }
         }
     }

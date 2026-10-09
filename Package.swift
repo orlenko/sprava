@@ -65,6 +65,7 @@ let package = Package(
                                                          "BinderStore", "BinderFormat", "SpravaKit"]),
         .executableTarget(name: "SpravaApp", dependencies: ["Services", "Backup", "Capture", "Shelf", "BinderStore",
                                                             "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "SpravaAppTests", dependencies: ["SpravaApp", "Shelf", "SpravaTestSupport", "SpravaKit"]),
         .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Brains", "Backup", "Hub", "Capture", "Clerk",
                                                                  "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .executableTarget(name: "sprava-mcp", dependencies: ["Brains", "SpravaKit"]),

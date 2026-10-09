@@ -7,6 +7,12 @@ import SpravaKit
 @MainActor
 final class RuntimeClient {
     private var connection: NSXPCConnection?
+    /// Answers in place of the runtime, for tests: no test reaches a runtime over XPC.
+    private let answer: (@MainActor (String) async throws -> String)?
+
+    init(answer: (@MainActor (String) async throws -> String)? = nil) {
+        self.answer = answer
+    }
 
     private func proxy(onError: @escaping @Sendable (Error) -> Void) -> SpravaRuntimeXPC? {
         if connection == nil {
@@ -28,7 +34,14 @@ final class RuntimeClient {
     /// answers `ok: false`.
     func send(_ request: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
         let text = JSONWriter.compact(.object(request))
-        let reply: String = try await withCheckedThrowingContinuation { continuation in
+        let reply: String = if let answer { try await answer(text) } else { try await viaXPC(text, timeout: timeout) }
+        guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
+        guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused") }
+        return o
+    }
+
+    private func viaXPC(_ text: String, timeout: TimeInterval) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
             let once = Once()
             let proxy = self.proxy { error in
                 if once.claim() {
@@ -48,9 +61,6 @@ final class RuntimeClient {
                 }
             }
         }
-        guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
-        guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused") }
-        return o
     }
 
     func global(_ name: String, _ fields: [(String, JSONValue)] = [], timeout: TimeInterval = 15) async throws -> JSONObject {

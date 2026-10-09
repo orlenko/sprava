@@ -243,12 +243,8 @@ struct HealthView: View {
                 Section("Outside watcher") { Text(watch).font(.caption.monospaced()).foregroundStyle(.secondary) }
             }
         }
-        .task {
-            while !Task.isCancelled {
-                model.refresh()
-                try? await Task.sleep(for: .seconds(10))
-            }
-        }
+        // The Shelf re-reads health every ten seconds whichever page is open; opening the page reads it at once.
+        .onAppear { model.refresh() }
     }
 
     @ViewBuilder var runtimeLines: some View {

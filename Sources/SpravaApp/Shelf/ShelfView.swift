@@ -16,13 +16,19 @@ final class ShelfModel: ObservableObject {
     /// away under the pointer.
     @Published var selection: URL? {
         didSet {
-            if let s = selection, s.isFileURL, s != oldValue { try? RecentBinders().touch(s) }
+            if let s = selection, s.isFileURL, s != oldValue { try? recent.touch(s) }
         }
     }
     @Published var note: String?
     @Published var lastRefresh: Date?
 
-    private let store = ShelfStore()
+    private let store: ShelfStore
+    private let recent: RecentBinders
+
+    init(support: URL = SpravaPaths.supportDirectory()) {
+        store = ShelfStore(supportDirectory: support)
+        recent = RecentBinders(supportDirectory: support)
+    }
 
     func refresh() {
         today = CalendarDate.today()
@@ -34,7 +40,7 @@ final class ShelfModel: ObservableObject {
         }
         var picked: [URL] = []
         do { picked = try store.readFolders() } catch { note = "\(error)" }
-        rows = RecentBinders.order(Shelf.rows(registry: registry, picked: picked), opened: RecentBinders().opened())
+        rows = RecentBinders.order(Shelf.rows(registry: registry, picked: picked), opened: recent.opened())
         if selection == nil || (selection != healthSelection && selection != brainsSelection && selection != inboxSelection && selection != backupSelection && !rows.contains(where: { $0.folder == selection })) {
             selection = rows.first?.folder
         }
@@ -57,16 +63,23 @@ final class ShelfModel: ObservableObject {
         panel.prompt = "Add to Shelf"
         panel.message = "Choose binder folders (each holds a catalog.json). Sprava only reads them."
         guard panel.runModal() == .OK else { return }
+        add(panel.urls)
+    }
+
+    /// Adds the chosen folders. What went wrong is said after the refresh, which would otherwise clear it.
+    func add(_ urls: [URL]) {
         var skipped: [String] = []
-        for url in panel.urls {
+        var failed: [String] = []
+        for url in urls {
             if Teka.read(url).state == .notATeka {
                 skipped.append(url.lastPathComponent)
                 continue
             }
-            do { try store.add(url) } catch { note = "Could not add \(url.lastPathComponent): \(error)" }
+            do { try store.add(url) } catch { failed.append("Could not add \(url.lastPathComponent): \(error)") }
         }
         refresh()
-        if !skipped.isEmpty { note = "Not added (no catalog.json): \(skipped.joined(separator: ", "))" }
+        if !skipped.isEmpty { failed.append("Not added (no catalog.json): \(skipped.joined(separator: ", "))") }
+        if !failed.isEmpty { note = ([note].compactMap { $0 } + failed).joined(separator: "\n") }
     }
 
     /// A new binder from the tax-year template (mvp.md feature 6), created by the runtime.
@@ -109,8 +122,10 @@ final class ShelfModel: ObservableObject {
     }
 
     func removeFromShelf(_ row: ShelfRow) {
-        do { try store.remove(row.folder) } catch { note = "Could not remove it: \(error)" }
+        var failure: String?
+        do { try store.remove(row.folder) } catch { failure = "Could not remove \(row.name): \(error)" }
         refresh()
+        if let failure { note = ([note].compactMap { $0 } + [failure]).joined(separator: "\n") }
     }
 
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
@@ -196,6 +211,13 @@ struct ShelfView: View {
             while !Task.isCancelled {
                 await inbox.load()
                 try? await Task.sleep(for: .seconds(30))
+            }
+        }
+        // Health is read here, not on its page, so the sidebar's dot stays current whichever page is open.
+        .task {
+            while !Task.isCancelled {
+                health.refresh()
+                try? await Task.sleep(for: .seconds(10))
             }
         }
         .toolbar {

@@ -42,7 +42,14 @@ final class InboxModel: ObservableObject {
     @Published var message: String?
     @Published var saving = false
     var startedTyping: Date?
-    let client = RuntimeClient()
+    let client: RuntimeClient
+    /// Sprava's support folder, where the device id and the typed notes' capture folder live.
+    let support: URL
+
+    init(client: RuntimeClient = RuntimeClient(), support: URL = SpravaPaths.supportDirectory()) {
+        self.client = client
+        self.support = support
+    }
 
     func load() async {
         do {
@@ -75,38 +82,51 @@ final class InboxModel: ObservableObject {
     /// Writes the note as a capture event (capture-event-v0 §8.1), then tells the runtime its id and digest, so
     /// the binder the person chose is trusted (architecture 8).
     func save(binderName: String?, explanation: String? = nil) {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let support = SpravaPaths.supportDirectory()
-        let deviceID: String
-        do { deviceID = try DeviceID.load(support: support) } catch {
-            message = "The note was not saved: \(error)"
-            return
-        }
+        guard !saving, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         saving = true
-        let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
         Task {
-            defer { saving = false }
-            do {
-                // The notice goes first, so the runtime trusts the binder the person chose (architecture 8).
-                let note = try producer.prepareNote(text, binderHint: binderName, startedAt: startedTyping ?? Date())
-                var noticed = true
-                do {
-                    _ = try await client.global("capture_notice", [("event", .string(note.id)), ("sha256", .string(note.digest))], timeout: 5)
-                } catch {
-                    noticed = false
-                }
-                try producer.publish(note)
-                draft = ""
-                startedTyping = nil
-                message = !noticed ? "Saved, but the runtime did not answer, so the card will ask for a binder."
-                    : explanation.map { "Saved. " + $0 }
-                    ?? (binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment.")
+            let saved = await saveDraft(binderName: binderName, explanation: explanation)
+            if saved {
                 try? await Task.sleep(for: .seconds(2))
                 await load()
-            } catch {
-                message = "The note was not saved: \(error)"
             }
+        }
+    }
+
+    /// Saves the draft as it is now and returns whether it was saved. The editor is locked while the runtime is
+    /// asked (up to five seconds); the draft is cleared only if it is still the text saved, so nothing typed
+    /// meanwhile is lost.
+    func saveDraft(binderName: String?, explanation: String? = nil) async -> Bool {
+        saving = true
+        defer { saving = false }
+        let submitted = draft
+        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        do {
+            let deviceID = try DeviceID.load(support: support)
+            let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
+            // The notice goes first, so the runtime trusts the binder the person chose (architecture 8).
+            let note = try producer.prepareNote(text, binderHint: binderName, startedAt: startedTyping ?? Date())
+            var noticed = true
+            do {
+                _ = try await client.global("capture_notice", [("event", .string(note.id)), ("sha256", .string(note.digest))], timeout: 5)
+            } catch {
+                noticed = false
+            }
+            try producer.publish(note)
+            if draft == submitted {
+                draft = ""
+                startedTyping = nil
+            }
+            message = !noticed ? "Saved, but the runtime did not answer, so the card will ask for a binder."
+                : explanation.map { "Saved. " + $0 }
+                ?? (binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment.")
+            return true
+        } catch {
+            // Sprava's errors are sentences: an unreadable device id or note clock names its file and says it was
+            // left as it is.
+            message = "The note was not saved: \(error)"
+            return false
         }
     }
 
@@ -168,6 +188,8 @@ struct InboxView: View {
                         TextEditor(text: $model.draft)
                             .font(.body)
                             .frame(minHeight: 80)
+                            // Locked while the note is saved: the draft is cleared once it is in.
+                            .disabled(model.saving)
                             .onChange(of: model.draft) { _, new in
                                 if model.startedTyping == nil, !new.isEmpty { model.startedTyping = Date() }
                             }

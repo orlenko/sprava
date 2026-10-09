@@ -47,6 +47,16 @@ final class BrainsModel: ObservableObject {
         }
     }
 
+    /// The registration as one line to paste into a shell: an argument with a space or another character the shell
+    /// reads (an app folder such as "Personal Apps") is single-quoted, so it stays one argument.
+    static func shellLine(_ args: [String]) -> String {
+        let plain = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@%+=:,./_-")
+        return args.map { arg in
+            if !arg.isEmpty, arg.unicodeScalars.allSatisfy(plain.contains) { return arg }
+            return "'" + arg.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+        }.joined(separator: " ")
+    }
+
     /// Runs `claude mcp add` directly, with no shell, so the token never lands in a shell history file.
     func runRegistration() {
         guard let args = registration else { return }
@@ -126,7 +136,7 @@ struct BrainsView: View {
                 Button("Create Registration") { model.register() }.disabled(model.chosen.isEmpty)
                 if let args = model.registration {
                     Text("Shown once. This is the exact command:").font(.caption)
-                    Text(args.joined(separator: " ")).font(.caption.monospaced()).textSelection(.enabled)
+                    Text(BrainsModel.shellLine(args)).font(.caption.monospaced()).textSelection(.enabled)
                     Button("Run It for Me") { model.runRegistration() }
                 }
                 if let m = model.message { Text(m).foregroundStyle(.orange) }
