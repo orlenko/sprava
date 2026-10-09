@@ -4,7 +4,7 @@ import { ConfigError, isSetupCode, type Config } from './config.ts';
 import { createHandler, type Principal, type Route } from './http.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
-import { Mutex, withIntents, type Store } from './store/store.ts';
+import { Mutex, type Store } from './store/store.ts';
 
 export interface Relay {
     readonly config: Config;
@@ -51,7 +51,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
     const timers: NodeJS.Timeout[] = [];
     const relay: Relay = {
         config,
-        store: withIntents(lease.fenceStore()),
+        store: lease.fenceStore(),
         log: options.log,
         lock: new Mutex(),
         now: options.now ?? Date.now,

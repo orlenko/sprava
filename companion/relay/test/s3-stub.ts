@@ -14,7 +14,7 @@ export interface S3Stub {
     /** Answers the next n requests with 503, to test retries. */
     failNext(n: number): void;
     /**
-     * Holds back every PUT to a key that `match` accepts: the client is answered 500, as if the write failed, but
+     * Holds back every PUT and DELETE of a key that `match` accepts: the client is answered 500, as if the write failed, but
      * the stub keeps it and applies it only on `landHeld()`, as a store may when a write lands late.
      */
     hold(match: (key: string) => boolean): void;
@@ -33,7 +33,7 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
     const requests: string[] = [];
     let failures = 0;
     let holding: ((key: string) => boolean) | null = null;
-    const held: [string, Uint8Array][] = [];
+    const held: [string, Uint8Array | null][] = [];
     let listBody: string | null = null;
     const server = createServer(async (req, res) => {
         const body = await readAll(req);
@@ -76,6 +76,10 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
                 written.set(key, Date.now());
                 return reply(200);
             case 'DELETE':
+                if (holding?.(key)) {
+                    held.push([key, null]);
+                    return reply(500);
+                }
                 objects.delete(key);
                 return reply(204);
         }
@@ -96,7 +100,10 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
         },
         landHeld: () => {
             holding = null;
-            for (const [key, body] of held.splice(0)) objects.set(key, body);
+            for (const [key, body] of held.splice(0)) {
+                if (body === null) objects.delete(key);
+                else objects.set(key, body);
+            }
         },
         nextListBody: (body) => {
             listBody = body;

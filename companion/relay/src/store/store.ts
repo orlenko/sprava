@@ -70,7 +70,7 @@ const MAX_UNCERTAIN = 10_000;
  * only keeps other bytes out, which is safe.
  */
 export const INTENTS = 'intents/';
-const intentsOf = (key: string): string => `${INTENTS}${key}/`;
+export const intentsOf = (key: string): string => `${INTENTS}${key}/`;
 
 /**
  * §6 step 5, §7.8: writes a write-once object. Called under the lock that guards the key, so the check and the
@@ -90,6 +90,8 @@ export async function writeOnce(store: Store, key: string, body: Uint8Array): Pr
         pending.delete(key);
         return 'same';
     };
+    // A dead name takes no bytes again, not even the same ones (invariant 5).
+    if (await isDeleted(store, key)) return 'different';
     const existing = await store.get(key);
     if (existing !== null) return confirm(existing);
     const mine = intentsOf(key) + sha256Hex(body);
@@ -110,30 +112,23 @@ export async function writeOnce(store: Store, key: string, body: Uint8Array): Pr
 }
 
 /**
- * The store as the relay writes it: deleting a key also deletes its intents, after the key, so they do not pile up.
- * A late write of a deleted key can bring it back; every reader treats such a copy as stale (a duplicate request,
- * an older revision, a part without its record).
+ * Tombstones: `tombstones/{key}`, empty. A deletion of an object whose name could be written again (an object
+ * the owner deletes) writes the tombstone first, durably, then deletes the object. From then on the name is dead:
+ * writeOnce refuses every write to it, and readers that serve such objects check the tombstone, so a copy that a
+ * late write brings back is treated as deleted, and a late deletion only removes what is already dead. Intents
+ * are never deleted with their object: they keep refusing other bytes for the name as long as the instance lives.
  */
-export function withIntents(store: Store): Store {
-    return {
-        ...bind(store),
-        delete: async (key) => {
-            await store.delete(key);
-            if (!key.startsWith(INTENTS)) for (const intent of await store.list(intentsOf(key))) await store.delete(intent);
-        },
-    };
+export const TOMBSTONES = 'tombstones/';
+export const tombstoneOf = (key: string): string => `${TOMBSTONES}${key}`;
+
+/** Deletes a name for good: its tombstone, durable, then the object. Repeating it is harmless. */
+export async function deleteForGood(store: Store, key: string): Promise<void> {
+    await store.put(tombstoneOf(key), new Uint8Array());
+    await store.delete(key);
 }
 
-function bind(store: Store): Store {
-    return {
-        get: (key) => store.get(key),
-        has: (key) => store.has(key),
-        put: (key, body) => store.put(key, body),
-        putIfAbsent: (key, body) => store.putIfAbsent(key, body),
-        sync: (key) => store.sync(key),
-        delete: (key) => store.delete(key),
-        list: (prefix) => store.list(prefix),
-    };
+export function isDeleted(store: Store, key: string): Promise<boolean> {
+    return store.has(tombstoneOf(key));
 }
 
 /** Deletes every key under a prefix. */

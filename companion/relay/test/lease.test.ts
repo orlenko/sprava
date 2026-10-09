@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { FencedError, InconsistentStore, Lease, sleep } from '../src/lease.ts';
 import { silentLog } from '../src/log.ts';
 import { S3Store } from '../src/store/s3.ts';
-import { scoped, writeOnce, type Store } from '../src/store/store.ts';
+import { deleteForGood, isDeleted, Mutex, scoped, writeOnce, type Store } from '../src/store/store.ts';
 import { INSTANCE, startTestRelay } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
 
@@ -125,9 +125,36 @@ test('a write that lands after the next process is ready cannot replace what tha
     stub.landHeld(); // after the new process is ready
     assert.equal(Buffer.from((await fresh.relay.store.get('objects/index/1'))!).toString(), 'A');
     assert.equal(await fresh.relay.lock.run(() => writeOnce(fresh.relay.store, 'objects/index/1', Buffer.from('A'))), 'same');
-    await fresh.relay.store.delete('objects/index/1');
-    assert.deepEqual(await fresh.relay.store.list('intents/objects/index/1/'), [], 'deleting a key deletes its intents');
     await fresh.close();
+});
+
+test('a name deleted for good refuses every later write, and a copy a late write brings back reads as deleted', async () => {
+    const { stub, raw } = await bucket();
+    const store = scoped(raw, INSTANCE);
+    const lock = new Mutex();
+    stub.hold((key) => key.endsWith('/objects/index/2'));
+    await assert.rejects(lock.run(() => writeOnce(store, 'objects/index/2', Buffer.from('A'))), /status 500/);
+    stub.hold(() => false);
+    await deleteForGood(store, 'objects/index/2'); // the owner deletes the name before A lands
+    assert.equal(await lock.run(() => writeOnce(store, 'objects/index/2', Buffer.from('B'))), 'different');
+    stub.landHeld();
+    assert.ok(await store.has('objects/index/2'), 'A landed');
+    assert.ok(await isDeleted(store, 'objects/index/2'), 'and every reader treats it as deleted');
+    assert.equal((await store.list('intents/objects/index/2/')).length, 1, 'the intent stays');
+});
+
+test('a late deletion cannot erase an upload acknowledged after it: the name is dead first', async () => {
+    const { stub, raw } = await bucket();
+    const store = scoped(raw, INSTANCE);
+    const lock = new Mutex();
+    assert.equal(await lock.run(() => writeOnce(store, 'objects/index/3', Buffer.from('A'))), 'created');
+    stub.hold((key) => key.endsWith('/objects/index/3'));
+    await assert.rejects(deleteForGood(store, 'objects/index/3'), /status 500/); // the tombstone is written; the deletion is held
+    stub.hold(() => false);
+    await deleteForGood(store, 'objects/index/3');
+    assert.equal(await lock.run(() => writeOnce(store, 'objects/index/3', Buffer.from('A'))), 'different', 'no upload is acknowledged again');
+    stub.landHeld();
+    assert.equal(await store.get('objects/index/3'), null);
 });
 
 test('a store that does not show a completed write in its listings is refused at start (§13)', async () => {
