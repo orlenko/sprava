@@ -35,7 +35,8 @@ import Testing
         [
             ("add", [add("Invented new task")]),
             ("update", [update("estate-example-2026-007", [("title", .str("Invented title B"))]),
-                        update("estate-example-2026-007", [("title", .str("Invented title C")), ("priority", .str("low"))])]),
+                        update("estate-example-2026-007", [("title", .str("Invented title C")), ("priority", .str("low")),
+                                                           ("link", .str("documents/2026-08-20_will-certified-copy.pdf"))])]),
             ("set_status", [simple("set_status", "estate-example-2026-007", [("status", .str("waiting")), ("waiting_on", .str("Invented office")),
                                                                               ("follow_up_at", .str("2026-10-20"))]),
                             simple("set_status", "estate-example-2026-007", [("status", .str("open"))])]),
@@ -46,9 +47,9 @@ import Testing
             ("update_document", [{ _ in [self.op("update_document", [("id", .str("estate-example-doc-2026-002")),
                                                                      ("set", .obj([("title", .str("Invented letter B"))]))])] },
                                  { _ in [self.op("update_document", [("id", .str("estate-example-doc-2026-002")),
-                                                                     ("set", .obj([("title", .str("Invented letter C"))]))])] }]),
+                                                                     ("set", .obj([("title", .str("Invented letter C")), ("date", .str("2026-10-02"))]))])] }]),
             ("set_meta", [{ _ in [self.op("set_meta", [("set", .obj([("invented_note", .str("first"))]))])] },
-                          { _ in [self.op("set_meta", [("set", .obj([("invented_note", .str("second"))]))])] }]),
+                          { _ in [self.op("set_meta", [("set", .obj([("invented_note", .str("second")), ("invented_other", .str("two"))]))])] }]),
             ("add, update, complete", [add("Invented short task"), updateNew(0, [("title", .str("Invented short task, renamed"))]),
                                        simpleNew("complete", 0)]),
             ("mixed", [update("estate-example-2026-007", [("title", .str("Invented title B"))]), simple("dismiss", "estate-example-2026-008"),
@@ -99,8 +100,9 @@ import Testing
     }
 
     /// The catalog with what recovery cannot repeat left out: times and op ids, and the ids minted for records
-    /// made again (`new`). Arrays are sorted, since a change made again lands after the ones that survived.
-    func normalized(_ c: JSONObject, original: Set<JSONValue>) -> JSONValue {
+    /// made again (`new`). Arrays are sorted, since a change made again lands after the ones that survived, and the
+    /// result is canonical text, since a field put back lands at the end of its record.
+    func normalized(_ c: JSONObject, original: Set<JSONValue>) -> String {
         func fix(_ v: JSONValue?) -> JSONValue? { v.map { original.contains($0) ? $0 : .str("new") } }
         func clean(_ r: JSONValue, drop: Set<String>) -> JSONValue {
             guard case .object(var o) = r else { return r }
@@ -114,36 +116,128 @@ import Testing
         out.set("open_items", sorted((c["open_items"]?.arrayValue ?? []).map { clean($0, drop: stamps) }))
         out.set("documents", sorted((c["documents"]?.arrayValue ?? []).map { clean($0, drop: stamps) }))
         out.set("processing_log", sorted((c["processing_log"]?.arrayValue ?? []).map { clean($0, drop: ["at", "op_id", "final"]) }))
-        return .object(out)
+        return (try? Canonical.serialize(.object(out))) ?? "unserializable"
     }
 
     func ids(_ c: JSONObject) -> Set<JSONValue> {
         Set(["open_items", "documents", "processing_log"].flatMap { c[$0]?.arrayValue ?? [] }.compactMap { $0["id"] ?? $0["item"] ?? $0["document"] })
     }
 
-    /// One sequence per argument, so the sequences run side by side.
+    /// `c` with one field of a record (`kind` "open_items" or "documents"), or of meta (`kind` "meta"), set to
+    /// `value`, or removed when it is nil.
+    func setting(_ c: JSONObject, _ kind: String, _ id: String?, _ field: String, _ value: JSONValue?) -> JSONObject {
+        func change(_ o: JSONObject) -> JSONObject {
+            var o = o
+            if let value { o.set(field, value) } else { o.remove(field) }
+            return o
+        }
+        var out = c
+        if kind == "meta" {
+            out.set("meta", .object(change(c["meta"]?.objectValue ?? JSONObject())))
+        } else {
+            out.set(kind, .array((c[kind]?.arrayValue ?? []).map { r in
+                guard r["id"] == id.map(JSONValue.string), case .object(let o) = r else { return r }
+                return .object(change(o))
+            }))
+        }
+        return out
+    }
+
+    /// Runs `steps` as separate approvals, saves what `outside` makes of the catalogs along the way (with the other
+    /// program's retitle of the bystander), runs recovery and approves its card. The catalog must then be what
+    /// `expected` makes of the last approved one, with the retitle.
+    func check(_ label: String, _ steps: [Step], outside: ([JSONObject]) -> JSONObject,
+               expected: (JSONObject) -> JSONObject = { $0 }) throws {
+        let (folder, store) = try adopted()
+        let original = ids(try catalog(folder))
+        let copies = try run(steps, store: store, folder: folder).map { try #require(try JSONParser.parse($0).value.objectValue) }
+        let want = withOutsideTitle(expected(try #require(copies.last)))
+        try saveOutside(Data(JSONWriter.pretty(.object(outside(copies))).utf8), in: folder)
+        // A copy whose approved values all came back by later approvals (open, waiting, open) loses nothing.
+        let lossy = normalized(try catalog(folder), original: original) != normalized(want, original: original)
+        try store.settle(now: now)
+        let card = ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil }
+        #expect((card != nil) == lossy, "\(label): a recovery card \(lossy ? "is missing" : "for nothing")")
+        guard let card else { return }
+        #expect(card.raw["provenance"]?["manual_repair"] == nil, "\(label): not rebuilt")
+        // Approving it brings back every value the person approved, and keeps the other program's own.
+        try store.approve(card, now: now)
+        #expect(normalized(try catalog(folder), original: original) == normalized(want, original: original),
+                "\(label): not every approved value is back, or the other program's own value is gone")
+    }
+
+    /// One sequence per argument, so the sequences run side by side: every catalog along the way saved back.
     @Test(arguments: 0..<10) func everyOldCopyIsRecoveredWhole(_ index: Int) throws {
         try #require(sequences.count == 10)
         let (name, steps) = sequences[index]
         for k in 0..<steps.count {
-            let (folder, store) = try adopted()
-            let original = ids(try catalog(folder))
-            let copies = try run(steps, store: store, folder: folder)
-            let expected = withOutsideTitle(try catalog(folder))
-
-            try saveOutside(copies[k], in: folder)
-            // A copy whose approved values all came back by later approvals (open, waiting, open) loses nothing.
-            let lossy = normalized(try catalog(folder), original: original) != normalized(expected, original: original)
-            try store.settle(now: now)
-            let card = ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil }
-            #expect((card != nil) == lossy, "\(name), copy \(k): a recovery card \(lossy ? "is missing" : "for nothing")")
-            guard let card else { continue }
-            #expect(card.raw["provenance"]?["manual_repair"] == nil, "\(name), copy \(k): not rebuilt")
-            // Approving it brings back every value the person approved, and keeps the other program's own.
-            try store.approve(card, now: now)
-            #expect(normalized(try catalog(folder), original: original) == normalized(expected, original: original),
-                    "\(name), copy \(k): not every approved value is back")
+            try check("\(name), copy \(k)", steps, outside: { $0[k] })
         }
+    }
+
+    /// The last catalog saved back without one optional field an approval wrote: the field comes back.
+    @Test(arguments: 0..<10) func aDroppedApprovedFieldComesBack(_ index: Int) throws {
+        let (name, steps) = sequences[index]
+        let (folder, store) = try adopted()
+        let copies = try run(steps, store: store, folder: folder).map { try #require(try JSONParser.parse($0).value.objectValue) }
+        let first = TekaStore.cells(try #require(copies.first)), last = TekaStore.cells(try #require(copies.last))
+        let required: Set<String> = ["id", "title", "status", "priority", "path", "created_at"]
+        let dropped = last.filter { cell, value in
+            first[cell] != value && !cell.field.isEmpty && !required.contains(cell.field) && cell.kind != "top"
+                && (cell.kind == "meta" || last[TekaStore.Cell(kind: cell.kind, id: cell.id, field: "")] != nil)
+        }.keys.sorted { ($0.kind, $0.field) < ($1.kind, $1.field) }
+        for cell in dropped {
+            try check("\(name), \(cell.field) dropped", steps,
+                      outside: { self.setting($0.last!, cell.kind, cell.id?.stringValue, cell.field, nil) })
+        }
+    }
+
+    /// A multi-field approval whose record the other program saved with one field back as before and another set to
+    /// a value of its own: the first comes back, the other program's value stays.
+    @Test func aRevertedFieldComesBackBesideTheOtherProgramsOwn() throws {
+        let cases: [(Int, String, String?, String, String, JSONValue)] = [
+            (1, "open_items", "estate-example-2026-007", "title", "priority", .str("normal")),
+            (1, "open_items", "estate-example-2026-007", "link", "title", .str("Invented title of the other program")),
+            (6, "documents", "estate-example-doc-2026-002", "title", "date", .str("2026-10-03")),
+            (7, "meta", nil, "invented_note", "invented_other", .str("three")),
+        ]
+        for (index, kind, id, reverted, changed, value) in cases {
+            let (name, steps) = sequences[index]
+            try check("\(name): \(reverted) back, \(changed) the other program's", steps, outside: { copies in
+                // The field as the copy before the last approval had it.
+                let earlier = TekaStore.cells(copies[copies.count - 2])[TekaStore.Cell(kind: kind, id: id.map(JSONValue.string), field: reverted)]
+                return self.setting(self.setting(copies.last!, kind, id, reverted, earlier), kind, id, changed, value)
+            }, expected: { self.setting($0, kind, id, changed, value) })
+        }
+    }
+
+    /// A lost op that can only be made again whole, over a value the other program wrote itself, is never replayed:
+    /// the card asks for a repair by hand and the other program's value stays.
+    @Test func aWholeReplayOverTheOtherProgramsValueIsRepairedByHand() throws {
+        let (folder, store) = try adopted()
+        let copies = try run(sequences[4].1, store: store, folder: folder).map { try #require(try JSONParser.parse($0).value.objectValue) }
+        // A copy from before both occurrences, with a due date of the other program's own.
+        let outside = setting(copies[0], "open_items", "estate-example-2026-010", "due", .str("2026-11-30"))
+        try saveOutside(Data(JSONWriter.pretty(.object(outside)).utf8), in: folder)
+        try store.settle(now: now)
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        #expect(card.raw["provenance"]?["manual_repair"] == .bool(true))
+        #expect(throws: TekaStore.Refused.self) { try store.approve(card, now: now) }
+        let due = try catalog(folder)["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-010") }?["due"]
+        #expect(due == .str("2026-11-30"))
+    }
+
+    /// An item from before the approvals that the other program removed takes the approved changes on it along: they
+    /// are named on a card for a repair by hand, never dropped unseen.
+    @Test func approvedChangesOnARemovedItemAreNamed() throws {
+        let (folder, store) = try adopted()
+        let copies = try run(sequences[1].1, store: store, folder: folder).map { try #require(try JSONParser.parse($0).value.objectValue) }
+        var outside = try #require(copies.last)
+        outside.set("open_items", .array((outside["open_items"]?.arrayValue ?? []).filter { $0["id"] != .str("estate-example-2026-007") }))
+        try saveOutside(Data(JSONWriter.pretty(.object(outside)).utf8), in: folder)
+        try store.settle(now: now)
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        #expect(card.raw["provenance"]?["manual_repair"] == .bool(true))
     }
 
     /// A write cut short and then aborted because of the outside save still lets the approvals before it be found.
