@@ -121,7 +121,7 @@ function list(objects: Map<string, Uint8Array>, query: URLSearchParams, pageSize
     const escape = (k: string): string => k.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     return (
         `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>${truncated}</IsTruncated>` +
-        page.map((k) => `<Contents><Key>${escape(k)}</Key><Size>1</Size></Contents>`).join('') +
+        page.map((k) => `<Contents><Key>${escape(k)}</Key><LastModified>${new Date(0).toISOString()}</LastModified><Size>1</Size></Contents>`).join('') +
         (truncated ? `<NextContinuationToken>${start + pageSize}</NextContinuationToken>` : '') +
         '</ListBucketResult>'
     );

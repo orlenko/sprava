@@ -98,6 +98,8 @@ test('s3: a malformed or incomplete listing page is an error, never a shorter li
         'a bare ampersand': page('<IsTruncated>false</IsTruncated><Contents><Key>p/a&b</Key></Contents>'),
         'text after the root': good + 'x',
         'an empty body': '',
+        'an entry without its time': page('<IsTruncated>false</IsTruncated><Contents><Key>p/a</Key></Contents>'),
+        'an entry with two times': page('<IsTruncated>false</IsTruncated><Contents><Key>p/a</Key><LastModified>2026-10-08T07:00:00.000Z</LastModified><LastModified>2026-10-08T07:00:00.000Z</LastModified></Contents>'),
     };
     for (const [why, xml] of Object.entries(bad)) assert.throws(() => parseListPage(xml, 'p/'), /LIST failed/, why);
     const { store, stub } = await open();
@@ -115,4 +117,26 @@ test('s3: a write that failed may land later, so its key refuses other bytes unt
     stub.landHeld();
     assert.equal(Buffer.from(stub.objects.get('devices/D/record.json')!).toString(), 'A');
     assert.equal(await lock.run(() => writeOnce(store, 'devices/D/record.json', Buffer.from('A'))), 'same');
+});
+
+test('s3: every answer but a 200 has its body released, so no connection is held by an unread body', async () => {
+    const released: number[] = [];
+    const answer = (status: number): Response => {
+        const body = new ReadableStream<Uint8Array>({
+            pull: (c) => c.enqueue(new Uint8Array(1024)),
+            cancel: () => void released.push(status),
+        });
+        return new Response(status === 204 ? null : body, { status });
+    };
+    const statuses = [404, 404, 412, 403, 500, 500, 500];
+    const store = new S3Store(
+        { endpoint: 'http://relay-storage.example.org', bucket: 'example-bucket', ...S3_CREDENTIALS },
+        { fetch: async () => answer(statuses.shift()!) },
+    );
+    assert.equal(await store.get('a'), null);
+    assert.equal(await store.has('a'), false);
+    assert.equal(await store.putIfAbsent('a', new Uint8Array([1])), false);
+    await assert.rejects(store.get('a'), /GET failed/);
+    await assert.rejects(store.get('a'), /GET failed/);
+    assert.deepEqual(released, [404, 404, 412, 403, 500, 500, 500]);
 });

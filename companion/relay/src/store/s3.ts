@@ -108,8 +108,13 @@ export class S3Store implements Store {
                 const init: RequestInit = { method, headers, signal: AbortSignal.timeout(ATTEMPT_MS) };
                 if (body !== undefined) init.body = body;
                 const res = await this.#fetch(url, init);
-                if (res.status < 500 || attempt >= 2) return res;
-                await res.arrayBuffer().catch(() => undefined);
+                if (res.status < 500 || attempt >= 2) {
+                    // Only a 200's body is ever read. Any other is released now, since an unread body keeps its
+                    // connection busy: absence checks of a missing object would otherwise pile up connections.
+                    if (res.status !== 200) await res.body?.cancel().catch(() => undefined);
+                    return res;
+                }
+                await res.body?.cancel().catch(() => undefined);
             } catch (error) {
                 if (attempt >= 2) throw error;
             }
@@ -208,8 +213,9 @@ export function parseListPage(xml: string, prefix: string): { entries: { key: st
     const entries = childrenNamed(root, 'Contents').map((contents) => {
         const keys = childrenNamed(contents, 'Key');
         const times = childrenNamed(contents, 'LastModified');
-        if (keys.length !== 1 || keys[0]!.text === '' || !keys[0]!.text.startsWith(prefix) || times.length > 1) fail();
-        const modified = times.length === 1 ? Date.parse(times[0]!.text) : 0;
+        // Every entry has its time: a listing without one is incomplete, and must never read as written long ago.
+        if (keys.length !== 1 || keys[0]!.text === '' || !keys[0]!.text.startsWith(prefix) || times.length !== 1) fail();
+        const modified = Date.parse(times[0]!.text);
         if (Number.isNaN(modified)) fail();
         return { key: keys[0]!.text, modified };
     });
