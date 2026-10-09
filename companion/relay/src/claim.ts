@@ -1,10 +1,10 @@
 // Claiming the relay (companion-v0 §6): the one owner, fixed once with the deployer's setup code.
-import { isHashHex, sameBytes, sameSecret, sha256Hex } from './encoding.ts';
+import { isHashHex, sameSecret, sha256Hex } from './encoding.ts';
 import { HttpError, type Route } from './http.ts';
-import { OWNER, ownerRecord } from './layout.ts';
+import { CLAIMS, OWNERS, ownerRecord } from './layout.ts';
 import { SlidingWindow, sleep } from './limits.ts';
 import type { Relay } from './relay.ts';
-import { writeOnce } from './store/store.ts';
+import type { Store } from './store/store.ts';
 
 /** §6 step 1: at most 10 claims a second, one at a time; a claim that waited 5 seconds is 503. */
 export const CLAIM_TIMING = { intervalMs: 100, maxWaitMs: 5000, failureWindowMs: 600_000, failureDelayMs: 2000 };
@@ -114,13 +114,10 @@ async function decide(relay: Relay, code: string, hash: string, record: Uint8Arr
     // Step 2: already claimed. Once this process knows its owner, nothing in storage changes that: a vanished or
     // unreadable record never makes a claimed relay claimable again.
     if (relay.ownerHash !== null) return relay.ownerHash === hash ? 'claimed' : 'taken';
-    const stored = await relay.store.get(OWNER);
-    if (stored !== null) {
-        // A claim that landed after this process started (a write begun before a restart): a retry of it is that
-        // claim, made durable (invariant 2) and adopted; any other is refused.
-        if (!sameBytes(stored, record)) return 'taken';
-        return relay.lock.run(async () => ((await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash)));
-    }
+    const found = await ownerIn(relay.store);
+    // A claim that landed after this process started (a write begun before a restart): a retry of it is that
+    // claim, made durable (invariant 2) and adopted; any other is refused.
+    if (found !== null) return found === hash ? relay.lock.run(() => adoptFound(relay, hash, record)) : 'taken';
     // Step 3: the code first, so a correct code is never refused because of failures. There is no code to match
     // once the variable is gone, and an empty one never matches.
     const configured = relay.config.setupCode;
@@ -128,11 +125,41 @@ async function decide(relay: Relay, code: string, hash: string, record: Uint8Arr
         // Step 4: failures per client address over the last 10 minutes, the throttled ones included.
         return failures.record(address, relay.now()) >= 5 ? 'throttled' : 'wrong';
     }
-    // Step 5: the owner record, written once under the creation lock. Its intent, durable before its bytes are sent,
-    // is the single claim slot: once a claim's intent exists, its write may still land, at any time, so the slot is
-    // bound to that claim for good. Only the same body, retried, completes it; every other claim is refused (409).
-    // The Mac keeps its claim body and resends it (§6); a lost body means a new instance (README, trade-off A).
-    return relay.lock.run(async () => ((await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash)));
+    // Step 5, under the creation lock (README, trade-off A): the claim's intent, durable; then, if its name is the
+    // lowest of every claim intent, its owner record. A claim intent is never voided or deleted, so the binding
+    // claim is always the lowest one, and only its retry completes; every other claim is refused (409).
+    return relay.lock.run(async () => {
+        const now = await ownerIn(relay.store);
+        if (now !== null) return now === hash ? adoptFound(relay, hash, record) : 'taken';
+        const digest = sha256Hex(record);
+        await relay.store.put(`${CLAIMS}${digest}`, new Uint8Array());
+        const claims = (await relay.store.list(CLAIMS)).map((key) => key.slice(CLAIMS.length)).sort();
+        if (claims[0] !== digest) return 'taken';
+        await relay.store.put(`${OWNERS}${digest}`, record);
+        return adopt(relay, hash);
+    });
+}
+
+/**
+ * The owner from storage: the lowest-named owner record. A record is written only by the lowest claim of its time,
+ * and a claim lower than an acknowledged one could only be a late intent, which never brings a record; so the
+ * lowest record is the acknowledged owner, and a late record of a higher claim changes nothing.
+ */
+export async function ownerIn(store: Store): Promise<string | null> {
+    const records = (await store.list(OWNERS)).map((key) => key.slice(OWNERS.length)).sort();
+    if (records.length === 0) return null;
+    const bytes = await store.get(`${OWNERS}${records[0]}`);
+    const hash = bytes === null ? undefined : /^\{"owner_token_sha256":"([0-9a-f]{64})"\}$/.exec(Buffer.from(bytes).toString('utf8'))?.[1];
+    if (bytes === null || hash === undefined || sha256Hex(bytes) !== records[0]) throw new UnreadableOwner('The owner record is unreadable.');
+    return hash;
+}
+
+export class UnreadableOwner extends Error {}
+
+/** Adopts a record found: made durable first (invariant 2), since its write may have failed after it became readable. */
+async function adoptFound(relay: Relay, hash: string, record: Uint8Array): Promise<'claimed'> {
+    await relay.store.sync(`${OWNERS}${sha256Hex(record)}`);
+    return adopt(relay, hash);
 }
 
 function adopt(relay: Relay, hash: string): 'claimed' {

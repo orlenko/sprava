@@ -1,6 +1,13 @@
 // The names of what the relay keeps under `SPRAVA_INSTANCE/`, and the records it writes (companion-v0 §7.8).
 
-export const OWNER = 'owner.json';
+/**
+ * Claims (§6): `claims/{digest}`, empty, a claim's intent; `owner/{digest}`, its owner record. Both are named by the
+ * SHA-256 of the owner record's bytes, so a late write of either repeats the same name and bytes. The owner is the
+ * lowest-named owner record; with none, the binding claim is the lowest-named claim intent, and only its retry may
+ * write its record (claim.ts).
+ */
+export const CLAIMS = 'claims/';
+export const OWNERS = 'owner/';
 export const ownerRecord = (hash: string): Uint8Array => new Uint8Array(Buffer.from(`{"owner_token_sha256":"${hash}"}`, 'utf8'));
 
 export const deviceKeys = (d: string) => ({

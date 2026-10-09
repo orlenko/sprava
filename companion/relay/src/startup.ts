@@ -4,7 +4,7 @@
 import type { Devices } from './devices.ts';
 import { deviceKeys, EMPTY, groupParts, pairingKeys, readRecord, type DeviceRecord, type PairingCreated } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { writeOnce } from './store/store.ts';
+import { deleteAll, writeOnce } from './store/store.ts';
 
 export async function repairAtStart(relay: Relay, devices: Devices): Promise<void> {
     const { store } = relay;
@@ -71,5 +71,8 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
     deviceParts = groupParts(await store.list('devices/'), 'devices');
     for (const [d, parts] of deviceParts) {
         if (parts.has('revoked') && !parts.has('revocation')) await devices.deleteParts(d);
+        // A self-revocation that stopped before its pending requests were deleted is finished; its record and
+        // proof stay for the owner.
+        else if (parts.has('revoked') && parts.has('revocation')) await deleteAll(store, `requests/${d}/`);
     }
 }

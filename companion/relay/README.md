@@ -134,10 +134,18 @@ endpoint is checked against them:
 **Accepted trade-offs.** These are settled; they follow from the invariants and are not defects:
 
 - **A. A claim binds the slot for good.** A client's timeout cannot prove that a write it sent will never land, so
-  a claim whose intent exists is never voided or deleted, by time or by lease rank. Only the same claim body,
-  retried, completes it; every other claim gets 409. The Mac keeps its claim body and resends it (spec section 6).
-  If that body is lost, the only reset is a new `SPRAVA_INSTANCE`: claiming is a one-time setup by the person who
-  holds the setup code.
+  a claim intent is never voided or deleted, by time or by lease rank. A claim's intent (`claims/{digest}`) and
+  its owner record (`owner/{digest}`) are both named by the SHA-256 of the record, and the rule is deterministic:
+  - an owner record exists: the lowest-named one is the owner, final;
+  - no owner record, one or more claim intents: the binding claim is the lowest-named intent. Only a retry of
+    that claim's body may write its owner record, under the creation lock, after listing the intents again;
+    every other claim gets 409.
+
+  A late intent that lands after the owner record changes nothing. One that lands before can become the binding
+  claim only by sorting lower, and was never acknowledged, so nothing acknowledged is lost; its holder retrying
+  completes the claim. A late owner record can only be of a higher claim, below which the owner stays. The Mac
+  keeps its claim body and resends it (spec section 6). If the binding claim's holder never retries, the only
+  reset is a new `SPRAVA_INSTANCE`: claiming is a one-time setup by the person who holds the setup code.
 
 ## Layout
 

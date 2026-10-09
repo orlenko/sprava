@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CLAIM_TIMING } from '../src/claim.ts';
-import { newToken, tokenHash } from '../src/encoding.ts';
+import { newToken, sha256Hex, tokenHash } from '../src/encoding.ts';
+import { ownerRecord } from '../src/layout.ts';
 import { bearer, SETUP_CODE, startTestRelay, WEB_ORIGIN, type TestRelay } from './harness.ts';
 import { vectors } from './vectors.ts';
 
@@ -17,7 +18,7 @@ test('claiming: the owner record is exactly the derived bytes, and a retry is 20
     const token = newToken();
     const body = { setup_code: SETUP_CODE, owner_token_sha256: tokenHash(token) };
     assert.equal((await post(t, body)).status, 204);
-    const stored = await t.relay.store.get('owner.json');
+    const stored = await t.relay.store.get(`owner/${sha256Hex(ownerRecord(tokenHash(token)))}`);
     assert.equal(Buffer.from(stored!).toString(), `{"owner_token_sha256":"${tokenHash(token)}"}`);
     assert.equal((await post(t, body)).status, 204, 'a retry of the claim that won');
     assert.deepEqual(await (await fetch(`${t.url}/v0/health`)).json(), { protocol: 0, claimed: true, instance: t.relay.config.instance });
@@ -54,7 +55,7 @@ test('malformed claims are 400, and a claim with an Origin header is 403 (ยง6, ย
     assert.equal((await post(t, `{"setup_code":"${SETUP_CODE}","setup_code":"x","owner_token_sha256":"${hash}"}`)).status, 400);
     assert.equal((await post(t, { setup_code: 'x'.repeat(1100), owner_token_sha256: hash })).status, 413);
     assert.equal((await post(t, { setup_code: SETUP_CODE, owner_token_sha256: hash }, { Origin: WEB_ORIGIN })).status, 403);
-    assert.equal(await t.relay.store.get('owner.json'), null);
+    assert.deepEqual(await t.relay.store.list('owner/'), []);
     await t.close();
 });
 

@@ -1,11 +1,11 @@
 // The relay: its shared state, what it checks before serving, and its routes (companion-v0 §7).
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { CLAIM_TIMING, claimRoute } from './claim.ts';
+import { CLAIM_TIMING, claimRoute, ownerIn, UnreadableOwner } from './claim.ts';
 import { ConfigError, isSetupCode, type Config } from './config.ts';
 import { deviceRoutes, Devices } from './devices.ts';
-import { isHashHex, sameBytes } from './encoding.ts';
+import { sha256Hex } from './encoding.ts';
 import { createHandler, type Route } from './http.ts';
-import { OWNER, ownerRecord } from './layout.ts';
+import { OWNERS, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
 import { repairAtStart } from './startup.ts';
@@ -53,18 +53,16 @@ export interface Started {
 
 export class ClaimConflict extends Error {}
 
-/**
- * The owner, from its record (§6): none, or the hash it holds. Only a record that cannot be read, which nothing
- * the relay writes can produce, fails the start.
- */
+/** The owner (claim.ts, ownerIn); only an owner record that cannot be read fails the start. */
 async function readOwner(store: Store): Promise<string | null> {
-    const owner = await store.get(OWNER);
-    if (owner === null) return null;
-    const hash = /^\{"owner_token_sha256":"([0-9a-f]{64})"\}$/.exec(Buffer.from(owner).toString('utf8'))?.[1];
-    if (hash === undefined || !isHashHex(hash) || !sameBytes(owner, ownerRecord(hash))) {
-        throw new ClaimConflict('The owner record is unreadable; start over with a new SPRAVA_INSTANCE and setup code.');
+    try {
+        return await ownerIn(store);
+    } catch (error) {
+        if (error instanceof UnreadableOwner) {
+            throw new ClaimConflict('The owner record is unreadable; start over with a new SPRAVA_INSTANCE and setup code.');
+        }
+        throw error;
     }
-    return hash;
 }
 
 /** Checks what must hold before serving, takes the lease, and builds the handler; the rest happens in `ready`. */
@@ -103,7 +101,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         relay.ownerHash = await readOwner(relay.store);
         // The owner record made durable (a write may have failed after it became readable). Claim intents are never
         // deleted: one binds the slot to its claim for good (README, accepted trade-off A).
-        if (relay.ownerHash !== null) await writeOnce(relay.store, OWNER, ownerRecord(relay.ownerHash));
+        if (relay.ownerHash !== null) await relay.store.sync(`${OWNERS}${sha256Hex(ownerRecord(relay.ownerHash))}`);
         await repairAtStart(relay, devices);
         await devices.load();
         await lease.retireEarlier();

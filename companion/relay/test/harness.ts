@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLAIM_TIMING } from '../src/claim.ts';
 import { readConfig } from '../src/config.ts';
-import { formatTime, newId, newToken, tokenHash } from '../src/encoding.ts';
+import { formatTime, newId, newToken, sha256Hex, tokenHash } from '../src/encoding.ts';
 import { deviceKeys, ownerRecord, pairingKeys } from '../src/layout.ts';
 import { jsonLog } from '../src/log.ts';
 import { startRelay, type Handler, type Relay } from '../src/relay.ts';
@@ -149,7 +149,8 @@ export function slowRequest(url: string, method: string, headers: Record<string,
 
 /** Writes a claim and its owner record, as a claim would (§6, layout.ts). */
 export async function seedOwnerHash(store: Store, hash: string): Promise<void> {
-    await store.put('owner.json', ownerRecord(hash));
+    await store.put(`claims/${sha256Hex(ownerRecord(hash))}`, new Uint8Array());
+    await store.put(`owner/${sha256Hex(ownerRecord(hash))}`, ownerRecord(hash));
 }
 
 /** A fresh folder store scoped to the test instance, and the raw store under it. */
