@@ -352,4 +352,34 @@ import Testing
         #expect(meta?["legacy_schema_version"] == .int(-1))
         #expect(meta?["legacy_schema_version_2"] == .int(0))
     }
+
+    // Layer 5 fourth calibrated review, finding 1: a done item whose id an open item also holds is never closed by
+    // id, which would close the open one; the shared id goes to the person on a card settled by hand.
+    @Test func aSharedIDIsNeverClosedByID() throws {
+        let open = #"{"id":"x-1","title":"Invented open task","status":"open","priority":"normal","due":"2026-11-01"}"#
+        let done = #"{"id":"x-1","title":"Invented finished task","status":"done","priority":"normal","due":"2026-09-01"}"#
+        let folder = try lifeproj([open, done], schemaVersion: 1)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        #expect(!result.proposals.contains { $0.ops.contains { $0["op"] == .str("complete") } })
+        let card = try #require(result.proposals.first { $0.raw["provenance"]?["adoption"] == .str("shared-id") })
+        #expect(card.raw["provenance"]?["ids"] == .array([.str("x-1")]))
+        #expect(throws: TekaStore.Refused.self) { try TekaStore(folder: folder).approve(card, now: now) }
+        #expect(Teka.read(folder).items.map { $0.object?["status"] } == [.str("open"), .str("done")])
+    }
+
+    // Layer 5 fourth calibrated review, finding 2: a pre-lifeproj item that breaks the v0 rules gets its repair card
+    // at adoption, so the binder can still reach the stamp.
+    @Test func aPreLifeprojItemGetsItsRepairCard() throws {
+        let folder = try lifeproj([#"{"id":"p-1","title":"Invented task","status":"open","due":"2026-11-01"}"#], schemaVersion: 0)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        let repair = try #require(result.proposals.first { $0.raw["provenance"]?["repair"] != nil })
+        #expect(repair.raw["provenance"]?["repair"] == .array([.str("priority")]))
+        let store = TekaStore(folder: folder)
+        try store.approve(try #require(result.proposals.first { $0.raw["provenance"]?["adoption"] == .str("schema") }), now: now)
+        try store.approve(repair, edited: try CardEdits.apply([.obj([("index", .int(0)), ("priority", .str("normal"))])], to: repair.ops), now: now)
+        let id = try #require(try Adoption.offerStamp(folder, now: now))
+        try store.approve(try ProposalStore.load(id, in: folder, expectedDigest: nil), now: now)
+        let teka = Teka.read(folder)
+        #expect(teka.state == .ready, "\(teka.reasons)")
+    }
 }

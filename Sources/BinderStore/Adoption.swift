@@ -163,8 +163,15 @@ public enum Adoption {
         var proposals: [Proposal] = []
         let closedIDs = Set(log.compactMap { $0["id"] })
         var closeOps: [JSONObject] = []
+        // An op names its item by id, so an id two items share would close whichever comes first: those items go to
+        // the person on a card they settle by hand.
+        var shared: [JSONValue] = []
         for item in items {
             guard let id = item["id"] else { continue }
+            guard seenIDs[id] == 1 else {
+                if !shared.contains(id) { shared.append(id) }
+                continue
+            }
             let isDone = item["status"] == .str("done")
             guard isDone || closedIDs.contains(id) else { continue }
             var args = JSONObject()
@@ -179,13 +186,20 @@ public enum Adoption {
             proposals.append(Proposal.make(title: "Close \(closeOps.count) item(s) already marked done", actor: importActor,
                                            ops: closeOps, now: now))
         }
+        if !shared.isEmpty {
+            let names = shared.map { JSONWriter.compact($0) }.joined(separator: ", ")
+            proposals.append(Proposal.make(title: "Give each of these ids to one open item only, by hand, then reject this card: " + names,
+                                           actor: importActor, ops: [],
+                                           provenance: JSONObject([(key: "adoption", value: .str("shared-id")), (key: "manual_repair", value: .bool(true)),
+                                                                   (key: "ids", value: .array(shared))]), now: now))
+        }
 
-        // Repairs are judged after the mechanical fixes. A lifeproj catalog is judged by the v0 rules, since those are
-        // what the stamp needs: a redacted item without a kind passes lifeproj's rules, and a v1 catalog has none, yet
-        // neither stamps.
+        // Repairs are judged after the mechanical fixes. A lifeproj or pre-lifeproj catalog is judged by the v0 rules,
+        // since those are what the stamp needs: a redacted item without a kind passes lifeproj's rules, and a v1 or
+        // pre-lifeproj catalog has none, yet none of them stamps. Adoption runs once, so its cards are the only ones.
         let afterFixes = Teka.read(folder)
         let fixed = afterFixes.catalog ?? catalog
-        let towardV0 = teka.level == .lifeprojV1 || teka.level == .lifeprojV2
+        let towardV0 = teka.level == .lifeprojV1 || teka.level == .lifeprojV2 || teka.level == .preLifeproj
         let repairItems = fixed["open_items"]?.arrayValue ?? []
         let findings = towardV0 ? ItemRules.check(items: repairItems, log: fixed["processing_log"]?.arrayValue ?? [], v0: true)
                                 : afterFixes.findings
