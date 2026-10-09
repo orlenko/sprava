@@ -34,6 +34,9 @@ public struct Interpretation: Sendable {
     public var unfiled: [(span: TextSpan, reason: String)] = []
     public var dropped = 0
     public var truncatedWindows = 0
+    /// Text the model answered with the six-item ceiling and that could not be read again in halves: it may hide
+    /// more items, so the items read from it carry `Clerk.cappedFlag` (architecture 5.3, "Six is a ceiling").
+    public var capped: [TextSpan] = []
     public var outcome = "complete"
     public var calls = 0
 
@@ -141,6 +144,8 @@ public struct Clerk: Sendable {
             let prompt = missed.map(\.text).joined(separator: " ")
             interp.calls += 1
             if let answer = try? await model.respond(instructions: instructions, prompt: prompt, task: .extraction, maxTokens: 6 * 110 + 64) {
+                // A second reading that also reaches the ceiling may hide more items in its sentences.
+                if (answer["items"]?.arrayValue ?? []).count >= 6 { interp.capped += missed; interp.outcome = "partial" }
                 for value in answer["items"]?.arrayValue ?? [] {
                     guard let item = check(value, text: text, sentences: sentences, today: today, locale: locale, estimated: estimated,
                                            scope: missed, taken: interp.items),
@@ -152,6 +157,7 @@ public struct Clerk: Sendable {
         }
         // The model's list is in no set order: neighbours (check 5) are read in the text's order.
         interp.items.sort { $0.sentence.start < $1.sentence.start }
+        Self.flagCapped(&interp.items, capped: interp.capped)
         for s in uncovered() {
             interp.unfiled.append((s, "not_covered"))
             interp.outcome = "partial"
@@ -190,7 +196,7 @@ public struct Clerk: Sendable {
                     queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0)
                     continue
                 }
-                if items.count >= 6 { interp.outcome = "partial" }   // a window that cannot be split may hide more
+                if items.count >= 6 { interp.outcome = "partial"; interp.capped.append(window) }   // a window that cannot be split may hide more
                 raw += items.map { ($0, window) }
             } catch ClerkModelError.contextSizeExceeded {
                 if maySplit, let halves = Self.halves(window, in: text) { queue.insert(contentsOf: [(halves.0, false), (halves.1, false)], at: 0) }
@@ -204,6 +210,18 @@ public struct Clerk: Sendable {
             }
         }
         return raw
+    }
+
+    /// The card flag for items read from text the model answered with its ceiling (architecture 5.3).
+    public static let cappedFlag = "the clerk may have missed items here"
+
+    /// Adds `cappedFlag` to every item whose sentence lies in capped text, so the card says more may be there even
+    /// when coverage counts the sentence as covered.
+    static func flagCapped(_ items: inout [ClerkItem], capped: [TextSpan]) {
+        for i in items.indices where !items[i].flags.contains(cappedFlag)
+            && capped.contains(where: { $0.start < items[i].sentence.end && items[i].sentence.start < $0.end }) {
+            items[i].flags.append(cappedFlag)
+        }
     }
 
     static func halves(_ window: TextSpan, in text: String) -> (TextSpan, TextSpan)? {

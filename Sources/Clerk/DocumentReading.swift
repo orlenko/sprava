@@ -268,6 +268,7 @@ extension Clerk {
             doc.calls += 1
             if let answer = try? await model.respond(instructions: documentItemInstructions(dated: dated, locale: locale),
                                                      prompt: missed.map(\.text).joined(separator: " "), task: .extraction, maxTokens: 6 * 110 + 64) {
+                if (answer["items"]?.arrayValue ?? []).count >= 6 { interp.capped += missed; interp.outcome = "partial" }
                 for value in answer["items"]?.arrayValue ?? [] {
                     guard var item = check(value, text: text, sentences: sentences, today: dated, locale: locale, scope: Array(missed), taken: interp.items),
                       missed.contains(item.sentence),
@@ -315,6 +316,7 @@ extension Clerk {
         }
         // What still asks something by a date and no item covers, after the second reading, is kept and makes the
         // reading partial (§4.4): an item that took its date from the next sentence covers that sentence too.
+        Self.flagCapped(&interp.items, capped: interp.capped)
         let borrowed = interp.items.filter { $0.flags.contains("date taken from the next sentence") }
             .compactMap { sentences.firstIndex(of: $0.sentence) }.filter { $0 + 1 < sentences.count }.map { sentences[$0 + 1] }
         // Items past the cap leave their sentences uncovered too, so the reading is partial and names them.
@@ -338,6 +340,7 @@ extension Clerk {
         if doc.replyNeeded || facts.signals.contains("reply") { doc.escalate.append("a reply may be needed") }
         if facts.words > 3000 || (reading.pages ?? 0) > 10 { doc.escalate.append("it is long") }
         if doc.unread > 0 { doc.escalate.append("the clerk could not read all of it") }
+        if !interp.capped.isEmpty { doc.escalate.append("the clerk may have missed items in it") }
         if doc.dropped > 0 { doc.escalate.append("the clerk listed things code could not find in it") }
         if found > Self.documentItems { doc.escalate.append("it asks for more than the clerk lists") }
         if !doc.notCovered.isEmpty { doc.escalate.append("parts of it ask for something the clerk did not list") }
