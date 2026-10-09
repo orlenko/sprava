@@ -104,3 +104,41 @@ test('rejected reads keep no state: a device at its limit stays bounded however 
     assert.equal((await read()).status, 200);
     await t.close();
 });
+
+test('a retried request is acknowledged with 409 only when its stored copy is there (§7.6)', async () => {
+    const { raw, store } = await freshStore();
+    await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const r = newId();
+    const post = (body: Uint8Array) => fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body, headers: bearer(device.token) });
+    assert.equal((await post(new Uint8Array([7]))).status, 201);
+    const [key] = await store.list(`requests/${device.id}/`);
+    assert.equal((await post(new Uint8Array([7]))).status, 409, 'stored: the retry is told so');
+    await store.delete(key!); // the stored copy is lost
+    assert.equal((await post(new Uint8Array([7]))).status, 201, 'stored again, under its own ordinal');
+    assert.deepEqual(await store.list(`requests/${device.id}/`), [key]);
+    await store.delete(key!);
+    assert.equal((await post(new Uint8Array([8]))).status, 503, 'other bytes are never taken for the lost request');
+    await t.close();
+});
+
+test('a request missing from a listing stays listed, so no later one overtakes it (§7.6, §9.2)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const [a, b] = [newId(), newId()];
+    for (const r of [a, b]) {
+        assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    }
+    const [first] = await store.list(`requests/${device.id}/`);
+    await store.delete(first!); // A is missing from the bucket for now
+    const listing = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+    assert.deepEqual(listing.requests.map((x) => x.request_id), [a, b]);
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${a}`, { headers: bearer(owner) })).status, 404, 'its body: the Mac backs off');
+    assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    const after = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+    assert.deepEqual(after.requests.map((x) => x.request_id), [b], 'gone only once the owner deleted it');
+    await t.close();
+});

@@ -1,6 +1,6 @@
 // Request mailboxes (companion-v0 §7.6): each active device posts sealed requests for the owner, who lists them
 // by ordinal, reads and deletes them. Stored as `requests/{D}/{ordinal}-{R}` (§7.8).
-import { formatTime, isId, parseUnsigned } from './encoding.ts';
+import { formatTime, isId, parseUnsigned, sha256Hex } from './encoding.ts';
 import { HttpError, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Devices } from './devices.ts';
@@ -19,33 +19,48 @@ interface Entry {
     ordinal: number;
     key: string;
     received: number;
+    /** SHA-256 of the bytes when this process stored or read them; null for an entry only listed so far. */
+    digest: string | null;
 }
 
 export function requests(relay: Relay, devices: Devices) {
     const { store } = relay;
-    /** Per device, R → its stored copy. Rebuilt from the bucket at start and at every owner listing (§7.8). */
+    /**
+     * Per device, R → its stored copy. Entries come from this process's writes and from every listing of the bucket
+     * (§7.8), and leave only by the owner's deletion, the device's revocation or expiry: an entry missing from a
+     * listing stays, listed with a 404 body, so no later request overtakes one the relay acknowledged.
+     */
     const mailboxes = new Map<string, Map<string, Entry>>();
     const nextOrdinal = new Map<string, number>();
     const sent = new SlidingWindow(HOUR, PER_HOUR);
-
     /** Per device, the end (exclusive) of the block of ordinals this process reserved and may use. */
     const reservedUpTo = new Map<string, number>();
 
     /**
-     * Reads a device's mailbox from the bucket. Two copies of one R keep the lower ordinal; the other goes. The
-     * first read in this process also starts above every block of ordinals an earlier process reserved, so no
-     * ordinal it may have used, even for a write still to land, is ever given again.
+     * Merges a device's listing into its mailbox; the device's lock must be held. Two copies of one R keep the
+     * lower ordinal; the other goes. The first read in this process also starts above every block of ordinals an
+     * earlier process reserved, so no ordinal it may have used, even for a write still to land, is given again.
      */
-    async function refresh(d: string): Promise<Map<string, Entry>> {
-        const mailbox = new Map<string, Entry>();
+    async function refreshLocked(d: string): Promise<Map<string, Entry>> {
+        if (await devices.revokedLocked(d)) {
+            mailboxes.set(d, new Map());
+            return mailboxes.get(d)!;
+        }
+        const mailbox = mailboxes.get(d) ?? new Map<string, Entry>();
         let highest = 0;
         for (const { key, modified } of await store.listTimes(`requests/${d}/`)) {
             const match = NAME.exec(key);
             if (match === null || match[1] !== d) continue;
             const ordinal = Number(match[2]);
             highest = Math.max(highest, ordinal);
-            if (mailbox.has(match[3]!)) await store.delete(key); // the listing is in ordinal order
-            else mailbox.set(match[3]!, { ordinal, key, received: modified });
+            const known = mailbox.get(match[3]!);
+            if (known === undefined) {
+                mailbox.set(match[3]!, { ordinal, key, received: modified, digest: null });
+            } else if (known.key !== key) {
+                const lower = ordinal < known.ordinal;
+                await store.delete(lower ? known.key : key);
+                if (lower) mailbox.set(match[3]!, { ordinal, key, received: modified, digest: null });
+            }
         }
         mailboxes.set(d, mailbox);
         let next = Math.max(nextOrdinal.get(d) ?? 1, highest + 1);
@@ -59,16 +74,17 @@ export function requests(relay: Relay, devices: Devices) {
 
     /**
      * §7.6: the next ordinal, taken before the write so a write of unknown outcome never shares its ordinal. Its
-     * block is reserved durably first (`ordinals/{D}/{block}`, written once, empty), so a later process starts
-     * above it.
+     * block is reserved durably first (`ordinals/{D}/{block}`, written once, holding this process's lease name), so
+     * a later process starts above it, and two processes can never both hold one block.
      */
-    async function takeOrdinal(d: string): Promise<number> {
-        if (!mailboxes.has(d)) await refresh(d);
-        const ordinal = nextOrdinal.get(d)!;
-        if (ordinal >= (reservedUpTo.get(d) ?? 0)) {
+    async function takeOrdinalLocked(d: string): Promise<number> {
+        if (!mailboxes.has(d)) await refreshLocked(d);
+        let ordinal = nextOrdinal.get(d)!;
+        while (ordinal >= (reservedUpTo.get(d) ?? 0)) {
             const block = Math.floor(ordinal / BLOCK);
-            await writeOnce(store, `${RESERVED}${d}/${String(block).padStart(16, '0')}`, new Uint8Array());
-            reservedUpTo.set(d, (block + 1) * BLOCK);
+            const held = await writeOnce(store, `${RESERVED}${d}/${String(block).padStart(16, '0')}`, Buffer.from(relay.writer));
+            if (held !== 'different') reservedUpTo.set(d, (block + 1) * BLOCK);
+            else ordinal = (block + 1) * BLOCK;
         }
         nextOrdinal.set(d, ordinal + 1);
         return ordinal;
@@ -76,13 +92,14 @@ export function requests(relay: Relay, devices: Devices) {
 
     /** At start, and hourly: every mailbox is read again, and requests older than 30 days are deleted (§7.6). */
     async function sweep(): Promise<void> {
-        const ids = new Set((await store.list('requests/')).map((key) => key.split('/')[1]!).filter((d) => isId(d)));
-        for (const d of ids) {
-            await relay.lock.run(async () => {
-                for (const [r, entry] of await refresh(d)) {
+        const listed = (await store.list('requests/')).map((key) => key.split('/')[1]!);
+        for (const d of new Set([...listed, ...mailboxes.keys()].filter((id) => isId(id)))) {
+            await relay.deviceLocks.run(d, async () => {
+                const mailbox = await refreshLocked(d);
+                for (const [r, entry] of mailbox) {
                     if (entry.received < relay.now() - REQUEST_EXPIRY_MS) {
                         await store.delete(entry.key);
-                        mailboxes.get(d)!.delete(r);
+                        mailbox.delete(r);
                     }
                 }
             });
@@ -105,21 +122,29 @@ export function requests(relay: Relay, devices: Devices) {
                 const r = call.params.R!;
                 if (call.principal?.kind !== 'device' || !isId(r) || call.body.length === 0) throw new HttpError(400, 'A request needs an id and its sealed bytes.');
                 const d = call.principal.id;
-                return relay.lock.run(async () => {
-                    // Under the creation lock, which a revocation also takes: nothing is stored after the marker.
-                    if (await devices.revokedLocked(d)) throw new HttpError(401, 'A valid token is required.');
-                    if (!mailboxes.has(d)) await refresh(d);
-                    const mailbox = mailboxes.get(d)!;
-                    if (mailbox.has(r)) throw new HttpError(409, 'This request is already stored.');
-                    if (!sent.admit(d, relay.now())) throw new HttpError(429, 'Too many requests; wait and try again.');
-                    if (mailbox.size >= MAX_PENDING) throw new HttpError(507, 'Too many requests are waiting for the Mac.');
-                    const ordinal = await takeOrdinal(d);
-                    const key = `requests/${d}/${String(ordinal).padStart(16, '0')}-${r}`;
-                    // A late write from before a restart can only be this same request, with the same bytes (§7.6).
-                    if ((await writeOnce(store, key, call.body)) === 'different') throw new HttpError(409, 'This request is already stored.');
-                    mailbox.set(r, { ordinal, key, received: relay.now() });
+                // Runs under the device's lock (guard), which every revocation takes: nothing is stored after one.
+                if (!mailboxes.has(d)) await refreshLocked(d);
+                const mailbox = mailboxes.get(d)!;
+                const digest = sha256Hex(call.body);
+                const known = mailbox.get(r);
+                if (known !== undefined) {
+                    // §7.6: 409 tells the device its request is stored, so it is said only once that is verified.
+                    if ((await store.get(known.key)) !== null) throw new HttpError(409, 'This request is already stored.');
+                    if ((known.digest ?? digest) !== digest || (await writeOnce(store, known.key, call.body)) === 'different') {
+                        throw new HttpError(503, 'This request is not stored yet; try again.', { 'Retry-After': '5' });
+                    }
+                    mailbox.set(r, { ...known, digest });
                     return { status: 201 };
-                });
+                }
+                if (!sent.admit(d, relay.now())) throw new HttpError(429, 'Too many requests; wait and try again.');
+                if (mailbox.size >= MAX_PENDING) throw new HttpError(507, 'Too many requests are waiting for the Mac.');
+                const ordinal = await takeOrdinalLocked(d);
+                const key = `requests/${d}/${String(ordinal).padStart(16, '0')}-${r}`;
+                if ((await writeOnce(store, key, call.body)) === 'different') {
+                    throw new HttpError(503, 'This request could not be stored; try again.', { 'Retry-After': '5' });
+                }
+                mailbox.set(r, { ordinal, key, received: relay.now(), digest });
+                return { status: 201 };
             },
         },
         {
@@ -132,7 +157,7 @@ export function requests(relay: Relay, devices: Devices) {
                 const limit = parseUnsigned(call.query.get('limit') ?? '25') ?? 0;
                 const after = parseUnsigned(call.query.get('after') ?? '0');
                 if (limit < 1 || limit > 100 || after === null) throw new HttpError(400, 'The limit must be from 1 to 100, and after an ordinal.');
-                const mailbox = await relay.lock.run(() => refresh(d));
+                const mailbox = await relay.deviceLocks.run(d, () => refreshLocked(d));
                 const listed = [...mailbox].filter(([, e]) => e.ordinal > after).sort(([, a], [, b]) => a.ordinal - b.ordinal);
                 // Ordinals are never given twice, but a page never ends between equal ones either: `after` could
                 // then skip a request.
@@ -167,7 +192,7 @@ export function requests(relay: Relay, devices: Devices) {
             browser: false,
             async handle(call) {
                 const d = ids(call.params.D, call.params.R);
-                await relay.lock.run(async () => {
+                await relay.deviceLocks.run(d, async () => {
                     const entry = mailboxes.get(d)?.get(call.params.R!);
                     if (entry !== undefined) await store.delete(entry.key);
                     mailboxes.get(d)?.delete(call.params.R!);

@@ -29,6 +29,8 @@ export interface Relay {
     now(): number;
     /** The owner token's hash once the relay is claimed (§6), else null. */
     ownerHash: string | null;
+    /** This process's lease name (lease.ts), written where a choice must belong to one process. */
+    readonly writer: string;
     /** Runs `work` every `ms` until the relay stops; a failure is logged by name only. */
     repeat(ms: number, name: string, work: () => Promise<void>): void;
 }
@@ -84,6 +86,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         log: options.log,
         lock: new Mutex(),
         deviceLocks: new KeyedMutex(),
+        writer: lease.name,
         now: options.now ?? Date.now,
         ownerHash,
         repeat(ms, name, work) {

@@ -147,6 +147,32 @@ endpoint is checked against them:
   token refused (401) and shows the relay as needing a reset, a new `SPRAVA_INSTANCE`. Nothing is silently lost.
   The same reset applies if the binding claim's holder never retries: claiming is a one-time setup.
 
+### Every endpoint against the four invariants
+
+Every write-once object below goes through `writeOnce` (`src/store/store.ts`): it is acknowledged only once the
+store confirmed it, a retry that finds it makes it durable first (invariant 2), and its intent fixes its bytes
+before they are sent (invariant 3). Every write is also refused once a newer process holds the lease. The table
+adds what is particular to each endpoint.
+
+| Endpoint | What it writes | Fixed by (1, 3) | Under (4) |
+|---|---|---|---|
+| `GET /v0/health` | nothing | | |
+| `POST /v0/claim` | `claims/{hash}`, then `owner.json` | the claim's name is its content; two claims fail the start closed; a known owner never changes in memory | the claim queue, then the creation lock |
+| `POST /v0/pairings` | `created.json` under a new random id | a new name | the device's lock, then the creation lock |
+| `POST /v0/pairings/{P}/join` | a token marker, `record.json`, `joined.json` | the token's own name; a record every join writes alike; an earlier transcript's intent consumes the pairing | the device's lock, then the creation lock (device count) |
+| `GET /v0/pairings/{P}` | an expired pairing's deletion | `created.json` deleted last | the device's lock |
+| `PUT /v0/pairings/{P}/key` | `active`, `key.sha256`, `key` | an empty marker; the key's hash | the device's lock, revocation checked there |
+| `GET /v0/pairings/{P}/key`, `POST .../ack` | `ack` | an empty marker | the device's lock (guard), after the body |
+| `DELETE /v0/pairings/{P}` | deletions | `created.json` last; the sweep removes parts left without it | the device's lock |
+| `GET /v0/devices` | a missing revocation marker | an empty marker | each device's lock |
+| `DELETE /v0/devices/{D}` | `revoked`, then deletions | an empty marker, never deleted | the device's lock |
+| `DELETE /v0/devices/self` | `revocation`, then `revoked` | the marker only once this revocation is the one stored | the device's lock (guard), after the body |
+| `GET /v0/devices/{D}/revocation` | nothing | | |
+| `PUT /v0/objects/{name}`, `DELETE` | the object; its intents with it | revision names, never reused | the creation lock |
+| `GET /v0/objects...` | nothing | | the device's lock (guard), so no revoked device reads |
+| `POST /v0/requests/{R}` | `ordinals/{D}/{block}`, the request | a block holds one process's lease name; an ordinal is never given twice; 409 only when the stored copy is there | the device's lock (guard), after the body |
+| `GET /v0/requests/{D}...`, `DELETE` | duplicate copies' deletion | listings merge; an entry leaves only by deletion, revocation or expiry | the device's lock |
+
 ## Layout
 
 - `src/main.ts`: reads the environment, opens the store, serves.
