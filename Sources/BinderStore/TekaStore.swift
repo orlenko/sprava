@@ -225,6 +225,8 @@ public final class TekaStore {
         }
 
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        // Every write of several ops is one batch, so recovery sees all of it as the trailing write (binder-v0 §6.9).
+        let batch = batch ?? (bodies.count > 1 ? UUIDv7.make(now: now) : nil)
         var lines: [JSONObject] = []
         for (seq, var body) in bodies.enumerated() {
             // An applied op carries every value its effect needs (binder-v0 §6.3): a closure's time and source are
@@ -267,13 +269,26 @@ public final class TekaStore {
 
     /// The files a batch files (binder-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
     /// file with the recorded digest, so a file that changed or is gone since the card was made is refused; the
-    /// destination must be free and lie inside the binder. A filing without `from` needs the file in place.
+    /// destination must be free and lie inside the binder. A filing without `from` needs the file in place. A key or
+    /// credential file is never read or moved, at either end (binder-v0 §3.3). An `update_document` that sets a path
+    /// needs the file there, reached without a link, or filed earlier in the batch.
     func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String, sha: String)] {
         var moves: [(String, String, String)] = []
         var claimed = Set<String>()
+        for line in lines where line["op"] == .str("update_document") {
+            guard let path = line["args"]?["set"]?["path"] else { continue }
+            guard let p = path.stringValue, DocumentPaths.isSafe(p, forFiling: false) else { throw Refused(reason: "a document's new path breaks the path rules") }
+            let filedHere = lines.contains { $0["op"] == .str("file_document") && $0["args"]?["document"]?["path"]?.stringValue.map(DocumentPaths.fold) == DocumentPaths.fold(p) }
+            guard filedHere || DocumentPaths.plainFile(p, in: folder) else {
+                throw Refused(reason: "no file is at \(p), or the way there is not a plain folder")
+            }
+        }
         for line in lines where line["op"] == .str("file_document") {
             let args = line["args"]?.objectValue ?? JSONObject()
             guard let path = args["document"]?["path"]?.stringValue, let sha = args["document"]?["sha256"]?.stringValue else { continue }
+            if DocumentPaths.isKeyFile(path) || args["from"]?.stringValue.map(DocumentPaths.isKeyFile) == true {
+                throw Refused(reason: "a key or credential file is never filed")
+            }
             guard claimed.insert(DocumentPaths.fold(path)).inserted else { throw Refused(reason: "two documents would be filed at \(path)") }
             if let from = args["from"]?.stringValue {
                 guard DocumentPaths.plainFile(from, in: folder),
@@ -297,7 +312,8 @@ public final class TekaStore {
     package func performMoves(_ moves: [(from: String, to: String, sha: String)]) throws {
         for move in moves {
             // Checked again right before the rename: the source is still a plain file, the way there has no link.
-            guard DocumentPaths.plainFile(move.from, in: folder), DocumentPaths.isFreeDestination(move.to, in: folder),
+            guard !DocumentPaths.isKeyFile(move.from), !DocumentPaths.isKeyFile(move.to),
+                  DocumentPaths.plainFile(move.from, in: folder), DocumentPaths.isFreeDestination(move.to, in: folder),
                   DocumentPaths.sha256(of: folder.appendingPathComponent(move.from)) == move.sha else {
                 throw Refused(reason: "the file in intake/ or its destination changed while it was being filed")
             }
@@ -325,9 +341,11 @@ public final class TekaStore {
         guard fd >= 0 else { throw AtomicFile.Failure(step: "create temp catalog", code: errno) }
         var renamed = false
         defer { if !renamed { unlink(temp.path) } }
-        try writeAll(fd, Data(text.utf8))
-        if fcntl(fd, F_FULLFSYNC) != 0 { fsync(fd) }
-        close(fd)
+        do {
+            defer { close(fd) }
+            try writeAll(fd, Data(text.utf8))
+            try flush(fd, "flush temp catalog")
+        }
 
         // Step 5: someone changed the file without the lock; start over.
         let (_, nowHash, _) = try readCatalog()
@@ -371,15 +389,25 @@ public final class TekaStore {
             try AtomicFile.makePrivateFolder(tornDir)
             let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
             try AtomicFile.write(data[cut...], to: tornDir.appendingPathComponent("\(stamp).ndjson"))
+            // Appending after a tail that could not be cut would join it to the new lines.
             let fd = open(opLogURL.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
-            if fd >= 0 { ftruncate(fd, off_t(cut)); close(fd) }
+            guard fd >= 0 else { throw AtomicFile.Failure(step: "open op log", code: errno) }
+            defer { close(fd) }
+            guard ftruncate(fd, off_t(cut)) == 0 else { throw AtomicFile.Failure(step: "cut the op log's torn tail", code: errno) }
         }
         let fd = open(opLogURL.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw AtomicFile.Failure(step: "open op log", code: errno) }
         defer { close(fd) }
         let text = lines.map { JSONWriter.compact(.object($0)) + "\n" }.joined()
         try writeAll(fd, Data(text.utf8))
-        if fcntl(fd, F_FULLFSYNC) != 0 { fsync(fd) }
+        try flush(fd, "flush op log")
+    }
+
+    /// Flushes a file to stable storage: `F_FULLFSYNC`, or `fsync` where that is not supported (binder-v0 §6.9
+    /// step 3). A failure throws, so no later step builds on a change that may not have reached the disk.
+    func flush(_ fd: Int32, _ step: String) throws {
+        if testHookFlushFails?(step) == true { throw AtomicFile.Failure(step: step, code: EIO) }
+        if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 { throw AtomicFile.Failure(step: step, code: errno) }
     }
 
     /// The byte length of the op log's part that took effect: complete lines, minus a trailing batch with fewer
@@ -462,6 +490,11 @@ public final class TekaStore {
             for op in trailing where op["op"] == .str("file_document") {
                 let args = op["args"]?.objectValue ?? JSONObject()
                 guard let to = args["document"]?["path"]?.stringValue, let sha = args["document"]?["sha256"]?.stringValue else { continue }
+                // A key or credential file is never read or moved, even for a logged write (binder-v0 §3.3).
+                if DocumentPaths.isKeyFile(to) || args["from"]?.stringValue.map(DocumentPaths.isKeyFile) == true {
+                    possible = false
+                    continue
+                }
                 let placed = DocumentPaths.plainFile(to, in: folder) && DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha
                 if let from = args["from"]?.stringValue, !placed {
                     if DocumentPaths.plainFile(from, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha,
@@ -475,21 +508,7 @@ public final class TekaStore {
                 }
             }
             guard possible else {
-                // Files this write already moved go back to intake/, so the card can be approved again; a file
-                // that cannot go back is named in the abort's reason.
-                var stranded: [String] = []
-                for op in trailing where op["op"] == .str("file_document") {
-                    let args = op["args"]?.objectValue ?? JSONObject()
-                    guard let from = args["from"]?.stringValue, let to = args["document"]?["path"]?.stringValue,
-                          let sha = args["document"]?["sha256"]?.stringValue,
-                          DocumentPaths.plainFile(to, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha else { continue }
-                    if DocumentPaths.isIntake(from), DocumentPaths.isFreeDestination(from, in: folder),
-                       (try? DocumentPaths.makeParents(from, in: folder)) != nil,
-                       renamex_np(folder.appendingPathComponent(to).path, folder.appendingPathComponent(from).path, UInt32(RENAME_EXCL)) == 0 {
-                        continue
-                    }
-                    stranded.append(to)
-                }
+                let stranded = restoreMoves(trailing, catalog: catalog)
                 let reason = "a filed file is missing from both intake/ and its destination"
                     + (stranded.isEmpty ? "" : "; moved but not recorded: " + stranded.joined(separator: ", "))
                 var abort = JSONObject()
@@ -518,6 +537,8 @@ public final class TekaStore {
         let snapshot: JSONObject? = (try? Data(contentsOf: snapshotURL)).flatMap { try? JSONParser.parse($0).value.objectValue } ?? nil
         var effectiveLog = log
         if S == b, S != a, let snap = snapshot, let b {
+            // The aborted write may have moved files before it stopped: they go back too.
+            let stranded = restoreMoves(trailing, catalog: catalog)
             var abort = JSONObject()
             abort.set("id", .string(UUIDv7.make(now: now)))
             abort.set("at", .string(ISOTime.string(now, timeZone: utc)))
@@ -526,7 +547,8 @@ public final class TekaStore {
             abort.set("after_hash", .string(b))
             abort.set("op", .str("abort"))
             abort.set("args", .obj([("ops", .array(trailing.compactMap { $0["id"] })),
-                                    ("reason", .str("the catalog was edited outside before this write reached the disk"))]))
+                                    ("reason", .string("the catalog was edited outside before this write reached the disk"
+                                        + (stranded.isEmpty ? "" : "; moved but not recorded: " + stranded.joined(separator: ", "))))]))
             appended.append(abort)
             effectiveLog.append(abort)
             expected = snap
@@ -564,16 +586,46 @@ public final class TekaStore {
         line.set("op", .str("external_edit"))
         line.set("args", .object(args))
         appended.append(line)
+        // The loss is never absorbed silently (binder-v0 §6.7 step 6): a card offers the lost ops again, as the
+        // person's own new ops. It is saved before the edit is recorded, so a card that cannot be saved leaves the
+        // edit unrecorded and the next pass finds the loss again; a card an earlier pass saved for the same ops is
+        // written over, never doubled.
+        if !lostOps.isEmpty, var card = Self.reapplyCard(lostOps, client: client, now: now) {
+            let lost = card.raw["provenance"]?["overwritten_ops"]
+            if let earlier = ProposalStore.list(in: folder).first(where: {
+                $0.0.state == "proposed" && $0.0.raw["provenance"]?["overwritten_ops"] == lost
+            }) {
+                card.raw.set("id", .string(earlier.0.id))
+            }
+            try ProposalStore.save(card, in: folder)
+            if !createdProposals.contains(card.id) { createdProposals.append(card.id) }
+        }
         try appendLines(appended)
         try AtomicFile.write(Data(JSONWriter.pretty(.object(catalog)).utf8), to: snapshotURL)
         lastAbsorbed = .externalEdit(revertedLastBatch: !lostOps.isEmpty)
-        // The loss is never absorbed silently (binder-v0 §6.7 step 6): a card offers the lost ops again, as the
-        // person's own new ops.
-        if !lostOps.isEmpty, let card = Self.reapplyCard(lostOps, client: client, now: now) {
-            try ProposalStore.save(card, in: folder)
-            createdProposals.append(card.id)
-        }
         return appended
+    }
+
+    /// Files a write cut short already moved go back to intake/, so its card can be approved again. A file the
+    /// found catalog records stays where it is, and a key or credential file is never touched (binder-v0 §3.3).
+    /// Returns the files that could not go back, for the abort to name.
+    func restoreMoves(_ trailing: [JSONObject], catalog: JSONObject) -> [String] {
+        let recorded = Set((catalog["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue })
+        var stranded: [String] = []
+        for op in trailing where op["op"] == .str("file_document") {
+            let args = op["args"]?.objectValue ?? JSONObject()
+            guard let from = args["from"]?.stringValue, let to = args["document"]?["path"]?.stringValue,
+                  let sha = args["document"]?["sha256"]?.stringValue, !recorded.contains(to),
+                  !DocumentPaths.isKeyFile(from), !DocumentPaths.isKeyFile(to),
+                  DocumentPaths.plainFile(to, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha else { continue }
+            if DocumentPaths.isIntake(from), DocumentPaths.isFreeDestination(from, in: folder),
+               (try? DocumentPaths.makeParents(from, in: folder)) != nil,
+               renamex_np(folder.appendingPathComponent(to).path, folder.appendingPathComponent(from).path, UInt32(RENAME_EXCL)) == 0 {
+                continue
+            }
+            stranded.append(to)
+        }
+        return stranded
     }
 
     /// Proposal ids this store wrote itself, for the caller to trust. A store lives for one command.
@@ -583,6 +635,8 @@ public final class TekaStore {
     package var testHookAfterAppend: (() throws -> Void)?
     /// Tests only: runs right before a batch takes the lock, where another program's edit could land.
     package var testHookBeforeLock: (() -> Void)?
+    /// Tests only: makes the flush of the named step fail, as a failing disk would.
+    package var testHookFlushFails: ((String) -> Bool)?
 
     /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item or a
     /// filed document gets a placeholder, because its old id was used once and is never reused; later ops that named

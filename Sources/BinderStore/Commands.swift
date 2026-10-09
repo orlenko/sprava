@@ -48,13 +48,30 @@ public struct Commands: Sendable {
     /// Throws when the digests cannot be kept; the caller then treats the card as not made.
     public func trustProposals(_ ids: [String], in folder: URL) throws { try recordDigests(ids, in: folder) }
 
+    /// Records a digest the caller took from bytes it read and checked itself, such as a stored card found to hold
+    /// exactly what a retried request asks for. Throws `ProposalStore.Tampered` when the file no longer has them.
+    public func trustChecked(_ id: String, digest: String, in folder: URL) throws {
+        _ = try ProposalStore.load(id, in: folder, expectedDigest: digest)
+        var digests = try loadDigests()
+        digests[key(folder, id)] = digest
+        try saveDigests(digests)
+    }
+
     package func key(_ folder: URL, _ id: String) -> String { folder.path + "#" + id }
 
+    /// Records the digest of the bytes `ProposalStore.save` wrote in this process, never one read back from the
+    /// file afterwards: another program could have replaced it in between (architecture 4.6). A card this process
+    /// did not write throws, and so does one whose file no longer holds those bytes.
     package func recordDigests(_ ids: [String], in folder: URL) throws {
         guard !ids.isEmpty else { return }
-        let wanted = Set(ids)
         var digests = try loadDigests()
-        for (p, d) in ProposalStore.list(in: folder) where wanted.contains(p.id) { digests[key(folder, p.id)] = d }
+        for id in Set(ids) {
+            guard let written = ProposalStore.writtenDigest(id, in: folder) else {
+                throw Failure(message: "proposal \(id) was not written by Sprava here; it is not trusted")
+            }
+            _ = try ProposalStore.load(id, in: folder, expectedDigest: written)
+            digests[key(folder, id)] = written
+        }
         try saveDigests(digests)
     }
 
@@ -81,7 +98,8 @@ public struct Commands: Sendable {
 
     /// Rewrites a stored card Sprava wrote and trusts the result. Every rewrite of a stored card goes through here:
     /// the bytes on disk are checked against the recorded digest first, so a card another program changed is left
-    /// as it is, unverified, and a rewrite never makes it trusted again. Throws `ProposalStore.Tampered` then.
+    /// as it is, unverified, and a rewrite never makes it trusted again. Throws `ProposalStore.Tampered` then. The
+    /// result is trusted by the digest of the bytes written, never by a read of the file afterwards.
     @discardableResult
     public func rewriteTrusted(_ id: String, in folder: URL, transform: (Proposal) throws -> Proposal) throws -> Proposal {
         let rewritten = try transform(try loadTrusted(id, in: folder))

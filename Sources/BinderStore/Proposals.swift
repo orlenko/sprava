@@ -335,6 +335,19 @@ public enum ProposalStore {
         "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The digest of the bytes this process last wrote for each card, by folder and id. A card is trusted from
+    /// these, never from a read of its file afterwards, which another program could have replaced in between
+    /// (architecture 4.6).
+    private static let writtenLock = NSLock()
+    nonisolated(unsafe) private static var written: [String: String] = [:]
+
+    static func writtenKey(_ id: String, in folder: URL) -> String { folder.standardizedFileURL.path + "#" + id }
+
+    /// The digest of the bytes `save` last wrote for this card in this process; nil when it wrote none.
+    package static func writtenDigest(_ id: String, in folder: URL) -> String? {
+        writtenLock.withLock { written[writtenKey(id, in: folder)] }
+    }
+
     /// Writes the proposal and returns the file's digest, which the caller records in its own state.
     @discardableResult
     public static func save(_ proposal: Proposal, in folder: URL) throws -> String {
@@ -347,7 +360,9 @@ public enum ProposalStore {
         }
         let data = Data(JSONWriter.pretty(.object(raw)).utf8)
         try AtomicFile.write(data, to: target.appendingPathComponent("\(proposal.id).json"))
-        return digest(data)
+        let d = digest(data)
+        writtenLock.withLock { written[writtenKey(proposal.id, in: folder)] = d }
+        return d
     }
 
     /// Every proposal in the binder, with its file digest. Unreadable files are skipped, and so is a file whose
@@ -393,23 +408,16 @@ extension TekaStore {
         if Proposal.hasDuplicatePlaceholders(edited ?? proposal.ops) {
             throw Refused(reason: "two new records on this card share one placeholder name")
         }
-        // A crash after the batch was written but before the card was marked: finish marking, apply nothing twice.
-        // The binder is settled first, so a write cut short is rolled forward or aborted, and aborted lines never
-        // count as applied.
-        try settle(now: now)
-        let log = try readOpLog().ops
-        let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
-        let already = log.filter { $0["proposal"]?.stringValue == proposal.id && !aborted.contains($0["id"]?.stringValue ?? "") }
-        if !already.isEmpty {
-            var raw = proposal.raw
-            raw.set("state", .str("applied"))
-            raw.set("applied_ops", .array(already.compactMap { $0["id"] }))
-            try ProposalStore.save(Proposal(raw: raw), in: folder)
-            return already
-        }
         // The card's `expect` is checked, and its placeholders minted, against the catalog the batch is applied to,
         // under the lock and after outside edits were absorbed (architecture 4.2 step 4).
-        let applied = try apply(building: { catalog, log in
+        func bodies(_ catalog: JSONObject, _ log: [JSONObject]) throws -> [OpBody] {
+            // A crash after the batch was written but before the card was marked, or another writer that approved the
+            // card first: finish marking, apply nothing twice. Decided under the lock that writes the batch, on the
+            // log as settled there, so a write cut short is rolled forward or aborted first, and aborted lines never
+            // count as applied.
+            let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+            let already = log.filter { $0["proposal"]?.stringValue == proposal.id && !aborted.contains($0["id"]?.stringValue ?? "") }
+            if !already.isEmpty { throw AlreadyApplied(lines: already) }
             let changed = proposal.changedSince(catalog: catalog)
             if !changed.isEmpty {
                 throw Refused(reason: "needs a look: changed since this card was made: " + changed.joined(separator: ", "))
@@ -422,7 +430,17 @@ extension TekaStore {
                        extra: [("proposal", .string(proposal.id)), ("approved_by", .string(approvedBy))]
                            + (op["note"].map { [("note", $0)] } ?? []))
             }
-        }, batch: proposal.id, now: now)
+        }
+        let applied: [JSONObject]
+        do {
+            applied = try apply(building: bodies, batch: proposal.id, now: now)
+        } catch let done as AlreadyApplied {
+            var raw = proposal.raw
+            raw.set("state", .str("applied"))
+            raw.set("applied_ops", .array(done.lines.compactMap { $0["id"] }))
+            try ProposalStore.save(Proposal(raw: raw), in: folder)
+            return done.lines
+        }
         var raw = proposal.raw
         raw.set("state", .str("applied"))
         raw.set("applied_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
@@ -430,6 +448,11 @@ extension TekaStore {
         if edited != nil { raw.set("edited", .bool(true)) }   // for the filing-quality measure (mvp.md 1.2)
         try ProposalStore.save(Proposal(raw: raw), in: folder)
         return applied
+    }
+
+    /// The card's ops are in the log already: `approve` marks the card and returns them, applying nothing.
+    struct AlreadyApplied: Error {
+        let lines: [JSONObject]
     }
 
     public func reject(_ proposal: Proposal, reason: String? = nil, now: Date = Date()) throws {

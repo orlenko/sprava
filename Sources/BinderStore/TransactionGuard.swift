@@ -131,6 +131,16 @@ public enum TransactionGuard {
             if let from = args?["from"], !DocumentPaths.isIntake(from.stringValue ?? "") {
                 problems.append("file_document: from must be a file under intake/")
             }
+            // A key or credential file is never read or moved, and no file is renamed to or from a key file's name,
+            // which would take it out of, or put it under, the readers' exclusion (binder-v0 §3.3).
+            if [doc?["path"], args?["from"]].contains(where: { $0?.stringValue.map(DocumentPaths.isKeyFile) == true }) {
+                problems.append("file_document: a key or credential file is never filed")
+            }
+        }
+        // A new path follows the path rules, under chapters/ and entities/ too, since nothing moves (binder-v0 §4.3).
+        if type == "update_document", let path = args?["set"]?["path"],
+           !DocumentPaths.isSafe(path.stringValue ?? "", forFiling: false) {
+            problems.append("update_document: path breaks the path rules")
         }
         // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2): neither is set
         // nor removed, so a series never quietly becomes a one-off.
