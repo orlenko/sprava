@@ -60,7 +60,8 @@ import Testing
             Issue.record("not done"); return
         }
         #expect(record.backupID == id)
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(copy, deviceID: "dev", confirmOpenItems: true, now: now) }
+        // The offloaded binder's id is reserved (`claim`).
+        #expect(throws: Backup.SharedBackupID.self) { _ = try b.offload(copy, deviceID: "dev", confirmOpenItems: true, now: now) }
         #expect(try b.offloaded() == [record])
         #expect(FileManager.default.fileExists(atPath: copy.appendingPathComponent("correspondence/notary/draft.pdf").path))
 

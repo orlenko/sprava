@@ -59,10 +59,12 @@ import Testing
         st.restoring[record.backupID] = e.folder.standardizedFileURL.path
         st.restored[record.backupID] = nil
         try b.save(st)
-        try Data("invented edit".utf8).write(to: e.folder.appendingPathComponent(letter))
+        // The person approved an entry since (the catalog and the op log grew); every document is as restored.
+        try bb.addLogEntry(e.folder, "invented approval")
 
         _ = try b.restore(record.backupID, now: now)
-        #expect(try String(contentsOf: e.folder.appendingPathComponent(letter), encoding: .utf8) == "invented edit")
+        let titles = (Teka.read(e.folder).catalog?["processing_log"]?.arrayValue ?? []).compactMap { $0["title"]?.stringValue }
+        #expect(titles.contains("invented approval"))
         #expect(try b.offloaded().isEmpty)
         #expect(try b.state().restoring.isEmpty)
         // No baseline: the binder may have changed, so the next offload takes a new snapshot.

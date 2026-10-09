@@ -157,6 +157,15 @@ public struct Restic: Sendable {
         /// For a snapshot `rewrite` made, the id of the snapshot it replaced (restic's `original`); a copy keeps the
         /// field as it was.
         public var original: String? = nil
+
+        /// `time` as a date ("2026-10-09T00:59:52.345658-04:00"; restic writes nanoseconds, which ISO8601DateFormatter
+        /// does not read, so the fraction is added apart). Nil when it cannot be read.
+        public var date: Date? {
+            guard let m = time.wholeMatch(of: /(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)/) else { return nil }
+            let f = ISO8601DateFormatter()
+            guard let whole = f.date(from: String(m.1) + String(m.3)) else { return nil }
+            return whole.addingTimeInterval(m.2.flatMap { Double("0" + $0) } ?? 0)
+        }
     }
 
     public func snapshots(tag: String? = nil) throws -> [Snapshot] {
@@ -207,14 +216,18 @@ public struct Restic: Sendable {
                      "--keep-monthly", String(keepMonthly), "--keep-yearly", String(keepYearly), "--keep-tag", "offloaded", "--prune", "-q"])
     }
 
-    /// Rewrites every snapshot carrying `tag` without the entry at `path` inside the binder ("documents/deed.pdf"),
-    /// and removes the originals (`--forget`; without it restic keeps them, and the entry with them). A rewrite keeps
-    /// a snapshot's time and tags and names the snapshot it replaced in `original`, so `replacements` maps them, also
-    /// after a rewrite that was cut off. `prune` then removes the data no snapshot uses any more.
-    public func rewrite(tag: String, excluding path: String) throws {
+    /// Rewrites the given snapshots, and only those, without the entry at `path` inside the binder
+    /// ("documents/deed.pdf"), and removes the originals (`--forget`; without it restic keeps them, and the entry
+    /// with them). A rewrite keeps a snapshot's time and tags and names the snapshot it replaced in `original`, so
+    /// `replacements` maps them, also after a rewrite that was cut off. `prune` then removes the data no snapshot
+    /// uses any more. No snapshot named does nothing: restic would take that as every snapshot.
+    public func rewrite(snapshots: [String], excluding path: String) throws {
+        guard !snapshots.isEmpty else { return }
         // Anchored at the snapshot's root, with the pattern characters in the name taken literally.
         let pattern = "/" + path.map { "*?[\\".contains($0) ? "\\\($0)" : String($0) }.joined()
-        try checked(["rewrite", "--tag", tag, "--exclude", pattern, "--forget", "-q"])
+        // Snapshot ids are restic's own hex ids, never options; `run` adds the repository after them.
+        guard snapshots.allSatisfy({ $0.wholeMatch(of: /[0-9a-f]{8,64}/) != nil }) else { throw Failure(message: "restic rewrite: not a snapshot id") }
+        try checked(["rewrite", "--exclude", pattern, "--forget", "-q"] + snapshots)
     }
 
     /// The snapshots carrying `tag` that replaced one of `before`, by the id they replaced. A snapshot that is itself

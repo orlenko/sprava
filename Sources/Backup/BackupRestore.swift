@@ -28,12 +28,17 @@ extension Backup {
         let live = ShelfStore(supportDirectory: support).rows(includeArchived: true)
             .contains { Self.realPath($0.folder) == Self.realPath(destination) }
         if live {
-            // An older restore that put the binder on the Shelf and stopped before its records were saved: the binder
-            // is live and may have changed, so only the records are finished, with no baseline (the next offload
-            // takes a new snapshot). Any other binder on the Shelf there is refused.
+            // Only a restore whose files were recorded as in place is finished without restic (`restoredContents`).
+            // An older Sprava put the binder on the Shelf and stopped before its records were saved; the folder may
+            // also be a partial restore the person put on the Shelf, or another binder. It counts as the restored
+            // binder only when it is: its backup id, its history (the snapshot's op log, which only grows, still
+            // starts it), and every other entry the snapshot holds present with the same contents. Then only the
+            // records are finished, with no baseline (the next offload takes a new snapshot); nothing is written into
+            // the folder either way.
             guard st.restoring[backupID] == destination.path else {
                 throw Failure(message: "\(destination.lastPathComponent) is a binder on the Shelf; choose another place")
             }
+            try verifyLive(record, s, destination: destination)
             st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: nil)
             try save(st)
             return try finishRestore(backupID)
@@ -80,6 +85,32 @@ extension Backup {
         try save(st)
         step("restore.contents")
         return try finishRestore(backupID)
+    }
+
+    /// Checks that a folder on the Shelf is all of an offloaded binder's snapshot (`restore`), reading it only. The
+    /// catalog, DASHBOARD.md and `.sprava/` other than the op log change with every approval, so they are not compared.
+    func verifyLive(_ record: Offloaded, _ s: Settings, destination: URL) throws {
+        let name = destination.lastPathComponent
+        func conflict(_ why: String) -> Failure {
+            Failure(message: "\(name) is on the Shelf but \(why); nothing was changed, and the offloaded binder's record is kept. "
+                + "Take that folder off the Shelf and restore again to finish into it, or restore into another place")
+        }
+        guard (try? Self.storedBackupID(destination)) == record.backupID else { throw conflict("is another binder (its backup id differs)") }
+        let (held, history) = try fromBackups(record, s) { r, snapshot -> ([String: String], Data?) in
+            let verify = dir.appendingPathComponent("verify/live-\(record.backupID)", isDirectory: true)
+            try? FileManager.default.removeItem(at: verify)
+            try AtomicFile.makePrivateFolder(verify)
+            defer { try? FileManager.default.removeItem(at: verify) }
+            try r.restore(snapshot, into: verify)
+            return (try Self.manifest(verify), try? Data(contentsOf: verify.appendingPathComponent(".sprava/ops.ndjson")))
+        }
+        let current: [String: String]
+        do { current = try Self.manifest(destination) } catch { throw conflict("cannot be read whole") }
+        let changing: Set<String> = ["catalog.json", "DASHBOARD.md", ".sprava"]
+        let differ = held.filter { !changing.contains($0.key) && !$0.key.hasPrefix(".sprava/") && current[$0.key] != $0.value }
+        guard differ.isEmpty else { throw conflict("lacks \(differ.count) of the restored binder's files, or holds them changed") }
+        let now = try? Data(contentsOf: destination.appendingPathComponent(".sprava/ops.ndjson"))
+        if let history, !(now?.starts(with: history) ?? false) { throw conflict("its history is not the restored binder's") }
     }
 
     /// The bookkeeping after a restore's files are in place: the binder goes on the Shelf, then its records change.
