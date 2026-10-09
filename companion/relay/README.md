@@ -171,7 +171,7 @@ adds what is particular to each endpoint.
 | `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its tombstone, then the object | revision names; a deleted name refuses every PUT and a copy brought back is never served or listed; intents stay | the creation lock |
 | `GET /v0/objects...` | nothing | | the device's lock (guard), so no revoked device reads |
 | `POST /v0/requests/{R}` | `ordinals/{D}/{block}`, the request | a block holds one process's lease name; an ordinal is never given twice; 409 only when the stored copy is there and synced | the device's lock (guard), after the body |
-| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents | the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted | the device's lock |
+| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
 
 ## Layout
 

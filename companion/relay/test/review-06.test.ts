@@ -212,3 +212,69 @@ test('a deleted object name is dead: a later PUT is 409, and a copy a late write
     assert.deepEqual(((await (await call('GET', '/v0/objects?prefix=index/', owner)).json()) as { names: string[] }).names, []);
     await t.close();
 });
+
+test('a request whose write failed keeps its name and bytes: a retry with other bytes is never stored (§7.6)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    stubs.push(stub);
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const device = await seedDevice(scoped(raw, INSTANCE), { active: true });
+    const t = await startTestRelay({ raw });
+    const r = newId();
+    const post = (body: number) => fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([body]), headers: bearer(device.token) });
+    stub.hold((key) => key.includes(`-${r}`) && !key.includes('/intents/')); // the copy, after its intent
+    assert.equal((await post(1)).status, 500);
+    stub.hold(() => false);
+    assert.equal((await post(2)).status, 503, 'other bytes never take the name, nor another ordinal');
+    stub.landHeld();
+    assert.equal((await post(1)).status, 409, 'the first bytes, landed late, are the request');
+    const listing = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: unknown[] };
+    assert.equal(listing.requests.length, 1);
+    assert.deepEqual(new Uint8Array(await (await fetch(`${t.url}/v0/requests/${device.id}/${r}`, { headers: bearer(owner) })).arrayBuffer()), new Uint8Array([1]));
+    await t.close();
+});
+
+test('what deletion leaves is bounded: drained requests leave no tombstones behind the floor (§7.6)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const clock = { now: Date.now() };
+    const t = await startTestRelay({ raw, now: () => clock.now });
+    const post = () => fetch(`${t.url}/v0/requests/${newId()}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) });
+    const drain = async () => {
+        const { requests } = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+        for (const { request_id } of requests) await fetch(`${t.url}/v0/requests/${device.id}/${request_id}`, { method: 'DELETE', headers: bearer(owner) });
+    };
+    for (let cycle = 0; cycle < 3; cycle++) {
+        for (let i = 0; i < 5; i++) assert.equal((await post()).status, 201);
+        await drain();
+    }
+    assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), [], 'the floor covers every drained name');
+    assert.equal((await store.list(`floors/${device.id}/`)).length, 1);
+    assert.deepEqual(await store.list(`intents/requests/${device.id}/`), []);
+    // A late copy below the floor counts as deleted, and is never listed again.
+    const [floorKey] = await store.list(`floors/${device.id}/`);
+    const below = Number(floorKey!.split('/').at(-1)) - 1;
+    await store.put(`requests/${device.id}/${String(below).padStart(16, '0')}-${newId()}`, new Uint8Array([9]));
+    const { requests } = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: unknown[] };
+    assert.deepEqual(requests, []);
+    await t.close();
+});
+
+test('a mailbox whose copies are all missing is found at start, and deleting from it is final', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const first = await startTestRelay({ raw });
+    const [a, b] = [newId(), newId()];
+    for (const r of [a, b]) {
+        assert.equal((await fetch(`${first.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    }
+    await first.close();
+    for (const key of await store.list(`requests/${device.id}/`)) await store.delete(key);
+    const second = await startTestRelay({ raw });
+    assert.equal((await fetch(`${second.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    const { requests } = (await (await fetch(`${second.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+    assert.deepEqual(requests.map((x) => x.request_id), [b]);
+    await second.close();
+});

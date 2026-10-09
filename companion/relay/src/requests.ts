@@ -12,7 +12,12 @@ const PER_HOUR = 120;
 const MAX_PENDING = 1000;
 export const REQUEST_EXPIRY_MS = 30 * 24 * HOUR;
 const RESERVED = 'ordinals/';
+/** `floors/{D}/{ordinal}`: every request name of the device below the highest such ordinal counts as deleted. */
+const FLOORS = 'floors/';
+const TOMBSTONE = /^tombstones\/requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})$/;
+const pad = (n: number): string => String(n).padStart(16, '0');
 const BLOCK = 1024;
+const INTENTS_PREFIX = 'intents/requests/';
 const INTENT = /^intents\/requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})\/([0-9a-f]{64})$/;
 const NAME = /^requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})$/;
 
@@ -36,6 +41,16 @@ export function requests(relay: Relay, devices: Devices) {
     const sent = new SlidingWindow(HOUR, PER_HOUR);
     /** Per device, the end (exclusive) of the block of ordinals this process reserved and may use. */
     const reservedUpTo = new Map<string, number>();
+    /** Per device, its floor (§7.6): read once from the bucket, raised only by this process. */
+    const floors = new Map<string, number>();
+
+    async function floorLocked(d: string): Promise<number> {
+        if (!floors.has(d)) {
+            const listed = (await store.list(`${FLOORS}${d}/`)).map((key) => Number(key.slice(`${FLOORS}${d}/`.length)));
+            floors.set(d, Math.max(0, ...listed.filter(Number.isSafeInteger)));
+        }
+        return floors.get(d)!;
+    }
 
     /**
      * Merges a device's listing into its mailbox; the device's lock must be held. Two copies of one R keep the
@@ -48,14 +63,16 @@ export function requests(relay: Relay, devices: Devices) {
             return mailboxes.get(d)!;
         }
         const mailbox = mailboxes.get(d) ?? new Map<string, Entry>();
-        let highest = 0;
+        const floor = await floorLocked(d);
+        let highest = floor;
         const bodies = new Set<string>();
         for (const { key, modified } of await store.listTimes(`requests/${d}/`)) {
             const match = NAME.exec(key);
             if (match === null || match[1] !== d) continue;
             highest = Math.max(highest, Number(match[2]));
-            // A copy a late write brought back after the owner deleted it stays deleted (invariant 5).
-            if (await isDeleted(store, key)) {
+            // A copy a late write brought back after the owner deleted it stays deleted (invariant 5): below the
+            // floor every name is deleted, and above it the tombstone says so.
+            if (Number(match[2]) < floor || (await isDeleted(store, key))) {
                 await retire(key);
                 continue;
             }
@@ -70,6 +87,10 @@ export function requests(relay: Relay, devices: Devices) {
             if (match === null || match[1] !== d) continue;
             const key = `requests/${d}/${match[2]}-${match[3]}`;
             highest = Math.max(highest, Number(match[2]));
+            if (Number(match[2]) < floor) {
+                await store.delete(intent);
+                continue;
+            }
             if (bodies.has(key) || mailbox.has(match[3]!) || (await isDeleted(store, key))) continue;
             mailbox.set(match[3]!, { ordinal: Number(match[2]), key, received: modified, digest: match[4]! });
         }
@@ -105,6 +126,30 @@ export function requests(relay: Relay, devices: Devices) {
     }
 
     /**
+     * Raises the device's floor to its lowest pending ordinal (or its next one, with nothing pending), then deletes
+     * what the floor now covers: tombstones, stray copies and intents, lower floors, and ordinal reservations but
+     * the highest. So what deletion leaves behind is bounded by what is pending, not by every request ever made,
+     * and a late write below the floor still counts as deleted. The device's lock must be held.
+     */
+    async function compactLocked(d: string): Promise<void> {
+        const mailbox = mailboxes.get(d);
+        if (mailbox === undefined) return;
+        const lowest = Math.min(nextOrdinal.get(d) ?? 1, ...[...mailbox.values()].map((e) => e.ordinal));
+        if (lowest <= (await floorLocked(d))) return;
+        await store.put(`${FLOORS}${d}/${pad(lowest)}`, new Uint8Array()); // durable before anything it covers goes
+        floors.set(d, lowest);
+        for (const key of await store.list(`tombstones/requests/${d}/`)) {
+            const match = TOMBSTONE.exec(key);
+            if (match !== null && Number(match[2]) < lowest) await store.delete(key);
+        }
+        for (const key of await store.list(`${FLOORS}${d}/`)) if (key !== `${FLOORS}${d}/${pad(lowest)}`) await store.delete(key);
+        const blocks = await store.list(`${RESERVED}${d}/`);
+        for (const key of blocks.slice(0, -1)) {
+            if ((Number(key.slice(`${RESERVED}${d}/`.length)) + 1) * BLOCK <= lowest) await store.delete(key);
+        }
+    }
+
+    /**
      * §7.6: the next ordinal, taken before the write so a write of unknown outcome never shares its ordinal. Its
      * block is reserved durably first (`ordinals/{D}/{block}`, written once, holding this process's lease name), so
      * a later process starts above it, and two processes can never both hold one block.
@@ -124,7 +169,11 @@ export function requests(relay: Relay, devices: Devices) {
 
     /** At start, and hourly: every mailbox is read again, and requests older than 30 days are deleted (§7.6). */
     async function sweep(): Promise<void> {
-        const listed = (await store.list('requests/')).map((key) => key.split('/')[1]!);
+        // A device whose copies are all missing still has intents: it is found from them too.
+        const listed = [
+            ...(await store.list('requests/')).map((key) => key.split('/')[1]!),
+            ...(await store.list(INTENTS_PREFIX)).map((key) => key.split('/')[2]!),
+        ];
         for (const d of new Set([...listed, ...mailboxes.keys()].filter((id) => isId(id)))) {
             await relay.deviceLocks.run(d, async () => {
                 const mailbox = await refreshLocked(d);
@@ -134,6 +183,7 @@ export function requests(relay: Relay, devices: Devices) {
                         mailbox.delete(r);
                     }
                 }
+                await compactLocked(d);
             });
         }
     }
@@ -175,8 +225,17 @@ export function requests(relay: Relay, devices: Devices) {
                 if (!sent.admit(d, relay.now())) throw new HttpError(429, 'Too many requests; wait and try again.');
                 if (mailbox.size >= MAX_PENDING) throw new HttpError(507, 'Too many requests are waiting for the Mac.');
                 const ordinal = await takeOrdinalLocked(d);
-                const key = `requests/${d}/${String(ordinal).padStart(16, '0')}-${r}`;
-                if ((await writeOnce(store, key, call.body)) === 'different') {
+                const key = `requests/${d}/${pad(ordinal)}-${r}`;
+                let written;
+                try {
+                    written = await writeOnce(store, key, call.body);
+                } catch (error) {
+                    // Its intent may be durable and its copy may still land: the name and bytes stay this request's,
+                    // so a retry with other bytes is refused rather than stored under another ordinal (invariant 1).
+                    mailbox.set(r, { ordinal, key, received: relay.now(), digest });
+                    throw error;
+                }
+                if (written === 'different') {
                     throw new HttpError(503, 'This request could not be stored; try again.', { 'Retry-After': '5' });
                 }
                 mailbox.set(r, { ordinal, key, received: relay.now(), digest });
@@ -229,9 +288,11 @@ export function requests(relay: Relay, devices: Devices) {
             async handle(call) {
                 const d = ids(call.params.D, call.params.R);
                 await relay.deviceLocks.run(d, async () => {
+                    if (!mailboxes.has(d)) await refreshLocked(d);
                     const entry = mailboxes.get(d)?.get(call.params.R!);
                     if (entry !== undefined) await retire(entry.key);
                     mailboxes.get(d)?.delete(call.params.R!);
+                    await compactLocked(d);
                 });
                 return { status: 204 };
             },
