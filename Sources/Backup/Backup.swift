@@ -119,6 +119,14 @@ public struct Backup: Sendable {
         var rewrites: [Rewrite] = []
         /// Documents deleted for good that the backups are to forget, waiting or done (`forgetDocument`).
         var forgetting: [Forgetting] = []
+        /// Tombstones of finished forgetting requests no longer shown: which deletion, in which binder, at which path.
+        var forgotten: [Forgotten] = []
+        struct Forgotten: Codable, Equatable {
+            var request: String
+            var backupID: String
+            var path: String
+            var done: String
+        }
         struct BinderRecord: Codable, Equatable {
             /// The folder that holds this backup id. A copy of the folder carries the same id; while both are there,
             /// neither backup nor forgetting runs for the copy (`claim`).
@@ -347,6 +355,7 @@ extension Backup.State {
         restoredContents = try c.decodeIfPresent([String: RestoredContents].self, forKey: .restoredContents) ?? [:]
         rewrites = try c.decodeIfPresent([Rewrite].self, forKey: .rewrites) ?? []
         forgetting = try c.decodeIfPresent([Backup.Forgetting].self, forKey: .forgetting) ?? []
+        forgotten = try c.decodeIfPresent([Forgotten].self, forKey: .forgotten) ?? []
     }
 }
 

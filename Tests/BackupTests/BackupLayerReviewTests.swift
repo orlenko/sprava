@@ -60,8 +60,8 @@ import Testing
         try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent("documents/current.pdf").path, withDestinationPath: "deed.pdf")
         let m = try Backup.manifest(folder)
         #expect(m["documents/current.pdf"] == "link deed.pdf")
-        #expect(m["documents/empty"] == "folder")
-        #expect(m["documents/deed.pdf"]?.count == 64)
+        #expect(m["documents/empty"]?.hasPrefix("folder mode:") == true)
+        #expect(m["documents/deed.pdf"]?.wholeMatch(of: /[0-9a-f]{64} mode:[0-7]+( xattr:[0-9a-f]{64})?/) != nil)
 
         let hidden = folder.appendingPathComponent("documents/hidden")
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)

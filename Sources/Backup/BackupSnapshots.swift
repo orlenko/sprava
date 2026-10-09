@@ -244,8 +244,14 @@ extension Backup {
     // MARK: - Manifests
 
     /// Every entry under `folder` that a snapshot holds, as restic backs it up: a file with its SHA-256, a symbolic
-    /// link with its target, a folder as such. A folder that cannot be listed or a file that cannot be read throws:
-    /// whatever a manifest left out could leave the Mac while the binder still counts as unchanged.
+    /// link with its target, a folder as such; files and folders also with their permission bits and extended
+    /// attributes, which restic saves and restores on macOS (Finder tags and comments, resource forks, quarantine),
+    /// so a change to those alone is a change: "Offload again" takes a new snapshot, and the last check before the
+    /// folder leaves sees it. A folder that cannot be listed or an entry that cannot be read throws: whatever a
+    /// manifest left out could leave the Mac while the binder still counts as unchanged.
+    ///
+    /// Left out are the attributes macOS itself keeps and a restore cannot give back (`volatileAttributes`): they
+    /// would make every verification fail, and no person sets them. The binder folder's own metadata is not compared.
     static func manifest(_ folder: URL) throws -> [String: String] {
         var out: [String: String] = [:]
         func unreadable(_ rel: String) -> Failure {
@@ -260,16 +266,20 @@ extension Backup {
                 let rel = prefix.isEmpty ? name : prefix + "/" + name
                 var info = stat()
                 guard lstat(url.path, &info) == 0 else { throw unreadable(rel) }
+                func metadata() throws -> String {
+                    guard let attributes = Self.attributesDigest(url.path) else { throw unreadable(rel) }
+                    return " mode:" + String(info.st_mode & 0o7777, radix: 8) + (attributes.isEmpty ? "" : " xattr:" + attributes)
+                }
                 switch info.st_mode & S_IFMT {
                 case S_IFDIR:
-                    out[rel] = "folder"
+                    out[rel] = "folder" + (try metadata())
                     try walk(url, rel)
                 case S_IFLNK:
                     guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { throw unreadable(rel) }
                     out[rel] = "link " + target
                 case S_IFREG:
                     guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
-                    out[rel] = sha
+                    out[rel] = sha + (try metadata())
                 default:
                     out[rel] = "special \(info.st_mode & S_IFMT)"
                 }
@@ -277,6 +287,46 @@ extension Backup {
         }
         try walk(folder, "")
         return out
+    }
+
+    /// Extended attributes macOS sets and keeps itself, which a restore cannot write back: the process that wrote a
+    /// file (`com.apple.provenance`), sandbox access grants (`com.apple.macl`, protected), System Integrity
+    /// Protection's mark, and the last-opened date Finder updates on every open. Everything else counts.
+    static let volatileAttributes: Set<String> = ["com.apple.provenance", "com.apple.macl", "com.apple.rootless", "com.apple.lastuseddate#PS"]
+
+    /// A digest of an entry's extended attributes, names and values, without following a link; "" when it has none
+    /// that count, nil when they cannot be read.
+    static func attributesDigest(_ path: String) -> String? {
+        func list() -> [String]? {
+            for _ in 0..<3 {
+                let size = listxattr(path, nil, 0, XATTR_NOFOLLOW)
+                guard size >= 0 else { return nil }
+                if size == 0 { return [] }
+                var buffer = [CChar](repeating: 0, count: size)
+                let got = listxattr(path, &buffer, size, XATTR_NOFOLLOW)
+                if got < 0 { if errno == ERANGE { continue }; return nil }
+                return buffer.prefix(got).split(separator: 0).map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
+            }
+            return nil
+        }
+        guard let names = list()?.filter({ !volatileAttributes.contains($0) }).sorted() else { return nil }
+        if names.isEmpty { return "" }
+        var hasher = SHA256()
+        for name in names {
+            var value: [UInt8]?
+            for _ in 0..<3 {
+                let size = getxattr(path, name, nil, 0, 0, XATTR_NOFOLLOW)
+                guard size >= 0 else { if errno == ENOATTR { value = []; break }; return nil }
+                var buffer = [UInt8](repeating: 0, count: size)
+                let got = getxattr(path, name, &buffer, size, 0, XATTR_NOFOLLOW)
+                if got < 0 { if errno == ERANGE { continue }; if errno == ENOATTR { value = []; break }; return nil }
+                value = Array(buffer.prefix(got))
+                break
+            }
+            guard let value else { return nil }
+            hasher.update(data: Data(name.utf8) + [0] + withUnsafeBytes(of: UInt64(value.count).bigEndian) { Data($0) } + value)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// One digest for a whole manifest, to tell later whether the binder still matches it.

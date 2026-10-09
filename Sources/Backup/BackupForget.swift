@@ -90,6 +90,14 @@ extension Backup {
         if let other = st.forgetting.first(where: { $0.request == request && !mine($0) }) {
             throw Failure(message: "request \(request) already forgets \(other.path) in another binder")
         }
+        // A request finished long ago has left the list but not its tombstone: asking again is answered from it, and
+        // never starts a new request that would reach snapshots made after it (a document filed later at the path).
+        if let done = st.forgotten.first(where: { $0.request == request }) {
+            guard done.backupID == id, done.path == path else {
+                throw Failure(message: "request \(request) already forgot \(done.path) in another binder")
+            }
+            return true
+        }
         if !st.forgetting.contains(where: mine) {
             let requested = Date()
             // The snapshots each reachable repository holds now; one that is away gets its share by time, later.
@@ -103,8 +111,9 @@ extension Backup {
             step("forget.recorded")
         }
         try forgetPending(now: now)
-        // A finished request is shown for 30 days, then dropped: one no longer listed was done long ago.
-        return try state().forgetting.first(where: mine).map { $0.done != nil } ?? true
+        // A finished request is shown for 30 days, then only its tombstone stays (`forgotten`).
+        let after = try state()
+        return after.forgetting.first(where: mine).map { $0.done != nil } ?? after.forgotten.contains { $0.request == request }
     }
 
     /// Every repository that may hold a binder's snapshots: the current two, and every one a record names for it
@@ -129,7 +138,17 @@ extension Backup {
     func forgetPending(now: Date) throws -> Int {
         let s = try settings()
         var st = try state()
-        st.forgetting.removeAll { f in f.done.flatMap { ISOTime.date($0) }.map { now.timeIntervalSince($0) > 30 * 86_400 } ?? false }
+        // Finished requests are shown for 30 days; then only a tombstone of each stays, for good, so the same deletion
+        // asked for again is known as done (`forget`).
+        let expired = { (f: Forgetting) in f.done.flatMap { ISOTime.date($0) }.map { now.timeIntervalSince($0) > 30 * 86_400 } ?? false }
+        for f in st.forgetting where expired(f) {
+            guard let request = f.request, let done = f.done, !st.forgotten.contains(where: { $0.request == request }) else { continue }
+            st.forgotten.append(State.Forgotten(request: request, backupID: f.backupID, path: f.path, done: done))
+        }
+        if st.forgetting.contains(where: expired) {
+            st.forgetting.removeAll(where: expired)
+            try save(st)
+        }
         for i in st.forgetting.indices where st.forgetting[i].done == nil {
             let id = st.forgetting[i].backupID, path = st.forgetting[i].path
             // A repository a record has named since (destinations changed) is added, and kept with the request.
