@@ -129,13 +129,10 @@ async function decide(relay: Relay, code: string, hash: string, record: Uint8Arr
         return failures.record(address, relay.now()) >= 5 ? 'throttled' : 'wrong';
     }
     // Step 5: the owner record, written once under the creation lock. Its intent, durable before its bytes are sent,
-    // is the single claim slot: while another claim's intent stands, its write may still land, so this claim is
-    // refused; a claim whose intent was never confirmed never sent its bytes. So at most one claim is ever
-    // acknowledged, and a late write can only repeat it (store.ts, writeOnce). An intent of an earlier process is
-    // void once this one has warmed up (store.ts, setWriter): it can no longer be followed by its bytes.
-    return relay.lock.run(async () =>
-        (await writeOnce(relay.store, OWNER, record, { voidStale: true })) === 'different' ? 'taken' : adopt(relay, hash),
-    );
+    // is the single claim slot: once a claim's intent exists, its write may still land, at any time, so the slot is
+    // bound to that claim for good. Only the same body, retried, completes it; every other claim is refused (409).
+    // The Mac keeps its claim body and resends it (§6); a lost body means a new instance (README, trade-off A).
+    return relay.lock.run(async () => ((await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash)));
 }
 
 function adopt(relay: Relay, hash: string): 'claimed' {

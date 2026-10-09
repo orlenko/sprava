@@ -3,13 +3,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CLAIM_TIMING, claimRoute } from './claim.ts';
 import { ConfigError, isSetupCode, type Config } from './config.ts';
 import { deviceRoutes, Devices } from './devices.ts';
-import { isHashHex, sameBytes, sha256Hex } from './encoding.ts';
+import { isHashHex, sameBytes } from './encoding.ts';
 import { createHandler, type Route } from './http.ts';
 import { OWNER, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
 import { repairAtStart } from './startup.ts';
-import { INTENTS, KeyedMutex, Mutex, setWriter, writeOnce, type Store } from './store/store.ts';
+import { KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
 
 export interface Relay {
     readonly config: Config;
@@ -77,11 +77,9 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
     const timing = options.lease ?? LEASE_TIMING;
     const { lease } = await Lease.take(store, options.log, timing, options.onFenced);
     const timers: NodeJS.Timeout[] = [];
-    const fenced = lease.fenceStore();
-    setWriter(fenced, lease.name);
     const relay: Relay = {
         config,
-        store: fenced,
+        store: lease.fenceStore(),
         log: options.log,
         lock: new Mutex(),
         deviceLocks: new KeyedMutex(),
@@ -103,12 +101,9 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         await lease.check();
         await lease.assertHeld();
         relay.ownerHash = await readOwner(relay.store);
-        // The owner record made durable (a write may have failed after it became readable). Every claim intent but
-        // the owner's is cleared: after the warm-up, none of them can still be followed by its bytes (§7.9), so
-        // none can block a claim; with no owner, all of them go.
+        // The owner record made durable (a write may have failed after it became readable). Claim intents are never
+        // deleted: one binds the slot to its claim for good (README, accepted trade-off A).
         if (relay.ownerHash !== null) await writeOnce(relay.store, OWNER, ownerRecord(relay.ownerHash));
-        const kept = relay.ownerHash === null ? null : `${INTENTS}${OWNER}/${sha256Hex(ownerRecord(relay.ownerHash))}`;
-        for (const intent of await relay.store.list(`${INTENTS}${OWNER}/`)) if (intent !== kept) await relay.store.delete(intent);
         await repairAtStart(relay, devices);
         await devices.load();
         await lease.retireEarlier();

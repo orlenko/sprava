@@ -163,40 +163,12 @@ export const INTENTS = 'intents/';
 export const intentsOf = (key: string): string => `${INTENTS}${key}/`;
 
 /**
- * The lease name of the process writing through a store (lease.ts), recorded in each intent it writes. Once a
- * process has finished its warm-up, no write a lower-ranked process began can still land (§7.9: every S3 call ends
- * within the warm-up), so an intent of a lower rank whose object is absent will never be followed by its bytes: it
- * is void. Only where contenders legitimately bring other bytes (claims, joins) do void intents block nothing
- * (writeOnce's `voidStale`); everywhere else every intent counts, so the protection holds without the timing.
- * Intents of this process, of a higher rank, or of no recorded rank always count.
- */
-const writers = new WeakMap<Store, string>();
-
-export function setWriter(store: Store, lease: string): void {
-    writers.set(store, lease);
-}
-
-/** The intents of a key that can still be followed by their bytes (see setWriter). */
-export async function liveIntents(store: Store, key: string): Promise<string[]> {
-    const me = writers.get(store);
-    const live: string[] = [];
-    for (const name of await store.list(intentsOf(key))) {
-        if (me !== undefined) {
-            const writer = Buffer.from((await store.get(name)) ?? new Uint8Array()).toString('utf8');
-            if (writer !== '' && writer < me) continue;
-        }
-        live.push(name);
-    }
-    return live;
-}
-
-/**
  * §6 step 5, §7.8: writes a write-once object. Called under the lock that guards the key, so the check and the
  * write are atomic in this process; across processes and restarts, the intents above fix the bytes. 'same' means
  * the stored bytes are identical (a retry, made durable before it is acknowledged), 'different' that other bytes
  * were stored or chosen first.
  */
-export async function writeOnce(store: Store, key: string, body: Uint8Array, options: { voidStale?: boolean } = {}): Promise<WriteOnce> {
+export async function writeOnce(store: Store, key: string, body: Uint8Array): Promise<WriteOnce> {
     const pending = uncertain.get(store) ?? new Map<string, Uint8Array>();
     uncertain.set(store, pending);
     const earlier = pending.get(key);
@@ -213,13 +185,12 @@ export async function writeOnce(store: Store, key: string, body: Uint8Array, opt
     const existing = await store.get(key);
     if (existing !== null) return confirm(existing);
     const mine = intentsOf(key) + sha256Hex(body);
-    const intents = async (): Promise<string[]> => (options.voidStale === true ? liveIntents(store, key) : store.list(intentsOf(key)));
-    const others = async (): Promise<boolean> => (await intents()).some((name) => name !== mine);
+    const others = async (): Promise<boolean> => (await store.list(intentsOf(key))).some((name) => name !== mine);
     if (await others()) return 'different';
     if (earlier === undefined && pending.size >= MAX_UNCERTAIN) throw new Error('too many writes of unknown outcome');
     let created: boolean;
     try {
-        await store.put(mine, new Uint8Array(Buffer.from(writers.get(store) ?? '')));
+        await store.put(mine, new Uint8Array());
         if (await others()) return 'different';
         created = await store.putIfAbsent(key, body);
     } catch (error) {

@@ -94,7 +94,9 @@ proxy that hides client addresses (App Platform's included) every client shares 
 in effect relay-wide; a correct code is never refused because of it.
 
 Starting over means a new `SPRAVA_INSTANCE` and a new setup code; the old data stays behind under the old
-prefix, which you may delete by hand.
+prefix, which you may delete by hand. It is also the only way out when a claim was begun and its body lost: once
+a claim's intent is written, the relay accepts no other claim (trade-off A below), and the Mac keeps its claim
+body and resends it until the claim is confirmed (spec section 6).
 
 **DigitalOcean App Platform**, as one example: [`deploy/digitalocean-app.yaml`](deploy/digitalocean-app.yaml)
 is an app spec with placeholders. Copy it outside the repository, fill it in (or leave the values empty and set
@@ -128,6 +130,14 @@ endpoint is checked against them:
 6. **Every object the relay keeps is bounded by live data, with a stated bound.** Bookkeeping (intents,
    tombstones, reservations, markers, folders) is removed once nothing needs it, or covered by a floor that
    stands for everything below it; a folder left empty is removed.
+
+**Accepted trade-offs.** These are settled; they follow from the invariants and are not defects:
+
+- **A. A claim binds the slot for good.** A client's timeout cannot prove that a write it sent will never land, so
+  a claim whose intent exists is never voided or deleted, by time or by lease rank. Only the same claim body,
+  retried, completes it; every other claim gets 409. The Mac keeps its claim body and resends it (spec section 6).
+  If that body is lost, the only reset is a new `SPRAVA_INSTANCE`: claiming is a one-time setup by the person who
+  holds the setup code.
 
 ## Layout
 
