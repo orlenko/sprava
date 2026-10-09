@@ -57,6 +57,8 @@ export interface HttpOptions {
     log: Log;
     authenticate(token: string): Promise<Principal | null>;
     isClaimed(): boolean;
+    /** False while the relay starts or once it is fenced (lease.ts): only health is served then. */
+    isReady?(): boolean;
     /** §7: a body that has not fully arrived within this time is dropped. */
     bodyTimeoutMs?: number;
 }
@@ -105,6 +107,9 @@ async function route(req: IncomingMessage, options: HttpOptions, timeoutMs: numb
     }
     const url = new URL(req.url ?? '/', 'http://relay.invalid');
     if (!url.pathname.startsWith('/v0/')) throw new HttpError(404, 'There is nothing here.');
+    if (options.isReady?.() === false && url.pathname !== '/v0/health' && req.method !== 'OPTIONS') {
+        throw new HttpError(503, 'The relay is starting or being replaced; try again shortly.', { 'Retry-After': '5' });
+    }
     if (req.method === 'OPTIONS') {
         if (origin === undefined) throw new HttpError(404, 'There is nothing here.');
         matched.pattern = 'OPTIONS';

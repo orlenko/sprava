@@ -1,0 +1,43 @@
+# A template for DigitalOcean App Platform (docs/companion.md section 13). Every value in angle brackets is a
+# placeholder: fill them in your own copy or in the App Platform settings, never in this repository.
+# Create the app with `doctl apps create --spec <your copy>`, or paste it into the control panel.
+name: sprava-relay
+region: <region, for example the one your bucket is in>
+services:
+  - name: relay
+    github:
+      repo: <your account>/sprava
+      branch: main
+      deploy_on_push: false
+    source_dir: companion/relay
+    dockerfile_path: companion/relay/Dockerfile
+    http_port: 8080
+    # Exactly one instance: rate limits and the creation lock live in its memory (spec section 7). App Platform
+    # starts the new container before it stops the old one on every deploy; the relay's lease fences the old one
+    # (src/lease.ts), and every new one serves only /v0/health for its first 50 seconds.
+    instance_count: 1
+    instance_size_slug: <the smallest size>
+    health_check:
+      http_path: /v0/health
+    envs:
+      - key: SPRAVA_INSTANCE
+        value: "<openssl rand -hex 16>"
+      - key: SPRAVA_SETUP_CODE
+        type: SECRET
+        value: "<openssl rand -base64 32; remove it once the Mac has claimed the relay>"
+      - key: SPRAVA_WEB_ORIGIN
+        value: "<the web app's origin, such as https://companion.example.org>"
+      - key: SPRAVA_STORAGE
+        value: s3
+      - key: S3_ENDPOINT
+        value: "<https://<region>.digitaloceanspaces.com>"
+      - key: S3_REGION
+        value: "<region>"
+      - key: S3_BUCKET
+        value: "<your bucket>"
+      - key: S3_ACCESS_KEY_ID
+        type: SECRET
+        value: "<a key limited to that bucket>"
+      - key: S3_SECRET_ACCESS_KEY
+        type: SECRET
+        value: "<its secret>"
