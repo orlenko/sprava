@@ -162,4 +162,50 @@ import Testing
         try FileManager.default.removeItem(at: stateURL)
         #expect(try keeper.refresh(today: today, timeZone: utc, now: now) == .notSwitched)
     }
+
+    // Layer 5 third review, finding 1: a dashboard the person made private stays private when it is rendered again,
+    // and its staged copy is never readable by others either.
+    @Test func aPrivateDashboardStaysPrivate() throws {
+        let folder = try adopted()
+        var keeper = DashboardKeeper(folder: folder)
+        try keeper.switchOn(today: today, timeZone: utc, now: now)
+        let url = folder.appendingPathComponent("DASHBOARD.md")
+        chmod(url.path, 0o600)
+        try touchCatalog(folder, "low")
+        let staged = StopFlag(), wide = StopFlag()
+        let path = folder.path
+        keeper.testHookBeforeSwap = {
+            for name in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] where name.hasPrefix(".DASHBOARD-") {
+                var st = stat()
+                guard lstat(path + "/" + name, &st) == 0 else { continue }
+                staged.set()
+                if st.st_mode & 0o077 != 0 { wide.set() }
+            }
+        }
+        #expect(try keeper.refresh(today: today, timeZone: utc, now: now) == .rendered(editedOutsideNotes: false))
+        #expect(staged.get() && !wide.get())
+        var st = stat()
+        #expect(lstat(url.path, &st) == 0 && st.st_mode & 0o777 == 0o600)
+    }
+
+    // Layer 5 third review, finding 4: a catalog of a version this one does not know gets no dashboard write, and
+    // the keeper's state is left as it is.
+    @Test func anUnknownVersionGetsNoDashboardWrite() throws {
+        let folder = try adopted()
+        let keeper = DashboardKeeper(folder: folder)
+        try keeper.switchOn(today: today, timeZone: utc, now: now)
+        let catalogURL = folder.appendingPathComponent("catalog.json")
+        let text = try String(contentsOf: catalogURL, encoding: .utf8)
+        #expect(text.contains(#""format_version": "0""#))
+        try Data(text.replacingOccurrences(of: #""format_version": "0""#, with: #""format_version": "1""#).utf8).write(to: catalogURL)
+        #expect(Teka.read(folder).state == .unknownLevel)
+        let url = folder.appendingPathComponent("DASHBOARD.md")
+        let stateURL = folder.appendingPathComponent(".sprava/dashboard.json")
+        let (before, state) = (try Data(contentsOf: url), try Data(contentsOf: stateURL))
+        #expect(throws: TekaStore.Refused.self) { try keeper.refresh(today: today.adding(days: 1), timeZone: utc, now: now) }
+        #expect(throws: TekaStore.Refused.self) { try keeper.switchOn(today: today, timeZone: utc, now: now) }
+        #expect(try Data(contentsOf: url) == before)
+        #expect(try Data(contentsOf: stateURL) == state)
+        #expect(keeper.preview(today: today, timeZone: utc) != nil)   // still shown in the app's own window
+    }
 }

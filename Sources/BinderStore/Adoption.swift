@@ -157,7 +157,7 @@ public enum Adoption {
             guard let id = item["id"], seenIDs[id] == 1 else { return nil }
             return id
         }
-        let mechanical = applyMechanicalFixes(store: store, ids: fixable, today: today, actor: importActor, now: now)
+        let mechanical = try applyMechanicalFixes(store: store, ids: fixable, today: today, actor: importActor, now: now)
 
         // Step 4: proposals for what changes meaning.
         var proposals: [Proposal] = []
@@ -217,12 +217,13 @@ public enum Adoption {
 
         // Step 6: the stamp, when the catalog would then satisfy v0. Proposed after the closures.
         if let stamp = stampProposal(folder, survey: survey, pending: closeOps, client: client, now: now) { proposals.append(stamp) }
-        // A card an interrupted run already saved is kept as it is, never saved a second time.
+        // A card an interrupted run already saved is kept as it is, never saved a second time. A new card is returned
+        // as saved, with the fingerprints of the items it touches, so approving it still notices an item changed since.
         let saved = Dictionary(ProposalStore.list(in: folder).map { (cardKey($0.0), $0.0) }) { first, _ in first }
         proposals = try proposals.map { p in
             if let earlier = saved[cardKey(p)] { return earlier }
-            try ProposalStore.save(p, in: folder)
-            return p
+            let digest = try ProposalStore.save(p, in: folder)
+            return try ProposalStore.load(p.id, in: folder, expectedDigest: digest)
         }
         unlink(marker.path)
         return Result(mechanical: mechanical, proposals: proposals)
@@ -288,18 +289,22 @@ public enum Adoption {
     /// Applies the mechanical fix of each item in `ids`, one batch per item. Each fix is built from the item as read
     /// under the lock, after outside edits were absorbed, so a value someone wrote after the survey (a follow-up date,
     /// say) is seen and never overwritten. Each is guarded on its own, so one the guard refuses never blocks the
-    /// others or the proposals.
+    /// others or the proposals. Any other failure (a disk error, a busy or unreadable binder) throws, so the adoption
+    /// stops with its unfinished marker in place and is finished by running it again.
     static func applyMechanicalFixes(store: TekaStore, ids: [JSONValue], today: CalendarDate, actor: JSONObject,
-                                     now: Date) -> [JSONObject] {
+                                     now: Date) throws -> [JSONObject] {
         var mechanical: [JSONObject] = []
         for id in ids {
-            let applied = try? store.apply(building: { catalog, _ in
-                let found = (catalog["open_items"]?.arrayValue ?? []).filter { $0["id"] == id }
-                guard found.count == 1, case .object(let o) = found[0],
-                      let body = mechanicalFix(o, today: today, actor: actor) else { throw NothingToFix() }
-                return [body]
-            }, now: now)
-            mechanical += applied ?? []
+            do {
+                mechanical += try store.apply(building: { catalog, _ in
+                    let found = (catalog["open_items"]?.arrayValue ?? []).filter { $0["id"] == id }
+                    guard found.count == 1, case .object(let o) = found[0],
+                          let body = mechanicalFix(o, today: today, actor: actor) else { throw NothingToFix() }
+                    return [body]
+                }, now: now)
+            } catch is NothingToFix {
+            } catch is TransactionGuard.Rejection {
+            }
         }
         return mechanical
     }

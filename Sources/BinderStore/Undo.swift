@@ -103,6 +103,11 @@ public enum Undo {
                   let entry = catalog["processing_log"]?.arrayValue?.last(where: {
                       ($0["id"] ?? $0["item"]) == closedID && $0["op_id"] == target["id"] })?.objectValue
             else { throw Unsupported(message: "the closure entry is not in the processing log") }
+            // This version never writes `recurrence` (the guard refuses it), and reopening without it would quietly turn
+            // a series into a one-off: the undo is refused instead.
+            if let recurrence = entry["final"]?["recurrence"], recurrence != .null {
+                throw Unsupported(message: "this item repeated, and this version cannot reopen a repeating item; add it again instead")
+            }
             var item = JSONObject()
             item.set("id", .string(try IDMint.next(catalog: catalog, opLog: opLog, year: year)))
             item.set("title", entry["title"] ?? .str(""))

@@ -177,4 +177,16 @@ import Testing
         #expect(second["derived"] == .array([.str("follow_up_at")]))
         _ = try Replay.run(try store.readOpLog().ops)
     }
+
+    // Layer 5 third review, finding 3: undoing the drop of a repeating item is refused, never reopened as a one-off.
+    @Test func undoingTheDropOfARepeatingItemIsRefused() throws {
+        let (folder, store) = try adopted()
+        let applied = try store.apply([.init(op: "drop", args: JSONObject([
+            (key: "id", value: .str("estate-example-2026-010")), (key: "closed_at", value: .str("2026-10-07T09:00:00Z")),
+            (key: "source", value: .str("user"))]), actor: user)], now: now)
+        let count = items(folder).count
+        #expect(throws: Undo.Unsupported.self) { try store.undo(opID: applied[0]["id"]!.stringValue!, now: now) }
+        #expect(items(folder).count == count)
+        #expect(try store.readOpLog().ops.last?["id"] == applied[0]["id"])
+    }
 }

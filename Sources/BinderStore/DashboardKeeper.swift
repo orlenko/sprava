@@ -103,7 +103,11 @@ public struct DashboardKeeper: Sendable {
     /// kept under `.sprava/adopted/`.
     func replace(_ found: String?, with text: String, now: Date) throws -> Bool {
         let staged = folder.appendingPathComponent(".DASHBOARD-\(UUID().uuidString.lowercased()).tmp")
-        try AtomicFile.write(Data(text.utf8), to: staged, mode: 0o644)
+        // The new file never reads wider than the one it replaces: a dashboard the person made private (0600, say)
+        // stays so, and so does the staged copy. A new dashboard is 0644, like the catalog a template writes.
+        var st = stat()
+        let mode: mode_t = found != nil && lstat(fileURL.path, &st) == 0 ? st.st_mode & 0o666 : 0o644
+        try AtomicFile.write(Data(text.utf8), to: staged, mode: mode)
         // The staged name is removed unless it may hold a version no copy has kept yet.
         var keepStaged = false
         defer { if !keepStaged { unlink(staged.path) } }
@@ -146,10 +150,19 @@ public struct DashboardKeeper: Sendable {
         try AtomicFile.write(try encoder.encode(state), to: stateURL)
     }
 
+    /// An unknown level, a broken stamp or another state that blocks writes blocks the dashboard too: it is rendered
+    /// for display only, and the file and its state are left as they are (binder-v0 §9.6).
+    static func checkWritable(_ teka: Teka) throws {
+        guard teka.writesBlocked else { return }
+        throw TekaStore.Refused(reason: "DASHBOARD.md is not written until this is repaired: " + teka.reasons.joined(separator: "; "))
+    }
+
     /// The approved switch: the old text goes into Notes, headings demoted, and a copy is kept.
     public func switchOn(today: CalendarDate, timeZone: TimeZone = .current, now: Date = Date()) throws {
         try TekaStore(folder: folder).withLock {
-            guard Teka.read(folder).isAdopted, let catalog = Teka.read(folder).catalog else { throw TekaStore.Refused(reason: "not adopted") }
+            let teka = Teka.read(folder)
+            guard teka.isAdopted, let catalog = teka.catalog else { throw TekaStore.Refused(reason: "not adopted") }
+            try Self.checkWritable(teka)
             var st = stat()
             if lstat(fileURL.path, &st) == 0, st.st_mode & S_IFMT != S_IFREG { throw TekaStore.Refused(reason: "DASHBOARD.md is not a regular file") }
             _ = try load()   // a state file that cannot be read is reported, never saved over
@@ -172,7 +185,9 @@ public struct DashboardKeeper: Sendable {
     public func refresh(today: CalendarDate, timeZone: TimeZone = .current, now: Date = Date()) throws -> Refresh {
         guard var state = try load(), state.switched else { return .notSwitched }
         return try TekaStore(folder: folder).withLock {
-            guard let catalog = Teka.read(folder).catalog else { return .unchanged }
+            let teka = Teka.read(folder)
+            guard let catalog = teka.catalog else { return .unchanged }
+            try Self.checkWritable(teka)
             let hash = try Canonical.hash(.object(catalog))
             let outcome: Refresh = try rewrite(now: now) { found in
                 if hash == state.catalogHash, today.description == state.day, let found, !Dashboard.editedOutsideNotes(found) {

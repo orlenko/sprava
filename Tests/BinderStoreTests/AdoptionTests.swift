@@ -102,7 +102,7 @@ import Testing
             store.testHookBeforeLock = nil
         }
         let actor = JSONObject([(key: "kind", value: .str("import")), (key: "client", value: .str("t"))])
-        let applied = Adoption.applyMechanicalFixes(store: store, ids: [.str("w-1")], today: today, actor: actor, now: now)
+        let applied = try Adoption.applyMechanicalFixes(store: store, ids: [.str("w-1")], today: today, actor: actor, now: now)
         #expect(applied.isEmpty)
         let item = Teka.read(folder).items.first { $0.idText == "w-1" }
         #expect(item?.followUpAt?.description == "2026-10-30")
@@ -227,5 +227,40 @@ import Testing
         let r = try Adoption.adopt(other, inRegistry: false, deviceID: "t", today: today, now: now)
         #expect(!r.proposals.contains { $0.raw["provenance"]?["adoption"] == .str("stamp") })
         #expect(!(try FileManager.default.contentsOfDirectory(atPath: other.appendingPathComponent(".sprava").path)).contains { $0.hasPrefix("probe-") })
+    }
+
+    // Layer 5 third review, finding 2: the cards adoption returns carry the fingerprints they were saved with, so an
+    // item reopened after adoption is not closed by approving the returned card.
+    @Test func aReturnedCardNoticesAnItemChangedSince() throws {
+        let done = #"{"id":"d-1","title":"Invented finished task","status":"done","priority":"normal","due":"2026-11-01"}"#
+        let folder = try lifeproj([done])
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        let close = try #require(result.proposals.first { $0.title.hasPrefix("Close ") })
+        #expect(close.raw["expect"]?.objectValue?.entries.isEmpty == false)
+        // The person sets the item back to open in an editor.
+        let url = folder.appendingPathComponent("catalog.json")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(text.contains(#""status":"done""#))
+        try Data(text.replacingOccurrences(of: #""status":"done""#, with: #""status":"open""#).utf8).write(to: url)
+        #expect(throws: TekaStore.Refused.self) { try TekaStore(folder: folder).approve(close, now: now) }
+        #expect(Teka.read(folder).items.first { $0.idText == "d-1" }?.object?["status"] == .str("open"))
+    }
+
+    // Layer 5 third review, finding 5: a fix that cannot be written (an op log that is read-only) stops the
+    // adoption with its marker in place, so running it again finishes it.
+    @Test func aFixThatCannotBeWrittenStopsTheAdoption() throws {
+        let folder = try lifeproj([#"{"id":"n-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01","link":null}"#])
+        let store = TekaStore(folder: folder)
+        try store.adopt(survey: JSONObject(), owner: JSONObject(), now: now)
+        try Data().write(to: Adoption.unfinishedMarker(folder))
+        let log = folder.appendingPathComponent(".sprava/ops.ndjson")
+        chmod(log.path, 0o444)
+        defer { chmod(log.path, 0o644) }
+        #expect(throws: AtomicFile.Failure.self) { try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now) }
+        #expect(FileManager.default.fileExists(atPath: Adoption.unfinishedMarker(folder).path))
+        chmod(log.path, 0o644)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        #expect(result.mechanical.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: Adoption.unfinishedMarker(folder).path))
     }
 }
