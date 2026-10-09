@@ -183,8 +183,9 @@ The owner rotates after it revokes a device, and when the person asks:
 
 1. The owner takes that device's **decision lock** (section 9.2), so no request of it is being decided, and
    finishes any of its decision records still `deciding` (section 9.6); if one cannot be finished now, the
-   revocation waits and the person is told why. Then it marks the device revoked in its own records, in the
-   same durable write retires its outcome work (section 9.9), releases the lock, deletes that device's `Kd`
+   revocation waits and the person is told why. Then, also taking the key lock, it marks the device revoked in
+   its own records, in the same durable write records a pending rotation (below) and retires its outcome work
+   (section 9.9), releases both locks, deletes that device's `Kd`
    from the Keychain, and goes on to step 2 at once. Separately, it calls `DELETE /v0/devices/{D}`, repeating
    it, after a restart too, until it gets `204`; the rotation never waits for it, so a relay that refuses or
    delays the deletion cannot keep the old keys in use. A request of a revoked device is never decided
@@ -204,6 +205,35 @@ The owner rotates after it revokes a device, and when the person asks:
    `Kb`, then publishes the index sealed with the new `K` (section 9.7). Old view versions are deleted once
    that index is published.
 5. It discards the old `K` and the old binder keys.
+
+Rotations run one at a time, none is ever lost, and nothing made after a removal is sealed for the removed
+device:
+
+- **Recipients.** Each epoch has a durable list of the devices given its keys: a rotation records it with the
+  keys objects in step 3, and a pairing confirmed at that epoch (section 5.2, step 4) adds its device in the
+  same write that makes the device active.
+- **The barrier.** Every view and index plaintext is built and sealed under the key lock, in one local step
+  with no network call: under the binder's write lock (a view) or the publish lock (an index), the Mac takes
+  the key lock, checks that no device on the current epoch's recipients list is revoked, reads what the
+  plaintext holds, seals it at the current epoch, records the bytes durably (section 9.7), and releases the
+  key lock; uploads come after. A revocation marks its device revoked under the key lock too (step 1). So
+  anything sealed at an epoch a removed device holds was read and sealed before its removal. The locks are
+  always taken in this order, each only while holding none that comes after it: the publish lock, a device's
+  decision lock, a binder's write lock, the key lock. When the check fails, the work never waits under a lock: it releases every
+  lock it holds and is tried again after the next rotation records its keys (step 3).
+- **Pending.** The revocation write of step 1 records that a rotation is pending; a person's request to rotate
+  records it the same way. A rotation begins by recording itself and clearing the pending mark in one durable
+  write; steps 2 to 5 are that rotation.
+- **Superseding.** A running rotation that finds a rotation pending, at whichever step, stops at its next lock
+  boundary, releasing what it holds; uploads already sent may still land. It is superseded in the same write in
+  which the pending rotation begins. What it reserved or published is handled as any unfinished publication
+  (section 9.7): an assigned revision still counts as possibly published, and the new rotation publishes above
+  it. The new rotation makes the next epoch for the devices active then, publishes at it (step 4), and
+  discards every older key (step 5). A superseded rotation's keys objects stay uploaded; a device reading one
+  moves on at its next refresh.
+- **Restart.** At start, a recorded rotation that was not superseded is finished, unless a rotation is
+  pending, in which case it is superseded and the pending one begins. Any number of requests made meanwhile
+  need only that one further rotation, and step 1 of another removal never waits for a running rotation.
 
 A device looks for its keys objects (section 10.3) when it starts, on every refresh, and whenever it meets an
 index or a view whose epoch is above its own. If the newest valid one has a higher epoch than the one it holds,
