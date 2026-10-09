@@ -8,10 +8,10 @@
 import { randomBytes } from 'node:crypto';
 import { decodeB64, encodeB64, formatTime, isId, newToken, sameSecret, sha256Hex, tokenHash } from './encoding.ts';
 import type { Devices } from './devices.ts';
-import { HttpError, type Call, type Route } from './http.ts';
+import { HttpError, type Call, type Reply, type Route } from './http.ts';
 import { deviceKeys, EMPTY, groupParts, pairingKeys, readRecord, type DeviceRecord, type PairingCreated } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { writeOnce } from './store/store.ts';
+import { INTENTS, writeOnce } from './store/store.ts';
 
 export const PAIRING_TTL_MS = 10 * 60_000;
 const MAX_OPEN = 3;
@@ -74,7 +74,9 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
         const d = pairing.created.device_id;
         const pending = (await store.has(deviceKeys(d).record)) && !(await store.has(deviceKeys(d).active)) && !(await store.has(deviceKeys(d).revoked));
         if (pending) await devices.deletePartsLocked(d);
-        for (const part of pairing.parts) await store.delete(`pairings/${pairing.id}/${part}`);
+        // created.json last: a deletion cut short leaves the pairing readable, so a retry or the sweep finishes it.
+        for (const part of [...pairing.parts].filter((p) => p !== 'created.json')) await store.delete(`pairings/${pairing.id}/${part}`);
+        await store.delete(pairingKeys(pairing.id).created);
         failedJoins.delete(pairing.id);
     }
 
@@ -116,6 +118,20 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
         }
     }
 
+    /** The join's writes: its token's marker, the record every join writes alike, then the transcript. */
+    async function completeJoin(pairing: Pairing, d: string, b: string, hello: string): Promise<Reply> {
+        const token = newToken();
+        const hash = tokenHash(token);
+        await writeOnce(store, deviceKeys(d).token(hash), json({ joined_at: formatTime(relay.now()) }));
+        const record: DeviceRecord = { pairing_id: pairing.id };
+        if ((await writeOnce(store, deviceKeys(d).record, json(record))) === 'different') throw new HttpError(409, 'This pairing was already joined.');
+        if ((await writeOnce(store, pairingKeys(pairing.id).joined, json({ device_public_key: b, hello }))) === 'different') {
+            throw new HttpError(409, 'This pairing was already joined.');
+        }
+        devices.remember(d, pairing.id, hash);
+        return { status: 200, json: { device_id: d, device_token: token, expires_at: pairing.created.expires_at } };
+    }
+
     const ownDevice = (call: Call): string => {
         if (call.principal?.kind !== 'device' || call.principal.pairing !== call.params.P) {
             throw new HttpError(403, 'This token may only use its own pairing.');
@@ -124,6 +140,10 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
     };
 
     const sweep = async (): Promise<void> => {
+        // Parts without created.json are unreachable by every route (read() needs it); they only need deleting.
+        for (const [p, parts] of groupParts(await store.list('pairings/'), 'pairings')) {
+            if (!parts.has('created.json')) for (const part of parts) await store.delete(`pairings/${p}/${part}`);
+        }
         for (const pairing of await allPairings()) {
             if (!pairing.expired) continue;
             await relay.deviceLocks.run(pairing.created.device_id, async () => {
@@ -176,6 +196,7 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                 if (typeof secret !== 'string' || typeof b !== 'string' || decodeB64(b)?.length !== 32 || typeof hello !== 'string' || hello.length > 2048 || !decodeB64(hello)?.length) {
                     throw new HttpError(400, 'A join needs the secret, the device public key (32 bytes in b64) and the sealed hello in b64.');
                 }
+                await deleteOrphans();
                 return withPairing(call.params.P, async (pairing) => {
                     if (!sameSecret(sha256Hex(secret), pairing.created.secret_sha256)) {
                         const failures = (failedJoins.get(pairing.id) ?? 0) + 1;
@@ -187,16 +208,18 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                     // Joined means joined.json exists. A join that failed part-way, whose writes may still land, left
                     // at most a token nobody holds and a record every join writes alike (layout.ts).
                     if (pairing.state !== 'open' || (await devices.revokedLocked(d))) throw new HttpError(409, 'This pairing was already joined.');
-                    const token = newToken();
-                    const hash = tokenHash(token);
-                    await writeOnce(store, deviceKeys(d).token(hash), json({ joined_at: formatTime(relay.now()) }));
-                    const record: DeviceRecord = { pairing_id: pairing.id };
-                    if ((await writeOnce(store, deviceKeys(d).record, json(record))) === 'different') throw new HttpError(409, 'This pairing was already joined.');
-                    if ((await writeOnce(store, pairingKeys(pairing.id).joined, json({ device_public_key: b, hello }))) === 'different') {
+                    // An earlier join whose transcript write may still land has consumed the pairing: its intent is
+                    // durable, and a second transcript must never be accepted (§7.3: B and hello never change).
+                    if ((await store.list(`${INTENTS}${pairingKeys(pairing.id).joined}/`)).length > 0) {
                         throw new HttpError(409, 'This pairing was already joined.');
                     }
-                    devices.remember(d, pairing.id, hash);
-                    return { status: 200, json: { device_id: d, device_token: token, expires_at: pairing.created.expires_at } };
+                    return relay.lock.run(async () => {
+                        // §7.3: at most 20 devices, pending and active, counted under the creation lock at the join.
+                        if ((await orphans((await allPairings()).filter((p) => !p.expired))).counted >= MAX_DEVICES) {
+                            throw new HttpError(507, 'There are too many devices.');
+                        }
+                        return completeJoin(pairing, d, b, hello);
+                    });
                 });
             },
         },

@@ -6,7 +6,7 @@ import { encodeB64, newId, tokenHash } from '../src/encoding.ts';
 import { deviceKeys } from '../src/layout.ts';
 import { S3Store } from '../src/store/s3.ts';
 import { scoped, type Store } from '../src/store/store.ts';
-import { bearer, freshStore, INSTANCE, seedOwner, slowRequest, startTestRelay, WEB_ORIGIN, type TestRelay } from './harness.ts';
+import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, slowRequest, startTestRelay, WEB_ORIGIN, type TestRelay } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
 
 const A = encodeB64(new Uint8Array(32).fill(1));
@@ -127,4 +127,71 @@ test('a join whose writes land after a restart replaces nothing: the token retur
     // The failed join's token marker had no record beside it at the second start, which deleted it (§7.8 rule 4).
     assert.deepEqual(await raw.list(`${INSTANCE}/${deviceKeys(d).tokens}`), [`${INSTANCE}/${deviceKeys(d).token(tokenHash(token))}`]);
     await third.close();
+});
+
+test('a join whose transcript may still land consumes the pairing: no second transcript is accepted (§7.3)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    stubs.push(stub);
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const first = await startTestRelay({ raw });
+    const { pairing_id: p, secret } = await client(first, owner).open();
+    stub.hold((key) => key.endsWith(`/pairings/${p}/joined.json`)); // the transcript, after its intent
+    assert.equal((await client(first, owner).join(p, secret)).status, 500);
+    await first.close();
+    stub.hold(() => false);
+
+    const second = await startTestRelay({ raw });
+    const res = await fetch(`${second.url}/v0/pairings/${p}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ secret, device_public_key: encodeB64(new Uint8Array(32).fill(9)), hello: HELLO }),
+    });
+    assert.equal(res.status, 409);
+    stub.landHeld();
+    const seen = (await (await client(second, owner).call('GET', `/v0/pairings/${p}`, owner)).json()) as { device_public_key: string };
+    assert.equal(seen.device_public_key, B, 'the transcript is the first join’s, and never changes');
+    await second.close();
+});
+
+test('a join beyond 20 devices is refused, however many pairings were opened before (§7.3)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    for (let i = 0; i < 19; i++) await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const c = client(t, owner);
+    const opened = [await c.open(), await c.open(), await c.open()];
+    const statuses = [];
+    for (const { pairing_id, secret } of opened) statuses.push((await c.join(pairing_id, secret)).status);
+    assert.deepEqual(statuses, [200, 507, 507]);
+    await t.close();
+});
+
+test('a deletion cut short is finished by its retry: created.json goes last', async () => {
+    const { raw: fs } = await freshStore();
+    let failOnce = true;
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        put: (k, b) => fs.put(k, b),
+        putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
+        sync: (k) => fs.sync(k),
+        list: (p) => fs.list(p),
+        delete: async (k) => {
+            if (failOnce && k.endsWith('/joined.json')) {
+                failOnce = false;
+                throw new Error('injected delete failure');
+            }
+            return fs.delete(k);
+        },
+    };
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const t = await startTestRelay({ raw });
+    const c = client(t, owner);
+    const { pairing_id: p, secret } = await c.open();
+    assert.equal((await c.join(p, secret)).status, 200);
+    assert.equal((await c.call('DELETE', `/v0/pairings/${p}`, owner)).status, 500);
+    assert.ok(await scoped(raw, INSTANCE).has(`pairings/${p}/created.json`), 'still readable');
+    assert.equal((await c.call('DELETE', `/v0/pairings/${p}`, owner)).status, 204);
+    assert.deepEqual(await scoped(raw, INSTANCE).list(`pairings/${p}/`), []);
+    await t.close();
 });
