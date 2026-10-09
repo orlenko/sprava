@@ -224,9 +224,12 @@ extension HubLane {
 
         // Items published redacted stay redacted unless the person lifted it with an op since then; a redaction an
         // outside edit removed stays until the person approves the privacy card (architecture 4.5). This covers the
-        // items closed once as well as the open ones, for their ids. A redacted item shows only the tags the hub
-        // already saw for it and the ones the person set since; one the hub never saw shows its tags as found. An
-        // aborted op lifts and sets nothing, as in `PrivacyRatchet.confirmed` (binder-v0 §6.9).
+        // items closed once as well as the open ones, for their ids. A redacted item shows only the tags the person
+        // confirmed: for an item the privacy ratchet knows (from adoption, an op of Sprava's or an outside edit it
+        // recorded), the tags it confirmed, so nothing about publication history, the first one included, loosens
+        // them; for one it does not know yet (an outside addition no write of Sprava's has recorded), the tags the hub
+        // already saw for it and the ones the person set since, or its tags as found when the hub never saw it, its
+        // first sight. An aborted op lifts and sets nothing, as in `PrivacyRatchet.confirmed` (binder-v0 §6.9).
         let ops = (try? TekaStore(folder: folder).readOpLog().ops) ?? []
         let aborted = Set(ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
         var lifted = Set<String>()
@@ -240,8 +243,11 @@ extension HubLane {
                 userTags[k, default: []].formUnion(tags.compactMap { try? Canonical.serialize($0) })
             }
         }
+        let confirmed = PrivacyRatchet.confirmed(opLog: ops)
+        let known = confirmed?.known ?? []
         var allowTags: [String: Set<String>] = [:]
-        for (k, seen) in cursors.tags ?? [:] { allowTags[k] = Set(seen).union(userTags[k] ?? []) }
+        for (k, seen) in cursors.tags ?? [:] where !known.contains(k) { allowTags[k] = Set(seen).union(userTags[k] ?? []) }
+        for k in known { allowTags[k] = Set((confirmed?.tags[k] ?? []).compactMap { try? Canonical.serialize($0) }) }
         return Plan(closures: closures, closedOnce: closedOnce,
                     keepRedacted: Set(cursors.redacted ?? []).subtracting(lifted).union(privacy.redacted),
                     allowTags: allowTags, logCount: log.count, opCount: ops.count)

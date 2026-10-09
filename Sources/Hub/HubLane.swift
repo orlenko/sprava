@@ -75,8 +75,8 @@ extension HubLane {
         var opCount: Int? = 0
         /// The binder name the slice was last written under, so a withdrawal finds it without trusting the catalog.
         package var sliceName: String?
-        /// The tags the hub last saw for each open item, by canonical id text: a redacted item shows no other tag
-        /// until the person sets it with their own op (architecture 4.5). Each tag is its canonical JSON text.
+        /// The tags the hub last saw for each open item, by canonical id text. They limit a redacted item the privacy
+        /// ratchet does not know yet (architecture 4.5); one it knows shows the tags it confirmed. Canonical JSON text.
         var tags: [String: [String]]?
     }
 
