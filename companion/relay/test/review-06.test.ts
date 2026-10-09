@@ -506,3 +506,58 @@ test('a request deletion cut short never blocks the mailbox: the next listing fi
     assert.deepEqual(await scoped(raw, INSTANCE).list(`intents/requests/${device.id}/`).then((k) => k.filter((x) => x.includes(a))), [], 'and A is finished');
     await t.close();
 });
+
+test('a deletion is acknowledged only once its tombstone is durable; a retry after any failure finishes it (§7.6)', async () => {
+    const { raw: fs } = await freshStore();
+    const fail = { tombstones: 0, floors: 0 };
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
+        sync: (k) => fs.sync(k),
+        list: (p) => fs.list(p),
+        listTimes: (p) => fs.listTimes(p),
+        delete: (k) => fs.delete(k),
+        put: async (k, b) => {
+            if (fail.tombstones > 0 && k.includes('/tombstones/requests/')) {
+                fail.tombstones--;
+                throw new Error('injected tombstone failure');
+            }
+            if (fail.floors > 0 && k.includes('/floors/requests/')) {
+                fail.floors--;
+                throw new Error('injected floor failure');
+            }
+            return fs.put(k, b);
+        },
+    };
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const device = await seedDevice(scoped(raw, INSTANCE), { active: true });
+    const first = await startTestRelay({ raw });
+    const [a, b] = [newId(), newId()];
+    for (const r of [a, b]) {
+        assert.equal((await fetch(`${first.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    }
+    const list = async (url: string) =>
+        ((await (await fetch(`${url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] }).requests.map((x) => x.request_id);
+    const remove = (url: string) => fetch(`${url}/v0/requests/${device.id}/${b}`, { method: 'DELETE', headers: bearer(owner) });
+    fail.tombstones = 1;
+    assert.equal((await remove(first.url)).status, 500, 'its tombstone failed: not deleted, not acknowledged');
+    assert.equal((await remove(first.url)).status, 204, 'the retry, with no listing between, writes the tombstone');
+    assert.deepEqual(await list(first.url), [a], 'B stays deleted');
+    await first.close();
+    // Across a restart: a tombstone and then a floor failure, then the retry.
+    const c = newId();
+    const second = await startTestRelay({ raw });
+    assert.equal((await fetch(`${second.url}/v0/requests/${c}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    const removeA = () => fetch(`${second.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) });
+    fail.tombstones = 1;
+    assert.equal((await removeA()).status, 500);
+    fail.floors = 1;
+    assert.equal((await removeA()).status, 500, 'deleted, but its floor failed');
+    await second.close();
+    const third = await startTestRelay({ raw });
+    assert.deepEqual(await list(third.url), [c], 'A and B stay deleted');
+    assert.equal((await fetch(`${third.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    assert.deepEqual(await list(third.url), [c]);
+    await third.close();
+});

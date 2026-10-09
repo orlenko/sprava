@@ -5,7 +5,7 @@ import { HttpError, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Devices } from './devices.ts';
 import type { Relay } from './relay.ts';
-import { deleteForGood, forget, forgetAll, INTENTS, intentsOf, isDeleted, raiseFloor, readFloor, writeOnce } from './store/store.ts';
+import { deleteForGood, forget, forgetAll, INTENTS, intentsOf, raiseFloor, readFloor, tombstoneOf, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const PER_HOUR = 120;
@@ -72,13 +72,16 @@ export function requests(relay: Relay, devices: Devices) {
         const floor = await floorLocked(d);
         let highest = floor;
         const bodies = new Set<string>();
+        // The device's tombstones, read once: every name below is checked against this set, not one call each.
+        const tombstones = new Set(await store.list(`tombstones/requests/${d}/`));
+        const deleted = (key: string): boolean => tombstones.has(`tombstones/${key}`);
         for (const { key, modified } of await store.listTimes(`requests/${d}/`)) {
             const match = NAME.exec(key);
             if (match === null || match[1] !== d) continue;
             highest = Math.max(highest, Number(match[2]));
             // A copy a late write brought back after the owner deleted it stays deleted (invariant 5): below the
             // floor every name is deleted, and above it the tombstone says so.
-            if (Number(match[2]) < floor || (await isDeleted(store, key))) {
+            if (Number(match[2]) < floor || deleted(key)) {
                 await retire(key);
                 continue;
             }
@@ -98,7 +101,7 @@ export function requests(relay: Relay, devices: Devices) {
                 continue;
             }
             if (bodies.has(key)) continue;
-            if (await isDeleted(store, key)) {
+            if (deleted(key)) {
                 await retire(key); // a deletion cut short after the tombstone: finished now
                 continue;
             }
@@ -108,7 +111,7 @@ export function requests(relay: Relay, devices: Devices) {
         // An entry whose name is deleted (its tombstone written, or below the floor) is finished and leaves, whatever
         // a deletion cut short left of it: the next listing never shows a request that was deleted.
         for (const [r, entry] of mailbox) {
-            if (entry.ordinal < floor || (await isDeleted(store, entry.key))) {
+            if (entry.ordinal < floor || deleted(entry.key)) {
                 mailbox.delete(r);
                 await retire(entry.key);
             }
@@ -121,6 +124,16 @@ export function requests(relay: Relay, devices: Devices) {
         }
         nextOrdinal.set(d, next);
         return mailbox;
+    }
+
+    /** A request's stored name, from its copy or its intent; null when the bucket holds neither. */
+    async function findKey(d: string, r: string): Promise<string | null> {
+        for (const key of await store.list(`requests/${d}/`)) if (key.endsWith(`-${r}`)) return key;
+        for (const intent of await store.list(intentsOf(`requests/${d}`))) {
+            const match = INTENT.exec(intent);
+            if (match !== null && match[3] === r) return `requests/${d}/${match[2]}-${match[3]}`;
+        }
+        return null;
     }
 
     /** Two copies of one R keep the lower ordinal; the other is retired. */
@@ -333,11 +346,18 @@ export function requests(relay: Relay, devices: Devices) {
                 const d = ids(call.params.D, call.params.R);
                 await relay.deviceLocks.run(d, async () => {
                     if (!mailboxes.has(d)) await refreshLocked(d);
-                    const entry = mailboxes.get(d)?.get(call.params.R!);
-                    // Out of the mailbox first: if a step of the deletion fails, the tombstone, once written, keeps it
-                    // out of every listing, and the next listing or sweep finishes it.
-                    mailboxes.get(d)?.delete(call.params.R!);
-                    if (entry !== undefined) await retire(entry.key);
+                    const r = call.params.R!;
+                    // The request's name: remembered, or else found in the bucket, so a retry after a failure never
+                    // answers from memory alone.
+                    const key = mailboxes.get(d)?.get(r)?.key ?? (await findKey(d, r));
+                    if (key !== null) {
+                        // Acknowledged only once the tombstone is durable; only then does it leave the mailbox, and
+                        // the copy and intents go. If a later step fails, the tombstone keeps it out of every listing,
+                        // and the next listing, sweep or retry finishes it.
+                        await store.put(tombstoneOf(key), new Uint8Array());
+                        mailboxes.get(d)?.delete(r);
+                        await retire(key);
+                    }
                     await compactLocked(d);
                 });
                 return { status: 204 };

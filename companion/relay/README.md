@@ -161,7 +161,7 @@ adds what is particular to each endpoint.
 | Endpoint | What it writes | Fixed by (1, 3) | Under (4) |
 |---|---|---|---|
 | `GET /v0/health` | nothing | | |
-| `POST /v0/claim` | `claims/{digest}`, then `owner/{digest}` | names are the record's SHA-256; the lowest owner record is the owner, and with none the lowest claim intent binds (trade-off A); a known owner never changes in memory | the claim queue, then the creation lock |
+| `POST /v0/claim` | `claims/{digest}`, then `owner/{digest}` | names are the record's SHA-256; the owner is the record of the lowest claim intent, and only that claim is acknowledged (trade-off A); a known owner never changes in memory | the claim queue, then the creation lock |
 | `POST /v0/pairings` | `created.json` under a new random id | a new name | the device's lock, then the creation lock |
 | `POST /v0/pairings/{P}/join` | a token marker, `record.json`, `joined.json` | the token's own name; a record every join writes alike; an earlier transcript's intent consumes the pairing | the device's lock, then the creation lock (device count) |
 | `GET /v0/pairings/{P}` | an expired pairing's deletion | its tombstone `deleted` first, kept for good | the device's lock |
@@ -175,7 +175,7 @@ adds what is particular to each endpoint.
 | `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its tombstone, then the object, then the prefix's floor | revision names; a deleted name, or one below the floor, refuses every PUT with 410 (409 means other bytes are stored), and a copy brought back is never served or listed, and is deleted when met | the creation lock |
 | `GET /v0/objects...` | nothing | | the device's lock (guard), so no revoked device reads |
 | `POST /v0/requests/{R}` | `ordinals/{D}/{block}`, the request | a block holds one process's lease name; an ordinal is never given twice; 409 only when the stored copy is there and synced | the device's lock (guard), after the body |
-| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/requests/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
+| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | a DELETE answers 204 only once the tombstone is durable, and finds the name in the bucket when memory lacks it, so a retry after any failure finishes the deletion; the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/requests/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
 
 ### The floor protocol
 
