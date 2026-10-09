@@ -884,7 +884,10 @@ below from its own records, whatever the relay says.
 - For each shown binder, its snapshot record and its view versions, each `uploading` or `uploaded`; and, for
   as long as the relay instance is in use, the id of every binder recorded as `removed`, a few bytes each
   (section 9.7).
-- The last index revision assigned, and `published_revision`, the last one whose upload completed.
+- The last index revision assigned, and `published_revision`, the last one whose upload completed; and for
+  each shown binder its `highest_indexed_version`, the highest version of it named by any index whose bytes
+  the Mac recorded (section 9.7, publishing step 1), uploaded or not, superseded or not: starting at 0, raised
+  in that same write, never lowered. A device can only have seen an index the Mac recorded first.
 - For each device, in memory: its retry backoff (section 9.2).
 - **Diagnostics** for requests that fail authentication (section 9.3), bounded: a counter per device and
   reason, and a ring of the last 100 such failures (time, device id, request id, reason). Nothing else is kept
@@ -915,7 +918,8 @@ Health line says so.
       finished, the device stops here.
    2. **List** one page: `GET /v0/requests/{D}?limit=25`.
    3. **Check.** Fetch each listed request and run the checks of section 9.3 on it, on its own; no outcome is
-      recorded yet.
+      recorded yet. The relay may list two copies of one `(D, R)` (section 7.6): only the first listed is
+      checked and decided, and the others are deleted as duplicates once its outcome is recorded.
    4. **Decide** every authenticated request with a valid `seq` (checks 1 to 6 passed) in ascending `seq`
       (sections 9.4 and 9.5). One that check 7 rejects is decided in its place in that order, never before a
       lower `seq` still to decide.
@@ -992,8 +996,8 @@ decides, decides:
 2. The item is in that binder, open or closed. Otherwise **rejected** (`not-in-binder`). An id the binder holds
    more than once, among its open items and closure entries, is a **conflict**: the Mac cannot tell which
    record the person saw (section 8.5).
-3. `seen_version` is not above the binder's `reserved` version (section 9.7). Otherwise **rejected**
-   (`future-version`).
+3. `seen_version` is not above the binder's `highest_indexed_version` (section 9.1): a version no index
+   ever named could not have been seen. Otherwise **rejected** (`future-version`).
 4. **Closed items.** A `done` on an item closed as done, or a `drop` on an item closed as dropped, is
    **applied** with no change. Any other request on a closed item is a **conflict**. An item in `open_items[]`
    with status `done` counts as closed as done, as the view shows it (section 8.5).
