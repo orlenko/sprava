@@ -5,6 +5,9 @@ import PackageDescription
 let package = Package(
     name: "Sprava",
     platforms: [.macOS("27.0")],
+    products: [
+        .executable(name: "sprava-extract", targets: ["sprava-extract"]),
+    ],
     targets: [
         // Layer 0: JSON, atomic files, state files, dates, ids, paths.
         .target(name: "SpravaKit"),
@@ -20,5 +23,17 @@ let package = Package(
         // Layer 2: writing a binder.
         .target(name: "BinderStore", dependencies: ["BinderFormat", "SpravaKit"]),
         .testTarget(name: "BinderStoreTests", dependencies: ["BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
+
+        // Layer 3: which binders exist here; reading files; the clerk.
+        .target(name: "Shelf", dependencies: ["BinderStore", "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "ShelfTests", dependencies: ["Shelf", "SpravaTestSupport"]),
+        .target(name: "Extract", dependencies: ["BinderFormat", "SpravaKit"]),
+        .testTarget(name: "ExtractTests", dependencies: ["Extract", "BinderFormat"]),
+
+        // Layer 6: executables.
+        // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
+        .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
+                          linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
+                                                         "-Xlinker", "Resources/sprava-extract-Info.plist"])]),
     ]
 )
