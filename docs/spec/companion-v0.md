@@ -633,18 +633,22 @@ one with the lower ordinal and deletes the other.
 At start, before serving, the relay repairs and cleans up, in this order, and never deletes a revocation
 marker:
 
-1. it gives an activation marker to the device of a pairing that has `key.sha256` or `ack`, unless that device
+1. it writes the revocation marker of every device that has a stored `revocation` but no marker (a
+   self-revocation a crash cut short), so its token stops working; the phone has already removed itself. A
+   write begun before a crash can land after this cleanup, so the relay also applies this rule before it
+   admits a device's token or lists devices;
+2. it gives an activation marker to the device of a pairing that has `key.sha256` or `ack`, unless that device
    has a revocation marker;
-2. it deletes the parts of every pairing past its `expires_at`, with the record of its device only if that
+3. it deletes the parts of every pairing past its `expires_at`, with the record of its device only if that
    device is still pending (it has neither an activation nor a revocation marker); a self-revoked device's
    record and revocation stay until the owner deletes the device;
-3. it deletes any other pairing part whose `created.json` is missing, and any device part whose `record.json`
+4. it deletes any other pairing part whose `created.json` is missing, and any device part whose `record.json`
    is missing, revocation markers excepted;
-4. it deletes the record of every pending device (neither an activation nor a revocation marker) whose pairing
+5. it deletes the record of every pending device (neither an activation nor a revocation marker) whose pairing
    is missing or past its `expires_at`. A write begun before a crash can land after this cleanup, so the relay
    also applies this rule before counting devices against the limit of section 7.3: an orphaned pending record
    never holds a device slot;
-5. a device with a revocation marker but no stored `revocation` was being deleted by the owner (a
+6. a device with a revocation marker but no stored `revocation` was being deleted by the owner (a
    self-revocation stores its `revocation` before its marker), so the relay deletes the rest of its parts, as
    `DELETE /v0/devices/{D}` does, keeping the marker. A device with both may be self-revoked and waiting for
    the owner, or in an owner deletion a crash cut short: the relay keeps it, and the Mac, which repeats its
@@ -740,7 +744,10 @@ and at most 800 encoded bytes (a longer binder name is published cut to fit, on 
 object `views/{id}/{view_version}`, exactly that version, sealed with `key` at the index's epoch.
 
 A binder's id is random, made when the person turns "Show on my phone" on, and never derived from its name or
-folder. Turning it off removes the entry and the view; the next turn-on makes a new id and key. At most 100
+folder. Turning it on takes the key lock (section 4.4), makes the id and a `Kb` at the current epoch, and
+records the binder as shown in the same durable write, so a rotation either already includes it or makes
+its key at the next epoch. Turning it off removes the entry and the view; the next turn-on makes a new id
+and key. At most 100
 binders are shown at once; the switch refuses a 101st and says why. A shown binder with no version uploaded
 at the index's epoch yet is left out of the index until it has one (section 9.7).
 
