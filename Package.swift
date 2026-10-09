@@ -12,5 +12,9 @@ let package = Package(
         // The invented fixtures and helpers several test targets share.
         .target(name: "SpravaTestSupport", dependencies: ["SpravaKit"],
                 path: "Tests/SpravaTestSupport", resources: [.copy("Fixtures")]),
+
+        // Layer 1: reading a binder.
+        .target(name: "BinderFormat", dependencies: ["SpravaKit"]),
+        .testTarget(name: "BinderFormatTests", dependencies: ["BinderFormat", "SpravaTestSupport", "SpravaKit"]),
     ]
 )
