@@ -304,7 +304,14 @@ be the relay's `SPRAVA_WEB_ORIGIN`.
    their state, and records it durably as `pairing`; a device id is never used twice. It makes an ephemeral
    X25519 key pair `(a, A)`, calls `POST /v0/pairings` with `A` and `D`, and shows the link with the returned
    `P` and secret. The pairing expires 10 minutes after it is made. A pairing that ends without confirmation
-   leaves `D`'s record as `abandoned`, never free.
+   leaves `D`'s record as `abandoned`, never free. A `POST /v0/pairings` that does not answer `200` (an error, a
+   timeout, a lost response) may still have made a pairing, or may make one when a write lands late, whose `P`
+   and secret the owner never learns. So the owner never sends `D` again after such a result: it marks `D`
+   abandoned and starts this step again with a new `D` and a new key pair. A retry with the same `D` that is sent
+   all the same (after a restart that lost the result, say) gets `409` once that pairing is visible, because it
+   already uses `D` (section 7.3), and the owner then does the same. The pairing it could not learn is never
+   shown, so no one can join it, and it shares no device id with any other pairing; the relay deletes it when
+   it expires, and until then it counts toward the limit of open pairings.
 2. **Device.** Parses the link and refuses it if any part is malformed. In one IndexedDB transaction with
    strict durability, it refuses the link if a pairing is installed, and otherwise records a **reservation**: a
    new random pairing generation `G` and `P`, replacing any earlier reservation, whose flow can then no longer
@@ -314,10 +321,17 @@ be the relay's `SPRAVA_WEB_ORIGIN`.
    `POST /v0/pairings/{P}/join` with the secret, `B` and the sealed hello. It receives its token and the
    pairing's `expires_at`, refuses the pairing if the response names a device id other than its `D`, and shows
    the confirmation code. If the join's
-   response is lost, the device cannot join again: the person starts over with a new QR code.
+   response is lost, the device cannot join again: the person starts over with a new QR code. A `503` (the relay
+   is starting or being replaced, section 7.9) is retried with the identical body, first after 5 seconds, then
+   doubling the wait up to 30 seconds (a browser cannot read `Retry-After`, section 7.7), until another answer
+   comes or 10 minutes, the pairing's lifetime, have passed. A `409` on such a retry means an earlier attempt
+   joined, and a `404` that the pairing expired: either way the person starts over too.
 3. **Owner.** Polls `GET /v0/pairings/{P}` every 2 seconds until its state is `joined`. It keeps the first `B` and
    hello it sees; its transcript (`P`, `A`, `B`, `D`) is now fixed. If any response names a device id other than
-   its own `D`, or a later response shows a different `B`, it abandons the pairing. It computes
+   its own `D`, or a later response before the person confirms shows a different `B`, it abandons the pairing (a
+   failed join's write can land late and change `B`, section 7.3). Once step 4 has recorded the device active,
+   it reads only the state from later responses and ignores their `B` and hello: the transcript was confirmed,
+   and abandoning then would forget the key of an active device. It computes
    `Z = X25519(a, B)`, then `W`, `Kd` and the code, and opens the hello. If the hello does not open or is invalid,
    it abandons the pairing. Only then does it show the code and the device's label, and ask the person whether the
    codes on both screens match.
@@ -384,8 +398,12 @@ command, never an example value, and the repository's templates leave the variab
 pair (section 4.1), and stores durably, in the Keychain, the owner token itself, the signing key, the relay
 origin and the instance it is claiming (read from `GET /v0/health`). Then it writes the claim body, which
 refers to those stored credentials, durably, and sends that identical body on every retry, after a restart
-too, until the claim is confirmed. If the relay's instance changes meanwhile, the claim is void and the owner
-starts over:
+too, until the claim is confirmed: `POST /v0/claim` answered `204`, and `GET /v0/health` then says
+`"claimed": true` for the same instance. It keeps that body for as long as it uses the instance: if the relay
+later answers its owner token with `401` while `GET /v0/health` says `"claimed": false` for the same instance
+(a process that read its state before a claim it was not part of landed, sections 6 and 7.9), it sends the
+recorded body again, which that process adopts (step 2 below). If the relay's instance changes meanwhile, the
+claim is void and the owner starts over:
 
 ```
 {"setup_code": "...", "owner_token_sha256": "<64 lowercase hex>"}
@@ -399,28 +417,45 @@ claim are identical. A correct setup code is never refused because of anyone els
 1. **Paces.** It processes at most 10 claim requests per second for the whole relay, one at a time. A request
    beyond that waits; one that has waited 5 seconds is answered `503` with `Retry-After: 1`. This bounds load,
    whatever the codes; it never depends on failures, and the Mac simply retries.
-2. **Already claimed.** If the owner record exists: `204` if its bytes are exactly the ones this body derives
-   (a retry of the claim that won; the relay never discloses the owner token's hash), and `409` otherwise,
-   whatever the code.
+2. **Already claimed.** If the relay knows its owner: `204` if the owner token's hash is exactly the one this
+   body carries (a retry of the claim that won; the relay never discloses the owner token's hash), and `409`
+   otherwise, whatever the code. A process that knows its owner, because it read the claim at start or accepted
+   it since, never becomes claimable again: an owner record that later goes missing or cannot be read changes
+   nothing. A process that started unclaimed and finds a claim in the bucket that landed since (a write begun
+   before a restart) treats it the same way: `204` and the claim adopted if it is this body's, `409` otherwise.
 3. **Checks the code first.** `sha256` of the submitted code is compared in constant time with `sha256` of the
-   configured code. A correct code goes on to step 5, whatever has happened before.
+   configured code. A correct code goes on to step 5, whatever has happened before. A relay with no setup code
+   (the variable removed or empty after the claim) matches no code; an empty code never matches.
 4. **Throttles failures by address.** A wrong code is a failure, counted per client address (the address the
-   relay's host reports for the connection) over the last 10 minutes. Up to 5 failures are answered `403`;
-   later failures from that address are answered `429`, after a 2-second delay that holds only that
-   response, not the relay's processing of other claims. Counts live in memory.
-5. **Create if absent.** The relay writes the owner record only if it does not exist. The relay runs as
-   exactly one instance (§13), so it makes this atomic in its own process: claims, pairing joins and request
-   creation take one in-process lock, check that the object is absent, then write. It also sends
-   `If-None-Match: *` on S3 and treats a `412` as "already exists", as a second guard on stores that honour it;
-   it does not depend on it, because some S3-compatible stores (DigitalOcean Spaces among them) accept the
-   header and overwrite anyway. On the filesystem it writes a temporary file in the same directory and `link`s
-   it to the final name, which fails if the name exists.
+   relay's host reports for the connection; forwarding headers, which a client can forge, are not read) over the
+   last 10 minutes. Up to 5 failures are answered `403`; later failures from that address are answered `429`,
+   after a 2-second delay that holds only that response, not the relay's processing of other claims. Counts live
+   in memory. Behind a proxy that terminates TLS, as most hosts run one, every client has the proxy's address, so
+   the count is in effect relay-wide: after five wrong codes from anyone, every wrong code is `429` for a while.
+   A correct code is never refused because of it, because step 3 comes first.
+5. **Create if absent.** Under the creation lock, the relay first writes the **claim** `claims/{hash}`, named by
+   the owner token's hash and holding the owner record's bytes (section 7.8), then lists `claims/`. If any other
+   claim is there, it refuses with `409`. Otherwise it writes the owner record, and the relay is claimed. Each
+   write is create-if-absent. The relay runs as exactly one writer (section 7.9), so it makes this atomic in its
+   own process: claims, pairing joins and request creation take one in-process lock, check that the object is
+   absent, then write. It also sends `If-None-Match: *` on S3 and treats a `412` as "already exists", as a
+   second guard on stores that honour it; it does not depend on it, because some S3-compatible stores
+   (DigitalOcean Spaces among them) accept the header and overwrite anyway. On the filesystem it writes a
+   temporary file in the same directory and `link`s it to the final name, which fails if the name exists.
 
-A write the relay started before a crash may land after it restarts; the store does not fence it. For the
-owner record this is harmless: a late write from an earlier attempt at the same claim writes the same bytes.
+A write the relay started before a crash may land after it restarts (section 7.9). For a claim this is
+harmless or fails closed. A late write of the same claim repeats the same name and bytes. A late write of
+another claim, possible only when two different bodies were sent with the correct code, shows as a second name
+under `claims/`. **A relay refuses to start** when it holds more than one claim, an owner record with no claim
+behind it, or an owner record whose bytes differ from its claim's. A running relay that already knows its
+owner keeps serving it; the conflict shows at its next start. The deployer then starts over with a new
+instance (below). A claim whose owner record is missing is finished at start: the relay writes `owner.json`
+from it.
+
 After the claim, the relay ignores `SPRAVA_SETUP_CODE`; the deployer should remove it. Every other claim is
 refused with `409`, even after a restart or a change of the variable. While unclaimed, the relay serves
-nothing but `health` and `claim`.
+nothing but `health` and `claim`: every other endpoint answers `401` if it needs a token, and `404` if it is
+public (a join).
 
 **Re-claiming** uses a fresh namespace. Everything the relay stores, the owner record included, lives under the
 prefix `SPRAVA_INSTANCE` (section 13), a random id the deployer generates. To re-claim, the deployer stops the
@@ -435,16 +470,19 @@ All endpoints are under `/v0/`, over HTTPS (plain HTTP only on `localhost`). Req
 `Authorization: Bearer <token>` unless marked public. Bodies are JSON unless marked bytes; bytes are sent as
 `application/octet-stream`. Errors are `{"error": "<plain sentence>"}` with a 4xx or 5xx status; the relay
 never echoes a request's content in an error. A missing or unknown token is `401`. A known token calling an
-endpoint its role does not allow is `403`, except that a device reading an object it may not read gets `404`,
-so it cannot learn which objects exist.
+endpoint its role does not allow is `403`, except that a device reading an object, or listing a prefix, it may
+not read gets `404`, so it cannot learn which objects exist.
 
 The relay drops a request whose body has not fully arrived within 60 seconds, and stores nothing for it. It
-reads every request body as a stream and refuses it with `413` as soon as it passes its limit: 1 MiB
-for an object, 64 KiB for a request, 1 KiB for a pairing key, and 4 KiB for any JSON body. It reads JSON
-bodies strictly (section 3.1).
+reads every request body as a stream and refuses it with `413` as soon as it passes its limit, or at once when
+the `Content-Length` is above it: 1 MiB for an object, 64 KiB for a request, 1 KiB for a pairing key, and 4 KiB
+for any JSON body. It then reads the rest of the body and discards it, storing nothing, so that the client
+receives the `413` instead of a reset connection; the request's time limit bounds this. It reads JSON bodies
+strictly (section 3.1).
 
-The relay runs as exactly one instance. Rate limits, the claim throttle and failed-join counts live in its
-memory and reset when it restarts; everything else lives in the bucket (section 7.8).
+The relay runs as exactly one instance. Rate limits, the claim throttle, failed-join counts and its locks live
+in its memory and reset when it restarts; everything else lives in the bucket (section 7.8). Section 7.9 says
+how it stays one writer when a host briefly runs two.
 
 ### 7.1 Who may call what
 
@@ -478,39 +516,59 @@ a re-claimed relay from the one it claimed.
 
 - `POST /v0/pairings` with `{"owner_public_key": "<b64 A>", "device_id": D}` → `{"pairing_id": P, "secret": "<b64
   16 bytes>", "expires_at": time}`. The owner chose `D`; the relay refuses it with `409` if a device or pairing in
-  this instance already has it. At most 3 open pairings at once, and at most 20 devices, pending and active
-  together (`507` beyond).
+  this instance already has it, as it does when a lost response made the earlier call's pairing (section 5.2,
+  step 1). At most 3 pairings in state `open` at once, and at most 20 devices (`507` beyond). The device count
+  is of pending and active devices; a pairing not yet joined has no device and does not count, nor does a
+  self-revoked device or a pending one whose pairing is gone. Both limits are checked here, when a pairing is
+  made, so pairings already open may still be joined and take the count to at most 22.
 - `POST /v0/pairings/{P}/join` with `{"secret": "...", "device_public_key": "<b64 B>", "hello": "<b64 of the
   sealed hello, at most 2 KiB>"}` → `{"device_id": D, "device_token": "<token>", "expires_at": time}`. The relay
   makes the token and
   records the device `D` the owner chose as pending. The response carries no owner key; the device uses only the
-  `A` of its QR code. A join works once per pairing (`409` after); a wrong secret is `403` and counts toward the
-  pairing's limit of 5 failed joins, after which the pairing is deleted.
+  `A` of its QR code. The secret is checked first: a wrong secret is `403`, whatever the pairing's state, and
+  counts toward the pairing's limit of 5 failed joins, after which the pairing is deleted. With the right
+  secret, a pairing already joined, or whose device has a revocation marker, is `409`. A join writes, in this
+  order, the token's marker, the device's record and `joined.json` (section 7.8); the pairing is joined exactly
+  when `joined.json` exists.
 - `GET /v0/pairings/{P}` (owner) → `{"state": "open"|"joined"|"keyed"|"acknowledged", "device_id": D|null,
-  "device_public_key": "<b64 B>"|null, "hello": "<b64>"|null}`. Once set, `device_id`, `device_public_key` and
-  `hello` never change.
+  "device_public_key": "<b64 B>"|null, "hello": "<b64>"|null}`. All three are `null` while the pairing is
+  `open`, `device_id` included, and set from its join on. Once set, `device_id` never changes;
+  `device_public_key` and `hello` change only in the case of the note below.
 - `PUT /v0/pairings/{P}/key` (owner), body bytes: the sealed key payload, at most 1 KiB → `204`. In state
   `joined`, the relay writes, in this order, the device's activation marker, the payload's SHA-256 (`key.sha256`,
   kept until the pairing is deleted) and the payload (section 7.8); the pairing is then `keyed` and the device
   active. In `keyed` or `acknowledged`, an upload whose SHA-256 equals `key.sha256` is a retry: `204`, and the
-  payload is written again if it is missing and the pairing is not yet acknowledged. Other bytes are `409`.
+  payload is written again if it is missing and the pairing is not yet acknowledged. Other bytes are `409`. In
+  state `open`, or when the device was revoked between its join and this call (it has a revocation marker),
+  the call is `409` and writes nothing.
 - `GET /v0/pairings/{P}/key` (the device that joined `P`) → bytes, the sealed key payload. `404` before the
   owner posts it. Idempotent: it returns the same bytes on every call until the device acknowledges or the
   pairing expires.
 - `POST /v0/pairings/{P}/ack` (the device that joined `P`) → `204`, in state `keyed` or `acknowledged`. The
   relay writes the pairing's acknowledgement, which makes it `acknowledged`, then deletes the sealed key
   payload, keeping `key.sha256`. Repeating it is harmless.
-- `DELETE /v0/pairings/{P}` (owner) → `204`. Deletes the pairing, and its device if that device is still
-  pending.
+- `DELETE /v0/pairings/{P}` (owner) → `204`, also when the pairing does not exist. Deletes the pairing, and its
+  device if that device is still pending.
 
 A pairing is deleted 10 minutes after it was made, whatever its state. A device still pending at that moment
-is deleted with it. A device that was made active stays; the owner decides about it (section 5.2, step 6).
+is deleted with it. A device that was made active stays; the owner decides about it (section 5.2, step 6). A
+pending device deleted with its pairing gets no revocation marker: it was never active, its token admitted only
+its own pairing's `key` and `ack`, which are gone, and the owner never uses its id again (section 5.2, step 1).
+
+**A late join.** A join whose response failed (a timeout, a crash, a fenced writer, section 7.9) may have begun
+writes that land later. Its token marker then names a token nobody holds, and its record holds the same bytes
+every join of the pairing writes, so neither changes anything. Its `joined.json` can: on a store that ignores
+conditional writes, a late `joined.json` can replace the one a later join wrote, so `GET /v0/pairings/{P}`
+shows a different `B` and hello. Before the person confirms, the owner's check in section 5.2, step 3, then
+abandons the pairing. If the owner sees only the late `B`, the codes on the two screens differ (section 5.3),
+and the person says so. After the person confirmed, the owner ignores the change (section 5.2, step 3): the
+device it confirmed stays active and keeps its key.
 
 **One authority for activation.** A device is active exactly when its activation marker exists and its
 revocation marker does not; the pairing's state is the furthest of its write-once parts that exists (section
 7.8). There is no separate state field that could disagree. Because the marker is written before the key, a
 device that can fetch its key is always active. Admitting a token checks the revocation marker first, then
-the record, then, for anything but the device's own pairing, the activation marker.
+the record and the token's own marker, then, for anything but the device's own pairing, the activation marker.
 
 ### 7.4 Devices
 
@@ -519,13 +577,17 @@ the record, then, for anything but the device's own pairing, the activation mark
   device id, at most `limit` (1 to 50, default 50) devices after `after`; `next` is the `after` for the next
   page, or `null`. It lists only devices that still have a record: pending, active, and self-revoked ones the
   owner has not yet deleted. A device the owner deleted keeps only its revocation marker and is not listed.
-  The state is derived as section 7.3 says; a device with a revocation marker is `revoked`. `last_seen` is
-  rounded down to the hour. The relay holds no label; the Mac
-  keeps labels in its own records.
-- `DELETE /v0/devices/{D}` → `204`. The relay writes the device's revocation marker, so its token stops
-  working at once and for good, then deletes its record, pending requests, and keys and outcomes objects. No
-  cleanup ever deletes the marker; it stays until the instance is retired, so no late write can bring the
-  device back.
+  The state is derived as section 7.3 says; a device with a revocation marker is `revoked`. `paired_at` is the
+  earliest time held by the device's token markers (section 7.8), for a device that has an activation marker,
+  and `null` for one that never had a key. It is when the relay first made a token for the device, which a
+  failed earlier join of the same pairing can make a little earlier than the join that succeeded; it is
+  informative. `last_seen` is rounded down to the hour.
+  The relay holds no label; the Mac keeps labels in its own records.
+- `DELETE /v0/devices/{D}` → `204`, for any well-formed id, also one the relay does not know. The relay writes
+  the device's revocation marker, so its token stops working at once and for good, then deletes its record,
+  token markers, pending requests, and keys and outcomes objects. No cleanup ever deletes the marker; it stays
+  until the instance is retired, so no late write can bring the device back. For an id it does not know, the
+  relay writes the marker all the same, so no pairing can later make a device under that id (section 7.3).
 - `DELETE /v0/devices/self` (an active device, about itself), body bytes: its sealed revocation (section 8.8), at
   most 1 KiB → `204`. The relay stores the revocation at `devices/{D}/revocation`, then writes the calling
   device's revocation marker exactly as above, so its token stops working at once, and deletes its pending
@@ -546,10 +608,13 @@ integers of at least 1, in decimal without leading zeros. Nothing else is accept
 - `PUT /v0/objects/{name}`, body bytes (a sealed object, at most 1 MiB) → `204`. A `PUT` to a name that exists
   is refused with `409` and changes nothing, unless the stored bytes are identical, which is `204`, so a retry
   is harmless. The check and the write happen under the relay's creation lock.
-- `GET /v0/objects/{name}` → bytes.
+- `GET /v0/objects/{name}` → bytes, with `ETag: "<SHA-256 of the bytes, in lowercase hex>"` (the quotes are
+  part of the value). A request whose `If-None-Match` is exactly that value gets `304` with the same `ETag` and
+  no body. Since an object never changes under its name, the tag never goes stale.
 - `DELETE /v0/objects/{name}` → `204`, also when the name does not exist.
 - `GET /v0/objects?prefix=<p>[&limit=<n>][&below=<number>]` → `{"names": ["index/42", ...], "next":
-  <number>|null}`. `<p>` is one of `index/`, `views/{id}/`, `devices/{D}/keys/` and `devices/{D}/outcomes/`.
+  <number>|null}`. `<p>` is one of `index/`, `views/{id}/`, `devices/{D}/keys/` and `devices/{D}/outcomes/`;
+  any other is `400`. A device listing a prefix it may not list (section 7.1) gets `404`.
   The names under it come newest first, ordered by their last segment as a number, at most `limit` (1 to 100,
   default 20), and only those whose number is below `below` when it is given. `next` is the number to pass as
   `below` for the next page, or `null`.
@@ -568,20 +633,30 @@ verify only costs the reader those tries.
   treats `409` as success, because it means its earlier attempt was stored. At most 120 requests per device
   per hour (`429` beyond), and at most 1,000 pending per device (`507` beyond).
 - **Ordinals.** Under its creation lock, the relay gives each request it stores the next **ordinal** of its
-  device: an unsigned integer, above every ordinal of that device's stored requests, and stores the request
-  with it in its name (section 7.8). The relay keeps no counter that a late write could set back: at start,
-  before serving, it derives each device's next ordinal from the highest ordinal stored, plus one. A late write
-  from before a restart can only add a second copy of a request the device sent again under the same `R`;
-  the relay lists both, and the Mac decides the request once and discards the other copy as a duplicate
-  (section 9.3). Ordinals of deleted requests may be given again; nothing compares them across drains.
+  device: an unsigned integer, above every ordinal it has given that device, and stores the request with it in
+  its name (section 7.8). **An ordinal is never given twice**, even across restarts, while the lease of section
+  7.9 holds. Ordinals come in blocks of
+  1,024, and the relay writes a block's reservation `ordinals/{D}/{block}` before it gives the first ordinal in
+  it. Before a process gives a device its first ordinal, it starts above every ordinal stored for that device
+  and every block reserved for it, so it never reuses one an earlier process may have given, even to a write
+  still to land. The relay takes the ordinal before it writes the request, so a write whose outcome it does not
+  know keeps its ordinal, and a retry of the same request gets a new one.
+- **Late copies.** A write whose outcome the relay does not know (a timeout, a crash) may land later. It can
+  only add a second copy of a request the device sent again under the same `R`, with the same bytes (section
+  9.8). When the relay lists a device's requests and finds two copies of one `R`, it keeps the one with the lower
+  ordinal and deletes the other. A copy can also land after the Mac decided the request and deleted it: late
+  copies of drained requests may reappear in a listing, under their own ordinal, and the Mac discards them as
+  duplicates (section 9.3, check 2).
 - `GET /v0/requests/{D}?limit=<n>[&after=<ordinal>]` (owner) → `{"requests": [{"request_id": R, "ordinal": n,
   "received_at": time}], "next": <ordinal>|null}`: that device's requests with an ordinal above `after`, in
-  ascending ordinal, at most `limit` (1 to 100, default 25). `next` is the last ordinal returned when more may
-  follow, and `null` otherwise. Requests are listed and paged by ordinal only: receipt times and names never
-  order them. A device sends its next request only after the previous one was stored (section 9.8), so for an
-  honest relay ordinal order is the device's sequence order. `received_at` is informative and not trusted.
+  ascending ordinal, at most `limit` (1 to 100, default 25), and more only when a page would otherwise end
+  between two equal ordinals, so that `after` never skips a request. `next` is the last ordinal returned when
+  more may follow, and `null` otherwise. Requests are listed and paged by ordinal only: receipt times and names
+  never order them. A device sends its next request only after the previous one was stored (section 9.8), so for an
+  honest relay ordinal order is the device's sequence order. `received_at` is the stored request's last-modified
+  time as the bucket reports it, to the second; it is informative and not trusted.
 - `GET /v0/requests/{D}/{R}` → bytes. `DELETE /v0/requests/{D}/{R}` → `204`.
-- A request not collected within 30 days is deleted.
+- A request not collected within 30 days of its `received_at` is deleted.
 
 ### 7.7 Cross-origin requests
 
@@ -602,36 +677,52 @@ The web app runs at another origin, set in `SPRAVA_WEB_ORIGIN` (section 13). The
 
 ### 7.8 What the relay keeps in the bucket
 
-A write the relay started before a crash may land after it restarts (section 6). So every object it keeps is
-either **write-once** with content fixed by its first writer, so a late write repeats the same bytes, or
-**informative** and never used to decide anything, or derived again at start.
+A write the relay started may land after it gave up on it, even after a restart (section 7.9). So every object
+it keeps is one of three kinds:
 
-| Object, under the prefix `SPRAVA_INSTANCE/` | Kind | Holds |
+- **write-once**: content fixed by its first writer, and either derived alike by every writer, so a late write
+  repeats the same bytes, or named uniquely for one writer, so a late write adds a name and replaces nothing.
+  `joined.json` is the one exception, and the owner catches it (section 7.3, "A late join");
+- **informative**: never used to decide anything;
+- **derived**: rebuilt from write-once objects, and written again from them at start, so a missing copy is
+  restored and a late one repeats the same bytes.
+
+| Object, under the prefix `SPRAVA_INSTANCE/` | Kind | Holds, and its rule |
 |---|---|---|
-| `owner.json` | write-once, derived from the claim body | the owner token's hash (section 6) |
-| `devices/{D}/record.json` | write-once, at join | the token's hash, the pairing id, when it joined |
+| `claims/{hash}` | write-once, named by the owner token's hash; never deleted | the owner record's bytes. Written before `owner.json`; more than one claim, and the relay refuses to start (section 6) |
+| `owner.json` | derived from its claim | exactly `{"owner_token_sha256":"<hash>"}` (section 6); written after the claim, and again at start if missing; one that has no claim, or differs from it, and the relay refuses to start |
+| `leases/{rank}-{id}` | write-once, empty; the name says everything | one process's lease (section 7.9). Deleted by the process that outranks it, once that process is ready |
+| `devices/{D}/record.json` | write-once, at join, alike for every join of the pairing | the pairing id, and nothing else |
+| `devices/{D}/tokens/{sha256}` | write-once, at join, one per token the relay made, named by the token's hash (section 3) | `{"joined_at": time}`, when the token was made, informative. A token is admitted only while its marker exists; a late marker names a token nobody holds |
 | `devices/{D}/active` | write-once marker, at key installation, before the key | nothing |
 | `devices/{D}/revoked` | write-once marker, at removal, before any deletion; never cleaned up | nothing |
 | `devices/{D}/revocation` | write-once, at a device's self-revocation, before the marker; kept until the owner deletes the device | the device's sealed revocation |
 | `devices/{D}/last_seen` | informative | the hour the device was last seen; a late write can only set it back an hour |
 | `pairings/{P}/created.json` | write-once | `A`, `D`, the secret's hash, `expires_at` |
-| `pairings/{P}/joined.json` | write-once | `B` and the sealed hello |
+| `pairings/{P}/joined.json` | write-once; a failed join's late write can replace it (section 7.3) | `B` and the sealed hello |
 | `pairings/{P}/key.sha256` | write-once, kept until the pairing is deleted | the SHA-256 of the key payload |
 | `pairings/{P}/key` | write-once | the sealed key payload, deleted after the acknowledgement |
 | `pairings/{P}/ack` | write-once marker | nothing |
 | `objects/{name}` | write-once (section 7.5) | a sealed object |
-| `requests/{D}/{ordinal}-{R}` | write-once | a sealed request |
+| `requests/{D}/{ordinal}-{R}` | write-once, named uniquely by its ordinal | a sealed request |
+| `ordinals/{D}/{block}` | write-once marker, written before any ordinal in the block is given; never deleted | nothing: it reserves the ordinals `1,024 × block` to `1,024 × block + 1,023` for one process (section 7.6) |
 
 A pairing is `open` when only `created.json` exists, `joined` with `joined.json`, `keyed` with `key.sha256`, and
-`acknowledged` with `ack`. The ordinal in a request's name is written as 16 decimal digits so that a listing of
-the prefix comes back in ordinal order. The relay keeps in memory, for each device, a map from `R` to its ordinal,
-so `requests/{D}/{R}` in the API finds the object. It rebuilds the map from that listing at start, and updates
-it from every listing of the bucket it reads for `GET /v0/requests/{D}`, so a request whose write began before
-a restart and landed after it is found as soon as it is listed. When two copies hold the same `R`, it keeps the
-one with the lower ordinal and deletes the other.
+`acknowledged` with `ack`. The numbers in a lease's rank, a request's ordinal and an ordinal block are written as
+16 decimal digits, so that a listing of the prefix comes back in their order. The numbers in `objects/{name}`
+are not padded: they are the API's names (section 7.5), so the store lists them in text order, not numeric
+order, and a listing of an object prefix reads every name under it and sorts the numbers itself. This is a
+known cost, kept small by the owner's cleanup (section 9.7), which leaves few objects under each prefix.
 
-At start, before serving, the relay repairs and cleans up, in this order, and never deletes a revocation
-marker:
+The relay keeps in memory, for each device, a map from `R` to its ordinal, so `requests/{D}/{R}` in the API
+finds the object. It rebuilds the map from that listing at start, and updates it from every listing of the
+bucket it reads for `GET /v0/requests/{D}`, so a request whose write began before a restart and landed after it
+is found as soon as it is listed. When two copies hold the same `R`, it keeps the one with the lower ordinal and
+deletes the other (section 7.6).
+
+At start, after its warm-up (section 7.9) and before serving anything but health, the relay reads its claims
+and writes `owner.json` from the claim if it is missing (section 6). Then it repairs and cleans up, in this
+order, and never deletes a revocation marker:
 
 1. it writes the revocation marker of every device that has a stored `revocation` but no marker (a
    self-revocation a crash cut short), so its token stops working; the phone has already removed itself. A
@@ -653,6 +744,55 @@ marker:
    `DELETE /v0/devices/{D}` does, keeping the marker. A device with both may be self-revoked and waiting for
    the owner, or in an owner deletion a crash cut short: the relay keeps it, and the Mac, which repeats its
    `DELETE /v0/devices/{D}` until it gets `204` (section 4.4), finishes it.
+
+Then it reads every device's token markers, reads every mailbox (deleting requests older than 30 days, section
+7.6), and deletes the leases below its own. It reads every mailbox again, and expires requests, once an hour.
+
+### 7.9 One writer at a time
+
+The relay is deployed as one instance, and its locks and counts live in its memory. Some hosts start the new
+instance and send it traffic before they stop the old one (DigitalOcean App Platform does on every deploy, with
+no option to stop first), and an S3-compatible store cannot refuse a stale writer. So each process fences itself
+with a **lease**:
+
+1. **Taking it.** At start, the process lists `leases/` and writes its lease
+   `leases/{rank}-{id}`: `rank` one above the highest listed, `id` 16 random bytes in lowercase hex. Leases rank
+   by name, so each new one ranks above every earlier one (two taken at once are ordered by `id`).
+2. **Checking it.** Before every write or deletion, the process checks that no lease ranks above its own,
+   using a check (a listing of `leases/`) begun at most 10 seconds earlier; when the last one is older, it
+   checks again first. It also checks every 5 seconds in the background.
+3. **Fenced.** Once a check finds a lease above its own, the process is fenced for good: every write fails, and
+   the call that needed it is answered `503` with `Retry-After`; it answers `503` to everything but
+   `GET /v0/health` and preflights (section 7.7), stops accepting connections, and exits.
+4. **Warm-up.** After writing its lease, every process waits about 50 seconds before it reads the state it
+   serves from or writes anything (it may read its claims earlier, only to check its configuration, section
+   6), so whatever an earlier process began writing before it was fenced has ended: at most 10 seconds for its
+   last check to be outdated, plus the longest store call (step 5), about 41 seconds in all. Meanwhile it answers
+   `GET /v0/health` and preflights, and `503` with `Retry-After` to everything else. Then it checks its lease
+   again and starts as section 7.8 says. The first start of a new instance waits too: two processes that both
+   found no lease, because they started at once, each wait, and the lower one is fenced before either serves
+   anything but health.
+5. **Bounded calls.** Each attempt of an S3 call is cut off after 10 seconds, and a call is tried at most three
+   times (again only on a network error or a `5xx`), so a call ends within about 31 seconds.
+
+**What the lease assumes.** The lease is timed, not enforced: the store cannot refuse a stale writer. It
+holds while a process is not frozen between confirming that its check is fresh enough and sending the write
+(the host does not suspend a running container), and while the store applies a write before its call ends or
+not at all. Under these assumptions a host that starts the new instance before it stops the old one is
+covered: the two never write at the same time.
+
+**If the assumptions fail**, two processes may write at once, or a write may land after its call gave up. That
+makes the relay misbehave only in ways section 2 already allows a relay to: it can store a request twice, give
+two requests of one device ordinals that are equal or out of their `seq` order, refuse or lose a request, or
+abandon a pairing. Every object keeps its rule of section 7.8, so no late or stale write replaces another's
+content, except `joined.json`, which the owner checks (section 7.3). Claims fail closed (section 6). A listing
+never ends a page between equal ordinals, so paging by ordinal skips nothing. And the Mac decides every request
+from its own records (section 9): a copy is a duplicate, a request of a revoked device is discarded, and a
+request taken out of `seq` order is rejected, never applied twice or applied after a later one; the device then
+shows it as refused (section 9.8). A restart or a deploy makes the relay unavailable for about a minute; the
+host's health check belongs on `GET /v0/health`, which answers throughout. Both sides retry a `503`: in a drain
+it is a job failure (section 9.2), and every call the Mac repeats until it succeeds (sections 4.4, 5.2 and 9.7)
+is simply repeated; the web app retries its requests (section 9.8) and its join (section 5.2, step 2).
 
 ## 8. Payloads
 
@@ -1450,8 +1590,10 @@ keys objects.
 
 ## 12. What the relay logs
 
-Method, endpoint pattern (never a concrete id, name or path), status, duration, and an hourly count per
-device. Never a token, an id, a body, a setup code or a fragment.
+For each request: its method, endpoint pattern (never a concrete id, name or path), status and duration. Named
+events, such as the relay starting, being claimed or being fenced (section 7.9), and errors by kind only. Once
+an hour, how many calls each device made in that hour, as a list of counts without device ids, so the log shows
+how busy devices were but not which was which. Never a token, an id, a body, a setup code or a fragment.
 
 ## 13. Configuration
 
@@ -1463,11 +1605,20 @@ The relay reads only environment variables. None has a default that points anywh
 | `SPRAVA_SETUP_CODE` | The one-time code the owner claims the relay with: 32 random bytes in standard base64, as `openssl rand -base64 32` prints (section 6). Required until claimed, ignored after. |
 | `SPRAVA_WEB_ORIGIN` | The web app's origin, exactly, for example `https://companion.example.org`. Required. The only origin allowed to call the relay from a browser (section 7.7). |
 | `SPRAVA_STORAGE` | `s3` or `fs:<absolute directory>` (development and tests). |
-| `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET` | The bucket, for `s3`. The relay does not depend on conditional writes (section 6). |
+| `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET` | The bucket, for `s3`. The relay addresses it path-style (`S3_ENDPOINT/S3_BUCKET/<key>`) and signs with AWS Signature Version 4. It does not depend on conditional writes (section 6), but it does depend on consistency (below). |
 | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | A key limited to that bucket. |
 | `PORT` | The port to listen on (default 8080). |
 
-The relay runs as one instance (section 7). It answers `404` at `/` and any path outside `/v0/`.
+**The store must be consistent.** The lease (section 7.9), the claims (section 6), ordinal reservations
+(section 7.6) and every create-if-absent check assume that a write, once completed, shows in every later read
+and listing of the store (strong read-after-write and list-after-write consistency, which Amazon S3 gives).
+A deployer using another S3-compatible store checks that its documentation promises the same; the local
+folder store gives it.
+
+The relay is deployed as exactly one instance (section 7). A host that starts the new instance before it
+stops the old one briefly runs two; the lease of section 7.9 fences the old one, and every new process serves
+only `GET /v0/health` for its first 50 seconds or so. Point the host's health check at `GET /v0/health`. The relay
+answers `404` at `/` and any path outside `/v0/`.
 
 ## 14. Test vectors
 
@@ -1502,7 +1653,9 @@ A vector, once committed, changes only with the protocol version. The cases:
 9. `token-hash`: the token made of bytes `00` to `1f` is `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8`; its hash
    is `ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0`. (SHA-256 of the 32 decoded bytes,
    `630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd`, is the wrong reading.) The hash in uppercase
-   hex must be refused as `owner_token_sha256`, and the token with `=` padding as a bearer value.
+   hex must be refused as `owner_token_sha256`, and the token with `=` padding as a bearer value. The relay names
+   the token's marker by this hash, `devices/{D}/tokens/<hash>` (section 7.8), so the marker for this token ends
+   in `ea866a75` … `17afffd0`, all 64 characters.
 10. `signature`: the RFC 8032 §7.1 test 1 key, message and signature verify in both implementations. A signed
     index made by the Mac verifies in the web app; the same object fails when its name, `kid`, `e`, nonce, one
     byte of `c` or one bit of `s` changes, and when `s` is removed.
