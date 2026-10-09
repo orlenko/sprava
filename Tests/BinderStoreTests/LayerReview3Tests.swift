@@ -175,4 +175,40 @@ import Testing
         #expect(first?["title"] == .str("Invented title A") && first?["priority"] == .str("low"))
         #expect(items.first { $0["id"] == .str("estate-example-2026-008") }?["title"] == .str("Invented title B"))
     }
+
+    // MARK: - 7. A copy saved from before several approvals undoes them all, and all are offered again
+
+    @Test func aCopyFromBeforeTwoApprovalsOffersBothAgain() throws {
+        let (folder, store) = try adopted()
+        let found = try Data(contentsOf: folder.appendingPathComponent("catalog.json"))
+        let first = try store.apply([dismiss("estate-example-2026-007")], now: now)
+        let second = try store.apply([dismiss("estate-example-2026-008")], now: now)
+        // Another program that read the catalog before both changes saves its copy over it.
+        try found.write(to: folder.appendingPathComponent("catalog.json"))
+        try store.settle(now: now)
+        #expect(store.lastAbsorbed == .externalEdit(revertedLastBatch: true))
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        #expect(card.raw["provenance"]?["overwritten_ops"] == .array((first + second).compactMap { $0["id"] }))
+        #expect(card.ops.map { $0["args"]?["id"] } == [.str("estate-example-2026-007"), .str("estate-example-2026-008")])
+    }
+
+    // MARK: - 8. Settling a catalog at an unknown level writes nothing
+
+    @Test func settlingAnUnknownLevelWritesNothing() throws {
+        let (folder, store) = try adopted()
+        try store.apply([dismiss("estate-example-2026-007")], now: now)
+        let url = folder.appendingPathComponent("catalog.json")
+        var c = try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+        var meta = try #require(c["meta"]?.objectValue)
+        meta.set("format_version", .str("1"))
+        c.set("meta", .object(meta))
+        try Data(JSONWriter.pretty(.object(c)).utf8).write(to: url)
+        let names = ["catalog.json", ".sprava/ops.ndjson", ".sprava/snapshot.json"]
+        let before = try names.map { try Data(contentsOf: folder.appendingPathComponent($0)) }
+
+        #expect(throws: TekaStore.Refused.self) { try store.settle(now: now) }
+        #expect(try names.map { try Data(contentsOf: folder.appendingPathComponent($0)) } == before)
+        #expect(!FileManager.default.fileExists(atPath: ProposalStore.dir(folder).path)
+                || ProposalStore.list(in: folder).allSatisfy { $0.0.raw["provenance"]?["overwritten_ops"] == nil })
+    }
 }

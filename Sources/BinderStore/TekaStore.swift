@@ -183,7 +183,15 @@ public final class TekaStore {
             let (catalog, hash, _) = try readCatalog()
             let log = try readOpLog().ops
             guard !log.isEmpty else { return }
+            try Self.refuseUnknownLevel(catalog)
             _ = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now)
+        }
+    }
+
+    /// An unknown level writes nothing, not even the record of an outside edit or the snapshot (binder-v0 §9.6).
+    static func refuseUnknownLevel(_ catalog: JSONObject) throws {
+        if case .unknown(let why) = CatalogLevel.classify(catalog) {
+            throw Refused(reason: "this catalog's level is unknown (\(why)); Sprava writes nothing to it")
         }
     }
 
@@ -205,10 +213,7 @@ public final class TekaStore {
         var (catalog, hash, _) = try readCatalog()
         var log = try readOpLog().ops
         guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
-        // An unknown level writes nothing, not even the record of an outside edit (binder-v0 §9.6).
-        if case .unknown(let why) = CatalogLevel.classify(catalog) {
-            throw Refused(reason: "this catalog's level is unknown (\(why)); Sprava writes nothing to it")
-        }
+        try Self.refuseUnknownLevel(catalog)
         if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
             log.append(contentsOf: absorbed)
         }

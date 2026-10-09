@@ -121,9 +121,10 @@ extension TekaStore {
         let lostOps: [JSONObject]
         if appended.isEmpty, reverted || ambiguous {
             lostOps = trailing
-        } else if appended.isEmpty, log.count > trailing.count {
-            lostOps = Self.lostOps(found: catalog, expected: expected,
-                                   beforeTrailing: try? Replay.run(Array(log.dropLast(trailing.count))), trailing: trailing)
+        } else if appended.isEmpty, let (before, since) = Self.sincePreviousExternalEdit(log) {
+            // Every approved op since the previous external edit, not only the last batch: a copy saved from before
+            // several approvals undoes them all (architecture 4.5).
+            lostOps = Self.lostOps(found: catalog, expected: expected, before: before, ops: since)
         } else {
             lostOps = []
         }
@@ -241,12 +242,23 @@ extension TekaStore {
         return nil
     }
 
-    /// The ops of the last batch whose change the outside edit put back to the value from before the batch
-    /// (binder-v0 §6.7 step 6): another program overwrote that part of the person's change. Each op is judged on
-    /// its own, so a batch overwritten in part offers again only what was lost, and an `update_item` is narrowed to
-    /// the fields put back: a change that survived, or a value the other program wrote, is never written over.
-    static func lostOps(found: JSONObject, expected: JSONObject, beforeTrailing: JSONObject?, trailing: [JSONObject]) -> [JSONObject] {
-        guard let before = beforeTrailing else { return [] }
+    /// The catalog as the previous external edit (or the adoption) left it, and the ops applied since, aborted ones
+    /// left out: what an outside edit is compared with (architecture 4.5). Nil when no op followed it.
+    static func sincePreviousExternalEdit(_ log: [JSONObject]) -> (JSONObject, [JSONObject])? {
+        let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+        // An aborted op and its abort never took effect; the chain runs on without them.
+        let effective = log.filter { $0["op"] != .str("abort") && !aborted.contains($0["id"]?.stringValue ?? "") }
+        guard let start = effective.lastIndex(where: { ["external_edit", "import_snapshot"].contains($0["op"]?.stringValue ?? "") }),
+              start < effective.count - 1, let before = try? Replay.run(Array(effective[...start])) else { return nil }
+        return (before, Array(effective[(start + 1)...]))
+    }
+
+    /// The ops among `ops` (applied in order to `before`) whose change the outside edit put back to the value from
+    /// before them (binder-v0 §6.7 step 6): another program overwrote that part of the person's change. Each op is
+    /// judged on its own, so changes overwritten in part offer again only what was lost, and an `update_item` is
+    /// narrowed to the fields put back: a change that survived, or a value the other program wrote, is never
+    /// written over.
+    static func lostOps(found: JSONObject, expected: JSONObject, before: JSONObject, ops: [JSONObject]) -> [JSONObject] {
         // Records are compared by id, so an unrelated edit elsewhere in the same array does not hide the loss.
         func record(_ catalog: JSONObject, _ id: JSONValue) -> JSONValue? {
             for key in ["open_items", "documents"] {
@@ -255,14 +267,14 @@ extension TekaStore {
             return nil
         }
         func field(_ path: String) -> String { (try? JSONPatch.tokens(path))?.first ?? path }
-        // Back as before the batch, and no longer what the batch left there.
+        // Back as it was before these ops, and no longer what they left there.
         func putBack(_ path: String, found: JSONValue?, before: JSONValue?, expected: JSONValue?) -> Bool {
             let now = found.flatMap { JSONPatch.value(at: path, in: $0) }
             return now == before.flatMap { JSONPatch.value(at: path, in: $0) } && now != expected.flatMap { JSONPatch.value(at: path, in: $0) }
         }
         var lost: [JSONObject] = []
         var state = before
-        for op in trailing {
+        for op in ops {
             let prior = state
             guard let next = try? OpApplier.apply(op, to: prior) else { return lost }
             state = next
