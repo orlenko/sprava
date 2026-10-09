@@ -28,9 +28,10 @@ Build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`,
    green; `runtime/jobs.log` has a `wake` line and a sentinel run right after it.
 9. **Daily summary.** With an invented binder that has an item due today, the summary notification at 08:00
    says only counts, such as "1 due today".
-10. **Outside watcher.** Turn background work off, then quit the app; restore the runtime's job by hand with
+10. **Outside watcher.** With background work on, quit the app, then stop the runtime's job by hand with
     `launchctl bootout gui/$(id -u)/ca.orlenko.sprava.runtime` while the watcher stays registered: within 15
-    minutes one notification says background work stopped. `runtime/watch.json` records each run.
+    minutes one notification says background work stopped. `runtime/watch.json` records each run. (With
+    background work turned off, the watcher stays silent; step 11 checks that.)
 11. **Turn Off.** Health › Turn Off shows "Background work is off (your choice)", never red, and the
     outside watcher stays silent.
 

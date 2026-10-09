@@ -137,6 +137,38 @@ git -C "$repo" add listed.txt
 if with_list "$root/absent/tokens" "Without a list" && grep -q "the privacy scan was skipped" "$root/err"; then
     ok "token list: a list that is certainly absent skips the scan, and says so"
 else bad "token list: an absent list did not skip the scan as expected"; fi
+git -C "$repo" reset -q --hard
+
+# The commit message is scanned too, with the same rules: reported by line, its text withheld.
+echo "message test" > "$repo/msg.txt"; git -C "$repo" add msg.txt
+if git -C "$repo" commit -q -m "Clean subject" -m "Body naming invented_sentinel_11" > "$root/out" 2> "$root/err"; then
+    bad "message: a commit message with a private token was accepted"
+elif grep -q '^message line 3$' "$root/err" && ! grep -q invented_sentinel "$root/err"; then
+    ok "message: a token in the commit message is found on line 3, its text withheld"
+else bad "message: rejected, but not by message line alone"; fi
+# A line that looks like a comment is scanned: with -m, git keeps it in the message.
+if git -C "$repo" commit -q -m "Clean subject" -m "# invented_sentinel_12" > "$root/out" 2> "$root/err"; then
+    bad "message: a token on a comment-like line of the message was accepted"
+else ok "message: a token on a comment-like line of the message is rejected"; fi
+# The hook alone, since pre-commit would reject a dangling list first.
+printf 'Clean\n' > "$root/msg-file"
+if SPRAVA_PRIVATE_TOKENS="$root/dangling" "$hooks_dir/commit-msg" "$root/msg-file" > "$root/out" 2> "$root/err"; then
+    bad "message: a dangling token list skipped the scan of the message"
+elif grep -q "is not a readable file" "$root/err"; then ok "message: a dangling token list rejects the commit"
+else bad "message: a dangling token list was rejected for another reason"; fi
+echo "message test" > "$repo/msg.txt"; git -C "$repo" add msg.txt
+if commit "A clean message" && ! grep -q "the scan of the message was skipped" "$root/err"; then
+    ok "message: a clean message passes the scan"
+else bad "message: a clean message was rejected or not scanned"; fi
+# `git commit -v`: the staged diff below the scissors line is not the message. Removing a line that holds a
+# token, committed earlier without a list, shows it there as a removed line; that does not reject the commit.
+echo "old invented_sentinel_13" > "$repo/legacy.txt"; git -C "$repo" add legacy.txt
+with_list "$root/absent/tokens" "Legacy line" || { cp "$root/err" "$root/err-setup"; bad "message: setup commit failed"; }
+echo "cleaned" > "$repo/legacy.txt"; git -C "$repo" add legacy.txt
+if GIT_EDITOR='f() { printf "Remove the legacy line\n" | cat - "$1" > "$1.new" && mv "$1.new" "$1"; }; f' \
+    git -C "$repo" commit -q -v > "$root/out" 2> "$root/err"; then
+    ok "message: commit -v that removes a token passes; the diff under the scissors line is not scanned"
+else bad "message: commit -v was rejected for the removed line in its diff"; fi
 
 # 2. Partial staging: the build sees the index, not the working tree.
 new_repo staging

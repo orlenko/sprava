@@ -8,7 +8,9 @@ The plan is in [docs/](docs/): start with [docs/kickoff-summary.md](docs/kickoff
 
 ## Status
 
-On branch `increment-1`, the MVP increments of docs/mvp.md section 5 are built:
+The MVP increments of docs/mvp.md section 5 are built. They reach `main` as a stack of pull requests: the
+design docs and git hooks first, then the code, one layer at a time. Until the whole stack is merged, `main`
+may hold only the docs, and the commands under "Build and test" need the code layers. The increments:
 
 1. The Shelf and each binder's Now page, read-only.
 2. The runtime: a LaunchAgent with a heartbeat, watchdog, breakers, the deadline sentinel and the daily

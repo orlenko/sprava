@@ -10,7 +10,8 @@ Read this first; then `docs/code-structure.md` for which target owns what.
   tokens, read from a list kept outside the repository (`~/.config/sprava/private-tokens`). It names a match
   by file and line, never by its text, and a scan that fails (a list that exists but cannot be read, such as
   one behind a locked folder or a dangling symlink, or a malformed pattern) rejects the commit. Only when the
-  list is certainly absent is the scan skipped; scan by hand then.
+  list is certainly absent is the scan skipped; scan by hand then. The commit-msg hook scans the commit message
+  with the same list and rules.
 - Never read inside the author's live binders or run lifeproj commands that touch the real registry or spool
   (`new`, `equip`, `archive`, `restore`, `root`, `home`, `publish`, `drain`). `sprava dev` refuses registry
   folders for this reason.
@@ -24,7 +25,7 @@ Read this first; then `docs/code-structure.md` for which target owns what.
    There is no hosted CI; git hooks are the gate (install once per clone with `./scripts/install-hooks.sh`):
    pre-commit scans the staged files for private tokens and builds the staged snapshot (a copy of the index
    under the git directory, never the working tree), and rejects the commit if anything is staged while it
-   runs; pre-push runs the suite on every pushed commit that is new to the remote and changes Swift code,
+   runs; commit-msg scans the message; pre-push runs the suite on every pushed commit that is new to the remote and changes Swift code,
    `Resources/`, `Package.swift`, `Package.resolved` or `companion/`, oldest first, so a broken commit is caught even when a
    later one reverts it. Each commit is tested in a detached worktree kept at `<git dir>/sprava-hooks/push-tree`
    with its own `.build`, never in the checkout itself. A push of N such commits

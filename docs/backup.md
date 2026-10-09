@@ -62,8 +62,8 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
 - One run at a time, as a runtime job with a breaker (architecture 3.4). A run is never killed for taking
   long; it is cancelled only after a stretch with no progress, as architecture 3.4 already requires for
   backups.
-- Weekly: `restic check` of the repository's structure. Monthly: `restic check --read-data-subset` over a
-  rotating part of the data, so every byte is read back over a year.
+- Weekly: `restic check` of the repository's structure. Monthly: `restic check --read-data-subset n/12`, with
+  n going from 1 to 12 in turn, so every byte is read back over a year.
 
 ### 3.4 Is it really in iCloud?
 
@@ -86,7 +86,8 @@ with `--keep-last N --keep-within Xd`, which keeps the union. Proposed defaults,
 - an offloaded binder's snapshot is pinned (tag `offloaded`, kept with `--keep-tag`) and never forgotten.
 
 `forget` and `prune` run weekly. Deleting a document for good (binder-v0's expunge) also removes it from
-every snapshot with `restic rewrite --exclude`, then prunes.
+every snapshot, in the mirror and in the second backup, with `restic rewrite --exclude --forget`, then prunes.
+Without `--forget`, restic keeps the original snapshots, and the document with them.
 
 ## 4. The key
 
@@ -165,9 +166,12 @@ is the fallback.
 
 ### 6.4 Offload again
 
-After a restore, "Offload again" compares the binder with its pinned snapshot. If nothing changed, steps 2 to 5
-of 6.1 are skipped and the folder simply goes back to the Trash. If something changed, a new snapshot replaces
-the pinned one, and the whole of 6.1 runs.
+After a restore, "Offload again" compares the binder with its pinned snapshot. If nothing changed, no new
+snapshot is taken (steps 2 and 3 of 6.1). The backups are still checked before the folder goes back to the
+Trash: the mirror and the second backup must each still hold the pinned snapshot and pass `restic check` now.
+A copy missing from the second backup is made again (step 5). If a check fails, the binder stays on the Mac
+and the Health page names the backup at fault. If something changed, a new snapshot replaces the pinned one,
+and the whole of 6.1 runs.
 
 ## 7. In the app
 

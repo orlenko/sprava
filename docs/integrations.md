@@ -85,6 +85,12 @@ Sprava's own state:
 `outgoing/` is a binder folder. It is named so that it does not collide with the hub spool's `outbox/`
 (binder-v0 §8), which lives outside every binder and is a different thing (decisions.md P18).
 
+binder-v0 does not allow these writes yet. Before any integration is built, its folder table (§3.2) and its
+write rule (§9.7) gain two entries: an importer may create new files in `intake/`; and `outgoing/` holds
+instructions that people and agents write, which an implementation reads, and moves to `outgoing/done/` with
+their result once carried out. It writes nothing else there. Until then an implementation leaves `outgoing/`
+alone.
+
 ## 4. Importers
 
 ### 4.1 IMAP, with a filter (built in)
@@ -146,6 +152,11 @@ card; only when the person approves the card does the exporter run. A file an ag
 "not written by Sprava", as foreign proposal files are today. After the exporter runs, the instruction moves
 to `outgoing/done/` with its result, and the binder's history gets one log entry ("draft created: subject").
 
+A crash can come after the outside system acted and before the instruction moved. So every exporter is safe
+to retry: before it acts, it records the instruction's id as started in Sprava's own state, and it marks
+what it creates with that id. An instruction found started is first looked for at the destination; if it is
+there, the result is recorded and nothing is created again.
+
 An instruction, invented:
 
 ```json
@@ -166,7 +177,9 @@ An instruction, invented:
 Builds a MIME message (plain text, and HTML from the Markdown), sets `In-Reply-To` and `References` from the
 imported message so the draft threads in the person's mail app, attaches files only from the binder's own
 document folders, and appends it to the account's drafts folder with the `\Draft` flag. It never sends: there
-is no SMTP in Sprava. The result records the draft's UID and the folder.
+is no SMTP in Sprava. The result records the draft's UID and the folder. The draft's Message-ID is made from
+the instruction's id, so a retry first searches the drafts folder for it (`UID SEARCH HEADER Message-ID`)
+and appends only when it is not there.
 
 ### 5.3 Later exporters
 

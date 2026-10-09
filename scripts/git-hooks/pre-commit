@@ -16,8 +16,9 @@ set -eu
 hook_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$(git rev-parse --show-toplevel)"
 
-tokens="${SPRAVA_PRIVATE_TOKENS:-$HOME/.config/sprava/private-tokens}"
 reject() { echo "pre-commit: $1; nothing was committed" >&2; exit 1; }
+[ -r "$hook_dir/tokens.sh" ] || reject "$hook_dir/tokens.sh is missing"
+. "$hook_dir/tokens.sh"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/sprava-pre-commit.XXXXXX") || reject "could not create a temporary folder"
 trap 'rm -rf "$work"' EXIT
@@ -42,22 +43,9 @@ staged_diff() {
         diff --no-color --no-ext-diff --no-textconv --no-renames --no-relative --submodule=short "$@" "$base" "$staged_tree"
 }
 
-# Only a list that is certainly absent skips the scan: nothing at that path, not even a dangling symlink, and the
-# nearest existing folder above it is searchable, so the absence is not a lookup that was denied. Anything at the
-# path (a symlink of any kind included) must resolve to a readable regular file.
-tokens_state=absent
-if [ -e "$tokens" ] || [ -L "$tokens" ]; then
-    tokens_state=present
-else
-    above=$(dirname "$tokens")
-    while ! [ -e "$above" ] && ! [ -L "$above" ]; do above=$(dirname "$above"); done
-    [ -d "$above" ] && [ -x "$above" ] \
-        || reject "the private-token list at $tokens cannot be looked up: $above is not a searchable folder"
-fi
-
+# Only a list that is certainly absent skips the scan (tokens.sh).
+check_token_list
 if [ "$tokens_state" = present ]; then
-    { [ -f "$tokens" ] && [ -r "$tokens" ]; } \
-        || reject "the private-token list at $tokens is not a readable file (or a symlink to one)"
     staged_diff --inter-hunk-context=0 -U0 --src-prefix=a/ --dst-prefix=b/ > "$work/diff" \
         || reject "could not read the staged diff"
     # One line per added line: "<file>:<line>", a tab, then the added text. Each hunk is read by the counts in

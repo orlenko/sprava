@@ -83,6 +83,11 @@ The contract is capture-event-v0, with the changes in 3.2.
    It lets a card say "read from a scan; check the numbers".
 4. **The holos profile (§7) stays as a worked example**, with its note.
 
+These are proposals. capture-event-v0 and its schemas (`capture-event.schema.json` and the reader schema) do
+not have them yet; they change together, before any adapter writes capture events with them. Until then
+intake files are not written as capture events: `obtained` is kept on the card and in the provenance of what
+is filed from it (section 7).
+
 ### 3.3 `obtained`: how the information came (P16)
 
 | Field | Meaning | Who fills it |
@@ -107,8 +112,9 @@ The pipeline every file in a binder's `intake/` goes through, as soon as it hold
 2. **Copy the original** into Sprava's capture store with its SHA-256. The file stays in `intake/` until the
    person approves filing it.
 3. **Extract all the text**: the PDF text layer, OCR (Vision, on device) for every page or image without one,
-   the text of an office document, the headers and body of an email file. Attachments inside an email become
-   their own captures, linked to the message.
+   the text of an office document, the headers and body of an email file. A message and its attachments
+   (inside an email file, or in a mail monitor's attachments folder) are one capture and one card: the
+   attachments' text is read after the body, and each attachment is filed as its own document.
 4. **Facts by code**: dates and amounts (the grammar already used by the clerk), page count, sender and
    subject from headers, known senders matched against the binder's documents and items, reference numbers
    (invoice, account, file numbers) by pattern.
@@ -168,11 +174,11 @@ A file is held, with a card that says why, instead of read, when:
 
 | Type | Accepts (sniffed by content) | How text is obtained | Kept | Read as |
 |---|---|---|---|---|
-| Text | plain text, Markdown, RTF; notes; a shared text or URL | as given; RTF flattened; tracking parameters removed from URLs | the text | notes (capture variant) |
+| Text | plain text, Markdown, RTF; notes; a shared text or URL | as given; RTF flattened; known tracking parameters removed from a URL in `text` | the text; a shared URL in full in `extensions.sprava.url` (capture-event-v0 §8.3) | notes (capture variant) |
 | Image | JPEG, HEIC, PNG, TIFF; screenshots; photos of paper | Vision OCR; date taken; location stripped from a derived copy | original and the stripped copy | document variant when it holds text |
 | Office document | DOCX, XLSX, PPTX, Pages, Numbers, Keynote, RTF, ODF | the document's own text, tables as rows; no macros run | the original | document variant |
 | PDF | PDF | the text layer; Vision OCR for pages without one; every page | the original | document variant |
-| Email | `.eml`, `.emlx`, `.msg` | headers and body by code; HTML bodies as text with no remote content; attachments as their own captures | the message file | notes for the body; documents for attachments |
+| Email | `.eml`, `.emlx`, `.msg` | headers and body by code; HTML bodies as text with no remote content; attachments read with the message, as one capture | the message file | document variant, the attachments' text after the body; each attachment filed as its own document |
 
 ## 6. Making a new type cheap
 
@@ -228,7 +234,9 @@ Built in increment 7 (2026-10-08), on top of the contract reader, the clerk and 
   Sprava keeps the extracted text, not a second copy of the original; the original stays in `intake/` until
   the person files it, and the card's digest pins it.
 - The clerk's document reading (`SpravaCore/Clerk/DocumentReading.swift`): one classification call, then
-  items window by window (at most 24 windows of 200 words), code's checks, and the duplicate check. Code
+  items window by window (at most 24 windows of 200 words), code's checks, and the duplicate check. A
+  longer document is never cut off in silence: the reading is marked partial, the card says the clerk read
+  only part of it, and it waits for a careful reading (4.4). Code
   overrules "governing" when no governing word is found or the document looks like a record. A due date in
   the sentence after a payment is taken, flagged. Items from a record ("information") need a date. Dated
   sentences that ask something and that no item covers get one more reading; a document that asks for a
