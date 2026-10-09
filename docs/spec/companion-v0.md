@@ -765,7 +765,9 @@ verify only costs the reader those tries.
   are its copy and its intents deleted and the device's floor raised (section 7.8). It answers `204` only once the
   tombstone is durable: a step that fails after it leaves the request out of every listing, and the next listing,
   sweep or retry finishes it. A retry finds the name in the bucket when the mailbox no longer holds it, so `204` is
-  never answered from memory alone.
+  never answered from memory alone. When the relay finds no copy, intent or tombstone of `R` for that device, the
+  request was never stored or is already wholly deleted, and it answers `204` without writing anything: every
+  request's intent is written before its bytes (section 7.8), and the Mac deletes only requests it has listed.
 - A request not collected within 30 days of its `received_at` is deleted.
 
 ### 7.7 Cross-origin requests
