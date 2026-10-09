@@ -514,6 +514,8 @@ extension TekaStore {
         } catch let done as AlreadyApplied {
             var raw = proposal.raw
             raw.set("state", .str("applied"))
+            // When the batch was written, as the normal path records it (binder-v0 §6.5).
+            raw.set("applied_at", done.lines.first?["at"] ?? .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
             raw.set("applied_ops", .array(done.lines.compactMap { $0["id"] }))
             try ProposalStore.save(Proposal(raw: raw), in: folder)
             return done.lines

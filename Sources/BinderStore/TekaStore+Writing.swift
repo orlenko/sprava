@@ -122,6 +122,14 @@ extension TekaStore {
         }
         // A crash or failure from here on is rolled forward on the next read (binder-v0 §6.7 step 3, §6.9).
         try performMoves(moves)
+        // Moving takes time (each file is hashed again and its folders flushed): an edit made meanwhile is never written
+        // over. The next pass finds the snapshot at this write's start, aborts the write, puts the files back and
+        // records the edit (binder-v0 §6.7 step 5), and a batch is then applied again on top of it.
+        if !moves.isEmpty {
+            try testHookAfterMoves?()
+            let (_, movedHash, _) = try readCatalog()
+            guard movedHash == expectedHash else { throw ChangedWhileWriting() }
+        }
         guard rename(temp.path, catalogURL.path) == 0 else { throw AtomicFile.Failure(step: "rename catalog", code: errno) }
         renamed = true
         try flushFolder(folder, "flush the binder folder")

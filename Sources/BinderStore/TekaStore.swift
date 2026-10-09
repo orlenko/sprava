@@ -82,8 +82,17 @@ public final class TekaStore {
         public var opLog: [JSONObject]
     }
 
+    /// The largest `catalog.json` the writer reads, the reader's limit (BinderFormat's `Teka`): a larger or sparse
+    /// file is refused before it is loaded, never read whole into memory.
+    static let maxCatalogBytes = 64 << 20
+
     func readCatalog() throws -> (JSONObject, String, Data) {
-        let data = try Data(contentsOf: catalogURL)
+        let data: Data
+        switch SafeFile.read(catalogURL, limit: Self.maxCatalogBytes) {
+        case .ok(let d): data = d
+        case .missing: throw CocoaError(.fileReadNoSuchFile)
+        case .refused(let why), .unreadable(let why): throw Refused(reason: "catalog.json cannot be read (\(why)); it was left as it is")
+        }
         let (value, safety) = try JSONParser.parse(data)
         guard case .object(let catalog) = value else { throw Refused(reason: "catalog.json is not a JSON object") }
         guard safety.isSafe else { throw Refused(reason: "catalog.json holds unsafe JSON; a repair must be approved first") }
@@ -184,6 +193,7 @@ public final class TekaStore {
             let log = try readOpLog().ops
             guard !log.isEmpty else { return }
             try Self.refuseUnknownLevel(catalog)
+            try Self.refuseUnknownOps(log)
             _ = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now)
         }
     }
@@ -192,6 +202,15 @@ public final class TekaStore {
     static func refuseUnknownLevel(_ catalog: JSONObject) throws {
         if case .unknown(let why) = CatalogLevel.classify(catalog) {
             throw Refused(reason: "this catalog's level is unknown (\(why)); Sprava writes nothing to it")
+        }
+    }
+
+    /// An op type this version does not know means a newer writer wrote the log: nothing is appended after it, not
+    /// even the record of an outside edit (binder-v0 §1.4).
+    static func refuseUnknownOps(_ log: [JSONObject]) throws {
+        if let line = log.first(where: { !OpApplier.opTypes.contains($0["op"]?.stringValue ?? "") }) {
+            let type = line["op"]?.stringValue.map { String($0.prefix(40)) } ?? "none"
+            throw Refused(reason: "the op log holds an op this version does not know (\(type)); a newer Sprava wrote it, and this one writes nothing to the binder")
         }
     }
 
@@ -214,6 +233,7 @@ public final class TekaStore {
         var log = try readOpLog().ops
         guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
         try Self.refuseUnknownLevel(catalog)
+        try Self.refuseUnknownOps(log)
         if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
             log.append(contentsOf: absorbed)
         }
@@ -260,6 +280,13 @@ public final class TekaStore {
         }
         let knownIDs = Set(IDMint.usedIDs(opLog: log))
         let (result, hashes) = try TransactionGuard.check(lines, on: catalog, knownIDs: knownIDs)
+        // Nothing is written that would then block every write: a level this version does not know, or a stamp left
+        // broken, as a stamp repair to the wrong version would leave it (binder-v0 §1.4, §9.6).
+        switch CatalogLevel.classify(result) {
+        case .unknown(let why): throw Refused(reason: "the change would leave the catalog at a level Sprava does not know (\(why)); nothing was written")
+        case .brokenStamp: throw Refused(reason: "the change would leave the catalog's stamp (meta.format_version) broken; nothing was written")
+        default: break
+        }
         var previous = hash
         for i in lines.indices {
             lines[i].set("before_hash", .string(previous))
@@ -279,6 +306,8 @@ public final class TekaStore {
 
     /// Tests only: runs after a batch's op lines are flushed and before the catalog is checked again.
     package var testHookAfterAppend: (() throws -> Void)?
+    /// Tests only: runs after a batch's files are moved and before the catalog is checked again.
+    package var testHookAfterMoves: (() throws -> Void)?
     /// Tests only: runs right before a batch takes the lock, where another program's edit could land.
     package var testHookBeforeLock: (() -> Void)?
     /// Tests only: makes the flush of the named step fail, as a failing disk would.

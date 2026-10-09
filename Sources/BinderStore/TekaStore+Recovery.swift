@@ -167,12 +167,13 @@ extension TekaStore {
     /// found catalog records stays where it is, and a key or credential file is never touched (binder-v0 §3.3).
     /// Returns the files that could not go back, for the abort to name.
     func restoreMoves(_ trailing: [JSONObject], catalog: JSONObject) -> [String] {
-        let recorded = Set((catalog["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue })
+        // Compared folded, as the path rules compare paths: `Documents/Letter.pdf` names the same file (binder-v0 §4.3).
+        let recorded = Set((catalog["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue.map(DocumentPaths.fold) })
         var stranded: [String] = []
         for op in trailing where op["op"] == .str("file_document") {
             let args = op["args"]?.objectValue ?? JSONObject()
             guard let from = args["from"]?.stringValue, let to = args["document"]?["path"]?.stringValue,
-                  let sha = args["document"]?["sha256"]?.stringValue, !recorded.contains(to),
+                  let sha = args["document"]?["sha256"]?.stringValue, !recorded.contains(DocumentPaths.fold(to)),
                   !DocumentPaths.isKeyFile(from), !DocumentPaths.isKeyFile(to), DocumentPaths.isSafe(to),
                   DocumentPaths.plainFile(to, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha else { continue }
             if DocumentPaths.isIntake(from), DocumentPaths.isFreeDestination(from, in: folder),
@@ -521,7 +522,10 @@ extension TekaStore {
             pending.removeAll()
         }
         for (i, op) in ops.enumerated() where i < touched.count {
-            guard ["user", "clerk", "brain"].contains(op["actor"]?["kind"]?.stringValue ?? "") else { continue }
+            // An approval is the person's own op, a producer's, or an adoption card the person approved (actor import with
+            // `approved_by`); Sprava's unapproved bookkeeping is not.
+            guard ["user", "clerk", "brain"].contains(op["actor"]?["kind"]?.stringValue ?? "") || op["approved_by"]?.stringValue != nil
+            else { continue }
             if whole.contains(i) {
                 flush()
                 var line = op
