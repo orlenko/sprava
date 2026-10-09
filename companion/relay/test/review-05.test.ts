@@ -3,7 +3,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { encodeB64, newId, tokenHash } from '../src/encoding.ts';
+import { Devices } from '../src/devices.ts';
 import { deviceKeys } from '../src/layout.ts';
+import { pairings } from '../src/pairings.ts';
 import { S3Store } from '../src/store/s3.ts';
 import { scoped, type Store } from '../src/store/store.ts';
 import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, slowRequest, startTestRelay, WEB_ORIGIN, type TestRelay } from './harness.ts';
@@ -275,5 +277,44 @@ test('a join retried after its record was written is not counted against itself 
     stub.hold(() => false);
     const retry = await c.join(p, secret);
     assert.equal(retry.status, 200, 'the joining device is not counted against itself');
+    await t.close();
+});
+
+test('wrong secrets sent after a join are 409 and never delete the pairing or its device (§7.3)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    const c = client(t, owner);
+    const { pairing_id: p, secret } = await c.open();
+    const joined = (await (await c.join(p, secret)).json()) as { device_id: string; device_token: string };
+    for (let i = 0; i < 6; i++) assert.equal((await c.join(p, 'AAAAAAAAAAAAAAAAAAAAAA')).status, 409, 'a repeat join, whatever its secret');
+    assert.equal((await c.join(p, secret)).status, 409);
+    assert.equal((await c.call('GET', `/v0/pairings/${p}`, owner)).status, 200, 'the pairing stays');
+    assert.equal((await c.call('PUT', `/v0/pairings/${p}/key`, owner, KEY)).status, 204, 'and its device can still be activated');
+    assert.equal((await c.call('GET', `/v0/pairings/${p}/key`, joined.device_token)).status, 200);
+    await t.close();
+});
+
+test('a deleted pairing costs no listing of its own: not when pairings are read, not in the sweep', async () => {
+    const { raw: fs } = await freshStore();
+    const listed: string[] = [];
+    // Every call passes through; listings are recorded.
+    const raw = new Proxy(fs, {
+        get(target, name: keyof Store) {
+            if (name === 'list') return (prefix: string) => (listed.push(prefix), target.list(prefix));
+            const value = target[name];
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const t = await startTestRelay({ raw });
+    const c = client(t, owner);
+    const { pairing_id: p } = await c.open();
+    assert.equal((await c.call('DELETE', `/v0/pairings/${p}`, owner)).status, 204);
+    assert.deepEqual(await scoped(raw, INSTANCE).list(`pairings/${p}/`), [`pairings/${p}/deleted`]);
+    listed.length = 0;
+    await c.open(); // reads every pairing, twice
+    await pairings(t.relay, new Devices(t.relay)).sweep();
+    assert.deepEqual(listed.filter((prefix) => prefix.includes(`/pairings/${p}/`)), []);
     await t.close();
 });

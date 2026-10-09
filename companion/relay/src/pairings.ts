@@ -107,7 +107,8 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
 
     async function allPairings(): Promise<Pairing[]> {
         const all: Pairing[] = [];
-        for (const p of groupParts(await store.list('pairings/'), 'pairings').keys()) {
+        for (const [p, parts] of groupParts(await store.list('pairings/'), 'pairings')) {
+            if (parts.has('deleted')) continue; // a deleted pairing is never read again
             const pairing = await read(p);
             if (pairing !== null) all.push(pairing);
         }
@@ -151,6 +152,9 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
         return withPairing(
             p,
             async (pairing) => {
+                // §7.3: a repeat join is 409, before the secret is checked, so wrong secrets sent after the join
+                // can never count toward deleting the pairing and its device.
+                if (pairing.state !== 'open') throw new HttpError(409, 'This pairing was already joined.');
                 if (!sameSecret(sha256Hex(secret), pairing.created.secret_sha256)) {
                     const failures = (failedJoins.get(pairing.id) ?? 0) + 1;
                     failedJoins.set(pairing.id, failures);
@@ -206,7 +210,7 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
         // A deleted pairing's leftovers, and parts without created.json, are unreachable by every route (read()
         // refuses them); they only need deleting. Tombstones stay.
         for (const [p, parts] of groupParts(await store.list('pairings/'), 'pairings')) {
-            if (parts.has('deleted') || !parts.has('created.json')) await finishDeleted(p);
+            if (parts.has('deleted') ? parts.size > 1 : !parts.has('created.json')) await finishDeleted(p); // a bare tombstone is done
         }
         for (const pairing of await allPairings()) {
             if (!pairing.expired) continue;
