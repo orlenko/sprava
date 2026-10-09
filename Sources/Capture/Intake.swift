@@ -488,7 +488,8 @@ public struct IntakeWatcher: Sendable {
 
     /// Withdraws the card of an intake file that changed or went. True once it no longer waits; false when it could
     /// not be withdrawn now (the binder cannot be written), so the cursor keeps following it and tries again. Its
-    /// reading, the clerk's included, goes with it, and a careful reading it asked for is no longer waited for.
+    /// reading, the clerk's included, goes with it, and a careful reading it asked for is no longer waited for; a card
+    /// the person approved keeps both.
     @discardableResult
     func withdraw(_ id: String, in folder: URL, deviceID: String, now: Date) -> Bool {
         if let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" {
@@ -496,6 +497,9 @@ public struct IntakeWatcher: Sendable {
                 return false
             }
         }
+        // A card the person approved filed the document: its reading, and a careful reading it asked for, still stand
+        // (the brain's queue takes applied cards). Only a card withdrawn or rejected retires them.
+        if ProposalStore.list(in: folder).first(where: { $0.0.id == id })?.0.state == "applied" { return true }
         let readings = IntakeReadings(support: support)
         if var e = readings.forCard(id), e.state != "gone" {
             e.state = "gone"

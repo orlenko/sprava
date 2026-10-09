@@ -158,4 +158,19 @@ import Testing
         let after = try #require(IntakeReadings(support: s.support).load(entry.id))
         #expect(after.state == "gone" && after.escalation == nil)
     }
+
+    @Test func anApprovedCardKeepsItsCarefulReadingWaiting() async throws {
+        let t = IntakeReadingTests()
+        let s = try t.setup()
+        _ = try await t.clerkReads(s)
+        let entry = try #require(IntakeReadings(support: s.support).all().first)
+        #expect(entry.state == "read" && entry.escalation == "waiting")
+        // Approving the filing card moves the document out of intake/; the next scan finds it gone.
+        let card = try #require(t.open(s).first { $0.id == entry.card })
+        _ = try TekaStore(folder: s.folder).approve(card, now: t.now)
+        #expect(!FileManager.default.fileExists(atPath: s.folder.appendingPathComponent("intake/levy.txt").path))
+        _ = s.watcher.scan(binders: t.rows(s), commands: s.commands, now: t.now)
+        let after = try #require(IntakeReadings(support: s.support).load(entry.id))
+        #expect(after.state == "read" && after.escalation == "waiting", "the careful reading still waits for the brain")
+    }
 }
