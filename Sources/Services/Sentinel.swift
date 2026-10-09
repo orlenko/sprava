@@ -154,3 +154,142 @@ public enum OutsideEdits {
         return (cards, failed)
     }
 }
+
+extension OutsideEdits {
+    /// One settling pass: binders settled, cards written and trusted, and what failed (counts only).
+    public struct Settled: Sendable, Equatable {
+        public var cards = 0
+        /// Binders that could not be settled.
+        public var unsettled = 0
+        /// Cards Sprava wrote whose digests could not be recorded yet, these and earlier ones; `TrustBacklog` keeps
+        /// them for the next pass.
+        public var untrusted = 0
+
+        public init() {}
+    }
+
+    /// Settles each binder this Mac owns, then trusts the cards that wrote, together with any held back before, on
+    /// the command queue (`onCommandQueue`), where the commands that read the record run. A trust that fails is a
+    /// failure of the job, never dropped: the card would otherwise wait forever and could not be approved.
+    public static func settleAndTrust(_ rows: [ShelfRow], commands: Commands, backlog: TrustBacklog, now: Date = Date(),
+                                      onCommandQueue: (() -> Void) -> Void) -> Settled {
+        let settled = settle(rows, deviceID: commands.deviceID, now: now)
+        var out = Settled()
+        out.unsettled = settled.failed.count
+        out.cards = settled.cards.count
+        var failed = false
+        onCommandQueue {
+            do { try backlog.retry(commands: commands) } catch { failed = true }
+            for (folder, ids) in settled.cards {
+                do { try backlog.trust(ids, in: folder, commands: commands) } catch { failed = true }
+            }
+        }
+        // A backlog file that cannot be read holds an unknown number: at least one.
+        if failed { out.untrusted = max(1, backlog.count) }
+        return out
+    }
+}
+
+/// Cards Sprava itself wrote (a recovery card from an outside edit, a hub completion's card) whose digests could not
+/// be recorded, because `runtime/proposal-digests.json` could not be read or written (architecture 4.6). Each is kept
+/// by the digest it had right after Sprava wrote it, in memory and in `runtime/trust-backlog.json`, and recorded on
+/// the next pass. Never by what the file holds by then: a card another program changed in between stays untrusted.
+public final class TrustBacklog: @unchecked Sendable {
+    public let url: URL
+    private let lock = NSLock()
+    /// Record key (`<folder>#<id>`) to the digest Sprava wrote.
+    private var held: [String: String] = [:]
+
+    public init(support: URL) {
+        url = support.appendingPathComponent("runtime/trust-backlog.json")
+    }
+
+    /// How many cards wait to be trusted (those in memory; the file's are counted when it is read).
+    public var count: Int { lock.lock(); defer { lock.unlock() }; return held.count }
+
+    /// Trusts `ids`, which Sprava just wrote in `folder`, by their digests now. Throws when they or earlier ones could
+    /// not be recorded; they are kept for `retry`.
+    public func trust(_ ids: [String], in folder: URL, commands: Commands) throws {
+        let wanted = Set(ids)
+        var fresh: [String: String] = [:]
+        for (p, digest) in ProposalStore.list(in: folder) where wanted.contains(p.id) { fresh[commands.key(folder, p.id)] = digest }
+        try record(fresh, commands: commands)
+    }
+
+    /// Records the cards held back earlier. Throws while they still cannot be recorded.
+    public func retry(commands: Commands) throws { try record([:], commands: commands) }
+
+    private func record(_ fresh: [String: String], commands: Commands) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        var pending = held.merging(fresh) { _, new in new }
+        // A backlog file that cannot be read is left as it is and reported; what is in memory is still recorded.
+        var backlogError: Error?
+        do {
+            let saved = try StateFile.read([String: String].self, from: url) ?? [:]
+            pending.merge(saved) { mine, _ in mine }
+        } catch {
+            backlogError = error
+        }
+        if !pending.isEmpty {
+            do {
+                var digests = try commands.loadDigests()
+                for (key, digest) in pending { digests[key] = digest }
+                try AtomicFile.makePrivateFolder(commands.digestsURL.deletingLastPathComponent())
+                try AtomicFile.write(try JSONEncoder().encode(digests), to: commands.digestsURL)
+            } catch {
+                held = pending
+                if backlogError == nil, let data = try? JSONEncoder().encode(pending) {
+                    try? AtomicFile.makePrivateFolder(url.deletingLastPathComponent())
+                    try? AtomicFile.write(data, to: url)
+                }
+                throw error
+            }
+            held = [:]
+            if backlogError == nil { unlink(url.path) }
+        }
+        if let backlogError { throw backlogError }
+    }
+}
+
+/// The dashboard job's pass over the Shelf (binder-v0 §7.1): each switched DASHBOARD.md this Mac owns is refreshed
+/// on its own, so one binder that fails never stops the others. Counts only.
+public enum DashboardJob {
+    public struct Result: Sendable, Equatable {
+        public var rendered = 0
+        public var editedOutsideNotes = 0
+        public var failed = 0
+        /// Failures because Sprava's record of a dashboard could not be read (`StateFile.Unreadable`).
+        public var unreadable = 0
+
+        public init() {}
+    }
+
+    /// `refresh` is `DashboardKeeper.refresh` for one folder (tests pass their own).
+    public static func run(_ rows: [ShelfRow], deviceID: String,
+                           refresh: (URL) throws -> DashboardKeeper.Refresh) -> Result {
+        var out = Result()
+        for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
+            do {
+                if case .rendered(let edited) = try refresh(row.folder) {
+                    out.rendered += 1
+                    if edited { out.editedOutsideNotes += 1 }
+                }
+            } catch is StateFile.Unreadable {
+                out.failed += 1
+                out.unreadable += 1
+            } catch {
+                out.failed += 1
+            }
+        }
+        return out
+    }
+
+    /// The job's outcome: a record that cannot be read first, then cards left untrusted, then any other failure.
+    public static func outcome(_ result: Result, settled: OutsideEdits.Settled) -> JobOutcome {
+        if result.unreadable > 0 { return .error(code: "dashboard_state_unreadable", culprit: "\(result.unreadable) binder(s)") }
+        if settled.untrusted > 0 { return .error(code: "trust_failed", culprit: "\(settled.untrusted) card(s)") }
+        let failed = result.failed + settled.unsettled
+        return failed > 0 ? .error(code: "dashboard_failed", culprit: "\(failed) binder(s)") : .ok
+    }
+}

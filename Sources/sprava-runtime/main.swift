@@ -11,8 +11,8 @@ var args = Array(CommandLine.arguments.dropFirst())
 let dev = args.contains("--dev")
 args.removeAll { $0 == "--dev" }
 
-var support = SpravaPaths.supportDirectory()
-if dev { support = support.deletingLastPathComponent().appendingPathComponent(support.lastPathComponent + "-dev") }
+// The same development folder `sprava dev` uses, so its brains and binders meet this runtime.
+let support = dev ? DevelopmentGuard.supportDirectory() : SpravaPaths.supportDirectory()
 let runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
 
 do {
@@ -42,7 +42,16 @@ if !dev, ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] != "ca.orlenko.
     exit(64)
 }
 
-switch try Lease.acquire(at: runtimeDir.appendingPathComponent("lease")) {
+// A lease file that cannot be opened is reported and the process exits; it never crashes.
+let leaseOutcome: Lease.Outcome
+do {
+    leaseOutcome = try Lease.acquire(at: runtimeDir.appendingPathComponent("lease"))
+} catch {
+    AtomicFile.appendLine("\(ISOTime.string(Date())) lease_unavailable", to: runtimeDir.appendingPathComponent("jobs.log"))
+    FileHandle.standardError.write(Data("sprava-runtime: cannot take the lease: \(error)\n".utf8))
+    exit(1)
+}
+switch leaseOutcome {
 case .held(let pid):
     // Another runtime holds the lease (an old copy still exiting after an update, or a copy started by hand).
     // Record it and exit 0; launchd retries after its 10-second throttle (architecture 3.2).

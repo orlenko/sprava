@@ -42,7 +42,10 @@ final class Runtime: @unchecked Sendable {
     var runGeneration: [String: Int] = [:]
     var timers: [DispatchSourceTimer] = []
     var xpc: XPCService?
-    let watch = WatchBox(budgets: Runtime.specs.mapValues(\.budget))
+    /// The jobs' budgets and the app requests' (`RequestQueues`), so the watchdog names a request that hangs too.
+    let watch = WatchBox(budgets: Runtime.specs.mapValues(\.budget).merging(RequestQueues.budgets) { job, _ in job })
+    /// Cards Sprava wrote whose digests could not be recorded yet.
+    let trustBacklog: TrustBacklog
     var commands: Commands?
     /// Set when this Mac's device id cannot be read: nothing is written until it is repaired.
     var deviceIDError: String?
@@ -68,9 +71,10 @@ final class Runtime: @unchecked Sendable {
         self.support = support
         runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
         self.lease = lease
+        trustBacklog = TrustBacklog(support: support)
         let (loaded, setAside) = JobRecords.loadAtStart(runtimeDir.appendingPathComponent("breakers.json"), jobs: Array(Self.specs.keys))
         records = loaded
-        let state = RuntimeState.load(runtimeDir)
+        let (state, stateSetAside) = RuntimeState.loadAtStart(runtimeDir)
         refusalsToday = state.refusalsToday
         restartsToday = state.startsToday
         lastSummaryDate = state.lastSummaryDate
@@ -79,6 +83,7 @@ final class Runtime: @unchecked Sendable {
         // and only once today's summary time has passed.
         nextSummary = nextSummaryTime(now: Date(), lastSent: state.lastSummaryDate)
         if let setAside { log("breakers_unreadable kept_as=\(setAside.lastPathComponent) breakers=half_open") }
+        if let stateSetAside { log("runtime_state_unreadable kept_as=\(stateSetAside.lastPathComponent) summary_today=counted_as_sent") }
     }
 
     func log(_ line: String) {
@@ -113,11 +118,12 @@ final class Runtime: @unchecked Sendable {
         }
         let commands = Commands(support: support, deviceID: deviceID)
         self.commands = commands
-        try? commands.inbox.registerProducer(folder: commands.deviceID, app: "sprava")
+        // A failure here is the capture job's to report: its sweep reads the same record.
+        do { try commands.inbox.registerProducer(folder: commands.deviceID, app: "sprava") } catch { log("capture producer_unregistered") }
         // No backup request runs yet, so one left "running" was cut off; peeked documents go after a day.
         do { try BackupRequests(support: support).recoverInterrupted() } catch { log("backup requests_unreadable") }
         Backup(support: support, key: nil).cleanPeeks()
-        let service = XPCService(commands: commands) { [weak self] line in self?.log(line) }
+        let service = XPCService(commands: commands, watch: watch) { [weak self] line in self?.log(line) }
         service.start()
         xpc = service
         let support = self.support
@@ -343,8 +349,17 @@ final class Runtime: @unchecked Sendable {
             notify(title: "Sprava", body: "A background job keeps failing. Open Sprava's Health page.",
                    id: "breaker-\(key)")
         }
-        try? records.save(runtimeDir.appendingPathComponent("breakers.json"))
+        // Kept in memory either way; a save that fails is logged once and tried again after the next job.
+        do {
+            try records.save(runtimeDir.appendingPathComponent("breakers.json"))
+            breakersUnwritable = false
+        } catch {
+            if !breakersUnwritable { log("breakers_unwritable") }
+            breakersUnwritable = true
+        }
     }
+
+    var breakersUnwritable = false
 
     /// The deadline sentinel: reads every binder on the shelf and records counts per opaque id. Reads only.
     func sentinel() -> JobOutcome {
@@ -377,14 +392,19 @@ final class Runtime: @unchecked Sendable {
     static let shelfUnreadable = JobOutcome.error(code: "shelf_unreadable", culprit: nil)
 
     /// Settles outside edits in each binder this Mac owns before it is read for others (architecture 4.5), and
-    /// trusts the cards that writes. Returns how many binders could not be settled.
-    func settleOutsideEdits(_ rows: [ShelfRow], commands: Commands) -> Int {
-        let settled = OutsideEdits.settle(rows, deviceID: commands.deviceID)
-        if !settled.cards.isEmpty, let xpc {
-            xpc.queue.sync { for (folder, ids) in settled.cards { try? commands.trustProposals(ids, in: folder) } }
-            log("outside_edit undid_changes_cards=\(settled.cards.count)")
+    /// trusts the cards that writes, with any held back before (`TrustBacklog`).
+    func settleOutsideEdits(_ rows: [ShelfRow], commands: Commands) -> OutsideEdits.Settled {
+        let settled = OutsideEdits.settleAndTrust(rows, commands: commands, backlog: trustBacklog) { body in
+            onCommandQueue(body)
         }
-        return settled.failed.count
+        if settled.cards > 0 { log("outside_edit undid_changes_cards=\(settled.cards)") }
+        if settled.untrusted > 0 { log("trust_failed cards=\(settled.untrusted)") }
+        return settled
+    }
+
+    /// Runs `body` on the command queue, the single writer of Sprava's record of the cards.
+    func onCommandQueue(_ body: () -> Void) {
+        if let xpc { xpc.queue.sync(execute: body) } else { body() }
     }
 
     /// The hub lane (binder-v0 §8; mvp.md feature 7): for each adopted binder this Mac owns, drain the hub's
@@ -394,10 +414,11 @@ final class Runtime: @unchecked Sendable {
         let rows: [ShelfRow]
         do { rows = try shelfRows() } catch { return Self.shelfUnreadable }
         // Before anything is published, and also without a spool, so a hand edit becomes an external_edit.
-        let unsettled = settleOutsideEdits(rows, commands: commands)
+        let settled = settleOutsideEdits(rows, commands: commands)
         let root = HubLane.spoolRoot()
         guard FileManager.default.fileExists(atPath: root.path) else {
-            return unsettled > 0 ? .error(code: "settle_failed", culprit: "\(unsettled) binder(s)") : .idle
+            if settled.untrusted > 0 { return .error(code: "trust_failed", culprit: "\(settled.untrusted) card(s)") }
+            return settled.unsettled > 0 ? .error(code: "settle_failed", culprit: "\(settled.unsettled) binder(s)") : .idle
         }
         let mine = rows.filter { $0.teka.isAdopted && Owner.device(of: $0.folder) == commands.deviceID }
         let idsURL = support.appendingPathComponent("binder-ids.json")
@@ -407,9 +428,11 @@ final class Runtime: @unchecked Sendable {
             return .error(code: "binder_ids_unreadable", culprit: nil)
         }
         let bids = mine.map { ids.id(for: $0.folder) }
-        try? ids.save(idsURL)
+        // Ids that cannot be kept would change on the next run: the job still runs and then reports it.
+        let idsSaved = (try? ids.save(idsURL)) != nil
         idsLock.unlock()
         var failures: [String] = []
+        var untrusted = 0
         // Two known binders under one name would share a spool file: neither publishes nor drains, but a narrowing
         // still withdraws the slice each recorded writing (binder-v0 §3.1; `HubLane.sync`).
         let colliding = HubLane.collidingFolders(rows, today: CalendarDate.today())
@@ -418,10 +441,13 @@ final class Runtime: @unchecked Sendable {
             if collides { log("hub binder=\(bid) name_collision=true") }
             // A drain that fails never holds back the publish, so a narrowing or withdrawal still reaches the hub.
             let synced = HubLane.sync(row.folder, root: root, nameCollides: collides) { drained in
-                if !drained.createdProposals.isEmpty, let xpc {
-                    xpc.queue.sync { try? commands.trustProposals(drained.createdProposals, in: row.folder) }
-                    log("hub binder=\(bid) overwritten_change_card=1")
+                guard !drained.createdProposals.isEmpty else { return }
+                onCommandQueue {
+                    do { try trustBacklog.trust(drained.createdProposals, in: row.folder, commands: commands) } catch {
+                        untrusted += drained.createdProposals.count
+                    }
                 }
+                log("hub binder=\(bid) overwritten_change_card=1")
             }
             if let drained = synced.drained, drained.applied > 0 || drained.skipped > 0 || drained.waitingForYou > 0 {
                 log("hub binder=\(bid) drained=\(drained.applied) skipped=\(drained.skipped) waiting=\(drained.waitingForYou)")
@@ -433,8 +459,15 @@ final class Runtime: @unchecked Sendable {
             if let error = synced.publishError { log("hub binder=\(bid) error=\(type(of: error))") }
             if synced.failed { failures.append(bid) }
         }
-        if unsettled > 0 { failures.append("\(unsettled) unsettled") }
-        return failures.isEmpty ? .ok : .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ","))
+        // A card left untrusted cannot be approved until a later pass records it: reported first.
+        let notTrusted = settled.untrusted + untrusted
+        if untrusted > 0 { log("hub trust_failed cards=\(untrusted)") }
+        if notTrusted > 0 {
+            return .error(code: "trust_failed", culprit: "\(notTrusted) card(s)")
+        }
+        if settled.unsettled > 0 { failures.append("\(settled.unsettled) unsettled") }
+        if !failures.isEmpty { return .error(code: "hub_failed", culprit: "binders " + failures.joined(separator: ",")) }
+        return idsSaved ? .ok : .error(code: "binder_ids_unwritable", culprit: nil)
     }
 
     /// The capture watcher (architecture 8; mvp.md feature 4): sweeps the capture root and turns each new capture
@@ -532,21 +565,21 @@ final class Runtime: @unchecked Sendable {
         guard let commands else { return noCommands }
         guard let rows = try? shelfRows() else { return Self.shelfUnreadable }
         // A hand edit is absorbed before the dashboard is rendered from the catalog (the first run is at start).
-        var failed = settleOutsideEdits(rows, commands: commands)
-        var rendered = 0, edited = 0
-        for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == commands.deviceID {
-            switch try? DashboardKeeper(folder: row.folder, impl: commands.client).refresh(today: CalendarDate.today()) {
-            case .rendered(let e)?: rendered += 1; if e { edited += 1 }
-            case nil: failed += 1
-            default: break
-            }
+        let settled = settleOutsideEdits(rows, commands: commands)
+        let today = CalendarDate.today()
+        // Each binder on its own: one whose dashboard record cannot be read fails the job, never the other binders.
+        let r = DashboardJob.run(rows, deviceID: commands.deviceID) { folder in
+            try DashboardKeeper(folder: folder, impl: commands.client).refresh(today: today)
         }
-        if rendered > 0 || failed > 0 { log("dashboard rendered=\(rendered) edited_outside_notes=\(edited) failed=\(failed)") }
-        if edited > 0 {
+        let failed = r.failed + settled.unsettled
+        if r.rendered > 0 || failed > 0 {
+            log("dashboard rendered=\(r.rendered) edited_outside_notes=\(r.editedOutsideNotes) failed=\(failed) unreadable=\(r.unreadable)")
+        }
+        if r.editedOutsideNotes > 0 {
             notify(title: "Sprava", body: "A DASHBOARD.md was edited outside its Notes section. The edited copy was saved in the binder's .sprava folder.",
                    id: "dashboard-edited")
         }
-        return failed > 0 ? .error(code: "dashboard_failed", culprit: "\(failed) binder(s)") : .ok
+        return DashboardJob.outcome(r, settled: settled)
     }
 
     /// Backup (docs/backup.md): first one request the app queued (offload, restore, drill, back up now), then the
@@ -677,8 +710,10 @@ final class Runtime: @unchecked Sendable {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: queue)
             source.setEventHandler { [weak self] in
-                self?.log("exit reason=signal_\(sig)")
-                try? self?.records.save(self!.runtimeDir.appendingPathComponent("breakers.json"))
+                if let self {
+                    self.log("exit reason=signal_\(sig)")
+                    try? self.records.save(self.runtimeDir.appendingPathComponent("breakers.json"))
+                }
                 exit(0)
             }
             source.resume()
@@ -689,37 +724,6 @@ final class Runtime: @unchecked Sendable {
     var signalSources: [DispatchSourceSignal] = []
 }
 
-/// Small persisted counters that are not job state.
-struct RuntimeState: Codable {
-    var day: String = ""
-    var startsToday = 0
-    var refusalsToday = 0
-    var lastSummaryDate: String?
-    var lastSentinelDate: String?
-
-    static func url(_ dir: URL) -> URL { dir.appendingPathComponent("state.json") }
-
-    static func load(_ dir: URL) -> RuntimeState {
-        var state = (try? Data(contentsOf: url(dir))).flatMap { try? JSONDecoder().decode(RuntimeState.self, from: $0) }
-            ?? RuntimeState()
-        let today = CalendarDate.today().description
-        if state.day != today {
-            state.day = today
-            state.startsToday = 0
-            state.refusalsToday = 0
-        }
-        return state
-    }
-
-    static func update(_ dir: URL, _ change: (inout RuntimeState) -> Void) {
-        var state = load(dir)
-        change(&state)
-        if let data = try? JSONEncoder().encode(state) { try? AtomicFile.write(data, to: url(dir)) }
-    }
-
-    static func recordStart(_ dir: URL) { update(dir) { $0.startsToday += 1 } }
-    static func recordRefusal(_ dir: URL) { update(dir) { $0.refusalsToday += 1 } }
-}
 
 /// Notifications under the app's identity. A helper inside the bundle has the app's bundle as its main bundle;
 /// whether macOS delivers its notifications is spike h (architecture 3.7). Outside a bundle (a `swift build`

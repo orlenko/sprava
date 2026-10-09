@@ -39,7 +39,9 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava measures [--days N]          the shadow run's measures (mvp.md 1.2) over the last N days (30)
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>.
-                                          Refuses any folder in lifeproj's registry.
+                                          Refuses any folder in lifeproj's registry or on Sprava's
+                                          Shelf, or owned by the installed Sprava. Uses its own
+                                          state and device id (the support folder plus "-dev").
 
 The shelf lists new binders and folders added with `sprava shelf add`. lifeproj's registry
 ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml) is listed only with "showRegistry": true in shelf.json.
@@ -179,13 +181,15 @@ func check(_ args: [String]) {
     exit(teka.state <= .corrupt ? 1 : 0)
 }
 
-/// Development commands: the same `Commands` the runtime runs for the app, in-process. Never on a folder that
-/// lifeproj's registry lists, so a live binder is only ever written by the installed runtime.
+/// Development commands: the same `Commands` the runtime runs for the app, in-process, with the development
+/// identity and state (`DevelopmentGuard.supportDirectory`, shared with `sprava-runtime --dev`). Never on a folder
+/// lifeproj's registry lists, the installed app's Shelf holds or the installed app owns, so a live binder is only
+/// ever written by the installed runtime.
 func dev(_ args: [String]) {
     guard args.count >= 2 else { fail(usage) }
     let folder = folderURL(args[1])
     if let refusal = DevelopmentGuard.refusal(for: folder) { fail(refusal) }
-    let support = SpravaPaths.supportDirectory()
+    let support = DevelopmentGuard.supportDirectory()
     let commands = Commands(support: support, deviceID: deviceID(support), client: "sprava-dev/0.1")
     var request = JSONObject([(key: "binder", value: .string(folder.path))])
     switch args[0] {
