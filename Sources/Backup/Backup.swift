@@ -63,6 +63,8 @@ public struct Backup: Sendable {
         public var name: String
         public var originalPath: String
         public var snapshot: String
+        /// The mirror `snapshot` is in, since the mirror may change later (nil in older records).
+        public var repository: String?
         public var secondSnapshot: String?
         /// The repository `secondSnapshot` is in, since the second backup may change later (nil in older records).
         public var secondRepository: String?
@@ -78,6 +80,8 @@ public struct Backup: Sendable {
         var path: String
         var stage: String          // start, snapshotted, verified, waiting_for_upload, copied, leaving
         var snapshot: String?
+        /// The mirror `snapshot` is in: a job whose mirror the person has since replaced starts over.
+        var repository: String?
         var secondSnapshot: String?
         var secondRepository: String?
         var bytes: Int64 = 0
@@ -107,6 +111,8 @@ public struct Backup: Sendable {
         }
         struct Restored: Codable, Equatable {
             var snapshot: String
+            /// The mirror `snapshot` is in; "Offload again" reuses it only while that is still the mirror (nil: never).
+            var repository: String?
             var secondSnapshot: String?
             var secondRepository: String?
             var manifest: [String: String]
@@ -139,13 +145,12 @@ public struct Backup: Sendable {
     }
 
     /// The backup's records. A missing file is a fresh state; a file that exists but cannot be read or decoded
-    /// throws, so nothing ever saves over it: `offloaded` is the only way back to an offloaded binder.
+    /// throws, so nothing ever saves over it: `offloaded` is the only way back to an offloaded binder. Only a missing
+    /// directory entry is fresh: a link to a place that is away now (an unmounted disk) is unreadable, not empty.
     func state() throws -> State {
-        guard FileManager.default.fileExists(atPath: stateURL.path) else { return State() }
-        guard let data = try? Data(contentsOf: stateURL), let st = try? JSONDecoder().decode(State.self, from: data) else {
+        do { return try StateFile.read(State.self, from: stateURL) ?? State() } catch {
             throw Failure(message: "backup state is unreadable; nothing was changed (\(stateURL.path))")
         }
-        return st
     }
 
     func save(_ s: State) throws {
@@ -177,13 +182,15 @@ public struct Backup: Sendable {
 
     /// Sets up the mirror at `primary` with the key Sprava holds. An existing repository must open with that key.
     /// The settings name it only once it opens, so a failed change leaves the working mirror in place. Settings that
-    /// cannot be read are never saved over.
+    /// cannot be read are never saved over. A mirror in or around the second backup is refused.
     public func setUp(primary: URL, iCloudKeychain: Bool) throws {
         var s = try settings()
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
         s.primary = primary.standardizedFileURL.path
         s.iCloudKeychain = iCloudKeychain
         s.resticSHA256 = Restic.sha256(of: binary)
+        // A new mirror must not share a fate with the second backup already chosen (§5), as setSecond requires.
+        if let second = s.second { try Self.refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: primary) }
         let r = try engine(s.primary, settings: s)
         if r.isInitialized() {
             _ = try r.snapshots()   // throws when the key does not open it
@@ -226,6 +233,12 @@ public struct Backup: Sendable {
         if a == iCloud || a.hasPrefix(iCloud + "/") {
             throw Failure(message: "the second backup cannot be in iCloud Drive: losing the account would lose both copies; choose an external disk or another cloud service's folder")
         }
+    }
+
+    /// The same check on the saved settings, before an offload counts the two repositories as independent copies.
+    func refuseSharedFate(_ s: Settings) throws {
+        guard let primary = s.primary, let second = s.second else { return }
+        try Self.refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: URL(fileURLWithPath: primary, isDirectory: true))
     }
 
     // MARK: - Snapshots
@@ -338,19 +351,39 @@ public struct Backup: Sendable {
 
     // MARK: - Manifests
 
-    /// Every file under `folder` that a snapshot holds, with its SHA-256.
-    static func manifest(_ folder: URL) -> [String: String] {
+    /// Every entry under `folder` that a snapshot holds, as restic backs it up: a file with its SHA-256, a symbolic
+    /// link with its target, a folder as such. A folder that cannot be listed or a file that cannot be read throws:
+    /// whatever a manifest left out could leave the Mac while the binder still counts as unchanged.
+    static func manifest(_ folder: URL) throws -> [String: String] {
         var out: [String: String] = [:]
-        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return out }
-        let base = folder.standardizedFileURL.resolvingSymlinksInPath().path
-        for case let url as URL in walker {
-            let name = url.lastPathComponent
-            if name == ".teka.lock" || name == ".DS_Store" || (name.hasPrefix(".") && name.hasSuffix(".tmp")) { continue }
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-            let rel = path.hasPrefix(base + "/") ? String(path.dropFirst(base.count + 1)) : path
-            out[rel] = DocumentPaths.sha256(of: url) ?? "unreadable"
+        func unreadable(_ rel: String) -> Failure {
+            Failure(message: "\(rel.isEmpty ? "the binder" : rel) cannot be read; nothing was removed")
         }
+        func walk(_ dir: URL, _ prefix: String) throws {
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { throw unreadable(prefix) }
+            for name in names.sorted() {
+                // The names restic leaves out (`excludes`), wherever they are, and anything inside them.
+                if name == ".teka.lock" || name == ".DS_Store" || (name.hasPrefix(".") && name.hasSuffix(".tmp")) { continue }
+                let url = dir.appendingPathComponent(name)
+                let rel = prefix.isEmpty ? name : prefix + "/" + name
+                var info = stat()
+                guard lstat(url.path, &info) == 0 else { throw unreadable(rel) }
+                switch info.st_mode & S_IFMT {
+                case S_IFDIR:
+                    out[rel] = "folder"
+                    try walk(url, rel)
+                case S_IFLNK:
+                    guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { throw unreadable(rel) }
+                    out[rel] = "link " + target
+                case S_IFREG:
+                    guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
+                    out[rel] = sha
+                default:
+                    out[rel] = "special \(info.st_mode & S_IFMT)"
+                }
+            }
+        }
+        try walk(folder, "")
         return out
     }
 
@@ -378,8 +411,14 @@ public struct Backup: Sendable {
            let leaving = try state().offloads.first(where: { $0.value.path == folder.standardizedFileURL.path && $0.value.stage == "leaving" }) {
             return try continueOffload(leaving.key, now: now)
         }
+        try refuseSharedFate(s)
         let teka = Teka.read(folder)
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
+        // Its hub slice is named by its catalog, so a binder whose name differs from its folder's (an outside edit may
+        // have given it another binder's name) or cannot be read is put right first (`removeHubSlice`).
+        guard !teka.federationBlocked else {
+            throw Failure(message: "this binder needs attention (its name or its catalog); put it right before offloading")
+        }
         guard !ProposalStore.list(in: folder).contains(where: { $0.0.state == "proposed" }) else {
             throw Failure(message: "cards are waiting for this binder; approve or reject them first")
         }
@@ -402,14 +441,19 @@ public struct Backup: Sendable {
         var job = st.offloads[id] ?? InProgress(path: folder.standardizedFileURL.path, stage: "start")
         // The binder stays writable while an offload waits for iCloud, which can take hours. One that changed since
         // its snapshot was verified (or never got that far) starts over, so what leaves the Mac is what the backups hold.
-        if job.stage == "snapshotted" || (job.stage != "start" && job.manifestSHA != Self.digest(Self.manifest(folder))) {
+        // So does one whose snapshot is in a mirror the person has since replaced.
+        if try job.stage == "snapshotted" || (job.stage != "start" && (job.manifestSHA != Self.digest(Self.manifest(folder)) || job.repository != s.primary)) {
             if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
             job = InProgress(path: job.path, stage: "start")
         }
         if job.stage == "start" {
             // Nothing changed since a restore: the pinned snapshots are still the binder (§6.4), and the earlier
-            // offload already recorded the person's confirmation.
-            let unchanged = st.restored[id].map { $0.manifest == Self.manifest(folder) } ?? false
+            // offload already recorded the person's confirmation. Only while the mirror is the one the pinned snapshot
+            // is in, and still holds it: a mirror the person has since replaced does not, so it is taken again.
+            let primary = try engine(s.primary)
+            let current = try Self.manifest(folder)
+            let baseline = st.restored[id].flatMap { $0.repository != nil && $0.repository == s.primary && $0.manifest == current ? $0 : nil }
+            let unchanged = try baseline.map { b in try primary.snapshots(tag: "binder:\(id)").contains { $0.id == b.snapshot } } ?? false
             if !open.isEmpty, !unchanged {
                 // The person's confirmation goes into the binder's history before the snapshot.
                 let entry = JSONObject([(key: "entry", value: .obj([("action", .str("offloaded")),
@@ -419,13 +463,16 @@ public struct Backup: Sendable {
                                                            actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
             }
             job.openItemsConfirmed = open.count
-            let primary = try engine(s.primary)
-            let manifest = Self.manifest(folder)
+            let manifest = try Self.manifest(folder)
             job.manifestSHA = Self.digest(manifest)
+            job.repository = s.primary
             if unchanged, let restored = st.restored[id] {
                 job.snapshot = restored.snapshot
-                // A copy in a second backup the person has since replaced does not count; it is copied again.
-                let copyHolds = restored.secondSnapshot != nil && restored.secondRepository == s.second
+                // A copy in a second backup the person has since replaced, or no longer in it, does not count; it is
+                // copied again.
+                let copyHolds = try restored.secondSnapshot.map { copy in
+                    try restored.secondRepository == s.second && engine(s.second).snapshots(tag: "binder:\(id)").contains { $0.id == copy }
+                } ?? false
                 job.secondSnapshot = copyHolds ? restored.secondSnapshot : nil
                 job.secondRepository = copyHolds ? restored.secondRepository : nil
                 job.stage = copyHolds ? "copied" : "verified"
@@ -443,7 +490,7 @@ public struct Backup: Sendable {
                 try AtomicFile.makePrivateFolder(verify)
                 defer { try? FileManager.default.removeItem(at: verify) }
                 try primary.restore(snap, into: verify)
-                let restored = Self.manifest(verify)
+                let restored = try Self.manifest(verify)
                 guard restored == manifest else {
                     let missing = Set(manifest.keys).subtracting(restored.keys).count
                     let differ = manifest.filter { restored[$0.key] != nil && restored[$0.key] != $0.value }.count
@@ -463,6 +510,20 @@ public struct Backup: Sendable {
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
         if job.stage == "leaving" { return try leave(id, folder: folder, &st) }
+        // The settings may have changed while the offload waited. A snapshot in a mirror the person has since
+        // replaced is not in the backups any more; a copy in a replaced second backup is made again; and two
+        // repositories that now share a fate are not two copies.
+        try refuseSharedFate(s)
+        guard job.repository != nil, job.repository == s.primary else {
+            st.offloads[id] = nil
+            try save(st)
+            throw Failure(message: "the mirror changed during the offload; nothing was removed. Offload again to back up into the new one")
+        }
+        if job.secondSnapshot != nil, job.secondRepository != s.second {
+            job.secondSnapshot = nil
+            job.secondRepository = nil
+            if job.stage == "copied" { job.stage = "verified" }
+        }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" {
             if case .waiting(let n) = uploadCheck(primary.repository) {
@@ -489,8 +550,8 @@ public struct Backup: Sendable {
         try refuseIfChanged(id, folder: folder, job, &st)
         let teka = Teka.read(folder)
         let record = Offloaded(
-            backupID: id, name: teka.name, originalPath: job.path, snapshot: snap, secondSnapshot: job.secondSnapshot,
-            secondRepository: job.secondRepository ?? s.second, bytes: job.bytes, at: ISOTime.string(now),
+            backupID: id, name: teka.name, originalPath: job.path, snapshot: snap, repository: job.repository,
+            secondSnapshot: job.secondSnapshot, secondRepository: job.secondRepository, bytes: job.bytes, at: ISOTime.string(now),
             summary: teka.catalog?["meta"]?["description"]?.stringValue ?? "",
             documents: (teka.catalog?["documents"]?.arrayValue ?? []).compactMap { d in
                 guard let p = d["path"]?.stringValue else { return nil }
@@ -498,7 +559,7 @@ public struct Backup: Sendable {
             },
             openItemsConfirmed: job.openItemsConfirmed)
         // The hub stops showing it, as for a binder at disclosure none.
-        try removeHubSlice(teka.name)
+        try removeHubSlice(teka)
         // The record is kept before the folder goes, so a failure from here on can be finished, never lost.
         job.stage = "leaving"
         st.offloads[id] = job
@@ -539,22 +600,27 @@ public struct Backup: Sendable {
 
     /// Stops an offload whose binder changed after its snapshot was verified: the job starts over next time.
     func refuseIfChanged(_ id: String, folder: URL, _ job: InProgress, _ st: inout State) throws {
-        guard job.manifestSHA != Self.digest(Self.manifest(folder)) else { return }
+        guard job.manifestSHA != Self.digest(try Self.manifest(folder)) else { return }
         st.offloads[id] = nil
         st.offloaded.removeAll { $0.backupID == id }
         try save(st)
         throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
     }
 
-    /// Removes the binder's slice from the hub's spool. A slice that is there and cannot be removed stops the
-    /// offload, which is retried, rather than leaving it on the hub with nothing to remove it later.
-    func removeHubSlice(_ name: String) throws {
-        guard HubLane.isSafeSegment(name) else { return }
-        let target = try HubLane.spoolFile(hubSpool.appendingPathComponent("inbox"), name, ".agenda.json")
-        var st = stat()
-        guard lstat(target.path, &st) == 0 else { return }
-        do { try FileManager.default.removeItem(at: target) } catch {
-            throw Failure(message: "could not take the binder off the hub (\(error.localizedDescription)); the offload will retry")
+    /// Removes the binder's slice from the hub's spool. The slice is named by the catalog only for a binder that
+    /// passes the hub's checks (its name is its folder's, as `HubLane.withdraw` requires); any other is refused, never
+    /// guessed at, since the name might be another binder's slice. Only a slice that is already gone counts as
+    /// removed: one that cannot be checked or removed (a spool that cannot be searched) stops the offload, which is
+    /// retried, rather than leaving it on the hub with nothing to remove it later.
+    func removeHubSlice(_ teka: Teka) throws {
+        guard !teka.federationBlocked else {
+            throw Failure(message: "this binder needs attention (its name or its catalog); it was not taken off the hub, and nothing was removed")
+        }
+        let target = try HubLane.spoolFile(hubSpool.appendingPathComponent("inbox"), teka.name, ".agenda.json")
+        guard unlink(target.path) == 0 || errno == ENOENT else {
+            let code = errno
+            let reason = String(cString: strerror(code))
+            throw Failure(message: "could not take the binder off the hub (\(reason)); the offload will retry")
         }
     }
 
@@ -584,39 +650,42 @@ public struct Backup: Sendable {
         guard let record = st.offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
         let s = try settings()
         let destination = (target ?? URL(fileURLWithPath: record.originalPath, isDirectory: true)).standardizedFileURL
-        var isDir: ObjCBool = false
-        if st.restoring[backupID] != destination.path, FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir),
-           !((try? FileManager.default.contentsOfDirectory(atPath: destination.path))?.isEmpty ?? true) {
-            throw Failure(message: "\(destination.lastPathComponent) already exists there; choose another place")
+        // restic overwrites what is in its way, so only a missing place or a folder seen to be empty is restored
+        // into, unless this restore is being resumed. One that cannot be listed may hold anything.
+        if st.restoring[backupID] != destination.path {
+            var info = stat()
+            if lstat(destination.path, &info) == 0 {
+                guard info.st_mode & S_IFMT == S_IFDIR, let names = try? FileManager.default.contentsOfDirectory(atPath: destination.path),
+                      names.isEmpty else {
+                    throw Failure(message: "\(destination.lastPathComponent) already exists there; choose another place")
+                }
+            } else if errno != ENOENT {
+                throw Failure(message: "\(destination.lastPathComponent) cannot be checked; choose another place")
+            }
         }
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         st.restoring[backupID] = destination.path
         try save(st)
         let held: Set<String>?
         do {
-            do {
-                let primary = try engine(s.primary)
-                try primary.restore(record.snapshot, into: destination)
-                held = try? primary.files(record.snapshot)
-            } catch {
-                guard let second = record.secondSnapshot else { throw error }
-                let secondary = try engine(record.secondRepository ?? s.second)
-                try secondary.restore(second, into: destination)
-                held = try? secondary.files(second)
+            held = try fromBackups(record, s) { r, snapshot in
+                try r.restore(snapshot, into: destination)
+                return try? r.files(snapshot)
             }
         } catch {
             throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
         try? FileManager.default.removeItem(at: destination.appendingPathComponent(".teka.lock"))
         try? ShelfStore(supportDirectory: support).add(destination)
-        // The baseline a later offload compares with (§6.4) is the snapshot's own files, as restic restored and
+        // The baseline a later offload compares with (§6.4) is the snapshot's own entries, as restic restored and
         // verified them, never the whole folder: a resumed restore keeps whatever was added to the folder in the
         // meantime, and no snapshot holds that, so the binder no longer counts as unchanged. Without the
-        // snapshot's listing there is no baseline, and the next offload takes a new snapshot.
-        if let held {
-            let manifest = Self.manifest(destination).filter { held.contains($0.key) }
-            st.restored[backupID] = State.Restored(snapshot: record.snapshot, secondSnapshot: record.secondSnapshot,
-                                                   secondRepository: record.secondRepository ?? s.second, manifest: manifest)
+        // snapshot's listing, or a folder that can be read whole, there is no baseline, and the next offload takes
+        // a new snapshot.
+        if let held, let all = try? Self.manifest(destination) {
+            st.restored[backupID] = State.Restored(snapshot: record.snapshot, repository: record.repository, secondSnapshot: record.secondSnapshot,
+                                                   secondRepository: record.secondRepository ?? s.second,
+                                                   manifest: all.filter { held.contains($0.key) })
         } else {
             st.restored[backupID] = nil
         }
@@ -635,12 +704,21 @@ public struct Backup: Sendable {
         let folder = dir.appendingPathComponent("peek/\(UUID().uuidString.prefix(8))", isDirectory: true)
         try AtomicFile.makePrivateFolder(folder)
         let file = folder.appendingPathComponent((path as NSString).lastPathComponent)
-        let s = try settings()
-        do { try engine(s.primary).dump(record.snapshot, path: "/" + path, to: file) } catch {
-            guard let second = record.secondSnapshot else { throw error }
-            try engine(record.secondRepository ?? s.second).dump(second, path: "/" + path, to: file)
-        }
+        try fromBackups(record, try settings()) { r, snapshot in try r.dump(snapshot, path: "/" + path, to: file) }
         return file
+    }
+
+    /// Runs `body` on an offloaded binder's snapshot: in the mirror it was written to, then in the current mirror if
+    /// that is another folder (a mirror moved with its files keeps its snapshots), then in the second backup.
+    func fromBackups<T>(_ record: Offloaded, _ s: Settings, _ body: (Restic, String) throws -> T) throws -> T {
+        var mirrors = [record.repository ?? s.primary]
+        if record.repository != nil, s.primary != record.repository { mirrors.append(s.primary) }
+        var last: Error = Failure(message: "backup is not set up")
+        for mirror in mirrors {
+            do { return try body(try engine(mirror), record.snapshot) } catch { last = error }
+        }
+        guard let second = record.secondSnapshot else { throw last }
+        return try body(try engine(record.secondRepository ?? s.second), second)
     }
 
     /// Removes peeked documents older than a day: plain copies of offloaded documents do not stay on the Mac.
@@ -667,7 +745,7 @@ public struct Backup: Sendable {
         try AtomicFile.makePrivateFolder(target)
         defer { try? FileManager.default.removeItem(at: target) }
         try primary.restore(snap, into: target)
-        guard Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
+        guard try Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
         var st = try state()
         st.lastDrill = ISOTime.string(now)
         try save(st)
@@ -826,6 +904,7 @@ extension Backup.InProgress {
         path = try c.decode(String.self, forKey: .path)
         stage = try c.decode(String.self, forKey: .stage)
         snapshot = try c.decodeIfPresent(String.self, forKey: .snapshot)
+        repository = try c.decodeIfPresent(String.self, forKey: .repository)
         secondSnapshot = try c.decodeIfPresent(String.self, forKey: .secondSnapshot)
         secondRepository = try c.decodeIfPresent(String.self, forKey: .secondRepository)
         bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
@@ -841,6 +920,7 @@ extension Backup.Offloaded {
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         originalPath = try c.decode(String.self, forKey: .originalPath)
         snapshot = try c.decode(String.self, forKey: .snapshot)
+        repository = try c.decodeIfPresent(String.self, forKey: .repository)
         secondSnapshot = try c.decodeIfPresent(String.self, forKey: .secondSnapshot)
         secondRepository = try c.decodeIfPresent(String.self, forKey: .secondRepository)
         bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0

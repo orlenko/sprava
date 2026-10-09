@@ -21,11 +21,11 @@ import Testing
         let earlier = ISOTime.string(now), later = ISOTime.string(now.addingTimeInterval(60))
         try requests.enqueue(.init(id: "a", kind: "offload", binder: "/Invented/a", at: earlier))
         try requests.enqueue(.init(id: "b", kind: "offload", binder: "/Invented/b", at: later))
-        requests.update("a") { $0.state = "waiting_for_icloud" }
-        requests.update("b") { $0.state = "waiting_for_icloud" }
+        try requests.update("a") { $0.state = "waiting_for_icloud" }
+        try requests.update("b") { $0.state = "waiting_for_icloud" }
         #expect(try requests.next()?.id == "a")
         // Retried and still waiting: its time moves on, so the other one comes next.
-        requests.update("a") { $0.at = ISOTime.string(self.now.addingTimeInterval(120)) }
+        try requests.update("a") { $0.at = ISOTime.string(self.now.addingTimeInterval(120)) }
         #expect(try requests.next()?.id == "b")
         try requests.enqueue(.init(id: "c", kind: "drill", binder: "/Invented/c", at: later))
         #expect(try requests.next()?.id == "c")

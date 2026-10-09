@@ -23,9 +23,10 @@ import Testing
         let support = base.appendingPathComponent("support")
         let trash = base.appendingPathComponent("trash")
         try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        // The hub's spool is a temporary folder too, never the person's.
         let backup = Backup(support: support, key: key, removeFolder: { url in
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        })
+        }, hubSpool: base.appendingPathComponent("spool"))
         let folder = try makeTeka(fixture: "sprava-v0")
         try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("dev"))]), now: now)
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("correspondence/notary"), withIntermediateDirectories: true)
@@ -65,7 +66,7 @@ import Testing
         try TekaStore(folder: s.folder).apply([.init(op: "file_document", args: JSONObject([(key: "document", value: .obj([
             ("id", .str("estate-example-doc-2026-900")), ("title", .str("Letter")), ("path", .str("correspondence/notary/letter.pdf")),
             ("sha256", .string(sha))]))]), actor: JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .str("t"))]))], now: now)
-        let before = Backup.manifest(s.folder)
+        let before = try Backup.manifest(s.folder)
         let progress = try s.backup.offload(s.folder, deviceID: "dev", confirmOpenItems: true, now: now)
         guard case .done(let record) = progress else { Issue.record("not done: \(progress)"); return }
         #expect(!FileManager.default.fileExists(atPath: s.folder.path))
@@ -81,7 +82,7 @@ import Testing
         // Restore: the binder comes back as it left, with the offload recorded in its history.
         let restored = try s.backup.restore(record.backupID, now: now)
         #expect(restored.path == s.folder.standardizedFileURL.path)
-        let after = Backup.manifest(restored)
+        let after = try Backup.manifest(restored)
         #expect(after["correspondence/notary/letter.pdf"] == before["correspondence/notary/letter.pdf"])
         #expect(Teka.read(restored).catalog?["processing_log"]?.arrayValue?.contains { ($0["title"]?.stringValue ?? "").hasPrefix("Offloaded with") } == true)
         #expect(try s.backup.offloaded().isEmpty)

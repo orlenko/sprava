@@ -70,6 +70,20 @@ public enum BackupKey {
                        kSecAttrAccount as String: pendingAccount] as CFDictionary)
     }
 
+    /// The Keychain calls `store` makes; tests pass their own, so no test touches the person's Keychain.
+    struct Keychain {
+        var put: (_ key: String, _ account: String, _ synchronizable: Bool) throws -> Void
+        var delete: (_ account: String, _ synchronizable: Bool) -> OSStatus
+        static var system: Keychain {
+            Keychain(put: { try BackupKey.put($0, account: $1, synchronizable: $2) }, delete: { acct, synchronizable in
+                var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                            kSecAttrAccount as String: acct]
+                if synchronizable { query[kSecAttrSynchronizable as String] = true }
+                return SecItemDelete(query as CFDictionary)
+            })
+        }
+    }
+
     /// Stores the key on this device, and in iCloud Keychain when the person chose that.
     public static func store(_ key: String, inICloudKeychain: Bool) throws {
         if let file = fileOverride {
@@ -77,8 +91,21 @@ public enum BackupKey {
             try AtomicFile.write(Data(key.utf8), to: file)
             return
         }
-        try put(key, account: account, synchronizable: false)
-        if inICloudKeychain { try put(key, account: syncedAccount, synchronizable: true) }
+        try store(key, inICloudKeychain: inICloudKeychain, keychain: .system)
+    }
+
+    /// Choosing not to keep the key in iCloud Keychain takes an earlier copy out of it, or says it could not:
+    /// a copy left there would stay as reachable as the person chose it not to be, and `load()` would still use it.
+    static func store(_ key: String, inICloudKeychain: Bool, keychain: Keychain) throws {
+        try keychain.put(key, account, false)
+        if inICloudKeychain {
+            try keychain.put(key, syncedAccount, true)
+        } else {
+            let status = keychain.delete(syncedAccount, true)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw Failure(message: "the backup key could not be taken out of iCloud Keychain (\(status)); remove it there, or keep it there")
+            }
+        }
     }
 
     static func put(_ key: String, account acct: String, synchronizable: Bool) throws {

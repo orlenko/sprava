@@ -198,7 +198,7 @@ import Testing
     @Test(.enabled(if: hasRestic)) func aPartlyRestoredBinderCanBeRestoredAgain() throws {
         let e = try env()
         let b = try configured(e)
-        let before = Backup.manifest(e.folder)
+        let before = try Backup.manifest(e.folder)
         guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
             Issue.record("not done"); return
         }
@@ -213,9 +213,9 @@ import Testing
         try FileManager.default.moveItem(at: away.appendingPathComponent("second"), to: e.second)
 
         let restored = try b.restore(record.backupID, now: now)
-        #expect(Backup.manifest(restored)["catalog.json"] != nil)
+        #expect(try Backup.manifest(restored)["catalog.json"] != nil)
         #expect(Teka.read(restored).catalog != nil)
-        #expect(Backup.manifest(restored)["correspondence/notary/letter.pdf"] == before["correspondence/notary/letter.pdf"])
+        #expect(try Backup.manifest(restored)["correspondence/notary/letter.pdf"] == before["correspondence/notary/letter.pdf"])
         #expect(try b.state().restoring.isEmpty)
     }
 
@@ -340,7 +340,7 @@ import Testing
         let at = ISOTime.string(Date())
         DispatchQueue.concurrentPerform(iterations: 200) { i in
             _ = try? requests.enqueue(.init(id: "r\(i)", kind: "drill", binder: "/Invented/binder-\(i)", at: at))
-            requests.update("r\(i)") { $0.state = "running" }
+            try? requests.update("r\(i)") { $0.state = "running" }
         }
         let all = try requests.all()
         #expect(all.count == 200)

@@ -23,7 +23,7 @@ import Testing
         let id = try Backup.backupID(e.folder)
         var job = Backup.InProgress(path: e.folder.standardizedFileURL.path, stage: "leaving")
         job.snapshot = "invented-snapshot"
-        job.manifestSHA = Backup.digest(Backup.manifest(e.folder))
+        job.manifestSHA = Backup.digest(try Backup.manifest(e.folder))
         var st = Backup.State()
         st.offloads[id] = job
         st.offloaded = [Backup.Offloaded(backupID: id, name: "estate-example", originalPath: job.path, snapshot: "invented-snapshot",

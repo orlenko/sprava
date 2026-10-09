@@ -30,7 +30,7 @@ import Testing
         try FileManager.default.moveItem(at: away.appendingPathComponent("primary"), to: e.primary)
         try FileManager.default.moveItem(at: away.appendingPathComponent("second"), to: e.second)
         let restored = try b.restore(record.backupID, now: now)
-        #expect(Backup.manifest(restored)[added] != nil)
+        #expect(try Backup.manifest(restored)[added] != nil)
         let baseline = try #require(try b.state().restored[record.backupID]?.manifest)
         #expect(baseline[added] == nil)
         #expect(baseline["correspondence/notary/letter.pdf"] != nil)

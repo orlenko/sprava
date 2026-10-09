@@ -78,13 +78,14 @@ public struct BackupRequests: Sendable {
         }
     }
 
-    /// Changes one request. A queue that cannot be read is left as it is; the job reports it on its next run.
-    public func update(_ id: String, _ change: (inout Request) -> Void) {
-        locked {
-            guard var list = try? all() else { return }
-            guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+    /// Changes one request. A queue that cannot be read is left as it is, and a change that cannot be saved throws,
+    /// as does a request no longer in the queue: a transition that did not land must never pass for one that did.
+    public func update(_ id: String, _ change: (inout Request) -> Void) throws {
+        try locked {
+            var list = try all()
+            guard let i = list.firstIndex(where: { $0.id == id }) else { throw Backup.Failure(message: "the request is no longer queued") }
             change(&list[i])
-            try? save(list)
+            try save(list)
         }
     }
 
@@ -101,7 +102,7 @@ public struct BackupRequests: Sendable {
                 list[i].at = ISOTime.string(now)
                 changed = true
             }
-            if changed { try? save(list) }
+            if changed { try save(list) }
         }
     }
 
@@ -113,39 +114,42 @@ public struct BackupRequests: Sendable {
             ?? list.filter { $0.state == "waiting_for_icloud" }.min { (ISOTime.date($0.at) ?? .distantPast) < (ISOTime.date($1.at) ?? .distantPast) }
     }
 
-    /// Runs one request with the given backup; the runtime calls this off the command queue.
-    public func run(_ r: Request, backup: Backup, deviceID: String, now: Date = Date()) {
-        update(r.id) { $0.state = "running"; $0.at = ISOTime.string(now) }
+    /// Runs one request with the given backup; the runtime calls this off the command queue. It throws, without
+    /// running the request, when the queue cannot record it as running; and when the queue cannot record how it
+    /// ended, so the request does not sit "running" unnoticed (`recoverInterrupted` marks it failed at the next start).
+    public func run(_ r: Request, backup: Backup, deviceID: String, now: Date = Date()) throws {
+        try update(r.id) { $0.state = "running"; $0.at = ISOTime.string(now) }
+        let outcome: (inout Request) -> Void
         do {
             switch r.kind {
             case "offload":
                 guard let path = r.binder else { throw Backup.Failure(message: "no binder") }
                 switch try backup.offload(URL(fileURLWithPath: path, isDirectory: true), deviceID: deviceID, confirmOpenItems: r.confirmOpenItems, now: now) {
                 case .waitingForICloud(let n):
-                    update(r.id) { $0.state = "waiting_for_icloud"; $0.message = "waiting for iCloud to upload \(n) file(s)"; $0.at = ISOTime.string(now) }
-                    return
+                    outcome = { $0.state = "waiting_for_icloud"; $0.message = "waiting for iCloud to upload \(n) file(s)"; $0.at = ISOTime.string(now) }
                 case .done(let record):
-                    update(r.id) { $0.state = "done"; $0.message = "offloaded \(record.name)"; $0.backupID = record.backupID }
+                    outcome = { $0.state = "done"; $0.message = "offloaded \(record.name)"; $0.backupID = record.backupID }
                 }
             case "restore":
                 guard let id = r.backupID else { throw Backup.Failure(message: "no binder") }
                 let url = try backup.restore(id, to: r.target.map { URL(fileURLWithPath: $0, isDirectory: true) }, now: now)
-                update(r.id) { $0.state = "done"; $0.message = "restored"; $0.binder = url.path }
+                outcome = { $0.state = "done"; $0.message = "restored"; $0.binder = url.path }
             case "drill":
                 guard let path = r.binder else { throw Backup.Failure(message: "no binder") }
                 try backup.drill(URL(fileURLWithPath: path, isDirectory: true), now: now)
-                update(r.id) { $0.state = "done"; $0.message = "the restore drill passed" }
+                outcome = { $0.state = "done"; $0.message = "the restore drill passed" }
             case "backup_now":
                 guard let path = r.binder else { throw Backup.Failure(message: "no binder") }
                 try backup.backUp(URL(fileURLWithPath: path, isDirectory: true), now: now)
-                update(r.id) { $0.state = "done"; $0.message = "backed up" }
+                outcome = { $0.state = "done"; $0.message = "backed up" }
             default:
                 throw Backup.Failure(message: "unknown request")
             }
         } catch let e as Backup.NeedsConfirmation {
-            update(r.id) { $0.state = "needs_confirmation"; $0.message = e.openItems.prefix(20).joined(separator: "\n") }
+            outcome = { $0.state = "needs_confirmation"; $0.message = e.openItems.prefix(20).joined(separator: "\n") }
         } catch {
-            update(r.id) { $0.state = "failed"; $0.message = "\(error)" }
+            outcome = { $0.state = "failed"; $0.message = "\(error)" }
         }
+        try update(r.id, outcome)
     }
 }
