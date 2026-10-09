@@ -59,9 +59,11 @@ extension CaptureInbox {
         var clerk = state.clerk ?? [:]
         for id in chain {
             clerk[id] = "retracted"
-            let interpretation = dir.appendingPathComponent("interpretations/\(id).json")
-            if (try? FileManager.default.removeItem(at: interpretation)) == nil, FileManager.default.fileExists(atPath: interpretation.path) {
-                complete = false
+            // The capture's readings (a folder of them by their ids; one file, as an older inbox kept it).
+            for interpretation in [dir.appendingPathComponent("interpretations/\(id)", isDirectory: true), dir.appendingPathComponent("interpretations/\(id).json")] {
+                if (try? FileManager.default.removeItem(at: interpretation)) == nil, FileManager.default.fileExists(atPath: interpretation.path) {
+                    complete = false
+                }
             }
         }
         state.clerk = clerk

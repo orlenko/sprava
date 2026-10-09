@@ -237,7 +237,9 @@ public struct IntakeWatcher: Sendable {
                                 entry?.readingMissing = saveReading(reading, file: file, sha: sha, card: existing.id, in: row, now: now) ? nil : true
                             }
                         } else {
-                            for stranded in matching { withdraw(stranded.id, in: row.folder, deviceID: commands.deviceID, now: now) }
+                            // A stale card that cannot be withdrawn now is never left beside a new one: the file waits.
+                            let cleared = matching.map { withdraw($0.id, in: row.folder, deviceID: commands.deviceID, now: now) }
+                            guard !cleared.contains(false) else { next[file.name] = entry; continue }
                             entry?.card = card(file, sha: sha, reading: reading, digests: prepared.digests, in: row, commands: commands, now: now)
                             if let made = entry?.card, let sha {
                                 result.carded += 1
@@ -258,7 +260,8 @@ public struct IntakeWatcher: Sendable {
                     // New, or still being written, or changed after its card: wait for it to hold still. A card for
                     // the old bytes is withdrawn; its digest would be refused on approval anyway.
                     if let old = entry?.card {
-                        withdraw(old, in: row.folder, deviceID: commands.deviceID, now: now)
+                        // Until its old card is withdrawn, the entry keeps following it (and tries again next scan).
+                        guard withdraw(old, in: row.folder, deviceID: commands.deviceID, now: now) else { next[file.name] = entry; continue }
                         result.replaced += 1
                     }
                     entry = Seen(size: file.size, mtime: file.mtime, card: nil, firstSeen: entry?.firstSeen ?? now)
@@ -267,7 +270,10 @@ public struct IntakeWatcher: Sendable {
                 next[file.name] = entry
             }
             // Files gone from intake/ (filed, or removed by the person): cards still waiting for them are withdrawn.
-            for (_, gone) in seen { if let card = gone.card { withdraw(card, in: row.folder, deviceID: commands.deviceID, now: now) } }
+            // One whose card cannot be withdrawn now stays in the cursor, so the next scan tries again.
+            for (name, gone) in seen {
+                if let card = gone.card, !withdraw(card, in: row.folder, deviceID: commands.deviceID, now: now) { next[name] = gone }
+            }
             kept[key] = next
         }
         if (try? save(kept)) == nil { result.cursorUnsaved = true }
@@ -475,19 +481,28 @@ public struct IntakeWatcher: Sendable {
         }
         guard let mine = waiting.first(where: { $0.id == followed }), let old = mine.raw["provenance"]?["replaces"]?.stringValue,
               waiting.contains(where: { $0.id == old }) else { return followed }
-        withdraw(old, in: folder, deviceID: deviceID, now: now)
-        waiting.removeAll { $0.id == old }
+        // Left waiting when it cannot be withdrawn now: the next scan follows the same link and tries again.
+        if withdraw(old, in: folder, deviceID: deviceID, now: now) { waiting.removeAll { $0.id == old } }
         return followed
     }
 
-    func withdraw(_ id: String, in folder: URL, deviceID: String, now: Date) {
+    /// Withdraws the card of an intake file that changed or went. True once it no longer waits; false when it could
+    /// not be withdrawn now (the binder cannot be written), so the cursor keeps following it and tries again. Its
+    /// reading, the clerk's included, goes with it, and a careful reading it asked for is no longer waited for.
+    @discardableResult
+    func withdraw(_ id: String, in folder: URL, deviceID: String, now: Date) -> Bool {
+        if let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" {
+            guard (try? BinderWrite.reject(proposal, in: folder, reason: "the file in intake/ changed or is gone", deviceID: deviceID, now: now)) != nil else {
+                return false
+            }
+        }
         let readings = IntakeReadings(support: support)
-        if var e = readings.forCard(id), e.state != "read" {
+        if var e = readings.forCard(id), e.state != "gone" {
             e.state = "gone"
             if e.escalation == "waiting" { e.escalation = nil }
-            try? readings.save(e)
+            // Not saved, the reading would be kept (and its words with it) for a card that is gone: tried again.
+            guard (try? readings.save(e)) != nil else { return false }
         }
-        guard let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" else { return }
-        try? BinderWrite.reject(proposal, in: folder, reason: "the file in intake/ changed or is gone", deviceID: deviceID, now: now)
+        return true
     }
 }

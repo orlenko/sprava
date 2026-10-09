@@ -126,10 +126,14 @@ extension CaptureInbox {
         }
         // The interpretation the cards will name is on disk first (decisions.md C3); if it cannot be written, the
         // code-built card stays and the reading is tried again.
+        // Each reading is kept under its own id, the one the cards name, in its capture's folder: a later reading of
+        // the same capture never writes over it, and a retraction removes the capture's folder whole.
         do {
-            try AtomicFile.makePrivateFolder(dir.appendingPathComponent("interpretations", isDirectory: true))
-            try AtomicFile.write(Data(JSONWriter.pretty(.object(Self.record(interp))).utf8),
-                                 to: dir.appendingPathComponent("interpretations/\(id).json"))
+            guard CaptureEvent.isUUIDText(interp.id) else { throw Commands.Failure(message: "an interpretation id is not an id") }
+            let folder = dir.appendingPathComponent("interpretations", isDirectory: true).appendingPathComponent(id, isDirectory: true)
+            try AtomicFile.makePrivateFolder(folder.deletingLastPathComponent())
+            try AtomicFile.makePrivateFolder(folder)
+            try AtomicFile.write(Data(JSONWriter.pretty(.object(Self.record(interp))).utf8), to: folder.appendingPathComponent("\(interp.id).json"))
         } catch {
             clerk[id] = "retry"
             log("clerk_write_failed")

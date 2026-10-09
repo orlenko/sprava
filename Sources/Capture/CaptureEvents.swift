@@ -129,7 +129,13 @@ public struct CaptureProducer: Sendable {
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
         var best: HLC?
         for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") {
-            guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(name)),
+            let outcome = SafeFile.read(folder.appendingPathComponent(name))
+            // An event there but unreadable now may hold the highest stamp: nothing is stamped until it can be read.
+            switch outcome {
+            case .unreadable, .refused("not readable by this user"): throw StateFile.Unreadable(path: folder.appendingPathComponent(name).path)
+            default: break
+            }
+            guard case .ok(let data) = outcome,
                   let stamp = (try? JSONParser.parse(data).value)?["hlc"], stamp["node"]?.stringValue == node,
                   let wall = stamp["wall_ms"]?.numberValue?.safeInteger, let counter = stamp["counter"]?.numberValue?.safeInteger,
                   HLC.walls.contains(wall), HLC.counters.contains(counter) else { continue }
@@ -332,6 +338,9 @@ public struct CaptureEvent: Sendable {
                 return (.quarantined("\(key) is not text"), nil)
             }
             if let r = o["retracted"], r != .bool(true), r != .bool(false) { return (.quarantined("retracted is not true or false"), nil) }
+            if let e = o["captured_at_estimated"], e != .bool(true), e != .bool(false) {
+                return (.quarantined("captured_at_estimated is not true or false"), nil)
+            }
         }
         var missing: [String: Int] = [:]   // copied media not there yet, or not at their size: path -> bytes
         if let m = o["media"], m.arrayValue == nil { return (.quarantined("media is not a list"), nil) }

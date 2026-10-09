@@ -20,7 +20,13 @@ extension CaptureInbox {
         // From now on the chain is private: for cards made later, and for the clerk's reading already under way.
         markPrivate(chain + [id], state: &state)
         owePrivacy(key, state: &state)
-        try? save(state)
+        // No binder is touched before the private mark and the debt are on disk: a pass cut short with nothing durable
+        // behind it would leave a card the approval gate reads as public. Unsaved, the pass waits; the sweep's own
+        // save fails the same way, so the event is taken in again and raised again.
+        guard (try? save(state)) != nil else {
+            journal([("event", .string(id)), ("stage", .str("privacy_raise_unsaved"))])
+            return
+        }
         if payDebt(key, binders: knownRows(binders, commands: commands), state: state, commands: commands, now: now) {
             state.debts?.removeAll { $0 == key }
         } else {

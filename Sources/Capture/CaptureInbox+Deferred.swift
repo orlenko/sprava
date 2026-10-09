@@ -50,11 +50,29 @@ extension CaptureInbox {
         for id in chain + [event] where !stored.contains(where: { s in chains.contains { $0.contains(s) && $0.contains(id) } }) && !stored.contains(id) {
             stored.append(id)
         }
-        for path in unreachableBinders(binders, commands: commands) {
+        // While the record of written cards cannot be read, the binders known only from it are not known: the work is
+        // kept for "every binder", and spread out once the record can be read again (`resolveUnknown`).
+        let paths = (try? commands.loadDigests()) == nil ? [Self.unknownKey] : unreachableBinders(binders, commands: commands)
+        for path in paths {
             var ids = (state.deferred?[path] ?? []).filter { !members.contains($0) }
             ids.append(contentsOf: stored)
             state.deferred = (state.deferred ?? [:]).merging([path: ids]) { $1 }
         }
+    }
+
+    /// The key under which work is kept while the binders it is owed to cannot be told.
+    static let unknownKey = "(binders not known)"
+
+    /// Work kept for binders that could not be told: once the record of written cards can be read, it is owed to every
+    /// binder this Mac knows, those in reach and those not (each finishes it, worked out from the chain as it is then).
+    func resolveUnknown(_ binders: [ShelfRow], state: inout State, commands: Commands) {
+        guard let ids = state.deferred?[Self.unknownKey], !ids.isEmpty, (try? commands.loadDigests()) != nil else { return }
+        let rows = knownRows(binders, commands: commands)
+        for id in ids {
+            owe(id, binders: rows, commands: commands, state: &state)
+            deferWork(of: id, chain: state.chainsByKey?.values.first { $0.contains(id) } ?? [id], binders: rows, commands: commands, state: &state)
+        }
+        state.deferred?[Self.unknownKey] = nil
     }
 
     /// Records that every binder this Mac writes still owes `event`'s chain its work, when part of it failed there (a
@@ -80,7 +98,8 @@ extension CaptureInbox {
     func obligations(in folder: URL, state: State) -> [Obligation] {
         let path = folder.standardizedFileURL.path
         let debts = (state.debts ?? []).map { Obligation.debt(key: $0) }
-        let missed = (state.deferred?[path] ?? []).map { Obligation.missed(event: $0) }
+        // Work kept for binders that could not be told may be owed to this one too.
+        let missed = ((state.deferred?[path] ?? []) + (state.deferred?[Self.unknownKey] ?? [])).map { Obligation.missed(event: $0) }
         // A retraction's part is the events before it; a later restore's cards are never its to withdraw.
         let retractions = state.ingested.filter { $0.value == "retracting" }.keys.sorted().map { id in
             Obligation.retraction(event: id, chain: (state.chainsByKey?.values.first { $0.contains(id) } ?? []).filter {
@@ -126,7 +145,7 @@ extension CaptureInbox {
         }
         settleDeferred([row], state: &state, commands: commands, now: now)
         guard (try? save(state)) != nil else { return false }
-        return complete && state.deferred?[path]?.isEmpty != false
+        return complete && state.deferred?[path]?.isEmpty != false && state.deferred?[Self.unknownKey]?.isEmpty != false
     }
 
     /// The approval gate: the card `id` in `folder` as it may be approved now, or nil when it may not. It settles the
@@ -207,6 +226,7 @@ extension CaptureInbox {
 
     /// Finishes the deferred work of every binder in `binders` that is reachable again, and the Inbox's.
     func settleDeferred(_ binders: [ShelfRow], state: inout State, commands: Commands, now: Date) {
+        resolveUnknown(binders, state: &state, commands: commands)
         if let ids = state.deferred?[Self.inboxKey], !ids.isEmpty {
             let left = ids.filter { !finishInInbox($0, state: &state, commands: commands, now: now) }
             state.deferred?[Self.inboxKey] = left.isEmpty ? nil : left

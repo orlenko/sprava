@@ -55,7 +55,13 @@ extension CaptureInbox {
            PrivacyRatchet.disclosure(row) != "none" {
             do {
                 try BinderWrite.save(proposal, in: row.folder, deviceID: commands.deviceID)
-                try commands.trustProposals([proposal.id], in: row.folder)
+                do {
+                    try commands.trustProposals([proposal.id], in: row.folder)
+                } catch {
+                    // The binder's copy could never be approved: it goes before the card waits in the Inbox instead.
+                    BinderWrite.takeBackUntrusted(proposal, in: row.folder, deviceID: commands.deviceID, now: now)
+                    throw error
+                }
                 return (proposal.id, row.folder)
             } catch {
                 journal([("event", .string(event.id)), ("stage", .str("file_failed")), ("code", .string("\(type(of: error))"))])

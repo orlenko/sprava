@@ -125,8 +125,14 @@ extension IntakeWatcher {
             return ReadingOutcome()
         }
         // A card an earlier commit made before it was cut short is never followed by anything: it goes.
+        // One that cannot go now is never joined by a second: the reading waits.
         for (p, _) in ProposalStore.list(in: folder) where p.state == "proposed" && p.raw["provenance"]?["replaces"] == .string(tier0.id) {
-            try? BinderWrite.reject(p, in: folder, reason: "replaced by the clerk's reading", deviceID: commands.deviceID, now: now)
+            guard (try? BinderWrite.reject(p, in: folder, reason: "replaced by the clerk's reading", deviceID: commands.deviceID, now: now)) != nil else {
+                var back = loaded
+                back.state = "pending"
+                try? store.save(back)
+                return ReadingOutcome()
+            }
         }
         do {
             try BinderWrite.save(proposal, in: folder, deviceID: commands.deviceID)
@@ -146,7 +152,12 @@ extension IntakeWatcher {
         e.card = proposal.id
         e.state = "read"
         guard (try? store.save(e)) != nil, follow(e.name, in: folder, from: tier0.id, to: proposal.id) else {
-            try? BinderWrite.reject(proposal, in: folder, reason: "the intake cursor could not follow it", deviceID: commands.deviceID, now: now)
+            guard (try? BinderWrite.reject(proposal, in: folder, reason: "the intake cursor could not follow it", deviceID: commands.deviceID, now: now)) != nil else {
+                // The new card cannot be taken back now: the reading keeps naming it (state "read"), so the next scan
+                // follows it from the code-built card (`finishReplacement`) and withdraws that one.
+                try? store.save(e)
+                return ReadingOutcome()
+            }
             var back = loaded
             back.state = loaded.attempts >= 2 ? "kept" : "pending"
             try? store.save(back)

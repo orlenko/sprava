@@ -112,11 +112,15 @@ extension CaptureInbox {
                 }
             }
         }
-        // Work a binder missed that waited for an event this sweep finished is done now, not a sweep later.
-        if result.unsaved == nil {
-            settleDeferred(binders, state: &state, commands: commands, now: now)
-            payDebts(binders, state: &state, commands: commands, now: now)
+        // Work a binder missed that waited for an event this sweep finished is done now, not a sweep later; but only
+        // once what the sweep recorded (privacy marks and debts among it) is on disk, so no binder is changed on the
+        // strength of a cursor that was never saved.
+        guard result.unsaved == nil, (try? save(state)) != nil else {
+            result.unsaved = "state.json"
+            return result
         }
+        settleDeferred(binders, state: &state, commands: commands, now: now)
+        payDebts(binders, state: &state, commands: commands, now: now)
         if (try? save(state)) == nil { result.unsaved = "state.json" }
         return result
     }
