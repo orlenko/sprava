@@ -128,6 +128,15 @@ public enum OpApplier {
             if case .string(let t)? = item["title"], !t.isEmpty { title = .string(t) }
             var final = JSONObject()
             for e in item.entries where !["id", "title", "kind"].contains(e.key) { final.entries.append(e) }
+            // A title that is not text cannot be the entry's title. An op that names `keep_title_as` keeps it in `final`
+            // under that name (binder-v0 §9.5); the writer adds it to every new closure of such an item, and an op
+            // without it applies as it always did, so a log written before replays to the same hashes.
+            if case .string(let key)? = args["keep_title_as"], let t = item["title"], t != .null, t.stringValue == nil {
+                guard final[key] == nil, !["id", "title", "kind"].contains(key) else {
+                    throw Failure("\(type): \(key) is taken in the closed item")
+                }
+                final.set(key, t)
+            }
             var entry: [(String, JSONValue)] = alreadyClosed ? [("item", id)] : [("id", id)]
             entry += [("title", title),
                       ("action", .string(alreadyClosed ? "closed-duplicate" : (type == "complete" ? "done" : "dropped"))),
