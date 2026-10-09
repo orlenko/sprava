@@ -203,6 +203,13 @@ public enum TransactionGuard {
                 problems.append("\(type): \(key) is text")
             }
         }
+        // A rename writes a binder name the spool can use, keeps the former one, and drains it until a real date
+        // (binder-v0 §3.1, §4.2, §6.3).
+        if type == "rename_teka" {
+            if !(args?["name"]?.stringValue.map(HubLane.isSafeSegment) ?? false) { problems.append("rename_teka: name is a binder name") }
+            if (args?["former"]?.stringValue ?? "").isEmpty { problems.append("rename_teka: former is the binder's old name") }
+            if args?["until"]?.stringValue.flatMap(CalendarDate.strict) == nil { problems.append("rename_teka: until is a YYYY-MM-DD date") }
+        }
         if type == "external_edit", kind != "external" { problems.append("external_edit: actor kind must be external") }
         if ["import_snapshot", "migrate", "abort"].contains(type), kind != "import" { problems.append("\(type): actor kind must be import") }
         return problems
@@ -223,6 +230,9 @@ public enum TransactionGuard {
         for op in ops {
             reasons += envelopeProblems(op)
             let type = op["op"]?.stringValue
+            if type == "rename_teka", case .string(let current)? = state["meta"]?["name"], op["args"]?["former"] != .string(current) {
+                reasons.append("rename_teka: former is the binder's current name")
+            }
             if type == "add_item" || type == "reopen", let id = op["args"]?["item"]?["id"] {
                 if seenIDs.contains(id) { reasons.append("\(type!): id \(canonicalText(id)) was used before and is never reused") }
                 seenIDs.insert(id)

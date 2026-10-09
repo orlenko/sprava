@@ -60,7 +60,7 @@ extension TekaStore {
                   DocumentPaths.sha256(of: folder.appendingPathComponent(move.from)) == move.sha else {
                 throw Refused(reason: "the file in intake/ or its destination changed while it was being filed")
             }
-            try DocumentPaths.makeParents(move.to, in: folder)
+            try DocumentPaths.makeParents(move.to, in: folder) { try flushFolder($0, "flush the parent of a new folder") }
             let source = folder.appendingPathComponent(move.from).path
             let target = folder.appendingPathComponent(move.to).path
             guard renamex_np(source, target, UInt32(RENAME_EXCL)) == 0 else {

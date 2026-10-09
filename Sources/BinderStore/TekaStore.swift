@@ -167,7 +167,8 @@ public final class TekaStore {
     /// applied to (architecture 4.2 step 4). `build` runs again on each pass.
     @discardableResult
     func apply(building build: (_ catalog: JSONObject, _ log: [JSONObject]) throws -> [OpBody], batch: String? = nil,
-               now: Date = Date(), underLock after: (() throws -> Void)? = nil) throws -> [JSONObject] {
+               now: Date = Date(), underLock after: (() throws -> Void)? = nil,
+               marking: (([JSONObject]) throws -> Void)? = nil) throws -> [JSONObject] {
         testHookBeforeLock?()
         return try withLock {
             // An editor that skips the lock can change the file at any moment: each pass absorbs what it finds,
@@ -178,6 +179,7 @@ public final class TekaStore {
                 do {
                     let lines = try applyOnce(build, batch: batch, now: now)
                     try after?()
+                    try marking?(lines)
                     return lines
                 } catch is ChangedWhileWriting where attempt < 5 {
                     usleep(50_000)
@@ -243,6 +245,13 @@ public final class TekaStore {
         // The chain must hold before anything is appended: the head of the log is the catalog found.
         guard log.last?["after_hash"]?.stringValue == hash else { throw ChangedWhileWriting() }
         let bodies = try build(catalog, log)
+        // A rename records the folder's new basename, the name the reader compares with (binder-v0 §3.1, §6.3).
+        for body in bodies where body.op == "rename_teka" {
+            guard let name = body.args["name"]?.stringValue,
+                  name.precomposedStringWithCanonicalMapping == folder.lastPathComponent.precomposedStringWithCanonicalMapping else {
+                throw Refused(reason: "a rename sets the binder's name to its folder's name; rename the folder first")
+            }
+        }
         // A broken stamp blocks every write until the person approves its repair (binder-v0 §9.6).
         if CatalogLevel.classify(catalog) == .brokenStamp, !Self.isStampRepair(bodies) {
             throw Refused(reason: "the catalog's stamp is broken (meta.format_version); nothing is written until its repair is approved")
@@ -321,9 +330,12 @@ public final class TekaStore {
     /// `.sprava/adopted/`, writes the owner record, and starts the op log with an `import_snapshot`. Nothing
     /// else in the folder changes.
     public func adopt(survey: JSONObject, owner: JSONObject, now: Date = Date()) throws {
+        // A level this version does not know is never adopted: not even the lock file is made (binder-v0 §1.4).
+        try Self.refuseUnknownLevel(try readCatalog().0)
         try withLock {
             guard (try readOpLog().ops).isEmpty else { throw Refused(reason: "already adopted") }
             let (catalog, hash, bytes) = try readCatalog()
+            try Self.refuseUnknownLevel(catalog)
             let adopted = spravaDir.appendingPathComponent("adopted", isDirectory: true)
             try AtomicFile.makePrivateFolder(adopted)
             try AtomicFile.write(bytes, to: adopted.appendingPathComponent("catalog.json"))

@@ -395,6 +395,8 @@ public enum ProposalStore {
             }
             guard errno == ENOENT, create else { throw TekaStore.Refused(reason: "the proposals folder cannot be read") }
             guard mkdir(url.path, 0o700) == 0 || errno == EEXIST else { throw TekaStore.Refused(reason: "the proposals folder cannot be made") }
+            // Whatever is there now must be a real folder: a link made in a race is refused.
+            guard lstat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR else { throw TekaStore.Refused(reason: "the proposals folder is not a regular folder") }
         }
         return dir(folder)
     }
@@ -410,6 +412,11 @@ public enum ProposalStore {
     nonisolated(unsafe) private static var written: [String: String] = [:]
 
     static func writtenKey(_ id: String, in folder: URL) -> String { folder.standardizedFileURL.path + "#" + id }
+
+    /// Tests only: forgets what this process wrote for a card, as a new process would.
+    package static func forgetWritten(_ id: String, in folder: URL) {
+        _ = writtenLock.withLock { written.removeValue(forKey: writtenKey(id, in: folder)) }
+    }
 
     /// The digest of the bytes `save` last wrote for this card in this process; nil when it wrote none.
     package static func writtenDigest(_ id: String, in folder: URL) -> String? {
@@ -493,7 +500,20 @@ extension TekaStore {
             // count as applied.
             let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
             let already = log.filter { $0["proposal"]?.stringValue == proposal.id && !aborted.contains($0["id"]?.stringValue ?? "") }
-            if !already.isEmpty { throw AlreadyApplied(lines: already) }
+            if !already.isEmpty {
+                var raw = proposal.raw
+                raw.set("state", .str("applied"))
+                // When the batch was written, as the normal path records it (binder-v0 §6.5).
+                raw.set("applied_at", already.first?["at"] ?? .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
+                raw.set("applied_ops", .array(already.compactMap { $0["id"] }))
+                try ProposalStore.save(Proposal(raw: raw), in: folder)
+                throw AlreadyApplied(lines: already)
+            }
+            // A request that held the card while another one rejected or applied it: the card's state is read again
+            // here, under the binder lock that `reject` takes too, and a card no longer proposed is not applied.
+            if let stored = try? ProposalStore.load(proposal.id, in: folder, expectedDigest: nil), stored.state != "proposed" {
+                throw Refused(reason: "proposal is \(stored.state), not proposed")
+            }
             let changed = proposal.changedSince(catalog: catalog)
             if !changed.isEmpty {
                 throw Refused(reason: "needs a look: changed since this card was made: " + changed.joined(separator: ", "))
@@ -508,25 +528,20 @@ extension TekaStore {
                            + (op["note"].map { [("note", $0)] } ?? []))
             }
         }
-        let applied: [JSONObject]
-        do {
-            applied = try apply(building: bodies, batch: proposal.id, now: now)
-        } catch let done as AlreadyApplied {
+        // The card is marked under the same lock as its batch, so no reject can come in between.
+        func mark(_ applied: [JSONObject]) throws {
             var raw = proposal.raw
             raw.set("state", .str("applied"))
-            // When the batch was written, as the normal path records it (binder-v0 §6.5).
-            raw.set("applied_at", done.lines.first?["at"] ?? .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
-            raw.set("applied_ops", .array(done.lines.compactMap { $0["id"] }))
+            raw.set("applied_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
+            raw.set("applied_ops", .array(applied.compactMap { $0["id"] }))
+            if edited != nil { raw.set("edited", .bool(true)) }   // for the filing-quality measure (mvp.md 1.2)
             try ProposalStore.save(Proposal(raw: raw), in: folder)
+        }
+        do {
+            return try apply(building: bodies, batch: proposal.id, now: now, marking: mark)
+        } catch let done as AlreadyApplied {
             return done.lines
         }
-        var raw = proposal.raw
-        raw.set("state", .str("applied"))
-        raw.set("applied_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
-        raw.set("applied_ops", .array(applied.compactMap { $0["id"] }))
-        if edited != nil { raw.set("edited", .bool(true)) }   // for the filing-quality measure (mvp.md 1.2)
-        try ProposalStore.save(Proposal(raw: raw), in: folder)
-        return applied
     }
 
     /// The card's ops are in the log already: `approve` marks the card and returns them, applying nothing.
@@ -560,11 +575,20 @@ extension TekaStore {
         if !left.isEmpty { throw Refused(reason: "fill in what is still missing: " + Array(Set(left)).sorted().joined(separator: ", ")) }
     }
 
+    /// Rejects a card under the binder lock that approval takes, judged by the card as stored: a card another request
+    /// applied or decided meanwhile, or whose batch is in the log already, is left as it is (binder-v0 §6.5).
     public func reject(_ proposal: Proposal, reason: String? = nil, now: Date = Date()) throws {
-        var raw = proposal.raw
-        raw.set("state", .str("rejected"))
-        raw.set("rejected_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
-        if let reason { raw.set("rejected_reason", .string(reason)) }
-        try ProposalStore.save(Proposal(raw: raw), in: folder)
+        try withLock {
+            if let stored = try? ProposalStore.load(proposal.id, in: folder, expectedDigest: nil), stored.state != "proposed" { return }
+            if let log = try? readOpLog().ops {
+                let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+                if log.contains(where: { $0["proposal"]?.stringValue == proposal.id && !aborted.contains($0["id"]?.stringValue ?? "") }) { return }
+            }
+            var raw = proposal.raw
+            raw.set("state", .str("rejected"))
+            raw.set("rejected_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
+            if let reason { raw.set("rejected_reason", .string(reason)) }
+            try ProposalStore.save(Proposal(raw: raw), in: folder)
+        }
     }
 }

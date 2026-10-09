@@ -28,6 +28,7 @@ extension TekaStore {
                 try AtomicFile.write(Data(JSONWriter.pretty(.object(catalog)).utf8), to: snapshotURL)
                 lastAbsorbed = .snapshotRewritten
             }
+            reofferLostCard(catalog: catalog, log: log, now: now)
             return nil
         }
         if H == b, S == b, let b {
@@ -131,8 +132,8 @@ extension TekaStore {
         var args = JSONObject()
         args.set("patch", .array(patch))
         args.set("detected_at", .string(ISOTime.string(now, timeZone: utc)))
-        if reverted { args.set("hint", .str("the catalog was put back as it was before the last change")) }
-        else if !lostOps.isEmpty { args.set("hint", .str("a change of yours was overwritten by another program")) }
+        if reverted { args.set("hint", .string(Self.revertedHint)) }
+        else if !lostOps.isEmpty { args.set("hint", .string(Self.overwrittenHint)) }
         else if let hint = Self.hint(for: patch) { args.set("hint", .string(hint)) }
         var line = JSONObject()
         line.set("id", .string(UUIDv7.make(now: now)))
@@ -163,6 +164,32 @@ extension TekaStore {
         return appended
     }
 
+    static let overwrittenHint = "a change of yours was overwritten by another program"
+    static let revertedHint = "the catalog was put back as it was before the last change"
+
+    /// A pass cut short after it recorded an outside edit that overwrote approvals saved its card, but the card's id may
+    /// never have reached the caller that trusts it. While that edit is the last op, its card is made again from the log
+    /// (the same ops and provenance, under the stored card's id and creation time, so the same bytes when nobody changed
+    /// the file) and written by this process, for the caller to trust (binder-v0 §6.7 step 6). A card the person has
+    /// decided on is left as it is. Nothing here blocks the write that called it.
+    func reofferLostCard(catalog: JSONObject, log: [JSONObject], now: Date) {
+        guard let last = log.last, last["op"] == .str("external_edit"),
+              [Self.overwrittenHint, Self.revertedHint].contains(last["args"]?["hint"]?.stringValue ?? "") else { return }
+        let earlier = Array(log.dropLast())
+        guard let (before, since) = Self.sinceAdoption(earlier), let expected = try? Replay.run(earlier),
+              (try? Canonical.hash(.object(expected))) == last["before_hash"]?.stringValue else { return }
+        let lost = Self.lostOps(found: catalog, expected: expected, before: before, ops: since)
+        guard !lost.isEmpty, var card = Self.reapplyCard(lost, client: client, now: now) else { return }
+        let overwritten = card.raw["provenance"]?["overwritten_ops"]
+        guard let stored = ProposalStore.list(in: folder).map(\.0).first(where: {
+            $0.state == "proposed" && $0.raw["provenance"]?["overwritten_ops"] == overwritten
+        }) else { return }
+        card.raw.set("id", .string(stored.id))
+        if let created = stored.raw["created_at"] { card.raw.set("created_at", created) }
+        guard (try? ProposalStore.save(card, in: folder)) != nil else { return }
+        if !createdProposals.contains(card.id) { createdProposals.append(card.id) }
+    }
+
     /// Files a write cut short already moved go back to intake/, so its card can be approved again. A file the
     /// found catalog records stays where it is, and a key or credential file is never touched (binder-v0 §3.3).
     /// Returns the files that could not go back, for the abort to name.
@@ -177,7 +204,7 @@ extension TekaStore {
                   !DocumentPaths.isKeyFile(from), !DocumentPaths.isKeyFile(to), DocumentPaths.isSafe(to),
                   DocumentPaths.plainFile(to, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha else { continue }
             if DocumentPaths.isIntake(from), DocumentPaths.isFreeDestination(from, in: folder),
-               (try? DocumentPaths.makeParents(from, in: folder)) != nil,
+               (try? DocumentPaths.makeParents(from, in: folder) { try flushFolder($0, "flush the parent of a new folder") }) != nil,
                renamex_np(folder.appendingPathComponent(to).path, folder.appendingPathComponent(from).path, UInt32(RENAME_EXCL)) == 0 {
                 continue
             }
