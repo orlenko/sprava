@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// UUID version 7: time-ordered, as the op log and capture events use (binder-v0 §6.2). Ids made by one process
 /// are strictly increasing even within one millisecond: the 12 `rand_a` bits carry a counter (RFC 9562 §6.2,
@@ -11,7 +10,7 @@ public enum UUIDv7 {
 
     public static func make(now: Date = Date()) -> String {
         var bytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 16, &bytes)
+        arc4random_buf(&bytes, bytes.count)   // the kernel generator; unlike SecRandomCopyBytes it cannot fail
         var ms = UInt64(max(0, now.timeIntervalSince1970) * 1000)
         lock.lock()
         if ms <= lastMS {

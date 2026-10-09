@@ -165,10 +165,11 @@ public enum Timestamp {
         guard let m = text.wholeMatch(of: pattern), CalendarDate.strict(String(m.1)) != nil,
               let h = Int(m.2), let mi = Int(m.3), let s = Int(m.4), h < 24, mi < 60, s <= 60 else { return nil }
         if let oh = m.7.flatMap({ Int($0) }), let om = m.8.flatMap({ Int($0) }), oh > 23 || om > 59 { return nil }
-        let normalized = text.replacingOccurrences(of: "t", with: "T").replacingOccurrences(of: "z", with: "Z")
+        // Foundation refuses more than nine fraction digits and rounds nine into the next second, so the fraction is
+        // cut to six (a `Date` holds no finer near now). A leap second reads as :59, keeping its minute and day.
+        let fraction = m.5.map { String($0.prefix(7)) } ?? ""
+        let stamp = "\(m.1)T\(m.2):\(m.3):\(s == 60 ? "59" : String(m.4))\(fraction)\(m.6.uppercased())"
         let withFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-        let plain = Date.ISO8601FormatStyle()
-        let leapless = s == 60 ? normalized.replacingCharacters(in: m.4.startIndex..<m.4.endIndex, with: "59") : normalized
-        return (try? withFraction.parse(leapless)) ?? (try? plain.parse(leapless))
+        return (try? withFraction.parse(stamp)) ?? (try? Date.ISO8601FormatStyle().parse(stamp))
     }
 }

@@ -109,9 +109,14 @@ public enum AtomicFile {
                                                 attributes: [.posixPermissions: 0o700])
     }
 
+    private static let logLock = NSLock()
+
     /// Appends one line to a log, rotating at `limit` bytes and keeping `keep` old files
-    /// (`jobs.log`, `jobs.log.1` ...; architecture 2.3).
+    /// (`jobs.log`, `jobs.log.1` ...; architecture 2.3). One append at a time in this process, so two jobs never
+    /// rotate together and drop the previous log.
     public static func appendLine(_ line: String, to url: URL, limit: Int = 10_000_000, keep: Int = 5) {
+        logLock.lock()
+        defer { logLock.unlock() }
         let fm = FileManager.default
         if let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int, size >= limit {
             for i in stride(from: keep - 1, through: 1, by: -1) {

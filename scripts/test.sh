@@ -33,9 +33,10 @@ status=$(cat "$test_root/status")
 runs=$(grep -c "Test run with [0-9]* test" "$log" || true)
 failed=$(grep -c "Test run with [0-9]* test.* failed" "$log" || true)
 tests=$(grep -o "Test run with [0-9]* test" "$log" | awk '{ n += $4 } END { print n + 0 }')
-if [ "$status" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$runs" -gt 0 ]; then
+# A run that found no tests at all fails too: it would hide a test-discovery or macro-loading regression.
+if [ "$status" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$runs" -gt 0 ] && [ "$tests" -gt 0 ]; then
     echo "All test runs passed: $tests tests in $runs test target(s)."
 else
-    echo "Tests failed: $failed of $runs test runs failed (swift test exit status $status)." >&2
+    echo "Tests failed: $failed of $runs test runs failed, $tests tests ran (swift test exit status $status)." >&2
     exit 1
 fi

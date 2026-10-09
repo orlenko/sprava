@@ -187,4 +187,42 @@ import Testing
         #expect(CalendarDate(Date(timeIntervalSince1970: 253_402_300_800), in: utc) == nil)   // 10000-01-01
         #expect(CalendarDate(Date(timeIntervalSince1970: 0), in: TimeZone(secondsFromGMT: -3600)!)?.description == "1969-12-31")
     }
+
+    // 6. A fraction longer than Foundation takes still parses, and nine nines stay in their own second and day.
+    @Test func longFractionsParse() throws {
+        let utc = TimeZone(identifier: "UTC")!
+        let midnight = Date(timeIntervalSince1970: 1_791_244_800)   // 2026-10-06T00:00:00Z
+        for text in ["2026-10-05T23:59:59.1234567890Z", "2026-10-05T23:59:59.999999999Z",
+                     "2026-10-05T23:59:59.99999999999999999999z", "2026-10-05T19:59:59.9999999999-04:00"] {
+            let instant = try #require(Timestamp.parse(text), "\(text)")
+            #expect(instant < midnight && instant >= midnight.addingTimeInterval(-1), "\(text)")
+            #expect(CalendarDate(instant, in: utc)?.description == "2026-10-05", "\(text)")
+        }
+        let short = try #require(Timestamp.parse("2026-10-05T23:59:59.25+05:30"))
+        #expect(abs(short.timeIntervalSince1970 - 1_791_224_999.25) < 0.000_01)
+        #expect(Timestamp.parse("2016-12-31T23:59:60Z") == Timestamp.parse("2016-12-31T23:59:59Z"))
+    }
+
+    // 7. The random part of an id is always filled, so two processes starting in one millisecond never meet.
+    @Test func idsCarryRandomBits() {
+        let at = Date(timeIntervalSince1970: 1_791_360_000)
+        let tails = (0..<64).map { _ in String(UUIDv7.make(now: at).suffix(12)) }
+        #expect(Set(tails).count == tails.count)
+        #expect(!tails.contains("000000000000"))
+    }
+
+    // 8. Appends from several jobs at once never lose a rotated log: every line is still in one of the files.
+    @Test func concurrentAppendsKeepEveryLine() throws {
+        let dir = try tempDir()
+        let log = dir.appendingPathComponent("jobs.log")
+        let count = 400
+        DispatchQueue.concurrentPerform(iterations: count) { i in
+            AtomicFile.appendLine("line \(i)", to: log, limit: 64, keep: 200)
+        }
+        let files = [log] + (1...201).map { URL(fileURLWithPath: log.path + ".\($0)") }
+        let lines = files.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .flatMap { $0.split(separator: "\n").map(String.init) }
+        #expect(Set(lines) == Set((0..<count).map { "line \($0)" }))
+        #expect(lines.count == count)
+    }
 }
