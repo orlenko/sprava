@@ -144,23 +144,35 @@ import Testing
             m.log.append("retract \(chain) private=\(isPrivate)")
         case 42..<50:  // a copy of an event from the other device, the same stamp, sensitivity the same or raised
             guard let id = m.chains.flatMap({ $0 }).randomElement(using: &rng), let e = m.events[id] else { return false }
-            let isPrivate = m.privateChains.contains(e.chain) || rng.chance(15)
+            let isPrivate = m.privateChains.contains(e.chain) || rng.chance(30)
             let copy = try publish(s, m, chain: e.chain, revision: e.revision, text: e.text, private: isPrivate, retracted: e.retracted,
                                    device: devices.first { $0 != e.device }!, clock: (e.wall, e.counter))
             m.copies[e.chain, default: []].append(copy)
             m.log.append("copy \(e.chain) \(e.revision) private=\(isPrivate)")
-        case 50..<62:  // a sweep that stops at a random cursor save
+        case 50..<62:  // a sweep that stops at a random cursor save: one that fails, or the process killed right after one
             let saves = rng.below(6)
-            CursorCrash.after(saves, cursor: s.inbox.stateURL)
-            defer { CursorCrash.after(nil, cursor: s.inbox.stateURL) }
-            _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
-            m.log.append("crash sweep after \(saves) saves")
+            if rng.chance(50) {
+                CursorCrash.after(saves, cursor: s.inbox.stateURL)
+                defer { CursorCrash.after(nil, cursor: s.inbox.stateURL) }
+                _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+                m.log.append("crash sweep after \(saves) saves")
+            } else {
+                let at = try killAtAnySave(s, m, &rng) { _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow) }
+                m.log.append("killed sweep \(at)")
+            }
         case 62..<72:  // the clerk reads one capture, sometimes stopping at a cursor save
             guard let work = s.inbox.nextForClerk() else { return false }
             let answer = CaptureInbox.lines(of: work.event.text).map { item($0.text, $0.text) }
             let interp = await Clerk(model: RecordingModel([.obj([("items", .array(answer))])]))
                 .read(work.event, filing: [bFiling(s)], hint: work.hint, now: pNow)
             let crash = rng.chance(40) ? rng.below(3) : nil
+            if crash != nil, rng.chance(50) {
+                let at = try killAtAnySave(s, m, &rng) {
+                    _ = s.inbox.commitClerk(work, interp, filing: [bFiling(s)], rows: pRows(s), commands: s.commands, seconds: 1, now: pNow)
+                }
+                m.log.append("clerk \(work.event.id) killed \(at)")
+                return false
+            }
             CursorCrash.after(crash, cursor: s.inbox.stateURL)
             defer { CursorCrash.after(nil, cursor: s.inbox.stateURL) }
             _ = s.inbox.commitClerk(work, interp, filing: [bFiling(s)], rows: pRows(s), commands: s.commands, seconds: 1, now: pNow)
@@ -202,6 +214,28 @@ import Testing
             }
         case 86..<91:  // the binder's volume goes away, or comes back
             try toggleAway(s, m)
+        case 91..<95:  // a capture's card changes an existing item (as the clerk's update of a matching item does)
+            // Only for a revision the inbox has taken in and carded, as the clerk reads only those.
+            let stages = s.inbox.loadState().ingested
+            guard !m.away, let chain = (0..<m.chains.count).filter({
+                      !m.chains[$0].isEmpty && !m.current($0).retracted && ["unfiled", "proposed"].contains(stages[m.chains[$0].last!] ?? "")
+                  }).randomElement(using: &rng),
+                  let target = Teka.read(s.folder).items.compactMap(\.object).filter({ $0["status"] == .str("open") })
+                      .sorted(by: { ($0["title"]?.stringValue ?? "") < ($1["title"]?.stringValue ?? "") }).randomElement(using: &rng),
+                  let itemID = target["id"] else { return false }
+            let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .str("t")), (key: "model", value: .str("invented"))])
+            let priority = target["priority"] == .str("high") ? "low" : "high"
+            var set = JSONObject([(key: "priority", value: .string(priority))])
+            if m.privateChains.contains(chain) {
+                set.set("redact", .bool(true))
+                if target["kind"] == nil { set.set("kind", .str("other")) }
+            }
+            let card = Proposal.make(title: "Change an item's priority", actor: actor,
+                                     ops: [JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(set))]))])],
+                                     provenance: JSONObject([(key: "events", value: .array([.string(m.chains[chain].last!)]))]), now: pNow)
+            try ProposalStore.save(card, in: s.folder)
+            try s.commands.trustProposals([card.id], in: s.folder)
+            m.log.append("chain \(chain) changes item \(itemID.stringValue ?? "?") to \(priority)")
         default:       // a clean sweep
             _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
             m.log.append("sweep")
@@ -251,7 +285,16 @@ import Testing
                 let redacting = Set(cards.flatMap(\.ops).compactMap { op -> String? in
                     op["op"] == .str("update_item") && op["args"]?["set"]?["redact"] == .bool(true) ? op["args"]?["id"]?.stringValue : nil
                 })
-                for o in items where fromChain(.object(o)) && o["redact"] != .bool(true) && !redacting.contains(o["id"]?.stringValue ?? "") {
+                // An item counts as the chain's when the chain made it, or when an approved card of the chain changed it,
+                // as the op log records (the item keeps the provenance of whatever made it).
+                let approved = Set(ProposalStore.list(in: s.folder).map(\.0).filter { $0.state == "applied" && fromChain(.object($0.raw)) }.map(\.id))
+                let changed = Set(((try? TekaStore(folder: s.folder).readOpLog().ops) ?? []).compactMap { line -> String? in
+                    guard approved.contains(line["proposal"]?.stringValue ?? ""), line["op"] != .str("file_document"),
+                          line["op"] != .str("update_document") else { return nil }
+                    return (line["args"]?["item"]?["id"] ?? line["args"]?["id"])?.stringValue
+                })
+                for o in items where (fromChain(.object(o)) || changed.contains(o["id"]?.stringValue ?? "")) && o["redact"] != .bool(true)
+                    && !redacting.contains(o["id"]?.stringValue ?? "") {
                     Issue.record("chain \(chain): item \(o["id"]?.stringValue ?? "?") is unredacted\n\(diagnose(chain))")
                 }
                 for card in cards {
@@ -273,6 +316,69 @@ import Testing
                 Issue.record("card \(card.id) waits from chain \(e.chain) \(e.revision), but its current words are \(current.revision)\n\(diagnose(e.chain))")
             }
         }
+    }
+
+    final class Taken: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        var value: Bool { lock.withLock { done } }
+        func set() { lock.withLock { done = true } }
+    }
+
+    /// Runs `body` as a process killed right after the `afterSave`-th save of the cursor: Sprava's support folder and
+    /// the binder are copied as they are at that moment, and put back once `body` is done, so nothing written after
+    /// that save survives. True when that save was reached.
+    func kill(_ s: PSetup, _ m: Model, afterSave n: Int, _ body: () -> Void) throws -> Bool {
+        let snapshot = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-killed-\(UUID().uuidString)")
+        let places = self.places(s)
+        let taken = Taken()
+        CursorCrash.stop(after: n, cursor: s.inbox.stateURL) {
+            Self.copy(places, to: snapshot)
+            taken.set()
+        }
+        body()
+        CursorCrash.stop(after: nil, cursor: s.inbox.stateURL)
+        guard taken.value else { return false }
+        try putBack(places, from: snapshot)
+        return true
+    }
+
+    /// Kills `body` right after one of its cursor saves, picked at random among all it makes: it runs once to count
+    /// them, everything is put back, and it runs again to be killed there. So every save, the last one of an event's
+    /// stage among them, is a crash point some seed meets.
+    func killAtAnySave(_ s: PSetup, _ m: Model, _ rng: inout Rng, _ body: () -> Void) throws -> String {
+        let before = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-before-\(UUID().uuidString)")
+        let places = self.places(s)
+        Self.copy(places, to: before)
+        let counted = CursorCrash.saves(s.inbox.stateURL)
+        body()
+        let n = CursorCrash.saves(s.inbox.stateURL) - counted
+        try putBack(places, from: before)
+        guard n > 0 else { return "no save" }
+        let k = 1 + rng.below(n)
+        _ = try kill(s, m, afterSave: k, body)
+        return "after save \(k) of \(n)"
+    }
+
+    func places(_ s: PSetup) -> [URL] {
+        [s.support, s.folder, s.folder.deletingLastPathComponent().appendingPathComponent(s.folder.lastPathComponent + ".away")]
+    }
+
+    static func copy(_ places: [URL], to snapshot: URL) {
+        try? FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for (i, place) in places.enumerated() where FileManager.default.fileExists(atPath: place.path) {
+            try? FileManager.default.copyItem(at: place, to: snapshot.appendingPathComponent("\(i)"))
+        }
+    }
+
+    func putBack(_ places: [URL], from snapshot: URL) throws {
+        let fm = FileManager.default
+        for (i, place) in places.enumerated() {
+            if fm.fileExists(atPath: place.path) { try fm.removeItem(at: place) }
+            let copy = snapshot.appendingPathComponent("\(i)")
+            if fm.fileExists(atPath: copy.path) { try fm.copyItem(at: copy, to: place) }
+        }
+        try? fm.removeItem(at: snapshot)
     }
 
     /// The binder's folder moves out of reach (a volume disconnected) or back. While it is away no invariant is
@@ -301,9 +407,9 @@ import Testing
         check(s, m, seed: seed)
     }
 
-    @Test(arguments: [UInt64(7), 412, 1022, 1036])
+    @Test(arguments: [UInt64(7), 412, 1036, 1203])
     func randomSequencesKeepEveryCaptureAccountedFor(seed: UInt64) async throws {
-        try await run(seed: seed, steps: 80)
+        try await run(seed: seed, steps: 120)
     }
 }
 

@@ -6,15 +6,20 @@ import SpravaKit
 
 // Raises to private: the cursor's record, and the cards rewritten and redacted (capture-event-v0 §3.2, §3.3).
 extension CaptureInbox {
-    /// Applies a raise to private for event `id`; one that could not be written is kept in the cursor and tried
-    /// again by every sweep until it is, so an unredacted card never stays approvable.
+    /// Applies a raise to private for event `id`. The raise is recorded as pending in the cursor before anything is
+    /// saved, so no save, whatever stage it carries for the event, is ever on disk without it; it is cleared only once
+    /// every card and redaction is written, and until then every sweep tries it again. So a crash at any point never
+    /// leaves an unredacted card approvable.
     func raise(_ chain: [String], for id: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
         // From now on the chain is private: for cards made later, and for the clerk's reading already under way.
         markPrivate(chain + [id], state: &state)
-        try? save(state)
-        guard !raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) else { return }
         state.raises = (state.raises ?? [:]).merging([id: chain]) { $1 }
-        journal([("event", .string(id)), ("stage", .str("privacy_raise_failed"))])
+        try? save(state)
+        guard raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) else {
+            journal([("event", .string(id)), ("stage", .str("privacy_raise_failed"))])
+            return
+        }
+        state.raises?[id] = nil
     }
 
     /// Records events as private in the cursor; nothing ever takes one out (capture-event-v0 §3.3).
@@ -67,9 +72,11 @@ extension CaptureInbox {
                 guard op["op"] == .str("update_item"), op["args"]?["set"]?["redact"] == .bool(true), let id = op["args"]?["id"] else { return nil }
                 return canonicalText(id)
             })
+            let touched = Self.itemsTouched(by: ids, in: row.folder)
             let ops = row.teka.items.compactMap { item -> JSONObject? in
-                guard let o = item.object, o["redact"] != .bool(true), let itemID = o["id"], !covered.contains(canonicalText(itemID)),
-                      let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue), events.contains(where: ids.contains) else { return nil }
+                guard let o = item.object, o["redact"] != .bool(true), let itemID = o["id"], !covered.contains(canonicalText(itemID)) else { return nil }
+                let events = o["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
+                guard events.contains(where: ids.contains) || touched.contains(canonicalText(itemID)) else { return nil }
                 var set = JSONObject([(key: "redact", value: .bool(true))])
                 if o["kind"] == nil { set.set("kind", .str("other")) }
                 return JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", itemID), ("set", .object(set))]))])
@@ -91,6 +98,23 @@ extension CaptureInbox {
     /// completion or drop is preceded by an `update_item` that redacts the item, unless the card or the item
     /// already does. A redaction needs a kind, so an item without one gets `other`, as the clerk does for a
     /// private update; without the catalog (an unfiled card), the kind is left to the guard to ask for.
+    /// The items, by the id's canonical text, that the approved cards of a chain's events wrote to: added, or changed
+    /// by an update, a status change, a completion or a drop. Read from the binder's op log, so it is what was applied
+    /// (with the person's edits), not what a card proposed; an item a capture changed keeps the provenance of the one
+    /// that made it, so its own `events` never name the capture that changed it.
+    static func itemsTouched(by events: Set<String>, in folder: URL) -> Set<String> {
+        let cards = Set(ProposalStore.list(in: folder).map(\.0).filter { p in
+            p.state == "applied" && p.raw["provenance"]?["events"]?.arrayValue?.contains { events.contains($0.stringValue ?? "") } == true
+        }.map(\.id))
+        guard !cards.isEmpty, let log = try? TekaStore(folder: folder).readOpLog().ops else { return [] }
+        let itemOps: Set<String> = ["add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss"]
+        return Set(log.compactMap { line -> String? in
+            guard let proposal = line["proposal"]?.stringValue, cards.contains(proposal), itemOps.contains(line["op"]?.stringValue ?? ""),
+                  let id = line["args"]?["item"]?["id"] ?? line["args"]?["id"] else { return nil }
+            return canonicalText(id)
+        })
+    }
+
     static func privateCopy(_ p: Proposal, catalog: JSONObject?) -> Proposal {
         var raw = p.raw
         var prov = raw["provenance"]?.objectValue ?? JSONObject()

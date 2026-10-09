@@ -155,8 +155,9 @@ extension CaptureInbox {
                 state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
                 if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
                 if registered, event.isPrivate {
-                    raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now)
+                    // The binders out of reach are recorded first, so the raise's save carries them with the stage.
                     deferWork(of: id, chain: [earlier] + chain, binders: binders, commands: commands, state: &state)
+                    raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now)
                 }
                 journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
                 return

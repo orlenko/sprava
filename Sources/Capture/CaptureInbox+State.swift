@@ -53,15 +53,43 @@ extension CaptureInbox {
         guard CursorCrash.allows(stateURL) else { throw Commands.Failure(message: "the cursor's save was stopped (a test's crash point)") }
         try AtomicFile.makePrivateFolder(dir)
         try AtomicFile.write(try JSONEncoder().encode(s), to: stateURL)
+        CursorCrash.saved(stateURL)
     }
 }
 
-/// A crash point for tests: the cursor's saves fail after a given number of them, as if the process stopped right
-/// after its last durable write, so the inbox's recovery can be exercised at every checkpoint. Keyed by the cursor's
-/// path, so tests running side by side never meet; nothing in the app sets it.
+/// Crash points for tests, so the inbox's recovery can be exercised at every checkpoint. Either the cursor's saves
+/// fail after a given number of them (the work after a failed save goes on, as with a full disk), or a test is told
+/// right after a given save is on disk, takes the files as they are then, and puts them back after the sweep: what a
+/// process killed right after that save leaves. Keyed by the cursor's path, so tests running side by side never meet;
+/// nothing in the app sets either.
 enum CursorCrash {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var left: [String: Int] = [:]
+    nonisolated(unsafe) private static var stops: [String: (left: Int, take: @Sendable () -> Void)] = [:]
+
+    /// Calls `take` right after the `saves`-th next save of the cursor at `url` is on disk; nil lifts it.
+    static func stop(after saves: Int?, cursor url: URL, take: @escaping @Sendable () -> Void = {}) {
+        lock.withLock { stops[url.path] = saves.map { ($0, take) } }
+    }
+
+    nonisolated(unsafe) private static var counts: [String: Int] = [:]
+
+    /// How many times the cursor at `url` has been saved in this process, so a test can pick any of a sweep's saves.
+    static func saves(_ url: URL) -> Int { lock.withLock { counts[url.path] ?? 0 } }
+
+    static func saved(_ url: URL) {
+        let take: (@Sendable () -> Void)? = lock.withLock {
+            counts[url.path, default: 0] += 1
+            guard let stop = stops[url.path] else { return nil }
+            if stop.left > 1 {
+                stops[url.path] = (stop.left - 1, stop.take)
+                return nil
+            }
+            stops[url.path] = nil
+            return stop.take
+        }
+        take?()
+    }
 
     /// Lets `saves` more saves of the cursor at `url` through, then fails every one; nil lifts the crash point.
     static func after(_ saves: Int?, cursor url: URL) { lock.withLock { left[url.path] = saves } }
