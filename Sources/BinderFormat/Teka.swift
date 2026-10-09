@@ -47,8 +47,9 @@ public struct Teka: Sendable {
         }
     }
 
+    /// A stamped binder without a valid `meta.disclosure` has no level that says what may leave it, so nothing does.
     public var federationBlocked: Bool {
-        writesBlocked || (states[.needsAttention] ?? []).contains("the folder name differs from meta.name")
+        writesBlocked || (states[.needsAttention] ?? []).contains { $0 == Self.nameDiffers || $0 == Self.noDisclosure }
             || !HubLane.isSafeSegment(name)
     }
 
@@ -145,6 +146,8 @@ public struct Teka: Sendable {
         return .incomplete
     }
 
+    static let nameDiffers = "the folder name differs from meta.name"
+    static let noDisclosure = "stamped catalog without a valid meta.disclosure"
     static let expungeInterrupted = "an expunge was interrupted; enter the text again to finish it"
 
     /// Whether `.sprava/expunge-pending` exists (binder-v0 §6.11), looked up through a real `.sprava` folder without
@@ -244,16 +247,19 @@ public struct Teka: Sendable {
             return blocked("catalog.json unreadable", modified: modified)
         }
 
+        // A catalog that does not parse is corrupt; the findings above (a link at DASHBOARD.md, say) are kept.
+        func corrupt(_ reason: String, safety: JSONSafetyReport = .init()) -> Teka {
+            Teka(folder: folder, states: states.merging([.corrupt: [reason]]) { $0 + $1 }, level: nil, catalog: nil,
+                 safety: safety, findings: [], isAdopted: adopted, modified: modified)
+        }
         let parsed: (value: JSONValue, safety: JSONSafetyReport)
         do {
             parsed = try JSONParser.parse(data)
         } catch {
-            return Teka(folder: folder, states: [.corrupt: ["catalog.json: \(error)"]], level: nil, catalog: nil,
-                        safety: .init(), findings: [], isAdopted: adopted, modified: modified)
+            return corrupt("catalog.json: \(error)")
         }
         guard case .object(let catalog) = parsed.value else {
-            return Teka(folder: folder, states: [.corrupt: ["catalog.json is not a JSON object"]], level: nil,
-                        catalog: nil, safety: parsed.safety, findings: [], isAdopted: adopted, modified: modified)
+            return corrupt("catalog.json is not a JSON object", safety: parsed.safety)
         }
 
         if !parsed.safety.isSafe {
@@ -274,7 +280,7 @@ public struct Teka: Sendable {
         for key in ["documents", "open_items", "processing_log"] {
             switch catalog[key] {
             case nil:
-                if level == .tekaV0 { flag(.needsMigration, "\(key) is missing") }
+                if level == .tekaV0 { flag(adopted ? .needsAttention : .needsMigration, "\(key) is missing") }
             case .array?: break
             default: flag(.needsMigration, "\(key) is not an array")
             }
@@ -302,7 +308,7 @@ public struct Teka: Sendable {
             if (meta["name"]?.stringValue ?? "").isEmpty { flag(.needsAttention, "stamped catalog without meta.name") }
             switch meta["disclosure"]?.stringValue {
             case "full"?, "title"?, "kind"?, "none"?: break
-            default: flag(.needsAttention, "stamped catalog without a valid meta.disclosure")
+            default: flag(.needsAttention, noDisclosure)
             }
             if let lifecycle = meta["lifecycle"], !["ongoing", "finite"].contains(lifecycle.stringValue ?? "") {
                 flag(.needsAttention, "meta.lifecycle is not ongoing or finite")
@@ -323,7 +329,7 @@ public struct Teka: Sendable {
         // Name (binder-v0 §3.1).
         if case .string(let name)? = catalog["meta"]?["name"],
            name.precomposedStringWithCanonicalMapping != folder.lastPathComponent.precomposedStringWithCanonicalMapping {
-            flag(.needsAttention, "the folder name differs from meta.name")
+            flag(.needsAttention, nameDiffers)
         }
 
         var findings: [RuleFinding] = []

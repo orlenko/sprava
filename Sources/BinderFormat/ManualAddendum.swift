@@ -23,13 +23,15 @@ public enum ManualAddendum {
 
     """
 
-    /// Whether the binder's manual carries the marker line (CLAUDE.md or AGENTS.md).
+    /// Whether the binder's manual carries the marker line (CLAUDE.md or AGENTS.md): a line of its own, so a manual
+    /// that only mentions the marker in its prose does not count.
     public static func isPresent(in folder: URL) -> Bool? {
         var sawManual = false
         for name in ["CLAUDE.md", "AGENTS.md"] {
             guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(name), limit: 1024 * 1024) else { continue }
             sawManual = true
-            if String(decoding: data, as: UTF8.self).contains(marker) { return true }
+            let lines = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline)
+            if lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == marker }) { return true }
         }
         return sawManual ? false : nil
     }

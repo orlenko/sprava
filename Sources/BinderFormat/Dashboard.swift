@@ -41,7 +41,9 @@ public enum Dashboard {
         var longest = 0, run = 0
         for s in scalars { if s == "`" { run += 1; longest = max(longest, run) } else { run = 0 } }
         let fence = String(repeating: "`", count: longest + 1)
-        let pad = scalars.first == "`" || scalars.last == "`" ? " " : ""
+        // CommonMark strips one space from each end of a span that begins and ends with one; padding keeps them.
+        let spaced = scalars.first == " " && scalars.last == " " && scalars.contains { $0 != " " }
+        let pad = scalars.first == "`" || scalars.last == "`" || spaced ? " " : ""
         return fence + pad + id + pad + fence
     }
 
@@ -145,9 +147,24 @@ public enum Dashboard {
         return hash != String(m.output.1)
     }
 
-    /// The switch (binder-v0 §7.1): the old text moves into Notes with every heading demoted one level.
+    /// The switch (binder-v0 §7.1): the old text moves into Notes with every heading demoted one level. A `#` line
+    /// inside a fenced code block is code, not a heading, and is kept as it is.
     public static func notesFromOld(_ old: String) -> String {
+        var fence: (mark: Character, length: Int)?
         let demoted = old.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            // A fence (CommonMark): up to three spaces, then three or more backticks or tildes, a backtick fence's
+            // info holding no backtick. A run of the same mark at least as long, with nothing after it, closes it.
+            let body = line.drop { $0 == " " }
+            if line.count - body.count < 4, let mark = body.first, mark == "`" || mark == "~" {
+                let length = body.prefix { $0 == mark }.count
+                let rest = body.dropFirst(length)
+                if let open = fence {
+                    if mark == open.mark, length >= open.length, rest.allSatisfy(\.isWhitespace) { fence = nil }
+                } else if length >= 3, mark == "~" || !rest.contains("`") {
+                    fence = (mark, length)
+                }
+            }
+            if fence != nil { return String(line) }
             // `#` becomes `##` and so on; `######` stays as it is.
             let hashes = line.prefix { $0 == "#" }.count
             if (1...5).contains(hashes), line.dropFirst(hashes).first == " " { return "#" + String(line) }
