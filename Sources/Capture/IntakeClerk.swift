@@ -126,18 +126,15 @@ extension IntakeWatcher {
         }
         // A card an earlier commit made before it was cut short is never followed by anything: it goes.
         for (p, _) in ProposalStore.list(in: folder) where p.state == "proposed" && p.raw["provenance"]?["replaces"] == .string(tier0.id) {
-            try? TekaStore(folder: folder).reject(p, reason: "replaced by the clerk's reading", now: now)
+            try? BinderWrite.reject(p, in: folder, reason: "replaced by the clerk's reading", deviceID: commands.deviceID, now: now)
         }
         do {
-            try ProposalStore.save(proposal, in: folder)
+            try BinderWrite.save(proposal, in: folder, deviceID: commands.deviceID)
             try commands.trustProposals([proposal.id], in: folder)
         } catch {
             // A card saved but never trusted could never be approved: it goes, and the reading is tried again (once
             // more at most, as for a model failure); the code-built card stays meanwhile.
-            let written = ProposalStore.dir(folder).appendingPathComponent("\(proposal.id).json")
-            if FileManager.default.fileExists(atPath: written.path), (try? FileManager.default.removeItem(at: written)) == nil {
-                try? TekaStore(folder: folder).reject(proposal, reason: "its digest could not be kept", now: now)
-            }
+            BinderWrite.takeBackUntrusted(proposal, in: folder, deviceID: commands.deviceID, now: now)
             var back = loaded
             back.state = loaded.attempts >= 2 ? "kept" : "pending"
             try? store.save(back)
@@ -149,13 +146,13 @@ extension IntakeWatcher {
         e.card = proposal.id
         e.state = "read"
         guard (try? store.save(e)) != nil, follow(e.name, in: folder, from: tier0.id, to: proposal.id) else {
-            try? TekaStore(folder: folder).reject(proposal, reason: "the intake cursor could not follow it", now: now)
+            try? BinderWrite.reject(proposal, in: folder, reason: "the intake cursor could not follow it", deviceID: commands.deviceID, now: now)
             var back = loaded
             back.state = loaded.attempts >= 2 ? "kept" : "pending"
             try? store.save(back)
             return ReadingOutcome()
         }
-        try? TekaStore(folder: folder).reject(tier0, reason: "replaced by the clerk's reading", now: now)
+        try? BinderWrite.reject(tier0, in: folder, reason: "replaced by the clerk's reading", deviceID: commands.deviceID, now: now)
         outcome.replaced = true
         return outcome
     }

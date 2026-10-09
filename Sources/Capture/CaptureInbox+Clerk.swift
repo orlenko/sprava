@@ -199,7 +199,7 @@ extension CaptureInbox {
         }
         // The "not sure" cards are written first, then the binders'.
         for (proposal, folder) in placed.filter({ $0.1 == nil }) + placed.filter({ $0.1 != nil }) {
-            if let folder, (try? ProposalStore.save(proposal, in: folder)) != nil {
+            if let folder, (try? BinderWrite.save(proposal, in: folder, deviceID: commands.deviceID)) != nil {
                 // A card counts as made only once it is trusted: an untrusted one could never be approved, so
                 // everything saved is taken back and the code-built card stays; the reading is tried again.
                 guard (try? commands.trustProposals([proposal.id], in: folder)) != nil else {
@@ -251,7 +251,7 @@ extension CaptureInbox {
         }
         if let binder = work.tier0Binder {
             // A card another program changed since Sprava wrote it is left as it is, unverified (architecture 4.6).
-            do { try commands.rewriteTrusted(work.tier0, in: URL(fileURLWithPath: binder, isDirectory: true), transform: annotated) }
+            do { try BinderWrite.rewriteTrusted(work.tier0, in: URL(fileURLWithPath: binder, isDirectory: true), commands: commands, transform: annotated) }
             catch is ProposalStore.Tampered { journal([("event", .string(work.event.id)), ("stage", .str("card_changed_outside"))]) }
             catch {}
         } else if let p = unfiled().first(where: { $0.id == work.tier0 }) {

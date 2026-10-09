@@ -39,6 +39,8 @@ extension CaptureInbox {
         settleHandoffs(state: &state, commands: commands, now: now)
         lookForMissingMedia(state: &state)
         guard let devices = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+            // The capture root is there but cannot be listed now: nothing was swept, and Health says so.
+            result.rootUnlisted = true
             if (try? save(state)) == nil { result.unsaved = "state.json" }
             return result
         }
@@ -385,6 +387,8 @@ extension CaptureInbox {
                     state.cards[id] = card
                     if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
                     result.filed += 1
+                    // A correction's card counts for the one-minute measure like any capture's (decisions.md M3).
+                    if let end = event.endedAt { result.latencies.append(max(0, now.timeIntervalSince(end))) }
                 }
                 state.clerk = (state.clerk ?? [:]).merging([id: "kept"]) { $1 }   // the clerk would add them again
                 state.ingested[id] = made.isEmpty ? "nothing_to_change" : "proposed"
@@ -454,7 +458,7 @@ extension CaptureInbox {
             if commands.isTrusted(p.id, in: folder) {
                 if trusted == nil { trusted = (folder, p) }
             } else {
-                try? TekaStore(folder: folder).reject(p, reason: "its digest could not be kept", now: now)
+                try? BinderWrite.reject(p, in: folder, reason: "its digest could not be kept", deviceID: commands.deviceID, now: now)
             }
         }
         if let (folder, p) = trusted ?? actedOnCard(id, binders: binders, deviceID: commands.deviceID) { return (p.id, folder) }

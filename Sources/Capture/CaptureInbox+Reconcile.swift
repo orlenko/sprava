@@ -87,13 +87,10 @@ extension CaptureInbox {
             let card = Proposal.make(title: "A note was corrected while this binder was away. Change what was filed from it?", actor: actor, ops: ops,
                                      provenance: provenance, now: now)
             do {
-                try ProposalStore.save(card, in: folder)
+                try BinderWrite.save(card, in: folder, deviceID: commands.deviceID)
                 try commands.trustProposals([card.id], in: folder)
             } catch {
-                let written = ProposalStore.dir(folder).appendingPathComponent("\(card.id).json")
-                if (try? FileManager.default.removeItem(at: written)) == nil {
-                    try? TekaStore(folder: folder).reject(card, reason: "its digest could not be kept", now: now)
-                }
+                BinderWrite.takeBackUntrusted(card, in: folder, deviceID: commands.deviceID, now: now)
                 return false
             }
             journal([("event", .string(words.id)), ("stage", .str("reconciled")), ("ops", .int(ops.count))])

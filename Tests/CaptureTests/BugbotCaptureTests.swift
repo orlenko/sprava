@@ -344,7 +344,8 @@ func bFileAndApprove(_ s: PSetup) throws {
         let folder = s.producer.root.appendingPathComponent(device)
         func media(_ bytes: JSONValue?) throws -> CaptureEvent.Check {
             let id = try pEvent(s, device: device, app: "adapter", ref: UUID().uuidString, revision: "1", text: "Invented note") { o in
-                var m = JSONObject([(key: "path", value: .string("\(o["id"]!.stringValue!).m4a"))])
+                var m = JSONObject([(key: "kind", value: .str("audio")), (key: "sha256", value: .string(String(repeating: "0", count: 64))),
+                                    (key: "path", value: .string("\(o["id"]!.stringValue!).m4a"))])
                 if let bytes { m.set("bytes", bytes) }
                 o.set("media", .array([.object(m)]))
             }

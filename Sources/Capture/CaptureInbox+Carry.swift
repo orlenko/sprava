@@ -317,7 +317,7 @@ extension CaptureInbox {
                 }
             }
         }
-        for (folder, p) in going where !giveWay(p, in: folder, reason: reason, now: now) { complete = false }
+        for (folder, p) in going where !giveWay(p, in: folder, reason: reason, deviceID: commands.deviceID, now: now) { complete = false }
         return complete
     }
 
@@ -352,12 +352,9 @@ extension CaptureInbox {
         var raw = card.raw
         raw.set("expect", .object(fingerprints))
         card = Proposal(raw: raw)
-        guard (try? ProposalStore.save(card, in: folder)) != nil else { return false }
+        guard (try? BinderWrite.save(card, in: folder, deviceID: commands.deviceID)) != nil else { return false }
         guard (try? commands.trustProposals([card.id], in: folder)) != nil else {
-            let written = ProposalStore.dir(folder).appendingPathComponent("\(card.id).json")
-            if (try? FileManager.default.removeItem(at: written)) == nil {
-                try? TekaStore(folder: folder).reject(card, reason: "its digest could not be kept", now: now)
-            }
+            BinderWrite.takeBackUntrusted(card, in: folder, deviceID: commands.deviceID, now: now)
             return false
         }
         return true
@@ -367,10 +364,10 @@ extension CaptureInbox {
     /// calls it. True once it no longer waits. (A card Sprava saved but could never trust, so never approvable, is
     /// taken back where it was written; intake's document cards follow their files. Neither held a capture's lines
     /// for the person.)
-    func giveWay(_ p: Proposal, in folder: URL?, reason: String, now: Date) -> Bool {
+    func giveWay(_ p: Proposal, in folder: URL?, reason: String, deviceID: String, now: Date) -> Bool {
         if let folder {
             guard let current = ProposalStore.list(in: folder).first(where: { $0.0.id == p.id })?.0, current.state == "proposed" else { return true }
-            return (try? TekaStore(folder: folder).reject(current, reason: reason, now: now)) != nil
+            return (try? BinderWrite.reject(current, in: folder, reason: reason, deviceID: deviceID, now: now)) != nil
         }
         guard let file = unfiledFile(p.id) else { return true }
         return (try? FileManager.default.removeItem(at: file)) != nil || !FileManager.default.fileExists(atPath: file.path)

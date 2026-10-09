@@ -299,7 +299,9 @@ public struct CaptureEvent: Sendable {
         }
         let format = o["format"]?.stringValue
         guard format == "sprava-capture-event" || format == "sprava-derived-event" else { return (.quarantined("unknown format"), nil) }
-        guard o["format_version"]?.stringValue == "0" else { return (.deferred, nil) }
+        // Only a version given as text that this reader does not know is deferred; a missing or mistyped one is malformed.
+        guard let version = o["format_version"]?.stringValue else { return (.quarantined("format_version is not text"), nil) }
+        guard version == "0" else { return (.deferred, nil) }
         guard parsed.safety.isSafe else { return (.quarantined("unsafe JSON"), nil) }
         guard o["id"]?.stringValue == stem else { return (.quarantined("id differs from the file name"), nil) }
         guard o["device"]?["id"]?.stringValue == deviceFolder.lastPathComponent else { return (.quarantined("device id differs from the folder"), nil) }
@@ -334,11 +336,15 @@ public struct CaptureEvent: Sendable {
         var missing: [String: Int] = [:]   // copied media not there yet, or not at their size: path -> bytes
         if let m = o["media"], m.arrayValue == nil { return (.quarantined("media is not a list"), nil) }
         for media in o["media"]?.arrayValue ?? [] {
-            guard let path = media["path"]?.stringValue else {
-                // A media entry is a copied file (`path`) or a reuse of an earlier event's (`of`), never neither.
-                if media["of"]?.stringValue == nil { return (.quarantined("media entry has neither path nor of"), nil) }
-                continue
+            // Each entry as the reader schema has it: a kind, a SHA-256, and either a copied file (`path`) or a reuse of
+            // an earlier event's (`of`, an event id), never both and never neither.
+            guard media.objectValue != nil, media["kind"]?.stringValue?.isEmpty == false,
+                  media["sha256"]?.stringValue?.wholeMatch(of: /[0-9a-f]{64}/) != nil,
+                  (media["path"] != nil) != (media["of"] != nil), media["of"].map({ $0.stringValue.map(isUUIDText) == true }) ?? true,
+                  media["path"].map({ $0.stringValue != nil }) ?? true else {
+                return (.quarantined("media entry is not a copied file or a reuse"), nil)
             }
+            guard let path = media["path"]?.stringValue else { continue }
             guard path.hasPrefix("\(stem)."), !path.hasSuffix(".tmp"), !path.contains("/") else {
                 return (.quarantined("media path does not belong to the event"), nil)
             }

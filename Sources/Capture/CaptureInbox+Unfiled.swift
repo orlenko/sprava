@@ -88,11 +88,11 @@ extension CaptureInbox {
             if raw["provenance"]?["private"] != .bool(true), events.contains(where: privates.contains) {
                 raw = Self.privateCopy(Proposal(raw: raw), catalog: teka.catalog).raw
             }
-            try ProposalStore.save(Proposal(raw: raw), in: folder)
+            try BinderWrite.save(Proposal(raw: raw), in: folder, deviceID: commands.deviceID)
             do { try commands.trustProposals([proposalID], in: folder) } catch {
                 // A copy saved but not trusted cannot be approved; it is taken back, and the Inbox keeps the card.
                 if let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == proposalID }) {
-                    try? TekaStore(folder: folder).reject(p, reason: "it could not be moved from the Inbox")
+                    try? BinderWrite.reject(p, in: folder, reason: "it could not be moved from the Inbox", deviceID: commands.deviceID, now: Date())
                 }
                 throw error
             }

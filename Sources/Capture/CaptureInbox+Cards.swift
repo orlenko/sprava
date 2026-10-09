@@ -54,7 +54,7 @@ extension CaptureInbox {
            Owner.device(of: row.folder) == commands.deviceID,
            PrivacyRatchet.disclosure(row) != "none" {
             do {
-                try ProposalStore.save(proposal, in: row.folder)
+                try BinderWrite.save(proposal, in: row.folder, deviceID: commands.deviceID)
                 try commands.trustProposals([proposal.id], in: row.folder)
                 return (proposal.id, row.folder)
             } catch {

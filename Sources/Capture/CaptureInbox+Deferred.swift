@@ -142,7 +142,7 @@ extension CaptureInbox {
         guard isPrivate else { return card }
         let catalog = Teka.read(folder).catalog
         if Self.fullyRedacted(card, catalog: catalog) { return card }
-        guard let rewritten = try? commands.rewriteTrusted(id, in: folder, transform: { Self.privateCopy($0, catalog: catalog) }),
+        guard let rewritten = try? BinderWrite.rewriteTrusted(id, in: folder, commands: commands, transform: { Self.privateCopy($0, catalog: catalog) }),
               Self.fullyRedacted(rewritten, catalog: catalog) else { return nil }
         journal([("stage", .str("redacted_at_approval")), ("card", .string(id))])
         return rewritten

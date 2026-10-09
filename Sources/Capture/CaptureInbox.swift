@@ -126,6 +126,8 @@ public struct CaptureInbox: Sendable {
         public var quarantined = 0
         public var duplicates = 0
         public var refusedFolders = 0
+        /// The capture root is there and trusted but could not be listed: nothing was swept this time.
+        public var rootUnlisted = false
         /// Seconds from each new capture's end to its card, for the one-minute measure (decisions.md M3).
         public var latencies: [Double] = []
         /// A state file that exists but cannot be read: nothing was swept, and nothing was written over it.

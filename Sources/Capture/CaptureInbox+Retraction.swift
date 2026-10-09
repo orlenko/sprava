@@ -95,7 +95,7 @@ extension CaptureInbox {
             var made = false
             for (p, _) in ProposalStore.list(in: row.folder) where p.raw["provenance"]?["retraction"] == .string(retraction) {
                 if p.state == "proposed", !commands.isTrusted(p.id, in: row.folder) {
-                    if (try? TekaStore(folder: row.folder).reject(p, reason: leftover, now: now)) == nil { complete = false }
+                    if (try? BinderWrite.reject(p, in: row.folder, reason: leftover, deviceID: commands.deviceID, now: now)) == nil { complete = false }
                 } else if p.raw["rejected_reason"] != .string(leftover) {
                     made = true
                 }
@@ -108,16 +108,13 @@ extension CaptureInbox {
                                                              (key: "remains", value: .str("the event files in the capture folder, the titles in this binder's history, and backups"))]),
                                      now: now)
             do {
-                try ProposalStore.save(card, in: row.folder)
+                try BinderWrite.save(card, in: row.folder, deviceID: commands.deviceID)
             } catch {
                 complete = false
                 continue
             }
             if (try? commands.trustProposals([card.id], in: row.folder)) == nil {
-                let written = ProposalStore.dir(row.folder).appendingPathComponent("\(card.id).json")
-                if (try? FileManager.default.removeItem(at: written)) == nil {
-                    try? TekaStore(folder: row.folder).reject(card, reason: leftover, now: now)
-                }
+                BinderWrite.takeBackUntrusted(card, in: row.folder, deviceID: commands.deviceID, now: now)
                 complete = false
             }
         }

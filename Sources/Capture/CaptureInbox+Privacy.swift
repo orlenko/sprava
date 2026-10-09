@@ -110,7 +110,7 @@ extension CaptureInbox {
         var changed = Set<String>()
         for (folder, p) in filed where p.raw["provenance"]?["private"] != .bool(true) {
             // A rewritten card that cannot be trusted again is not approvable, so the raise is retried.
-            do { try commands.rewriteTrusted(p.id, in: folder) { Self.privateCopy($0, catalog: Teka.read(folder).catalog) } }
+            do { try BinderWrite.rewriteTrusted(p.id, in: folder, commands: commands) { Self.privateCopy($0, catalog: Teka.read(folder).catalog) } }
             catch is ProposalStore.Tampered { changed.insert(p.id) }
             catch { complete = false }
         }
@@ -149,7 +149,7 @@ extension CaptureInbox {
                                      provenance: JSONObject([(key: "events", value: .array(chain.map(JSONValue.string))), (key: "private", value: .bool(true)),
                                                              (key: "remains", value: .str("titles already published to the hub until the next publish"))]),
                                      now: now)
-            if (try? ProposalStore.save(card, in: row.folder)) != nil, (try? commands.trustProposals([card.id], in: row.folder)) != nil {} else { complete = false }
+            if (try? BinderWrite.save(card, in: row.folder, deviceID: commands.deviceID)) != nil, (try? commands.trustProposals([card.id], in: row.folder)) != nil {} else { complete = false }
         }
         journal([("stage", .str("sensitivity_raised")), ("cards", .int(unfiled.count + filed.count))])
         return complete

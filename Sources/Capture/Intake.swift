@@ -72,6 +72,13 @@ public struct IntakeWatcher: Sendable {
         public var channel = "other"
     }
 
+    /// A file's digest for the cursor and its card: its SHA-256, except for a key or credential file, which is never
+    /// opened (binder-v0 §3.3) and is known by its size and modification time instead. Nil when it cannot be read.
+    static func digest(of url: URL) -> String? {
+        guard DocumentPaths.isKeyFile(url.lastPathComponent) else { return DocumentPaths.sha256(of: url) }
+        return plainFile(url).map { "unread:\($0.size):\($0.mtime)" }
+    }
+
     static func plainFile(_ url: URL) -> (size: Int, mtime: Double)? {
         var s = stat()
         guard lstat(url.path, &s) == 0, s.st_mode & S_IFMT == S_IFREG, s.st_uid == getuid() else { return nil }
@@ -166,7 +173,7 @@ public struct IntakeWatcher: Sendable {
                 if read && Date().timeIntervalSince(started) > budget { return out }
                 let file = row.folder.appendingPathComponent("intake/" + c.name)
                 let attachments = c.attachments.map { row.folder.appendingPathComponent("intake/" + $0) }
-                for url in [file] + attachments { out.digests[url.path] = DocumentPaths.sha256(of: url) }
+                for url in [file] + attachments { out.digests[url.path] = Self.digest(of: url) }
                 if read { out.readings[file.path] = IntakeReading.read(file, in: row.folder, attachments: attachments, channel: c.channel, reader: reader) }
             }
         }
@@ -215,7 +222,7 @@ public struct IntakeWatcher: Sendable {
                         let path = row.folder.appendingPathComponent("intake/" + file.name).path
                         let reading = prepared.readings[path]
                         if requireReading && reading == nil { result.waiting += 1; next[file.name] = entry; continue }
-                        let sha = prepared.digests[path] ?? DocumentPaths.sha256(of: URL(fileURLWithPath: path))
+                        let sha = prepared.digests[path] ?? Self.digest(of: URL(fileURLWithPath: path))
                         let matching = waiting.filter { $0.raw["provenance"]?["intake"]?["name"]?.stringValue == file.name
                             && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }
                         // Only a card Sprava recorded is taken over, with its reading made sure of, and only when it files
@@ -230,7 +237,7 @@ public struct IntakeWatcher: Sendable {
                                 entry?.readingMissing = saveReading(reading, file: file, sha: sha, card: existing.id, in: row, now: now) ? nil : true
                             }
                         } else {
-                            for stranded in matching { withdraw(stranded.id, in: row.folder, now: now) }
+                            for stranded in matching { withdraw(stranded.id, in: row.folder, deviceID: commands.deviceID, now: now) }
                             entry?.card = card(file, sha: sha, reading: reading, digests: prepared.digests, in: row, commands: commands, now: now)
                             if let made = entry?.card, let sha {
                                 result.carded += 1
@@ -241,7 +248,7 @@ public struct IntakeWatcher: Sendable {
                             }
                         }
                     } else {
-                        if let card = e.card { entry?.card = finishReplacement(card, waiting: &waiting, in: row.folder, now: now) }
+                        if let card = e.card { entry?.card = finishReplacement(card, waiting: &waiting, in: row.folder, deviceID: commands.deviceID, now: now) }
                         if e.readingMissing == true, let card = e.card {
                             entry?.readingMissing = retryReading(prepared, file: file, card: card, in: row, commands: commands, now: now) ? nil : true
                         }
@@ -251,7 +258,7 @@ public struct IntakeWatcher: Sendable {
                     // New, or still being written, or changed after its card: wait for it to hold still. A card for
                     // the old bytes is withdrawn; its digest would be refused on approval anyway.
                     if let old = entry?.card {
-                        withdraw(old, in: row.folder, now: now)
+                        withdraw(old, in: row.folder, deviceID: commands.deviceID, now: now)
                         result.replaced += 1
                     }
                     entry = Seen(size: file.size, mtime: file.mtime, card: nil, firstSeen: entry?.firstSeen ?? now)
@@ -260,7 +267,7 @@ public struct IntakeWatcher: Sendable {
                 next[file.name] = entry
             }
             // Files gone from intake/ (filed, or removed by the person): cards still waiting for them are withdrawn.
-            for (_, gone) in seen { if let card = gone.card { withdraw(card, in: row.folder, now: now) } }
+            for (_, gone) in seen { if let card = gone.card { withdraw(card, in: row.folder, deviceID: commands.deviceID, now: now) } }
             kept[key] = next
         }
         if (try? save(kept)) == nil { result.cursorUnsaved = true }
@@ -402,7 +409,7 @@ public struct IntakeWatcher: Sendable {
         else { title = "File \u{201C}\(DocumentPaths.safeName(file.name))\u{201D} from intake" }
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
         do {
-            try ProposalStore.save(proposal, in: row.folder)
+            try BinderWrite.save(proposal, in: row.folder, deviceID: commands.deviceID)
         } catch {
             return nil
         }
@@ -411,8 +418,7 @@ public struct IntakeWatcher: Sendable {
         } catch {
             // A card whose digest was not kept could never be approved: it goes, and the file stays uncarded, so the
             // next scan cards it again.
-            let written = ProposalStore.dir(row.folder).appendingPathComponent("\(proposal.id).json")
-            if (try? FileManager.default.removeItem(at: written)) == nil { withdraw(proposal.id, in: row.folder, now: now) }
+            BinderWrite.takeBackUntrusted(proposal, in: row.folder, deviceID: commands.deviceID, now: now)
             return nil
         }
         return proposal.id
@@ -461,7 +467,7 @@ public struct IntakeWatcher: Sendable {
         return filed == expected
     }
 
-    func finishReplacement(_ card: String, waiting: inout [Proposal], in folder: URL, now: Date) -> String {
+    func finishReplacement(_ card: String, waiting: inout [Proposal], in folder: URL, deviceID: String, now: Date) -> String {
         var followed = card
         let readings = IntakeReadings(support: support)
         if let next = waiting.first(where: { $0.raw["provenance"]?["replaces"] == .string(card) }), readings.forCard(next.id)?.state == "read" {
@@ -469,12 +475,12 @@ public struct IntakeWatcher: Sendable {
         }
         guard let mine = waiting.first(where: { $0.id == followed }), let old = mine.raw["provenance"]?["replaces"]?.stringValue,
               waiting.contains(where: { $0.id == old }) else { return followed }
-        withdraw(old, in: folder, now: now)
+        withdraw(old, in: folder, deviceID: deviceID, now: now)
         waiting.removeAll { $0.id == old }
         return followed
     }
 
-    func withdraw(_ id: String, in folder: URL, now: Date) {
+    func withdraw(_ id: String, in folder: URL, deviceID: String, now: Date) {
         let readings = IntakeReadings(support: support)
         if var e = readings.forCard(id), e.state != "read" {
             e.state = "gone"
@@ -482,6 +488,6 @@ public struct IntakeWatcher: Sendable {
             try? readings.save(e)
         }
         guard let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" else { return }
-        try? TekaStore(folder: folder).reject(proposal, reason: "the file in intake/ changed or is gone", now: now)
+        try? BinderWrite.reject(proposal, in: folder, reason: "the file in intake/ changed or is gone", deviceID: deviceID, now: now)
     }
 }

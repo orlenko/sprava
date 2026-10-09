@@ -238,15 +238,12 @@ extension CaptureInbox {
             }
             let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: cardOps,
                                      provenance: cardProvenance(folder), now: now)
-            try ProposalStore.save(card, in: folder)
+            try BinderWrite.save(card, in: folder, deviceID: commands.deviceID)
             do {
                 try commands.trustProposals([card.id], in: folder)
             } catch {
                 // A card whose digest was not kept could never be approved: it goes, and the correction is tried again.
-                let written = ProposalStore.dir(folder).appendingPathComponent("\(card.id).json")
-                if (try? FileManager.default.removeItem(at: written)) == nil {
-                    try? TekaStore(folder: folder).reject(card, reason: "its digest could not be kept", now: now)
-                }
+                BinderWrite.takeBackUntrusted(card, in: folder, deviceID: commands.deviceID, now: now)
                 throw error
             }
             made.append((folder, card.id))
