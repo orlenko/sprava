@@ -6,8 +6,8 @@ Read this first; then `docs/code-structure.md` for which target owns what.
 
 - No personal data in code, tests, docs or commit messages: no real names, addresses, account numbers,
   legal or tax facts, or contents of real binders. Every example is invented.
-- The pre-commit hook scans the staged content of every added or changed file, binary or not, for private
-  tokens, read from a list kept outside the repository (`~/.config/sprava/private-tokens`). It names a match
+- The pre-commit hook scans the staged content of every added or changed file, binary or not, and the names
+  of added, renamed and copied files (a name that matches is never printed), for private tokens, read from a list kept outside the repository (`~/.config/sprava/private-tokens`). It names a match
   by file and line, never by its text, and a scan that fails (a list that exists but cannot be read, such as
   one behind a locked folder or a dangling symlink, or a malformed pattern) rejects the commit. Only when the
   list is certainly absent is the scan skipped; scan by hand then. The commit-msg hook scans the commit message

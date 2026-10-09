@@ -5,7 +5,8 @@
 # A match is reported by file and line number only. The matched text is never printed: whoever runs the commit,
 # a person or an agent whose output is logged, would otherwise receive the private content.
 # The staged content of every added or changed file is scanned whole, as bytes, so binary files and files marked
-# -diff are covered too; the scan of the added lines in the text diff only adds line numbers.
+# -diff are covered too; the scan of the added lines in the text diff only adds line numbers. The names of added,
+# renamed and copied files (old and new) are scanned as well, and a match there is reported without the name.
 # A failure to read the patterns, produce the diff or scan it rejects the commit; it never skips the scan.
 # The build runs on what is being committed (the index), checked out into a snapshot folder kept under the git
 # directory with its own .build, never on the working tree, whose unstaged edits are not part of the commit.
@@ -46,6 +47,21 @@ staged_diff() {
 # Only a list that is certainly absent skips the scan (tokens.sh).
 check_token_list
 if [ "$tokens_state" = present ]; then
+    # File names first: every added file's name, and both names of a renamed or copied one. A match is reported
+    # without the name, and before anything below can print a path. The list is NUL-separated; a name holding a
+    # line break is refused, since the scan reads one name per line.
+    git -c core.quotePath=false diff --no-color --no-ext-diff --no-relative -M -C --name-status -z --diff-filter=ACR \
+        "$base" "$staged_tree" > "$work/names.z" || reject "could not list the staged file names"
+    [ "$(wc -l < "$work/names.z" | tr -d ' ')" -eq 0 ] || reject "a staged file name holds a line break; rename it"
+    tr '\0' '\n' < "$work/names.z" | awk '
+        want == 0 { s = substr($0, 1, 1); if (s == "R" || s == "C") want = 2; else if (s == "A") want = 1; else { bad = 1; exit 1 }; next }
+        { print; want-- }
+        END { if (bad || want != 0) exit 1 }' > "$work/names" || reject "could not parse the staged file names"
+    status=0
+    grep -qEi -f "$tokens" "$work/names" 2>/dev/null || status=$?
+    [ "$status" -le 1 ] || reject "the privacy scan of the file names failed (grep exit status $status); check the patterns in $tokens"
+    [ "$status" -eq 1 ] || reject "a file name matches a private token (patterns in $tokens); the name is withheld"
+
     staged_diff --inter-hunk-context=0 -U0 --src-prefix=a/ --dst-prefix=b/ > "$work/diff" \
         || reject "could not read the staged diff"
     # One line per added line: "<file>:<line>", a tab, then the added text. Each hunk is read by the counts in

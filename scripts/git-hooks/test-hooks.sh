@@ -112,6 +112,25 @@ elif grep -q '^opaque.txt (in its staged content; no line number)$' "$root/err" 
 else bad "binary: the -diff file was rejected, but not by file name alone"; fi
 git -C "$repo" reset -q --hard
 
+# File names are scanned too: an added file, and a rename, whose name holds a token. The name is never printed.
+echo "plain text" > "$repo/notes-invented_sentinel_14.txt"
+git -C "$repo" add "notes-invented_sentinel_14.txt"
+if commit "A file named with a token"; then bad "file name: an added file whose name holds a token was accepted"
+elif grep -q "a file name matches a private token" "$root/err" && ! grep -q invented_sentinel "$root/err"; then
+    ok "file name: an added file whose name holds a token is rejected, the name withheld"
+else bad "file name: the added file was rejected, but not for its name alone"; fi
+git -C "$repo" reset -q --hard; rm -f "$repo/notes-invented_sentinel_14.txt"
+for i in $(seq 1 20); do echo "plain line $i"; done > "$repo/plain.txt"
+git -C "$repo" add plain.txt && commit "Plain file"
+git -C "$repo" mv plain.txt "plain-invented_sentinel_15.txt"
+if commit "Rename to a name with a token"; then bad "file name: a rename to a name that holds a token was accepted"
+elif grep -q "a file name matches a private token" "$root/err" && ! grep -q invented_sentinel "$root/err"; then
+    ok "file name: a rename to a name that holds a token is rejected, the name withheld"
+else bad "file name: the rename was rejected, but not for its name alone"; fi
+git -C "$repo" reset -q --hard
+if [ -f "$repo/plain.txt" ] && [ ! -e "$repo/plain-invented_sentinel_15.txt" ]; then :; else
+    echo "setup: the rename was not undone"; exit 1; fi
+
 # The token list: only a list that is certainly absent skips the scan.
 with_list() {    # <list path> <message>: commits the staged change with that token list
     (SPRAVA_PRIVATE_TOKENS="$1"; export SPRAVA_PRIVATE_TOKENS; commit "$2")
