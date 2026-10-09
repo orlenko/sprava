@@ -257,6 +257,17 @@ public struct Backup: Sendable {
         return id
     }
 
+    /// A binder's backup id when it already has one, for pages that only show it (the app's Health page). Never
+    /// creates one, and refuses a `.sprava` folder or `backup-id` file that is a symbolic link: nil then.
+    public static func existingBackupID(_ folder: URL) -> String? {
+        let sprava = folder.appendingPathComponent(".sprava")
+        var st = stat()
+        guard lstat(sprava.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR else { return nil }
+        guard case .ok(let data) = SafeFile.read(sprava.appendingPathComponent("backup-id"), limit: 64),
+              let text = String(data: data, encoding: .utf8), text.wholeMatch(of: /[0-9a-f]{32}\n?/) != nil else { return nil }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// What every binder write changes: the op log grows and the catalog is replaced (binder-v0 §6.9).
     static func writeMark(_ folder: URL) -> String {
         let log = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(".sprava/ops.ndjson").path))?[.size] as? Int

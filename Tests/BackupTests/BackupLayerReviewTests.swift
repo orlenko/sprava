@@ -291,4 +291,34 @@ import Testing
         chmod(folder, 0o700)
         #expect(try requests.all().first?.state == "running")
     }
+
+    // MARK: - 10. A page that only shows a backup id reads it and never makes one
+
+    @Test func anExistingBackupIDIsReadOnlyAndRefusesLinks() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-backup-id-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        #expect(Backup.existingBackupID(folder) == nil)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".sprava").path))
+
+        let id = try Backup.backupID(folder)
+        #expect(Backup.existingBackupID(folder) == id)
+
+        // A backup-id that is a link to another binder's id is refused, and left as it is.
+        let other = folder.appendingPathComponent("other-id")
+        try Data("0123456789abcdef0123456789abcdef\n".utf8).write(to: other)
+        let url = folder.appendingPathComponent(".sprava/backup-id")
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(atPath: url.path, withDestinationPath: other.path)
+        #expect(Backup.existingBackupID(folder) == nil)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: url.path) == other.path)
+
+        // A .sprava folder that is a link is refused too.
+        let elsewhere = folder.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data("0123456789abcdef0123456789abcdef\n".utf8).write(to: elsewhere.appendingPathComponent("backup-id"))
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(".sprava"))
+        try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent(".sprava").path, withDestinationPath: elsewhere.path)
+        #expect(Backup.existingBackupID(folder) == nil)
+    }
 }
