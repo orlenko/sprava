@@ -102,4 +102,77 @@ import Testing
         #expect(item["created_at"] == at)
         #expect(item["updated_at"] == at)
     }
+
+    // MARK: - 4. A card edit is applied or refused, never dropped
+
+    @Test func aTitleEditOnAnUpdateCardIsApplied() throws {
+        let update = JSONObject([(key: "op", value: .str("update_item")),
+                                 (key: "args", value: .obj([("id", .str("estate-example-2026-007")),
+                                                            ("set", .obj([("title", .str("Invented proposed title"))]))]))])
+        let edited = try CardEdits.apply([.obj([("index", .int(0)), ("title", .str(" Corrected task "))])], to: [update])
+        #expect(edited[0]["args"]?["set"]?["title"] == .str("Corrected task"))
+
+        // An edit the op cannot carry is refused.
+        let add = addCard().ops[0]
+        let complete = JSONObject([(key: "op", value: .str("complete")), (key: "args", value: .obj([("id", .str("estate-example-2026-007"))]))])
+        #expect(throws: CardEdits.Failure.self) { try CardEdits.apply([.obj([("index", .int(0)), ("waiting_on", .str("Invented Office"))])], to: [add]) }
+        #expect(throws: CardEdits.Failure.self) { try CardEdits.apply([.obj([("index", .int(0)), ("title", .str("Invented"))])], to: [complete]) }
+        #expect(throws: CardEdits.Failure.self) { try CardEdits.apply([.obj([("index", .int(0)), ("folder", .str("documents"))])], to: [add]) }
+        #expect(throws: CardEdits.Failure.self) { try CardEdits.apply([.obj([("index", .int(0)), ("title", .int(3))])], to: [update]) }
+    }
+
+    // MARK: - 5. A meta that is not an object is never written over
+
+    @Test func aNonObjectMetaIsNeverReplaced() throws {
+        let catalog = JSONObject([(key: "meta", value: .str("Invented project notes")), (key: "open_items", value: .array([]))])
+        func line(_ op: String, _ args: JSONValue) -> JSONObject {
+            JSONObject([(key: "id", value: .string(UUIDv7.make(now: now))), (key: "at", value: .str("2026-10-06T08:00:00Z")),
+                        (key: "actor", value: .object(user)), (key: "op", value: .string(op)), (key: "args", value: args)])
+        }
+        let ops = [line("set_disclosure", .obj([("disclosure", .str("none"))])),
+                   line("set_meta", .obj([("set", .obj([("lifecycle", .str("ongoing"))]))])),
+                   line("rename_teka", .obj([("name", .str("invented-new")), ("former", .str("invented")), ("until", .str("2026-10-06"))]))]
+        for op in ops {
+            #expect(throws: OpApplier.Failure.self) { try OpApplier.apply(op, to: catalog) }
+            #expect(throws: TransactionGuard.Rejection.self) { try TransactionGuard.check([op], on: catalog) }
+        }
+        // A catalog with no meta at all still gets one.
+        let bare = JSONObject([(key: "open_items", value: .array([]))])
+        #expect(try OpApplier.apply(ops[0], to: bare)["meta"]?["disclosure"] == .str("none"))
+    }
+
+    // MARK: - 6. A batch overwritten in part offers again only what was lost
+
+    @Test func aPartlyOverwrittenBatchOffersTheLostPartAgain() throws {
+        let (folder, store) = try adopted()
+        func retitle(_ id: String, _ title: String, priority: String? = nil) -> TekaStore.OpBody {
+            var set = JSONObject([(key: "title", value: .string(title))])
+            if let priority { set.set("priority", .string(priority)) }
+            return .init(op: "update_item", args: JSONObject([(key: "id", value: .string(id)), (key: "set", value: .object(set))]), actor: user)
+        }
+        let original = try #require(try store.readCatalog().0["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-007") }?["title"])
+        let applied = try store.apply([retitle("estate-example-2026-007", "Invented title A", priority: "low"),
+                                       retitle("estate-example-2026-008", "Invented title B")],
+                                      batch: UUIDv7.make(now: now), now: now)
+        // Another program puts back the first item's title only; its new priority and the second item's title stay.
+        try handEdit(folder) { items in
+            guard let i = items.firstIndex(where: { $0["id"] == .str("estate-example-2026-007") }), case .object(var first) = items[i] else { return }
+            first.set("title", original)
+            items[i] = .object(first)
+        }
+        try store.settle(now: now)
+        #expect(store.lastAbsorbed == .externalEdit(revertedLastBatch: true))
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        #expect(card.raw["provenance"]?["overwritten_ops"] == .array([try #require(applied[0]["id"])]))
+        #expect(card.ops.count == 1)
+        #expect(card.ops[0]["args"]?["id"] == .str("estate-example-2026-007"))
+        #expect(card.ops[0]["args"]?["set"] == .obj([("title", .str("Invented title A"))]))
+
+        // Approving it brings the title back and leaves what survived as it is.
+        try store.approve(card, now: now)
+        let items = try store.readCatalog().0["open_items"]?.arrayValue ?? []
+        let first = items.first { $0["id"] == .str("estate-example-2026-007") }
+        #expect(first?["title"] == .str("Invented title A") && first?["priority"] == .str("low"))
+        #expect(items.first { $0["id"] == .str("estate-example-2026-008") }?["title"] == .str("Invented title B"))
+    }
 }

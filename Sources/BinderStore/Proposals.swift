@@ -213,17 +213,28 @@ public enum CardEdits {
         public var description: String { message }
     }
 
-    /// `edits` is `[{index, skip?, title?, due?, priority?, waiting_on?, folder?}]`; `due` is a date, or "" for no deadline.
+    /// The fields each op can take from the card. An edit to any other field, or to an op not listed, is refused,
+    /// never dropped: what the person typed is either applied or reported.
+    static let editable: [String: Set<String>] = ["add_item": ["title", "due", "priority"],
+                                                  "update_item": ["title", "due", "priority", "waiting_on"]]
+
+    /// `edits` is `[{index, skip?, title?, due?, priority?, waiting_on?}]`; `due` is a date, or "" for no deadline.
     public static func apply(_ edits: [JSONValue], to ops: [JSONObject]) throws -> [JSONObject] {
         var out = ops
         var skipped = Set<Int>()
         for e in edits {
             guard let i = e["index"]?.numberValue?.safeInteger.map(Int.init), out.indices.contains(i) else { throw Failure(message: "an edit names no op") }
             if e["skip"] == .bool(true) { skipped.insert(i); continue }
-            guard var args = out[i]["args"]?.objectValue else { continue }
+            let fields = e.objectValue?.keys.filter { $0 != "index" && $0 != "skip" } ?? []
+            let carried = editable[out[i]["op"]?.stringValue ?? ""] ?? []
+            if let field = fields.first(where: { !carried.contains($0) || e[$0]?.stringValue == nil }) {
+                throw Failure(message: carried.contains(field) ? "\(field) is written as text" : "this change cannot take a new \(field)")
+            }
+            guard !fields.isEmpty else { continue }
+            guard var args = out[i]["args"]?.objectValue else { throw Failure(message: "this change cannot be edited") }
             switch out[i]["op"]?.stringValue {
             case "add_item":
-                guard var item = args["item"]?.objectValue else { continue }
+                guard var item = args["item"]?.objectValue else { throw Failure(message: "this change cannot be edited") }
                 if let t = e["title"]?.stringValue {
                     let title = t.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !title.isEmpty, title.count <= 200 else { throw Failure(message: "a title is one line of text") }
@@ -246,13 +257,19 @@ public enum CardEdits {
                 }
                 args.set("item", .object(item))
             case "update_item":
-                // A repair card asks for what is missing: a due date or none, a party, a priority (binder-v0 §9.4).
-                guard e["due"] != nil || e["waiting_on"] != nil || e["priority"] != nil else { break }
+                // A repair card asks for what is missing: a due date or none, a party, a priority (binder-v0 §9.4);
+                // a change of title is the person's correction of the proposed one.
                 var set = args["set"]?.objectValue ?? JSONObject()
                 var unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
                 func clear(_ key: String) {
                     set.remove(key)
                     if !unset.contains(key) { unset.append(key) }
+                }
+                if let t = e["title"]?.stringValue {
+                    let title = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty, title.count <= 200 else { throw Failure(message: "a title is one line of text") }
+                    unset.removeAll { $0 == "title" }
+                    set.set("title", .string(title))
                 }
                 if let d = e["due"]?.stringValue {
                     if d.isEmpty {

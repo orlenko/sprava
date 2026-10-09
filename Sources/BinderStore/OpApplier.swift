@@ -189,7 +189,7 @@ public enum OpApplier {
             c.set("documents", .array(docs))
 
         case "set_meta":
-            var meta = c["meta"]?.objectValue ?? JSONObject()
+            var meta = try metaObject(c, type)
             let set = args["set"]?.objectValue ?? JSONObject()
             let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
             let locked: Set<String> = ["name", "schema_version", "format", "format_version", "disclosure", "former_names"]
@@ -202,7 +202,7 @@ public enum OpApplier {
             guard case .string(let level)? = args["disclosure"], ["full", "title", "kind", "none"].contains(level) else {
                 throw Failure("set_disclosure: full, title, kind or none")
             }
-            var meta = c["meta"]?.objectValue ?? JSONObject()
+            var meta = try metaObject(c, type)
             meta.set("disclosure", .string(level))
             c.set("meta", .object(meta))
 
@@ -210,8 +210,11 @@ public enum OpApplier {
             guard let name = args["name"], let former = args["former"], let until = args["until"] else {
                 throw Failure("rename_teka: name, former and until are required")
             }
-            var meta = c["meta"]?.objectValue ?? JSONObject()
+            var meta = try metaObject(c, type)
             meta.set("name", name)
+            guard meta["former_names"] == nil || meta["former_names"]?.arrayValue != nil else {
+                throw Failure("rename_teka: meta.former_names is not a list; migrate the catalog first")
+            }
             var formers = meta["former_names"]?.arrayValue ?? []
             formers.append(.obj([("name", former), ("until", until)]))
             meta.set("former_names", .array(formers))
@@ -224,6 +227,16 @@ public enum OpApplier {
     }
 
     // MARK: - Helpers
+
+    /// The catalog's `meta`, or an empty one when there is none. A `meta` that holds something else, as a
+    /// pre-lifeproj catalog may, is never written over: the op is refused until a migration keeps that value.
+    static func metaObject(_ c: JSONObject, _ type: String) throws -> JSONObject {
+        switch c["meta"] {
+        case nil: return JSONObject()
+        case .object(let meta)?: return meta
+        default: throw Failure("\(type): the catalog's meta is not an object; migrate the catalog first so its value is kept")
+        }
+    }
 
     static func required(_ args: JSONObject, _ key: String, _ type: String) throws -> JSONValue {
         guard let value = args[key] else { throw Failure("\(type): \(key) is required") }

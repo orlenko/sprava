@@ -121,10 +121,9 @@ extension TekaStore {
         let lostOps: [JSONObject]
         if appended.isEmpty, reverted || ambiguous {
             lostOps = trailing
-        } else if appended.isEmpty, log.count > trailing.count,
-                  Self.undoes(found: catalog, expected: expected, beforeTrailing: try? Replay.run(Array(log.dropLast(trailing.count))),
-                              trailing: trailing) {
-            lostOps = trailing
+        } else if appended.isEmpty, log.count > trailing.count {
+            lostOps = Self.lostOps(found: catalog, expected: expected,
+                                   beforeTrailing: try? Replay.run(Array(log.dropLast(trailing.count))), trailing: trailing)
         } else {
             lostOps = []
         }
@@ -242,13 +241,12 @@ extension TekaStore {
         return nil
     }
 
-    /// Whether the outside edit put back, on every path the last batch changed, the value from before it
-    /// (binder-v0 §6.7 step 6): another program overwrote the person's change.
-    static func undoes(found: JSONObject, expected: JSONObject, beforeTrailing: JSONObject?, trailing: [JSONObject]) -> Bool {
-        guard let before = beforeTrailing, !trailing.isEmpty,
-              trailing.allSatisfy({ ["user", "clerk", "brain"].contains($0["actor"]?["kind"]?.stringValue ?? "") }) else {
-            return false
-        }
+    /// The ops of the last batch whose change the outside edit put back to the value from before the batch
+    /// (binder-v0 §6.7 step 6): another program overwrote that part of the person's change. Each op is judged on
+    /// its own, so a batch overwritten in part offers again only what was lost, and an `update_item` is narrowed to
+    /// the fields put back: a change that survived, or a value the other program wrote, is never written over.
+    static func lostOps(found: JSONObject, expected: JSONObject, beforeTrailing: JSONObject?, trailing: [JSONObject]) -> [JSONObject] {
+        guard let before = beforeTrailing else { return [] }
         // Records are compared by id, so an unrelated edit elsewhere in the same array does not hide the loss.
         func record(_ catalog: JSONObject, _ id: JSONValue) -> JSONValue? {
             for key in ["open_items", "documents"] {
@@ -256,35 +254,67 @@ extension TekaStore {
             }
             return nil
         }
-        var checked = false
+        func field(_ path: String) -> String { (try? JSONPatch.tokens(path))?.first ?? path }
+        // Back as before the batch, and no longer what the batch left there.
+        func putBack(_ path: String, found: JSONValue?, before: JSONValue?, expected: JSONValue?) -> Bool {
+            let now = found.flatMap { JSONPatch.value(at: path, in: $0) }
+            return now == before.flatMap { JSONPatch.value(at: path, in: $0) } && now != expected.flatMap { JSONPatch.value(at: path, in: $0) }
+        }
+        var lost: [JSONObject] = []
+        var state = before
         for op in trailing {
+            let prior = state
+            guard let next = try? OpApplier.apply(op, to: prior) else { return lost }
+            state = next
+            guard ["user", "clerk", "brain"].contains(op["actor"]?["kind"]?.stringValue ?? "") else { continue }
+            // A closure whose processing_log entry is still there was not undone.
+            if let opID = op["id"], found["processing_log"]?.arrayValue?.contains(where: { $0["op_id"] == opID }) == true { continue }
             let args = op["args"]?.objectValue ?? JSONObject()
             let ids = [args["id"], args["item"]?["id"], args["document"]?["id"]].compactMap { $0 }
+            var whole = false
+            var fields = Set<String>()
             if ids.isEmpty {
-                // An op without a record id (set_meta and the like): its changed paths must be back as before.
-                let changed = JSONPatch.diff(from: .object(before), to: .object(expected)).compactMap { $0["path"]?.stringValue }
-                guard !changed.isEmpty, changed.allSatisfy({ JSONPatch.value(at: $0, in: .object(found)) == JSONPatch.value(at: $0, in: .object(before)) })
-                else { return false }
-                checked = true
-                continue
+                // An op without a record id (set_meta and the like): a path it changed is back as before.
+                whole = JSONPatch.diff(from: .object(prior), to: .object(next)).compactMap { $0["path"]?.stringValue }
+                    .contains { putBack($0, found: .object(found), before: .object(before), expected: .object(expected)) }
             }
             for id in ids {
                 let old = record(before, id), new = record(expected, id), current = record(found, id)
-                guard let old, let new else {
-                    // A record the batch created or removed: it is back as before when it is gone again, or back whole.
-                    guard current == old else { return false }
-                    checked = true
+                guard let opOld = record(prior, id), let opNew = record(next, id) else {
+                    // A record this op created or removed: lost when it is gone again, or back whole.
+                    if current == old, current != new { whole = true }
                     continue
                 }
-                // Within the record, only the fields the batch changed must be back as before; another field the
-                // edit changed too does not hide the loss.
-                let changed = JSONPatch.diff(from: old, to: new).compactMap { $0["path"]?.stringValue }
-                guard !changed.isEmpty else { continue }
-                guard let current, changed.allSatisfy({ JSONPatch.value(at: $0, in: current) == JSONPatch.value(at: $0, in: old) }) else { return false }
-                checked = true
+                // Within the record, a field this op changed that is back as before; bookkeeping the op sets on its
+                // own (`updated_at`, `derived`) is no loss by itself. A record made earlier in the batch, or removed
+                // by the outside edit, is not a put-back change.
+                guard old != nil, current != nil else { continue }
+                for path in JSONPatch.diff(from: opOld, to: opNew).compactMap({ $0["path"]?.stringValue })
+                where !["updated_at", "derived"].contains(field(path)) && putBack(path, found: current, before: old, expected: new) {
+                    fields.insert(field(path))
+                }
             }
-            if let opID = op["id"], found["processing_log"]?.arrayValue?.contains(where: { $0["op_id"] == opID }) == true { return false }
+            if whole {
+                lost.append(op)
+            } else if !fields.isEmpty {
+                lost.append(op["op"] == .str("update_item") ? narrowed(op, to: fields) : op)
+            }
         }
-        return checked
+        return lost
+    }
+
+    /// An `update_item` that sets and removes only `fields`, the ones another program put back. A `derived` it
+    /// supplied goes with it only when every field is kept, since it names the fields the whole op derived.
+    static func narrowed(_ op: JSONObject, to fields: Set<String>) -> JSONObject {
+        guard var args = op["args"]?.objectValue else { return op }
+        let set = args["set"]?.objectValue ?? JSONObject()
+        let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        guard !(Set(set.keys).subtracting(["derived"]).union(unset)).isSubset(of: fields) else { return op }
+        args.set("set", .object(JSONObject(set.entries.filter { fields.contains($0.key) && $0.key != "derived" })))
+        let keptUnset = unset.filter(fields.contains)
+        if keptUnset.isEmpty { args.remove("unset") } else { args.set("unset", .array(keptUnset.map(JSONValue.string))) }
+        var out = op
+        out.set("args", .object(args))
+        return out
     }
 }
