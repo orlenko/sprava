@@ -38,13 +38,19 @@ test('after the claim every other claim is 409, whatever the code, even after a 
     await again.close();
 });
 
-test('the token-hash vector: an uppercase hash is refused as owner_token_sha256 (§14 case 9)', async () => {
+test('the token-hash vector: an uppercase hash is refused as owner_token_sha256, and the claim is named by its record digest (§14 case 9)', async () => {
     const t = await startTestRelay({ claimTiming: fast });
     const v = vectors['token-hash'];
     assert.equal((await post(t, { setup_code: SETUP_CODE, owner_token_sha256: v.refused_owner_token_sha256 })).status, 400);
     assert.equal((await post(t, { setup_code: SETUP_CODE, owner_token_sha256: v.sha256 })).status, 204);
     assert.equal((await fetch(`${t.url}/v0/devices`, { headers: bearer(v.token) })).status, 200);
     assert.equal((await fetch(`${t.url}/v0/devices`, { headers: bearer(v.refused_bearer) })).status, 401, 'the padded token as a bearer value');
+    // The claim's record, and its intent and record named by the record's SHA-256 (§6, §7.8).
+    assert.equal(Buffer.from(ownerRecord(v.sha256)).toString('utf8'), v.claim_owner_record);
+    assert.equal(sha256Hex(ownerRecord(v.sha256)), v.claim_digest);
+    assert.deepEqual(await t.relay.store.list('claims/'), [v.relay_claim_intent]);
+    assert.deepEqual(await t.relay.store.list('owner/'), [v.relay_owner_record]);
+    assert.equal(Buffer.from((await t.relay.store.get(v.relay_owner_record))!).toString('utf8'), v.claim_owner_record);
     await t.close();
 });
 
