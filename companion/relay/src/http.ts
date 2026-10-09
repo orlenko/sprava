@@ -97,14 +97,14 @@ async function route(req: IncomingMessage, options: HttpOptions, timeoutMs: numb
     const origin = req.headers.origin;
     // §7.7: a foreign Origin is refused before anything else.
     if (origin !== undefined && origin !== options.webOrigin) throw new HttpError(403, 'This origin may not call the relay.');
-    const url = new URL(req.url ?? '/', 'http://relay.invalid');
-    // §13: `/` and any path outside `/v0/` are 404.
-    // The path as sent, before URL normalization removes dot segments (`/x/../v0/health` stays outside /v0/).
+    // §13: `/` and any path outside `/v0/` are 404, checked on the path as sent, before URL parsing, which removes
+    // dot segments (`/x/../v0/health`), treats a backslash as a separator, and throws on some targets (`//`).
     const raw = (req.url ?? '').split('?')[0]!;
-    // URL parsing also treats a backslash as a separator, so one, raw or percent-encoded, is never accepted.
-    if (!raw.startsWith('/v0/') || /\\|%5c/i.test(raw) || /(^|\/)(\.|%2e){1,2}(\/|$)/i.test(raw) || !url.pathname.startsWith('/v0/')) {
+    if (!raw.startsWith('/v0/') || /\\|%5c/i.test(raw) || /(^|\/)(\.|%2e){1,2}(\/|$)/i.test(raw)) {
         throw new HttpError(404, 'There is nothing here.');
     }
+    const url = new URL(req.url ?? '/', 'http://relay.invalid');
+    if (!url.pathname.startsWith('/v0/')) throw new HttpError(404, 'There is nothing here.');
     if (req.method === 'OPTIONS') {
         if (origin === undefined) throw new HttpError(404, 'There is nothing here.');
         matched.pattern = 'OPTIONS';

@@ -39,7 +39,7 @@ function rawGet(url: string): Promise<{ status: number; type: string; body: stri
 
 test('`/` and every path outside /v0/ are 404 (§13)', async () => {
     const t = await startTestRelay();
-    for (const path of ['/', '/index.html', '/v1/health', '/v0', '/v0/nothing', '/outside/../v0/health', '/v0/../v0/health', '/v0/%2e%2E/v0/health', '/v0/./health', '/v0/x\\..\\health', '/v0/x%5C..%5chealth', '/v0\\health']) {
+    for (const path of ['/', '/index.html', '/v1/health', '/v0', '/v0/nothing', '/outside/../v0/health', '/v0/../v0/health', '/v0/%2e%2E/v0/health', '/v0/./health', '/v0/x\\..\\health', '/v0/x%5C..%5chealth', '/v0\\health', '//', '//v0/health']) {
         const res = await rawGet(t.url + path);
         assert.equal(res.status, 404, path);
         assert.match(res.type, /application\/json/);
