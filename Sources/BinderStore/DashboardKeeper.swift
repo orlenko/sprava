@@ -38,10 +38,15 @@ public struct DashboardKeeper: Sendable {
 
     /// The file as found, when it is a regular file of this user (never through a link); nil when there is none.
     /// A file that exists but cannot be read (too large, another owner, a link, a failed open) throws, so it is
-    /// never written over and its Notes are never lost.
+    /// never written over and its Notes are never lost. So does one that is not UTF-8: decoding it would put
+    /// replacement characters in place of what an editor saved.
     func found() throws -> String? {
         switch SafeFile.read(fileURL, limit: 4 * 1024 * 1024) {
-        case .ok(let data): return String(decoding: data, as: UTF8.self)
+        case .ok(let data):
+            guard let text = String(validating: data, as: UTF8.self) else {
+                throw TekaStore.Refused(reason: "DASHBOARD.md is not UTF-8 text; it was left as it is")
+            }
+            return text
         case .refused(let why): throw TekaStore.Refused(reason: "DASHBOARD.md cannot be read (\(why)); it was left as it is")
         case .unreadable(let why): throw TekaStore.Refused(reason: "DASHBOARD.md cannot be read now (\(why)); it was left as it is")
         case .missing: return nil
@@ -127,9 +132,9 @@ public struct DashboardKeeper: Sendable {
         guard renamex_np(staged.path, fileURL.path, UInt32(RENAME_SWAP)) == 0 else {
             throw AtomicFile.Failure(step: "replace DASHBOARD.md", code: errno)
         }
-        // `staged` now names the displaced file.
+        // `staged` now names the displaced file. One that is not UTF-8 reads as nil, so it is put back and kept.
         func contents(at url: URL) -> String? {
-            if case .ok(let data) = SafeFile.read(url, limit: 4 * 1024 * 1024) { return String(decoding: data, as: UTF8.self) }
+            if case .ok(let data) = SafeFile.read(url, limit: 4 * 1024 * 1024) { return String(validating: data, as: UTF8.self) }
             return nil
         }
         if contents(at: staged) == found { return synced() }

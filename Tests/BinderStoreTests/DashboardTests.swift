@@ -208,4 +208,19 @@ import Testing
         #expect(try Data(contentsOf: stateURL) == state)
         #expect(keeper.preview(today: today, timeZone: utc) != nil)   // still shown in the app's own window
     }
+
+    // Layer 5 calibrated review, finding 1: Notes saved in another encoding are never rewritten with replacement
+    // characters; the file is reported and left byte for byte.
+    @Test func aDashboardThatIsNotUTF8IsLeftAsItIs() throws {
+        let folder = try adopted()
+        let keeper = DashboardKeeper(folder: folder)
+        try keeper.switchOn(today: today, timeZone: utc, now: now)
+        let url = folder.appendingPathComponent("DASHBOARD.md")
+        var bytes = try Data(contentsOf: url)
+        bytes.append(contentsOf: Array("Invented note in Latin-1: caf".utf8) + [0xE9, 0x0A])
+        try bytes.write(to: url)
+        #expect(throws: TekaStore.Refused.self) { try keeper.refresh(today: today.adding(days: 1), timeZone: utc, now: now) }
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath: folder.path)).contains { $0.hasSuffix(".tmp") })
+    }
 }

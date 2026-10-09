@@ -263,4 +263,23 @@ import Testing
         #expect(result.mechanical.count == 1)
         #expect(!FileManager.default.fileExists(atPath: Adoption.unfinishedMarker(folder).path))
     }
+
+    // Layer 5 calibrated review, finding 2: a disclosure value found in a lifeproj catalog stays in the catalog under
+    // `legacy_disclosure` (or the next free name) when the stamp sets v0's.
+    @Test func theStampKeepsAsideAFoundDisclosure() throws {
+        let plain = #"{"id":"p-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01"}"#
+        let folder = try lifeproj([plain])
+        let url = folder.appendingPathComponent("catalog.json")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        try Data(text.replacingOccurrences(of: #""name":"tax""#,
+                                           with: #""name":"tax","disclosure":{"hub":"invented setting"},"legacy_disclosure":"taken""#).utf8).write(to: url)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        let stamp = try #require(result.proposals.first { $0.raw["provenance"]?["adoption"] == .str("stamp") })
+        try TekaStore(folder: folder).approve(stamp, now: now)
+        let teka = Teka.read(folder)
+        #expect(teka.state == .ready, "\(teka.reasons)")
+        #expect(teka.catalog?["meta"]?["disclosure"] == .str("none"))
+        #expect(teka.catalog?["meta"]?["legacy_disclosure"] == .str("taken"))
+        #expect(teka.catalog?["meta"]?["legacy_disclosure_2"] == .obj([("hub", .str("invented setting"))]))
+    }
 }

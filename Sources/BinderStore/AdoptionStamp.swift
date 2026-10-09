@@ -31,7 +31,13 @@ extension Adoption {
         if (meta["name"]?.stringValue ?? "").isEmpty { add("name", .string(folder.lastPathComponent)) }
         add("format", .str("teka"))
         add("format_version", .str("0"))
-        add("disclosure", .str(lifeprojReach ? "full" : "none"))
+        // A disclosure found with another value (lifeproj's own, or free text) is kept aside before the stamp sets one.
+        let disclosure: JSONValue = .str(lifeprojReach ? "full" : "none")
+        if let old = meta["disclosure"], old != disclosure {
+            guard let aside = legacyKey("disclosure", in: meta) else { return nil }
+            patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", old)]))
+        }
+        add("disclosure", disclosure)
         if meta["modules"] == nil, case .array(let found)? = survey["modules_found"], !found.isEmpty { add("modules", .array(found)) }
         if meta["id_scheme"] == nil { add("id_scheme", survey["ids"] == .str("teka-year-seq") ? .str("teka-year-seq") : .str("opaque")) }
         for key in ["documents", "open_items", "processing_log"] where current[key] == nil {
