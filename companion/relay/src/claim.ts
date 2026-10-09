@@ -1,7 +1,7 @@
 // Claiming the relay (companion-v0 §6): the one owner, fixed once with the deployer's setup code.
-import { isHashHex, sameSecret, sha256Hex } from './encoding.ts';
+import { isHashHex, sameBytes, sameSecret, sha256Hex } from './encoding.ts';
 import { HttpError, type Route } from './http.ts';
-import { CLAIMS, OWNER, ownerRecord } from './layout.ts';
+import { OWNER, ownerRecord } from './layout.ts';
 import { SlidingWindow, sleep } from './limits.ts';
 import type { Relay } from './relay.ts';
 import { writeOnce } from './store/store.ts';
@@ -114,39 +114,25 @@ async function decide(relay: Relay, code: string, hash: string, record: Uint8Arr
     // Step 2: already claimed. Once this process knows its owner, nothing in storage changes that: a vanished or
     // unreadable record never makes a claimed relay claimable again.
     if (relay.ownerHash !== null) return relay.ownerHash === hash ? 'claimed' : 'taken';
-    const decided = await claimsIn(relay);
-    if (decided.length > 0) {
+    const stored = await relay.store.get(OWNER);
+    if (stored !== null) {
         // A claim that landed after this process started (a write begun before a restart): a retry of it is that
-        // claim, and this process adopts it; any other is refused.
-        if (decided.length !== 1 || decided[0] !== hash) return 'taken';
-        // Invariant 2: the claim found may be one whose write failed before it was durable; writeOnce makes it so.
-        return relay.lock.run(async () => {
-            if ((await writeOnce(relay.store, `${CLAIMS}${hash}`, record)) === 'different') return 'taken';
-            return (await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash);
-        });
+        // claim, made durable (invariant 2) and adopted; any other is refused.
+        if (!sameBytes(stored, record)) return 'taken';
+        return relay.lock.run(async () => ((await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash)));
     }
     // Step 3: the code first, so a correct code is never refused because of failures. There is no code to match
     // once the variable is gone, and an empty one never matches.
     const configured = relay.config.setupCode;
     if (configured === null || !sameSecret(sha256Hex(code), sha256Hex(configured))) {
-        // Step 4: failures per client address over the last 10 minutes; past the fifth, nothing more is kept.
-        return failures.admit(address, relay.now()) ? 'wrong' : 'throttled';
+        // Step 4: failures per client address over the last 10 minutes, the throttled ones included.
+        return failures.record(address, relay.now()) >= 5 ? 'throttled' : 'wrong';
     }
-    // Step 5: the decision first, named by its content, then the owner record, under the creation lock.
-    return relay.lock.run(async () => {
-        if ((await writeOnce(relay.store, `${CLAIMS}${hash}`, record)) === 'different') return 'taken';
-        const now = await claimsIn(relay);
-        if (now.length !== 1 || now[0] !== hash) {
-            relay.log.event('claim-conflict');
-            return 'taken';
-        }
-        return (await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash);
-    });
-}
-
-/** The claims decided in storage, by hash. */
-async function claimsIn(relay: Relay): Promise<string[]> {
-    return (await relay.store.list(CLAIMS)).map((key) => key.slice(CLAIMS.length));
+    // Step 5: the owner record, written once under the creation lock. Its intent, durable before its bytes are sent,
+    // is the single claim slot: while another claim's intent stands, its write may still land, so this claim is
+    // refused; a claim whose intent was never confirmed never sent its bytes. So at most one claim is ever
+    // acknowledged, and a late write can only repeat it (store.ts, writeOnce).
+    return relay.lock.run(async () => ((await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash)));
 }
 
 function adopt(relay: Relay, hash: string): 'claimed' {

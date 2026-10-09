@@ -149,7 +149,6 @@ export function slowRequest(url: string, method: string, headers: Record<string,
 
 /** Writes a claim and its owner record, as a claim would (§6, layout.ts). */
 export async function seedOwnerHash(store: Store, hash: string): Promise<void> {
-    await store.put(`claims/${hash}`, ownerRecord(hash));
     await store.put('owner.json', ownerRecord(hash));
 }
 

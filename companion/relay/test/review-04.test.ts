@@ -1,6 +1,7 @@
 // Regressions from the review of part 4: claims that storage cannot undo, and revocation atomic with every
 // request of the device in flight.
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,21 +45,67 @@ test('a claim that landed after the start is adopted on its retry: health and th
     await t.close();
 });
 
-test('a second claim in storage, or an owner record without its claim, fails the start closed (§6)', async () => {
+test('a claim whose write lands late never wedges the relay: the acknowledged claim stays the owner (§6)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const first = await startTestRelay({ raw, claimTiming: fast });
+    const [a, b] = [newToken(), newToken()];
+    stub.hold((key) => key.includes('/intents/owner.json/')); // claim A's slot, held
+    assert.equal((await claimWith(first.url, SETUP_CODE, tokenHash(a))).status, 500, "A's outcome is unknown");
+    stub.hold(() => false);
+    await first.close();
+    const second = await startTestRelay({ raw, claimTiming: fast });
+    assert.equal((await claimWith(second.url, SETUP_CODE, tokenHash(b))).status, 204, 'B is acknowledged');
+    stub.landHeld(); // A's slot lands after B was acknowledged
+    await second.close();
+    const third = await startTestRelay({ raw, claimTiming: fast });
+    assert.equal((await fetch(`${third.url}/v0/devices`, { headers: bearer(b) })).status, 200, 'the relay starts, and B is its owner');
+    assert.equal((await claimWith(third.url, SETUP_CODE, tokenHash(a))).status, 409);
+    await third.close();
+    await stub.close();
+});
+
+test('while a claim may still land, no other claim is accepted; its retry is (§6)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const t = await startTestRelay({ raw, claimTiming: fast });
+    const [a, b] = [newToken(), newToken()];
+    stub.hold((key) => key.endsWith('/owner.json')); // A's slot is confirmed; its record is held
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(a))).status, 500);
+    stub.hold(() => false);
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(b))).status, 409, 'A holds the slot');
+    stub.landHeld();
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(a))).status, 204, "A's retry");
+    await t.close();
+    await stub.close();
+});
+
+test('only an owner record that cannot be read fails the start (§6)', async () => {
     const config = readConfig({ SPRAVA_INSTANCE: INSTANCE, SPRAVA_WEB_ORIGIN: WEB_ORIGIN, SPRAVA_STORAGE: 'fs:/unused' });
-    const two = await freshStore();
-    await seedOwnerHash(two.store, 'a'.repeat(64));
-    await two.store.put(`claims/${'b'.repeat(64)}`, ownerRecord('b'.repeat(64))); // a late write of another claim
-    await assert.rejects(startRelay(config, two.store, { log: silentLog, lease: TEST_LEASE }), ClaimConflict);
-    const bare = await freshStore();
-    await bare.store.put('owner.json', ownerRecord('a'.repeat(64)));
-    await assert.rejects(startRelay(config, bare.store, { log: silentLog, lease: TEST_LEASE }), ClaimConflict);
-    const cut = await freshStore();
-    await cut.store.put(`claims/${'a'.repeat(64)}`, ownerRecord('a'.repeat(64)));
-    const started = await startRelay(config, cut.store, { log: silentLog, lease: TEST_LEASE });
+    const bad = await freshStore();
+    await bad.store.put('owner.json', new Uint8Array(Buffer.from('{"owner_token_sha256":"nope"}')));
+    await assert.rejects(startRelay(config, bad.store, { log: silentLog, lease: TEST_LEASE }), ClaimConflict);
+    const good = await freshStore();
+    await good.store.put('owner.json', ownerRecord('a'.repeat(64)));
+    await good.store.put(`intents/owner.json/${'b'.repeat(64)}`, new Uint8Array()); // another claim's slot, landed late
+    const started = await startRelay(config, good.store, { log: silentLog, lease: TEST_LEASE });
     await started.ready;
-    assert.deepEqual(await cut.store.get('owner.json'), ownerRecord('a'.repeat(64)), 'a claim cut short is finished');
+    assert.equal(started.relay.ownerHash, 'a'.repeat(64));
+    assert.deepEqual(await good.store.list(`intents/owner.json/${'b'.repeat(64)}`), [], 'the stray slot is cleared');
     started.stop();
+});
+
+test('throttled wrong codes still count: the throttle holds while failures go on (§6 step 4)', () => {
+    const window = new SlidingWindow(10 * 60_000, 5);
+    let now = 0;
+    const answers: boolean[] = [];
+    for (let i = 0; i < 5; i++) answers.push(window.record('address', now) >= 5);
+    for (let minute = 1; minute <= 12; minute++) {
+        now = minute * 60_000;
+        answers.push(window.record('address', now) >= 5);
+    }
+    assert.deepEqual(answers.slice(0, 5), [false, false, false, false, false]);
+    assert.ok(answers.slice(5).every((throttled) => throttled), 'a failure a minute keeps it throttled');
 });
 
 test('an unreadable record stops the start; it is never taken for a missing one and deleted', async () => {
@@ -139,19 +186,19 @@ test('queued claims are answered 503 at their deadline, the queue is bounded, an
     let stall: Promise<void> | null = null;
     let reads = 0;
     const raw: Store = {
-        get: (k) => fs.get(k),
+        get: async (k) => {
+            if (k.endsWith('/owner.json') && stall !== null) {
+                reads++;
+                await stall;
+            }
+            return fs.get(k);
+        },
         has: (k) => fs.has(k),
         put: (k, b) => fs.put(k, b),
         putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
         sync: (k) => fs.sync(k),
         delete: (k) => fs.delete(k),
-        list: async (p) => {
-            if (p.endsWith('/claims/') && stall !== null) {
-                reads++;
-                await stall;
-            }
-            return fs.list(p);
-        },
+        list: (p) => fs.list(p),
     };
     const t = await startTestRelay({ raw, claimTiming: { ...CLAIM_TIMING, intervalMs: 40, maxWaitMs: 100, failureDelayMs: 1 } });
     let unstall: () => void = () => {};
@@ -247,15 +294,15 @@ test("the owner's revocation of a device is answered while that device keeps its
     await t.close();
 });
 
-test('a claim retry makes a claim found readable but not durable durable before answering (§6, invariant 2)', async () => {
+test('a claim retry makes an owner record found readable but not durable durable before answering (§6, invariant 2)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
-    let fail = true;
+    let fail = false;
     const synced: string[] = [];
     const raw = new FsStore(root, {
         syncDir: async (dir) => {
-            if (!dir.endsWith('/claims')) return;
+            if (!dir.endsWith(INSTANCE)) return; // the folder that holds owner.json
             synced.push(dir);
-            if (fail) {
+            if (fail && existsSync(join(dir, 'owner.json'))) { // right after owner.json is linked
                 fail = false;
                 throw new Error('injected sync failure');
             }
@@ -263,6 +310,7 @@ test('a claim retry makes a claim found readable but not durable durable before 
     });
     const t = await startTestRelay({ raw, claimTiming: fast });
     const hash = tokenHash(newToken());
+    fail = true; // the next sync of the instance's folder: the one after owner.json is linked
     assert.equal((await claimWith(t.url, SETUP_CODE, hash)).status, 500, 'linked, but its folder sync failed');
     synced.length = 0;
     assert.equal((await claimWith(t.url, SETUP_CODE, hash)).status, 204);

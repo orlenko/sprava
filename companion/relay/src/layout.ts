@@ -1,11 +1,6 @@
 // The names of what the relay keeps under `SPRAVA_INSTANCE/`, and the records it writes (companion-v0 §7.8).
 
 export const OWNER = 'owner.json';
-/**
- * `claims/{hash}`: the claim decided, written before `owner.json`. Its name is its content, so a late write of one
- * claim repeats it, and a late write of another claim shows as a second name: the instance then fails closed.
- */
-export const CLAIMS = 'claims/';
 export const ownerRecord = (hash: string): Uint8Array => new Uint8Array(Buffer.from(`{"owner_token_sha256":"${hash}"}`, 'utf8'));
 
 export const deviceKeys = (d: string) => ({

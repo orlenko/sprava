@@ -3,13 +3,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CLAIM_TIMING, claimRoute } from './claim.ts';
 import { ConfigError, isSetupCode, type Config } from './config.ts';
 import { deviceRoutes, Devices } from './devices.ts';
-import { isHashHex, sameBytes } from './encoding.ts';
+import { isHashHex, sameBytes, sha256Hex } from './encoding.ts';
 import { createHandler, type Route } from './http.ts';
-import { CLAIMS, OWNER, ownerRecord } from './layout.ts';
+import { OWNER, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
 import { repairAtStart } from './startup.ts';
-import { KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
+import { INTENTS, KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
 
 export interface Relay {
     readonly config: Config;
@@ -54,21 +54,16 @@ export interface Started {
 export class ClaimConflict extends Error {}
 
 /**
- * The owner, from the claims decided in storage (§6, layout.ts): none, or exactly one whose owner record matches.
- * Anything else fails closed: a relay with two claims, or an owner record without its claim, never starts.
+ * The owner, from its record (§6): none, or the hash it holds. Only a record that cannot be read, which nothing
+ * the relay writes can produce, fails the start.
  */
 async function readOwner(store: Store): Promise<string | null> {
-    const claims = (await store.list(CLAIMS)).map((key) => key.slice(CLAIMS.length));
     const owner = await store.get(OWNER);
-    if (claims.length === 0) {
-        if (owner !== null) throw new ClaimConflict('The owner record has no claim behind it.');
-        return null;
+    if (owner === null) return null;
+    const hash = /^\{"owner_token_sha256":"([0-9a-f]{64})"\}$/.exec(Buffer.from(owner).toString('utf8'))?.[1];
+    if (hash === undefined || !isHashHex(hash) || !sameBytes(owner, ownerRecord(hash))) {
+        throw new ClaimConflict('The owner record is unreadable; start over with a new SPRAVA_INSTANCE and setup code.');
     }
-    const [hash] = claims;
-    if (claims.length > 1 || !isHashHex(hash)) {
-        throw new ClaimConflict('This instance holds more than one claim; start over with a new SPRAVA_INSTANCE and setup code.');
-    }
-    if (owner !== null && !sameBytes(owner, ownerRecord(hash))) throw new ClaimConflict('The owner record does not match its claim.');
     return hash;
 }
 
@@ -106,11 +101,12 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         await lease.check();
         await lease.assertHeld();
         relay.ownerHash = await readOwner(relay.store);
-        // The claim made durable (a write may have failed after it became readable), and a claim whose owner record
-        // a crash cut short finished.
+        // The owner record made durable (a write may have failed after it became readable), and the intents of
+        // other claims, whose bytes were never sent, cleared.
         if (relay.ownerHash !== null) {
-            await writeOnce(relay.store, `${CLAIMS}${relay.ownerHash}`, ownerRecord(relay.ownerHash));
             await writeOnce(relay.store, OWNER, ownerRecord(relay.ownerHash));
+            const mine = `${INTENTS}${OWNER}/${sha256Hex(ownerRecord(relay.ownerHash))}`;
+            for (const intent of await relay.store.list(`${INTENTS}${OWNER}/`)) if (intent !== mine) await relay.store.delete(intent);
         }
         await repairAtStart(relay, devices);
         await devices.load();

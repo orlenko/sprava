@@ -39,6 +39,20 @@ export class SlidingWindow {
         }
     }
 
+    /**
+     * Counts one hit for `key` at `now`, always, and returns how many it had within the window before it. Only the
+     * last `limit` are kept: enough to say whether the limit was reached, so memory stays bounded.
+     */
+    record(key: string, now: number): number {
+        const recent = (this.#hits.get(key) ?? []).filter((t) => t > now - this.#windowMs);
+        const before = recent.length;
+        recent.push(now);
+        this.#hits.delete(key);
+        this.#hits.set(key, recent.slice(-this.#limit));
+        if (this.#hits.size > this.#maxKeys) this.#evict(now);
+        return before;
+    }
+
     get size(): number {
         return this.#hits.size;
     }
