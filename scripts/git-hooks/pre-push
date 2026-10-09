@@ -1,84 +1,43 @@
 #!/bin/sh
-# Before every push: the test suites for what the push changes. There is no hosted CI, so this is the gate.
-# Swift changes run ./scripts/test.sh (each test target is its own run; it ends with one line for all of them).
-# Companion changes run companion/test.sh.
-# Tests run against each pushed commit, never against whatever this checkout holds: in place only when the
-# checkout is that commit with no uncommitted or untracked changes, otherwise in a temporary detached worktree.
-# A push whose changes cannot be tested (the commit lacks the test script for what it changes) is rejected.
+# Before every push: the test suites, run on every commit the push brings to the remote. There is no hosted CI,
+# so this is the gate.
+# The commits checked are those reachable from a pushed ref and not yet on the remote (not reachable from the
+# remote's current tip for that ref, nor from any remote-tracking branch of that remote or of origin), oldest
+# first. Which suites each one needs, where it runs, and the cache of trees that already passed (so a stack
+# tested beforehand with scripts/git-hooks/test-tree.sh is not tested again) are described in suites.sh.
 set -eu
+hook_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$(git rev-parse --show-toplevel)"
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+remote="${1:-origin}"
 zero=0000000000000000000000000000000000000000
 work=$(mktemp -d "${TMPDIR:-/tmp}/sprava-pre-push.XXXXXX")
-tree=""
-cleanup() {
-    [ -n "$tree" ] && git worktree remove --force "$tree" >/dev/null 2>&1 || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 fail() { echo "$1" >&2; echo "pre-push: nothing was pushed" >&2; exit 1; }
+for lib in lock.sh suites.sh; do [ -r "$hook_dir/$lib" ] || fail "pre-push: $hook_dir/$lib is missing"; . "$hook_dir/$lib"; done
 
 # Read every ref first: the tests must not consume the hook's standard input.
 cat > "$work/refs"
 
-swift_paths='^(Sources/|Tests/|Package\.swift$|scripts/test\.sh$)'
-tested=""
+# Every commit new to the remote, oldest first, once each even when several pushed refs share it.
+: > "$work/all"
 while read -r local_ref local_sha remote_ref remote_sha; do
-    [ "$local_sha" = "$zero" ] && continue                      # a deleted branch
-    case " $tested " in *" $local_sha "*) continue ;; esac
-    tested="$tested $local_sha"
-
+    [ "$local_sha" = "$zero" ] && continue                      # a deleted ref
+    set -- "$local_sha" --not --remotes="$remote" --remotes=origin
     if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-        base=$remote_sha
-    else                                                        # a new branch, or a remote tip not fetched
-        base=$(git merge-base "$local_sha" origin/main 2>/dev/null || echo "")
+        set -- "$@" "$remote_sha"
     fi
-    if [ -n "$base" ]; then
-        git diff --name-only "$base" "$local_sha" > "$work/changed" || fail "pre-push: could not list the changes of $local_ref"
-    else
-        git ls-tree -r --name-only "$local_sha" > "$work/changed" || fail "pre-push: could not list the files of $local_ref"
-    fi
-    swift=0; companion=0
-    grep -qE "$swift_paths" "$work/changed" && swift=1
-    grep -q '^companion/' "$work/changed" && companion=1
-    [ "$swift" -eq 0 ] && [ "$companion" -eq 0 ] && continue
-
-    # Where the commit is checked out: here if this checkout is exactly that commit, else a temporary worktree.
-    if [ "$(git rev-parse HEAD)" = "$local_sha" ] && [ -z "$(git status --porcelain --untracked-files=all)" ]; then
-        dir=$(pwd)
-    else
-        tree="$work/tree"
-        git worktree add --detach --quiet "$tree" "$local_sha" >/dev/null 2>&1 \
-            || fail "pre-push: could not check out $local_ref ($local_sha) to test it"
-        dir=$tree
-    fi
-
-    if [ "$swift" -eq 1 ]; then
-        if [ -f "$dir/Package.swift" ] && [ -x "$dir/scripts/test.sh" ]; then
-            out=$(cd "$dir" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && ./scripts/test.sh 2>&1 </dev/null) || true
-            echo "$out" | grep -q "^All test runs passed" \
-                || fail "$(echo "$out" | grep -E "✘|error:|^Tests failed" | head -20)
-pre-push: Swift tests failed for $local_ref"
-            echo "$local_ref: $(echo "$out" | grep "^All test runs passed")" >&2
-        elif [ -e "$dir/Package.swift" ] || [ -e "$dir/Sources" ] || [ -e "$dir/Tests" ]; then
-            fail "pre-push: $local_ref changes Swift code but its commit has no Package.swift or executable scripts/test.sh to test it"
-        fi
-    fi
-    if [ "$companion" -eq 1 ]; then
-        if [ -x "$dir/companion/test.sh" ]; then
-            out=$(cd "$dir" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && companion/test.sh 2>&1 </dev/null) || fail "$(echo "$out" | tail -30)
-pre-push: companion tests failed for $local_ref"
-            echo "$local_ref: companion tests passed" >&2
-        elif [ -e "$dir/companion" ]; then
-            fail "pre-push: $local_ref changes companion/ but its commit has no executable companion/test.sh"
-        fi
-    fi
-
-    if [ -n "$tree" ]; then
-        git worktree remove --force "$tree" >/dev/null 2>&1 || true
-        tree=""
-    fi
+    git rev-list --reverse --topo-order "$@" > "$work/new" || fail "pre-push: could not list the commits of $local_ref"
+    awk -v ref="$local_ref" '{ print $1, ref }' "$work/new" >> "$work/all"
 done < "$work/refs"
+awk '!seen[$1]++' "$work/all" > "$work/commits"
+
+while read -r sha ref; do
+    test_commit "$sha" "$ref" pre-push
+done < "$work/commits"
+total=$(wc -l < "$work/commits" | tr -d ' ')
+[ "$total" -eq 0 ] || echo "pre-push: $total new commit(s): $suites_run suite run(s), $suites_cached already passed for the same tree, $commits_skipped commit(s) skipped (no Swift or companion changes)" >&2
 exit 0

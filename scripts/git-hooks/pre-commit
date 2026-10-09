@@ -1,48 +1,162 @@
 #!/bin/sh
-# Before every commit: the package builds, and the staged diff holds no private token.
+# Before every commit: the staged diff holds no private token, and the staged snapshot builds.
 # Private patterns live outside the repository, one extended regex per line, in
 # ${SPRAVA_PRIVATE_TOKENS:-~/.config/sprava/private-tokens}; the repository is public, so they are never committed.
 # A match is reported by file and line number only. The matched text is never printed: whoever runs the commit,
 # a person or an agent whose output is logged, would otherwise receive the private content.
+# The staged content of every added or changed file is scanned whole, as bytes, so binary files and files marked
+# -diff are covered too; the scan of the added lines in the text diff only adds line numbers.
 # A failure to read the patterns, produce the diff or scan it rejects the commit; it never skips the scan.
+# The build runs on what is being committed (the index), checked out into a snapshot folder kept under the git
+# directory with its own .build, never on the working tree, whose unstaged edits are not part of the commit.
+# Both checks read one fixed tree, written from the index when the hook starts. Git reads the index again after
+# the hook, so if anything is staged while the hook runs, the index no longer matches that tree and the commit
+# is rejected rather than taking files that were never scanned or built.
 set -eu
+hook_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$(git rev-parse --show-toplevel)"
 
 tokens="${SPRAVA_PRIVATE_TOKENS:-$HOME/.config/sprava/private-tokens}"
 reject() { echo "pre-commit: $1; nothing was committed" >&2; exit 1; }
 
-if [ -e "$tokens" ]; then
-    { [ -f "$tokens" ] && [ -r "$tokens" ]; } || reject "the private-token list at $tokens is not a readable file"
-    work=$(mktemp -d "${TMPDIR:-/tmp}/sprava-pre-commit.XXXXXX") || reject "could not create a temporary folder"
-    trap 'rm -rf "$work"' EXIT
-    git diff --cached -U0 --no-color --no-ext-diff > "$work/diff" || reject "could not read the staged diff"
-    # One line per added line: "<file>:<line>", a tab, then the added text. Hunk headers give the counts of
-    # removed and added lines, so an added line that itself starts with "++ " is never taken for a file header.
+work=$(mktemp -d "${TMPDIR:-/tmp}/sprava-pre-commit.XXXXXX") || reject "could not create a temporary folder"
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The tree being committed, fixed now; and what it is compared with: HEAD, or the empty tree for a first commit.
+staged_tree=$(git write-tree) || reject "could not record the staged files (unmerged paths?)"
+base=$(git rev-parse -q --verify 'HEAD^{tree}' || git hash-object -t tree /dev/null) || reject "could not read HEAD"
+# Success: but only if the index still holds the tree that was checked.
+finish() {
+    now=$(git write-tree) || reject "could not record the staged files again"
+    [ "$now" = "$staged_tree" ] || reject "the staged files changed while the hook ran; commit again"
+    exit 0
+}
+
+# The diff is produced with explicit options, so no setting of the person's git configuration (prefixes, context
+# between hunks, colour, external diff or textconv drivers, rename or copy detection, relative paths) changes it.
+staged_diff() {
+    git -c diff.noprefix=false -c diff.mnemonicPrefix=false -c diff.interHunkContext=0 \
+        -c diff.suppressBlankEmpty=false -c core.quotePath=false \
+        diff --no-color --no-ext-diff --no-textconv --no-renames --no-relative --submodule=short "$@" "$base" "$staged_tree"
+}
+
+# Only a list that is certainly absent skips the scan: nothing at that path, not even a dangling symlink, and the
+# nearest existing folder above it is searchable, so the absence is not a lookup that was denied. Anything at the
+# path (a symlink of any kind included) must resolve to a readable regular file.
+tokens_state=absent
+if [ -e "$tokens" ] || [ -L "$tokens" ]; then
+    tokens_state=present
+else
+    above=$(dirname "$tokens")
+    while ! [ -e "$above" ] && ! [ -L "$above" ]; do above=$(dirname "$above"); done
+    [ -d "$above" ] && [ -x "$above" ] \
+        || reject "the private-token list at $tokens cannot be looked up: $above is not a searchable folder"
+fi
+
+if [ "$tokens_state" = present ]; then
+    { [ -f "$tokens" ] && [ -r "$tokens" ]; } \
+        || reject "the private-token list at $tokens is not a readable file (or a symlink to one)"
+    staged_diff --inter-hunk-context=0 -U0 --src-prefix=a/ --dst-prefix=b/ > "$work/diff" \
+        || reject "could not read the staged diff"
+    # One line per added line: "<file>:<line>", a tab, then the added text. Each hunk is read by the counts in
+    # its header: a line starting with "+" is added, "-" removed, "\" a marker, anything else a context line
+    # (counted on both sides). So an added line that itself starts with "++ " is never taken for a file header,
+    # and context lines, should any appear, never shift the parser off the hunk boundaries.
     awk '
         function count(s,   a) { return split(s, a, ",") > 1 ? a[2] + 0 : 1 }
+        BEGIN { old = 0; new = 0; bad = 0 }
         old > 0 || new > 0 {
-            if (substr($0, 1, 1) == "+") { print file ":" line "\t" substr($0, 2); line++; new-- }
-            else if (substr($0, 1, 1) == "-") { old-- }
+            c = substr($0, 1, 1)
+            if (c == "+")       { if (new <= 0) { bad = 1; exit 1 }; print file ":" line "\t" substr($0, 2); line++; new-- }
+            else if (c == "-")  { old-- }
+            else if (c != "\\") { old--; new--; line++ }
+            if (old < 0 || new < 0) { bad = 1; exit 1 }
             next
         }
-        /^\+\+\+ / { file = substr($0, 5); sub(/^b\//, "", file); next }
-        /^@@ /     { old = count(substr($2, 2)); new = count(substr($3, 2)); split(substr($3, 2), a, ","); line = a[1] + 0 }
+        /^\+\+\+ / {
+            file = substr($0, 5); sub(/\t$/, "", file)
+            if (substr(file, 1, 3) == "\"b/") file = "\"" substr(file, 4); else sub(/^b\//, "", file)
+            next
+        }
+        /^@@ / {
+            if ($2 !~ /^-[0-9]+(,[0-9]+)?$/ || $3 !~ /^\+[0-9]+(,[0-9]+)?$/) { bad = 1; exit 1 }
+            old = count(substr($2, 2)); new = count(substr($3, 2)); split(substr($3, 2), a, ","); line = a[1] + 0
+        }
+        END { if (bad || old > 0 || new > 0) exit 1 }
     ' "$work/diff" > "$work/added" || reject "could not parse the staged diff"
+    # Every added line must reach the scanner exactly once: the parsed count must equal git's own count.
+    staged_diff --numstat > "$work/numstat" || reject "could not count the staged changes"
+    expected=$(awk -F'\t' '$1 != "-" { n += $1 } END { print n + 0 }' "$work/numstat") \
+        || reject "could not count the staged changes"
+    parsed=$(wc -l < "$work/added" | tr -d ' ')
+    [ "$parsed" -eq "$expected" ] || reject "could not parse the staged diff ($parsed of $expected added lines read)"
     cut -f2- "$work/added" > "$work/text" || reject "could not parse the staged diff"
     # grep exits 0 on a match, 1 on none, and 2 on an error such as a malformed pattern.
     status=0
     grep -nEi -f "$tokens" "$work/text" > "$work/hits" 2>/dev/null || status=$?
-    if [ "$status" -eq 0 ]; then
+    [ "$status" -le 1 ] || reject "the privacy scan failed (grep exit status $status); check the patterns in $tokens"
+    : > "$work/where"
+    [ "$status" -eq 1 ] || cut -d: -f1 "$work/hits" | while read -r n; do sed -n "${n}p" "$work/added" | cut -f1; done >> "$work/where"
+
+    # The guarantee: the whole staged content of every added or changed file is scanned as bytes, whatever Git
+    # makes of it in a diff (binary, marked -diff in .gitattributes, or anything else). The line scan above only
+    # adds line numbers. A file found here but not above is named without a line: it is binary or not diffed as
+    # text, or the token sits on a line this commit did not add. A file that cannot be read rejects the commit.
+    staged_diff --raw --no-abbrev --diff-filter=AMT > "$work/raw" || reject "could not list the staged files"
+    tab=$(printf '\t')
+    while IFS= read -r record; do
+        meta=${record%%"$tab"*}; path=${record#*"$tab"}
+        # shellcheck disable=SC2086
+        set -- $meta
+        [ "$#" -eq 5 ] && [ "$meta" != "$record" ] || reject "could not parse the staged file list"
+        [ "$2" = 160000 ] && continue                            # a submodule: no content in this repository
+        git cat-file blob "$4" > "$work/blob" || reject "could not read the staged content of $path"
+        status=0
+        grep -aqEi -f "$tokens" "$work/blob" 2>/dev/null || status=$?
+        if [ "$status" -eq 0 ]; then
+            P="$path" awk 'BEGIN { p = ENVIRON["P"] ":" }
+                index($0, p) == 1 && substr($0, length(p) + 1) ~ /^[0-9]+$/ { f = 1 } END { exit !f }' "$work/where" \
+                || echo "$path (in its staged content; no line number)" >> "$work/where"
+        elif [ "$status" -ne 1 ]; then
+            reject "the privacy scan of $path failed (grep exit status $status); check the patterns in $tokens"
+        fi
+    done < "$work/raw"
+    if [ -s "$work/where" ]; then
         echo "pre-commit: the staged changes contain a private token (patterns in $tokens); the matched text is withheld:" >&2
-        cut -d: -f1 "$work/hits" | while read -r n; do sed -n "${n}p" "$work/added" | cut -f1; done >&2
+        cat "$work/where" >&2
         exit 1
-    elif [ "$status" -ne 1 ]; then
-        reject "the privacy scan failed (grep exit status $status); check the patterns in $tokens"
     fi
 else
     echo "pre-commit: no private-token list at $tokens; the privacy scan was skipped" >&2
 fi
 
-if git diff --cached --name-only | grep -qE '\.swift$|^Package\.swift$'; then
-    swift build >/dev/null 2>&1 || { echo "pre-commit: swift build failed; run it to see why" >&2; exit 1; }
+# Build only when the staged changes touch what the package builds from: Swift sources and tests, resources the
+# manifest links or copies, the manifest and its dependency lockfile. (The same paths as in suites.sh.)
+staged_diff --name-only -z > "$work/staged.z" || reject "could not list the staged changes"
+tr '\0' '\n' < "$work/staged.z" > "$work/staged"
+grep -qE '^(Sources|Tests|Resources)/|^Package\.(swift|resolved)$|^scripts/test\.sh$|\.swift$' "$work/staged" || finish
+
+if ! git cat-file -e "$staged_tree:Package.swift" 2>/dev/null; then
+    echo "pre-commit: the staged snapshot has no Package.swift; nothing to build" >&2
+    finish
 fi
+# The snapshot folder has its own index, so only files that changed since the last commit are rewritten and the
+# build in its .build stays incremental. It lives in this checkout's git directory (one per worktree).
+hooks="$(git rev-parse --absolute-git-dir)/sprava-hooks"
+snap="$hooks/staged"
+mkdir -p "$snap" || reject "could not create the snapshot folder $snap"
+# One build at a time in the snapshot, from checkout to the end of the build (held until this hook exits).
+[ -r "$hook_dir/lock.sh" ] || reject "$hook_dir/lock.sh is missing"
+. "$hook_dir/lock.sh"
+hold_lock "$hooks/staged.lock" pre-commit || reject "could not lock $hooks/staged.lock"
+if [ ! -f "$hooks/staged.index" ]; then
+    find "$snap" -mindepth 1 -maxdepth 1 ! -name .build -exec rm -rf {} + || reject "could not clear $snap"
+fi
+GIT_INDEX_FILE="$hooks/staged.index" git -c core.hooksPath=/dev/null --work-tree="$snap" \
+    read-tree --reset -u "$staged_tree" || reject "could not check out the staged snapshot into $snap"
+(cd "$snap" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && swift build) \
+    > "$hooks/staged-build.log" 2>&1 </dev/null 9>&- \
+    || reject "swift build of the staged snapshot failed; the output is in $hooks/staged-build.log"
+finish

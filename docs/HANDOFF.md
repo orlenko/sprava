@@ -144,14 +144,10 @@ Public, safe to quote:
 - `~/code/lifeproj/docs/DESIGN.md` and the lifeproj README.
 - `~/code/holos/README.md` and `~/code/holos/docs/status.md`.
 
-Private, local only (read for understanding; do not copy anything specific):
-- `~/tekas/osavul/CLAUDE.md`: the hub's operating manual (spool contract, guardrails, sync, quota guard).
-- `~/tekas/osavul/docs/design/todo-app/DESIGN.md`: the editable web lens, op vocabulary and ownership
-  rule.
-- `~/tekas/osavul/docs/briefs-contract.md` and `~/tekas/osavul/docs/publish-contract.md`: the briefs
-  lane and the Google sync seam.
-
-Do not read inside any other folder under `~/tekas/`. Those are private life projects.
+Private, local only (read for understanding; do not copy anything specific): the hub's four documents in
+the author's local hub folder: its operating manual (spool contract, guardrails, sync, quota guard), the
+editable web lens with its op vocabulary and ownership rule, and the briefs lane with the Google sync seam.
+Do not read any other folder there: those are private life projects.
 
 ## How the author works (please follow)
 
