@@ -393,6 +393,8 @@ test('a floor read that finishes late never lowers a floor raised meanwhile (§7
     const reading = call('GET', '/v0/objects/index/1', device.token); // its floor read is held
     await new Promise((r) => setTimeout(r, 50));
     assert.equal((await call('DELETE', '/v0/objects/index/1', owner)).status, 204, 'raises the floor to 2');
+    // Many other prefixes are asked about meanwhile; nothing of what is known about index/ is dropped.
+    for (let i = 0; i < 1100; i++) await call('GET', `/v0/objects/views/${newId()}/1`, owner);
     open();
     assert.equal((await reading).status, 404, 'the late read sees the raised floor');
     await scoped(raw, INSTANCE).put('objects/index/1', new Uint8Array([1])); // a late copy lands

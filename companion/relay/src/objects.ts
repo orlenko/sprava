@@ -34,24 +34,21 @@ function parsePrefix(prefix: string): { device: string | null } | null {
  * `floors/objects/{prefix}`, following the floor protocol of the README: raised only under the creation lock, only
  * to the lowest name the owner has not deleted, and durable before anything it covers is deleted.
  */
-const FLOOR_CACHE = 1024;
 
 export function objects(relay: Relay, devices: Devices): { routes: Route[]; sweep: () => Promise<void> } {
     const { store } = relay;
     const reads = new SlidingWindow(HOUR, READS_PER_HOUR);
     /**
-     * Floors known above 0, at most FLOOR_CACHE of them, least recently used dropped first; a dropped or absent one
-     * is read from the bucket again. Values only ever rise: a read that finishes after a raise never lowers one.
+     * The high-water mark of every floor above 0 this process has seen, never dropped: a read that finishes after a
+     * raise never lowers one, however late. Only prefixes with a floor are kept, and only the owner's deletions make
+     * one (a binder shown, a device kept), so a device asking about names that do not exist adds nothing; a revoked
+     * device's go with it. A prefix not kept is read from the bucket each time.
      */
     const floors = new Map<string, number>();
     const scopeOf = (prefix: string): string => `objects/${prefix.slice(0, -1)}`;
     const remember = (prefix: string, floor: number): number => {
         const known = Math.max(floor, floors.get(prefix) ?? 0);
-        floors.delete(prefix);
-        if (known > 0) {
-            floors.set(prefix, known);
-            if (floors.size > FLOOR_CACHE) floors.delete(floors.keys().next().value!);
-        }
+        if (known > 0) floors.set(prefix, known);
         return known;
     };
     const floorOf = async (prefix: string): Promise<number> => {
@@ -103,6 +100,7 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
             const device = prefix.startsWith('devices/') ? prefix.split('/')[1]! : null;
             if (device !== null && (await devices.isRevoked(device))) {
                 for (const root of ['objects/', `${TOMBSTONES}objects/`, `${FLOORS}objects/`]) await forgetAll(store, `${root}${prefix}`);
+                floors.delete(prefix); // nothing is ever written under a revoked device's prefix again
                 continue;
             }
             await relay.lock.run(() => compactLocked(prefix));

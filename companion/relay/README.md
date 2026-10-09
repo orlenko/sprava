@@ -217,7 +217,7 @@ the owner itself makes (devices paired, pairings opened, binders shown).
 | `pairings/{P}/` parts (and their intents) | per pairing open (at most 3, for 10 minutes); deleted with the pairing |
 | `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
 | `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
-| `tombstones/objects/...`, `intents/objects/...` | per prefix, names at or above its floor: what is published, uploads in progress, uploads that failed and that the owner has not deleted yet (the owner deletes every revision it assigned, spec section 9.7), and names deleted out of order above the lowest kept; the floor deletes everything below it |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, names at or above its floor: what is published, uploads in progress, and the owner's failed uploads, which only the owner can make and which the Mac deletes (spec section 9.7), so no device can grow them, and names deleted out of order above the lowest kept; the floor deletes everything below it |
 | `floors/objects/{prefix}` | one per prefix in use: the index, each binder shown, each device kept; **exception**: a removed binder's views floor stays, one per binder ever shown (its id is never reused, so nothing new arrives under it, and a late copy is refused only by it). A removed device's go with it |
 | `requests/{D}/`, `intents/requests/{D}/` | pending requests: at most 1,000 per device |
 | `tombstones/requests/{D}/` | names deleted out of order above the device's floor: with its pending requests, at most 10,000 names per device, whatever the rate or the restarts (a device at the bound gets 507 until the Mac collects its oldest request) |
