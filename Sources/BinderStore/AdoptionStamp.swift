@@ -20,20 +20,19 @@ extension Adoption {
         for key in setMeta?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [] { meta.remove(key) }
         for entry in setMeta?["set"]?.objectValue?.entries ?? [] { meta.set(entry.key, entry.value) }
         var patch: [JSONValue] = []
-        // A value the stamp writes over (a found `format`, `format_version`, `disclosure` or a name that is not a
-        // non-empty string) is kept aside under the next free `legacy_<field>` first (binder-v0 §9.5); with none free,
-        // no stamp is offered. `schema_version` is the one value replaced outright (binder-v0 §9.4 step 6); the
-        // migrate's `from` records it.
+        // A value the stamp writes over (a found `schema_version`, `format`, `format_version`, `disclosure` or a name
+        // that is not a non-empty string) is kept aside first (`keepAside`); with no legacy name free, no stamp is
+        // offered.
         var noLegacyKey = false
-        func add(_ key: String, _ value: JSONValue, keepAside: Bool = true) {
-            if keepAside, let old = meta[key], old != value {
-                guard let aside = legacyKey(key, in: meta) else { noLegacyKey = true; return }
-                patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", old)]))
-                meta.set(aside, old)
-            }
+        func add(_ key: String, _ value: JSONValue) {
+            do {
+                if let aside = try keepAside(key, in: &meta, becoming: value) {
+                    patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside.key)")), ("value", aside.value)]))
+                }
+            } catch { noLegacyKey = true; return }
             patch.append(.obj([("op", .str(meta[key] == nil ? "add" : "replace")), ("path", .string("/meta/\(key)")), ("value", value)]))
         }
-        if teka.level == .lifeprojV1 { add("schema_version", .int(2), keepAside: false) }
+        if teka.level == .lifeprojV1 { add("schema_version", .int(2)) }
         if (meta["name"]?.stringValue ?? "").isEmpty { add("name", .string(folder.lastPathComponent)) }
         add("format", .str("teka"))
         add("format_version", .str("0"))
@@ -80,9 +79,10 @@ extension Adoption {
         var unset: [JSONValue] = []
         var taken = meta
         for (key, ok) in valid {
-            guard let value = meta[key], !ok(value), let aside = legacyKey(key, in: taken) else { continue }
-            set.set(aside, value)
-            taken.set(aside, value)
+            guard let value = meta[key], !ok(value) else { continue }
+            let aside: (key: String, value: JSONValue)?
+            do { aside = try keepAside(key, in: &taken, becoming: nil) } catch { continue }
+            if let aside { set.set(aside.key, aside.value) }
             unset.append(.string(key))
         }
         guard !unset.isEmpty else { return nil }
@@ -92,6 +92,23 @@ extension Adoption {
     /// `legacy_<field>`, or `legacy_<field>_2` and so on when that is taken (binder-v0 §9.5).
     static func legacyKey(_ field: String, in meta: JSONObject) -> String? {
         (1...100).lazy.map { $0 == 1 ? "legacy_\(field)" : "legacy_\(field)_\($0)" }.first { meta[$0] == nil }
+    }
+
+    struct NoLegacyKey: Error {}
+
+    /// The one rule for every value adoption replaces or removes, in meta or in an item (binder-v0 §9.5): when `new`
+    /// (nil for a removal) does not carry the value `field` holds in `object`, that value goes under the next free
+    /// `legacy_<field>`, returned for the caller to write first and marked taken in `object`. Nothing is lost, and
+    /// nil returned, for a null or an empty string removed, an unchanged value, or an array whose every entry the
+    /// new array still holds. Throws when every legacy name is taken, so the change is not offered.
+    static func keepAside(_ field: String, in object: inout JSONObject,
+                          becoming new: JSONValue?) throws -> (key: String, value: JSONValue)? {
+        guard let old = object[field], old != .null, old != new else { return nil }
+        if new == nil, old == .str("") { return nil }
+        if case .array(let was) = old, case .array(let now)? = new, was.allSatisfy(now.contains) { return nil }
+        guard let key = legacyKey(field, in: object) else { throw NoLegacyKey() }
+        object.set(key, old)
+        return (key, old)
     }
 
     /// Whether `catalog` would read as a ready v0 binder in `folder`: the full reading of `Teka.read`, meta and

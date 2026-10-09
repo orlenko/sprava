@@ -193,6 +193,16 @@ public enum Adoption {
                                            provenance: JSONObject([(key: "adoption", value: .str("shared-id")), (key: "manual_repair", value: .bool(true)),
                                                                    (key: "ids", value: .array(shared))]), now: now))
         }
+        // No op can name an item without an id (or an entry that is not an item at all), so those go to the person
+        // too, by their place in the list, counted from 1.
+        let unnamed = items.indices.filter { items[$0].objectValue == nil || items[$0]["id"] == nil || items[$0]["id"] == .null }
+        if !unnamed.isEmpty {
+            let places = unnamed.map { String($0 + 1) }.joined(separator: ", ")
+            proposals.append(Proposal.make(title: "Give an id to the open items at these places in the list, by hand, then reject this card: " + places,
+                                           actor: importActor, ops: [],
+                                           provenance: JSONObject([(key: "adoption", value: .str("no-id")), (key: "manual_repair", value: .bool(true)),
+                                                                   (key: "positions", value: .array(unnamed.map { .int($0) }))]), now: now))
+        }
 
         // Repairs are judged after the mechanical fixes. A lifeproj or pre-lifeproj catalog is judged by the v0 rules,
         // since those are what the stamp needs: a redacted item without a kind passes lifeproj's rules, and a v1 or
@@ -211,12 +221,14 @@ public enum Adoption {
         // stays in needs migration for now.
         if teka.level == .preLifeproj, let found = Teka.read(folder).catalog {
             var patch: [JSONValue] = []
-            if case .object(let meta)? = found["meta"] {
-                if let old = meta["schema_version"] {
-                    if let aside = legacyKey("schema_version", in: meta) {
-                        patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", old)]))
+            if case .object(var meta)? = found["meta"] {
+                if meta["schema_version"] != nil {
+                    do {
+                        if let aside = try keepAside("schema_version", in: &meta, becoming: .int(1)) {
+                            patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside.key)")), ("value", aside.value)]))
+                        }
                         patch.append(.obj([("op", .str("replace")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
-                    }
+                    } catch {}
                 } else {
                     patch.append(.obj([("op", .str("add")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
                 }
@@ -274,10 +286,17 @@ public enum Adoption {
             var set = JSONObject()
             let status = o["status"]?.stringValue
             if status == "waiting" || status == "blocked", o["follow_up_at"] == nil {
-                let due = o["due"]?.stringValue.flatMap { CalendarDate.strict($0) ?? CalendarDate.lenient($0) }
-                set.set("follow_up_at", .string(followUp(o, due: due, today: today).description))
+                // A `derived` the new list does not carry (an object, a mixed list) is kept aside first; with no legacy
+                // name free, the card leaves the follow-up date to the person.
+                var taken = o
                 let derived = (o["derived"]?.arrayValue?.compactMap(\.stringValue) ?? []).filter { $0 != "follow_up_at" }
-                set.set("derived", .array((derived + ["follow_up_at"]).map(JSONValue.string)))
+                let names: JSONValue = .array((derived + ["follow_up_at"]).map(JSONValue.string))
+                do {
+                    if let aside = try keepAside("derived", in: &taken, becoming: names) { set.set(aside.key, aside.value) }
+                    let due = o["due"]?.stringValue.flatMap { CalendarDate.strict($0) ?? CalendarDate.lenient($0) }
+                    set.set("follow_up_at", .string(followUp(o, due: due, today: today).description))
+                    set.set("derived", names)
+                } catch {}
             }
             var op = JSONObject([(key: "op", value: .str("update_item")),
                                  (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
@@ -324,30 +343,42 @@ public enum Adoption {
         return mechanical
     }
 
-    /// The lossless fixes of binder-v0 §9.4 step 3 for one item, as one `update_item`; nil when it needs none.
+    /// The lossless fixes of binder-v0 §9.4 step 3 for one item, as one `update_item`; nil when it needs none. Every
+    /// value it replaces or removes goes through `keepAside`: a compact due date, a `derived` that is not a list of
+    /// names, stay in the item under `legacy_<field>`. With no legacy name free, the item gets no fix.
     static func mechanicalFix(_ o: JSONObject, today: CalendarDate, actor: JSONObject) -> TekaStore.OpBody? {
         guard let id = o["id"] else { return nil }
+        var taken = o
         var set = JSONObject()
         var unset: [String] = []
-        var derived = o["derived"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        var added: [String] = []
         var notes: [String] = []
-        for key in ["due", "waiting_on", "link"] where o[key] == .null { unset.append(key) }
-        if o["no_deadline"] == .bool(true), o["due"] == .str("") { unset.append("due") }
-        if case .string(let due)? = o["due"], !due.isEmpty, CalendarDate.strict(due) == nil, let d = CalendarDate.lenient(due) {
-            set.set("due", .string(d.description))
-            derived.append("due")
-            notes.append("due was written \(due)")
+        func replace(_ key: String, with value: JSONValue?) throws {
+            if let aside = try keepAside(key, in: &taken, becoming: value) { set.set(aside.key, aside.value) }
+            if let value { set.set(key, value) } else { unset.append(key) }
         }
-        let status = o["status"]?.stringValue
-        if (status == "waiting" || status == "blocked"), o["follow_up_at"] == nil {
-            let follow = followUp(o, due: (set["due"] ?? o["due"])?.stringValue.flatMap(CalendarDate.strict), today: today)
-            set.set("follow_up_at", .string(follow.description))
-            derived.append("follow_up_at")
+        do {
+            for key in ["due", "waiting_on", "link"] where o[key] == .null { try replace(key, with: nil) }
+            if o["no_deadline"] == .bool(true), o["due"] == .str("") { try replace("due", with: nil) }
+            if case .string(let due)? = o["due"], !due.isEmpty, CalendarDate.strict(due) == nil, let d = CalendarDate.lenient(due) {
+                try replace("due", with: .string(d.description))
+                added.append("due")
+                notes.append("due was written \(due)")
+            }
+            let status = o["status"]?.stringValue
+            if (status == "waiting" || status == "blocked"), o["follow_up_at"] == nil {
+                let follow = followUp(o, due: (set["due"] ?? o["due"])?.stringValue.flatMap(CalendarDate.strict), today: today)
+                try replace("follow_up_at", with: .string(follow.description))
+                added.append("follow_up_at")
+            }
+            if !added.isEmpty {
+                let kept = (o["derived"]?.arrayValue?.compactMap(\.stringValue) ?? []).filter { !added.contains($0) }
+                try replace("derived", with: .array((kept + added).map(JSONValue.string)))
+            }
+        } catch {
+            return nil
         }
         guard !set.entries.isEmpty || !unset.isEmpty else { return nil }
-        if !derived.isEmpty, set.entries.contains(where: { ["due", "follow_up_at"].contains($0.key) }) {
-            set.set("derived", .array(derived.map(JSONValue.string)))
-        }
         var args = JSONObject()
         args.set("id", id)
         if !set.entries.isEmpty { args.set("set", .object(set)) }
