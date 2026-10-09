@@ -45,7 +45,7 @@ import Testing
 
         _ = try event(s, ref: "E1", revision: "rev2", text: "Call the invented roofer", private: true)
         sweep(s)
-        #expect(try s.inbox.readState().raises?.isEmpty == false, "the raise is still owed")
+        #expect(try s.inbox.readState().debts?.isEmpty == false, "the privacy debt is still owed")
         #expect(!s.inbox.settle(binder: s.folder, commands: s.commands, now: pNow), "the approval waits")
 
         chmod(file.path, 0o600)
@@ -53,7 +53,7 @@ import Testing
         let fresh = try #require(pOpen(s).first { $0.id == card.id })
         #expect(fresh.raw["provenance"]?["private"] == .bool(true))
         sweep(s)
-        #expect(try s.inbox.readState().raises?.isEmpty != false)
+        #expect(try s.inbox.readState().debts?.isEmpty != false)
     }
 
     // MARK: - 2. A revision with no words takes back what the chain said

@@ -32,10 +32,8 @@ extension CaptureInbox {
         dropFiled(binders: binders, commands: commands)
         // A binder back after it could not be reached first gets the capture work it missed.
         settleDeferred(binders, state: &state, commands: commands, now: now)
-        // Raises to private that could not be written last time are tried again first.
-        for (id, chain) in (state.raises ?? [:]).sorted(by: { $0.key < $1.key }) where raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) {
-            state.raises?[id] = nil
-        }
+        // Privacy debts are paid first, as far as they can be.
+        payDebts(binders, state: &state, commands: commands, now: now)
         // A hand-off to the clerk's cards cut short is finished or taken back, so no capture waits twice.
         settleHandoffs(state: &state, commands: commands, now: now)
         guard let devices = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
@@ -105,7 +103,10 @@ extension CaptureInbox {
             }
         }
         // Work a binder missed that waited for an event this sweep finished is done now, not a sweep later.
-        if result.unsaved == nil { settleDeferred(binders, state: &state, commands: commands, now: now) }
+        if result.unsaved == nil {
+            settleDeferred(binders, state: &state, commands: commands, now: now)
+            payDebts(binders, state: &state, commands: commands, now: now)
+        }
         if (try? save(state)) == nil { result.unsaved = "state.json" }
         return result
     }
@@ -154,8 +155,7 @@ extension CaptureInbox {
                 chain.insert(first, at: 0)
                 absorbed.append(first)
                 if Set(state.privates ?? []).contains(first), chain.count > 1 {
-                    deferWork(of: first, chain: chain, binders: binders, commands: commands, state: &state)
-                    raise(chain.filter { $0 != first }, for: first, state: &state, binders: binders, commands: commands, now: now)
+                    raise(chain.filter { $0 != first }, for: first, key: event.chainKey, state: &state, binders: binders, commands: commands, now: now)
                 }
             }
         }
@@ -220,10 +220,8 @@ extension CaptureInbox {
                 }
                 // Sensitivity only goes up, whoever sends it: a private copy raises what the copy repeats (§3.3).
                 if event.isPrivate {
-                    // The binders out of reach are recorded first, so the raise's save carries them with the stage.
                     let raised = members + privacyChain.filter { !members.contains($0) }
-                    deferWork(of: id, chain: raised, binders: binders, commands: commands, state: &state)
-                    raise(raised, for: id, state: &state, binders: binders, commands: commands, now: now)
+                    raise(raised, for: id, key: event.chainKey, state: &state, binders: binders, commands: commands, now: now)
                 }
                 journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
                 return
@@ -235,18 +233,17 @@ extension CaptureInbox {
             state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
             if member { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
         }
-        // A private event's raise of its chain is pending from the save that first holds the event, so no crash after
-        // it loses the raise (it is cleared once done).
+        // A private event's chain owes its privacy pass from the save that first holds the event, so no crash after it
+        // loses the debt (cleared only once paid in full).
         if event.isPrivate, !privacyChain.isEmpty {
             markPrivate(privacyChain + [id], state: &state)
-            state.raises = (state.raises ?? [:]).merging([id: privacyChain]) { $1 }
+            owePrivacy(event.chainKey, state: &state)
         }
         // Ingesting is one durable step, recorded before anything else happens: no card is made from an event the
         // cursor on disk does not hold, since a card the cursor forgot would be made again (§5.3).
         guard checkpoint(state, &result) else { return }
         // A binder that cannot be reached now misses what this event does to its chain; it is done there when it is back.
         if member, !chain.isEmpty { deferWork(of: id, chain: chain, binders: binders, commands: commands, state: &state) }
-        else if event.isPrivate, !privacyChain.isEmpty { deferWork(of: id, chain: privacyChain, binders: binders, commands: commands, state: &state) }
         if new {
             journal([("event", .string(id)), ("stage", .str("ingested")), ("bytes", .int(size))])
             result.ingested += 1
@@ -257,7 +254,7 @@ extension CaptureInbox {
         // The first event of a chain records its privacy too, before any return below (empty, retracted), so a later
         // revision marked otherwise is still filed private.
         if event.isPrivate {
-            if !privacyChain.isEmpty { raise(privacyChain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+            if !privacyChain.isEmpty { raise(privacyChain, for: id, key: event.chainKey, state: &state, binders: binders, commands: commands, now: now) }
             else { markPrivate([id], state: &state) }
         }
         // A revision that arrives late but is older than what the chain already has changes nothing else.
@@ -438,7 +435,11 @@ extension CaptureInbox {
         let stored = storedEvent(id, paths: state.paths ?? [:])?["sensitivity"]
         let carded = (folder.map { f in ProposalStore.list(in: f).map(\.0) } ?? unfiled()).first { $0.id == card }
         if stored.map({ $0 != .str("unmarked") }) ?? false || carded?.raw["provenance"]?["private"] == .bool(true) {
-            raise(chain.filter { $0 != id }, for: id, state: &state, binders: binders, commands: commands, now: now)
+            if let key = chainKey(of: id, state: state) {
+                raise(chain.filter { $0 != id }, for: id, key: key, state: &state, binders: binders, commands: commands, now: now)
+            } else {
+                markPrivate(chain + [id], state: &state)
+            }
         }
         return true
     }

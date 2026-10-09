@@ -99,14 +99,14 @@ func bFileAndApprove(_ s: PSetup) throws {
             $0.set("sensitivity", .str("private")); $0.set("supersedes", .string(first))
         }
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
-        #expect(try s.inbox.readState().raises?[dup]?.contains(first) == true)   // kept for the next sweep
+        #expect(s.inbox.privacyOwed(for: first))   // kept for the next sweep
         #expect(pOpen(s).first?.ops.first?["args"]?["item"]?["redact"] == nil)
         chmod(proposals.path, 0o700)
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
         let card = try #require(pOpen(s).first)
         #expect(card.ops.first?["args"]?["item"]?["redact"] == .bool(true))
         #expect(card.raw["provenance"]?["private"] == .bool(true))
-        #expect(try s.inbox.readState().raises?[dup] == nil)
+        #expect(!s.inbox.privacyOwed(for: first))
     }
 
     // qHLuP: an unreadable producer registry is never saved over.

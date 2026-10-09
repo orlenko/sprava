@@ -201,9 +201,13 @@ public struct IntakeWatcher: Sendable {
                         let sha = prepared.digests[path] ?? DocumentPaths.sha256(of: URL(fileURLWithPath: path))
                         let matching = waiting.filter { $0.raw["provenance"]?["intake"]?["name"]?.stringValue == file.name
                             && $0.raw["provenance"]?["intake"]?["sha256"]?.stringValue == sha }
-                        // Only a card Sprava recorded is taken over, with its reading made sure of; one it cannot
-                        // vouch for could never be approved, so it is withdrawn and the file carded again.
-                        if let existing = matching.first(where: { commands.isTrusted($0.id, in: row.folder) }) {
+                        // Only a card Sprava recorded is taken over, with its reading made sure of, and only when it files
+                        // exactly the files there now: the message and every attachment, each by its digest (one that
+                        // changed, or was added or removed, makes it stale). One it cannot vouch for could never be
+                        // approved, so it is withdrawn and the file carded again.
+                        if let existing = matching.first(where: {
+                            commands.isTrusted($0.id, in: row.folder) && Self.filesSame($0, file: file, sha: sha, digests: prepared.digests, in: row.folder)
+                        }) {
                             entry?.card = existing.id
                             if let sha, IntakeReadings(support: support).forCard(existing.id) == nil {
                                 entry?.readingMissing = saveReading(reading, file: file, sha: sha, card: existing.id, in: row, now: now) ? nil : true
@@ -420,6 +424,24 @@ public struct IntakeWatcher: Sendable {
     /// Finishes a replacement of a file's card by the clerk's reading that a crash cut short (`commitReading`): a
     /// clerk's card whose reading names it takes over from the card it replaces, and a card it replaces that still
     /// waits is withdrawn. Returns the card the cursor follows now.
+    /// Whether a filing card files exactly `file`'s source files as they are now: each `intake/` path once, with the
+    /// digest it has now. A file whose digest cannot be taken matches nothing.
+    static func filesSame(_ card: Proposal, file: Candidate, sha: String?, digests: [String: String], in folder: URL) -> Bool {
+        var expected: [String: String] = [:]
+        for (index, name) in ([file.name] + file.attachments).enumerated() {
+            let url = folder.appendingPathComponent("intake/" + name)
+            guard let digest = index == 0 ? sha : (digests[url.path] ?? DocumentPaths.sha256(of: url)) else { return false }
+            expected["intake/" + name] = digest
+        }
+        var filed: [String: String] = [:]
+        for op in card.ops where op["op"] == .str("file_document") {
+            guard let from = op["args"]?["from"]?.stringValue, let digest = op["args"]?["document"]?["sha256"]?.stringValue,
+                  filed[from] == nil else { return false }
+            filed[from] = digest
+        }
+        return filed == expected
+    }
+
     func finishReplacement(_ card: String, waiting: inout [Proposal], in folder: URL, now: Date) -> String {
         var followed = card
         let readings = IntakeReadings(support: support)

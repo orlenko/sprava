@@ -20,7 +20,8 @@ extension CaptureInbox {
         var chainsByKey: [String: [String]]? = [:]    // ["app","ref"] (CaptureEvent.chainKey) -> event ids, oldest first (§3.2)
         var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
         var clocks: [String: String]? = [:]           // id -> its HLC as sortable text, to find a chain's current event
-        package var raises: [String: [String]]? = [:]         // id -> a chain whose raise to private failed, retried each sweep
+        package var raises: [String: [String]]? = [:]         // as older cursors kept raises (by event); read once into `debts`
+        package var debts: [String]? = []                     // chain keys that owe a complete privacy pass (CaptureInbox+Privacy)
         var privates: [String]? = []                  // ids raised to private, or private by their chain (capture-event-v0 §3.3)
         package var examined: [String: Examined] = [:]        // device/name -> last seen
         var handoffs: [String: [Replacement]]? = [:]  // id -> the clerk's cards, named before any is saved, until its Tier 0 card gives way

@@ -8,6 +8,19 @@ import SpravaKit
 // to private, a retraction, a correction whose old cards it holds. The work is recorded per binder and finished when
 // the binder is back, before anything in it from those chains can be approved (capture-event-v0 §3.2, §3.3).
 extension CaptureInbox {
+    /// The binders given, and every other binder Sprava trusted a card in (from the digest list), as rows.
+    func knownRows(_ binders: [ShelfRow], commands: Commands) -> [ShelfRow] {
+        var rows = binders
+        var have = Set(binders.map { $0.folder.standardizedFileURL.path })
+        for key in (try? commands.loadDigests())?.keys ?? [:].keys {
+            guard let cut = key.lastIndex(of: "#") else { continue }
+            let folder = URL(fileURLWithPath: String(key[..<cut]), isDirectory: true).standardizedFileURL
+            guard have.insert(folder.path).inserted else { continue }
+            rows.append(ShelfRow(folder: folder, source: .picked, archived: false, teka: Teka.read(folder)))
+        }
+        return rows
+    }
+
     /// The binders this Mac knows that the sweep cannot write now: on the shelf but not readable as an adopted binder,
     /// or holding a card Sprava trusted but not on the shelf. A binder another Mac owns is not this Mac's to change.
     func unreachableBinders(_ binders: [ShelfRow], commands: Commands) -> [String] {
@@ -56,18 +69,17 @@ extension CaptureInbox {
         }
     }
 
-    /// What the inbox still owes a binder before anything in it may be approved, all read from the cursor: a raise to
-    /// private not yet written everywhere (it may cover any binder), work the binder missed while away, and a
-    /// retraction left part done (its removal card redacts first when the chain is private).
+    /// What the inbox still owes a binder before anything in it may be approved, all read from the cursor: a chain's
+    /// privacy debt (it may cover any binder), work the binder missed while away, and a retraction left part done.
     enum Obligation: Equatable {
-        case raise(event: String, chain: [String])
+        case debt(key: String)
         case missed(event: String)
         case retraction(event: String, chain: [String])
     }
 
     func obligations(in folder: URL, state: State) -> [Obligation] {
         let path = folder.standardizedFileURL.path
-        let raises = (state.raises ?? [:]).sorted { $0.key < $1.key }.map { Obligation.raise(event: $0.key, chain: $0.value) }
+        let debts = (state.debts ?? []).map { Obligation.debt(key: $0) }
         let missed = (state.deferred?[path] ?? []).map { Obligation.missed(event: $0) }
         // A retraction's part is the events before it; a later restore's cards are never its to withdraw.
         let clocks = state.clocks ?? [:]
@@ -76,7 +88,7 @@ extension CaptureInbox {
                 $0 != id && (clocks[$0] ?? "") < (clocks[id] ?? "")
             })
         }
-        return raises + missed + retractions
+        return debts + missed + retractions
     }
 
     /// Whether the inbox still owes `folder` anything (`obligations`). The approval of any card in it waits for
@@ -85,7 +97,7 @@ extension CaptureInbox {
         !obligations(in: folder, state: loadState()).isEmpty
     }
 
-    /// Finishes everything the inbox owes `folder` (`obligations`): raises to private, work it missed while away, and
+    /// Finishes everything the inbox owes `folder` (`obligations`): privacy debts, work it missed while away, and
     /// retractions left part done. Call it before approving a card in that binder, and read the card again after it:
     /// false means some of it is still left (the binder cannot be written, or the cursor cannot be read or saved), and
     /// the approval must wait, since an old card there may still add what a chain made private or retracted.
@@ -101,9 +113,12 @@ extension CaptureInbox {
         var complete = true
         for obligation in owed {
             switch obligation {
-            case .raise(_, let chain):
-                // Done here; the raise stays pending for the sweep until every binder and the Inbox have it.
-                if !raisePrivacy(chain: chain, binders: [row], commands: commands, now: now) { complete = false }
+            case .debt(let key):
+                // Paid in this binder at least; the debt is cleared when every binder this Mac knows could have it paid.
+                if !raisePrivacy(chain: privacyMembers(key, state: state), binders: [row], commands: commands, now: now) { complete = false }
+                else if payDebt(key, binders: knownRows([row], commands: commands), state: state, commands: commands, now: now) {
+                    state.debts?.removeAll { $0 == key }
+                }
             case .missed:
                 break
             case .retraction(let event, let chain):
@@ -115,7 +130,70 @@ extension CaptureInbox {
         return complete && state.deferred?[path]?.isEmpty != false
     }
 
-    /// Finishes the deferred work of every binder in `binders` that is reachable again.
+    /// The approval gate: the card `id` in `folder` as it may be approved now, or nil when it may not. It settles the
+    /// binder first (`settle`), then works out from the cursor, at this moment, whether any chain the card comes from is
+    /// private (its events, the chains they belong to, and every event with the same app and ref). A card of a private
+    /// chain that is not fully redacted is rewritten redacted (and trusted again) and checked once more; one whose chains
+    /// cannot be told (an event the cursor does not know, a cursor that cannot be read) is refused. A card of no
+    /// capture passes as it is. The approval path calls this, and approves only what it returns.
+    public func cardForApproval(_ id: String, in folder: URL, commands: Commands, now: Date = Date()) -> Proposal? {
+        guard settle(binder: folder, commands: commands, now: now), let state = try? readState(),
+              let card = try? commands.loadTrusted(id, in: folder), card.state == "proposed",
+              let isPrivate = derivesFromPrivateChain(card, state: state) else { return nil }
+        guard isPrivate else { return card }
+        let catalog = Teka.read(folder).catalog
+        if Self.fullyRedacted(card, catalog: catalog) { return card }
+        guard let rewritten = try? commands.rewriteTrusted(id, in: folder, transform: { Self.privateCopy($0, catalog: catalog) }),
+              Self.fullyRedacted(rewritten, catalog: catalog) else { return nil }
+        journal([("stage", .str("redacted_at_approval")), ("card", .string(id))])
+        return rewritten
+    }
+
+    /// Whether a card comes from a chain that is private now: true or false from the cursor, nil when it cannot be told.
+    func derivesFromPrivateChain(_ card: Proposal, state: State) -> Bool? {
+        let events = card.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let privates = Set(state.privates ?? [])
+        var isPrivate = card.raw["provenance"]?["private"] == .bool(true)
+        for event in events {
+            guard state.ingested[event] != nil else { return nil }
+            var related = [event]
+            if let key = chainKey(of: event, state: state) {
+                related += privacyMembers(key, state: state)
+                if (state.privateKeys ?? []).contains(key) { isPrivate = true }
+            }
+            if related.contains(where: privates.contains) { isPrivate = true }
+        }
+        return isPrivate
+    }
+
+    /// Whether nothing a card writes is in the clear: every item it adds is redacted, every item it changes, closes or
+    /// reopens is redacted already or by an earlier op of the card, nothing takes a redaction away, and every document
+    /// it files is redacted.
+    static func fullyRedacted(_ card: Proposal, catalog: JSONObject?) -> Bool {
+        let items = catalog?["open_items"]?.arrayValue ?? []
+        var redacted = Set(items.filter { $0["redact"] == .bool(true) }.compactMap { $0["id"].map(canonicalText) })
+        for op in card.ops {
+            let args = op["args"]
+            switch op["op"]?.stringValue {
+            case "add_item":
+                guard args?["item"]?["redact"] == .bool(true) else { return false }
+                if let id = args?["item"]?["id"] { redacted.insert(canonicalText(id)) }
+            case "update_item":
+                guard let id = args?["id"] else { return false }
+                if args?["unset"]?.arrayValue?.contains(.str("redact")) == true || args?["set"]?["redact"] == .bool(false) { return false }
+                if args?["set"]?["redact"] == .bool(true) { redacted.insert(canonicalText(id)) }
+                guard redacted.contains(canonicalText(id)) else { return false }
+            case "set_status", "complete", "drop", "reopen", "dismiss", "undismiss":
+                guard let id = args?["id"], redacted.contains(canonicalText(id)) else { return false }
+            case "file_document":
+                guard args?["document"]?["redact"] == .bool(true) else { return false }
+            default:
+                continue
+            }
+        }
+        return true
+    }
+
     /// The event whose words, or retraction, stand for the chain now: the newest that holds them, a duplicate counted
     /// at its own stamp as the event it repeats. So a retraction taken for a copy of an earlier one (the event between
     /// them came later) still ends the chain after that event.
@@ -129,6 +207,7 @@ extension CaptureInbox {
     /// The key under which the Inbox's owed work is kept beside the binders'.
     static let inboxKey = "(inbox)"
 
+    /// Finishes the deferred work of every binder in `binders` that is reachable again, and the Inbox's.
     func settleDeferred(_ binders: [ShelfRow], state: inout State, commands: Commands, now: Date) {
         if let ids = state.deferred?[Self.inboxKey], !ids.isEmpty {
             let left = ids.filter { !finishInInbox($0, state: &state, commands: commands, now: now) }
@@ -152,9 +231,6 @@ extension CaptureInbox {
               Self.cardsReadable(in: unfiledDir), (try? unfiledDigests()) != nil else { return false }
         guard let newest = Self.standing(chain, state: state) else { return true }
         var complete = true
-        if chain.contains(where: Set(state.privates ?? []).contains) {
-            complete = raisePrivacy(chain: chain, binders: [], commands: commands, now: now)
-        }
         let retracted = ["retracted", "retracting"].contains(state.ingested[newest] ?? "")
         for p in unfiled() {
             let events = p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []
@@ -181,9 +257,6 @@ extension CaptureInbox {
             return retract(chain: chain.filter { $0 != newest }, retraction: newest, state: &state, binders: [row], commands: commands, now: now)
         }
         var complete = Self.cardsReadable(in: ProposalStore.dir(row.folder))
-        if chain.contains(where: Set(state.privates ?? []).contains) {
-            complete = raisePrivacy(chain: chain, binders: [row], commands: commands, now: now) && complete
-        }
         let current = state.texts?[newest]
         for (p, _) in ProposalStore.list(in: row.folder) where p.state == "proposed" && !Self.onlyRedacts(p)
             && p.raw["provenance"]?["retraction"] == nil {

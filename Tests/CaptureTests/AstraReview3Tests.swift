@@ -86,7 +86,7 @@ import Testing
         #expect(try Data(contentsOf: ProposalStore.dir(s.folder).appendingPathComponent("\(unfiled.id).json")) == changed)
         #expect(!s.commands.isTrusted(unfiled.id, in: s.folder))
         // Nothing to retry: the card can never be approved.
-        #expect(try s.inbox.readState().raises?[raise] == nil)
+        #expect(!s.inbox.privacyOwed(for: raise))
         #expect(journal(s).contains("card_changed_outside"))
     }
 

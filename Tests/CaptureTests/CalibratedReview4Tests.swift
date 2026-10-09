@@ -184,7 +184,7 @@ import Testing
             $0.set("sensitivity", .str("private"))
         }
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
-        #expect(try s.inbox.readState().raises?.isEmpty == false)
+        #expect(try s.inbox.readState().debts?.isEmpty == false)
         #expect(s.inbox.hasDeferredWork(in: s.folder))
         #expect(!s.inbox.settle(binder: s.folder, commands: s.commands, now: pNow))   // still unwritable: the approval waits
         chmod(proposals.path, 0o700)

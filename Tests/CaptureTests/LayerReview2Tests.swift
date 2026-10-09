@@ -74,7 +74,7 @@ import Testing
         defer { chmod(s.inbox.unfiledDir.path, 0o700) }
         let raise = try event(s, ref: "F1", revision: "rev1", text: "Renew the invented passport") { $0.set("sensitivity", .str("private")) }
         sweep(s)
-        #expect(try s.inbox.readState().raises?[raise] != nil)
+        #expect(s.inbox.privacyOwed(for: raise))
         #expect(s.inbox.unfiled().first?.raw["provenance"]?["private"] == nil)
 
         try s.inbox.file(card.id, into: s.folder, commands: s.commands)

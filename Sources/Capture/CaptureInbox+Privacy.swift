@@ -6,20 +6,75 @@ import SpravaKit
 
 // Raises to private: the cursor's record, and the cards rewritten and redacted (capture-event-v0 §3.2, §3.3).
 extension CaptureInbox {
-    /// Applies a raise to private for event `id`. The raise is recorded as pending in the cursor before anything is
-    /// saved, so no save, whatever stage it carries for the event, is ever on disk without it; it is cleared only once
-    /// every card and redaction is written, and until then every sweep tries it again. So a crash at any point never
-    /// leaves an unredacted card approvable.
-    func raise(_ chain: [String], for id: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
+    // Two guarantees keep a private chain private, whatever the order of crashes, disconnects and retries:
+    // - no card is approved in the clear: `cardForApproval` works out, from the cursor at that moment, whether the
+    //   chains a card comes from are private, and redacts or refuses it;
+    // - every item a private chain made or changed is offered for redaction: the chain owes a privacy debt (`debts`,
+    //   by chain key) from the save that first holds the raise, cleared only by one complete pass with every binder
+    //   in reach and every card readable (`payDebt`); `settle` pays it in a binder before an approval there.
+    // Rewriting the cards that wait is a convenience on top: a card missed there is redacted at approval.
+
+    /// A raise to private for event `id` and the chain `chain` (key `key`): the events are marked private and the
+    /// chain owes a privacy debt, in the cursor, before anything is saved; then the debt is paid if it can be.
+    func raise(_ chain: [String], for id: String, key: String, state: inout State, binders: [ShelfRow], commands: Commands, now: Date) {
         // From now on the chain is private: for cards made later, and for the clerk's reading already under way.
         markPrivate(chain + [id], state: &state)
-        state.raises = (state.raises ?? [:]).merging([id: chain]) { $1 }
+        owePrivacy(key, state: &state)
         try? save(state)
-        guard raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) else {
+        if payDebt(key, binders: knownRows(binders, commands: commands), state: state, commands: commands, now: now) {
+            state.debts?.removeAll { $0 == key }
+        } else {
             journal([("event", .string(id)), ("stage", .str("privacy_raise_failed"))])
-            return
         }
-        state.raises?[id] = nil
+    }
+
+    /// Records that the chain `key` owes a complete privacy pass.
+    func owePrivacy(_ key: String, state: inout State) {
+        if !(state.debts ?? []).contains(key) { state.debts = (state.debts ?? []) + [key] }
+    }
+
+    /// Every event with the chain key `key`: the registered chain's, and those from any other folder.
+    func privacyMembers(_ key: String, state: State) -> [String] {
+        var members = state.chainsByKey?[key] ?? []
+        for id in state.keyEvents?[key] ?? [] where !members.contains(id) { members.append(id) }
+        return members
+    }
+
+    /// The chain key an event was taken in under, when the cursor knows it.
+    func chainKey(of id: String, state: State) -> String? {
+        state.keyEvents?.first { $0.value.contains(id) }?.key ?? state.chainsByKey?.first { $0.value.contains(id) }?.key
+    }
+
+    /// One pass of a chain's privacy debt over `binders` (and the Inbox): every waiting card made private, every item
+    /// the chain made or changed offered for redaction. True only when all of it is done, every card could be read,
+    /// and no binder this Mac knows is out of reach (it may hold the chain's items).
+    func payDebt(_ key: String, binders: [ShelfRow], state: State, commands: Commands, now: Date) -> Bool {
+        let members = privacyMembers(key, state: state)
+        guard !members.isEmpty else { return true }
+        let done = raisePrivacy(chain: members, binders: binders, commands: commands, now: now)
+        return done && unreachableBinders(binders, commands: commands).isEmpty
+    }
+
+    /// Pays every privacy debt it can; a debt is cleared only by a complete pass.
+    func payDebts(_ binders: [ShelfRow], state: inout State, commands: Commands, now: Date) {
+        // A raise an older cursor kept by event becomes its chain's debt.
+        for (id, chain) in state.raises ?? [:] {
+            let snapshot = state
+            if let key = ([id] + chain).compactMap({ chainKey(of: $0, state: snapshot) }).first {
+                owePrivacy(key, state: &state)
+            }
+            state.raises?[id] = nil
+        }
+        let rows = knownRows(binders, commands: commands)
+        for key in state.debts ?? [] where payDebt(key, binders: rows, state: state, commands: commands, now: now) {
+            state.debts?.removeAll { $0 == key }
+        }
+    }
+
+    /// Whether the chain of event `id` still owes a privacy pass.
+    package func privacyOwed(for id: String) -> Bool {
+        let state = loadState()
+        return chainKey(of: id, state: state).map { (state.debts ?? []).contains($0) } ?? false
     }
 
     /// Records events as private in the cursor; nothing ever takes one out (capture-event-v0 §3.3).

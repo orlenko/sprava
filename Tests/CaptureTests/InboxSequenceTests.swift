@@ -212,10 +212,9 @@ import Testing
                     m.log.append("file \(card.id)")
                 }
             } else if rng.chance(70) || privacyOnly {
-                // The approval path first finishes what the binder missed while it was away, as the app's must.
-                // The card is read again after that: settling may have rewritten it private or withdrawn it.
-                guard s.inbox.settle(binder: s.folder, commands: s.commands, now: pNow),
-                      let fresh = ProposalStore.list(in: s.folder).map(\.0).first(where: { $0.id == card.id && $0.state == "proposed" }) else {
+                // The approval path asks the gate for the card, as the app's must: it settles the binder, and redacts or
+                // refuses a card of a private chain.
+                guard let fresh = s.inbox.cardForApproval(card.id, in: s.folder, commands: s.commands, now: pNow) else {
                     m.log.append("approve \(card.id) waits")
                     return false
                 }
@@ -417,7 +416,7 @@ import Testing
                 let trace = m.log.suffix(60).joined(separator: "\n")
                 let state = s.inbox.loadState()
                 let stages = m.chains[chain].map { "\($0.prefix(8)) \(m.events[$0]!.revision): \(state.ingested[$0] ?? "-") private=\((state.privates ?? []).contains($0))" }
-                Issue.record("card \(card.id) of private chain \(chain) is let through for approval in the clear\n\(JSONWriter.compact(.object(card.raw)))\n\(stages)\nraises: \(state.raises ?? [:])\n\(trace)")
+                Issue.record("card \(card.id) of private chain \(chain) is let through for approval in the clear\n\(JSONWriter.compact(.object(card.raw)))\n\(stages)\ndebts: \(state.debts ?? [])\n\(trace)")
             }
         }
     }

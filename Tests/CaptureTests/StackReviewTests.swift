@@ -86,13 +86,13 @@ import Testing
         let raise = try event(s, ref: "U1", revision: "rev1", text: "Renew the invented passport") { $0.set("sensitivity", .str("private")) }
         sweep(s)
         #expect(s.inbox.unfiled().map(\.id) == [card.id])
-        #expect(try s.inbox.readState().raises?[raise] != nil)
+        #expect(s.inbox.privacyOwed(for: raise))
 
         chmod(s.inbox.unfiledDir.path, 0o700)
         sweep(s)
         let now = try #require(s.inbox.unfiled().first)
         #expect(now.id == card.id && now.raw["provenance"]?["private"] == .bool(true))
-        #expect(try s.inbox.readState().raises?[raise] == nil)
+        #expect(!s.inbox.privacyOwed(for: raise))
         #expect(try s.inbox.unfiledDigests()[card.id]?.contains(" ") == false)
     }
 
