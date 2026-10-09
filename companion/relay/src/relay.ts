@@ -8,6 +8,7 @@ import { createHandler, type Route } from './http.ts';
 import { OWNERS, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
+import { pairings } from './pairings.ts';
 import { repairAtStart } from './startup.ts';
 import { KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
 
@@ -90,6 +91,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         },
     };
     const devices = new Devices(relay);
+    const pairing = pairings(relay, devices);
     let isReady = false;
     const ready = (async () => {
         // Whatever an earlier process began writing has ended before this one reads anything (lease.ts).
@@ -105,10 +107,12 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         await repairAtStart(relay, devices);
         await devices.load();
         await lease.retireEarlier();
+        // §7.3: pairings are deleted 10 minutes after they were made; a sweep each minute, and on every access.
+        relay.repeat(60_000, 'pairing-sweep', pairing.sweep);
         isReady = true;
         options.log.event('ready');
     })();
-    const routes: Route[] = [health(relay), claimRoute(relay, options.claimTiming), ...deviceRoutes(relay, devices)];
+    const routes: Route[] = [health(relay), claimRoute(relay, options.claimTiming), ...deviceRoutes(relay, devices), ...pairing.routes];
     const handler = createHandler({
         routes,
         webOrigin: config.webOrigin,

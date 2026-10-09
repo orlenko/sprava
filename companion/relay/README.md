@@ -156,6 +156,7 @@ endpoint is checked against them:
 - `src/devices.ts`: admitting device tokens, listing and revoking devices (sections 7.3, 7.4), and the lock
   order: every action of a device runs under that device's lock, its authorization checked again there; a
   device's lock comes before the creation lock, and code holding the creation lock never takes a device lock.
+- `src/pairings.ts`: pairing a device: open, join, key, acknowledge, expire (section 7.3).
 - `src/startup.ts`: the repairs and cleanups before serving (section 7.8).
 - `src/layout.ts`: the names of what the relay keeps (section 7.8); `src/limits.ts`: in-memory counts.
 - `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.
