@@ -101,7 +101,8 @@ async function route(req: IncomingMessage, options: HttpOptions, timeoutMs: numb
     // §13: `/` and any path outside `/v0/` are 404.
     // The path as sent, before URL normalization removes dot segments (`/x/../v0/health` stays outside /v0/).
     const raw = (req.url ?? '').split('?')[0]!;
-    if (!raw.startsWith('/v0/') || /(^|\/)(\.|%2e){1,2}(\/|$)/i.test(raw) || !url.pathname.startsWith('/v0/')) {
+    // URL parsing also treats a backslash as a separator, so one, raw or percent-encoded, is never accepted.
+    if (!raw.startsWith('/v0/') || /\\|%5c/i.test(raw) || /(^|\/)(\.|%2e){1,2}(\/|$)/i.test(raw) || !url.pathname.startsWith('/v0/')) {
         throw new HttpError(404, 'There is nothing here.');
     }
     if (req.method === 'OPTIONS') {
