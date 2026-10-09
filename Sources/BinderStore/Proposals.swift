@@ -171,7 +171,10 @@ public struct Proposal: Sendable {
 extension Proposal {
     static let touchingOps: Set<String> = ["update_item", "set_status", "complete", "drop", "dismiss", "undismiss"]
 
-    /// The canonical hash of each existing item the ops touch, keyed by the id's canonical text.
+    /// The canonical hash of each existing item the ops touch, keyed by the id's canonical text, and of each catalog
+    /// value a `set_meta` or `migrate` writes or removes, keyed by its JSON pointer (`absent` when there is none), so
+    /// a card that moves a meta value aside never removes one written since. A pointer starts with `/`, which no
+    /// canonical id does.
     public static func fingerprints(_ ops: [JSONObject], catalog: JSONObject?) -> JSONObject {
         var out = JSONObject()
         for op in ops where touchingOps.contains(op["op"]?.stringValue ?? "") {
@@ -180,14 +183,39 @@ extension Proposal {
                   let hash = try? Canonical.hash(item) else { continue }
             out.set(key, .string(hash))
         }
+        for op in ops {
+            let args = op["args"]?.objectValue ?? JSONObject()
+            var pointers: [String] = []
+            switch op["op"]?.stringValue {
+            case "set_meta":
+                let keys = (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+                pointers = keys.map { "/meta/" + JSONPatch.escape($0) }
+            case "migrate": pointers = args["patch"]?.arrayValue?.compactMap { $0["path"]?.stringValue } ?? []
+            default: continue
+            }
+            for pointer in pointers where pointer.hasPrefix("/") && out[pointer] == nil {
+                out.set(pointer, .string(metaFingerprint(pointer, in: catalog)))
+            }
+        }
         return out
     }
 
-    /// Items that changed since the card was made: their titles, for "needs a look" (architecture 4.6).
+    /// The canonical hash of the value at `pointer`, or `absent`.
+    static func metaFingerprint(_ pointer: String, in catalog: JSONObject?) -> String {
+        guard let catalog, let value = JSONPatch.value(at: pointer, in: .object(catalog)) else { return "absent" }
+        return (try? Canonical.hash(value)) ?? "unreadable"
+    }
+
+    /// Items that changed since the card was made: their titles, for "needs a look" (architecture 4.6). A catalog
+    /// value the card writes or removes is named by its place, `meta.lifecycle` say.
     public func changedSince(catalog: JSONObject?) -> [String] {
         guard let expect = raw["expect"]?.objectValue else { return [] }
         let items = catalog?["open_items"]?.arrayValue ?? []
         return expect.entries.compactMap { e in
+            if e.key.hasPrefix("/") {
+                guard Proposal.metaFingerprint(e.key, in: catalog) != e.value.stringValue else { return nil }
+                return (try? JSONPatch.tokens(e.key))?.joined(separator: ".") ?? e.key
+            }
             let item = items.first { (try? Canonical.serialize($0["id"] ?? .null)) == e.key }
             guard let item else { return "\(e.key) (no longer open)" }
             return (try? Canonical.hash(item)) == e.value.stringValue ? nil : (item["title"]?.stringValue ?? e.key)

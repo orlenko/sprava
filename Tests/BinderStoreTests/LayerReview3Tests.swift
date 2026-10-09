@@ -255,3 +255,27 @@ import Testing
                 || ProposalStore.list(in: folder).allSatisfy { $0.0.raw["provenance"]?["overwritten_ops"] == nil })
     }
 }
+
+/// A card that writes or moves a catalog value is stale once that value changed (from layer 5's calibrated review:
+/// a stamp card must never remove a `lifecycle` written after it was made). Invented data only.
+@Suite struct MetaFingerprintTests {
+    func catalog(_ meta: [(String, JSONValue)]) -> JSONObject {
+        JSONObject([(key: "meta", value: .obj(meta)), (key: "open_items", value: .array([]))])
+    }
+
+    @Test func aChangedMetaValueMakesTheCardStale() {
+        let before = catalog([("lifecycle", .str("legacy"))])
+        let move = JSONObject([(key: "op", value: .str("migrate")), (key: "args", value: .obj([("patch", .array([
+            .obj([("op", .str("add")), ("path", .str("/meta/legacy_lifecycle")), ("value", .str("legacy"))]),
+            .obj([("op", .str("remove")), ("path", .str("/meta/lifecycle"))])]))]))])
+        let set = JSONObject([(key: "op", value: .str("set_meta")), (key: "args", value: .obj([("set", .obj([("owner_note", .str("Invented"))]))]))])
+        var raw = JSONObject([(key: "ops", value: .array([.object(move), .object(set)]))])
+        raw.set("expect", .object(Proposal.fingerprints([move, set], catalog: before)))
+        let card = Proposal(raw: raw)
+
+        #expect(card.changedSince(catalog: before).isEmpty)
+        #expect(card.changedSince(catalog: catalog([("lifecycle", .str("finite"))])) == ["meta.lifecycle"])
+        // A value the card would add counts as changed once something else wrote it.
+        #expect(card.changedSince(catalog: catalog([("lifecycle", .str("legacy")), ("owner_note", .str("Other"))])) == ["meta.owner_note"])
+    }
+}
