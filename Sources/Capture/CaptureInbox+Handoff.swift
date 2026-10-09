@@ -11,6 +11,8 @@ extension CaptureInbox {
     /// Withdraws the code-built card the clerk's cards replace: `.withdrawn` once it no longer waits, `.acted` when
     /// the person approved it or filed it into a binder, `.failed` when it is still there.
     func withdrawTier0(_ card: String, binder: String?, commands: Commands, now: Date) -> Tier0Withdrawal {
+        // Not found in a folder that cannot be looked at is not "gone".
+        guard canInspect(binder: binder) else { return .failed }
         if let binder {
             let folder = URL(fileURLWithPath: binder, isDirectory: true)
             guard let (p, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == card }) else { return .withdrawn }
@@ -90,9 +92,7 @@ extension CaptureInbox {
             let committed = state.committed?.contains(id) == true
             // What happened to a card in a binder that cannot be read now is not known: the record waits for it, unless
             // the commit had saved every card and only the code-built card is left to give way.
-            let away = (cards.compactMap(\.binder) + [binder].compactMap { $0 }).contains {
-                !Teka.read(URL(fileURLWithPath: $0, isDirectory: true)).isAdopted
-            }
+            let away = !(cards.map(\.binder) + [binder]).allSatisfy { canInspect(binder: $0) }
             if away && !committed { continue }
             let forward = committed || tier0.map { !tier0Pending($0, binder: binder) } ?? true
                 || cards.allSatisfy { written($0, commands: commands) }

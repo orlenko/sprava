@@ -183,6 +183,12 @@ public struct IntakeWatcher: Sendable {
                 result.unreadableFolders += 1
                 continue
             }
+            // Nor is a binder whose cards cannot all be read one without cards: a file's card missed now would be made
+            // twice, and a stranded one never withdrawn.
+            guard CaptureInbox.cardsReadable(in: ProposalStore.dir(row.folder)) else {
+                result.unreadableFolders += 1
+                continue
+            }
             // Cards already waiting for a file, matched by name and digest, are never made twice.
             var waiting = ProposalStore.list(in: row.folder).map(\.0).filter { $0.state == "proposed" && $0.raw["provenance"]?["intake"] != nil }
             for file in files {

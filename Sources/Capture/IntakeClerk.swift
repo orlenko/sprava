@@ -1,3 +1,4 @@
+import BinderFormat
 import BinderStore
 import Clerk
 import Foundation
@@ -11,6 +12,9 @@ extension IntakeWatcher {
         let store = IntakeReadings(support: support)
         for var e in store.all().filter({ $0.state == "pending" || $0.state == "attempt" }).sorted(by: { $0.createdAt < $1.createdAt }) {
             let folder = URL(fileURLWithPath: e.binder, isDirectory: true)
+            // A binder that cannot be looked at now (its volume away, a card unreadable) says nothing about the card:
+            // the reading waits, never counted kept.
+            guard Teka.read(folder).isAdopted, CaptureInbox.cardsReadable(in: ProposalStore.dir(folder)) else { continue }
             guard ProposalStore.list(in: folder).contains(where: { $0.0.id == e.card && $0.0.state == "proposed" }) else {
                 e.state = "kept"
                 try? store.save(e)
@@ -52,7 +56,8 @@ extension IntakeWatcher {
         let tier0: Proposal
         do { tier0 = try commands.loadTrusted(e.card, in: folder) } catch {
             outcome.cardChanged = error is ProposalStore.Tampered
-            e.state = "kept"
+            // A card another program changed is never built on; one that cannot be read now is read again later.
+            e.state = outcome.cardChanged ? "kept" : "pending"
             try? store.save(e)
             return outcome
         }

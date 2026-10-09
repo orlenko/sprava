@@ -142,18 +142,34 @@ extension CaptureInbox {
         // An event from another folder with this registered event's app, ref and revision, taken in before it, joins
         // the chain now (before it is decided whether this one repeats it): whatever the chain does later reaches its
         // card, and a raise to private it carries reaches the chain.
-        var absorbed: String?
-        if registered, let first = earlierCapture(event, state: state), first != id, !chain.contains(first), state.ingested[first] != nil {
-            chain.insert(first, at: 0)
-            absorbed = first
-            if Set(state.privates ?? []).contains(first), chain.count > 1 {
-                deferWork(of: first, chain: chain, binders: binders, commands: commands, state: &state)
-                raise(chain.filter { $0 != first }, for: first, state: &state, binders: binders, commands: commands, now: now)
+        // Every such event joins, not only the one the dedupe key names now: two copies from other folders can each have
+        // been carded before this one arrived.
+        var absorbed: [String] = []
+        if registered {
+            let paths = state.paths ?? [:]
+            let same = (state.keyEvents?[event.chainKey] ?? []).filter { e in
+                storedEvent(e, paths: paths)?["source"]?["revision"]?.stringValue == event.revision
+            } + [earlierCapture(event, state: state)].compactMap { $0 }
+            for first in same where first != id && !chain.contains(first) && !absorbed.contains(first) && state.ingested[first] != nil {
+                chain.insert(first, at: 0)
+                absorbed.append(first)
+                if Set(state.privates ?? []).contains(first), chain.count > 1 {
+                    deferWork(of: first, chain: chain, binders: binders, commands: commands, state: &state)
+                    raise(chain.filter { $0 != first }, for: first, state: &state, binders: binders, commands: commands, now: now)
+                }
             }
         }
-        // A raise to private only ever makes more private, so it reaches the registered chain of the same app and ref even
-        // from a folder that cannot change that chain otherwise (capture-event-v0 §3.3).
-        let privacyChain = member ? chain : registeredChain.filter { $0 != id }
+        // A raise to private only ever makes more private, so it reaches every event of the same app and ref, from any
+        // folder, even one that cannot change that chain otherwise (capture-event-v0 §3.3).
+        if new { state.keyEvents = (state.keyEvents ?? [:]).merging([event.chainKey: (state.keyEvents?[event.chainKey] ?? []) + [id]]) { $1 } }
+        let sameKey = (state.keyEvents?[event.chainKey] ?? []).filter { $0 != id }
+        let privacyChain = (member ? chain : registeredChain.filter { $0 != id }) + sameKey.filter { !chain.contains($0) && !registeredChain.contains($0) }
+        // And it holds for the events of that app and ref that come only later: a private event remembers its key, and
+        // every event with that key is private from then on (capture-event-v0 §3.3).
+        if event.isPrivate, !(state.privateKeys ?? []).contains(event.chainKey) {
+            state.privateKeys = (state.privateKeys ?? []) + [event.chainKey]
+        }
+        if (state.privateKeys ?? []).contains(event.chainKey) { markPrivate(chain + [id], state: &state) }
         // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision older than
         // it changes nothing. Duplicates count here: a second retraction taken for a copy of the first, because the
         // restore between them had not arrived yet, still makes that restore stale when it does.
@@ -163,6 +179,13 @@ extension CaptureInbox {
         // One that crashed before its card was made, or a stale revision, holds nothing, so its words are never
         // taken as already filed (§3.2, §5.3).
         let holding = chain.filter { holdsContent($0, chain: chain + [id], state: &state, binders: binders, commands: commands, now: now) }
+        // An event of the chain a crash left unfinished may have a card no listing could see now: what this one is
+        // compared with is not known, so it waits for a sweep that can see every card (it is not taken in yet).
+        if chain.contains(where: { state.ingested[$0] == "ingested" }), !cardsListedCompletely(binders: binders, deviceID: commands.deviceID) {
+            journal([("event", .string(id)), ("stage", .str("cards_unreadable"))])
+            result.pending += 1
+            return
+        }
         let baseline = holding.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
         let currentRetracted = baseline.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
         // A deletion after the chain's current event, or a restore after its deletion, changes what the chain is:
@@ -174,18 +197,23 @@ extension CaptureInbox {
                 // The same capture again: only a raise of sensitivity is applied (capture-event-v0 §3.2).
                 result.duplicates += 1
                 state.ingested[id] = "duplicate"
+                state.dupOf = (state.dupOf ?? [:]).merging([id: earlier]) { $1 }
                 state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
                 // A registered event that repeats one from another folder brings that one, and its card, into the chain.
                 let members = chain.contains(earlier) ? chain : [earlier] + chain
                 if member { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: members + [id]]) { $1 } }
                 // The copy was carded while it was not yet in the chain, so its card and the chain's were never compared:
-                // whichever words are older now (the copy's, or the chain's before it) wait on cards that are out of
-                // date, and they go, as a correction would have taken them; the newest words' card holds the chain.
-                let held = (baseline.map { [$0] } ?? []) + [earlier]
-                if registered, absorbed == earlier, let newest = held.max(by: { (clocks[$0] ?? "") < (clocks[$1] ?? "") }),
-                   case let outdated = members.filter({ $0 != newest && state.texts?[$0] != state.texts?[newest] }), !outdated.isEmpty {
-                    if !withdraw(chain: outdated, reason: "replaced by a corrected note", state: &state, binders: binders,
-                                  deviceID: commands.deviceID, now: now) {
+                // whichever words do not stand for the chain now wait on cards that are out of date, and they go, as a
+                // correction would have taken them. What stands is the newest event holding words, a duplicate counted
+                // as the event it repeats (a retraction taken for a copy of an earlier one ends the chain after the copy).
+                let standing = Self.standing(members + [id], state: state)
+                let retractedNow = standing.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
+                let outdated = standing.map { s in members.filter { $0 != s && state.texts?[$0] != state.texts?[s] } } ?? []
+                // A binder out of reach now gets this when it is back, worked out from the chain as it is then.
+                if registered, !absorbed.isEmpty { deferWork(of: id, chain: members, binders: binders, commands: commands, state: &state) }
+                if registered, !absorbed.isEmpty, !outdated.isEmpty {
+                    if !withdraw(chain: outdated, reason: "replaced by a corrected note", keeping: retractedNow ? standing : nil, state: &state,
+                                  binders: binders, deviceID: commands.deviceID, now: now) {
                         // Left for each binder this Mac writes, finished there by the next sweep or before an approval.
                         owe(id, binders: binders, commands: commands, state: &state)
                     }
@@ -242,6 +270,22 @@ extension CaptureInbox {
                 state.ingested[id] = done ? "retracted" : "retracting"
                 journal([("event", .string(id)), ("stage", .str(done ? "retracted" : "retract_failed"))])
                 return
+            }
+            // One taken in before a crash may have a card of its own words waiting already; the chain has moved past
+            // them, so it goes. When the cards cannot all be seen now, the stage stays "ingested" until they can.
+            if !new {
+                guard cardsListedCompletely(binders: binders, deviceID: commands.deviceID) else {
+                    journal([("event", .string(id)), ("stage", .str("cards_unreadable"))])
+                    return
+                }
+                for (folder, p) in withdrawable(chain: [id], binders: binders, deviceID: commands.deviceID)
+                where p.raw["provenance"]?["events"] == .array([.string(id)]) {
+                    let gone: Bool
+                    if let folder { gone = (try? TekaStore(folder: folder).reject(p, reason: "replaced by a corrected note", now: now)) != nil }
+                    else if let file = unfiledFile(p.id) { gone = (try? FileManager.default.removeItem(at: file)) != nil }
+                    else { gone = true }
+                    if !gone { return }
+                }
             }
             state.ingested[id] = "stale_revision"
             journal([("event", .string(id)), ("stage", .str("stale_revision"))])

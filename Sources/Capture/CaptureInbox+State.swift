@@ -26,6 +26,9 @@ extension CaptureInbox {
         var handoffs: [String: [Replacement]]? = [:]  // id -> the clerk's cards, named before any is saved, until its Tier 0 card gives way
         var committed: [String]? = []                 // ids whose clerk cards were all saved: the hand-off only goes forward now
         package var deferred: [String: [String]]? = [:] // binder folder -> an event of each chain whose work it missed while away
+        var privateKeys: [String]? = []                 // chain keys a private event named, from any folder: their chains are private
+        var keyEvents: [String: [String]]? = [:]        // chain key -> every event with that app and ref, from any folder
+        var dupOf: [String: String]? = [:]              // a duplicate -> the event it repeats
         package struct Examined: Codable, Equatable {
             var size: Int
             var mtime: Double

@@ -60,6 +60,8 @@ import Testing
         var away = false
         var unwritable = false
         var unreadable: URL?      // a card file made unreadable for a while
+        var pseudo = Set<Int>()   // "chains" that are one event from an unregistered folder, never revised
+        var raisers: [Int: Set<String>] = [:]   // chain -> private events from unregistered folders that raised it
         var privateEvents = Set<String>()
 
         func current(_ chain: Int) -> Event { events[chains[chain].last!]! }
@@ -78,7 +80,7 @@ import Testing
     }
 
     func publish(_ s: PSetup, _ m: Model, chain: Int, revision: String, text: String, private: Bool, retracted: Bool,
-                 device: String, clock: (Int, Int)? = nil) throws -> String {
+                 device: String, clock: (Int, Int)? = nil, ref: String? = nil) throws -> String {
         // Ids and stamps come from the seed, so a run replays exactly; ids are scrambled, so the order a sweep meets
         // the files in a folder is not the order they were written.
         m.written += 1
@@ -93,7 +95,7 @@ import Testing
         o.set("id", .string(id))
         o.set("hlc", .obj([("wall_ms", .int(wall)), ("counter", .int(counter)), ("node", .string(device.replacingOccurrences(of: "-", with: "")))]))
         o.set("device", .obj([("id", .string(device))]))
-        o.set("source", .obj([("app", .str("adapter")), ("kind", .str("dictation")), ("ref", .string("seq-\(chain)")), ("revision", .string(revision))]))
+        o.set("source", .obj([("app", .str("adapter")), ("kind", .str("dictation")), ("ref", .string(ref ?? "seq-\(chain)")), ("revision", .string(revision))]))
         o.set("captured_at", .str("2026-10-06T09:00:00-04:00"))
         o.set("locale", .str("en-CA"))
         o.set("text", .string(text))
@@ -133,8 +135,7 @@ import Testing
             m.chains[chain].append(id)
             m.log.append("new \(chain) \(numbers) private=\(isPrivate)")
         case 16..<34:  // a revision, or a restore after a retraction
-            guard !m.chains.isEmpty else { return false }
-            let chain = rng.below(m.chains.count)
+            guard let chain = (0..<m.chains.count).filter({ !m.pseudo.contains($0) }).randomElement(using: &rng) else { return false }
             let old = m.current(chain).text.split(separator: "\n").compactMap { Int($0.split(separator: " ").last ?? "") }
             var numbers = text(chain, &rng, from: old)
             // Sometimes the words are all taken out (a revision with no text, not a retraction).
@@ -145,13 +146,14 @@ import Testing
             m.chains[chain].append(id)
             m.log.append("revise \(chain) \(numbers) private=\(isPrivate)")
         case 34..<42:  // a retraction
-            guard let chain = (0..<m.chains.count).filter({ !m.current($0).retracted }).randomElement(using: &rng) else { return false }
+            guard let chain = (0..<m.chains.count).filter({ !m.pseudo.contains($0) && !m.current($0).retracted }).randomElement(using: &rng) else { return false }
             let isPrivate = rng.chance(10)
             let id = try publish(s, m, chain: chain, revision: "retracted", text: "", private: isPrivate, retracted: true, device: rng.pick(devices))
             m.chains[chain].append(id)
             m.log.append("retract \(chain) private=\(isPrivate)")
         case 42..<50:  // a copy of an event from the other device, the same stamp, sensitivity the same or raised
-            guard let id = m.chains.flatMap({ $0 }).randomElement(using: &rng), let e = m.events[id] else { return false }
+            guard let id = m.chains.indices.filter({ !m.pseudo.contains($0) }).flatMap({ m.chains[$0] }).randomElement(using: &rng),
+                  let e = m.events[id] else { return false }
             let isPrivate = m.privateChains.contains(e.chain) || rng.chance(30)
             // To the other registered device, or to a folder no producer is registered for (swept first, so its copy
             // can get the card before the registered original is taken for its duplicate).
@@ -234,6 +236,19 @@ import Testing
         case 86..<89:  // the binder's volume goes away, or comes back
             guard !m.unwritable, m.unreadable == nil else { return false }
             try toggleAway(s, m)
+        case 97..<99:  // a private event from an unregistered folder, with a registered chain's app and ref (its own revision)
+            guard let target = (0..<m.chains.count).filter({ !m.pseudo.contains($0) }).randomElement(using: &rng) else { return false }
+            let chain = m.chains.count
+            let numbers = text(chain, &rng)
+            m.chains.append([])
+            m.pseudo.insert(chain)
+            let id = try publish(s, m, chain: chain, revision: "u\(chain)", text: numbers.map { line(chain, $0) }.joined(separator: "\n"),
+                                 private: true, retracted: false, device: unregistered, ref: "seq-\(target)")
+            m.chains[chain].append(id)
+            // A raise only ever makes more private, so it reaches the registered chain of that app and ref too.
+            m.privateChains.insert(target)
+            m.raisers[target, default: []].insert(id)
+            m.log.append("unregistered private event \(chain) with chain \(target)'s ref \(numbers)\(m.away ? " (binder away)" : "")")
         case 95..<97:  // one waiting card's file cannot be read for a while (a raise or a withdrawal cannot see it), or can again
             guard !m.away, !m.unwritable else { return false }
             toggleUnreadable(s, m, &rng)
@@ -291,8 +306,8 @@ import Testing
                 p.raw["provenance"]?["events"]?.arrayValue?.contains { m.ids(chain).contains($0.stringValue ?? "") } == true
             }.map { "\($0.id.prefix(8)) \($0.state) \($0.raw["rejected_reason"]?.stringValue ?? "") \($0.title) \(titles($0).map { $0.split(separator: " ").last ?? "" }) nf=\(s.inbox.notFiled($0).count) private=\($0.raw["provenance"]?["private"] == .bool(true))" }
             let journal = ((try? String(contentsOf: s.inbox.journalURL, encoding: .utf8)) ?? "").split(separator: "\n").filter { line in
-                m.ids(chain).contains { line.contains($0) } || line.contains("deferred") || line.contains("clerk_handoff") || line.contains("DBG")
-            }.suffix(40).joined(separator: "\n")
+                m.ids(chain).contains { line.contains($0) } || line.contains("clerk_handoff") || line.contains("DBG")
+            }.suffix(80).joined(separator: "\n")
             return "stages: \(stages)\ncards: \(all)\nprivates: \(m.ids(chain).filter { (state.privates ?? []).contains($0) }.count)\njournal: \(journal)\n\(trace)"
         }
 
@@ -328,6 +343,15 @@ import Testing
                         Issue.record("chain \(chain): card \(card.id) adds an unredacted item\n\(diagnose(chain))")
                     }
                 }
+            }
+        }
+        // The clerk's work is counted "acted" only when the person did act: its code-built card no longer waits where
+        // Sprava put it (filing an Inbox card into a binder is acting on it).
+        let state = s.inbox.loadState()
+        let inInbox = Set(s.inbox.unfiled().map(\.id)), inBinder = Set(pOpen(s).map(\.id))
+        for (id, clerk) in state.clerk ?? [:] where clerk == "acted" {
+            if let card = state.cards[id], state.cardBinder?[id] == nil ? inInbox.contains(card) : inBinder.contains(card) {
+                Issue.record("the clerk's work for \(id) was counted acted while its card \(card) still waits\n\(trace)")
             }
         }
         // 3. No card waits from words that are no longer the chain's current ones.
@@ -380,7 +404,7 @@ import Testing
         let stages = s.inbox.loadState().ingested
         let redacted = Set(Teka.read(s.folder).items.compactMap(\.object).filter { $0["redact"] == .bool(true) }.compactMap { $0["id"]?.stringValue })
         let chains = Set((card.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).compactMap { m.events[$0]?.chain })
-        for chain in chains where m.ids(chain).contains(where: { m.privateEvents.contains($0) && stages[$0] != nil }) {
+        for chain in chains where m.ids(chain).union(m.raisers[chain] ?? []).contains(where: { m.privateEvents.contains($0) && stages[$0] != nil }) {
             let clear = card.ops.contains { op in
                 switch op["op"]?.stringValue {
                 case "add_item": op["args"]?["item"]?["redact"] != .bool(true)
@@ -489,7 +513,7 @@ import Testing
         check(s, m, seed: seed)
     }
 
-    @Test(arguments: [UInt64(1203), 1432, 1520, 1903])
+    @Test(arguments: [UInt64(1520), 1903, 2109, 2340])
     func randomSequencesKeepEveryCaptureAccountedFor(seed: UInt64) async throws {
         try await run(seed: seed, steps: 120)
     }

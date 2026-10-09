@@ -31,6 +31,8 @@ extension CaptureInbox {
             if state.handoffs?[id] != nil { continue }
             guard let card = state.cards[id], let path = state.paths?[id] else { clerk[id] = "kept"; continue }
             let binder = state.cardBinder?[id]
+            // A binder (or the Inbox) that cannot be looked at now says nothing about the card: the work waits.
+            guard canInspect(binder: binder) else { continue }
             if !tier0Pending(card, binder: binder) { clerk[id] = "acted"; continue }
             if attempts[id, default: 0] >= 2 {
                 let failed = clerk[id] == "retry"
@@ -41,8 +43,11 @@ extension CaptureInbox {
             }
             let parts = path.split(separator: "/").map(String.init)
             let device = root.appendingPathComponent(parts[0], isDirectory: true)
-            guard parts.count == 2, case (.complete(.capture), let event?) = CaptureEvent.check(device.appendingPathComponent(parts[1]), deviceFolder: device)
-            else { clerk[id] = "kept"; continue }
+            guard parts.count == 2 else { clerk[id] = "kept"; continue }
+            let (check, checked) = CaptureEvent.check(device.appendingPathComponent(parts[1]), deviceFolder: device)
+            // An event file that cannot be read now is read again later; only one found not to be a capture is kept.
+            if check == .pending { continue }
+            guard case .complete(.capture) = check, let event = checked else { clerk[id] = "kept"; continue }
             attempts[id, default: 0] += 1
             // The attempt is on disk before any model call, or there is no call this run (the poison rule).
             state.clerk = clerk
@@ -52,6 +57,17 @@ extension CaptureInbox {
             return ClerkWork(event: Self.asFiled(event, privates: Set(state.privates ?? [])), hint: state.hints?[id], tier0: card, tier0Binder: binder)
         }
         return nil
+    }
+
+    /// Whether the folder that holds a code-built card can be looked at now: the binder is there, adopted and its cards
+    /// all readable, or, for an Inbox card, the Inbox and its digest list can be read. When not, nothing about the card
+    /// is known, and no work for it is counted done.
+    func canInspect(binder: String?) -> Bool {
+        if let binder {
+            let folder = URL(fileURLWithPath: binder, isDirectory: true)
+            return Teka.read(folder).isAdopted && Self.cardsReadable(in: ProposalStore.dir(folder))
+        }
+        return Self.cardsReadable(in: unfiledDir) && (try? unfiledDigests()) != nil
     }
 
     func tier0Pending(_ card: String, binder: String?) -> Bool {
@@ -86,6 +102,8 @@ extension CaptureInbox {
         }
         let id = work.event.id
         guard state.handoffs?[id] == nil else { return outcome }
+        // Whether the code-built card still waits cannot be told now: the reading is kept for a later commit.
+        guard canInspect(binder: work.tier0Binder) else { return outcome }
         guard ["pending", "retry"].contains(clerk[id] ?? ""), tier0Pending(work.tier0, binder: work.tier0Binder) else {
             if clerk[id] == "pending" || clerk[id] == "retry" { clerk[id] = "acted" }
             return outcome
