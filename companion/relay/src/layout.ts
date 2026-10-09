@@ -2,9 +2,9 @@
 
 /**
  * Claims (§6): `claims/{digest}`, empty, a claim's intent; `owner/{digest}`, its owner record. Both are named by the
- * SHA-256 of the owner record's bytes, so a late write of either repeats the same name and bytes. The owner is the
- * lowest-named owner record; with none, the binding claim is the lowest-named claim intent, and only its retry may
- * write its record (claim.ts).
+ * SHA-256 of the owner record's bytes, so a late write of either repeats the same name and bytes. The binding claim
+ * is the lowest-named claim intent; the owner is its record, when that exists; only its retry may write it, or be
+ * acknowledged (claim.ts).
  */
 export const CLAIMS = 'claims/';
 export const OWNERS = 'owner/';

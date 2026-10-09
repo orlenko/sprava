@@ -159,6 +159,7 @@ test('a late owner record of a higher claim never replaces the acknowledged owne
 test('only an owner record that cannot be read fails the start; claim intents are kept (§6)', async () => {
     const config = readConfig({ SPRAVA_INSTANCE: INSTANCE, SPRAVA_WEB_ORIGIN: WEB_ORIGIN, SPRAVA_STORAGE: 'fs:/unused' });
     const bad = await freshStore();
+    await bad.store.put(`claims/${'0'.repeat(64)}`, new Uint8Array());
     await bad.store.put(`owner/${'0'.repeat(64)}`, new Uint8Array(Buffer.from('{"owner_token_sha256":"nope"}')));
     await assert.rejects(startRelay(config, bad.store, { log: silentLog, lease: TEST_LEASE }), ClaimConflict);
     const good = await freshStore();
@@ -269,7 +270,7 @@ test('queued claims are answered 503 at their deadline, the queue is bounded, an
         sync: (k) => fs.sync(k),
         delete: (k) => fs.delete(k),
         list: async (p) => {
-            if (p.endsWith('/owner/') && stall !== null) {
+            if (p.endsWith('/claims/') && stall !== null) {
                 reads++;
                 await stall;
             }
@@ -424,4 +425,27 @@ test('a self-revocation cut short before its requests were deleted is finished a
     assert.ok(await store.has(deviceKeys(device.id).record));
     assert.equal((await fetch(`${t.url}/v0/devices/${device.id}/revocation`, { headers: bearer(owner) })).status, 200);
     await t.close();
+});
+
+test("two claims whose records are both delayed: the higher one's retry is refused, and the lower one owns (§6, trade-off A)", async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const [b, a] = orderedTokens(); // B sorts lower
+    const t = await startTestRelay({ raw, claimTiming: fast });
+    const heldA = (key: string) => key.endsWith(`/owner/${sha256Hex(ownerRecord(tokenHash(a)))}`);
+    const heldB = (key: string) => key.endsWith(`/owner/${sha256Hex(ownerRecord(tokenHash(b)))}`);
+    stub.hold(heldA);
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(a))).status, 500, "A's record delayed");
+    stub.hold(heldB);
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(b))).status, 500, "B's lower record delayed");
+    stub.hold(() => false);
+    stub.landHeld(heldA); // A's record lands
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(a))).status, 409, "A's retry is refused: B's intent is lower");
+    stub.landHeld(heldB); // then B's
+    assert.equal((await claimWith(t.url, SETUP_CODE, tokenHash(b))).status, 204, "B's retry completes");
+    await t.close();
+    const again = await startTestRelay({ raw, claimTiming: fast });
+    assert.equal(again.relay.ownerHash, tokenHash(b));
+    await again.close();
+    await stub.close();
 });

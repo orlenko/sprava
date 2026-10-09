@@ -135,17 +135,17 @@ endpoint is checked against them:
 
 - **A. A claim binds the slot for good.** A client's timeout cannot prove that a write it sent will never land, so
   a claim intent is never voided or deleted, by time or by lease rank. A claim's intent (`claims/{digest}`) and
-  its owner record (`owner/{digest}`) are both named by the SHA-256 of the record, and the rule is deterministic:
-  - an owner record exists: the lowest-named one is the owner, final;
-  - no owner record, one or more claim intents: the binding claim is the lowest-named intent. Only a retry of
-    that claim's body may write its owner record, under the creation lock, after listing the intents again;
-    every other claim gets 409.
+  its owner record (`owner/{digest}`) are both named by the SHA-256 of the record. The binding claim is the
+  lowest-named claim intent, and the owner is its record, when that exists. A claim, first try or retry, is
+  acknowledged only when its own intent is the lowest at that moment, under the creation lock; a record of any
+  other claim is never adopted, and that claim gets 409.
 
-  A late intent that lands after the owner record changes nothing. One that lands before can become the binding
-  claim only by sorting lower, and was never acknowledged, so nothing acknowledged is lost; its holder retrying
-  completes the claim. A late owner record can only be of a higher claim, below which the owner stays. The Mac
-  keeps its claim body and resends it (spec section 6). If the binding claim's holder never retries, the only
-  reset is a new `SPRAVA_INSTANCE`: claiming is a one-time setup by the person who holds the setup code.
+  The guarantee is that one claimer retrying always ends as the owner: the Mac keeps its claim body and resends it
+  (spec section 6), and its claims all have one digest. Two different holders of the setup code racing a claim with
+  delayed writes is outside the threat model, since the setup code is held by one person, and whoever holds it
+  could simply claim first. In that race a later, lower claim can still become binding; the Mac then sees its owner
+  token refused (401) and shows the relay as needing a reset, a new `SPRAVA_INSTANCE`. Nothing is silently lost.
+  The same reset applies if the binding claim's holder never retries: claiming is a one-time setup.
 
 ## Layout
 

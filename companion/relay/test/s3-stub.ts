@@ -18,8 +18,8 @@ export interface S3Stub {
      * the stub keeps it and applies it only on `landHeld()`, as a store may when a write lands late.
      */
     hold(match: (key: string) => boolean): void;
-    /** Applies the held writes, in the order they arrived, and stops holding. */
-    landHeld(): void;
+    /** Applies the held writes, in the order they arrived, and stops holding; with `only`, just the writes it accepts. */
+    landHeld(only?: (key: string) => boolean): void;
     /** Answers the next listing with this body instead. */
     nextListBody(body: string): void;
     close(): Promise<void>;
@@ -98,9 +98,11 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
         hold: (match) => {
             holding = match;
         },
-        landHeld: () => {
+        landHeld: (only) => {
             holding = null;
-            for (const [key, body] of held.splice(0)) {
+            const landing = held.filter(([key]) => only === undefined || only(key));
+            held.splice(0, held.length, ...held.filter((entry) => !landing.includes(entry)));
+            for (const [key, body] of landing) {
                 if (body === null) objects.delete(key);
                 else objects.set(key, body);
             }
