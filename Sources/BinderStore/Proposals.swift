@@ -259,9 +259,10 @@ public enum CardEdits {
     /// The fields each op can take from the card. An edit to any other field, or to an op not listed, is refused,
     /// never dropped: what the person typed is either applied or reported.
     static let editable: [String: Set<String>] = ["add_item": ["title", "due", "priority"],
-                                                  "update_item": ["title", "due", "priority", "waiting_on"]]
+                                                  "update_item": ["title", "due", "priority", "waiting_on", "kind"]]
 
-    /// `edits` is `[{index, skip?, title?, due?, priority?, waiting_on?}]`; `due` is a date, or "" for no deadline.
+    /// `edits` is `[{index, skip?, title?, due?, priority?, waiting_on?, kind?}]`; `due` is a date, or "" for no
+    /// deadline; `kind` is one of the closed list (binder-v0 §4.4).
     public static func apply(_ edits: [JSONValue], to ops: [JSONObject]) throws -> [JSONObject] {
         var out = ops
         var skipped = Set<Int>()
@@ -300,7 +301,7 @@ public enum CardEdits {
                 }
                 args.set("item", .object(item))
             case "update_item":
-                // A repair card asks for what is missing: a due date or none, a party, a priority (binder-v0 §9.4);
+                // A repair card asks for what is missing: a due date or none, a party, a priority, a kind (binder-v0 §9.4);
                 // a change of title is the person's correction of the proposed one.
                 var set = args["set"]?.objectValue ?? JSONObject()
                 var unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
@@ -336,6 +337,13 @@ public enum CardEdits {
                     guard ["high", "normal", "low"].contains(p) else { throw Failure(message: "priority is high, normal or low") }
                     unset.removeAll { $0 == "priority" }
                     set.set("priority", .string(p))
+                }
+                if let k = e["kind"]?.stringValue {
+                    guard ItemRules.kinds.contains(k) else {
+                        throw Failure(message: "kind is one of " + ItemRules.kinds.sorted().joined(separator: ", "))
+                    }
+                    unset.removeAll { $0 == "kind" }
+                    set.set("kind", .string(k))
                 }
                 args.set("set", .object(set))
                 if unset.isEmpty { args.remove("unset") } else { args.set("unset", .array(unset.map(JSONValue.string))) }
@@ -493,6 +501,7 @@ extension TekaStore {
             let resolved = try Placeholders.resolve(edited ?? proposal.ops, catalog: catalog, opLog: log,
                                                 year: Calendar(identifier: .gregorian).component(.year, from: now),
                                                 at: ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!))
+            try requireRepaired(resolved, asked: proposal.raw["provenance"]?["repair"], on: catalog, actor: actor, now: now)
             return resolved.map { op in
                 OpBody(op: op["op"]?.stringValue ?? "", args: op["args"]?.objectValue ?? JSONObject(), actor: actor,
                        extra: [("proposal", .string(proposal.id)), ("approved_by", .string(approvedBy))]
@@ -521,6 +530,32 @@ extension TekaStore {
     /// The card's ops are in the log already: `approve` marks the card and returns them, applying nothing.
     struct AlreadyApplied: Error {
         let lines: [JSONObject]
+    }
+
+    /// A repair card (provenance `repair`: what it asks for, by field name or rule) is applied only when it leaves
+    /// none of that missing on the items it changes, judged by the v0 rules adoption judged it by (binder-v0 §9.4
+    /// step 4). Approved unchanged, it would otherwise count as done while the item still lacks what it asked for.
+    func requireRepaired(_ ops: [JSONObject], asked: JSONValue?, on catalog: JSONObject, actor: JSONObject, now: Date) throws {
+        let names = Set(asked?.arrayValue?.compactMap(\.stringValue) ?? [])
+        guard !names.isEmpty else { return }
+        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        let lines: [JSONObject] = ops.map { op in
+            var line = op
+            line.set("id", .string(UUIDv7.make(now: now)))
+            line.set("at", .string(at))
+            line.set("actor", .object(actor))
+            return line
+        }
+        let after = try TransactionGuard.check(lines, on: catalog).catalog
+        let items = after["open_items"]?.arrayValue ?? []
+        let ids = Set(ops.filter { $0["op"] == .str("update_item") }.compactMap { $0["args"]?["id"] })
+        let left = ItemRules.check(items: items, log: after["processing_log"]?.arrayValue ?? [], v0: true).compactMap { f -> String? in
+            guard let i = TransactionGuard.itemIndex(f.location), items.indices.contains(i), let id = items[i]["id"], ids.contains(id)
+            else { return nil }
+            let name = f.field ?? f.code.rawValue
+            return names.contains(name) ? name : nil
+        }
+        if !left.isEmpty { throw Refused(reason: "fill in what is still missing: " + Array(Set(left)).sorted().joined(separator: ", ")) }
     }
 
     public func reject(_ proposal: Proposal, reason: String? = nil, now: Date = Date()) throws {

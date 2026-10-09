@@ -279,3 +279,33 @@ import Testing
         #expect(card.changedSince(catalog: catalog([("lifecycle", .str("legacy")), ("owner_note", .str("Other"))])) == ["meta.owner_note"])
     }
 }
+
+/// A repair card takes the kind it asks for, and is never applied while what it asks for is still missing (from
+/// layer 5's third calibrated review: a redacted item without a kind). Invented data only.
+@Suite(.serialized) struct RepairCardTests {
+    let now = Date(timeIntervalSince1970: 1_791_360_000)
+    let importActor = JSONObject([(key: "kind", value: .str("import")), (key: "client", value: .str("sprava/0.1"))])
+
+    @Test func aRepairCardIsAppliedOnlyOnceItsKindIsFilledIn() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-repair-\(UUID().uuidString)/tax", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let item = #"{"id":"p-1","title":"Invented private task","status":"open","priority":"normal","due":"2026-11-01","redact":true}"#
+        try Data(#"{"meta":{"schema_version":2,"name":"tax"},"documents":[],"open_items":[\#(item)],"processing_log":[]}"#.utf8)
+            .write(to: folder.appendingPathComponent("catalog.json"))
+        let store = TekaStore(folder: folder)
+        try store.adopt(survey: JSONObject(), owner: JSONObject(), now: now)
+        // The card adoption makes for it: an empty update that asks for the kind.
+        let op = JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", .str("p-1")), ("set", .obj([]))]))])
+        let card = Proposal.make(title: "Fill in what this item is missing", actor: importActor, ops: [op],
+                                 provenance: JSONObject([(key: "repair", value: .array([.str("kind")]))]), now: now)
+        try ProposalStore.save(card, in: folder)
+        let saved = try ProposalStore.load(card.id, in: folder, expectedDigest: nil)
+
+        #expect(throws: TekaStore.Refused.self) { try store.approve(saved, now: now) }
+        #expect(ProposalStore.list(in: folder).first?.0.state == "proposed")
+        #expect(throws: CardEdits.Failure.self) { try CardEdits.apply([.obj([("index", .int(0)), ("kind", .str("invoice"))])], to: saved.ops) }
+        let edited = try CardEdits.apply([.obj([("index", .int(0)), ("kind", .str("payment"))])], to: saved.ops)
+        try store.approve(saved, edited: edited, now: now)
+        #expect(Teka.read(folder).catalog?["open_items"]?.arrayValue?.first?["kind"] == .str("payment"))
+    }
+}
