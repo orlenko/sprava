@@ -32,9 +32,7 @@ extension Backup {
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
         // Its hub slice is named by its catalog, so a binder whose name differs from its folder's (an outside edit may
         // have given it another binder's name) or cannot be read is put right first (`removeHubSlice`).
-        guard !teka.federationBlocked else {
-            throw Failure(message: "this binder needs attention (its name or its catalog); put it right before offloading")
-        }
+        guard !teka.federationBlocked else { throw Failure(message: Self.notOffloadable(teka) + "; put it right, then offload again") }
         guard !ProposalStore.list(in: folder).contains(where: { $0.0.state == "proposed" }) else {
             throw Failure(message: "cards are waiting for this binder; approve or reject them first")
         }
@@ -270,6 +268,25 @@ extension Backup {
         throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
     }
 
+    /// Why a binder the hub does not trust with its name is not offloaded, in words the person can act on: the reasons
+    /// it needs attention. For a stamped catalog without a valid `meta.disclosure` it says what that means on the hub:
+    /// the hub withdraws the slice it recorded writing and publishes nothing from the binder until the level is set.
+    static func notOffloadable(_ teka: Teka) -> String {
+        let reasons = teka.states.filter { $0.key <= .needsAttention }.sorted { $0.key < $1.key }.flatMap(\.value)
+        let disclosure = reasons.filter { $0.contains("meta.disclosure") }
+        if !disclosure.isEmpty {
+            let others = reasons.filter { !$0.contains("meta.disclosure") }
+            return "this binder's catalog has no valid disclosure level (meta.disclosure), so the hub withdraws its slice and "
+                + "publishes nothing from it; set its disclosure" + (others.isEmpty ? "" : ". It also needs attention: " + listed(others))
+        }
+        guard !reasons.isEmpty else { return "this binder's name (\(teka.name)) cannot be used as a hub file name" }
+        return "this binder needs attention: " + listed(reasons)
+    }
+
+    static func listed(_ reasons: [String]) -> String {
+        reasons.prefix(3).joined(separator: "; ") + (reasons.count > 3 ? "; and \(reasons.count - 3) more" : "")
+    }
+
     /// Removes the binder's slice from the hub's spool. The slice is named by the catalog only for a binder that
     /// passes the hub's checks (its name is its folder's, as `HubLane.withdraw` requires); any other is refused, never
     /// guessed at, since the name might be another binder's slice. Only a slice that is already gone counts as
@@ -281,7 +298,8 @@ extension Backup {
     /// (`HubLane.removeFormerSlice`): a name the binder lists as a former one, or a file still the one Sprava wrote.
     func removeHubSlice(_ teka: Teka) throws {
         guard !teka.federationBlocked else {
-            throw Failure(message: "this binder needs attention (its name or its catalog); it was not taken off the hub, and nothing was removed")
+            throw Failure(message: Self.notOffloadable(teka)
+                + "; it was not taken off the hub, and nothing was removed. The offload continues once it is put right")
         }
         let inbox = hubSpool.appendingPathComponent("inbox")
         var targets = [try HubLane.spoolFile(inbox, teka.name, ".agenda.json")]
@@ -289,8 +307,9 @@ extension Backup {
         if let former = cursors.sliceName, former != teka.name, let hash = cursors.sliceHash,
            let url = try? HubLane.spoolFile(inbox, former, ".agenda.json") {
             let listed = (teka.catalog?["meta"]?["former_names"]?.arrayValue ?? []).contains { $0["name"]?.stringValue == former }
-            let written = (try? Data(contentsOf: url)).flatMap { try? JSONParser.parse($0).value }
-                .flatMap { try? Canonical.hash(HubLane.stripGenerated($0)) } == hash
+            // Read as the hub reads a slice (`HubLane.sliceHash(at:)`): a regular file of this user, never through a link.
+            let data: Data? = if case .ok(let d) = SafeFile.read(url) { d } else { nil }
+            let written = data.flatMap { try? JSONParser.parse($0).value }.flatMap { try? Canonical.hash(HubLane.stripGenerated($0)) } == hash
             if listed || written { targets.append(url) }
         }
         for target in targets {

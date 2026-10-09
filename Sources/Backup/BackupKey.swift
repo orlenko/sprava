@@ -15,11 +15,19 @@ public enum BackupKey {
         public var description: String { message }
     }
 
-    /// A new key: 30 characters of base32 in groups of five, about 150 bits, easy to type back.
+    /// A new key: 30 characters of base32 in groups of five, about 150 bits, easy to type back. The bytes come from
+    /// `arc4random_buf`, which cannot fail: a source whose failure went unnoticed would leave every byte zero, and the
+    /// key would be "AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA" on every Mac.
     public static func generate() -> String {
-        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")   // no 0/O, 1/I
         var bytes = [UInt8](repeating: 0, count: 30)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        arc4random_buf(&bytes, bytes.count)
+        return format(bytes)
+    }
+
+    /// The key for 30 bytes. 256 is a multiple of the alphabet's 32 letters, so every letter is as likely.
+    static func format(_ bytes: [UInt8]) -> String {
+        precondition(bytes.count == 30)
+        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")   // no 0/O, 1/I
         let chars = bytes.map { alphabet[Int($0) % alphabet.count] }
         return stride(from: 0, to: 30, by: 5).map { String(chars[$0..<($0 + 5)]) }.joined(separator: "-")
     }
