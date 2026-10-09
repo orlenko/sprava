@@ -61,6 +61,7 @@ function landingOnClaimList(stub: S3Stub, raw: Store, armed: { on: boolean }): S
         putIfAbsent: (k, b) => raw.putIfAbsent(k, b),
         sync: (k) => raw.sync(k),
         delete: (k) => raw.delete(k),
+        listTimes: (p) => raw.listTimes(p),
         list: async (p) => {
             if (armed.on && p.endsWith('/claims/')) {
                 armed.on = false;
@@ -269,6 +270,7 @@ test('queued claims are answered 503 at their deadline, the queue is bounded, an
         putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
         sync: (k) => fs.sync(k),
         delete: (k) => fs.delete(k),
+        listTimes: (p) => fs.listTimes(p),
         list: async (p) => {
             if (p.endsWith('/claims/') && stall !== null) {
                 reads++;

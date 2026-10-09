@@ -107,6 +107,7 @@ export class Lease {
             get: (key) => store.get(key),
             has: (key) => store.has(key),
             list: (prefix) => store.list(prefix),
+            listTimes: (prefix) => store.listTimes(prefix),
             put: async (key, body) => {
                 await this.assertHeld();
                 return store.put(key, body);

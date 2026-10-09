@@ -9,7 +9,7 @@ import { formatTime, isId, parseUnsigned, sameSecret, tokenHash } from './encodi
 import { HttpError, type Principal, type Reply, type Route } from './http.ts';
 import { deviceElsewhere, deviceKeys, EMPTY, groupParts, readRecord, type DeviceRecord, type TokenRecord } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { deleteAll, deleteForGood, isDeleted, LockBusy, writeOnce } from './store/store.ts';
+import { deleteAll, deleteForGood, forget, forgetAll, isDeleted, LockBusy, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const DEVICE_QUEUE = 8;
@@ -124,8 +124,10 @@ export class Devices {
         for (const [hash, holder] of this.#byToken) if (holder === d) this.#byToken.delete(hash);
         this.#pairing.delete(d);
         this.#active.delete(d);
-        for (const prefix of [keys.tokens, ...deviceElsewhere(d)]) await deleteAll(store, prefix);
-        for (const key of [keys.active, keys.lastSeen]) await store.delete(key);
+        // Everything of the device goes, intents included (its marker refuses every late write), but the marker
+        // and its own intent, which stay as long as the instance (invariant 6's one exception, owner-driven).
+        for (const prefix of [keys.tokens, ...deviceElsewhere(d)]) await forgetAll(store, prefix);
+        for (const key of [keys.active, keys.lastSeen, keys.revocation, keys.record]) await forget(store, key);
     }
 
     deleteParts(d: string): Promise<void> {

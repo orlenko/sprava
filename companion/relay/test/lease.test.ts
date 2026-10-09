@@ -173,5 +173,6 @@ function bindStore(store: Store): Store {
         sync: (k) => store.sync(k),
         delete: (k) => store.delete(k),
         list: (p) => store.list(p),
+        listTimes: (p) => store.listTimes(p),
     };
 }

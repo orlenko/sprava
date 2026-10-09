@@ -36,6 +36,9 @@ export function storeContract(name: string, open: () => Promise<Store>, options:
         assert.deepEqual(await store.list('r/D/'), ['r/D/0000000000000001-z', 'r/D/0000000000000002-x', 'r/D/0000000000000010-y']);
         assert.deepEqual(await store.list('r/D'), ['r/D/0000000000000001-z', 'r/D/0000000000000002-x', 'r/D/0000000000000010-y', 'r/Dx']);
         assert.deepEqual(await store.list('nothing/'), []);
+        const timed = await store.listTimes('r/D/');
+        assert.deepEqual(timed.map((e) => e.key), await store.list('r/D/'));
+        assert.ok(timed.every((e) => Math.abs(e.modified - Date.now()) < 60_000), 'modified times are recent');
         await deleteAll(store, 'r/');
         assert.deepEqual(await store.list('r'), ['rr/1']);
     });

@@ -71,6 +71,7 @@ function slowActivation(store: Store): Store {
         get: (k) => store.get(k),
         has: (k) => store.has(k),
         list: (p) => store.list(p),
+        listTimes: (p) => store.listTimes(p),
         sync: (k) => store.sync(k),
         put: (k, b) => store.put(k, b),
         delete: (k) => store.delete(k),
@@ -178,6 +179,7 @@ test('a deletion cut short leaves the pairing deleted for good, and its retry fi
         putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
         sync: (k) => fs.sync(k),
         list: (p) => fs.list(p),
+        listTimes: (p) => fs.listTimes(p),
         delete: async (k) => {
             if (failOnce && k.endsWith('/joined.json')) {
                 failOnce = false;

@@ -23,6 +23,13 @@ export interface Store {
     delete(key: string): Promise<void>;
     /** Every key under `prefix`, in ascending byte order. */
     list(prefix: string): Promise<string[]>;
+    /** The same, with when each object was last written (ms since the epoch), as the backend reports it. */
+    listTimes(prefix: string): Promise<Listed[]>;
+}
+
+export interface Listed {
+    key: string;
+    modified: number;
 }
 
 /** §6, §7.8: everything lives under the prefix `SPRAVA_INSTANCE/`, so a new instance never sees an old one. */
@@ -36,6 +43,7 @@ export function scoped(store: Store, instance: string): Store {
         sync: (key) => store.sync(root + key),
         delete: (key) => store.delete(root + key),
         list: async (prefix) => (await store.list(root + prefix)).map((key) => key.slice(root.length)),
+        listTimes: async (prefix) => (await store.listTimes(root + prefix)).map((e) => ({ key: e.key.slice(root.length), modified: e.modified })),
     };
 }
 
@@ -210,6 +218,45 @@ export async function writeOnce(store: Store, key: string, body: Uint8Array): Pr
  */
 export const TOMBSTONES = 'tombstones/';
 export const tombstoneOf = (key: string): string => `${TOMBSTONES}${key}`;
+
+/**
+ * Floors: `floors/{scope}/{n}`, empty, with n in 16 digits. Every name of the scope numbered below the highest floor
+ * counts as deleted, so one small object stands for every tombstone, intent and copy below it, which can then be
+ * deleted: bookkeeping stays bounded by live data (invariant 6). A floor is written durably before anything it
+ * covers is deleted, and lower floors are deleted after it; a late write of a lower floor changes nothing.
+ */
+export const FLOORS = 'floors/';
+const pad16 = (n: number): string => String(n).padStart(16, '0');
+
+export async function readFloor(store: Store, scope: string): Promise<number> {
+    const listed = (await store.list(`${FLOORS}${scope}/`)).map((key) => Number(key.slice(`${FLOORS}${scope}/`.length)));
+    return Math.max(0, ...listed.filter(Number.isSafeInteger));
+}
+
+/**
+ * Writes a floor durably, then deletes the lower ones; never a higher one. The caller raises its in-memory floor
+ * before calling, so a failure at any step leaves it at least as high as what may be stored: a name it covers is
+ * refused, never accepted and then lost to a floor that lands.
+ */
+export async function raiseFloor(store: Store, scope: string, wanted: number): Promise<void> {
+    // At most the highest valid number (§3): that name's own tombstone, or its liveness, then still decides it.
+    const floor = Math.min(wanted, Number.MAX_SAFE_INTEGER);
+    const mine = `${FLOORS}${scope}/${pad16(floor)}`;
+    await store.put(mine, new Uint8Array());
+    for (const key of await store.list(`${FLOORS}${scope}/`)) if (key < mine) await store.delete(key);
+}
+
+/** Deletes a name whose late writes something else already refuses (a floor, a tombstone, a marker), with its intents. */
+export async function forget(store: Store, key: string): Promise<void> {
+    await store.delete(key);
+    for (const intent of await store.list(intentsOf(key))) await store.delete(intent);
+}
+
+/** The same for everything under a prefix, intents left without their object included. */
+export async function forgetAll(store: Store, prefix: string): Promise<void> {
+    await deleteAll(store, prefix);
+    await deleteAll(store, `${INTENTS}${prefix}`);
+}
 
 /** Deletes a name for good: its tombstone, durable, then the object. Repeating it is harmless. */
 export async function deleteForGood(store: Store, key: string): Promise<void> {

@@ -8,7 +8,9 @@ import { createHandler, type Route } from './http.ts';
 import { OWNERS, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
+import { objects } from './objects.ts';
 import { pairings } from './pairings.ts';
+import { requests } from './requests.ts';
 import { repairAtStart } from './startup.ts';
 import { KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
 
@@ -27,6 +29,8 @@ export interface Relay {
     now(): number;
     /** The owner token's hash once the relay is claimed (§6), else null. */
     ownerHash: string | null;
+    /** This process's lease name (lease.ts), written where a choice must belong to one process. */
+    readonly writer: string;
     /** Runs `work` every `ms` until the relay stops; a failure is logged by name only. */
     repeat(ms: number, name: string, work: () => Promise<void>): void;
 }
@@ -82,6 +86,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         log: options.log,
         lock: new Mutex(),
         deviceLocks: new KeyedMutex(),
+        writer: lease.name,
         now: options.now ?? Date.now,
         ownerHash,
         repeat(ms, name, work) {
@@ -92,6 +97,8 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
     };
     const devices = new Devices(relay);
     const pairing = pairings(relay, devices);
+    const mailbox = requests(relay, devices);
+    const published = objects(relay, devices);
     let isReady = false;
     const ready = (async () => {
         // Whatever an earlier process began writing has ended before this one reads anything (lease.ts).
@@ -106,13 +113,24 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         if (relay.ownerHash !== null) await relay.store.sync(`${OWNERS}${sha256Hex(ownerRecord(relay.ownerHash))}`);
         await repairAtStart(relay, devices);
         await devices.load();
+        // §7.6, §7.8: each device's next ordinal is derived from what is stored, before serving.
+        await mailbox.sweep();
         await lease.retireEarlier();
         // §7.3: pairings are deleted 10 minutes after they were made; a sweep each minute, and on every access.
         relay.repeat(60_000, 'pairing-sweep', pairing.sweep);
+        relay.repeat(3_600_000, 'request-sweep', mailbox.sweep);
+        relay.repeat(3_600_000, 'object-sweep', published.sweep);
         isReady = true;
         options.log.event('ready');
     })();
-    const routes: Route[] = [health(relay), claimRoute(relay, options.claimTiming), ...deviceRoutes(relay, devices), ...pairing.routes];
+    const routes: Route[] = [
+        health(relay),
+        claimRoute(relay, options.claimTiming),
+        ...deviceRoutes(relay, devices),
+        ...pairing.routes,
+        ...published.routes,
+        ...mailbox.routes,
+    ];
     const handler = createHandler({
         routes,
         webOrigin: config.webOrigin,

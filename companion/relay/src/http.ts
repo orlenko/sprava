@@ -1,6 +1,6 @@
 // The HTTP core (companion-v0 §7): routing, cross-origin rules (§7.7), tokens and roles (§7.1), body limits
 // (§3.2, §7), strict JSON bodies (§3.1), plain-sentence errors and logs (§12).
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import { isToken } from './encoding.ts';
 import { isObject, JsonError, parseStrict, writeJson, type JsonObject } from './json.ts';
 import type { Log } from './log.ts';
@@ -13,6 +13,7 @@ export type Principal = { kind: 'owner' } | { kind: 'device'; id: string; active
 export interface Call {
     params: Record<string, string>;
     query: URLSearchParams;
+    headers: IncomingHttpHeaders;
     principal: Principal | null;
     /** The request body: the bytes, or empty for a route without one. */
     body: Uint8Array;
@@ -175,7 +176,8 @@ async function run(req: IncomingMessage, r: Route, params: Record<string, string
         }
     }
     const signal = signals.get(req) ?? new AbortController().signal;
-    const action = (): Promise<Reply> => r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '', signal });
+    const action = (): Promise<Reply> =>
+        r.handle({ params, query: url.searchParams, headers: req.headers, principal, body, json, address: req.socket.remoteAddress ?? '', signal });
     return principal?.kind === 'device' && options.guard ? options.guard(principal, action, signal) : action();
 }
 
@@ -218,8 +220,11 @@ function preflight(path: string): Reply {
 /** §3.2, §7: reads the body as a stream, refusing it with 413 as soon as it passes its limit. */
 function readBody(req: IncomingMessage, limit: number, timeoutMs: number): Promise<Uint8Array> {
     const declared = req.headers['content-length'];
+    // The rest of an oversized body is read and discarded, never buffered: closing a connection with unread data
+    // resets it, and the client would never see the 413. The server's request timeout (main.ts) bounds it.
     if (declared !== undefined && Number(declared) > limit) {
-        return Promise.reject(new HttpError(413, 'The request body is too large.', { Connection: 'close' }));
+        req.resume();
+        return Promise.reject(new HttpError(413, 'The request body is too large.'));
     }
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
@@ -230,6 +235,7 @@ function readBody(req: IncomingMessage, limit: number, timeoutMs: number): Promi
             done = true;
             clearTimeout(timer);
             req.off('data', onData);
+            req.resume();
             if (error) reject(error);
             else resolve(new Uint8Array(Buffer.concat(chunks)));
         };
@@ -241,8 +247,7 @@ function readBody(req: IncomingMessage, limit: number, timeoutMs: number): Promi
         const onData = (chunk: Buffer): void => {
             size += chunk.length;
             if (size > limit) {
-                req.pause();
-                finish(new HttpError(413, 'The request body is too large.', { Connection: 'close' }));
+                finish(new HttpError(413, 'The request body is too large.'));
             } else {
                 chunks.push(chunk);
             }

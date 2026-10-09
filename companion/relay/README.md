@@ -146,6 +146,91 @@ endpoint is checked against them:
   could simply claim first. In that race a later, lower claim can still become binding; the Mac then sees its owner
   token refused (401) and shows the relay as needing a reset, a new `SPRAVA_INSTANCE`. Nothing is silently lost.
   The same reset applies if the binding claim's holder never retries: claiming is a one-time setup.
+- **B. A failed upload holds its prefix's floor until the owner deletes that revision.** Its intent keeps the name
+  live, because the relay never declares an object deleted that the owner did not delete. Tombstones above it wait
+  for the floor meanwhile. Only the owner uploads objects, and the Mac deletes every revision it assigned (spec
+  section 9.7), so this growth is bounded by the owner's own behaviour; no device can cause it.
+
+### Every endpoint against the six invariants
+
+Every write-once object below goes through `writeOnce` (`src/store/store.ts`): it is acknowledged only once the
+store confirmed it, a retry that finds it makes it durable first (invariant 2), and its intent fixes its bytes
+before they are sent (invariant 3). Every write is also refused once a newer process holds the lease. The table
+adds what is particular to each endpoint.
+
+| Endpoint | What it writes | Fixed by (1, 3) | Under (4) |
+|---|---|---|---|
+| `GET /v0/health` | nothing | | |
+| `POST /v0/claim` | `claims/{digest}`, then `owner/{digest}` | names are the record's SHA-256; the owner is the record of the lowest claim intent, and only that claim is acknowledged (trade-off A); a known owner never changes in memory | the claim queue, then the creation lock |
+| `POST /v0/pairings` | `created.json` under a new random id | a new name | the device's lock, then the creation lock |
+| `POST /v0/pairings/{P}/join` | a token marker, `record.json`, `joined.json` | the token's own name; a record every join writes alike; an earlier transcript's intent consumes the pairing | the device's lock, then the creation lock (device count) |
+| `GET /v0/pairings/{P}` | an expired pairing's deletion | its tombstone `deleted` first, kept for good | the device's lock |
+| `PUT /v0/pairings/{P}/key` | `active`, `key.sha256`, `key` | an empty marker; the key's hash | the device's lock, revocation checked there |
+| `GET /v0/pairings/{P}/key`, `POST .../ack` | `ack` | an empty marker | the device's lock (guard), after the body |
+| `DELETE /v0/pairings/{P}` | its tombstone, then deletions | a pairing with a tombstone reads as missing everywhere; a retry, the sweep and the start delete what is left | the device's lock |
+| `GET /v0/devices` | a missing revocation marker | an empty marker | each device's lock |
+| `DELETE /v0/devices/{D}` | `revoked`, then deletions | an empty marker, never deleted | the device's lock |
+| `DELETE /v0/devices/self` | `revocation`, then `revoked` | the marker only once this revocation is the one stored | the device's lock (guard), after the body |
+| `GET /v0/devices/{D}/revocation` | nothing | | |
+| `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its marker `intents/objects/{name}/deleting`, its tombstone, then the object, then the prefix's floor | revision names; a deleted name, one below the floor, or one whose deletion has begun (its marker written, so a tombstone that lands late hides no upload acknowledged meanwhile) refuses every PUT with 410 (409 means other bytes are stored), and a copy brought back is never served or listed, and is deleted when met | the creation lock |
+| `GET /v0/objects...` | nothing | | the device's lock (guard), so no revoked device reads |
+| `POST /v0/requests/{R}` | `ordinals/{D}/{block}`, the request | a block holds one process's lease name; an ordinal is never given twice; 409 only when the stored copy is there and synced | the device's lock (guard), after the body |
+| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | a DELETE answers 204 only once the tombstone is durable, and finds the name in the bucket when memory lacks it, so a retry after any failure finishes the deletion, and a name with no copy, intent or tombstone is 204 with nothing written; the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/requests/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
+
+### The floor protocol
+
+A floor, `floors/{scope}/{n}` (`src/store/store.ts`), stands for every name of its scope numbered below `n`: each
+counts as deleted, so the tombstones, intents and copies below it can be deleted and stay bounded.
+
+- **Who raises it, and when.** Only the relay, after a deletion and in the hourly sweep: a request floor
+  (`requests/{D}`) under the device's lock, an object floor (`objects/{prefix}`) under the creation lock, the
+  locks every write to those names takes.
+- **To what.** Never above a name not deleted: the relay never retires an object on its own. A request floor
+  rises to the device's lowest pending ordinal (or its next, with none pending). An object floor rises to the
+  lowest uploaded name of the prefix (one with an upload's intent or a copy) that has no tombstone, or, with none,
+  just above the highest uploaded name: every upload writes its intent first and only the floor removes it, so a
+  copy the store has lost for a while, or an upload that failed, keeps its name live until the owner deletes it. A
+  name never uploaded is passed only below an uploaded one, so deleting a name that never existed retires nothing
+  else. A floor never exceeds the highest valid number (§3); that name's own tombstone then
+  stays.
+- **In what order.** The floor is raised in memory, then written durably, then the lower floors (never a higher
+  one) and everything it covers are deleted. Every name it covers was deleted by the owner or never existed, so
+  refusing them first loses nothing, and a cleanup step that fails leaves every live name live. A floor only ever rises: a reader merges what it reads with what it knows by taking the
+  higher, so a read that finishes after a raise never lowers it.
+- **What readers do.** A write checks the tombstone and the floor under the same lock as the raise, and refuses
+  a deleted name (410 for an object, 503 for a request). A read takes the bytes first, then checks the tombstone,
+  then the floor, so a tombstone deleted by a raise meanwhile is always covered by the floor it then sees. A copy
+  that counts as deleted is deleted when met.
+
+Each object prefix against it: `index/` and `views/{id}/` and `devices/{D}/outcomes/` hold revisions the owner
+publishes in rising order and deletes from below once a newer one is named (spec section 9.7), so the floor only
+covers what the owner retired; `devices/{D}/keys/` holds epochs, which only rise, and the floor covers epochs the
+owner deleted. A PUT below its floor is 410: the owner never publishes below what it keeps. A removed device's
+prefixes, floors included, go with it.
+
+### What each kind of object is bounded by (invariant 6)
+
+Live data is what the owner keeps published, the devices it keeps paired, the pairings open now and the
+requests pending. Three kinds of marker are the stated exception: they outlive their device, pairing or binder,
+one empty object each, because a late write could otherwise bring it back, and their number grows only with what
+the owner itself makes (devices paired, pairings opened, binders shown).
+
+| Object | Bound |
+|---|---|
+| `claims/{digest}`, `owner/{digest}` | one per claim sent with the setup code: only the person who deployed the relay makes them |
+| `leases/{rank}-{id}` | one per process alive; a ready process deletes every lower one |
+| `devices/{D}/record.json`, `tokens/`, `active`, `last_seen`, `revocation` | per device kept (at most 20 pending and active, plus self-revoked ones until the owner deletes them); deleted, intents included, with the device |
+| `devices/{D}/revoked` (and its intent), `tombstones/devices/{D}/revocation` | **exception**: one each per device id the owner ever removed or abandoned |
+| `pairings/{P}/` parts (and their intents) | per pairing open (at most 3, for 10 minutes); deleted with the pairing |
+| `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
+| `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, names at or above its floor: what is published, uploads in progress, deletions' markers, and the owner's failed uploads, which only the owner can make and which the Mac deletes (spec section 9.7), so no device can grow them, names deleted out of order above the lowest kept, and names the owner deleted above every uploaded one; the floor deletes everything below it |
+| `floors/objects/{prefix}` | one per prefix in use: the index, each binder shown, each device kept; **exception**: a removed binder's views floor stays, one per binder ever shown (its id is never reused, so nothing new arrives under it, and a late copy is refused only by it). A removed device's go with it |
+| `requests/{D}/`, `intents/requests/{D}/` | pending requests: at most 1,000 per device |
+| `tombstones/requests/{D}/` | names deleted out of order above the device's floor: with its pending requests, at most 10,000 names per device, whatever the rate or the restarts (a device at the bound gets 507 until the Mac collects its oldest request) |
+| `floors/requests/{D}/` | one per device kept; deleted with the device, as is everything of a revoked device here |
+| `ordinals/{D}/{block}` (and their intents) | the blocks above the device's floor plus its highest, which a device kept always keeps (it says where the next process starts). Each process start that gives the device an ordinal reserves a fresh block, so while an old request stays pending the blocks number at most its pending span over 1,024 plus one per start since it was made; the request expires within 30 days, and every start takes the warm-up. All go with the device |
+| folders (local store) | only those holding an object; a folder left empty is removed |
 
 ## Layout
 
@@ -157,6 +242,9 @@ endpoint is checked against them:
   order: every action of a device runs under that device's lock, its authorization checked again there; a
   device's lock comes before the creation lock, and code holding the creation lock never takes a device lock.
 - `src/pairings.ts`: pairing a device: open, join, key, acknowledge, expire (section 7.3).
+- `src/objects.ts`: what the owner publishes, immutable by name, and who may read it (section 7.5).
+- `src/requests.ts`: each device's mailbox of sealed requests, with ordinals (sections 7.6, 7.8), taken from
+  blocks reserved in the bucket so that no ordinal is ever given twice, even across a restart.
 - `src/startup.ts`: the repairs and cleanups before serving (section 7.8).
 - `src/layout.ts`: the names of what the relay keeps (section 7.8); `src/limits.ts`: in-memory counts.
 - `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.

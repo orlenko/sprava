@@ -11,7 +11,7 @@ import type { Devices } from './devices.ts';
 import { HttpError, type Call, type Reply, type Route } from './http.ts';
 import { deviceKeys, EMPTY, groupParts, pairingKeys, readRecord, type DeviceRecord, type PairingCreated } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { INTENTS, LockBusy, writeOnce } from './store/store.ts';
+import { deleteAll, INTENTS, LockBusy, writeOnce } from './store/store.ts';
 
 export const PAIRING_TTL_MS = 10 * 60_000;
 const MAX_OPEN = 3;
@@ -103,6 +103,7 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
     /** Deletes what is left beside a pairing's tombstone; the parts are dead, so no lock is needed. */
     async function finishDeleted(p: string): Promise<void> {
         for (const key of await store.list(`pairings/${p}/`)) if (key !== pairingKeys(p).deleted) await store.delete(key);
+        await deleteAll(store, `${INTENTS}pairings/${p}/`);
     }
 
     async function allPairings(): Promise<Pairing[]> {
