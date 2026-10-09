@@ -189,7 +189,7 @@ test('a device cannot pile up calls: its queue is bounded, a call leaves at its 
     const owner = locks.run('D', async () => void ran.push('owner'));
     release();
     await Promise.all([holding, first, owner]);
-    assert.deepEqual(ran, ['first', 'owner'], 'refused calls never run; the owner gets through');
+    assert.deepEqual(ran, ['first', 'owner'], 'refused calls never run; an unbounded call is never refused');
     assert.equal(locks.size, 0);
 });
 
@@ -200,5 +200,45 @@ test('device listing pages refuse non-canonical numbers (§3)', async () => {
     for (const bad of ['01', '00050', '+5', '5.0']) {
         assert.equal((await fetch(`${t.url}/v0/devices?limit=${bad}`, { headers: bearer(owner) })).status, 400, bad);
     }
+    await t.close();
+});
+
+test("the owner's revocation takes the lock with priority: it waits only for the running call, and queued device calls are refused", async () => {
+    const locks = new KeyedMutex();
+    let release: () => void = () => {};
+    const holding = locks.run('D', () => new Promise<void>((r) => (release = r)));
+    const ran: string[] = [];
+    const bound = { limit: 3, waitMs: 5000, signal: new AbortController().signal };
+    const device = (n: number) => locks.run('D', async () => void ran.push(`device ${n}`), bound);
+    const queued = [device(1), device(2), device(3)];
+    await assert.rejects(device(4), LockBusy, 'the device queue is full');
+    const plain = locks.run('D', async () => void ran.push('owner listing'));
+    const revocation = locks.run('D', async () => void ran.push('revocation'), undefined, true);
+    for (const call of queued) await assert.rejects(call, LockBusy, 'queued device calls are refused');
+    await assert.rejects(device(5), LockBusy, 'and new ones, while the revocation waits');
+    release();
+    await Promise.all([holding, revocation, plain]);
+    assert.deepEqual(ran, ['revocation', 'owner listing']);
+    await locks.run('D', async () => void ran.push('device 6'), bound);
+    assert.deepEqual(ran.at(-1), 'device 6', 'after it, device calls are admitted again');
+});
+
+test("the owner's revocation of a device is answered while that device keeps its queue full", async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    let release: () => void = () => {};
+    const running = t.relay.deviceLocks.run(device.id, () => new Promise<void>((r) => (release = r))); // a slow call
+    const flood = Array.from({ length: 12 }, () =>
+        fetch(`${t.url}/v0/devices/self`, { method: 'DELETE', body: new Uint8Array(), headers: bearer(device.token) }).then((r) => r.status),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    const revoking = fetch(`${t.url}/v0/devices/${device.id}`, { method: 'DELETE', headers: bearer(owner) });
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await running;
+    assert.equal((await revoking).status, 204);
+    assert.ok((await Promise.all(flood)).every((s) => s === 503), 'every queued device call was refused');
     await t.close();
 });

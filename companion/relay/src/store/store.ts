@@ -55,33 +55,43 @@ export class LockBusy extends Error {}
 
 interface Waiter {
     start: () => void;
-    bounded: boolean;
+    /** Leaves the queue, refused with LockBusy; set for bounded waiters only. */
+    refuse: (() => void) | null;
+    kind: 'bounded' | 'plain' | 'priority';
 }
 
 /**
- * A lock per key, created on first use and dropped when idle, so memory follows only the keys in use. A caller can
- * ask for a bounded wait: at most `limit` such callers queue per key, each leaves at `waitMs` or when `signal`
- * aborts, and is then refused with LockBusy and never runs. Unbounded callers (the owner's revocations) still
- * queue behind at most `limit` bounded ones.
+ * A lock per key, created on first use and dropped when idle, so memory follows only the keys in use, in arrival
+ * order, with two exceptions:
+ *
+ * - a caller can ask for a bounded wait (a device's calls): at most `limit` such callers queue per key, each leaves
+ *   at `waitMs` or when `signal` aborts, and is then refused with LockBusy and never runs;
+ * - a priority caller (the owner's revocation of the device) is never queued behind those: it goes ahead of every
+ *   waiter but earlier priority ones and waits only for the call running now, whose storage calls are each bounded
+ *   (lease.ts). Once it waits, every bounded caller queued is refused, and so is every new one until it has run.
  */
 export class KeyedMutex {
     readonly #queues = new Map<string, { busy: boolean; waiting: Waiter[] }>();
 
-    async run<T>(key: string, work: () => Promise<T>, bound?: { limit: number; waitMs: number; signal: AbortSignal }): Promise<T> {
+    async run<T>(
+        key: string,
+        work: () => Promise<T>,
+        bound?: { limit: number; waitMs: number; signal: AbortSignal },
+        priority = false,
+    ): Promise<T> {
         const queue = this.#queues.get(key) ?? { busy: false, waiting: [] };
         this.#queues.set(key, queue);
         if (queue.busy) {
-            if (bound !== undefined && (bound.signal.aborted || queue.waiting.filter((w) => w.bounded).length >= bound.limit)) {
+            const kind: Waiter['kind'] = priority ? 'priority' : bound !== undefined ? 'bounded' : 'plain';
+            if (
+                kind === 'bounded' &&
+                (bound!.signal.aborted ||
+                    queue.waiting.some((w) => w.kind === 'priority') ||
+                    queue.waiting.filter((w) => w.kind === 'bounded').length >= bound!.limit)
+            ) {
                 throw new LockBusy('too many calls are waiting');
             }
             await new Promise<void>((resolve, reject) => {
-                const waiter: Waiter = {
-                    start: () => {
-                        cleanup();
-                        resolve();
-                    },
-                    bounded: bound !== undefined,
-                };
                 const leave = (): void => {
                     const at = queue.waiting.indexOf(waiter);
                     if (at < 0) return;
@@ -89,13 +99,26 @@ export class KeyedMutex {
                     cleanup();
                     reject(new LockBusy('the wait ended'));
                 };
-                const timer = bound === undefined ? undefined : setTimeout(leave, bound.waitMs);
+                const waiter: Waiter = {
+                    start: () => {
+                        cleanup();
+                        resolve();
+                    },
+                    refuse: kind === 'bounded' ? leave : null,
+                    kind,
+                };
+                const timer = kind === 'bounded' ? setTimeout(leave, bound!.waitMs) : undefined;
                 const cleanup = (): void => {
                     if (timer !== undefined) clearTimeout(timer);
                     bound?.signal.removeEventListener('abort', leave);
                 };
-                bound?.signal.addEventListener('abort', leave);
-                queue.waiting.push(waiter);
+                if (kind === 'bounded') bound!.signal.addEventListener('abort', leave);
+                if (kind === 'priority') {
+                    queue.waiting.splice(queue.waiting.filter((w) => w.kind === 'priority').length, 0, waiter);
+                    for (const w of [...queue.waiting]) w.refuse?.();
+                } else {
+                    queue.waiting.push(waiter);
+                }
             });
         } else {
             queue.busy = true;

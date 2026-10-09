@@ -65,7 +65,7 @@ export class Devices {
     async guard(principal: Principal & { kind: 'device' }, action: () => Promise<Reply>, signal: AbortSignal): Promise<Reply> {
         const d = principal.id;
         // A device's calls wait in a bounded queue, each with a deadline and dropped when its client leaves, so no
-        // device can pile up work or hold its owner's revocation behind a backlog.
+        // device can pile up work; its owner's revocation goes ahead of them (KeyedMutex) and is never refused.
         const bound = { limit: DEVICE_QUEUE, waitMs: DEVICE_WAIT_MS, signal };
         return this.#relay.deviceLocks.run(d, async () => {
             const { store } = this.#relay;
@@ -219,10 +219,17 @@ export function deviceRoutes(relay: Relay, devices: Devices): Route[] {
             browser: false,
             async handle(call) {
                 const d = deviceId(call.params.D);
-                await relay.deviceLocks.run(d, async () => {
-                    await devices.markRevokedLocked(d);
-                    await devices.deletePartsLocked(d);
-                });
+                // The owner's revocation takes the device's lock with priority: it waits only for the call running
+                // now, and the device's queued calls are refused.
+                await relay.deviceLocks.run(
+                    d,
+                    async () => {
+                        await devices.markRevokedLocked(d);
+                        await devices.deletePartsLocked(d);
+                    },
+                    undefined,
+                    true,
+                );
                 return { status: 204 };
             },
         },
