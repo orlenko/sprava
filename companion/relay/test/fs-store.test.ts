@@ -30,7 +30,8 @@ test('fs: a write is acknowledged only after its file and folder are synced, new
     });
     await store.put('a/b/c', new Uint8Array([1]));
     events.push('put done');
-    assert.deepEqual(events, ['sync ..', 'sync .', 'sync a', 'sync a/b', 'put done'], "the root's own entry first");
+    assert.equal(events[0], 'sync ..', "the root's own entry first, then every entry above it");
+    assert.deepEqual(events.filter((e) => !e.startsWith('sync ..')), ['sync .', 'sync a', 'sync a/b', 'put done']);
     events.length = 0;
     await store.putIfAbsent('a/b/d', new Uint8Array([1]));
     await store.putIfAbsent('a/b/d', new Uint8Array([2]));
@@ -60,7 +61,44 @@ test('fs: a root made by the store is durable before its first write is acknowle
         },
     });
     await store.put('k', new Uint8Array([1]));
-    assert.deepEqual(synced, ['.', 'new', 'new/root'], 'each made folder in its parent, then the root itself holds k');
+    assert.ok(synced.indexOf('new') >= 0 && synced.indexOf('.') > synced.indexOf('new'), 'the root in new, new in base');
+    assert.equal(synced.at(-1), 'new/root', 'then the root itself holds k');
+});
+
+test('fs: a root whose creation was cut short is made durable on the next attempt, and by a new store', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    const root = join(base, 'new', 'root');
+    let failBase = true;
+    const synced: string[] = [];
+    const syncDir = async (dir: string): Promise<void> => {
+        const name = relative(base, dir) || '.';
+        synced.push(name);
+        if (name === '.' && failBase) {
+            failBase = false;
+            throw new Error('injected sync failure');
+        }
+    };
+    await assert.rejects(new FsStore(root, { syncDir }).put('k', new Uint8Array([1])), /injected/);
+    synced.length = 0;
+    await new FsStore(root, { syncDir }).put('k', new Uint8Array([1]));
+    assert.ok(synced.includes('.') && synced.includes('new'), 'every entry above the root is synced, though the folders exist');
+});
+
+test('fs: folders left empty by deletions are removed, so folders stay bounded by objects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    const store = new FsStore(root);
+    for (let i = 0; i < 20; i++) {
+        await store.put(`intents/requests/D/${i}-R/digest`, new Uint8Array());
+        await store.delete(`intents/requests/D/${i}-R/digest`);
+    }
+    assert.deepEqual(await readdir(root), [], 'no folder is left behind');
+    await store.put('a/b', new Uint8Array([1]));
+    await store.put('a/c', new Uint8Array([1]));
+    await store.delete('a/b');
+    assert.deepEqual(await readdir(join(root, 'a')), ['c']);
+    await store.delete('a/c');
+    await store.put('a/d', new Uint8Array([1]));
+    assert.deepEqual(await store.list('a/'), ['a/d'], 'a pruned folder is made again for the next write');
 });
 
 test('fs: a folder whose sync failed is synced again on the next write, not taken as durable', async () => {
@@ -148,7 +186,7 @@ test('fs: a retried deletion whose first folder sync failed syncs before it is a
     await assert.rejects(store.delete('k/1'), /injected/);
     events.length = 0;
     await store.delete('k/1');
-    assert.deepEqual(events, ['sync k'], 'the file was already gone, and the folder is synced all the same');
+    assert.deepEqual(events, ['sync k', 'sync .'], 'the file was already gone: the folder is synced all the same, then removed as empty');
     await store.delete('never/1');
 });
 

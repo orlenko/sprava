@@ -8,7 +8,7 @@
 // Names: keys are case-sensitive, and folders often are not (APFS by default). Each upper-case letter is stored as
 // `^` and its lower-case form, so two keys that differ only in case never share a file.
 import { randomBytes } from 'node:crypto';
-import { link, mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
+import { link, mkdir, open, readdir, readFile, rename, rmdir, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { Store } from './store.ts';
 
@@ -98,6 +98,24 @@ export class FsStore implements Store {
         } catch (error) {
             if (!isMissing(error)) throw error;
         }
+        await this.#prune(dirname(this.#path(key)));
+    }
+
+    /**
+     * Removes folders left empty, from `folder` up to the root, each removal synced in its parent, so the folders
+     * kept are bounded by the objects kept. A write racing into a folder being removed makes it again (#writeTemp).
+     */
+    async #prune(folder: string): Promise<void> {
+        for (let dir = folder; dir !== this.root && dir.startsWith(this.root); dir = dirname(dir)) {
+            try {
+                await rmdir(dir);
+            } catch (error) {
+                if (isMissing(error)) continue;
+                return; // not empty: it, and every folder above it, stays
+            }
+            this.#durable.delete(dir);
+            await this.#syncDir(dirname(dir));
+        }
     }
 
     async list(prefix: string): Promise<string[]> {
@@ -133,18 +151,14 @@ export class FsStore implements Store {
 
     /** Every folder from the root down to `folder` exists, and its entry is durable in its parent. */
     /**
-     * The root itself, made and durable before the first write: every folder created for it, and the root's own
-     * entry, synced in its parent, since an earlier process may have made it and stopped before syncing.
+     * The root itself, made and durable before the first write: the entry of the root and of every folder above it
+     * is synced in its parent, up to the filesystem's root, once per process. Existence proves nothing: an earlier
+     * attempt, or an earlier process, may have made a folder and stopped before syncing its entry.
      */
     async #ensureRoot(): Promise<void> {
         if (this.#rootDurable) return;
-        const first = await mkdir(this.root, { recursive: true });
-        const made: string[] = [];
-        for (let dir = this.root; first !== undefined; dir = dirname(dir)) {
-            made.unshift(dir);
-            if (dir === first || dirname(dir) === dir) break;
-        }
-        for (const dir of made.length > 0 ? made : [this.root]) await this.#syncDir(dirname(dir));
+        await mkdir(this.root, { recursive: true });
+        for (let dir = this.root; dirname(dir) !== dir; dir = dirname(dir)) await this.#syncDir(dirname(dir));
         this.#rootDurable = true;
     }
 
@@ -169,7 +183,16 @@ export class FsStore implements Store {
         const folder = dirname(this.#path(key));
         await this.#ensureFolder(folder);
         const temp = join(folder, TEMP + randomBytes(8).toString('hex'));
-        const file = await open(temp, 'wx');
+        let file;
+        try {
+            file = await open(temp, 'wx');
+        } catch (error) {
+            if (!isMissing(error)) throw error;
+            // The folder was pruned while it was known: forget it, make it again.
+            for (let dir = folder; dir !== this.root; dir = dirname(dir)) this.#durable.delete(dir);
+            await this.#ensureFolder(folder);
+            file = await open(temp, 'wx');
+        }
         try {
             await file.writeFile(body);
             await file.sync();
