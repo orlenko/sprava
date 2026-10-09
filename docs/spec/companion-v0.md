@@ -739,8 +739,9 @@ projects every value as follows, so that what it publishes is always valid:
   shown and the bucket's order always come from the same value. A closure's `title` that is not a string is published as `""`.
 - `tags` and `contexts` keep only their string entries, in order; a field that is not an array is published
   as `[]`. Any other field whose value does not have the type above is published as `null` where `null` is
-  shown, and an item that still cannot be published validly (a `title` that is not a string, say) is left out
-  of the view, and the Mac's Health line names it, as for an item id above.
+  shown, and an item or document that still cannot be published validly (a `title` that is missing or not a
+  string, say, which binder-v0 §4.3 allows in an adopted binder awaiting migration) is left out of the view,
+  and the Mac's Health line names it, as for an item id above.
 
 Buckets and their order follow binder-v0 §5.2, computed by the owner for the day in `today`; the eighth
 bucket, Recently closed, is `closed`, which holds the last 7 days.
@@ -1448,7 +1449,7 @@ A vector, once committed, changes only with the protocol version. The cases:
 20. `view-projection`: a binder adopted but still needing migration, with an item of status `done`, one with no
     status, `due` values `20260705`, `2026-W27-1` and `2026-02-30`, and closure entries whose `closed_at` is a
     date-time with an offset, only a date (once alone and once beside a different `at`), and missing beside an
-    `at`: the exact view the Mac publishes
+    `at`, and a document with no `title`: the exact view the Mac publishes
     (section 8.5), which the web app accepts as valid.
 
 ## 15. Versioning
