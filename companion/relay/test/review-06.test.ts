@@ -4,6 +4,10 @@ import { after, test } from 'node:test';
 import { newId } from '../src/encoding.ts';
 import { deviceKeys } from '../src/layout.ts';
 import { S3Store } from '../src/store/s3.ts';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FsStore } from '../src/store/fs.ts';
 import { scoped } from '../src/store/store.ts';
 import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, slowRequest, startTestRelay, type Seeded } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
@@ -84,7 +88,9 @@ test('a late copy of a drained request never shares an ordinal, so paging skips 
         if (page.next === null) break;
         after = `&after=${page.next}`;
     }
-    assert.deepEqual(seen, [a, b, c], 'A again (the Mac discards it as a duplicate), then B and C');
+    // A's retry took A's own name back (its intent survived the restart), the owner deleted it for good, and the
+    // late copy of that name reads as deleted: B and C, nothing skipped, nothing stale.
+    assert.deepEqual(seen, [b, c]);
     const ordinals = (await list('')).requests.map((x) => x.ordinal);
     assert.equal(new Set(ordinals).size, ordinals.length, 'no two requests share an ordinal');
     await second.close();
@@ -140,5 +146,69 @@ test('a request missing from a listing stays listed, so no later one overtakes i
     assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${a}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
     const after = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
     assert.deepEqual(after.requests.map((x) => x.request_id), [b], 'gone only once the owner deleted it');
+    await t.close();
+});
+
+test('a retry finding a copy whose write failed after it landed makes it durable before answering 409 (§7.6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    let failNext = false;
+    const syncs: string[] = [];
+    const raw = new FsStore(root, {
+        syncDir: async (dir) => {
+            if (!/\/requests\/[^/]+$/.test(dir) || dir.includes('/intents/')) return; // a request body's folder
+            syncs.push(dir);
+            if (failNext) {
+                failNext = false;
+                throw new Error('injected sync failure');
+            }
+        },
+    });
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const r = newId();
+    const post = () => fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([7]), headers: bearer(device.token) });
+    failNext = true;
+    assert.equal((await post()).status, 500, 'linked, but its folder sync failed');
+    await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) }); // the owner's listing finds it
+    syncs.length = 0;
+    assert.equal((await post()).status, 409);
+    assert.ok(syncs.length > 0, 'synced before the 409');
+    await t.close();
+});
+
+test('requests whose copies are missing stay listed after a restart, from their intents (§7.6, §9.2)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const first = await startTestRelay({ raw });
+    const [a, b] = [newId(), newId()];
+    for (const r of [a, b]) {
+        assert.equal((await fetch(`${first.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+    }
+    await first.close();
+    const [copyOfA] = await store.list(`requests/${device.id}/`);
+    await store.delete(copyOfA!); // lost while the relay was down
+    const second = await startTestRelay({ raw });
+    const listing = (await (await fetch(`${second.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
+    assert.deepEqual(listing.requests.map((x) => x.request_id), [a, b]);
+    assert.equal((await fetch(`${second.url}/v0/requests/${device.id}/${a}`, { headers: bearer(owner) })).status, 404);
+    await second.close();
+});
+
+test('a deleted object name is dead: a later PUT is 409, and a copy a late write brings back is never served (§7.5)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    const call = (method: string, path: string, token: string, body?: Uint8Array) =>
+        fetch(t.url + path, { method, headers: bearer(token), ...(body ? { body } : {}) });
+    assert.equal((await call('PUT', '/v0/objects/index/1', owner, new Uint8Array([1]))).status, 204);
+    assert.equal((await call('DELETE', '/v0/objects/index/1', owner)).status, 204);
+    assert.equal((await call('PUT', '/v0/objects/index/1', owner, new Uint8Array([1]))).status, 409);
+    await store.put('objects/index/1', new Uint8Array([1])); // a late write lands
+    assert.equal((await call('GET', '/v0/objects/index/1', device.token)).status, 404);
+    assert.deepEqual(((await (await call('GET', '/v0/objects?prefix=index/', owner)).json()) as { names: string[] }).names, []);
     await t.close();
 });

@@ -3,7 +3,7 @@ import { isId, parseUnsigned, sha256Hex } from './encoding.ts';
 import { HttpError, type Call, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Relay } from './relay.ts';
-import { writeOnce } from './store/store.ts';
+import { deleteForGood, isDeleted, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const READS_PER_HOUR = 600;
@@ -60,12 +60,15 @@ export function objectRoutes(relay: Relay): Route[] {
                     throw new HttpError(400, 'The prefix must be one the protocol names, the limit from 1 to 100, and below a number.');
                 }
                 mayRead(call, parsed.device, prefix, true);
-                const numbers = (await relay.store.list(`objects/${prefix}`))
+                const listed = (await relay.store.list(`objects/${prefix}`))
                     .map((key) => key.slice(`objects/${prefix}`.length))
                     .filter((last) => isRevision(last))
                     .map(Number)
-                    .filter((n) => n < below)
-                    .sort((a, b) => b - a);
+                    .filter((n) => n < below);
+                // A copy a late write brought back after its deletion is not listed (invariant 5).
+                const numbers: number[] = [];
+                for (const n of listed) if (!(await isDeleted(relay.store, `objects/${prefix}${n}`))) numbers.push(n);
+                numbers.sort((a, b) => b - a);
                 const page = numbers.slice(0, limit);
                 return { status: 200, json: { names: page.map((n) => prefix + n), next: numbers.length > limit ? page[page.length - 1] : null } };
             },
@@ -78,7 +81,7 @@ export function objectRoutes(relay: Relay): Route[] {
             async handle(call) {
                 const { key, device, prefix } = named(call);
                 mayRead(call, device, prefix, false);
-                const bytes = await relay.store.get(key);
+                const bytes = (await isDeleted(relay.store, key)) ? null : await relay.store.get(key);
                 if (bytes === null) throw new HttpError(404, 'There is no such object.');
                 // Objects never change under a name, so their hash is a strong ETag (§7.7 exposes it).
                 const etag = `"${sha256Hex(bytes)}"`;
@@ -107,7 +110,9 @@ export function objectRoutes(relay: Relay): Route[] {
             access: ['owner'],
             browser: false,
             async handle(call) {
-                await relay.store.delete(named(call).key);
+                // A name the owner deletes is dead for good: its tombstone first, so no late write or deletion can
+                // change what was acknowledged, and a PUT of it is 409 from then on (invariant 5).
+                await deleteForGood(relay.store, named(call).key);
                 return { status: 204 };
             },
         },

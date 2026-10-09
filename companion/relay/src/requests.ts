@@ -5,7 +5,7 @@ import { HttpError, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Devices } from './devices.ts';
 import type { Relay } from './relay.ts';
-import { writeOnce } from './store/store.ts';
+import { deleteForGood, intentsOf, isDeleted, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const PER_HOUR = 120;
@@ -13,6 +13,7 @@ const MAX_PENDING = 1000;
 export const REQUEST_EXPIRY_MS = 30 * 24 * HOUR;
 const RESERVED = 'ordinals/';
 const BLOCK = 1024;
+const INTENT = /^intents\/requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})\/([0-9a-f]{64})$/;
 const NAME = /^requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})$/;
 
 interface Entry {
@@ -48,19 +49,29 @@ export function requests(relay: Relay, devices: Devices) {
         }
         const mailbox = mailboxes.get(d) ?? new Map<string, Entry>();
         let highest = 0;
+        const bodies = new Set<string>();
         for (const { key, modified } of await store.listTimes(`requests/${d}/`)) {
             const match = NAME.exec(key);
             if (match === null || match[1] !== d) continue;
-            const ordinal = Number(match[2]);
-            highest = Math.max(highest, ordinal);
-            const known = mailbox.get(match[3]!);
-            if (known === undefined) {
-                mailbox.set(match[3]!, { ordinal, key, received: modified, digest: null });
-            } else if (known.key !== key) {
-                const lower = ordinal < known.ordinal;
-                await store.delete(lower ? known.key : key);
-                if (lower) mailbox.set(match[3]!, { ordinal, key, received: modified, digest: null });
+            highest = Math.max(highest, Number(match[2]));
+            // A copy a late write brought back after the owner deleted it stays deleted (invariant 5).
+            if (await isDeleted(store, key)) {
+                await retire(key);
+                continue;
             }
+            bodies.add(key);
+            await merge(mailbox, match[3]!, { ordinal: Number(match[2]), key, received: modified, digest: null });
+        }
+        // The durable record of what was accepted: each request's intent, written before its body and deleted only
+        // with it. An intent whose body is missing is a request the relay may have acknowledged, so it stays listed
+        // (with a 404 body) across restarts, and no later request overtakes it (§9.2).
+        for (const { key: intent, modified } of await store.listTimes(intentsOf(`requests/${d}`))) {
+            const match = INTENT.exec(intent);
+            if (match === null || match[1] !== d) continue;
+            const key = `requests/${d}/${match[2]}-${match[3]}`;
+            highest = Math.max(highest, Number(match[2]));
+            if (bodies.has(key) || mailbox.has(match[3]!) || (await isDeleted(store, key))) continue;
+            mailbox.set(match[3]!, { ordinal: Number(match[2]), key, received: modified, digest: match[4]! });
         }
         mailboxes.set(d, mailbox);
         let next = Math.max(nextOrdinal.get(d) ?? 1, highest + 1);
@@ -70,6 +81,27 @@ export function requests(relay: Relay, devices: Devices) {
         }
         nextOrdinal.set(d, next);
         return mailbox;
+    }
+
+    /** Two copies of one R keep the lower ordinal; the other is retired. */
+    async function merge(mailbox: Map<string, Entry>, r: string, entry: Entry): Promise<void> {
+        const known = mailbox.get(r);
+        if (known === undefined || known.key === entry.key) {
+            if (known === undefined) mailbox.set(r, entry);
+            return;
+        }
+        const lower = entry.ordinal < known.ordinal;
+        await retire(lower ? known.key : entry.key);
+        if (lower) mailbox.set(r, entry);
+    }
+
+    /**
+     * Deletes a request for good: its tombstone first, so a copy a late write brings back reads as deleted, then its
+     * body, then its intents, which are the record of what is pending. Its name, with its ordinal, is never reused.
+     */
+    async function retire(key: string): Promise<void> {
+        await deleteForGood(store, key);
+        for (const intent of await store.list(intentsOf(key))) await store.delete(intent);
     }
 
     /**
@@ -98,7 +130,7 @@ export function requests(relay: Relay, devices: Devices) {
                 const mailbox = await refreshLocked(d);
                 for (const [r, entry] of mailbox) {
                     if (entry.received < relay.now() - REQUEST_EXPIRY_MS) {
-                        await store.delete(entry.key);
+                        await retire(entry.key);
                         mailbox.delete(r);
                     }
                 }
@@ -129,7 +161,11 @@ export function requests(relay: Relay, devices: Devices) {
                 const known = mailbox.get(r);
                 if (known !== undefined) {
                     // §7.6: 409 tells the device its request is stored, so it is said only once that is verified.
-                    if ((await store.get(known.key)) !== null) throw new HttpError(409, 'This request is already stored.');
+                    if ((await store.get(known.key)) !== null) {
+                        // A copy found, perhaps one whose write failed after it landed: durable before it is said so.
+                        await store.sync(known.key);
+                        throw new HttpError(409, 'This request is already stored.');
+                    }
                     if ((known.digest ?? digest) !== digest || (await writeOnce(store, known.key, call.body)) === 'different') {
                         throw new HttpError(503, 'This request is not stored yet; try again.', { 'Retry-After': '5' });
                     }
@@ -194,7 +230,7 @@ export function requests(relay: Relay, devices: Devices) {
                 const d = ids(call.params.D, call.params.R);
                 await relay.deviceLocks.run(d, async () => {
                     const entry = mailboxes.get(d)?.get(call.params.R!);
-                    if (entry !== undefined) await store.delete(entry.key);
+                    if (entry !== undefined) await retire(entry.key);
                     mailboxes.get(d)?.delete(call.params.R!);
                 });
                 return { status: 204 };
