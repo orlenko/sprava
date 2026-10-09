@@ -28,8 +28,8 @@ The test vectors shared with the Mac and the web app are in
 ## Crashes and late writes
 
 A process can stop at any moment, and with an S3-compatible store a write it sent may land later, even after a
-new process has started (spec section 6). The relay holds to four invariants, and every endpoint is checked
-against them:
+new process has started (spec section 6); so may a deletion. The relay holds to five invariants, and every
+endpoint is checked against them:
 
 1. **Every object is fixed by its first writer, or informative.** A write-once object never changes once
    written, and every writer of a name derives the same bytes, so a late write repeats them. Informative
@@ -42,6 +42,11 @@ against them:
    earlier write's outcome is unknown.
 4. **Every check-then-act runs under one lock**, the one its counterpart takes (a device's lock for anything
    a revocation must not overtake), in a single documented order.
+5. **A name is never reused for other bytes, and a deletion is final and durable.** A name that has ever held a
+   write-once object, or an intent, never takes different bytes. Deleting an object that could be written again
+   first leaves a durable tombstone, which refuses every later write and makes every reader treat a copy that a
+   late write brings back as deleted; a late deletion then only removes what is already dead. A deletion is
+   acknowledged only once it is durable, a repeated one included.
 
 ## Layout
 

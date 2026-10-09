@@ -36,7 +36,7 @@ test('fs: a write is acknowledged only after its file and folder are synced, new
     await store.putIfAbsent('a/b/d', new Uint8Array([2]));
     await store.delete('a/b/c');
     await store.delete('a/b/c');
-    assert.deepEqual(events, ['sync a/b', 'sync a/b', 'sync a/b'], 'one sync per change; a missing key changes nothing');
+    assert.deepEqual(events, ['sync a/b', 'sync a/b', 'sync a/b', 'sync a/b'], 'one sync per change, and per deletion even of a missing key');
 });
 
 test('fs: a failed write leaves no temporary file, and listings stay inside the folder', async () => {
@@ -107,6 +107,37 @@ test('fs: keys that differ only in case never share a file, on any folder (§3 i
     assert.deepEqual(await store.list(`views/a`), [lower]);
     await assert.rejects(store.put('a/b^c', new Uint8Array()), /invalid store key/);
     await assert.rejects(store.put('a/é', new Uint8Array()), /invalid store key/);
+});
+
+test('fs: a root written with a trailing slash or dot segments works like the plain one', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    for (const written of [`${root}/`, `${root}/./`, `${root}/x/..`]) {
+        const store = new FsStore(written);
+        await store.put('a/b', new Uint8Array([1]));
+        assert.deepEqual(await new FsStore(root).get('a/b'), new Uint8Array([1]));
+    }
+});
+
+test('fs: a retried deletion whose first folder sync failed syncs before it is acknowledged (§7.8)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    const events: string[] = [];
+    let fail = false;
+    const store = new FsStore(root, {
+        syncDir: async (dir) => {
+            events.push(`sync ${relative(root, dir) || '.'}`);
+            if (fail) {
+                fail = false;
+                throw new Error('injected sync failure');
+            }
+        },
+    });
+    await store.put('k/1', new Uint8Array([1]));
+    fail = true;
+    await assert.rejects(store.delete('k/1'), /injected/);
+    events.length = 0;
+    await store.delete('k/1');
+    assert.deepEqual(events, ['sync k'], 'the file was already gone, and the folder is synced all the same');
+    await store.delete('never/1');
 });
 
 test('the mutex runs work one at a time and survives a failure', async () => {

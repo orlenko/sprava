@@ -9,7 +9,7 @@
 // `^` and its lower-case form, so two keys that differ only in case never share a file.
 import { randomBytes } from 'node:crypto';
 import { link, mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { Store } from './store.ts';
 
 const TEMP = '.tmp-';
@@ -23,7 +23,8 @@ export class FsStore implements Store {
 
     /** `syncDir` is for tests that watch the order of writes and folder syncs; it defaults to fsync. */
     constructor(root: string, options: { syncDir?: (dir: string) => Promise<void> } = {}) {
-        this.root = root;
+        // Normalized, so a trailing slash or a dot segment cannot keep the folder walk from ever reaching it.
+        this.root = resolve(root);
         this.#syncDir = options.syncDir ?? fsyncDir;
     }
 
@@ -81,14 +82,21 @@ export class FsStore implements Store {
         await this.#syncDir(dirname(path));
     }
 
+    /**
+     * A deletion is acknowledged only once durable: the folder is synced even when the file is already gone, since
+     * an earlier attempt may have removed it and then failed to sync. A folder that does not exist held nothing.
+     */
     async delete(key: string): Promise<void> {
         try {
             await unlink(this.#path(key));
         } catch (error) {
-            if (isMissing(error)) return;
-            throw error;
+            if (!isMissing(error)) throw error;
         }
-        await this.#syncDir(dirname(this.#path(key)));
+        try {
+            await this.#syncDir(dirname(this.#path(key)));
+        } catch (error) {
+            if (!isMissing(error)) throw error;
+        }
     }
 
     async list(prefix: string): Promise<string[]> {
@@ -125,7 +133,10 @@ export class FsStore implements Store {
     /** Every folder from the root down to `folder` exists, and its entry is durable in its parent. */
     async #ensureFolder(folder: string): Promise<void> {
         const chain: string[] = [];
-        for (let dir = folder; dir !== this.root && !this.#durable.has(dir); dir = dirname(dir)) chain.unshift(dir);
+        for (let dir = folder; dir !== this.root && !this.#durable.has(dir); dir = dirname(dir)) {
+            if (dirname(dir) === dir) throw new Error('a store folder outside its root');
+            chain.unshift(dir);
+        }
         for (const dir of chain) {
             await mkdir(dir).catch((error: NodeJS.ErrnoException) => {
                 if (error.code !== 'EEXIST') throw error;
