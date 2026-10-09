@@ -26,19 +26,21 @@ public enum PrivacyRatchet {
     }
 
     /// What Sprava itself last applied: the latest `import_snapshot`, then every later op Sprava applied, skipping
-    /// aborted ones; an `external_edit` never counts. A redaction is confirmed by any op that sets it and lifted
-    /// only by the person's own op (architecture 4.5, 7.3). So is a hub title: any op may give an item one where it
-    /// had none, but only the person's own op changes or removes it. Every item Sprava knows has a confirmed hub
-    /// title or a confirmed absence of one, so a title added outside is held back as well. Tags and kind stand as
-    /// the ops set them; only the person's own op removes a kind.
+    /// aborted ones; an `external_edit` never changes what stands for an item already known. A redaction is
+    /// confirmed by any op that sets it and lifted only by the person's own op (architecture 4.5, 7.3). So is a hub
+    /// title: any op may give an item one where it had none, but only the person's own op changes or removes it.
+    /// Every item has a baseline from the first time Sprava sees it, at adoption, in its own op, or in an outside
+    /// edit it recorded: its hub title or the confirmed absence of one, its redaction, tags and kind, as they were
+    /// then. A title added outside later is held back as well. Tags and kind stand as the ops set them; only the
+    /// person's own op removes a kind. An item no log state shows yet is taken as found, its first sight.
     public struct Confirmed: Equatable {
         public var disclosure: String
         /// Items whose redaction stands, by the id's canonical text.
         public var redacted: Set<String>
         /// The `slice_title` that stands for each item that has one, by the id's canonical text.
         public var sliceTitles: [String: JSONValue] = [:]
-        /// Every item Sprava applied or adopted, by the id's canonical text: one of them without an entry in
-        /// `sliceTitles` has no hub title, confirmed.
+        /// Every item with a baseline, by the id's canonical text: one of them without an entry in `sliceTitles` has
+        /// no hub title, confirmed.
         public var known: Set<String> = []
         /// The tags and the kind that stand for each item Sprava knows.
         public var tags: [String: Set<JSONValue>] = [:]
@@ -64,7 +66,18 @@ public enum PrivacyRatchet {
             if let kind = item?["kind"] { c.kinds[k] = kind }
         }
         for item in snapshot?["open_items"]?.arrayValue ?? [] { record(item) }
+        // The catalog as each op left it, so an item first seen in an outside edit gets its baseline as that edit left
+        // it (binder-v0 §5.5 holds back loosening an item, not the arrival of a new one), and never goes without one.
+        var state = snapshot?.objectValue ?? JSONObject()
         for op in ops.dropFirst(start + 1) where !aborted.contains(op["id"]?.stringValue ?? "") {
+            defer {
+                if let next = try? OpApplier.apply(op, to: state) { state = next }
+                // Only an outside edit or a migration brings an item no op of Sprava's named; add_item and reopen
+                // record theirs below.
+                if op["op"] == .str("external_edit") || op["op"] == .str("migrate") {
+                    for item in state["open_items"]?.arrayValue ?? [] where !(key(item["id"]).map(c.known.contains) ?? true) { record(item) }
+                }
+            }
             let args = op["args"]
             let byUser = op["actor"]?["kind"] == .str("user")
             switch op["op"]?.stringValue {
@@ -169,13 +182,12 @@ public enum PrivacyRatchet {
                 retitled.append(Retitled(id: id, confirmed: confirmed.sliceTitles[k], found: foundTitle))
             }
         }
-        // An item closed with a title or tags added outside is shown to the hub once more as closed: held the same.
-        var closedTags: [String: Set<JSONValue>] = [:]
+        // A closure publishes no title or tags in `closed[]` (binder-v0 §8.2), so a closed item never holds the binder
+        // back; its hub title is held all the same, for a publisher that shows a closed item once more by its title.
         for entry in catalog["processing_log"]?.arrayValue ?? [] where ["done", "dropped"].contains(entry["action"]?.stringValue ?? "") {
             guard let k = key(entry["id"]) else { continue }
             let final = entry["final"]
             _ = heldTitle(k, found: sliceTitle(final?["slice_title"]), title: entry["title"], redact: final?["redact"] == .bool(true))
-            closedTags[k] = Set(final?["tags"]?.arrayValue ?? [])
         }
 
         // Tags and kind of redacted items.
@@ -191,10 +203,7 @@ public enum PrivacyRatchet {
                 kinds[k] = kind
             }
         }
-        let closedRetagged = closedTags.contains { k, tags in
-            confirmed.known.contains(k) && confirmed.redacted.contains(k) && !tags.isSubset(of: confirmed.tags[k] ?? [])
-        }
-        let held = retagged.isEmpty && !closedRetagged ? disclosure : narrower(disclosure, "title")
+        let held = retagged.isEmpty ? disclosure : narrower(disclosure, "title")
         return View(disclosure: held, redacted: redacted, widenedTo: disclosure == found ? nil : found, lifted: lifted,
                     retitled: retitled, titles: titles, retagged: retagged, unkinded: unkinded, kinds: kinds)
     }

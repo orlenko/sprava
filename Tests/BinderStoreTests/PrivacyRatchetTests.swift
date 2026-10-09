@@ -87,4 +87,58 @@ import Testing
         #expect(after.retitled.isEmpty && after.lifted.isEmpty && after.retagged.isEmpty && after.widenedTo == nil, "\(c.name)")
         #expect(try PrivacyRatchet.ensureCard(folder: folder, now: now) == nil, "\(c.name): a card after approval")
     }
+
+    func adoptedAtFull() throws -> (URL, TekaStore) {
+        let folder = try makeTeka(fixture: "sprava-v0")
+        let store = TekaStore(folder: folder)
+        store.testHookFullSync = { _ in 0 }
+        try store.adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("test"))]), now: now)
+        try store.apply([.init(op: "set_disclosure", args: JSONObject([(key: "disclosure", value: .str("full"))]), actor: user)], now: now)
+        return (folder, store)
+    }
+
+    func edit(_ folder: URL, _ change: (inout JSONObject) -> Void) throws {
+        let url = folder.appendingPathComponent("catalog.json")
+        var c = try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+        change(&c)
+        try Data(JSONWriter.pretty(.object(c)).utf8).write(to: url)
+    }
+
+    func view(_ folder: URL) throws -> PrivacyRatchet.View {
+        let c = try #require(try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue)
+        return PrivacyRatchet.view(folder: folder, catalog: c)
+    }
+
+    /// An item another program added has a baseline from the edit that brought it; redacted later by the person, a
+    /// hub title added outside afterwards is held back.
+    @Test func anItemAddedOutsideHasABaseline() throws {
+        let (folder, store) = try adoptedAtFull()
+        let id = "estate-example-2026-120"
+        try edit(folder) { c in
+            c.set("open_items", .array((c["open_items"]?.arrayValue ?? []) + [.obj([
+                ("id", .string(id)), ("title", .str("Invented outside task")), ("status", .str("open")), ("priority", .str("normal")),
+                ("no_deadline", .bool(true)), ("created_at", .str("2026-10-06T08:00:00Z")), ("updated_at", .str("2026-10-06T08:00:00Z")),
+            ])]))
+        }
+        try store.settle(now: now)
+        try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: .string(id)),
+                                                                    (key: "set", value: .obj([("redact", .bool(true)), ("kind", .str("other"))]))]),
+                               actor: user)], now: now)
+        try edit(folder) { Self.item(id, in: &$0) { $0.set("slice_title", .str("Invented subject")) } }
+        #expect(try view(folder).titles[Self.key(id)] == .str("[redacted]"))
+        try edit(folder) { Self.item(id, in: &$0) { $0.set("tags", .array([.str("invented-subject")])) } }
+        #expect(try view(folder).disclosure == "title")
+        #expect(try PrivacyRatchet.ensureCard(folder: folder, now: now) != nil)
+    }
+
+    /// A tag added outside to a redacted item that is then closed does not hold the binder back: a closure
+    /// publishes no tags.
+    @Test func aClosedItemNeverHoldsTheBinder() throws {
+        let (folder, store) = try adoptedAtFull()
+        try edit(folder) { Self.item(Self.redacted, in: &$0) { $0.set("tags", .array([.str("invented-subject")])) } }
+        try store.settle(now: now)
+        #expect(try view(folder).disclosure == "title")
+        try store.apply([.init(op: "complete", args: JSONObject([(key: "id", value: .str(Self.redacted))]), actor: user)], now: now)
+        #expect(try view(folder).disclosure == "full")
+    }
 }

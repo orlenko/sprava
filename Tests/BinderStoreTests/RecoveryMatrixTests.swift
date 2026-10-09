@@ -248,6 +248,43 @@ import Testing
         #expect(card.raw["provenance"]?["manual_repair"] == .bool(true))
     }
 
+    /// The cells recovery keeps up op by op are the cells of each catalog read whole, for every sequence.
+    @Test func cellsKeptUpOpByOpAreTheCellsReadWhole() throws {
+        for (name, steps) in sequences {
+            let (folder, store) = try adopted()
+            _ = try run(steps, store: store, folder: folder)
+            let (start, ops) = try #require(TekaStore.sinceAdoption(try store.readOpLog().ops))
+            var state = start, flat = TekaStore.cells(start)
+            for op in ops {
+                let next = try OpApplier.apply(op, to: state)
+                let (kept, looked) = TekaStore.cells(next, after: state, were: flat)
+                let whole = TekaStore.cells(next)
+                #expect(kept == whole, "\(name): \(op["op"]?.stringValue ?? "?")")
+                #expect(Set(whole.keys).union(flat.keys).filter { flat[$0] != whole[$0] }.isSubset(of: looked), "\(name)")
+                state = next
+                flat = kept
+            }
+        }
+    }
+
+    /// An unrelated outside edit between an approval and a stale copy hides nothing: the approval is still found.
+    @Test func anUnrelatedOutsideEditHidesNoEarlierLoss() throws {
+        let (folder, store) = try adopted()
+        let copies = try run([update("estate-example-2026-007", [("title", .str("Invented title B"))])], store: store, folder: folder)
+        var unrelated = try catalog(folder)
+        unrelated = setting(unrelated, "open_items", "estate-example-2026-008", "priority", .str("low"))
+        try Data(JSONWriter.pretty(.object(unrelated)).utf8).write(to: folder.appendingPathComponent("catalog.json"))
+        try store.settle(now: now)
+        // The copy from before the approval, saved with another change of its own.
+        try saveOutside(copies[0], in: folder)
+        try store.settle(now: now)
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        try store.approve(card, now: now)
+        let items = try catalog(folder)["open_items"]?.arrayValue ?? []
+        #expect(items.first { $0["id"] == .str("estate-example-2026-007") }?["title"] == .str("Invented title B"))
+        #expect(items.first { $0["id"] == .string(bystander) }?["title"] == .string(outsideTitle))
+    }
+
     /// A write cut short and then aborted because of the outside save still lets the approvals before it be found.
     @Test func anAbortedWriteDoesNotHideEarlierLosses() throws {
         let (folder, store) = try adopted()

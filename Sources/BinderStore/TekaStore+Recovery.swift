@@ -116,15 +116,14 @@ extension TekaStore {
         }
         let expectedHash = try Canonical.hash(.object(expected))
         let patch = JSONPatch.diff(from: .object(expected), to: .object(catalog))
-        let ambiguous = H == b && S == nil
         let reverted = H == b && S == a
         let lostOps: [JSONObject]
-        if appended.isEmpty, reverted || ambiguous {
-            lostOps = trailing
-        } else if let (before, since) = Self.sincePreviousExternalEdit(effectiveLog) {
-            // Every approved op since the previous external edit, not only the last batch: a copy saved from before
-            // several approvals undoes them all (architecture 4.5). A write just aborted is left out, through its
-            // abort in the effective log; the approvals before it are still checked.
+        // A catalog put back as it was before the last write is judged by the same rule as any other outside edit:
+        // what it takes back is offered again only where an approval wrote it, never an outside edit's own change.
+        if let (before, since) = Self.sinceAdoption(effectiveLog) {
+            // Every approved op that still stands, not only the last batch: a copy saved from before several
+            // approvals undoes them all, and an unrelated outside edit in between hides none of them (architecture
+            // 4.5). A write just aborted is left out, through its abort in the effective log.
             lostOps = Self.lostOps(found: catalog, expected: expected, before: before, ops: since)
         } else {
             lostOps = []
@@ -265,13 +264,13 @@ extension TekaStore {
         return nil
     }
 
-    /// The catalog as the previous external edit (or the adoption) left it, and the ops applied since, aborted ones
-    /// left out: what an outside edit is compared with (architecture 4.5). Nil when no op followed it.
-    static func sincePreviousExternalEdit(_ log: [JSONObject]) -> (JSONObject, [JSONObject])? {
+    /// The catalog as adopted, and every op applied since, outside edits included and aborted ones left out: what an
+    /// outside edit is compared with (architecture 4.5). Nil when no op followed the adoption.
+    static func sinceAdoption(_ log: [JSONObject]) -> (JSONObject, [JSONObject])? {
         let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
         // An aborted op and its abort never took effect; the chain runs on without them.
         let effective = log.filter { $0["op"] != .str("abort") && !aborted.contains($0["id"]?.stringValue ?? "") }
-        guard let start = effective.lastIndex(where: { ["external_edit", "import_snapshot"].contains($0["op"]?.stringValue ?? "") }),
+        guard let start = effective.lastIndex(where: { $0["op"] == .str("import_snapshot") }),
               start < effective.count - 1, let before = try? Replay.run(Array(effective[...start])) else { return nil }
         return (before, Array(effective[(start + 1)...]))
     }
@@ -298,7 +297,9 @@ extension TekaStore {
                 }
             case "processing_log":
                 for entry in e.value.arrayValue ?? [] {
-                    if let op = entry["op_id"], op != .null { out[Cell(kind: e.key, id: op, field: "")] = entry }
+                    if let op = entry["op_id"], op != .null, out[Cell(kind: e.key, id: op, field: "")] == nil {
+                        out[Cell(kind: e.key, id: op, field: "")] = entry
+                    }
                 }
             case "meta":
                 if case .object(let meta) = e.value {
@@ -313,12 +314,63 @@ extension TekaStore {
         return out
     }
 
-    /// The ops that put back what an outside edit took from the approved ops `ops` (applied in order to `before`)
-    /// (binder-v0 §6.7 step 6), each carrying the `id` and actor of the op whose effect it restores. One rule for
-    /// every place the ops write: replaying them gives every value each cell held in the interval. A cell whose found
-    /// value differs from the latest approved one is a loss when the found value is the original or one in between
-    /// (an editor held a copy from before or halfway), or when it is missing where the ops left a value. A present
-    /// value no op wrote in the interval is the other program's own change and is kept.
+    /// `cells(c)`, from the cells of `prior` (`flat`), looking again only at the top-level keys, records and log
+    /// entries that differ, and the cells it looked at (every cell whose value differs is among them): a replay of a
+    /// long log stays linear in what each op changes.
+    static func cells(_ c: JSONObject, after prior: JSONObject, were flat: [Cell: JSONValue]) -> ([Cell: JSONValue], Set<Cell>) {
+        var out = flat
+        var looked = Set<Cell>()
+        func put(_ cell: Cell, _ value: JSONValue?) {
+            out[cell] = value
+            looked.insert(cell)
+        }
+        func byID(_ v: JSONValue?, _ idKey: String) -> [JSONValue: JSONObject] {
+            var d: [JSONValue: JSONObject] = [:]
+            for case .object(let o) in v?.arrayValue ?? [] {
+                guard let id = o[idKey], idKey == "id" || id != .null, d[id] == nil else { continue }
+                d[id] = o
+            }
+            return d
+        }
+        for key in Set(prior.keys).union(c.keys) where prior[key] != c[key] {
+            switch key {
+            case "open_items", "documents":
+                let old = byID(prior[key], "id"), new = byID(c[key], "id")
+                for (id, r) in old where new[id] != r {
+                    put(Cell(kind: key, id: id, field: ""), nil)
+                    for f in r.keys where !["updated_at", "derived"].contains(f) { put(Cell(kind: key, id: id, field: f), nil) }
+                }
+                for (id, r) in new where old[id] != r {
+                    put(Cell(kind: key, id: id, field: ""), .bool(true))
+                    for f in r.entries where !["updated_at", "derived"].contains(f.key) { put(Cell(kind: key, id: id, field: f.key), f.value) }
+                }
+            case "processing_log":
+                let old = byID(prior[key], "op_id"), new = byID(c[key], "op_id")
+                for id in old.keys where new[id] == nil { put(Cell(kind: key, id: id, field: ""), nil) }
+                for (id, entry) in new where old[id] != entry { put(Cell(kind: key, id: id, field: ""), .object(entry)) }
+            case "meta":
+                for f in prior["meta"]?.objectValue?.keys ?? [] { put(Cell(kind: "meta", id: nil, field: f), nil) }
+                put(Cell(kind: "top", id: nil, field: "meta"), nil)
+                if case .object(let meta)? = c["meta"] {
+                    for f in meta.entries { put(Cell(kind: "meta", id: nil, field: f.key), f.value) }
+                } else if let v = c["meta"] {
+                    put(Cell(kind: "top", id: nil, field: "meta"), v)
+                }
+            default:
+                put(Cell(kind: "top", id: nil, field: key), c[key])
+            }
+        }
+        return (out, looked)
+    }
+
+    /// The ops that put back what an outside edit took from the approved ops among `ops` (applied in order to
+    /// `before`, outside edits included) (binder-v0 §6.7 step 6), each carrying the `id` and actor of the op whose
+    /// effect it restores. One rule for every place the ops write, judged place by place: replaying them gives every
+    /// value each cell held since the last outside edit that changed that cell, or since adoption. An outside edit
+    /// elsewhere does not end it. A cell whose found value differs from the latest approved one is a loss when the
+    /// found value is one of those, the first or one in between (an editor held a copy from before or halfway), or
+    /// when it is missing where an approved op left a value. A present value none of them is, is the other
+    /// program's own change and is kept; so is a cell an outside edit wrote last.
     ///
     /// A lost field of a record that is still there is put back by itself, to its approved value, so nothing else
     /// on the record is written: `update_item`, `set_status`, `dismiss` or `undismiss` for an item, `update_document`
@@ -338,9 +390,22 @@ extension TekaStore {
         var state = before, flat = cells(before)
         for (i, op) in ops.enumerated() {
             guard let next = try? OpApplier.apply(op, to: state) else { break }
-            let flatNext = cells(next)
+            let (flatNext, looked) = cells(next, after: state, were: flat)
             var records = Set<Record>()
-            for cell in Set(flat.keys).union(flatNext.keys) where flat[cell] != flatNext[cell] {
+            if op["op"] == .str("external_edit") {
+                // A cell an outside edit changed starts its history again from the value it left; no approval before
+                // that counts for it any more, and a record it made or removed was not made by an approved op.
+                for cell in looked where flat[cell] != flatNext[cell] {
+                    values[cell] = [flatNext[cell]]
+                    setters[cell] = []
+                    if cell.field.isEmpty { created[Record(kind: cell.kind, id: cell.id)] = nil }
+                }
+                touched.append(records)
+                state = next
+                flat = flatNext
+                continue
+            }
+            for cell in looked where flat[cell] != flatNext[cell] {
                 values[cell, default: [flat[cell]]].append(flatNext[cell])
                 setters[cell, default: []].append(i)
                 switch cell.kind {
