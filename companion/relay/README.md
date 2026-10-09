@@ -25,6 +25,23 @@ The git hooks run `companion/test.sh` for every commit that touches `companion/`
 The test vectors shared with the Mac and the web app are in
 [`companion/testdata/companion-v0-vectors.json`](../testdata/companion-v0-vectors.json) (spec section 14).
 
+## Running it locally
+
+The relay reads only environment variables (spec section 13). For development it keeps its data in a local
+folder instead of a bucket:
+
+```sh
+export SPRAVA_INSTANCE=$(openssl rand -hex 16)
+export SPRAVA_SETUP_CODE=$(openssl rand -base64 32)
+export SPRAVA_WEB_ORIGIN=http://localhost:5173      # where the web app is served from
+export SPRAVA_STORAGE=fs:$HOME/sprava-relay-dev     # an absolute folder
+npm start                                           # listens on PORT, 8080 by default
+curl -s http://localhost:8080/v0/health
+```
+
+It refuses to start, naming the variable, when one is missing or malformed. It logs one JSON line per request
+with the method, the endpoint pattern, the status and the duration, never a token, an id or a body (section 12).
+
 ## Crashes and late writes
 
 A process can stop at any moment, and with an S3-compatible store a write it sent may land later, even after a
@@ -53,7 +70,11 @@ endpoint is checked against them:
 
 ## Layout
 
-- `src/encoding.ts`: b64, ids, tokens and their hashes, times (spec section 3).
+- `src/main.ts`: reads the environment, opens the store, serves.
+- `src/relay.ts`: the relay's shared state, what it checks before serving, and its routes.
+- `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.
+- `src/log.ts`: structured logs without content (section 12).
+- `src/encoding.ts`: b64, ids, tokens and their hashes, times (section 3).
 - `src/json.ts`: the strict JSON reader and the writer (section 3.1).
 - `src/config.ts`: the environment variables (section 13).
 - `src/store/`: the storage interface, the write-once rule (section 7.8) and the backends.
