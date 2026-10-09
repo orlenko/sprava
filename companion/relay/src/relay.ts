@@ -3,21 +3,26 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CLAIM_TIMING, claimRoute } from './claim.ts';
 import { ConfigError, isSetupCode, type Config } from './config.ts';
 import { deviceRoutes, Devices } from './devices.ts';
-import { isHashHex } from './encoding.ts';
+import { isHashHex, sameBytes } from './encoding.ts';
 import { createHandler, type Route } from './http.ts';
-import { OWNER, readRecord } from './layout.ts';
+import { CLAIMS, OWNER, ownerRecord } from './layout.ts';
 import { Lease, LEASE_TIMING, sleep } from './lease.ts';
 import type { Log } from './log.ts';
 import { repairAtStart } from './startup.ts';
-import { Mutex, type Store } from './store/store.ts';
+import { KeyedMutex, Mutex, writeOnce, type Store } from './store/store.ts';
 
 export interface Relay {
     readonly config: Config;
     /** The store, already scoped to `SPRAVA_INSTANCE/` (§7.8). */
     readonly store: Store;
     readonly log: Log;
-    /** §6 step 5: claims, pairing joins, object and request creation take this one lock. */
+    /**
+     * §6 step 5: the creation lock, for claims, pairing joins and object writes. Lock order (devices.ts): a device's
+     * lock first, then this one; code holding this one never takes a device lock.
+     */
     readonly lock: Mutex;
+    /** One lock per device, held for every action of the device and every change to it (devices.ts). */
+    readonly deviceLocks: KeyedMutex;
     now(): number;
     /** The owner token's hash once the relay is claimed (§6), else null. */
     ownerHash: string | null;
@@ -46,11 +51,25 @@ export interface Started {
     stop(): void;
 }
 
+export class ClaimConflict extends Error {}
+
+/**
+ * The owner, from the claims decided in storage (§6, layout.ts): none, or exactly one whose owner record matches.
+ * Anything else fails closed: a relay with two claims, or an owner record without its claim, never starts.
+ */
 async function readOwner(store: Store): Promise<string | null> {
-    const owner = readRecord<{ owner_token_sha256: unknown }>(await store.get(OWNER));
-    if (owner === null) return null;
-    if (!isHashHex(owner.owner_token_sha256)) throw new Error('The owner record is unreadable.');
-    return owner.owner_token_sha256;
+    const claims = (await store.list(CLAIMS)).map((key) => key.slice(CLAIMS.length));
+    const owner = await store.get(OWNER);
+    if (claims.length === 0) {
+        if (owner !== null) throw new ClaimConflict('The owner record has no claim behind it.');
+        return null;
+    }
+    const [hash] = claims;
+    if (claims.length > 1 || !isHashHex(hash)) {
+        throw new ClaimConflict('This instance holds more than one claim; start over with a new SPRAVA_INSTANCE and setup code.');
+    }
+    if (owner !== null && !sameBytes(owner, ownerRecord(hash))) throw new ClaimConflict('The owner record does not match its claim.');
+    return hash;
 }
 
 /** Checks what must hold before serving, takes the lease, and builds the handler; the rest happens in `ready`. */
@@ -68,6 +87,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         store: lease.fenceStore(),
         log: options.log,
         lock: new Mutex(),
+        deviceLocks: new KeyedMutex(),
         now: options.now ?? Date.now,
         ownerHash,
         repeat(ms, name, work) {
@@ -86,6 +106,8 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         await lease.check();
         await lease.assertHeld();
         relay.ownerHash = await readOwner(relay.store);
+        // A claim whose owner record a crash cut short is finished now.
+        if (relay.ownerHash !== null) await writeOnce(relay.store, OWNER, ownerRecord(relay.ownerHash));
         await repairAtStart(relay, devices);
         await devices.load();
         await lease.retireEarlier();
@@ -98,6 +120,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         webOrigin: config.webOrigin,
         log: options.log,
         authenticate: (token) => devices.authenticate(token),
+        guard: (principal, action) => devices.guard(principal, action),
         isClaimed: () => relay.ownerHash !== null,
         isReady: () => isReady && !lease.fenced,
         ...(options.bodyTimeoutMs === undefined ? {} : { bodyTimeoutMs: options.bodyTimeoutMs }),

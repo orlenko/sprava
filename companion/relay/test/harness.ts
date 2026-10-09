@@ -1,13 +1,13 @@
 // Runs a relay in this process on a free port, over a fresh local folder, for the endpoint tests.
 import { mkdtemp } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLAIM_TIMING } from '../src/claim.ts';
 import { readConfig } from '../src/config.ts';
 import { formatTime, newId, newToken, tokenHash } from '../src/encoding.ts';
-import { deviceKeys, pairingKeys } from '../src/layout.ts';
+import { deviceKeys, ownerRecord, pairingKeys } from '../src/layout.ts';
 import { jsonLog } from '../src/log.ts';
 import { startRelay, type Handler, type Relay } from '../src/relay.ts';
 import { FsStore } from '../src/store/fs.ts';
@@ -107,7 +107,8 @@ export async function seedDevice(store: Store, options: { active?: boolean; expi
         json({ owner_public_key: newToken(), device_id: id, secret_sha256: tokenHash(newToken()), expires_at: formatTime(options.expiresAt ?? now + 600_000) }),
     );
     await store.put(pairingKeys(pairing).joined, json({ device_public_key: newToken(), hello: 'aGVsbG8' }));
-    await store.put(deviceKeys(id).record, json({ token_sha256: tokenHash(token), pairing_id: pairing, joined_at: formatTime(now) }));
+    await store.put(deviceKeys(id).record, json({ pairing_id: pairing }));
+    await store.put(deviceKeys(id).token(tokenHash(token)), json({ joined_at: formatTime(now) }));
     if (options.active) {
         await store.put(pairingKeys(pairing).keySha, new Uint8Array(Buffer.from('0'.repeat(64))));
         await store.put(deviceKeys(id).active, new Uint8Array());
@@ -120,8 +121,36 @@ export const bearer = (token: string): Record<string, string> => ({ Authorizatio
 /** Writes the owner record straight into a store, as a claim would; returns the owner token. */
 export async function seedOwner(store: Store): Promise<string> {
     const token = newToken();
-    await store.put('owner.json', new Uint8Array(Buffer.from(`{"owner_token_sha256":"${tokenHash(token)}"}`)));
+    await seedOwnerHash(store, tokenHash(token));
     return token;
+}
+
+/**
+ * Starts a request whose body is held back after its first part: it is authenticated by then, and its action
+ * waits for the rest. `finish` sends the rest and resolves with the answer.
+ */
+export function slowRequest(url: string, method: string, headers: Record<string, string>, body: Uint8Array = new Uint8Array([1, 2])) {
+    let answered: (value: { status: number; body: Buffer }) => void = () => {};
+    const answer = new Promise<{ status: number; body: Buffer }>((resolve) => (answered = resolve));
+    const req = request(url, { method, headers: { ...headers, 'Content-Length': String(body.length) } }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => answered({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
+    });
+    req.write(body.subarray(0, 1));
+    return {
+        finish: async () => {
+            await new Promise((r) => setTimeout(r, 30));
+            req.end(body.subarray(1));
+            return answer;
+        },
+    };
+}
+
+/** Writes a claim and its owner record, as a claim would (§6, layout.ts). */
+export async function seedOwnerHash(store: Store, hash: string): Promise<void> {
+    await store.put(`claims/${hash}`, ownerRecord(hash));
+    await store.put('owner.json', ownerRecord(hash));
 }
 
 /** A fresh folder store scoped to the test instance, and the raw store under it. */

@@ -1,6 +1,12 @@
 // The names of what the relay keeps under `SPRAVA_INSTANCE/`, and the records it writes (companion-v0 §7.8).
 
 export const OWNER = 'owner.json';
+/**
+ * `claims/{hash}`: the claim decided, written before `owner.json`. Its name is its content, so a late write of one
+ * claim repeats it, and a late write of another claim shows as a second name: the instance then fails closed.
+ */
+export const CLAIMS = 'claims/';
+export const ownerRecord = (hash: string): Uint8Array => new Uint8Array(Buffer.from(`{"owner_token_sha256":"${hash}"}`, 'utf8'));
 
 export const deviceKeys = (d: string) => ({
     record: `devices/${d}/record.json`,
@@ -8,6 +14,9 @@ export const deviceKeys = (d: string) => ({
     revoked: `devices/${d}/revoked`,
     revocation: `devices/${d}/revocation`,
     lastSeen: `devices/${d}/last_seen`,
+    /** `devices/{D}/tokens/{sha256}`: one per token the relay made at a join, named by the token's hash. */
+    tokens: `devices/${d}/tokens/`,
+    token: (hash: string) => `devices/${d}/tokens/${hash}`,
 });
 
 export const pairingKeys = (p: string) => ({
@@ -21,10 +30,16 @@ export const pairingKeys = (p: string) => ({
 /** Everything of a device outside `devices/{D}/`: its pending requests, keys and outcomes objects. */
 export const deviceElsewhere = (d: string) => [`requests/${d}/`, `objects/devices/${d}/keys/`, `objects/devices/${d}/outcomes/`];
 
-/** `devices/{D}/record.json`, written once at join. */
+/**
+ * `devices/{D}/record.json`, written once at join. It holds only what every join of the pairing derives alike, so
+ * a late write from an earlier attempt repeats the same bytes; the token's hash is in the name of its own marker
+ * (`tokens/{sha256}`, holding when it was made), so a late attempt adds a token nobody holds and replaces nothing.
+ */
 export interface DeviceRecord {
-    token_sha256: string;
     pairing_id: string;
+}
+
+export interface TokenRecord {
     joined_at: string;
 }
 
@@ -48,15 +63,22 @@ export function groupParts(keys: string[], top: 'devices' | 'pairings'): Map<str
     return groups;
 }
 
-/** Reads one of the relay's own JSON records; null when it is missing or unreadable. */
+export class UnreadableRecord extends Error {}
+
+/**
+ * Reads one of the relay's own JSON records: null only when it is missing. An unreadable record is an error, never
+ * taken for an absent one, so nothing is decided or deleted because a read went wrong.
+ */
 export function readRecord<T>(bytes: Uint8Array | null): T | null {
     if (bytes === null) return null;
+    let value: unknown;
     try {
-        const value: unknown = JSON.parse(Buffer.from(bytes).toString('utf8'));
-        return typeof value === 'object' && value !== null ? (value as T) : null;
+        value = JSON.parse(Buffer.from(bytes).toString('utf8'));
     } catch {
-        return null;
+        throw new UnreadableRecord('a record of the relay is unreadable');
     }
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new UnreadableRecord('a record of the relay is unreadable');
+    return value as T;
 }
 
 export const EMPTY = new Uint8Array();

@@ -11,7 +11,7 @@ import { jsonLog, silentLog } from '../src/log.ts';
 import { startRelay } from '../src/relay.ts';
 import { FsStore } from '../src/store/fs.ts';
 import { scoped } from '../src/store/store.ts';
-import { INSTANCE, serve, startTestRelay, TEST_LEASE, WEB_ORIGIN } from './harness.ts';
+import { INSTANCE, seedOwnerHash, serve, startTestRelay, TEST_LEASE, WEB_ORIGIN } from './harness.ts';
 
 test('health says the protocol, whether the relay is claimed, and its instance; nothing else (§7.2)', async () => {
     const t = await startTestRelay();
@@ -86,7 +86,7 @@ test('an unclaimed relay refuses to start without a well-formed setup code (§6)
     const store = scoped(new FsStore(dir), INSTANCE);
     await assert.rejects(startRelay(readConfig(env), store, { log: silentLog, lease: TEST_LEASE }), ConfigError);
     await assert.rejects(startRelay(readConfig({ ...env, SPRAVA_SETUP_CODE: 'not-a-code' }), store, { log: silentLog, lease: TEST_LEASE }), ConfigError);
-    await store.put('owner.json', Buffer.from('{"owner_token_sha256":"' + 'a'.repeat(64) + '"}'));
+    await seedOwnerHash(store, 'a'.repeat(64));
     const { relay } = await startRelay(readConfig({ ...env, SPRAVA_SETUP_CODE: 'not-a-code' }), store, { log: silentLog, lease: TEST_LEASE });
     assert.equal(relay.ownerHash, 'a'.repeat(64));
 });
@@ -126,7 +126,7 @@ async function core(options: { claimed?: boolean; bodyTimeoutMs?: number } = {})
     const authenticate = async (token: string): Promise<Principal | null> => {
         calls.push('authenticate');
         if (token === owner) return { kind: 'owner' };
-        if (token === pending) return { kind: 'device', id: 'D', active: false, pairing: 'P' };
+        if (token === pending) return { kind: 'device', id: 'D', active: false, pairing: 'P', token: 'T' };
         return null;
     };
     const handler = createHandler({

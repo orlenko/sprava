@@ -1,5 +1,6 @@
 // At start, before serving: repair and clean up what a crash may have left (companion-v0 §7.8), in the spec's
-// order. No step ever deletes a revocation marker.
+// order. No step ever deletes a revocation marker, and an unreadable record stops the start rather than being
+// taken for a missing one (layout.ts, readRecord).
 import type { Devices } from './devices.ts';
 import { deviceKeys, EMPTY, groupParts, pairingKeys, readRecord, type DeviceRecord, type PairingCreated } from './layout.ts';
 import type { Relay } from './relay.ts';
@@ -41,7 +42,7 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
         const record = created.get(p);
         if (record === undefined || !expired(p)) continue;
         const d = record.device_id;
-        if (has(d, 'record.json') && !has(d, 'active') && !has(d, 'revoked')) await store.delete(deviceKeys(d).record);
+        if (has(d, 'record.json') && !has(d, 'active') && !has(d, 'revoked')) await devices.deleteParts(d);
         for (const part of parts) await store.delete(`pairings/${p}/${part}`);
         pairingParts.delete(p);
     }
@@ -55,7 +56,7 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
     deviceParts = groupParts(await store.list('devices/'), 'devices');
     for (const [d, parts] of deviceParts) {
         if (parts.has('record.json')) continue;
-        for (const part of parts) if (part !== 'revoked') await store.delete(`devices/${d}/${part}`);
+        for (const key of await store.list(`devices/${d}/`)) if (key !== deviceKeys(d).revoked) await store.delete(key);
     }
 
     // 5. Pending devices whose pairing is missing or expired lose their record.
@@ -63,7 +64,7 @@ export async function repairAtStart(relay: Relay, devices: Devices): Promise<voi
     for (const [d, parts] of deviceParts) {
         if (!parts.has('record.json') || parts.has('active') || parts.has('revoked')) continue;
         const record = readRecord<DeviceRecord>(await store.get(deviceKeys(d).record));
-        if (record === null || !pairingParts.has(record.pairing_id) || expired(record.pairing_id)) await store.delete(deviceKeys(d).record);
+        if (record === null || !pairingParts.has(record.pairing_id) || expired(record.pairing_id)) await devices.deleteParts(d);
     }
 
     // 6. A marker without a stored revocation is an owner deletion a crash cut short: finish it.

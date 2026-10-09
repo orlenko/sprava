@@ -3,25 +3,48 @@
 
 export class SlidingWindow {
     readonly #windowMs: number;
+    readonly #limit: number;
+    readonly #maxKeys: number;
     readonly #hits = new Map<string, number[]>();
 
-    constructor(windowMs: number) {
+    /** At most `limit` hits per key are kept, and at most `maxKeys` keys: memory stays bounded whatever callers send. */
+    constructor(windowMs: number, limit: number, maxKeys = 10_000) {
         this.#windowMs = windowMs;
+        this.#limit = limit;
+        this.#maxKeys = maxKeys;
     }
 
-    /** Records one hit for `key` at `now` and returns how many hits it has within the window, this one included. */
-    hit(key: string, now: number): number {
+    /** Counts one hit for `key` at `now` if it has fewer than `limit` within the window; false, and nothing kept, if not. */
+    admit(key: string, now: number): boolean {
         const recent = (this.#hits.get(key) ?? []).filter((t) => t > now - this.#windowMs);
+        if (recent.length >= this.#limit) {
+            this.#hits.set(key, recent);
+            return false;
+        }
         recent.push(now);
+        this.#hits.delete(key); // re-inserted last: the map's order is then least recently counted first
         this.#hits.set(key, recent);
-        if (this.#hits.size > 10_000) this.#prune(now);
-        return recent.length;
+        if (this.#hits.size > this.#maxKeys) this.#evict(now);
+        return true;
     }
 
-    #prune(now: number): void {
+    /** Drops keys with nothing left in the window, then the least recently counted ones beyond the bound. */
+    #evict(now: number): void {
         for (const [key, times] of this.#hits) {
             if (times.every((t) => t <= now - this.#windowMs)) this.#hits.delete(key);
         }
+        for (const key of this.#hits.keys()) {
+            if (this.#hits.size <= this.#maxKeys) break;
+            this.#hits.delete(key);
+        }
+    }
+
+    get size(): number {
+        return this.#hits.size;
+    }
+
+    count(key: string): number {
+        return this.#hits.get(key)?.length ?? 0;
     }
 }
 

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { parseListPage, S3Store, signV4 } from '../src/store/s3.ts';
-import { Mutex, writeOnce } from '../src/store/store.ts';
+import { Mutex, scoped, writeOnce } from '../src/store/store.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
-import { INSTANCE, startTestRelay } from './harness.ts';
+import { INSTANCE, seedOwnerHash, startTestRelay } from './harness.ts';
 import { storeContract } from './store-contract.ts';
 
 const stubs: S3Stub[] = [];
@@ -68,7 +68,7 @@ test('s3: a 5xx is retried, and a wrong key is an error, not an empty answer', a
 
 test('s3: the relay runs over a bucket, under its instance prefix (§7.8)', async () => {
     const { store, stub } = await open();
-    await store.put(`${INSTANCE}/owner.json`, Buffer.from(`{"owner_token_sha256":"${'a'.repeat(64)}"}`));
+    await seedOwnerHash(scoped(store, INSTANCE), 'a'.repeat(64));
     const t = await startTestRelay({ raw: store });
     assert.deepEqual(await (await fetch(`${t.url}/v0/health`)).json(), { protocol: 0, claimed: true, instance: INSTANCE });
     assert.ok([...stub.objects.keys()].every((k) => k.startsWith(`${INSTANCE}/`)));

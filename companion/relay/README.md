@@ -135,7 +135,9 @@ endpoint is checked against them:
 - `src/relay.ts`: the relay's shared state, what it checks before serving, and its routes.
 - `src/lease.ts`: one writer at a time, even while a host runs two containers.
 - `src/claim.ts`: claiming the relay (section 6).
-- `src/devices.ts`: admitting device tokens, listing and revoking devices (sections 7.3, 7.4).
+- `src/devices.ts`: admitting device tokens, listing and revoking devices (sections 7.3, 7.4), and the lock
+  order: every action of a device runs under that device's lock, its authorization checked again there; a
+  device's lock comes before the creation lock, and code holding the creation lock never takes a device lock.
 - `src/startup.ts`: the repairs and cleanups before serving (section 7.8).
 - `src/layout.ts`: the names of what the relay keeps (section 7.8); `src/limits.ts`: in-memory counts.
 - `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.

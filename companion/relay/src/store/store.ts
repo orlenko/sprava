@@ -50,6 +50,26 @@ export class Mutex {
     }
 }
 
+/** A lock per key, created on first use and dropped when idle, so memory follows only the keys in use. */
+export class KeyedMutex {
+    readonly #locks = new Map<string, { mutex: Mutex; users: number }>();
+
+    async run<T>(key: string, work: () => Promise<T>): Promise<T> {
+        const entry = this.#locks.get(key) ?? { mutex: new Mutex(), users: 0 };
+        this.#locks.set(key, entry);
+        entry.users++;
+        try {
+            return await entry.mutex.run(work);
+        } finally {
+            if (--entry.users === 0) this.#locks.delete(key);
+        }
+    }
+
+    get size(): number {
+        return this.#locks.size;
+    }
+}
+
 export type WriteOnce = 'created' | 'same' | 'different';
 
 /**
