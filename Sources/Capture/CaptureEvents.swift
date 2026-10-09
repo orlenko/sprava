@@ -23,23 +23,20 @@ public struct HLC: Codable, Sendable, Equatable {
     func precedes(_ other: HLC) -> Bool { (wall_ms, counter) < (other.wall_ms, other.counter) }
 }
 
-/// Flushes an open file to stable storage by SpravaKit's rule (`AtomicFile`): `F_FULLFSYNC`, or `fsync` only on a
-/// volume without it (ENOTSUP, EINVAL, ENOTTY); any other failure is reported, and an interrupted call is retried.
+/// Flushes to stable storage by SpravaKit's one rule (`AtomicFile.flushToDisk`): `F_FULLFSYNC`, or `fsync` only on
+/// a volume without it (ENOTSUP, EINVAL, ENOTTY); any other failure throws, and an interrupted call is retried.
+/// The system calls are replaceable for tests.
 struct DiskFlush: Sendable {
     var fullSync: @Sendable (Int32) -> Int32 = { fcntl($0, F_FULLFSYNC) }
     var sync: @Sendable (Int32) -> Int32 = { fsync($0) }
 
     func callAsFunction(_ fd: Int32, step: String) throws {
-        while fullSync(fd) < 0 {
-            let code = errno
-            if code == EINTR { continue }
-            guard code == ENOTSUP || code == EINVAL || code == ENOTTY else { throw AtomicFile.Failure(step: step, code: code) }
-            while sync(fd) < 0 {
-                let code = errno
-                if code != EINTR { throw AtomicFile.Failure(step: step, code: code) }
-            }
-            return
-        }
+        try AtomicFile.flushToDisk(fd, step: step, fullSync: fullSync, sync: sync)
+    }
+
+    /// Flushes a folder by the same rule, so a name published in it survives a power loss.
+    func folder(_ url: URL, step: String) throws {
+        try AtomicFile.flushFolder(url, step: step, fullSync: fullSync, sync: sync)
     }
 }
 
@@ -141,7 +138,8 @@ public struct CaptureProducer: Sendable {
         return s
     }
 
-    /// Writes to `.<name>.tmp`, flushes, then publishes with an exclusive rename that fails if the name exists.
+    /// Writes to `.<name>.tmp`, flushes, publishes with an exclusive rename that fails if the name exists, then
+    /// flushes the folder. A throw after the rename leaves the event published.
     package static func publish(_ data: Data, as url: URL) throws {
         try publish(data, as: url, flush: DiskFlush())
     }
@@ -166,8 +164,10 @@ public struct CaptureProducer: Sendable {
             throw AtomicFile.Failure(step: "publish event", code: errno)
         }
         ok = true
-        let dir = open(url.deletingLastPathComponent().path, O_RDONLY | O_CLOEXEC)
-        if dir >= 0 { fsync(dir); close(dir) }
+        // The folder is flushed by the same rule before the producer records what it wrote (capture-event-v0
+        // §5.2 steps 4 and 5). A failure is reported: the event is there, but its name may not survive a power
+        // loss, so nothing must count on it yet.
+        try flush.folder(url.deletingLastPathComponent(), step: "flush event folder")
     }
 }
 
@@ -226,16 +226,24 @@ public struct CaptureEvent: Sendable {
 
     /// Checks 1 to 4 of capture-event-v0 §5.3 for a file named `<uuid>.json` in `deviceFolder`.
     public static func check(_ url: URL, deviceFolder: URL) -> (Check, CaptureEvent?) {
+        check(url, deviceFolder: deviceFolder) { SafeFile.read($0) }
+    }
+
+    /// The same checks with the file read by `read`, replaceable in tests.
+    static func check(_ url: URL, deviceFolder: URL, read: (URL) -> SafeFile.Outcome) -> (Check, CaptureEvent?) {
         let name = url.lastPathComponent
         let stem = String(name.dropLast(5))
         guard name.hasSuffix(".json"), !name.hasPrefix("."), isUUIDText(stem) else {
             return (.quarantined("not an event file name"), nil)
         }
         let data: Data
-        switch SafeFile.read(url) {
+        switch read(url) {
         case .ok(let d): data = d
         case .refused(let why): return (.quarantined(why), nil)
-        case .missing, .unreadable: return (.pending, nil)
+        case .missing: return (.pending, nil)
+        // A file that is there but cannot be read now (a sync client still holds it) is read again later, never
+        // quarantined.
+        case .unreadable: return (.pending, nil)
         }
         guard let parsed = try? JSONParser.parse(data), case .object(let o) = parsed.value else {
             return (.pending, nil)   // may be partly written by a sync client

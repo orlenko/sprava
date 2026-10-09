@@ -320,4 +320,21 @@ import Testing
         #expect(throws: AtomicFile.Failure.self) { try CaptureProducer.publish(Data("{}".utf8), as: event, flush: failing) }
         #expect(!FileManager.default.fileExists(atPath: event.path))
     }
+
+    @Test func aPublishedEventsFolderIsFlushedByTheSameRule() throws {
+        let s = try setup()
+        try AtomicFile.makePrivateFolder(s.producer.folder)
+        // The file and then its folder each get F_FULLFSYNC.
+        let flushed = Calls()
+        let counting = DiskFlush(fullSync: { _ in _ = flushed.next(); return 0 }, sync: { _ in errno = EIO; return -1 })
+        let first = s.producer.folder.appendingPathComponent("01a10000-0000-7000-8000-0000000000e8.json")
+        try CaptureProducer.publish(Data("{}".utf8), as: first, flush: counting)
+        #expect(flushed.next() == 3)
+        // A folder that cannot be flushed is reported, never ignored; the event itself is already published.
+        let calls = Calls()
+        let folderFails = DiskFlush(fullSync: { _ in if calls.next() == 2 { errno = EIO; return -1 }; return 0 }, sync: { _ in 0 })
+        let second = s.producer.folder.appendingPathComponent("01a10000-0000-7000-8000-0000000000e9.json")
+        #expect(throws: AtomicFile.Failure.self) { try CaptureProducer.publish(Data("{}".utf8), as: second, flush: folderFails) }
+        #expect(FileManager.default.fileExists(atPath: second.path))
+    }
 }

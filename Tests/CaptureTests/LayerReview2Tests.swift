@@ -255,4 +255,50 @@ import Testing
         state = try s.inbox.readState()
         #expect(state.ingested[id] == "proposed" && state.cards[id] == card.id)
     }
+
+    // MARK: - 7. An event that cannot be read now is retried, never quarantined
+
+    @Test func anUnreadableEventIsRetriedNotQuarantined() throws {
+        let s = try setup()
+        let id = try event(s, ref: "N1", revision: "rev1", text: "Book the invented dentist")
+        let device = s.producer.root.appendingPathComponent(adapter)
+        let file = device.appendingPathComponent("\(id).json")
+        // An I/O error now (a sync client still holds the file): pending, so a later sweep reads it again.
+        let (busy, none) = CaptureEvent.check(file, deviceFolder: device) { _ in .unreadable("Input/output error") }
+        #expect(busy == .pending && none == nil)
+        // A file this user may not read is refused, as SpravaKit's SafeFile decides, and quarantined.
+        let (refused, _) = CaptureEvent.check(file, deviceFolder: device) { _ in .refused("not readable by this user") }
+        #expect(refused == .quarantined("not readable by this user"))
+
+        // Once it can be read, the same file is a complete event and is taken in.
+        #expect(CaptureEvent.check(file, deviceFolder: device).0 == .complete(.capture))
+        #expect(sweep(s).unfiled == 1)
+        #expect(try stage(s, id) == "unfiled")
+    }
+
+    // MARK: - 8. A binder whose writes are blocked gets no new card
+
+    @Test func aBinderWithAnUnreadableOpLogGetsNoNewCard() throws {
+        let s = try pSetup()
+        let log = s.folder.appendingPathComponent(".sprava/ops.ndjson")
+        #expect(chmod(log.path, 0) == 0)
+        defer { chmod(log.path, 0o600) }
+        // The op log is there but cannot be read: the binder counts as adopted, and its writes are blocked.
+        let teka = Teka.read(s.folder)
+        #expect(teka.isAdopted && teka.writesBlocked)
+
+        let id = try note(s, "Call the invented notary about the deed", hint: "estate-example")
+        let r = sweep(s)
+        #expect(r.filed == 0 && r.unfiled == 1)
+        #expect(pOpen(s).isEmpty)
+        #expect(try stage(s, id) == "unfiled")
+        // Nor can the person move the Inbox card there until the binder is repaired.
+        let card = try #require(s.inbox.unfiled().first { fromEvent($0, id) })
+        #expect(throws: Commands.Failure.self) { try s.inbox.file(card.id, into: s.folder, commands: s.commands) }
+        #expect(pOpen(s).isEmpty && s.inbox.unfiled().count == 1)
+
+        chmod(log.path, 0o600)
+        try s.inbox.file(card.id, into: s.folder, commands: s.commands)
+        #expect(pOpen(s).map(\.id) == [card.id])
+    }
 }

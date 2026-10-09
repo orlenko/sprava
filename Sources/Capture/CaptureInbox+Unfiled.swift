@@ -72,6 +72,7 @@ extension CaptureInbox {
         }
         let teka = Teka.read(folder)
         guard teka.isAdopted else { throw Commands.Failure(message: "this binder is not adopted yet") }
+        guard !teka.writesBlocked else { throw Commands.Failure(message: "this binder needs attention; repair it first") }
         guard Owner.device(of: folder) == commands.deviceID else { throw Commands.Failure(message: "this binder is read-only here") }
         // Filed before a crash: only the Inbox's copy is left to remove.
         if !commands.isTrusted(proposalID, in: folder) {

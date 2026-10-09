@@ -48,7 +48,9 @@ extension CaptureInbox {
         if replaces != nil { title = "Corrected \(noun): " + title.prefix(1).lowercased() + title.dropFirst() }
         let proposal = Proposal.make(title: title, actor: actor, ops: ops, provenance: provenance, now: now)
 
-        if let hint, let row = binders.first(where: { $0.teka.isAdopted && $0.teka.name == hint }),
+        // A binder whose writes are blocked until a repair (an op log that cannot be read counts as adopted) gets no
+        // new card; the note waits in the Inbox, as the clerk's cards do.
+        if let hint, let row = binders.first(where: { $0.teka.isAdopted && !$0.teka.writesBlocked && $0.teka.name == hint }),
            Owner.device(of: row.folder) == commands.deviceID,
            PrivacyRatchet.disclosure(row) != "none" {
             do {
