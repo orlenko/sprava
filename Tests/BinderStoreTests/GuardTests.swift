@@ -77,10 +77,11 @@ import Testing
     }
 
     @Test func aBrokenRecordCanBeRepairedOneAtATime() throws {
-        // Two broken items; fixing one is accepted though the other stays broken.
+        // Two broken items; fixing one is accepted though the other stays broken. Neither recurs, so each
+        // missing due is exactly one finding (a recurring item without a due is two).
         var c = try catalog()
         var items = c["open_items"]!.arrayValue!
-        for i in [0, 3] {
+        for i in [0, 2] {
             var o = items[i].objectValue!
             o.remove("due")
             items[i] = .object(o)
@@ -91,7 +92,7 @@ import Testing
         let (fixed, _) = try TransactionGuard.check([fix], on: c)
         #expect(TransactionGuard.violations(fixed).count == 1)
         // Touching a broken record without repairing it is refused.
-        let touch = op("update_item", [("id", items[3]["id"]!), ("set", .obj([("priority", .str("low"))]))])
+        let touch = op("update_item", [("id", items[2]["id"]!), ("set", .obj([("priority", .str("low"))]))])
         #expect(throws: TransactionGuard.Rejection.self) { try TransactionGuard.check([touch], on: c) }
     }
 
