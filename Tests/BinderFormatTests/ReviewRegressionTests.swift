@@ -268,4 +268,32 @@ import Testing
         #expect(try check(item) == [.badDue])
         #expect(ItemRules.check(items: [try JSONParser.parse(item).value], log: [], v0: false).isEmpty)
     }
+
+    // MARK: - 7. Third layer review: an interrupted expunge, null unknown fields
+
+    @Test func anInterruptedExpungeExposesNothing() throws {
+        let f = try folder(v0)
+        try opLine.write(to: f.appendingPathComponent(".sprava/ops.ndjson"))
+        #expect(Teka.read(f).state == .ready)
+        let marker = f.appendingPathComponent(".sprava/expunge-pending")
+        try Data().write(to: marker)
+        let teka = Teka.read(f)
+        #expect(teka.reasons == [Teka.expungeInterrupted])
+        #expect(teka.catalog == nil && teka.level == nil && teka.items.isEmpty)
+        #expect(teka.isAdopted && teka.writesBlocked && teka.federationBlocked)
+
+        try FileManager.default.removeItem(at: marker)                       // a dangling link is a marker too
+        try FileManager.default.createSymbolicLink(atPath: marker.path, withDestinationPath: "nowhere")
+        #expect(Teka.read(f).catalog == nil)
+        try FileManager.default.removeItem(at: marker)
+        #expect(Teka.read(f).state == .ready)
+    }
+
+    @Test func aNullUnknownFieldIsKeptAndValid() throws {
+        let base = #""id":"a","title":"t","status":"open","priority":"normal","due":"2026-11-01""#
+        #expect(try check(#"{\#(base),"legacy_due":null,"x_note":null}"#).isEmpty)
+        #expect(try check(#"{\#(base),"link":null,"kind":null}"#) == [.badKind, .nullValue, .nullValue])
+        let f = try folder(v0.replacingOccurrences(of: #""open_items": []"#, with: #""open_items": [{\#(base),"legacy_due":null}]"#))
+        #expect(Teka.read(f).state == .ready)
+    }
 }

@@ -48,6 +48,13 @@ public enum ItemRules {
         "legal-deadline", "payment", "reply-owed", "filing", "appointment", "document-request", "decision", "other",
     ]
 
+    /// The item fields item.schema.json defines (binder-v0 §4.4).
+    static let definedFields: Set<String> = [
+        "id", "title", "status", "priority", "due", "no_deadline", "waiting_on", "follow_up_at", "expected_by", "kind", "tags",
+        "link", "redact", "slice_title", "recurrence", "contexts", "estimate_min", "dismissed", "created_at", "updated_at",
+        "provenance", "derived",
+    ]
+
     /// lifeproj's strict v2 rules (`osavul.validate_open_items` and `catalog_check.check_open_items`), plus the
     /// v0 additions when `v0` is true.
     public static func check(items: [JSONValue], log: [JSONValue], v0: Bool) -> [RuleFinding] {
@@ -118,7 +125,8 @@ public enum ItemRules {
                 if !isRecurrence(recurrence) { add(.badRecurrence, "recurrence") }
                 if !hasDue { add(.recurrenceWithoutDue, "due") }
             }
-            for entry in o.entries where entry.value == .null { add(.nullValue, entry.key) }
+            // No field item.schema.json defines may be null; an unknown field is preserved as it is, null or not.
+            for entry in o.entries where entry.value == .null && definedFields.contains(entry.key) { add(.nullValue, entry.key) }
         }
         return findings
     }

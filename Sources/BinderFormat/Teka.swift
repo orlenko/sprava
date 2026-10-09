@@ -43,7 +43,7 @@ public struct Teka: Sendable {
         state < .needsAttention || (states[.needsAttention] ?? []).contains { r in
             r.contains("symbolic link") || r.contains("is not a regular") || r.contains("unsafe JSON")
                 || r.hasPrefix("broken stamp") || r == "catalog.json unreadable" || r == ".sprava/ops.ndjson unreadable"
-                || r == Self.tooLarge
+                || r == Self.tooLarge || r == Self.expungeInterrupted
         }
     }
 
@@ -145,6 +145,18 @@ public struct Teka: Sendable {
         return .incomplete
     }
 
+    static let expungeInterrupted = "an expunge was interrupted; enter the text again to finish it"
+
+    /// Whether `.sprava/expunge-pending` exists (binder-v0 §6.11), looked up through a real `.sprava` folder without
+    /// following a link; a marker of any type counts.
+    static func expungePending(in folder: URL) -> Bool {
+        let sprava = open(folder.appendingPathComponent(".sprava").path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard sprava >= 0 else { return false }
+        defer { close(sprava) }
+        var st = stat()
+        return fstatat(sprava, "expunge-pending", &st, AT_SYMLINK_NOFOLLOW) == 0
+    }
+
     /// The largest `catalog.json` read: the whole file is held in memory to parse it, so a huge or sparse one
     /// must not exhaust memory before it is found invalid.
     static let maxCatalogBytes = 64 << 20
@@ -189,6 +201,13 @@ public struct Teka: Sendable {
             } else if wantDirectory ? type != .typeDirectory : type != .typeRegular {
                 flag(.needsAttention, "\(name) is not a regular \(wantDirectory ? "folder" : "file")")
             }
+        }
+
+        // An interrupted expunge (binder-v0 §6.11): the catalog and the log may still hold the text being forgotten,
+        // so nothing else is read, shown or published until the expunge is repeated. Only an adopted binder has one.
+        if expungePending(in: folder) {
+            return Teka(folder: folder, states: states.merging([.needsAttention: [expungeInterrupted]]) { $0 + $1 },
+                        level: nil, catalog: nil, safety: .init(), findings: [], isAdopted: true, modified: nil)
         }
 
         // The op log, read only through a real `.sprava` folder. Anything standing where history lives counts as
