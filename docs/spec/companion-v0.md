@@ -733,9 +733,10 @@ projects every value as follows, so that what it publishes is always valid:
   and `2026-W27-1` included) is published as that date in `YYYY-MM-DD`; anything else as `null`.
 - `closed`: the closure entries in Recently closed, found and ordered as binder-v0 §5.2 says; an entry whose
   `action` is neither `done` nor `dropped` is left out, as in the slice (binder-v0 §8.2). Its `closed_at` comes
-  from the closing date's source in that section: a `closed_at` that is an RFC 3339 date-time, or else an `at`
-  that is one, converted to UTC with any fraction of a second dropped; or else a `closed_at` that is only a
-  `YYYY-MM-DD` date, published as that date. A closure's `title` that is not a string is published as `""`.
+  from the closing date's source, in that section's order: a `closed_at` that is an RFC 3339 date-time,
+  converted to UTC with any fraction of a second dropped; else a `closed_at` that is only a `YYYY-MM-DD` date,
+  published as that date; else an `at` that is an RFC 3339 date-time, converted like the first. So the date
+  shown and the bucket's order always come from the same value. A closure's `title` that is not a string is published as `""`.
 - `tags` and `contexts` keep only their string entries, in order; a field that is not an array is published
   as `[]`. Any other field whose value does not have the type above is published as `null` where `null` is
   shown, and an item that still cannot be published validly (a `title` that is not a string, say) is left out
@@ -930,7 +931,9 @@ decides, decides:
 4. **Closed items.** A `done` on an item closed as done, or a `drop` on an item closed as dropped, is
    **applied** with no change. Any other request on a closed item is a **conflict**. An item in `open_items[]`
    with status `done` counts as closed as done, as the view shows it (section 8.5).
-5. **Status.** The item's status must be one the table below allows for the type. Otherwise **conflict**.
+5. **Status.** The item's status, read as the view publishes it (section 8.5: a missing or unknown status
+   counts as `open`), must be one the table below allows for the type. Otherwise **conflict**. A binder that
+   still needs migration and refuses the op is a device failure, not a decision (section 9.2).
 6. **Dates.** For `follow_up` and `postpone`, a `date` earlier than the Mac's today is a **conflict**.
 7. **As the person saw it.** The hash of the item's current record (section 9.7) must equal the hash in the
    binder's snapshot record, and its recorded `changed_in` must not be above `seen_version` (section 9.7).
@@ -1444,7 +1447,8 @@ A vector, once committed, changes only with the protocol version. The cases:
     which actions to offer.
 20. `view-projection`: a binder adopted but still needing migration, with an item of status `done`, one with no
     status, `due` values `20260705`, `2026-W27-1` and `2026-02-30`, and closure entries whose `closed_at` is a
-    date-time with an offset, only a date, and missing beside an `at`: the exact view the Mac publishes
+    date-time with an offset, only a date (once alone and once beside a different `at`), and missing beside an
+    `at`: the exact view the Mac publishes
     (section 8.5), which the web app accepts as valid.
 
 ## 15. Versioning
