@@ -3,9 +3,10 @@
 # The same list and rules as pre-commit (tokens.sh): a match is reported by line number only, never by its text;
 # a list that exists but cannot be read, or a malformed pattern, rejects the commit; only a list that is
 # certainly absent skips the scan.
-# The message is scanned as git hands it to this hook, comment lines included, because some cleanup modes keep
-# them. Scanning stops at the scissors line `git commit -v` writes above the staged diff: what follows is not
-# part of the message, and the diff's added lines were scanned by pre-commit.
+# The whole message file is scanned as git hands it to this hook, comment lines and anything after a scissors
+# line included: whether git drops those depends on the cleanup mode, and a scissors line can be typed into
+# `-m` as well. So with `git commit -v`, the staged diff below the scissors line is scanned too; a commit that
+# removes a line holding a token is then rejected, and is made without -v.
 set -eu
 hook_dir="$(cd "$(dirname "$0")" && pwd -P)"
 reject() { echo "commit-msg: $1; nothing was committed" >&2; exit 1; }
@@ -25,12 +26,9 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-awk 'BEGIN { cut = " ------------------------ >8 ------------------------" }
-     length($0) > length(cut) && substr($0, length($0) - length(cut) + 1) == cut { exit }
-     { print }' "$msg" > "$work/message" || reject "could not read the commit message"
 # grep exits 0 on a match, 1 on none, and 2 on an error such as a malformed pattern.
 status=0
-grep -nEi -f "$tokens" "$work/message" > "$work/hits" 2>/dev/null || status=$?
+grep -naEi -f "$tokens" "$msg" > "$work/hits" 2>/dev/null || status=$?
 [ "$status" -le 1 ] || reject "the privacy scan of the message failed (grep exit status $status); check the patterns in $tokens"
 if [ "$status" -eq 0 ]; then
     echo "commit-msg: the commit message contains a private token (patterns in $tokens); the matched text is withheld:" >&2

@@ -179,15 +179,23 @@ echo "message test" > "$repo/msg.txt"; git -C "$repo" add msg.txt
 if commit "A clean message" && ! grep -q "the scan of the message was skipped" "$root/err"; then
     ok "message: a clean message passes the scan"
 else bad "message: a clean message was rejected or not scanned"; fi
-# `git commit -v`: the staged diff below the scissors line is not the message. Removing a line that holds a
-# token, committed earlier without a list, shows it there as a removed line; that does not reject the commit.
-echo "old invented_sentinel_13" > "$repo/legacy.txt"; git -C "$repo" add legacy.txt
-with_list "$root/absent/tokens" "Legacy line" || { cp "$root/err" "$root/err-setup"; bad "message: setup commit failed"; }
-echo "cleaned" > "$repo/legacy.txt"; git -C "$repo" add legacy.txt
-if GIT_EDITOR='f() { printf "Remove the legacy line\n" | cat - "$1" > "$1.new" && mv "$1.new" "$1"; }; f' \
+# A scissors line does not end the scan: git keeps what follows it in a -m message (and in --cleanup=verbatim).
+scissors="# ------------------------ >8 ------------------------"
+for cleanup in default verbatim; do
+    set -- --allow-empty -m "Clean subject" -m "$scissors" -m "after the cut invented_sentinel_13"
+    [ "$cleanup" = default ] || set -- --cleanup=verbatim "$@"
+    if git -C "$repo" commit -q "$@" > "$root/out" 2> "$root/err"; then
+        bad "message: a token after a scissors line in a -m message was accepted (cleanup $cleanup)"
+    elif grep -q '^message line 5$' "$root/err" && ! grep -q invented_sentinel "$root/err"; then
+        ok "message: a token after a scissors line in a -m message is rejected (cleanup $cleanup)"
+    else bad "message: the scissors message was rejected, but not by message line alone (cleanup $cleanup)"; fi
+done
+# `git commit -v` with a clean change and message passes; its diff below the scissors line is scanned too.
+echo "message test, again" > "$repo/msg.txt"; git -C "$repo" add msg.txt
+if GIT_EDITOR='f() { printf "A verbose commit\n" | cat - "$1" > "$1.new" && mv "$1.new" "$1"; }; f' \
     git -C "$repo" commit -q -v > "$root/out" 2> "$root/err"; then
-    ok "message: commit -v that removes a token passes; the diff under the scissors line is not scanned"
-else bad "message: commit -v was rejected for the removed line in its diff"; fi
+    ok "message: a clean commit -v passes"
+else bad "message: a clean commit -v was rejected"; fi
 
 # 2. Partial staging: the build sees the index, not the working tree.
 new_repo staging
