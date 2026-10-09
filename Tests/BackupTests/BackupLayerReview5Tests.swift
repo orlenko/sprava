@@ -138,6 +138,67 @@ import Testing
         #expect(record.rootMetadata?.attributes[comment] == Data("invented comment while waiting".utf8))
     }
 
+    // MARK: - Review 7: the folder's metadata in the snapshots; unreadable is never absent
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func theFolderCommentComesBackFromTheSnapshotAlone() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        setAttribute(comment, "invented binder comment", on: e.folder)
+        setAttribute(tags, "invented binder tag", on: e.folder)
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        // Both backups hold it.
+        for (repo, snap) in [(e.primary, record.snapshot), (e.second, record.secondSnapshot ?? "")] {
+            #expect(try b.engine(repo.path).files(snap).contains(Backup.folderMetadataPath), "\(repo.lastPathComponent)")
+        }
+        // A record without the metadata (as the state snapshot before the offload would hold it).
+        var st = try b.state()
+        st.offloaded = st.offloaded.map { var r = $0; r.rootMetadata = nil; return r }
+        try b.save(st)
+        let restored = try b.restore(record.backupID, now: now)
+        #expect(attribute(comment, of: restored) == "invented binder comment")
+        #expect(attribute(tags, of: restored) == "invented binder tag")
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func anOriginalWhoseIDCannotBeReadKeepsIt() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        try b.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        let copy = e.base.appendingPathComponent("copies/\(e.folder.lastPathComponent)", isDirectory: true)
+        try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: e.folder, to: copy)
+        let idFile = e.folder.appendingPathComponent(".sprava/backup-id")
+        #expect(chmod(idFile.path, 0) == 0)
+        defer { chmod(idFile.path, 0o600) }
+
+        let refused = (try? b.backUp(copy, now: now)) == nil
+        #expect(refused)
+        do {
+            try b.forgetDocument(in: copy, path: letter, request: "invented-deletion-1", now: now)
+            Issue.record("a copy forgot in the original's backups")
+        } catch let shared as Backup.SharedBackupID {
+            #expect(shared.holder.contains("cannot be read"))
+        }
+        #expect(try b.state().binders[id]?.path == e.folder.standardizedFileURL.path)
+        #expect(try b.state().forgetting.isEmpty)
+    }
+
+    @Test func anIntakeFolderThatCannotBeListedStopsTheOffload() throws {
+        let e = try bb.env()
+        let b = try bb.settingsOnly(e)
+        let intake = e.folder.appendingPathComponent("intake")
+        try FileManager.default.createDirectory(at: intake, withIntermediateDirectories: true)
+        try Data("invented scan".utf8).write(to: intake.appendingPathComponent("invented-scan.pdf"))
+        #expect(chmod(intake.path, 0) == 0)
+        defer { chmod(intake.path, 0o755) }
+        let failed: String
+        do { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now); failed = "" } catch { failed = "\(error)" }
+        #expect(failed.contains("intake/ cannot be listed"), "\(failed)")
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+    }
+
     // MARK: - 2. A deletion forgotten long ago is never forgotten again
 
     @Test(.enabled(if: BugbotBackupTests.hasRestic)) func anOldDeletionAskedForAgainLeavesNewerBackups() throws {
