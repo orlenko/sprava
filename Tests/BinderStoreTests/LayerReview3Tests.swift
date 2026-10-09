@@ -192,6 +192,49 @@ import Testing
         #expect(card.ops.map { $0["args"]?["id"] } == [.str("estate-example-2026-007"), .str("estate-example-2026-008")])
     }
 
+    // MARK: - 7b. A copy saved halfway through several approvals is a loss too; a value of its own is not
+
+    @Test func aCopyFromHalfwayOffersTheLatestApprovalAgain() throws {
+        let (folder, store) = try adopted()
+        let url = folder.appendingPathComponent("catalog.json")
+        func retitle(_ title: String) -> TekaStore.OpBody {
+            .init(op: "update_item", args: JSONObject([(key: "id", value: .str("estate-example-2026-007")),
+                                                       (key: "set", value: .obj([("title", .string(title))]))]), actor: user)
+        }
+        func title() throws -> JSONValue? {
+            try store.readCatalog().0["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-007") }?["title"]
+        }
+        try store.apply([retitle("Invented title B")], now: now)
+        let halfway = try Data(contentsOf: url)
+        let last = try store.apply([retitle("Invented title C")], now: now)
+        // An editor that opened the catalog after B saves its copy, with an unrelated change of its own.
+        try halfway.write(to: url)
+        try handEdit(folder) { items in
+            guard let i = items.firstIndex(where: { $0["id"] == .str("estate-example-2026-008") }), case .object(var other) = items[i] else { return }
+            other.set("priority", .str("low"))
+            items[i] = .object(other)
+        }
+        try store.settle(now: now)
+        #expect(store.lastAbsorbed == .externalEdit(revertedLastBatch: true))
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        #expect(card.raw["provenance"]?["overwritten_ops"] == .array(last.compactMap { $0["id"] }))
+        #expect(card.ops.count == 1 && card.ops[0]["args"]?["set"] == .obj([("title", .str("Invented title C"))]))
+        try store.approve(card, now: now)
+        #expect(try title() == .str("Invented title C"))
+
+        // A title the other program wrote itself, never approved, is its own change: no card.
+        try store.apply([retitle("Invented title D")], now: now)
+        try handEdit(folder) { items in
+            guard let i = items.firstIndex(where: { $0["id"] == .str("estate-example-2026-007") }), case .object(var first) = items[i] else { return }
+            first.set("title", .str("Invented outside title"))
+            items[i] = .object(first)
+        }
+        let cards = ProposalStore.list(in: folder).count
+        try store.settle(now: now)
+        #expect(store.lastAbsorbed == .externalEdit(revertedLastBatch: false))
+        #expect(ProposalStore.list(in: folder).count == cards)
+    }
+
     // MARK: - 8. Settling a catalog at an unknown level writes nothing
 
     @Test func settlingAnUnknownLevelWritesNothing() throws {
