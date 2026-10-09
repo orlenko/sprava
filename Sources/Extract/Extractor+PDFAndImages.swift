@@ -13,7 +13,7 @@ extension Extractor {
         let count = doc.pageCount
         guard count <= limits.pages else { return Result(kind: "pdf", text: "", textFrom: "parsed", pages: count, problem: "more pages than the limit (\(count))") }
         var parts: [String] = []
-        var ocrPages = 0
+        var layerPages = 0, ocrFound = false
         // A page that does not open, draw or go through OCR holds the whole file: the other pages alone are not the
         // document. A page whose OCR ran and found nothing is read, and empty.
         func held(_ i: Int, _ why: String) -> Result { Result(kind: "pdf", text: "", textFrom: "parsed", pages: count, problem: "page \(i + 1) \(why)") }
@@ -21,15 +21,18 @@ extension Extractor {
             guard let page = doc.page(at: i) else { return held(i, "of the PDF does not open") }
             let layer = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if layer.count >= 20 {
+                layerPages += 1
                 parts.append(layer)
             } else {
                 guard let image = render(page) else { return held(i, "has no text layer and cannot be drawn for OCR (too large, or empty)") }
                 guard let text = ocr(image) else { return held(i, "could not be read by OCR") }
-                ocrPages += 1
+                if !text.isEmpty { ocrFound = true }
                 parts.append(text)
             }
         }
-        let from = ocrPages == 0 ? "text-layer" : (ocrPages == count ? "ocr" : "text-layer+ocr")
+        // One of the contract's values (adaptation-layer §3): any text that came from OCR makes the reading `ocr`, so
+        // the card asks for its names and numbers to be checked; a blank page that OCR found empty changes nothing.
+        let from = ocrFound || (layerPages == 0 && count > 0) ? "ocr" : "text-layer"
         return Result(kind: "pdf", text: parts.joined(separator: "\n\n"), textFrom: from, pages: count)
     }
 

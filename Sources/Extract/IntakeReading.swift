@@ -57,7 +57,11 @@ public struct IntakeReading: Sendable, Equatable {
             }
             parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, reader: reader) }))
         }
-        for url in attachments { parts.append((url.lastPathComponent, Result { try ExtractHelper.run(url, under: binder, reader: reader) })) }
+        // A file's name is made safe before it enters the text, as one inside a message is: no line break, control
+        // or direction mark.
+        for url in attachments {
+            parts.append((DocumentPaths.safeName(url.lastPathComponent), Result { try ExtractHelper.run(url, under: binder, reader: reader) }))
+        }
         for (name, outcome) in parts {
             r.attachments.append(name)
             switch outcome {
@@ -65,6 +69,7 @@ public struct IntakeReading: Sendable, Equatable {
             case .success(let a):
                 if let problem = a.problem { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: \(problem)"); continue }
                 if a.textFrom == "ocr" { r.textFrom = "ocr" }
+                if a.mismatch { r.notes.append("attachment \u{201C}\(name)\u{201D} is not the kind of file its name says") }
                 // A forwarded message's own attachments are not read here; a note says so, never silence.
                 if let nested = a.email?.attachments, !nested.isEmpty { r.notes.append("attachment \u{201C}\(name)\u{201D} has \(nested.count) attachment(s) of its own that were not read") }
                 if !a.text.isEmpty { r.text += "\n\n\u{2014} Attachment: \(name) \u{2014}\n" + a.text }
@@ -102,12 +107,19 @@ public struct IntakeReading: Sendable, Equatable {
                 // ASCII digits only, converted checked: a header is untrusted text.
                 if let m = text.firstMatch(of: /([+-])([0-9]{2})([0-9]{2})$/), let h = Int(m.output.2), let mi = Int(m.output.3) {
                     offset = (h * 3600 + mi * 60) * (m.output.1 == "-" ? -1 : 1)
+                } else if let zone = text.split(separator: " ").last, let hours = namedZones[zone.uppercased()] {
+                    offset = hours * 3600
                 }
                 return CalendarDate(date, in: TimeZone(secondsFromGMT: offset) ?? .gmt)
             }
         }
         return nil
     }
+
+    /// The zone names RFC 5322 section 4.3 allows in a date, as hours from UTC: the fixed offset each name stands
+    /// for, whatever the season.
+    static let namedZones = ["UT": 0, "UTC": 0, "GMT": 0, "Z": 0, "EST": -5, "EDT": -4, "CST": -6, "CDT": -5,
+                             "MST": -7, "MDT": -6, "PST": -8, "PDT": -7]
 
     public var json: JSONObject {
         var o = JSONObject()

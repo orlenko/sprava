@@ -6,7 +6,10 @@ extension Extractor {
     // MARK: - RTF and HTML
 
     static func rtf(_ data: Data) -> Result {
-        let text = (try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil))?.string ?? ""
+        // A file that does not parse is held (adaptation-layer §4.5), never passed on as a document with no text.
+        guard let text = (try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil))?.string else {
+            return Result(kind: "document", text: "", textFrom: "parsed", problem: "the RTF file does not parse")
+        }
         return Result(kind: "document", text: text, textFrom: "parsed")
     }
 
@@ -35,6 +38,11 @@ extension Extractor {
             return String(decoding: bytes, as: UTF8.self)
         }
         func xml(_ n: String) -> String? { entries.first { $0.name == n }.map(read) }
+        // A password-protected OpenDocument lists its encrypted parts in its manifest: it is held, never read as if
+        // its encrypted bytes were its text (adaptation-layer §4.5).
+        if xml("META-INF/manifest.xml")?.contains("encryption-data") == true {
+            return Result(kind: "document", text: "", textFrom: "parsed", problem: "the document is protected by a password")
+        }
         var text = ""
         if let doc = xml("word/document.xml") {
             text = xmlText(doc, paragraph: "w:p", run: "w:t")

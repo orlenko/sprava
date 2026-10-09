@@ -104,7 +104,7 @@ import Testing
         let blank = Extractor.extract(pdf([(letter, "Invented statement: the balance is 120.00"), (letter, nil)]), name: "statement.pdf")
         #expect(blank.problem == nil)
         #expect(blank.text.contains("Invented statement"))
-        #expect(blank.textFrom == "text-layer+ocr")
+        #expect(blank.textFrom == "text-layer")   // OCR added no text, so nothing was read from a scan
     }
 
     // MARK: - 4. A named text part is an attachment; independent parts are all kept

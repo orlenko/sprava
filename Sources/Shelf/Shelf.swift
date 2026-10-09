@@ -50,9 +50,17 @@ public struct ShelfStore: Sendable {
     /// The picked folders, or none when the file cannot be read (callers that write use `readFolders`).
     public func pickedFolders() -> [URL] { (try? readFolders()) ?? [] }
 
+    /// The contents a writer may change. A shelf.json from a newer Sprava may hold fields this one does not know and
+    /// would drop on saving, so it throws and is left as it is.
+    func writableContents() throws -> Contents {
+        let c = try readContents()
+        guard c.schemaVersion <= Contents().schemaVersion else { throw Unreadable(path: file.path) }
+        return c
+    }
+
     public func add(_ folder: URL) throws {
         try locked {
-            var c = try readContents()
+            var c = try writableContents()
             let path = folder.standardizedFileURL.path
             guard !c.folders.contains(where: { Shelf.identity($0) == Shelf.identity(path) }) else { return }
             c.folders.append(path)
@@ -63,7 +71,7 @@ public struct ShelfStore: Sendable {
     public func remove(_ folder: URL) throws {
         let path = folder.standardizedFileURL.path
         try locked {
-            var c = try readContents()
+            var c = try writableContents()
             c.folders.removeAll { Shelf.identity($0) == Shelf.identity(path) }
             try save(c)
         }
@@ -83,12 +91,12 @@ public struct ShelfStore: Sendable {
         return try body()
     }
 
-    /// Writes the contents read under the same lock, the registry setting among them.
+    /// Writes the contents read under the same lock, the registry setting among them: flushed to disk with the
+    /// folder before it returns, private to this user (`AtomicFile`).
     private func save(_ c: Contents) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(c).write(to: file, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try AtomicFile.write(try encoder.encode(c), to: file)
     }
 }
 

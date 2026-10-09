@@ -131,7 +131,9 @@ extension Extractor {
                 let (h, b) = splitHeaders(String(part.drop { $0 == "\n" }))
                 if let found = walk(headers: h, body: b, attachments: &attachments, tooDeep: &tooDeep, depth: depth + 1) { bodies.append(found) }
             }
-            if type.hasPrefix("multipart/alternative") { return bodies.first(where: \.plain) ?? bodies.first }
+            // An empty representation is no body when another one holds the text.
+            let filled = bodies.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if type.hasPrefix("multipart/alternative") { return filled.first(where: \.plain) ?? filled.first ?? bodies.first }
             return bodies.isEmpty ? nil : Body(text: bodies.map(\.text).joined(separator: "\n\n"), plain: bodies.allSatisfy(\.plain))
         }
         let encoding = (headers["content-transfer-encoding"] ?? "").lowercased()

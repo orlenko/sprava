@@ -103,13 +103,15 @@ public enum Extractor {
         case .png, .jpeg, .heic, .tiff: result = image(data, limits: limits)
         case .zip: result = office(data, name: name)
         case .rtf: result = rtf(data)
-        case .markdownEmail: result = markdownEmail(String(decoding: data, as: UTF8.self))
+        case .markdownEmail: result = markdownEmail(decodedText(data))
         case .eml: result = eml(data)
         case .html, .text:
             // A message that did not read as one may carry an HTML part: it is held before either reading.
-            let text = String(decoding: data, as: UTF8.self)
+            let text = decodedText(data)
             result = carriesMIMEParts(text)
                 ? Result(kind: "text", text: "", textFrom: "parsed", problem: "it looks like a mail message, but its headers do not read as one")
+                // A script is held, never read as a note (adaptation-layer §4.5).
+                : text.hasPrefix("#!") ? Result(kind: "text", text: "", textFrom: "parsed", problem: "a script, which Sprava does not read")
                 : Result(kind: "text", text: sniffed == .html ? htmlText(text) : text, textFrom: "parsed")
         case .ole: result = Result(kind: "document", text: "", textFrom: "parsed", problem: "an old Office or Outlook format that is not read yet")
         case .unknown: result = Result(kind: "unknown", text: "", textFrom: "parsed", problem: "not a kind of file Sprava reads")
@@ -120,6 +122,13 @@ public enum Extractor {
         if cut, result.problem == nil { result.problem = "longer than the text limit (\(limits.textChars) characters); only the start was read" }
         result.mismatch = nameMismatch(name, sniffed)
         return result
+    }
+
+    /// Text as `sniff` accepted it: UTF-8, else the Windows or Latin-1 single-byte text it fell back to, so an
+    /// accented name is kept rather than turned into replacement characters.
+    static func decodedText(_ data: Data) -> String {
+        String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252)
+            ?? String(data: data, encoding: .isoLatin1) ?? String(decoding: data, as: UTF8.self)
     }
 
     static func nameMismatch(_ name: String, _ sniffed: Sniffed) -> Bool {
@@ -149,6 +158,8 @@ public enum Extractor {
         var s = String(out)
         while s.contains("\n\n\n") { s = s.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return s.count > limit ? (String(s.prefix(limit)), true) : (s, false)
+        // Counted in Unicode scalars, not characters: one character can carry millions of combining marks, and the
+        // cap is there to bound the size of what is passed on.
+        return s.unicodeScalars.count > limit ? (String(String.UnicodeScalarView(s.unicodeScalars.prefix(limit))), true) : (s, false)
     }
 }
