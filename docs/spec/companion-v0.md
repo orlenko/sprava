@@ -607,7 +607,11 @@ marker:
    device is still pending (it has neither an activation nor a revocation marker); a self-revoked device's
    record and revocation stay until the owner deletes the device;
 3. it deletes any other pairing part whose `created.json` is missing, and any device part whose `record.json`
-   is missing, revocation markers excepted.
+   is missing, revocation markers excepted;
+4. it deletes the record of every pending device (neither an activation nor a revocation marker) whose pairing
+   is missing or past its `expires_at`. A write begun before a crash can land after this cleanup, so the relay
+   also applies this rule before counting devices against the limit of section 7.3: an orphaned pending record
+   never holds a device slot.
 
 ## 8. Payloads
 
