@@ -18,8 +18,13 @@ extension Extractor {
         // An element whose content is never page text goes whole: opened in any case, with or without attributes,
         // and closed by its end tag in any form the HTML tokenizer accepts (`</script >`, `</SCRIPT foo>`), or, when
         // it is never closed, by the end of the page.
-        var s = html.replacingOccurrences(of: #"(?is)<(script|style|noscript|template|head)(?=[\s/>])[^>]*>.*?(?:</\1(?=[\s/>])[^>]*>|\z)"#,
+        var s = html.replacingOccurrences(of: #"(?is)<(script|style|noscript|template)(?=[\s/>])[^>]*>.*?(?:</\1(?=[\s/>])[^>]*>|\z)"#,
                                           with: " ", options: .regularExpression)
+        // The head's end tag may be left out: it ends at `</head>`, or where the HTML parser closes it, at the first
+        // thing a head cannot hold (`<body>`, any other content tag, or text). So only what a head holds is taken:
+        // white space, comments, a title with its text, and the empty head elements; never the body after it.
+        s = s.replacingOccurrences(of: #"(?is)<head(?=[\s/>])[^>]*>(?:\s+|<!--.*?-->|<title(?=[\s/>])[^>]*>.*?(?:</title(?=[\s/>])[^>]*>|\z)|</?(?:base|basefont|bgsound|link|meta|noframes)(?=[\s/>])[^>]*>)*(?:</head(?=[\s/>])[^>]*>)?"#,
+                                   with: " ", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(?i)<(br|/p|/div|/li|/tr|/h[1-6])[^>]*>"#, with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
         for (e, c) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {

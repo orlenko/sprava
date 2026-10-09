@@ -58,4 +58,24 @@ import Testing
         // An element whose name only starts like one of them is ordinary markup.
         #expect(Extractor.htmlText("<scripture>Invented verse</scripture>").contains("Invented verse"))
     }
+
+    // MARK: - The head ends where the HTML parser ends it, never at the end of the page
+
+    @Test func aHeadWithoutItsEndTagKeepsTheBody() {
+        let pages = [
+            // `</head>` left out, the body opened: the body is kept.
+            "<html><head><title>Invented notice</title><body><p>Payment due Friday</p></body></html>",
+            // A head closed as usual, with what a head holds.
+            "<html><head><meta charset=\"utf-8\"><title>Invented notice</title><link rel=\"stylesheet\" href=\"s.css\">"
+                + "<!-- invented comment --><style>p { }</style></head><body><p>Payment due Friday</p></body></html>",
+            // `</head>` left out and no body tag: the first content tag ends the head.
+            "<html><head><title>Invented notice</title><p>Payment due Friday</p></html>",
+            // ... or the first text.
+            "<head><TITLE>Invented notice</TITLE>Payment due Friday",
+        ]
+        for html in pages {
+            let text = Extractor.htmlText(html)
+            #expect(text == "Payment due Friday", "\(html) -> \(text)")
+        }
+    }
 }
