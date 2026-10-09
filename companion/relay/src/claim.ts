@@ -4,15 +4,14 @@ import { HttpError, type Route } from './http.ts';
 import { CLAIMS, OWNER, ownerRecord } from './layout.ts';
 import { SlidingWindow, sleep } from './limits.ts';
 import type { Relay } from './relay.ts';
-import { Mutex, writeOnce } from './store/store.ts';
+import { writeOnce } from './store/store.ts';
 
 /** §6 step 1: at most 10 claims a second, one at a time; a claim that waited 5 seconds is 503. */
 export const CLAIM_TIMING = { intervalMs: 100, maxWaitMs: 5000, failureWindowMs: 600_000, failureDelayMs: 2000 };
 
 export function claimRoute(relay: Relay, timing = CLAIM_TIMING): Route {
-    const pacer = new Mutex();
     const failures = new SlidingWindow(timing.failureWindowMs, 5);
-    let lastStart = -Infinity;
+    const pacer = new ClaimPacer(timing);
     return {
         method: 'POST',
         path: '/v0/claim',
@@ -28,15 +27,14 @@ export function claimRoute(relay: Relay, timing = CLAIM_TIMING): Route {
             }
             // §6: the owner record is derived from the body and nothing else, so every retry writes the same bytes.
             const record = ownerRecord(hash);
-            const arrived = performance.now();
-            const outcome = await pacer.run(async () => {
-                const wait = Math.max(0, lastStart + timing.intervalMs - performance.now());
-                if (performance.now() + wait - arrived > timing.maxWaitMs) return 'busy';
-                await sleep(wait);
-                lastStart = performance.now();
-                return decide(relay, code, hash, record, call.address, failures);
-            });
-            if (outcome === 'busy') throw new HttpError(503, 'The relay is busy; try again.', { 'Retry-After': '1' });
+            const done = await pacer.turn(call.signal);
+            if (done === null) throw new HttpError(503, 'The relay is busy; try again.', { 'Retry-After': '1' });
+            let outcome: Awaited<ReturnType<typeof decide>>;
+            try {
+                outcome = await decide(relay, code, hash, record, call.address, failures);
+            } finally {
+                done();
+            }
             if (outcome === 'throttled') {
                 // §6 step 4: the delay holds only this response, not the processing of other claims.
                 await sleep(timing.failureDelayMs);
@@ -47,6 +45,69 @@ export function claimRoute(relay: Relay, timing = CLAIM_TIMING): Route {
             return { status: 204 };
         },
     };
+}
+
+/**
+ * §6 step 1: claims run one at a time, at most one start per interval. The queue holds at most as many claims as
+ * can start within the wait limit; each queued claim has its own deadline, and leaves the queue when it passes or
+ * its client goes away, so it is answered 503 then and never runs later, however long the claim in progress takes.
+ */
+class ClaimPacer {
+    readonly #timing: typeof CLAIM_TIMING;
+    readonly #queue: { start: () => void }[] = [];
+    #busy = false;
+    #lastStart = -Infinity;
+
+    constructor(timing: typeof CLAIM_TIMING) {
+        this.#timing = timing;
+    }
+
+    /** Waits for this claim's turn; resolves with the function that ends it, or null when it must be refused. */
+    turn(signal: AbortSignal): Promise<(() => void) | null> {
+        const limit = Math.max(1, Math.floor(this.#timing.maxWaitMs / this.#timing.intervalMs));
+        if (this.#queue.length >= limit || signal.aborted) return Promise.resolve(null);
+        return new Promise((resolve) => {
+            const entry = {
+                start: () => {
+                    cleanup();
+                    resolve(() => {
+                        this.#busy = false;
+                        this.#pump();
+                    });
+                },
+            };
+            const leave = (): void => {
+                const at = this.#queue.indexOf(entry);
+                if (at < 0) return;
+                this.#queue.splice(at, 1);
+                cleanup();
+                resolve(null);
+            };
+            const timer = setTimeout(leave, this.#timing.maxWaitMs);
+            const cleanup = (): void => {
+                clearTimeout(timer);
+                signal.removeEventListener('abort', leave);
+            };
+            signal.addEventListener('abort', leave);
+            this.#queue.push(entry);
+            this.#pump();
+        });
+    }
+
+    #pump(): void {
+        if (this.#busy || this.#queue.length === 0) return;
+        this.#busy = true;
+        const wait = Math.max(0, this.#lastStart + this.#timing.intervalMs - performance.now());
+        setTimeout(() => {
+            const next = this.#queue.shift();
+            if (next === undefined) {
+                this.#busy = false;
+                return;
+            }
+            this.#lastStart = performance.now();
+            next.start();
+        }, wait);
+    }
 }
 
 async function decide(relay: Relay, code: string, hash: string, record: Uint8Array, address: string, failures: SlidingWindow): Promise<'claimed' | 'taken' | 'wrong' | 'throttled'> {

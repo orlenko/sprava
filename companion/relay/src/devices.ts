@@ -194,8 +194,11 @@ export function deviceRoutes(relay: Relay, devices: Devices): Route[] {
             async handle(call) {
                 if (call.principal?.kind !== 'device' || call.body.length === 0) throw new HttpError(400, 'A sealed revocation is required.');
                 const d = call.principal.id;
-                // §7.4: the revocation first, then the marker, so a crash between them is repaired at start.
-                await writeOnce(relay.store, deviceKeys(d).revocation, call.body);
+                // §7.4: the revocation first, then the marker, so a crash between them is repaired at start. The marker
+                // is written only once this revocation is the one stored: the owner needs it to act (§9.2).
+                if ((await writeOnce(relay.store, deviceKeys(d).revocation, call.body)) === 'different') {
+                    throw new HttpError(409, 'Another revocation of this device may still be stored; try again later.');
+                }
                 await devices.markRevokedLocked(d);
                 await deleteAll(relay.store, `requests/${d}/`);
                 return { status: 204 };

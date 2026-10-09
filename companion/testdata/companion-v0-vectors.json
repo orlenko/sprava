@@ -26,7 +26,8 @@
     "sha256": "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0",
     "wrong_reading": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd",
     "refused_owner_token_sha256": "EA866A757E4C38BABFA8127CBE9A409D3E1F93A00FF1488FF735FCF917AFFFD0",
-    "refused_bearer": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+    "refused_bearer": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "relay_token_marker": "devices/{D}/tokens/ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
   },
   "strict-json": {
     "case": 11,

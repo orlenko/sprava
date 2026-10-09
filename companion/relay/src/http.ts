@@ -20,6 +20,8 @@ export interface Call {
     json: JsonObject;
     /** The client address the host reports for the connection (§6, step 4). */
     address: string;
+    /** Aborted when the client goes away before its answer, so work queued for it can be dropped. */
+    signal: AbortSignal;
 }
 
 export interface Reply {
@@ -74,6 +76,8 @@ export const JSON_LIMIT = 4096;
 
 class Dropped extends Error {}
 
+const signals = new WeakMap<IncomingMessage, AbortSignal>();
+
 export function createHandler(options: HttpOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
     const timeoutMs = options.bodyTimeoutMs ?? 60_000;
     return async (req, res) => {
@@ -81,6 +85,11 @@ export function createHandler(options: HttpOptions): (req: IncomingMessage, res:
         const origin = req.headers.origin;
         const cors = origin !== undefined && origin === options.webOrigin;
         const matched = { pattern: 'unmatched' };
+        const gone = new AbortController();
+        res.on('close', () => {
+            if (!res.writableFinished) gone.abort();
+        });
+        signals.set(req, gone.signal);
         let reply: Reply;
         try {
             reply = await route(req, options, timeoutMs, matched);
@@ -165,7 +174,7 @@ async function run(req: IncomingMessage, r: Route, params: Record<string, string
             throw error;
         }
     }
-    const action = (): Promise<Reply> => r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '' });
+    const action = (): Promise<Reply> => r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '', signal: signals.get(req) ?? new AbortController().signal });
     return principal?.kind === 'device' && options.guard ? options.guard(principal, action) : action();
 }
 
