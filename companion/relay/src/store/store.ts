@@ -14,6 +14,11 @@ export interface Store {
      * stores overwrite anyway (§6, step 5), so callers rely on the creation lock, never on this alone.
      */
     putIfAbsent(key: string, body: Uint8Array): Promise<boolean>;
+    /**
+     * Makes an object that exists durable before it is acknowledged again: a write whose last step failed may have
+     * left it readable but not yet safe from a power loss.
+     */
+    sync(key: string): Promise<void>;
     /** Deletes; a missing key is not an error. */
     delete(key: string): Promise<void>;
     /** Every key under `prefix`, in ascending byte order. */
@@ -28,6 +33,7 @@ export function scoped(store: Store, instance: string): Store {
         has: (key) => store.has(root + key),
         put: (key, body) => store.put(root + key, body),
         putIfAbsent: (key, body) => store.putIfAbsent(root + key, body),
+        sync: (key) => store.sync(root + key),
         delete: (key) => store.delete(root + key),
         list: async (prefix) => (await store.list(root + prefix)).map((key) => key.slice(root.length)),
     };
@@ -55,7 +61,10 @@ export async function writeOnce(store: Store, key: string, body: Uint8Array): Pr
     const existing = await store.get(key);
     if (existing === null && (await store.putIfAbsent(key, body))) return 'created';
     const stored = existing ?? (await store.get(key));
-    return stored !== null && sameBytes(stored, body) ? 'same' : 'different';
+    if (stored === null || !sameBytes(stored, body)) return 'different';
+    // A retry is acknowledged only once the object is durable, which an earlier attempt may not have finished.
+    await store.sync(key);
+    return 'same';
 }
 
 /** Deletes every key under a prefix. */

@@ -25,6 +25,24 @@ The git hooks run `companion/test.sh` for every commit that touches `companion/`
 The test vectors shared with the Mac and the web app are in
 [`companion/testdata/companion-v0-vectors.json`](../testdata/companion-v0-vectors.json) (spec section 14).
 
+## Crashes and late writes
+
+A process can stop at any moment, and with an S3-compatible store a write it sent may land later, even after a
+new process has started (spec section 6). The relay holds to four invariants, and every endpoint is checked
+against them:
+
+1. **Every object is fixed by its first writer, or informative.** A write-once object never changes once
+   written, and every writer of a name derives the same bytes, so a late write repeats them. Informative
+   objects (`last_seen`) decide nothing.
+2. **Nothing is acknowledged before it is durable and verified.** A write is confirmed by the store (on disk:
+   the file and its folder synced) before the answer; a retry that finds the object already there makes it
+   durable again before saying so; a record that cannot be read is an error, never taken for a missing one.
+3. **Every decision a late write could change is fenced**: by the writer's lease rank, or by a name whose bytes
+   every writer derives alike, or by an intent recorded before the write, so other bytes are refused while an
+   earlier write's outcome is unknown.
+4. **Every check-then-act runs under one lock**, the one its counterpart takes (a device's lock for anything
+   a revocation must not overtake), in a single documented order.
+
 ## Layout
 
 - `src/encoding.ts`: b64, ids, tokens and their hashes, times (spec section 3).

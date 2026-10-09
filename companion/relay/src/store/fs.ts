@@ -1,14 +1,25 @@
 // A store in a local folder, for development and tests (companion-v0 §13, `SPRAVA_STORAGE=fs:<dir>`).
+//
+// Durability: nothing is acknowledged before it would survive a power loss. A file is synced before it gets its
+// name, and the folder after, since syncing a file does not persist its directory entry (as AtomicFile does on the
+// Mac side). A folder counts as durable only once its own entry has been synced in its parent, which is tried
+// again on every write until it succeeds, so a failed sync is never forgotten.
+//
+// Names: keys are case-sensitive, and folders often are not (APFS by default). Each upper-case letter is stored as
+// `^` and its lower-case form, so two keys that differ only in case never share a file.
 import { randomBytes } from 'node:crypto';
 import { link, mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Store } from './store.ts';
 
 const TEMP = '.tmp-';
+const SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 export class FsStore implements Store {
     readonly root: string;
     readonly #syncDir: (dir: string) => Promise<void>;
+    /** Folders whose entries are known durable, up to a bound; one not in it is synced in its parent again. */
+    readonly #durable = new Set<string>();
 
     /** `syncDir` is for tests that watch the order of writes and folder syncs; it defaults to fsync. */
     constructor(root: string, options: { syncDir?: (dir: string) => Promise<void> } = {}) {
@@ -29,8 +40,6 @@ export class FsStore implements Store {
         return (await this.get(key)) !== null;
     }
 
-    // Every write is durable before it is acknowledged: the file is synced before it gets its name, and the folder
-    // after, since syncing a file does not persist its directory entry (as AtomicFile does on the Mac side).
     async put(key: string, body: Uint8Array): Promise<void> {
         const temp = await this.#writeTemp(key, body);
         try {
@@ -59,6 +68,19 @@ export class FsStore implements Store {
         return created;
     }
 
+    /** Makes an object that exists durable: its folders, the file and its entry are synced again. */
+    async sync(key: string): Promise<void> {
+        const path = this.#path(key);
+        await this.#ensureFolder(dirname(path));
+        const file = await open(path, 'r');
+        try {
+            await file.sync();
+        } finally {
+            await file.close();
+        }
+        await this.#syncDir(dirname(path));
+    }
+
     async delete(key: string): Promise<void> {
         try {
             await unlink(this.#path(key));
@@ -71,43 +93,52 @@ export class FsStore implements Store {
 
     async list(prefix: string): Promise<string[]> {
         // A prefix is plain segments too; only its last may be empty or partial.
-        if (prefix.split('/').slice(0, -1).some((s) => s === '' || s === '.' || s === '..')) throw new Error('invalid store prefix');
-        const slash = prefix.lastIndexOf('/');
-        const base = slash < 0 ? '' : prefix.slice(0, slash + 1);
+        const segments = prefix.split('/');
+        if (segments.slice(0, -1).some((s) => !SEGMENT.test(s) || s === '.' || s === '..') || !/^[A-Za-z0-9._-]*$/.test(segments.at(-1)!)) {
+            throw new Error('invalid store prefix');
+        }
+        const base = segments.slice(0, -1);
         const keys: string[] = [];
-        await this.#walk(base, prefix, keys);
+        await this.#walk(join(this.root, ...base.map(encode)), base.map((s) => s + '/').join(''), prefix, keys);
         return keys.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
     }
 
-    async #walk(folder: string, prefix: string, keys: string[]): Promise<void> {
+    async #walk(folder: string, keyFolder: string, prefix: string, keys: string[]): Promise<void> {
         let entries;
         try {
-            entries = await readdir(join(this.root, folder), { withFileTypes: true });
+            entries = await readdir(folder, { withFileTypes: true });
         } catch (error) {
-            if (isMissing(error) || (error as NodeJS.ErrnoException).code === 'ENOTDIR') return;
+            if (isMissing(error)) return;
             throw error;
         }
         for (const entry of entries) {
             if (entry.name.startsWith(TEMP)) continue;
-            const key = folder + entry.name;
+            const key = keyFolder + decode(entry.name);
             if (entry.isDirectory()) {
-                if ((key + '/').startsWith(prefix) || prefix.startsWith(key + '/')) await this.#walk(key + '/', prefix, keys);
+                if ((key + '/').startsWith(prefix) || prefix.startsWith(key + '/')) await this.#walk(join(folder, entry.name), key + '/', prefix, keys);
             } else if (key.startsWith(prefix)) {
                 keys.push(key);
             }
         }
     }
 
+    /** Every folder from the root down to `folder` exists, and its entry is durable in its parent. */
+    async #ensureFolder(folder: string): Promise<void> {
+        const chain: string[] = [];
+        for (let dir = folder; dir !== this.root && !this.#durable.has(dir); dir = dirname(dir)) chain.unshift(dir);
+        for (const dir of chain) {
+            await mkdir(dir).catch((error: NodeJS.ErrnoException) => {
+                if (error.code !== 'EEXIST') throw error;
+            });
+            await this.#syncDir(dirname(dir));
+            if (this.#durable.size >= 100_000) this.#durable.clear();
+            this.#durable.add(dir);
+        }
+    }
+
     async #writeTemp(key: string, body: Uint8Array): Promise<string> {
         const folder = dirname(this.#path(key));
-        const first = await mkdir(folder, { recursive: true });
-        if (first !== undefined) {
-            // New folders are entries in their parents: each parent is synced, from the first one made down.
-            for (let dir = first; ; dir = join(dir, relative(dir, folder).split(sep)[0]!)) {
-                await this.#syncDir(dirname(dir));
-                if (dir === folder) break;
-            }
-        }
+        await this.#ensureFolder(folder);
         const temp = join(folder, TEMP + randomBytes(8).toString('hex'));
         const file = await open(temp, 'wx');
         try {
@@ -122,14 +153,23 @@ export class FsStore implements Store {
         return temp;
     }
 
-    /** Keys are relative paths of plain segments; anything else is a programming error. */
+    /** Keys are relative paths of plain ASCII segments; anything else is a programming error. */
     #path(key: string): string {
         const segments = key.split('/');
-        if (segments.some((s) => s === '' || s === '.' || s === '..' || s.startsWith(TEMP))) {
+        if (segments.some((s) => !SEGMENT.test(s) || s === '.' || s === '..' || s.startsWith(TEMP))) {
             throw new Error('invalid store key');
         }
-        return join(this.root, ...segments);
+        return join(this.root, ...segments.map(encode));
     }
+}
+
+/** `A` is stored as `^a`, so names that differ only in case stay apart on a folder that ignores case. */
+function encode(segment: string): string {
+    return segment.replace(/[A-Z]/g, (c) => `^${c.toLowerCase()}`);
+}
+
+function decode(name: string): string {
+    return name.replace(/\^([a-z])/g, (_, c: string) => c.toUpperCase());
 }
 
 async function fsyncDir(dir: string): Promise<void> {
