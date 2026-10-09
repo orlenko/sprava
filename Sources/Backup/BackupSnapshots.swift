@@ -41,8 +41,25 @@ extension Backup {
     /// the copy is refused, so the two never share snapshots under one tag, and forgetting a document in one never
     /// rewrites the other's backups. A binder that moved (nothing holds the id at the recorded place) takes the
     /// record with it. The caller saves `st`.
+    ///
+    /// An id an offloaded binder, an offload of another folder or a restore into another folder holds is reserved:
+    /// that binder's folder is gone or not yet back, so a copy of it would otherwise take the id, and forgetting a
+    /// document in the copy would rewrite the offloaded binder's pinned backups.
     func claim(_ folder: URL, _ st: inout State) throws -> String {
         let id = try Self.backupID(folder)
+        let here = Self.realPath(folder)
+        func other(_ path: String) -> Bool { Self.realPath(URL(fileURLWithPath: path, isDirectory: true)) != here }
+        // The binder an offload is taking away still holds its id until it has left (its record is kept first).
+        let leaving = st.offloads[id].map { !other($0.path) } ?? false
+        if !leaving, let record = st.offloaded.first(where: { $0.backupID == id }) {
+            // The folder a restore of it is going into is the binder itself.
+            let restoring = st.restoredContents[id]?.path ?? st.restoring[id]
+            if restoring.map(other) ?? true { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: record.originalPath + " (offloaded)") }
+        }
+        if let job = st.offloads[id], other(job.path) { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: job.path) }
+        if let path = st.restoredContents[id]?.path ?? st.restoring[id], other(path) {
+            throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: path)
+        }
         if let recorded = st.binders[id]?.path, Self.realPath(URL(fileURLWithPath: recorded)) != Self.realPath(folder),
            (try? Self.storedBackupID(URL(fileURLWithPath: recorded, isDirectory: true))) == id {
             throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded)
@@ -63,6 +80,9 @@ extension Backup {
         }
         if let job = st.offloads[old], Self.realPath(URL(fileURLWithPath: job.path)) == Self.realPath(folder) {
             throw Failure(message: "this binder is being offloaded; finish or cancel that first")
+        }
+        if let path = st.restoredContents[old]?.path ?? st.restoring[old], Self.realPath(URL(fileURLWithPath: path)) == Self.realPath(folder) {
+            throw Failure(message: "this binder is being restored; finish the restore first")
         }
         let id = Self.newBackupID()
         try AtomicFile.write(Data((id + "\n").utf8), to: folder.appendingPathComponent(".sprava/backup-id"))
