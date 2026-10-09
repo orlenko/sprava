@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build build/Sprava.app (ad-hoc signed, not launched). Pass SwiftPM options through, e.g. -c release.
+# Build build/Sprava.app (ad-hoc signed with the hardened runtime, not launched). Pass SwiftPM options through, e.g. -c release.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -40,11 +40,11 @@ fi
 cp "$(realpath "$restic_bin")" "$bundle/Contents/MacOS/restic"
 restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
 [ -f "$restic_license" ] && cp "$restic_license" "$bundle/Contents/Resources/restic-LICENSE.txt"
-codesign --force --sign - --identifier ca.orlenko.sprava.restic "$bundle/Contents/MacOS/restic"
-codesign --force --sign - --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
+codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.restic "$bundle/Contents/MacOS/restic"
+codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
 # The runtime refuses a helper that does not run sandboxed, so a helper signed without its entitlement stops the build.
 plutil -lint Resources/sprava-extract.entitlements
-if ! codesign --force --sign - --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \
+if ! codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \
     "$bundle/Contents/MacOS/sprava-extract"; then
     echo "build-app: signing the extraction helper failed" >&2
     exit 1
@@ -53,8 +53,15 @@ if ! codesign -d --entitlements - --xml "$bundle/Contents/MacOS/sprava-extract" 
     echo "build-app: the extraction helper carries no sandbox entitlement after signing" >&2
     exit 1
 fi
-codesign --force --sign - --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
-codesign --force --sign - --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
-codesign --force --sign - --identifier ca.orlenko.sprava "$bundle"
-codesign --verify "$bundle"
+codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.runtime "$bundle/Contents/MacOS/sprava-runtime"
+codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.cli "$bundle/Contents/MacOS/sprava"
+codesign --force --sign - --options runtime --identifier ca.orlenko.sprava "$bundle"
+codesign --verify --strict "$bundle"
+# Every executable runs with the hardened runtime: no injected libraries, no DYLD_ variables, no unsigned code.
+for exe in "$bundle"/Contents/MacOS/*; do
+    if ! codesign -d --verbose=2 "$exe" 2>&1 | grep -q 'flags=.*runtime'; then
+        echo "build-app: $(basename "$exe") is not signed with the hardened runtime" >&2
+        exit 1
+    fi
+done
 echo "Built $bundle (not launched)"
