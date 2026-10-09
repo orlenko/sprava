@@ -11,12 +11,15 @@ import type { Devices } from './devices.ts';
 import { HttpError, type Call, type Reply, type Route } from './http.ts';
 import { deviceKeys, EMPTY, groupParts, pairingKeys, readRecord, type DeviceRecord, type PairingCreated } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { INTENTS, writeOnce } from './store/store.ts';
+import { INTENTS, LockBusy, writeOnce } from './store/store.ts';
 
 export const PAIRING_TTL_MS = 10 * 60_000;
 const MAX_OPEN = 3;
 const MAX_DEVICES = 20;
 const MAX_FAILED_JOINS = 5;
+const MAX_JOINS_IN_FLIGHT = 16;
+const JOIN_QUEUE = 8;
+const JOIN_WAIT_MS = 10_000;
 
 type State = 'open' | 'joined' | 'keyed' | 'acknowledged';
 
@@ -35,6 +38,7 @@ const missing = (): HttpError => new HttpError(404, 'There is no such pairing.')
 export function pairings(relay: Relay, devices: Devices): { routes: Route[]; sweep: () => Promise<void> } {
     const { store } = relay;
     const failedJoins = new Map<string, number>();
+    let joinsInFlight = 0;
 
     /** Reads a pairing as it is now; it changes nothing. */
     async function read(p: string | undefined): Promise<Pairing | null> {
@@ -51,7 +55,12 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
      * Runs `work` on a live pairing under its device's lock, read again under the lock; an expired one is deleted
      * there and answers 404. `held` says the caller already holds that lock (a device acting on its own pairing).
      */
-    async function withPairing<T>(p: string | undefined, work: (pairing: Pairing) => Promise<T>, held: string | null = null): Promise<T> {
+    async function withPairing<T>(
+        p: string | undefined,
+        work: (pairing: Pairing) => Promise<T>,
+        held: string | null = null,
+        bound?: { limit: number; waitMs: number; signal: AbortSignal },
+    ): Promise<T> {
         const first = await read(p);
         if (first === null) throw missing();
         const d = first.created.device_id;
@@ -68,10 +77,12 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
             if (held !== d) throw new HttpError(403, 'This token may only use its own pairing.');
             return locked();
         }
-        return relay.deviceLocks.run(d, locked);
+        return relay.deviceLocks.run(d, locked, bound).catch((error: unknown) => {
+            if (error instanceof LockBusy) throw new HttpError(503, 'The relay is busy with this pairing; try again.', { 'Retry-After': '5' });
+            throw error;
+        });
     }
 
-    /** §7.3: a pairing is deleted 10 minutes after it was made, with its device if that is still pending. */
     /**
      * §7.3: a pairing is deleted 10 minutes after it was made, with its device if that is still pending. Its
      * tombstone comes first, durably, so a deletion cut short or a late write can never reopen it (invariant 5).
@@ -126,6 +137,39 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                 if (still.includes(d) && !(await store.has(deviceKeys(d).active))) await devices.deletePartsLocked(d);
             });
         }
+    }
+
+    /** The join itself (§7.3), under the pairing's device lock with a bounded wait. */
+    async function join(p: string | undefined, secret: string, b: string, hello: string, signal: AbortSignal): Promise<Reply> {
+        return withPairing(
+            p,
+            async (pairing) => {
+                if (!sameSecret(sha256Hex(secret), pairing.created.secret_sha256)) {
+                    const failures = (failedJoins.get(pairing.id) ?? 0) + 1;
+                    failedJoins.set(pairing.id, failures);
+                    if (failures >= MAX_FAILED_JOINS) await expireLocked(pairing);
+                    throw new HttpError(403, 'The pairing secret is not right.');
+                }
+                const d = pairing.created.device_id;
+                // Joined means joined.json exists. A join that failed part-way, whose writes may still land, left
+                // at most a token nobody holds and a record every join writes alike (layout.ts).
+                if (pairing.state !== 'open' || (await devices.revokedLocked(d))) throw new HttpError(409, 'This pairing was already joined.');
+                // An earlier join whose transcript write may still land has consumed the pairing: its intent is
+                // durable, and a second transcript must never be accepted (§7.3: B and hello never change).
+                if ((await store.list(`${INTENTS}${pairingKeys(pairing.id).joined}/`)).length > 0) {
+                    throw new HttpError(409, 'This pairing was already joined.');
+                }
+                return relay.lock.run(async () => {
+                    // §7.3: at most 20 devices, pending and active, counted under the creation lock at the join.
+                    if ((await orphans((await allPairings()).filter((p) => !p.expired))).counted >= MAX_DEVICES) {
+                        throw new HttpError(507, 'There are too many devices.');
+                    }
+                    return completeJoin(pairing, d, b, hello);
+                });
+            },
+            null,
+            { limit: JOIN_QUEUE, waitMs: JOIN_WAIT_MS, signal },
+        );
     }
 
     /** The join's writes: its token's marker, the record every join writes alike, then the transcript. */
@@ -207,31 +251,16 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                 if (typeof secret !== 'string' || typeof b !== 'string' || decodeB64(b)?.length !== 32 || typeof hello !== 'string' || hello.length > 2048 || !decodeB64(hello)?.length) {
                     throw new HttpError(400, 'A join needs the secret, the device public key (32 bytes in b64) and the sealed hello in b64.');
                 }
-                await deleteOrphans();
-                return withPairing(call.params.P, async (pairing) => {
-                    if (!sameSecret(sha256Hex(secret), pairing.created.secret_sha256)) {
-                        const failures = (failedJoins.get(pairing.id) ?? 0) + 1;
-                        failedJoins.set(pairing.id, failures);
-                        if (failures >= MAX_FAILED_JOINS) await expireLocked(pairing);
-                        throw new HttpError(403, 'The pairing secret is not right.');
-                    }
-                    const d = pairing.created.device_id;
-                    // Joined means joined.json exists. A join that failed part-way, whose writes may still land, left
-                    // at most a token nobody holds and a record every join writes alike (layout.ts).
-                    if (pairing.state !== 'open' || (await devices.revokedLocked(d))) throw new HttpError(409, 'This pairing was already joined.');
-                    // An earlier join whose transcript write may still land has consumed the pairing: its intent is
-                    // durable, and a second transcript must never be accepted (§7.3: B and hello never change).
-                    if ((await store.list(`${INTENTS}${pairingKeys(pairing.id).joined}/`)).length > 0) {
-                        throw new HttpError(409, 'This pairing was already joined.');
-                    }
-                    return relay.lock.run(async () => {
-                        // §7.3: at most 20 devices, pending and active, counted under the creation lock at the join.
-                        if ((await orphans((await allPairings()).filter((p) => !p.expired))).counted >= MAX_DEVICES) {
-                            throw new HttpError(507, 'There are too many devices.');
-                        }
-                        return completeJoin(pairing, d, b, hello);
-                    });
-                });
+                // Joins are public: at most a few are admitted at once, before any storage is read, and each waits
+                // for its pairing's lock in a bounded queue with a deadline, dropped when its client leaves, so no
+                // flood of joins can pile up work or hold an owner's revocation behind it.
+                if (joinsInFlight >= MAX_JOINS_IN_FLIGHT) throw new HttpError(503, 'The relay is busy; try again.', { 'Retry-After': '5' });
+                joinsInFlight++;
+                try {
+                    return await join(call.params.P, secret, b, hello, call.signal);
+                } finally {
+                    joinsInFlight--;
+                }
             },
         },
         {

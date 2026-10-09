@@ -203,3 +203,37 @@ test('a deletion cut short leaves the pairing deleted for good, and its retry fi
     assert.deepEqual(await scoped(raw, INSTANCE).list(`pairings/${p}/`), [`pairings/${p}/deleted`], 'only its tombstone stays');
     await again.close();
 });
+
+test('a flood of public joins is bounded: few admitted, a short queue, 503 beyond, and revocation gets through', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    const c = client(t, owner);
+    const d = newId();
+    const opened = (await (await c.call('POST', '/v0/pairings', owner, { owner_public_key: A, device_id: d })).json()) as { pairing_id: string; secret: string };
+    let release: () => void = () => {};
+    const held = t.relay.deviceLocks.run(d, () => new Promise<void>((r) => (release = r))); // slow storage holds the lock
+    const gone = new AbortController();
+    const send = (signal?: AbortSignal) =>
+        fetch(`${t.url}/v0/pairings/${opened.pairing_id}/join`, {
+            method: 'POST',
+            body: JSON.stringify({ secret: opened.secret, device_public_key: B, hello: HELLO }),
+            ...(signal ? { signal } : {}),
+        })
+            .then((r) => r.status)
+            .catch(() => 0);
+    const leaving = Array.from({ length: 4 }, () => send(gone.signal));
+    const flood = Array.from({ length: 30 }, () => send());
+    await new Promise((r) => setTimeout(r, 100));
+    gone.abort();
+    const revoking = c.call('DELETE', `/v0/devices/${d}`, owner);
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await held;
+    assert.equal((await revoking).status, 204, 'the owner was never stuck behind the flood');
+    const statuses = await Promise.all(flood);
+    assert.ok(statuses.filter((s) => s === 503).length >= 22, statuses.join());
+    assert.ok(statuses.filter((s) => s !== 503).length <= 8, statuses.join());
+    await Promise.all(leaving);
+    await t.close();
+});
