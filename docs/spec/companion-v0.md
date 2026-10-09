@@ -185,8 +185,9 @@ The owner rotates after it revokes a device, and when the person asks:
    finishes any of its decision records still `deciding` (section 9.6); if one cannot be finished now, the
    revocation waits and the person is told why. Then it marks the device revoked in its own records, in the
    same durable write retires its outcome work (section 9.9), releases the lock, deletes that device's `Kd`
-   from the Keychain, and calls `DELETE /v0/devices/{D}`, repeating it, after a restart too, until it gets
-   `204`. A request of a revoked device is never decided
+   from the Keychain, and goes on to step 2 at once. Separately, it calls `DELETE /v0/devices/{D}`, repeating
+   it, after a restart too, until it gets `204`; the rotation never waits for it, so a relay that refuses or
+   delays the deletion cannot keep the old keys in use. A request of a revoked device is never decided
    afterwards (section 9.3, check 3).
 2. It takes the owner's **key lock** (section 5.2, step 4), makes a new `K` with epoch `e + 1` and a new
    `Kb` for every shown binder (binder ids stay), and stores
@@ -1256,13 +1257,19 @@ in its records. A revoked device has no outcome work: revoking it sets `outcomes
 and drops any reserved, unpublished revision and its bytes, in the same write that marks it revoked, so
 nothing is ever built, published or retried for it without its `Kd`.
 
+Each publication of a device's outcomes holds that device's decision lock (section 9.2) from step 1 through
+step 2, and stops if the device is no longer active in the Mac's records, so a revocation, which takes the same
+lock, either retires the work before it is reserved or finds it reserved and drops it.
+
 1. Read `outcomes_changes`, then build the payload (section 8.7) from that device's tombstones decided in the
    last 30 days, newest first, at most 2,000, padded (section 8.7), with the next revision, the last reserved
    plus one. Seal it with `Kd` (`e` = 0) and sign it.
 2. Record that revision as reserved, with its bytes, durably in one write, before anything is uploaded.
 3. Upload the recorded bytes as `devices/{D}/outcomes/{revision}`.
-4. Record, in one durable write, the revision as published and `outcomes_built` as the counter value read in
-   step 1. A decision committed meanwhile leaves the device dirty, so it is published at the next turn.
+4. Under the decision lock again, and only if the device is still active and that revision is still the one
+   reserved, record, in one durable write, the revision as published and `outcomes_built` as the counter value
+   read in step 1; otherwise record nothing (bytes already sent may still land, and hold only outcomes from
+   before the revocation). A decision committed meanwhile leaves the device dirty, so it is published at the next turn.
 
 A crash anywhere leaves the device dirty. At the next start the Mac first uploads the recorded bytes of a
 reserved revision not yet recorded as published, then publishes again if still dirty, at a revision above
