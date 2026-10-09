@@ -109,6 +109,17 @@ import Testing
         #expect(items(folder).first?["due"] == .str("2026-10-15"))
     }
 
+    // Layer 5 second calibrated review, finding 3: a completion without `occurrence_due` is undone to the due date
+    // the item had before it.
+    @Test func anOccurrenceWithoutItsDueIsUndone() throws {
+        let (folder, store) = try inline(#"{"id":"r-1","title":"Invented monthly report","status":"open","priority":"normal","due":"2026-10-15","recurrence":{"every":"month"}}"#)
+        let applied = try store.apply([.init(op: "complete", args: JSONObject([(key: "id", value: .str("r-1")), (key: "next_due", value: .str("2026-11-15"))]),
+                                             actor: user)], now: now)
+        #expect(items(folder).first?["due"] == .str("2026-11-15"))
+        try store.undo(opID: applied[0]["id"]!.stringValue!, now: now)
+        #expect(items(folder).first?["due"] == .str("2026-10-15"))
+    }
+
     // Layer 5 review, finding 7: undo restores the derivation flags of the fields it restores, and no others.
     @Test func undoLeavesTheFlagsOfOtherFieldsAsTheyAre() throws {
         let (folder, store) = try inline(#"{"id":"d-1","title":"Invented reply","status":"open","priority":"normal","due":"2026-11-01","derived":["due"]},"#

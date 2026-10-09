@@ -282,4 +282,20 @@ import Testing
         #expect(teka.catalog?["meta"]?["legacy_disclosure"] == .str("taken"))
         #expect(teka.catalog?["meta"]?["legacy_disclosure_2"] == .obj([("hub", .str("invented setting"))]))
     }
+
+    // Layer 5 second calibrated review, finding 2: a pre-lifeproj schema version stays in the catalog under the next
+    // free legacy name when `legacy_schema_version` is taken.
+    @Test func anOldSchemaVersionIsKeptBesideATakenLegacyKey() throws {
+        let folder = try lifeproj([], schemaVersion: 0)
+        let url = folder.appendingPathComponent("catalog.json")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        try Data(text.replacingOccurrences(of: #""name":"tax""#, with: #""name":"tax","legacy_schema_version":-1"#).utf8).write(to: url)
+        let result = try Adoption.adopt(folder, inRegistry: false, deviceID: "t", today: today, now: now)
+        let card = try #require(result.proposals.first { $0.raw["provenance"]?["adoption"] == .str("schema") })
+        try TekaStore(folder: folder).approve(card, now: now)
+        let meta = Teka.read(folder).catalog?["meta"]
+        #expect(meta?["schema_version"] == .int(1))
+        #expect(meta?["legacy_schema_version"] == .int(-1))
+        #expect(meta?["legacy_schema_version_2"] == .int(0))
+    }
 }

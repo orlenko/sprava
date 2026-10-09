@@ -92,7 +92,10 @@ public enum Undo {
             return (target["op"]?.stringValue == "dismiss" ? "undismiss" : "dismiss", JSONObject([(key: "id", value: id)]))
 
         case "complete" where args["next_due"] != nil:
-            guard let id = args["id"], let due = args["occurrence_due"] else { throw Unsupported(message: "no occurrence") }
+            // Without `occurrence_due` the applier recorded the item's due date as it was then, so undo restores that.
+            guard let id = args["id"], let due = args["occurrence_due"] ?? itemBefore(id)?["due"] else {
+                throw Unsupported(message: "no occurrence")
+            }
             // A later completion advanced the series again; setting this occurrence back would erase that one too.
             try unchangedSince(id, ["due"])
             return ("update_item", JSONObject([(key: "id", value: id), (key: "set", value: .obj([("due", due)]))]))

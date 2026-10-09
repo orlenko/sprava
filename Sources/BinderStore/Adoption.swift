@@ -192,16 +192,17 @@ public enum Adoption {
         proposals += repairCards(findings.map { ($0.code, $0.location, $0.field) }, items: repairItems, today: today,
                                  actor: importActor, now: now)
 
-        // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4).
-        // A core key that is not an array stays in needs migration for now.
+        // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4) under
+        // the next free legacy name (§9.5); with none free, no migration is offered. A core key that is not an array
+        // stays in needs migration for now.
         if teka.level == .preLifeproj, let found = Teka.read(folder).catalog {
             var patch: [JSONValue] = []
             if case .object(let meta)? = found["meta"] {
                 if let old = meta["schema_version"] {
-                    if meta["legacy_schema_version"] == nil {
-                        patch.append(.obj([("op", .str("add")), ("path", .str("/meta/legacy_schema_version")), ("value", old)]))
+                    if let aside = legacyKey("schema_version", in: meta) {
+                        patch.append(.obj([("op", .str("add")), ("path", .string("/meta/\(aside)")), ("value", old)]))
+                        patch.append(.obj([("op", .str("replace")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
                     }
-                    patch.append(.obj([("op", .str("replace")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
                 } else {
                     patch.append(.obj([("op", .str("add")), ("path", .str("/meta/schema_version")), ("value", .int(1))]))
                 }
