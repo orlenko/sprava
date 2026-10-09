@@ -53,6 +53,9 @@ extension Backup {
         var st = try state()
         let id = try claim(folder, &st)
         try refuseSharedID(id, folder: folder, &st)
+        // Saved before restic writes anything under the id (`backUp`).
+        try save(st)
+        step("offload.claimed")
         var job = st.offloads[id] ?? InProgress(path: folder.standardizedFileURL.path, stage: "start")
         // The binder stays writable while an offload waits for iCloud, which can take hours. One that changed since
         // its snapshot was verified (or never got that far) starts over, so what leaves the Mac is what the backups hold.
@@ -109,6 +112,7 @@ extension Backup {
             } else {
                 let result = try primary.backup(folder, tags: ["sprava", "binder:\(id)", "offloaded"], excludes: Self.excludes, skipIfUnchanged: false)
                 guard let snap = result.snapshot else { throw Failure(message: "the snapshot was not written") }
+                step("offload.written")
                 job.snapshot = snap
                 job.bytes = result.bytes
                 job.stage = "snapshotted"

@@ -43,48 +43,84 @@ extension Backup {
             try save(st)
             return try finishRestore(backupID)
         }
-        // restic overwrites what is in its way, so only a missing place or a folder seen to be empty is restored
-        // into, unless this restore is being resumed. One that cannot be listed may hold anything.
-        if st.restoring[backupID] != destination.path {
-            var info = stat()
-            if lstat(destination.path, &info) == 0 {
-                guard info.st_mode & S_IFMT == S_IFDIR, let names = try? FileManager.default.contentsOfDirectory(atPath: destination.path),
-                      names.isEmpty else {
-                    throw Failure(message: "\(destination.lastPathComponent) already exists there; choose another place")
-                }
-            } else if errno != ENOENT {
-                throw Failure(message: "\(destination.lastPathComponent) cannot be checked; choose another place")
-            }
+        // Only a missing place or a folder seen to be empty is restored to; one that cannot be listed may hold anything.
+        try Self.refuseOccupied(destination)
+        // restic restores, and resumes, into a private folder beside the destination (the same volume), never into
+        // the destination itself: whatever the person puts there meanwhile is never overwritten (`install`).
+        let staging = Self.staging(for: destination, id: backupID)
+        if let earlier = st.restoring[backupID], earlier != destination.path {
+            try? FileManager.default.removeItem(at: Self.staging(for: URL(fileURLWithPath: earlier, isDirectory: true), id: backupID))
         }
-        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try AtomicFile.makePrivateFolder(staging)
         st.restoring[backupID] = destination.path
         try save(st)
         step("restore.started")
         let held: Set<String>?
         do {
             held = try fromBackups(record, s) { r, snapshot in
-                try r.restore(snapshot, into: destination)
+                try r.restore(snapshot, into: staging)
                 return try? r.files(snapshot)
             }
         } catch {
             throw Failure(message: "\(destination.lastPathComponent) is only partly restored (\(error)); restore again to resume")
         }
-        try? FileManager.default.removeItem(at: destination.appendingPathComponent(".teka.lock"))
+        try? FileManager.default.removeItem(at: staging.appendingPathComponent(".teka.lock"))
         // The baseline a later offload compares with (§6.4) is the snapshot's own entries, as restic restored and
-        // verified them, never the whole folder: a resumed restore keeps whatever was added to the folder in the
-        // meantime, and no snapshot holds that, so the binder no longer counts as unchanged. Without the
-        // snapshot's listing, or a folder that can be read whole, there is no baseline, and the next offload takes
-        // a new snapshot.
+        // verified them. Without the snapshot's listing, or a folder that can be read whole, there is no baseline,
+        // and the next offload takes a new snapshot.
         var baseline: State.Restored?
-        if let held, let all = try? Self.manifest(destination) {
+        if let held, let all = try? Self.manifest(staging) {
             baseline = State.Restored(snapshot: record.snapshot, repository: record.repository, secondSnapshot: record.secondSnapshot,
                                       secondRepository: record.secondRepository ?? s.second,
                                       manifest: all.filter { held.contains($0.key) }, bytes: record.bytes)
         }
-        st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: baseline)
+        st.restoredContents[backupID] = State.RestoredContents(path: destination.path, baseline: baseline, staging: staging.path)
         try save(st)
         step("restore.contents")
         return try finishRestore(backupID)
+    }
+
+    /// The private folder a restore into `destination` works in: beside it, so moving it into place is one rename.
+    static func staging(for destination: URL, id: String) -> URL {
+        destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).sprava-restore-\(id.prefix(8))",
+                                                                       isDirectory: true)
+    }
+
+    /// Refuses a destination that holds anything, or cannot be checked.
+    static func refuseOccupied(_ destination: URL) throws {
+        var info = stat()
+        if lstat(destination.path, &info) == 0 {
+            guard info.st_mode & S_IFMT == S_IFDIR, let names = try? FileManager.default.contentsOfDirectory(atPath: destination.path),
+                  names.isEmpty else {
+                throw Failure(message: "\(destination.lastPathComponent) already exists there; choose another place")
+            }
+        } else if errno != ENOENT {
+            throw Failure(message: "\(destination.lastPathComponent) cannot be checked; choose another place")
+        }
+    }
+
+    /// Moves a restore's verified files into place with one rename, only into a missing place or an empty folder.
+    /// Anything the person put there since is never overwritten: the restore stops, keeps its records and its staged
+    /// files, and says so. A rename already done (a crash after it) is recognised by the binder's backup id.
+    func install(_ contents: State.RestoredContents, id: String) throws {
+        guard let stagingPath = contents.staging else { return }
+        let staging = URL(fileURLWithPath: stagingPath, isDirectory: true)
+        let destination = URL(fileURLWithPath: contents.path, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: staging.path) else {
+            guard (try? Self.storedBackupID(destination)) == id else {
+                throw Failure(message: "the restored files of \(destination.lastPathComponent) are missing; restore again")
+            }
+            return
+        }
+        do { try Self.refuseOccupied(destination) } catch {
+            throw Failure(message: "something was put at \(destination.lastPathComponent) while it was being restored; nothing there was "
+                + "changed, and the restored binder waits in \(staging.lastPathComponent) beside it. Move that away and restore again")
+        }
+        _ = rmdir(destination.path)
+        guard rename(staging.path, destination.path) == 0 else {
+            throw Failure(message: "the restored binder could not be moved to \(destination.lastPathComponent) (\(String(cString: strerror(errno)))); restore again")
+        }
     }
 
     /// Checks that a folder on the Shelf is all of an offloaded binder's snapshot (`restore`), reading it only. The
@@ -120,8 +156,15 @@ extension Backup {
     @discardableResult
     func finishRestore(_ backupID: String) throws -> URL {
         var st = try state()
-        guard let done = st.restoredContents[backupID] else { throw Failure(message: "no restore to finish") }
+        guard var done = st.restoredContents[backupID] else { throw Failure(message: "no restore to finish") }
         let destination = URL(fileURLWithPath: done.path, isDirectory: true)
+        if done.staging != nil {
+            try install(done, id: backupID)
+            done.staging = nil
+            st.restoredContents[backupID] = done
+            try save(st)
+            step("restore.installed")
+        }
         do { try ShelfStore(supportDirectory: support).add(destination) } catch {
             throw Failure(message: "\(destination.lastPathComponent) is restored but could not be put on the Shelf (\(error)); restore again to finish")
         }

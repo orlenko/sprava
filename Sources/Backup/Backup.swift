@@ -142,6 +142,9 @@ public struct Backup: Sendable {
             var path: String
             /// The baseline a later offload compares with, taken right after restic verified the files.
             var baseline: Restored?
+            /// The private folder the files were restored and verified in, while they wait to be moved to `path`;
+            /// nil once they are there (and in older records, which restored in place).
+            var staging: String?
         }
         struct Rewrite: Codable, Equatable {
             var repository: String

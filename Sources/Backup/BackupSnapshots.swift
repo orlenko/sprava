@@ -134,6 +134,10 @@ extension Backup {
     public func backUp(_ folder: URL, now: Date = Date()) throws -> Restic.BackupResult {
         var st = try state()
         let id = try claim(folder, &st)
+        // The claim is saved before restic writes anything under the id: a snapshot never exists without an owner a
+        // copy would have to get past.
+        try save(st)
+        step("backup.claimed")
         do {
             let before = Self.writeMark(folder)
             let result = try engine(settings().primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
