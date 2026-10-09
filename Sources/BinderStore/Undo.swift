@@ -101,10 +101,9 @@ public enum Undo {
             return ("update_item", JSONObject([(key: "id", value: id), (key: "set", value: .obj([("due", due)]))]))
 
         case "complete", "drop":
-            // Reopen under a new id: the title and kind from the closure entry, the rest from its `final`.
-            guard let closedID = args["id"],
-                  let entry = catalog["processing_log"]?.arrayValue?.last(where: {
-                      ($0["id"] ?? $0["item"]) == closedID && $0["op_id"] == target["id"] })?.objectValue
+            // Reopen under a new id: the title and kind from the closure entry, the rest from its `final`. A dismissed
+            // item stays dismissed: `TekaStore.undo` follows the reopen with a `dismiss` in the same batch.
+            guard let closedID = args["id"], let entry = closureEntry(target, catalog: catalog)
             else { throw Unsupported(message: "the closure entry is not in the processing log") }
             // This version never writes `recurrence` (the guard refuses it), and reopening without it would quietly turn
             // a series into a one-off: the undo is refused instead.
@@ -144,6 +143,13 @@ public enum Undo {
             throw Unsupported(message: "\(other ?? "this op") records a fact and cannot be undone")
         }
     }
+
+    /// The processing log entry the closure `target` wrote; nil when it is not there.
+    static func closureEntry(_ target: JSONObject, catalog: JSONObject) -> JSONObject? {
+        guard let closedID = target["args"]?["id"] else { return nil }
+        return catalog["processing_log"]?.arrayValue?.last(where: {
+            ($0["id"] ?? $0["item"]) == closedID && $0["op_id"] == target["id"] })?.objectValue
+    }
 }
 
 extension TekaStore {
@@ -170,6 +176,13 @@ extension TekaStore {
             let (op, args) = try Undo.compensate(log[index], catalog: catalog, opLog: log, stateBefore: before, stateAfter: after,
                                                  year: calendar.component(.year, from: now), now: now)
             var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])]
+            // An item hidden when it was closed comes back hidden: never shown on the dashboard or published (binder-v0
+            // §5.7) only because its closure was undone.
+            if op == "reopen", let newID = args["item"]?["id"],
+               Undo.closureEntry(log[index], catalog: catalog)?["final"]?["dismissed"] == .bool(true) {
+                bodies.append(.init(op: "dismiss", args: JSONObject([(key: "id", value: newID)]), actor: actor,
+                                    extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
+            }
             // set_status keeps waiting fields it is not given unless the status is open, so fields the undone op
             // introduced are removed by a second op in the same batch.
             if op == "set_status", let id = args["id"],

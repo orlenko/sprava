@@ -28,6 +28,10 @@ public struct DashboardKeeper: Sendable {
     package var testHookBeforeWrite: (@Sendable () -> Void)?
     /// Tests only: runs after the last comparison and right before the new file takes the old one's place.
     package var testHookBeforeSwap: (@Sendable () -> Void)?
+    /// Flushes `.sprava/adopted/` after a copy is renamed into it; replaceable in tests to make it fail.
+    package var flushCopies: @Sendable (URL) throws -> Void = {
+        try AtomicFile.flushFolder($0, step: "flush the saved copy of DASHBOARD.md")
+    }
 
     /// The saved state; nil when there is none. A state file that exists but cannot be read or decoded throws, so an
     /// enabled dashboard never silently stops being kept and the file is never saved over. It is opened without
@@ -90,7 +94,9 @@ public struct DashboardKeeper: Sendable {
         defer { unlink(temp.path) }
         for n in 1...1000 {
             let name = n == 1 ? "DASHBOARD-\(stamp).md" : "DASHBOARD-\(stamp)-\(n).md"
-            if renamex_np(temp.path, dir.appendingPathComponent(name).path, UInt32(RENAME_EXCL)) == 0 { return }
+            // The folder is flushed before anything replaces the original, so the copy survives a power loss; a flush
+            // that fails throws, and the original is left as it is.
+            if renamex_np(temp.path, dir.appendingPathComponent(name).path, UInt32(RENAME_EXCL)) == 0 { return try flushCopies(dir) }
             guard errno == EEXIST else { throw AtomicFile.Failure(step: "keep a copy of DASHBOARD.md", code: errno) }
         }
         throw TekaStore.Refused(reason: "too many copies of DASHBOARD.md were kept in one second; it was left as it is")
