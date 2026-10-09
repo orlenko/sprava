@@ -28,21 +28,23 @@ extension HubLane {
     /// names, where the hub may still write after a rename (binder-v0 §8.3).
     public static func drain(_ folder: URL, root: URL = spoolRoot(), now: Date = Date(), client: String = "sprava/0.1") throws -> DrainResult {
         var result = DrainResult()
-        var rootInfo = stat()
-        guard lstat(root.path, &rootInfo) == 0 else { return result }
-        let teka = Teka.read(folder)
-        guard teka.isAdopted, teka.catalog != nil, !teka.federationBlocked else { return result }
-        let outboxDir = root.appendingPathComponent("outbox", isDirectory: true)
+        // Only a spool or an outbox that is not there is a quiet no-op; one that cannot be looked at is a failure the
+        // breaker sees. The root and `outbox/` must be this user's own, as for a publish (binder-v0 §8.1).
         var info = stat()
-        guard lstat(outboxDir.path, &info) == 0 else { return result }
+        if lstat(root.path, &info) != 0, errno == ENOENT { return result }
+        try checkFolder(root, create: false)
+        let teka = Teka.read(folder)
+        // A catalog that cannot be read fails the drain in `drainOutbox`, once there is a completion it holds back.
+        guard teka.isAdopted, teka.catalog == nil || !teka.federationBlocked else { return result }
+        let outboxDir = root.appendingPathComponent("outbox", isDirectory: true)
+        if lstat(outboxDir.path, &info) != 0, errno == ENOENT { return result }
         try checkFolder(outboxDir, create: false)
         // A former name without a readable `until` counts as unexpired, as in `collidingFolders`, which keeps every
         // such name from another binder.
         let today = CalendarDate.today(now: now)
         var outboxNames = [teka.name]
         for former in teka.catalog?["meta"]?["former_names"]?.arrayValue ?? [] {
-            guard let name = former["name"]?.stringValue, isSafeSegment(name) else { continue }
-            if let until = former["until"]?.stringValue.flatMap({ CalendarDate.strict(String($0.prefix(10))) }), until < today { continue }
+            guard let name = former["name"]?.stringValue, isSafeSegment(name), isUnexpired(former, today: today) else { continue }
             guard !outboxNames.contains(where: { foldedName($0) == foldedName(name) }) else { continue }
             outboxNames.append(name)
         }
@@ -63,7 +65,7 @@ extension HubLane {
     static func drainOutbox(_ folder: URL, file: URL, names: [String], now: Date, client: String) throws -> DrainResult {
         var result = DrainResult()
         guard let data = try readOutbox(file) else { return result }
-        guard case .object(let outbox) = try JSONParser.parse(data).value else { throw TekaStore.Refused(reason: "outbox is not a JSON object") }
+        let outbox = try parseOutbox(data)
         // A missing list is an empty one; anything else that is not a list is malformed and reported, never read as
         // empty, as the acknowledgement does.
         let found: [JSONValue]
@@ -73,11 +75,18 @@ extension HubLane {
         default: throw TekaStore.Refused(reason: "the outbox's completions is not a list; it was left as it is")
         }
         let completions = found.compactMap(\.objectValue)
+        // An entry that is not an object can never apply; it is counted, so the report shows it.
+        result.skipped = found.count - completions.count
         guard !completions.isEmpty else { return result }
 
-        // Read again for each outbox: the one before may have closed items.
+        // Read again for each outbox: the one before may have closed items. Invalid catalog JSON is a drain failure
+        // (binder-v0 §8.3); a folder without a catalog is not a binder, and drains nothing.
         let teka = Teka.read(folder)
-        guard teka.isAdopted, let catalog = teka.catalog, !teka.federationBlocked else { return result }
+        guard teka.isAdopted, teka.states[.notATeka] == nil else { return result }
+        guard let catalog = teka.catalog else {
+            throw TekaStore.Refused(reason: "catalog.json cannot be read; the hub's completions wait")
+        }
+        guard !teka.federationBlocked else { return result }
         // Only a publish, under the binder lock, makes the key; with none there are no aliases to resolve yet.
         let key = try existingSliceKey(folder)
         let cursors = try readCursors(folder)
@@ -86,9 +95,11 @@ extension HubLane {
 
         // Open items, then the ids already closed: an id is never reused, so a completion for a closed one is
         // acknowledged, as lifeproj does by id, for example after an earlier drain whose acknowledgement was lost.
+        // Any log entry with an `id` closes that item, whatever its action (lifeproj's rule, which covers legacy
+        // actions such as `completed`), and a `closed-duplicate` entry closes its `item` (binder-v0 §4.5, §6.8).
         let candidates: [(id: JSONValue, item: JSONObject?)] = items.compactMap { it in it["id"].map { ($0, it) } }
             + log.compactMap { e in
-                guard let id = e["id"], ["done", "dropped"].contains(e["action"]?.stringValue ?? "") else { return nil }
+                guard let id = e["id"] ?? (e["action"] == .str("closed-duplicate") ? e["item"] : nil) else { return nil }
                 return (id, nil)
             }
         /// Resolves a completion id in the order of binder-v0 §8.3, each rule across every item before the next: the
@@ -125,8 +136,9 @@ extension HubLane {
                 toAck.append((cid, c["at"]))
                 continue
             }
-            if item["recurrence"] != nil {
-                // The MVP leaves recurring items to the hub; the completion waits (mvp.md feature 2).
+            if item["recurrence"] != nil, action == "done" {
+                // The MVP leaves recurring items to the hub; a `done` waits (mvp.md feature 2). A `dropped` ends the
+                // series (binder-v0 §8.3).
                 result.waitingForYou += 1
                 continue
             }
@@ -191,6 +203,16 @@ extension HubLane {
         }
     }
 
+    /// An outbox as a JSON object. Unsafe JSON (a duplicate member name, a lone surrogate, an unsafe number) is
+    /// refused and the file left as it is: the drain would read one duplicate and the rewrite keep another, losing
+    /// completions (binder-v0 §4.8).
+    static func parseOutbox(_ data: Data) throws -> JSONObject {
+        let parsed = try JSONParser.parse(data)
+        guard parsed.safety.isSafe else { throw TekaStore.Refused(reason: "the outbox holds unsafe JSON; it was left as it is") }
+        guard case .object(let outbox) = parsed.value else { throw TekaStore.Refused(reason: "the outbox is not a JSON object; it was left as it is") }
+        return outbox
+    }
+
     /// Steps 1 to 4 of binder-v0 §8.3: re-read, remove only what was applied (by id and at), write and flush the
     /// replacement, and rename it only when the file did not change since the re-read; delete the file only when
     /// nothing else is in it. An outbox whose `completions` or `items` is not a list is left as it is for repair,
@@ -198,9 +220,7 @@ extension HubLane {
     static func acknowledge(file: URL, applied: [(String, JSONValue?)], beforeRename: (() -> Void)? = nil) throws -> Int {
         for _ in 0..<5 {
             guard let data = try readOutbox(file) else { return 0 }
-            guard case .object(var fresh) = try JSONParser.parse(data).value else {
-                throw TekaStore.Refused(reason: "the outbox is not a JSON object; it was left as it is")
-            }
+            var fresh = try parseOutbox(data)
             let before = SHA256.hash(data: data)
             func list(_ key: String) throws -> [JSONValue] {
                 switch fresh[key] {

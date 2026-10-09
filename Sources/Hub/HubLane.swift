@@ -44,13 +44,19 @@ extension HubLane {
         for row in rows where row.teka.catalog != nil {
             var names = [row.teka.name]
             for former in row.teka.catalog?["meta"]?["former_names"]?.arrayValue ?? [] {
-                guard let name = former["name"]?.stringValue else { continue }
-                if let until = former["until"]?.stringValue.flatMap({ CalendarDate.strict(String($0.prefix(10))) }), until < today { continue }
+                guard let name = former["name"]?.stringValue, isUnexpired(former, today: today) else { continue }
                 names.append(name)
             }
             for name in Set(names.map(foldedName)) { byName[name, default: []].insert(row.folder.standardizedFileURL.path) }
         }
         return Set(byName.values.filter { $0.count > 1 }.flatMap { $0 })
+    }
+
+    /// Whether a `meta.former_names` entry still holds its name: until its `until` date, and for good when it has no
+    /// readable `until` (binder-v0 §3.1).
+    static func isUnexpired(_ former: JSONValue, today: CalendarDate) -> Bool {
+        guard let until = former["until"]?.stringValue.flatMap({ CalendarDate.strict(String($0.prefix(10))) }) else { return true }
+        return until >= today
     }
 
     public enum PublishResult: Equatable {
@@ -73,11 +79,39 @@ extension HubLane {
         /// lifted on the hub only by the person's own op, never by an outside edit (architecture 4.5, 7.3).
         var redacted: [String]? = []
         var opCount: Int? = 0
+        /// The `generated` stamp of the slice last written: a slice someone else rewrote with the same items differs
+        /// only there (binder-v0 §8.1, §7.2).
+        var generated: String?
         /// The binder name the slice was last written under, so a withdrawal finds it without trusting the catalog.
         package var sliceName: String?
+        /// The slice a publish is about to write, recorded before the write and cleared once the publish completes,
+        /// so a slice written by a publish cut off before its cursors were saved is still known as Sprava's.
+        var pending: Pending?
         /// The tags the hub last saw for each open item, by canonical id text. They limit a redacted item the privacy
         /// ratchet does not know yet (architecture 4.5); one it knows shows the tags it confirmed. Canonical JSON text.
         var tags: [String: [String]]?
+
+        /// The pending slice, and the cursors that describe what it showed: they become the committed ones with it,
+        /// so a publish settled after a cut-off write neither shows its closures again nor forgets the ids it used.
+        struct Pending: Codable, Equatable {
+            var name: String
+            var hash: String
+            var generated: String?
+            var lastLogCount: Int?
+            var closedOnce: [String]?
+            var published: [String: String]?
+        }
+    }
+
+    /// The slices a binder's cursors record as Sprava's, by name, hash and stamp: the last one a publish completed,
+    /// and the one a publish cut off may have written. Every check that retires, compares or removes a slice asks
+    /// this, never the committed fields alone.
+    static func recordedSlices(_ c: Cursors, folder: URL) -> [(name: String, hash: String, generated: String?)] {
+        var out: [(name: String, hash: String, generated: String?)] = []
+        // Cursors written before the name was recorded: a slice is published only under the folder's name.
+        if let hash = c.sliceHash { out.append((c.sliceName ?? folder.lastPathComponent, hash, c.generated)) }
+        if let p = c.pending { out.append((p.name, p.hash, p.generated)) }
+        return out
     }
 
     static func cursorsURL(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/cursors.json") }
@@ -86,7 +120,9 @@ extension HubLane {
     package static func loadCursors(_ folder: URL) -> Cursors { (try? readCursors(folder)) ?? Cursors() }
 
     /// The cursors for publish and drain. Only a missing file is a fresh start; one that cannot be read or decoded
-    /// stops the lane for this binder, because its `redacted` list keeps redactions an outside edit removed.
+    /// stops the lane for this binder, because its `redacted` list keeps redactions an outside edit removed. Files
+    /// under `.sprava/` are untrusted (binder-v0 §7.2): only a regular file is read, never through a link and without
+    /// waiting, so a FIFO there cannot stall the hub pass, and a negative offset is refused before it reaches a slice.
     static func readCursors(_ folder: URL) throws -> Cursors {
         let url = cursorsURL(folder)
         var info = stat()
@@ -94,7 +130,8 @@ extension HubLane {
             guard errno == ENOENT else { throw TekaStore.Refused(reason: ".sprava/cursors.json cannot be read") }
             return Cursors()
         }
-        guard let data = try? Data(contentsOf: url), let c = try? JSONDecoder().decode(Cursors.self, from: data) else {
+        guard case .ok(let data) = SafeFile.read(url), let c = try? JSONDecoder().decode(Cursors.self, from: data),
+              c.lastLogCount >= 0, (c.opCount ?? 0) >= 0, (c.pending?.lastLogCount ?? 0) >= 0 else {
             throw TekaStore.Refused(reason: ".sprava/cursors.json cannot be read; it was left as it is")
         }
         return c
@@ -110,6 +147,7 @@ extension HubLane {
 
     /// The slice key, nil when there is none yet. The drain reads it this way: only a publish, under the binder
     /// lock, makes one, so two programs never make different keys and replace each other's.
+    /// Read as the cursors are: a regular file only, never through a link.
     static func existingSliceKey(_ folder: URL) throws -> SymmetricKey? {
         let url = sliceKeyURL(folder)
         var info = stat()
@@ -117,7 +155,7 @@ extension HubLane {
             guard errno == ENOENT else { throw TekaStore.Refused(reason: ".sprava/slice-key cannot be read") }
             return nil
         }
-        guard let data = try? Data(contentsOf: url), data.count == 32 else {
+        guard case .ok(let data) = SafeFile.read(url, limit: 32), data.count == 32 else {
             throw TekaStore.Refused(reason: ".sprava/slice-key cannot be read or is damaged; it was left as it is")
         }
         return SymmetricKey(data: data)
@@ -192,9 +230,10 @@ extension HubLane {
         let meta = catalog["meta"]?.objectValue ?? JSONObject()
         let teka = meta["name"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? folderName
         var chapters: [JSONValue]
+        // A bare string is a list of one; empty strings, and anything that is not a string, are dropped (binder-v0 §8.2).
         switch meta["active_chapters"] ?? meta["current_chapters"] {
-        case .string(let s)?: chapters = [.string(s)]
-        case .array(let a)?: chapters = a.filter { ItemRules.isTruthy($0) }
+        case .string(let s)?: chapters = s.isEmpty ? [] : [.string(s)]
+        case .array(let a)?: chapters = a.filter { $0.stringValue.map { !$0.isEmpty } ?? false }
         default: chapters = []
         }
         var activeChapter = meta["active_chapter"] ?? .null

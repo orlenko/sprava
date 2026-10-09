@@ -4,8 +4,8 @@ import Darwin
 import Foundation
 import SpravaKit
 
-/// Publishing and withdrawing a binder's agenda slice on the spool (binder-v0 §8.1, §8.2), and the hub pass that
-/// drains, then publishes.
+/// Publishing a binder's agenda slice on the spool (binder-v0 §8.1, §8.2), withdrawing it when the binder narrowed
+/// (the withdrawal itself is in `HubLane+Withdraw.swift`), and the hub pass that drains, then publishes.
 extension HubLane {
     /// Checks that a spool folder is a real folder of this user, not writable by others, and not a symlink.
     static func checkFolder(_ url: URL, create: Bool) throws {
@@ -19,75 +19,6 @@ extension HubLane {
         guard info.st_uid == getuid(), info.st_mode & 0o022 == 0 else {
             throw TekaStore.Refused(reason: "\(url.lastPathComponent)/ belongs to someone else or is writable by others")
         }
-    }
-
-    /// Removes a slice from the spool. Only a slice that is already gone is fine; any other failure is reported,
-    /// so a slice the person withdrew never stays on the hub unnoticed.
-    static func removeSlice(_ target: URL) throws {
-        guard unlink(target.path) == 0 || errno == ENOENT else {
-            throw TekaStore.Refused(reason: "the slice on the spool could not be removed")
-        }
-    }
-
-    /// The cursors only when they are this binder's own: `.sprava` a real folder and `cursors.json` a regular file
-    /// in it, never reached through a link to another binder's.
-    static func ownCursors(_ folder: URL) -> Cursors? {
-        var info = stat()
-        guard lstat(folder.appendingPathComponent(".sprava").path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
-              lstat(cursorsURL(folder).path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
-        return try? readCursors(folder)
-    }
-
-    /// The disclosure the person last confirmed, for a binder whose catalog cannot be read. An op log that cannot
-    /// be read fails closed (`none`), as in `PrivacyRatchet.view`.
-    static func confirmedDisclosure(_ folder: URL) -> String {
-        guard let ops = try? TekaStore(folder: folder).readOpLog().ops else { return "none" }
-        return PrivacyRatchet.confirmed(opLog: ops)?.disclosure ?? "full"
-    }
-
-    /// Withdraws a binder's slice, whatever else is wrong with the binder. The spool file is never named by the
-    /// catalog alone: a binder that passes every check publishes under its own name, which is also its folder's;
-    /// one that does not (an outside edit may have renamed it to another binder) withdraws only the slice Sprava
-    /// recorded writing for it in its own cursors. So does one whose name collides with another binder's
-    /// (`recordedOnly`): the shared name may be the other's slice. Returns false when no slice can be identified
-    /// that safely.
-    static func withdraw(_ teka: Teka, inbox: URL, recordedOnly: Bool = false) throws -> Bool {
-        let own = ownCursors(teka.folder)
-        let byRecord = recordedOnly || teka.federationBlocked
-        let name: String
-        if !byRecord {
-            name = teka.name
-        } else if let own, own.sliceHash != nil {
-            // Cursors written before the name was recorded: a slice is published only under the folder's name.
-            name = own.sliceName ?? teka.folder.lastPathComponent
-        } else {
-            return false
-        }
-        try removeSlice(try spoolFile(inbox, name, ".agenda.json"))
-        guard var cursors = byRecord ? own : try readCursors(teka.folder) else { return true }
-        if !byRecord { try removeFormerSlice(cursors, teka: teka, inbox: inbox) }
-        cursors.sliceHash = nil
-        cursors.sliceName = nil
-        try saveCursors(cursors, teka.folder)
-        return true
-    }
-
-    /// The canonical hash of a slice on the spool, `generated` left out; nil when it cannot be read as JSON. Only a
-    /// regular file is read, never through a link, so a FIFO there cannot stall the publish.
-    static func sliceHash(at url: URL) -> String? {
-        guard case .ok(let data) = SafeFile.read(url), let value = try? JSONParser.parse(data).value else { return nil }
-        return try? Canonical.hash(stripGenerated(value))
-    }
-
-    /// After a rename the slice Sprava recorded writing under the former name goes, before anything is published or
-    /// withdrawn under the new one, so its contents never stay on the hub (binder-v0 §8.3). It goes when the name is
-    /// one of the binder's former names or the file is still the one Sprava wrote; a file another program wrote
-    /// under a name the binder no longer lists may be another binder's now, and stays.
-    static func removeFormerSlice(_ cursors: Cursors, teka: Teka, inbox: URL) throws {
-        guard let former = cursors.sliceName, former != teka.name, cursors.sliceHash != nil else { return }
-        let url = try spoolFile(inbox, former, ".agenda.json")
-        let listed = (teka.catalog?["meta"]?["former_names"]?.arrayValue ?? []).contains { $0["name"]?.stringValue == former }
-        if listed || sliceHash(at: url) == cursors.sliceHash { try removeSlice(url) }
     }
 
     /// Publishes one adopted binder (binder-v0 §8.1, §8.2). Never creates the spool root. The level used is the
@@ -113,13 +44,22 @@ extension HubLane {
     static func publish(_ folder: URL, root: URL, now: Date, force: Bool, nameCollides: Bool,
                         lockTimeout: TimeInterval) throws -> PublishResult {
         var rootInfo = stat()
-        guard lstat(root.path, &rootInfo) == 0 else { return .noSpool }
+        if lstat(root.path, &rootInfo) != 0, errno == ENOENT { return .noSpool }
         try checkFolder(root, create: false)
         let inbox = root.appendingPathComponent("inbox", isDirectory: true)
         try checkFolder(inbox, create: true)
 
-        // The lock file is made only in a binder Sprava adopted.
-        guard Teka.read(folder).isAdopted else { return .notPublished("not adopted") }
+        // The lock file is made only in a binder Sprava adopted. One that no longer reads as adopted (its op log
+        // missing or cut short) has no privacy state to publish by, so a slice its own cursors recorded is withdrawn,
+        // by that record, while it is still the one Sprava wrote.
+        let found = Teka.read(folder)
+        guard found.isAdopted else {
+            guard let own = ownCursors(folder), !recordedSlices(own, folder: folder).isEmpty,
+                  try withdraw(found, inbox: inbox, recordedOnly: true) else {
+                return .notPublished("not adopted")
+            }
+            return .notPublished("not adopted; the slice Sprava wrote was withdrawn")
+        }
         var locked = false
         do {
             return try TekaStore(folder: folder).withLock(timeout: lockTimeout) {
@@ -202,7 +142,7 @@ extension HubLane {
         // next publish leaves them out. The first publish takes the log as found as its baseline. A
         // `closed-duplicate` entry closes its `item` (binder-v0 §6.8); each id shows once.
         let log = catalog["processing_log"]?.arrayValue ?? []
-        let baseline = cursors.sliceHash == nil && cursors.lastLogCount == 0 ? log.count : cursors.lastLogCount
+        let baseline = recordedSlices(cursors, folder: folder).isEmpty && cursors.lastLogCount == 0 ? log.count : cursors.lastLogCount
         var closedKeys = Set<String>()
         let closures: [(id: JSONValue, entry: JSONObject)] = log.dropFirst(min(baseline, log.count)).compactMap { entry in
             guard case .object(let e) = entry else { return nil }
@@ -256,24 +196,26 @@ extension HubLane {
                     opCount: ops.count)
     }
 
-    static func publishChecked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool) throws -> PublishResult {
+    /// `beforeSliceWrite` and `afterSliceWrite` are for tests: they run where a publish may be cut off.
+    static func publishChecked(_ teka: Teka, inbox: URL, now: Date, force: Bool, nameCollides: Bool,
+                               beforeSliceWrite: () throws -> Void = {}, afterSliceWrite: () throws -> Void = {}) throws -> PublishResult {
         let folder = teka.folder
         guard let catalog = teka.catalog else { return .notPublished("not adopted") }
         guard !teka.federationBlocked else { return .notPublished("the binder needs attention") }
         guard !nameCollides else { return .notPublished("another binder has the same name") }
         let target = try spoolFile(inbox, teka.name, ".agenda.json")
         let privacy = PrivacyRatchet.view(folder: folder, catalog: catalog)
-        var cursors = try readCursors(folder)
+        // A publish cut off after it recorded its pending slice is settled before that record is read or replaced.
+        let onDisk = try readCursors(folder)
+        var cursors = reconciled(onDisk, folder: folder, inbox: inbox)
 
         // Someone else published this binder since our last write, or removed or damaged the slice: say so, then
-        // publish over it. After a rename there is nothing under the new name to compare yet.
-        var targetCurrent = false
-        var overwritten = false
-        if let last = cursors.sliceHash, (cursors.sliceName ?? teka.name) == teka.name {
-            let hash = sliceHash(at: target)
-            targetCurrent = hash == last
-            overwritten = hash != last
-        }
+        // publish over it. After a rename there is nothing under the new name to compare yet. A slice rewritten with
+        // the same items differs only in its `generated` stamp.
+        let found = sliceOnSpool(at: target)
+        let mine = recordedSlices(cursors, folder: folder).filter { $0.name == teka.name }
+        let targetCurrent = mine.contains { found?.hash == $0.hash && ($0.generated == nil || found?.generated == $0.generated) }
+        let overwritten = !mine.isEmpty && !targetCurrent
 
         let plan = plan(catalog, folder: folder, cursors: cursors, privacy: privacy)
         let key = try sliceKey(folder)
@@ -283,19 +225,9 @@ extension HubLane {
                                         allowTags: plan.allowTags, strict: true)
         let slice = projection.slice
         let hash = try Canonical.hash(stripGenerated(slice))
-        let unchanged = !force && targetCurrent && hash == cursors.sliceHash
-        if !unchanged {
-            try removeFormerSlice(cursors, teka: teka, inbox: inbox)
-            try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
-        }
+        let unchanged = !force && targetCurrent && found?.hash == hash
         // The cursors are kept even when the slice is unchanged: the redactions it kept and the ops it read are what
         // the next publish starts from, so a lift it consumed is never applied again to a redaction made since.
-        let before = cursors
-        cursors.sliceHash = hash
-        cursors.sliceName = teka.name
-        cursors.published.merge(projection.ids) { _, new in new }
-        cursors.closedOnce = plan.closures.map { (try? Canonical.serialize($0.id)) ?? "" }
-        cursors.lastLogCount = plan.logCount
         cursors.opCount = plan.opCount
         cursors.tags = projection.tags
         let items = catalog["open_items"]?.arrayValue ?? []
@@ -303,61 +235,33 @@ extension HubLane {
             guard let id = it["id"], let k = try? Canonical.serialize(id) else { return nil }
             return it["redact"] == .bool(true) || plan.keepRedacted.contains(k) ? k : nil
         }
-        if cursors != before { try saveCursors(cursors, folder) }
+        let published = cursors.published.merging(projection.ids) { _, new in new }
+        let closedOnce = plan.closures.map { (try? Canonical.serialize($0.id)) ?? "" }
+        if !unchanged {
+            // What the slice hides, and which slice it is, are durable before the slice is: a publish cut off after its
+            // write must not leave cursors that would let the next one lift a redaction this slice showed
+            // (architecture 4.5), nor a slice a withdrawal cannot recognise as Sprava's.
+            try removeFormerSlice(cursors, teka: teka, inbox: inbox, now: now)
+            // `reconciled` cleared any earlier pending record, so none is overwritten unsettled here.
+            cursors.pending = .init(name: teka.name, hash: hash, generated: slice["generated"]?.stringValue,
+                                    lastLogCount: plan.logCount, closedOnce: closedOnce, published: published)
+            try saveCursors(cursors, folder)
+            try beforeSliceWrite()
+            try AtomicFile.write(Data(JSONWriter.pretty(slice).utf8), to: target)
+            try afterSliceWrite()
+        }
+        let privacySaved = unchanged ? onDisk : cursors
+        cursors.sliceHash = hash
+        cursors.sliceName = teka.name
+        cursors.pending = nil
+        // Cursors written before the stamp was recorded take it from the slice they match, so a rewrite that changes
+        // only the stamp is noticed from now on.
+        if !unchanged { cursors.generated = slice["generated"]?.stringValue } else if cursors.generated == nil { cursors.generated = found?.generated }
+        cursors.published = published
+        cursors.closedOnce = closedOnce
+        cursors.lastLogCount = plan.logCount
+        if cursors != privacySaved { try saveCursors(cursors, folder) }
         return unchanged ? .unchanged : .published(items: slice["items"]?.arrayValue?.count ?? 0, overwrittenByOther: overwritten)
-    }
-
-    /// Withdraws the slice when it shows more than the binder now allows; true when it did.
-    static func withdrawIfShowingMore(_ teka: Teka, inbox: URL, nameCollides: Bool) throws -> Bool {
-        guard try showsMore(teka, inbox: inbox) else { return false }
-        return try withdraw(teka, inbox: inbox, recordedOnly: nameCollides)
-    }
-
-    /// Whether the slice Sprava last wrote shows more than the binder allows now, judged against a projection made
-    /// without the checks that only publishing needs: an open item that is gone or shown as `done`, a title, party or
-    /// link that differs, or a tag no longer shown. An item left in `open_items` with status `done` is judged the
-    /// same way (it may stay done); only the rows shown once for closed items, which carry nothing but their id, are
-    /// passed over. Nothing recorded, or nothing readable on the spool, shows
-    /// nothing. A catalog that cannot be read, or whose `open_items` or `processing_log` is not a list, has no items
-    /// to judge against: the last slice stays, as for any refused publish (a narrowed disclosure is withdrawn before
-    /// this, by `withdrawIfNarrowed`).
-    static func showsMore(_ teka: Teka, inbox: URL) throws -> Bool {
-        let cursors = try readCursors(teka.folder)
-        guard cursors.sliceHash != nil else { return false }
-        let url = try spoolFile(inbox, cursors.sliceName ?? teka.folder.lastPathComponent, ".agenda.json")
-        guard case .ok(let data) = SafeFile.read(url), let shown = try? JSONParser.parse(data).value else { return false }
-        guard let catalog = teka.catalog else { return false }
-        guard let key = try existingSliceKey(teka.folder) else { return true }
-        let privacy = PrivacyRatchet.view(folder: teka.folder, catalog: catalog)
-        let plan = plan(catalog, folder: teka.folder, cursors: cursors, privacy: privacy)
-        guard let allowed = try? projection(catalog: catalog, folderName: teka.folder.lastPathComponent, closedOnce: plan.closedOnce,
-                                            key: key, now: Date(), alsoRedact: plan.keepRedacted, keepTitles: privacy.titles,
-                                            confirmedTitles: plan.confirmedTitles, lastSeen: cursors.published,
-                                            allowTags: plan.allowTags, strict: false) else { return false }
-        var open: [String: JSONValue] = [:]
-        var any: [String: JSONValue] = [:]
-        for it in allowed.slice["items"]?.arrayValue ?? [] {
-            guard let id = it["id"]?.stringValue else { continue }
-            if any[id] == nil { any[id] = it }
-            if it["status"] != .str("done"), open[id] == nil { open[id] = it }
-        }
-        // A row shown once for an item closed (`project`'s `closedOnce`) carries only the id the hub already saw. Any
-        // other row with status `done` is an item an outside edit left in `open_items` as done, published with its
-        // title, party, link and tags like an open one, and judged like one.
-        let closedIDs = Set(cursors.closedOnce.compactMap { cursors.published[$0] })
-        func closure(_ row: JSONValue) -> Bool {
-            guard let id = row["id"]?.stringValue, closedIDs.contains(id) else { return false }
-            return row["status"] == .str("done") && row["title"] == .str("[closed]") && row["tags"] == .array([])
-                && row["waiting_on"] == .null && row["link"] == .null
-        }
-        for old in shown["items"]?.arrayValue ?? [] where !closure(old) {
-            let done = old["status"] == .str("done")
-            guard let id = old["id"]?.stringValue, let now = done ? any[id] : open[id] else { return true }
-            if ["title", "waiting_on", "link"].contains(where: { old[$0] != now[$0] }) { return true }
-            let tags = Set(now["tags"]?.arrayValue ?? [])
-            if !(old["tags"]?.arrayValue ?? []).allSatisfy(tags.contains) { return true }
-        }
-        return false
     }
 
     /// One binder's hub pass, as the runtime runs it: drain, then publish.
