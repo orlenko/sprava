@@ -146,6 +146,10 @@ endpoint is checked against them:
   could simply claim first. In that race a later, lower claim can still become binding; the Mac then sees its owner
   token refused (401) and shows the relay as needing a reset, a new `SPRAVA_INSTANCE`. Nothing is silently lost.
   The same reset applies if the binding claim's holder never retries: claiming is a one-time setup.
+- **B. A failed upload holds its prefix's floor until the owner deletes that revision.** Its intent keeps the name
+  live, because the relay never declares an object deleted that the owner did not delete. Tombstones above it wait
+  for the floor meanwhile. Only the owner uploads objects, and the Mac deletes every revision it assigned (spec
+  section 9.7), so this growth is bounded by the owner's own behaviour; no device can cause it.
 
 ### Every endpoint against the six invariants
 
@@ -187,8 +191,9 @@ counts as deleted, so the tombstones, intents and copies below it can be deleted
   only the floor removes it, so a copy the store has lost for a while, or an upload that failed, keeps its name live
   until the owner deletes it. A floor never exceeds the highest valid number (§3); that name's own tombstone then
   stays.
-- **In what order.** The floor is written durably, then raised in memory, then the lower floors and everything it
-  covers are deleted. A floor only ever rises: a reader merges what it reads with what it knows by taking the
+- **In what order.** The floor is raised in memory, then written durably, then the lower floors (never a higher
+  one) and everything it covers are deleted. Every name it covers was deleted by the owner or never existed, so
+  refusing them first loses nothing, and a cleanup step that fails leaves every live name live. A floor only ever rises: a reader merges what it reads with what it knows by taking the
   higher, so a read that finishes after a raise never lowers it.
 - **What readers do.** A write checks the tombstone and the floor under the same lock as the raise, and refuses
   a deleted name (410 for an object, 503 for a request). A read takes the bytes first, then checks the tombstone,

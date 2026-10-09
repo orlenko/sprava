@@ -81,8 +81,11 @@ export function objects(relay: Relay, devices: Devices): { routes: Route[]; swee
         if (known.length === 0) return;
         const next = Math.min(live.length > 0 ? Math.min(...live) : Math.max(floor - 1, ...known) + 1, Number.MAX_SAFE_INTEGER);
         if (next <= floor) return;
-        await raiseFloor(store, scopeOf(prefix), next); // durable first
-        remember(prefix, next); // then known to every reader, before anything it covers goes
+        // Known to every reader and writer first: every name below `next` was deleted by the owner or never existed,
+        // so refusing them before the floor is durable loses nothing, and if writing it fails, the floor may still
+        // land, so nothing below it may be accepted meanwhile. Then durable, then what it covers goes.
+        remember(prefix, next);
+        await raiseFloor(store, scopeOf(prefix), next);
         for (const n of tombstoned) if (n < next) await store.delete(`${TOMBSTONES}objects/${prefix}${n}`);
         for (const n of intents) if (n < next) await deleteAll(store, `${INTENTS}objects/${prefix}${n}/`);
     }

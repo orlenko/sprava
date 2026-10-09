@@ -439,3 +439,38 @@ test('the highest valid revision keeps its deletion across a restart (§3, §7.5
     assert.equal((await call(second.url, 'PUT', new Uint8Array([1]))).status, 410);
     await second.close();
 });
+
+test('a floor raise whose cleanup fails never lets a covered name be accepted and then lost (§7.5)', async () => {
+    const { raw: fs } = await freshStore();
+    let failFloorDelete = false;
+    const raw: Store = {
+        get: (k) => fs.get(k),
+        has: (k) => fs.has(k),
+        put: (k, b) => fs.put(k, b),
+        putIfAbsent: (k, b) => fs.putIfAbsent(k, b),
+        sync: (k) => fs.sync(k),
+        list: (p) => fs.list(p),
+        listTimes: (p) => fs.listTimes(p),
+        delete: async (k) => {
+            if (failFloorDelete && k.includes('/floors/')) throw new Error('injected delete failure');
+            return fs.delete(k);
+        },
+    };
+    const owner = await seedOwner(scoped(raw, INSTANCE));
+    const first = await startTestRelay({ raw });
+    const call = (url: string, method: string, n: number, body?: Uint8Array) =>
+        fetch(`${url}/v0/objects/index/${n}`, { method, headers: bearer(owner), ...(body ? { body } : {}) });
+    for (const n of [1, 2, 4]) assert.equal((await call(first.url, 'PUT', n, new Uint8Array([n]))).status, 204);
+    assert.equal((await call(first.url, 'DELETE', 1)).status, 204, 'floor 2');
+    failFloorDelete = true;
+    assert.equal((await call(first.url, 'DELETE', 2)).status, 500, 'floor 4 written; the old floor not deleted');
+    failFloorDelete = false;
+    const put = await call(first.url, 'PUT', 3, new Uint8Array([3]));
+    assert.equal(put.status, 410, 'covered by the floor that is durable: refused, not acknowledged');
+    assert.equal((await call(first.url, 'GET', 4)).status, 200, 'the live name stays live');
+    await first.close();
+    const second = await startTestRelay({ raw });
+    assert.equal((await call(second.url, 'GET', 4)).status, 200);
+    assert.equal((await call(second.url, 'GET', 3)).status, 404);
+    await second.close();
+});

@@ -156,8 +156,8 @@ export function requests(relay: Relay, devices: Devices) {
         if (mailbox === undefined) return;
         const lowest = Math.min(nextOrdinal.get(d) ?? 1, Number.MAX_SAFE_INTEGER, ...[...mailbox.values()].map((e) => e.ordinal));
         if (lowest <= (await floorLocked(d))) return;
-        await raiseFloor(store, `requests/${d}`, lowest); // durable before anything it covers goes
-        floors.set(d, lowest);
+        floors.set(d, lowest); // known first, as for objects (objects.ts), then durable, then what it covers goes
+        await raiseFloor(store, `requests/${d}`, lowest);
         for (const key of await store.list(`tombstones/requests/${d}/`)) {
             const match = TOMBSTONE.exec(key);
             if (match !== null && Number(match[2]) < lowest) await store.delete(key);
