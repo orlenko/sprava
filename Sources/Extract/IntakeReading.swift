@@ -64,6 +64,8 @@ public struct IntakeReading: Sendable, Equatable {
             case .success(let a):
                 if let problem = a.problem { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: \(problem)"); continue }
                 if a.textFrom == "ocr" { r.textFrom = "ocr" }
+                // A forwarded message's own attachments are not read here; a note says so, never silence.
+                if let nested = a.email?.attachments, !nested.isEmpty { r.notes.append("attachment \u{201C}\(name)\u{201D} has \(nested.count) attachment(s) of its own that were not read") }
                 if !a.text.isEmpty { r.text += "\n\n\u{2014} Attachment: \(name) \u{2014}\n" + a.text }
             }
         }

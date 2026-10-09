@@ -100,14 +100,14 @@ public enum Extractor {
         case .png, .jpeg, .heic, .tiff: result = image(data, limits: limits)
         case .zip: result = office(data, name: name)
         case .rtf: result = rtf(data)
-        case .html: result = Result(kind: "text", text: htmlText(String(decoding: data, as: UTF8.self)), textFrom: "parsed")
         case .markdownEmail: result = markdownEmail(String(decoding: data, as: UTF8.self))
         case .eml: result = eml(data)
-        case .text:
+        case .html, .text:
+            // A message that did not read as one may carry an HTML part: it is held before either reading.
             let text = String(decoding: data, as: UTF8.self)
             result = carriesMIMEParts(text)
                 ? Result(kind: "text", text: "", textFrom: "parsed", problem: "it looks like a mail message, but its headers do not read as one")
-                : Result(kind: "text", text: text, textFrom: "parsed")
+                : Result(kind: "text", text: sniffed == .html ? htmlText(text) : text, textFrom: "parsed")
         case .ole: result = Result(kind: "document", text: "", textFrom: "parsed", problem: "an old Office or Outlook format that is not read yet")
         case .unknown: result = Result(kind: "unknown", text: "", textFrom: "parsed", problem: "not a kind of file Sprava reads")
         }

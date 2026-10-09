@@ -136,10 +136,12 @@ public enum Zip {
             i -= 1
         }
         guard eocd >= 0 else { return nil }
+        // More entries than the limit is no archive that opens: a partial listing would read as the whole document.
         let count = Int(u16(d, eocd + 10))
+        guard count <= 10_000 else { return nil }
         var p = Int(u32(d, eocd + 16))
         var out: [Entry] = []
-        for _ in 0..<min(count, 10_000) {
+        for _ in 0..<count {
             guard u32(d, p) == 0x02014b50 else { return nil }
             let method = u16(d, p + 10)
             let comp = Int(u32(d, p + 20)), size = Int(u32(d, p + 24))
