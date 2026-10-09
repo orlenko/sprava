@@ -119,7 +119,11 @@ async function decide(relay: Relay, code: string, hash: string, record: Uint8Arr
         // A claim that landed after this process started (a write begun before a restart): a retry of it is that
         // claim, and this process adopts it; any other is refused.
         if (decided.length !== 1 || decided[0] !== hash) return 'taken';
-        return (await relay.lock.run(() => writeOnce(relay.store, OWNER, record))) === 'different' ? 'taken' : adopt(relay, hash);
+        // Invariant 2: the claim found may be one whose write failed before it was durable; writeOnce makes it so.
+        return relay.lock.run(async () => {
+            if ((await writeOnce(relay.store, `${CLAIMS}${hash}`, record)) === 'different') return 'taken';
+            return (await writeOnce(relay.store, OWNER, record)) === 'different' ? 'taken' : adopt(relay, hash);
+        });
     }
     // Step 3: the code first, so a correct code is never refused because of failures. There is no code to match
     // once the variable is gone, and an empty one never matches.

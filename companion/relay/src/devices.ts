@@ -9,7 +9,7 @@ import { formatTime, isId, parseUnsigned, sameSecret, tokenHash } from './encodi
 import { HttpError, type Principal, type Reply, type Route } from './http.ts';
 import { deviceElsewhere, deviceKeys, EMPTY, groupParts, readRecord, type DeviceRecord, type TokenRecord } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { deleteAll, LockBusy, writeOnce } from './store/store.ts';
+import { deleteAll, deleteForGood, isDeleted, LockBusy, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const DEVICE_QUEUE = 8;
@@ -118,12 +118,14 @@ export class Devices {
     async deletePartsLocked(d: string): Promise<void> {
         const { store } = this.#relay;
         const keys = deviceKeys(d);
+        // The proof first, for good: a late write of a self-revocation can then never bring it back (invariant 5).
+        await deleteForGood(store, keys.revocation);
         await store.delete(keys.record);
         for (const [hash, holder] of this.#byToken) if (holder === d) this.#byToken.delete(hash);
         this.#pairing.delete(d);
         this.#active.delete(d);
         for (const prefix of [keys.tokens, ...deviceElsewhere(d)]) await deleteAll(store, prefix);
-        for (const key of [keys.active, keys.lastSeen, keys.revocation]) await store.delete(key);
+        for (const key of [keys.active, keys.lastSeen]) await store.delete(key);
     }
 
     deleteParts(d: string): Promise<void> {
@@ -239,7 +241,8 @@ export function deviceRoutes(relay: Relay, devices: Devices): Route[] {
             access: ['owner'],
             browser: false,
             async handle(call) {
-                const bytes = await relay.store.get(deviceKeys(deviceId(call.params.D)).revocation);
+                const key = deviceKeys(deviceId(call.params.D)).revocation;
+                const bytes = (await isDeleted(relay.store, key)) ? null : await relay.store.get(key);
                 if (bytes === null) throw new HttpError(404, 'There is no revocation for this device.');
                 return { status: 200, bytes };
             },

@@ -1,6 +1,9 @@
 // Regressions from the review of part 4: claims that storage cannot undo, and revocation atomic with every
 // request of the device in flight.
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { CLAIM_TIMING } from '../src/claim.ts';
 import { readConfig } from '../src/config.ts';
@@ -9,6 +12,7 @@ import { deviceKeys, ownerRecord } from '../src/layout.ts';
 import { SlidingWindow } from '../src/limits.ts';
 import { silentLog } from '../src/log.ts';
 import { ClaimConflict, startRelay } from '../src/relay.ts';
+import { FsStore } from '../src/store/fs.ts';
 import { S3Store } from '../src/store/s3.ts';
 import { KeyedMutex, LockBusy, scoped, type Store } from '../src/store/store.ts';
 import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, seedOwnerHash, SETUP_CODE, slowRequest, startTestRelay, TEST_LEASE, WEB_ORIGIN } from './harness.ts';
@@ -241,4 +245,45 @@ test("the owner's revocation of a device is answered while that device keeps its
     assert.equal((await revoking).status, 204);
     assert.ok((await Promise.all(flood)).every((s) => s === 503), 'every queued device call was refused');
     await t.close();
+});
+
+test('a claim retry makes a claim found readable but not durable durable before answering (§6, invariant 2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    let fail = true;
+    const synced: string[] = [];
+    const raw = new FsStore(root, {
+        syncDir: async (dir) => {
+            if (!dir.endsWith('/claims')) return;
+            synced.push(dir);
+            if (fail) {
+                fail = false;
+                throw new Error('injected sync failure');
+            }
+        },
+    });
+    const t = await startTestRelay({ raw, claimTiming: fast });
+    const hash = tokenHash(newToken());
+    assert.equal((await claimWith(t.url, SETUP_CODE, hash)).status, 500, 'linked, but its folder sync failed');
+    synced.length = 0;
+    assert.equal((await claimWith(t.url, SETUP_CODE, hash)).status, 204);
+    assert.ok(synced.length > 0, 'the claim was synced before the 204');
+    await t.close();
+});
+
+test("a self-revocation that lands after the owner deleted the device is never served (§7.4, invariant 5)", async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    stub.hold((key) => key.endsWith(`/devices/${device.id}/revocation`));
+    assert.equal((await fetch(`${t.url}/v0/devices/self`, { method: 'DELETE', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 500);
+    stub.hold(() => false);
+    assert.equal((await fetch(`${t.url}/v0/devices/${device.id}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    stub.landHeld();
+    assert.ok(await store.has(deviceKeys(device.id).revocation), 'the late write landed');
+    assert.equal((await fetch(`${t.url}/v0/devices/${device.id}/revocation`, { headers: bearer(owner) })).status, 404);
+    await t.close();
+    await stub.close();
 });

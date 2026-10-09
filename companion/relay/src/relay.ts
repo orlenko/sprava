@@ -106,8 +106,12 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         await lease.check();
         await lease.assertHeld();
         relay.ownerHash = await readOwner(relay.store);
-        // A claim whose owner record a crash cut short is finished now.
-        if (relay.ownerHash !== null) await writeOnce(relay.store, OWNER, ownerRecord(relay.ownerHash));
+        // The claim made durable (a write may have failed after it became readable), and a claim whose owner record
+        // a crash cut short finished.
+        if (relay.ownerHash !== null) {
+            await writeOnce(relay.store, `${CLAIMS}${relay.ownerHash}`, ownerRecord(relay.ownerHash));
+            await writeOnce(relay.store, OWNER, ownerRecord(relay.ownerHash));
+        }
         await repairAtStart(relay, devices);
         await devices.load();
         await lease.retireEarlier();
