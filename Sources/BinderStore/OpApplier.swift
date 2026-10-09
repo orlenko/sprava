@@ -128,6 +128,12 @@ public enum OpApplier {
             if case .string(let t)? = item["title"], !t.isEmpty { title = .string(t) }
             var final = JSONObject()
             for e in item.entries where !["id", "title", "kind"].contains(e.key) { final.entries.append(e) }
+            // A title that is not text cannot be the entry's title, so it stays in `final` under the next free
+            // `legacy_title` (binder-v0 §9.5): closing an item never loses a value it held.
+            if let t = item["title"], t != .null, t.stringValue == nil {
+                guard let key = Adoption.legacyKey("title", in: final) else { throw Failure("\(type): every legacy_title name is taken") }
+                final.set(key, t)
+            }
             var entry: [(String, JSONValue)] = alreadyClosed ? [("item", id)] : [("id", id)]
             entry += [("title", title),
                       ("action", .string(alreadyClosed ? "closed-duplicate" : (type == "complete" ? "done" : "dropped"))),

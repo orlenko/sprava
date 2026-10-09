@@ -123,24 +123,40 @@ public enum Undo {
             if let recurrence = source["recurrence"], recurrence != .null {
                 throw Unsupported(message: "this item repeated, and this version cannot reopen a repeating item; add it again instead")
             }
+            guard case .string(let title)? = source["title"], !title.isEmpty else {
+                throw Unsupported(message: "it had no title this version can write back; add it again with its title")
+            }
             var item = JSONObject()
             item.set("id", .string(try IDMint.next(catalog: catalog, opLog: opLog, year: year)))
-            item.set("title", source["title"] ?? .str(""))
+            item.set("title", .string(title))
             if let kind = source["kind"] { item.set("kind", kind) }
-            // Nulls are dropped, since null means absent. A compact or week date is written out and marked inferred, as
-            // adoption does (binder-v0 §9.4 step 3); a date that cannot be read refuses the undo.
-            var rewritten: [String] = []
+            // Every other field is copied first, nulls dropped since null means absent; only then are values rewritten,
+            // so a legacy name chosen below is never one a copied field still holds.
             for e in source.entries
             where !["id", "title", "kind", "provenance", "created_at", "updated_at", "derived", "dismissed", "recurrence"].contains(e.key)
                 && e.value != .null {
-                if ["due", "follow_up_at", "expected_by"].contains(e.key) {
-                    guard case .string(let text) = e.value, let date = CalendarDate.strict(text) ?? CalendarDate.lenient(text) else {
-                        throw Unsupported(message: "its saved \(e.key) is not a date this version can read; add it again with its date")
-                    }
-                    if CalendarDate.strict(text) == nil { rewritten.append(e.key) }
-                    item.set(e.key, .string(date.description))
-                } else {
-                    item.set(e.key, e.value)
+                item.set(e.key, e.value)
+            }
+            // A value the reopen must write in another shape stays on the item under the next free `legacy_<field>`
+            // (binder-v0 §9.5), never dropped; with no legacy name free, the undo is refused.
+            func replace(_ field: String, was old: JSONValue, with new: JSONValue?) throws {
+                item.set(field, old)
+                do { _ = try Adoption.keepAside(field, in: &item, becoming: new) } catch {
+                    throw Unsupported(message: "its \(field) cannot be kept aside, every legacy name is taken; add it again instead")
+                }
+                if let new { item.set(field, new) } else { item.remove(field) }
+            }
+            // A compact or week date is written out and marked inferred, as adoption does (binder-v0 §9.4 step 3); a
+            // date that cannot be read refuses the undo.
+            var rewritten: [String] = []
+            for key in ["due", "follow_up_at", "expected_by"] {
+                guard let value = item[key] else { continue }
+                guard case .string(let text) = value, let date = CalendarDate.strict(text) ?? CalendarDate.lenient(text) else {
+                    throw Unsupported(message: "its saved \(key) is not a date this version can read; add it again with its date")
+                }
+                if CalendarDate.strict(text) == nil {
+                    try replace(key, was: value, with: .string(date.description))
+                    rewritten.append(key)
                 }
             }
             // Without a due date and without `no_deadline` the deadline was unknown; reopening must not make it "none".
@@ -160,15 +176,25 @@ public enum Undo {
             if item["status"] == nil || item["status"] == .str("done") { item.set("status", .str("open")) }
             item.set("created_at", .string(at))
             item.set("updated_at", .string(at))
-            // Fields still inferred stay marked so, a date written out is marked too, and the original provenance is
-            // kept, with the closed id added.
+            // Fields still inferred stay marked so and a date written out is marked too. A `derived` that is not a list of
+            // names (an object, a mixed list) is kept aside; names of fields the item no longer has mean nothing.
             var derived = source["derived"]?.arrayValue?.filter { $0.stringValue.map { item[$0] != nil } ?? false } ?? []
             for name in rewritten where !derived.contains(.string(name)) { derived.append(.string(name)) }
-            if !derived.isEmpty { item.set("derived", .array(derived)) }
+            if let old = source["derived"], old != .null {
+                try replace("derived", was: old, with: .array(derived))
+                if derived.isEmpty { item.remove("derived") }
+            } else if !derived.isEmpty {
+                item.set("derived", .array(derived))
+            }
+            // The original provenance is kept, with the closed id added; one that is not an object stays aside.
             var provenance = source["provenance"]?.objectValue ?? JSONObject()
             provenance.set("reopened_from", closedID)
             if provenance["approved_by"] == nil { provenance.set("approved_by", .str("user")) }
-            item.set("provenance", .object(provenance))
+            if let old = source["provenance"], old != .null, old.objectValue == nil {
+                try replace("provenance", was: old, with: .object(provenance))
+            } else {
+                item.set("provenance", .object(provenance))
+            }
             return ("reopen", JSONObject([(key: "id", value: closedID), (key: "item", value: .object(item))]))
 
         case let other:

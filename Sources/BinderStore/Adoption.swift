@@ -186,6 +186,9 @@ public enum Adoption {
         var proposals: [Proposal] = []
         let closedIDs = Set(log.compactMap { $0["id"] })
         var closeOps: [JSONObject] = []
+        // An item whose title is not text is closed on its own repair card, after the person gives it a title, never on
+        // the card that closes many at once: a closure there could not keep that title as the entry's title.
+        var heldBack: [JSONValue: JSONObject] = [:]
         // An op names its item by id, so an id two items share would close whichever comes first: those items go to
         // the person on a card they settle by hand.
         var shared: [JSONValue] = []
@@ -203,7 +206,8 @@ public enum Adoption {
             args.set("source", .str("import"))
             args.set("note", .string(isDone ? "status was done in open_items at adoption"
                                               : "its id already closes a processing log entry"))
-            closeOps.append(JSONObject([(key: "op", value: .str("complete")), (key: "args", value: .object(args))]))
+            let close = JSONObject([(key: "op", value: .str("complete")), (key: "args", value: .object(args))])
+            if let title = item["title"], title != .null, title.stringValue == nil { heldBack[id] = close } else { closeOps.append(close) }
         }
         if !closeOps.isEmpty {
             proposals.append(Proposal.make(title: "Close \(closeOps.count) item(s) already marked done", actor: importActor,
@@ -237,7 +241,7 @@ public enum Adoption {
         let findings = towardV0 ? ItemRules.check(items: repairItems, log: fixed["processing_log"]?.arrayValue ?? [], v0: true)
                                 : afterFixes.findings
         proposals += repairCards(findings.map { ($0.code, $0.location, $0.field) }, items: repairItems, today: today,
-                                 actor: importActor, now: now)
+                                 actor: importActor, now: now, closures: heldBack)
 
         // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4) under
         // the next free legacy name (§9.5); with none free, no migration is offered. A core key that is not an array
@@ -293,8 +297,11 @@ public enum Adoption {
     /// One repair card per item that breaks its level's rules: a migration cannot invent a date or a party, so the
     /// person fills them in on the card (binder-v0 §9.4 step 4). Closures and shared ids are handled elsewhere, and a
     /// finding about anything but an open item makes no card here.
+    /// `closures` are closures held back until their item is repaired: each goes on its item's card, after the repair,
+    /// and one whose item has no other finding gets a card of its own asking for the title.
     static func repairCards(_ findings: [(code: RuleFinding.Code, location: String, field: String?)], items: [JSONValue],
-                            today: CalendarDate, actor: JSONObject, now: Date) -> [Proposal] {
+                            today: CalendarDate, actor: JSONObject, now: Date,
+                            closures: [JSONValue: JSONObject] = [:]) -> [Proposal] {
         let handled: Set<RuleFinding.Code> = [.doneInOpenItems, .reusedID, .duplicateID]
         var ids: [JSONValue: Int] = [:]
         for item in items { if let id = item["id"] { ids[id, default: 0] += 1 } }
@@ -321,11 +328,30 @@ public enum Adoption {
                     set.set("derived", names)
                 } catch {}
             }
+            // A title that is not text is kept aside on the same card, so the title the person types never replaces it.
+            var titled = o
+            if let title = o["title"], title != .null, title.stringValue == nil,
+               let aside = try? keepAside("title", in: &titled, becoming: nil), set[aside.key] == nil {
+                set.set(aside.key, aside.value)
+            }
             var op = JSONObject([(key: "op", value: .str("update_item")),
                                  (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
             op.set("card", .obj([("flags", .array([.string("fill in what is missing: " + missing.joined(separator: ", "))]))]))
-            cards.append(Proposal.make(title: "Fill in what this item is missing", actor: actor, ops: [op],
+            let close = closures[id]
+            cards.append(Proposal.make(title: close == nil ? "Fill in what this item is missing" : "Fill in what this item is missing, then close it",
+                                       actor: actor, ops: [op] + (close.map { [$0] } ?? []),
                                        provenance: JSONObject([(key: "repair", value: .array(missing.map(JSONValue.string)))]), now: now))
+        }
+        let placed = Set(cards.flatMap { $0.ops.filter { $0["op"] == .str("complete") }.compactMap { $0["args"]?["id"] } })
+        for (id, close) in closures.sorted(by: { JSONWriter.compact($0.key) < JSONWriter.compact($1.key) }) where !placed.contains(id) {
+            var set = JSONObject()
+            if var o = items.first(where: { $0["id"] == id })?.objectValue, let aside = try? keepAside("title", in: &o, becoming: nil) {
+                set.set(aside.key, aside.value)
+            }
+            var op = JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
+            op.set("card", .obj([("flags", .array([.str("fill in what is missing: title")]))]))
+            cards.append(Proposal.make(title: "Fill in what this item is missing, then close it", actor: actor, ops: [op, close],
+                                       provenance: JSONObject([(key: "repair", value: .array([.str("title")]))]), now: now))
         }
         return cards
     }

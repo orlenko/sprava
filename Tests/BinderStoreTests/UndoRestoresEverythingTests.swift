@@ -183,6 +183,48 @@ import Testing
         #expect(args["item"]?["due"] == .str("2026-11-01") && args["item"]?["derived"] == .array([.str("due")]))
     }
 
+    /// A field whose shape the reopen must change, its found value, and what the reopened item then holds there.
+    struct Reshaped: CustomStringConvertible {
+        let field: String
+        let old: JSONValue
+        let check: @Sendable (JSONValue?) -> Bool
+        var description: String { "\(field) \(JSONWriter.compact(old))" }
+    }
+
+    static let reshaped: [Reshaped] = [
+        Reshaped(field: "provenance", old: .str("invented import"), check: { $0?["reopened_from"] == .str("x-1") }),
+        Reshaped(field: "provenance", old: .array([.str("invented")]), check: { $0?["reopened_from"] == .str("x-1") }),
+        Reshaped(field: "due", old: .str("20261101"), check: { $0 == .str("2026-11-01") }),
+        Reshaped(field: "follow_up_at", old: .str("2026-W45"), check: { $0 == .str("2026-11-02") }),
+        Reshaped(field: "derived", old: .obj([("note", .str("invented"))]), check: { $0 == nil }),
+        Reshaped(field: "derived", old: .array([.str("due"), .int(1)]), check: { $0 == .array([.str("due")]) }),
+    ]
+
+    // Bugbot qtFhr: a value the reopen must write in another shape is kept on the item under `legacy_<field>`, never
+    // dropped; a field of that name already there moves it to the next free one.
+    @Test(arguments: reshaped)
+    func aFieldTheReopenReshapesIsKeptUnderALegacyName(_ c: Reshaped) throws {
+        let item = final([("id", .str("x-1")), ("title", .str("Invented task"))])
+        var fields: [(String, JSONValue)] = [("status", .str("waiting")), ("priority", .str("normal")), ("due", .str("2026-11-01")),
+                                             ("follow_up_at", .str("2026-10-20"))]
+        fields.removeAll { $0.0 == c.field }
+        fields.append((c.field, c.old))
+        let (_, args) = try compensateClosure(of: item, final: final(fields))
+        #expect(args["item"]?["legacy_\(c.field)"] == c.old)
+        #expect(c.check(args["item"]?[c.field]))
+        // With the first legacy name taken, the value goes to the second and the first stays as it was.
+        let (_, again) = try compensateClosure(of: item, final: final(fields + [("legacy_\(c.field)", .str("older"))]))
+        #expect(again["item"]?["legacy_\(c.field)"] == .str("older") && again["item"]?["legacy_\(c.field)_2"] == c.old)
+    }
+
+    @Test func aTitleThatIsNotTextRefusesTheUndo() throws {
+        let item = final([("id", .str("x-1")), ("title", .str(""))])
+        #expect(throws: Undo.Unsupported.self) {
+            try compensateClosure(of: item, final: final([("status", .str("open")), ("priority", .str("normal")),
+                                                          ("no_deadline", .bool(true)), ("legacy_title", .int(5))]))
+        }
+    }
+
     @Test func undoingADismissThatChangedNothingIsRefused() throws {
         let (folder, store) = try adopted()
         let applied = try store.apply([.init(op: "dismiss", args: JSONObject([(key: "id", value: Self.r)]), actor: user)], now: now)
