@@ -78,6 +78,9 @@ public struct Backup: Sendable {
         public var summary: String
         public var documents: [Document]
         public var openItemsConfirmed: Int
+        /// The binder folder's own permissions and extended attributes, which its snapshots do not hold; a restore
+        /// puts them back (nil in older records).
+        public var rootMetadata: RootMetadata? = nil
         public struct Document: Codable, Sendable, Equatable { public var title: String; public var path: String }
     }
 
@@ -93,6 +96,8 @@ public struct Backup: Sendable {
         var openItemsConfirmed = 0
         /// The digest of the manifest the snapshot was verified against (`digest(_:)`).
         var manifestSHA: String?
+        /// The binder folder's own metadata as it was then; a change to it is a change to the binder.
+        var root: RootMetadata?
     }
 
     struct State: Codable {
@@ -145,6 +150,8 @@ public struct Backup: Sendable {
             var manifest: [String: String]
             /// The offloaded snapshot's size, so "Offload again" records it rather than nothing.
             var bytes: Int64?
+            /// The binder folder's own metadata as the restore left it (`RootMetadata.entry`); nil: never unchanged.
+            var rootEntry: String?
         }
         struct RestoredContents: Codable, Equatable {
             var path: String
@@ -382,6 +389,7 @@ extension Backup.InProgress {
         bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
         openItemsConfirmed = try c.decodeIfPresent(Int.self, forKey: .openItemsConfirmed) ?? 0
         manifestSHA = try c.decodeIfPresent(String.self, forKey: .manifestSHA)
+        root = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .root)
     }
 }
 
@@ -400,5 +408,6 @@ extension Backup.Offloaded {
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
         documents = try c.decodeIfPresent([Document].self, forKey: .documents) ?? []
         openItemsConfirmed = try c.decodeIfPresent(Int.self, forKey: .openItemsConfirmed) ?? 0
+        rootMetadata = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .rootMetadata)
     }
 }

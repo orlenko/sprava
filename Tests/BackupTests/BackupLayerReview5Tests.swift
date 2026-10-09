@@ -86,6 +86,58 @@ import Testing
         #expect(lstat(back.appendingPathComponent(letter).path, &info) == 0 && info.st_mode & 0o777 == 0o600)
     }
 
+    // MARK: - The binder folder's own metadata (review 6)
+
+    let comment = "com.apple.metadata:kMDItemFinderComment"
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func theBinderFoldersCommentAndTagComeBack() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        setAttribute(comment, "invented binder comment", on: e.folder)
+        setAttribute(tags, "invented binder tag", on: e.folder)
+        #expect(chmod(e.folder.path, 0o750) == 0)
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(record.rootMetadata?.attributes[comment] == Data("invented binder comment".utf8))
+        let restored = try b.restore(record.backupID, now: now)
+        #expect(attribute(comment, of: restored) == "invented binder comment")
+        #expect(attribute(tags, of: restored) == "invented binder tag")
+        var info = stat()
+        #expect(lstat(restored.path, &info) == 0 && info.st_mode & 0o7777 == 0o750)
+
+        // Unchanged since the restore, it leaves on its pinned snapshot; a new comment on the folder alone is a
+        // change: a new snapshot, and the new comment comes back.
+        guard case .done(let same) = try b.offload(restored, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(same.snapshot == record.snapshot)
+        let again = try b.restore(same.backupID, now: now)
+        setAttribute(comment, "invented later comment", on: again)
+        guard case .done(let changed) = try b.offload(again, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(changed.snapshot != record.snapshot)
+        #expect(attribute(comment, of: try b.restore(changed.backupID, now: now)) == "invented later comment")
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aCommentOnTheFolderWhileWaitingRestartsTheOffload() throws {
+        let e = try bb.env()
+        let waiting = BugbotBackupTests.Switch(true)
+        let b = try bb.configured(e, waiting: waiting)
+        guard case .waitingForICloud = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("expected to wait for iCloud"); return
+        }
+        setAttribute(comment, "invented comment while waiting", on: e.folder)
+        waiting.on = false
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(Backup.backupID(e.folder), now: now) }
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(record.rootMetadata?.attributes[comment] == Data("invented comment while waiting".utf8))
+    }
+
     // MARK: - 2. A deletion forgotten long ago is never forgotten again
 
     @Test(.enabled(if: BugbotBackupTests.hasRestic)) func anOldDeletionAskedForAgainLeavesNewerBackups() throws {
