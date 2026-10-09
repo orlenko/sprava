@@ -2,16 +2,42 @@
 # Before every commit: the package builds, and the staged diff holds no private token.
 # Private patterns live outside the repository, one extended regex per line, in
 # ${SPRAVA_PRIVATE_TOKENS:-~/.config/sprava/private-tokens}; the repository is public, so they are never committed.
+# A match is reported by file and line number only. The matched text is never printed: whoever runs the commit,
+# a person or an agent whose output is logged, would otherwise receive the private content.
+# A failure to read the patterns, produce the diff or scan it rejects the commit; it never skips the scan.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 
 tokens="${SPRAVA_PRIVATE_TOKENS:-$HOME/.config/sprava/private-tokens}"
-if [ -f "$tokens" ]; then
-    hits=$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' | grep -inEf "$tokens" || true)
-    if [ -n "$hits" ]; then
-        echo "pre-commit: the staged changes contain a private token (patterns in $tokens):" >&2
-        echo "$hits" | cut -c1-160 >&2
+reject() { echo "pre-commit: $1; nothing was committed" >&2; exit 1; }
+
+if [ -e "$tokens" ]; then
+    { [ -f "$tokens" ] && [ -r "$tokens" ]; } || reject "the private-token list at $tokens is not a readable file"
+    work=$(mktemp -d "${TMPDIR:-/tmp}/sprava-pre-commit.XXXXXX") || reject "could not create a temporary folder"
+    trap 'rm -rf "$work"' EXIT
+    git diff --cached -U0 --no-color --no-ext-diff > "$work/diff" || reject "could not read the staged diff"
+    # One line per added line: "<file>:<line>", a tab, then the added text. Hunk headers give the counts of
+    # removed and added lines, so an added line that itself starts with "++ " is never taken for a file header.
+    awk '
+        function count(s,   a) { return split(s, a, ",") > 1 ? a[2] + 0 : 1 }
+        old > 0 || new > 0 {
+            if (substr($0, 1, 1) == "+") { print file ":" line "\t" substr($0, 2); line++; new-- }
+            else if (substr($0, 1, 1) == "-") { old-- }
+            next
+        }
+        /^\+\+\+ / { file = substr($0, 5); sub(/^b\//, "", file); next }
+        /^@@ /     { old = count(substr($2, 2)); new = count(substr($3, 2)); split(substr($3, 2), a, ","); line = a[1] + 0 }
+    ' "$work/diff" > "$work/added" || reject "could not parse the staged diff"
+    cut -f2- "$work/added" > "$work/text" || reject "could not parse the staged diff"
+    # grep exits 0 on a match, 1 on none, and 2 on an error such as a malformed pattern.
+    status=0
+    grep -nEi -f "$tokens" "$work/text" > "$work/hits" 2>/dev/null || status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "pre-commit: the staged changes contain a private token (patterns in $tokens); the matched text is withheld:" >&2
+        cut -d: -f1 "$work/hits" | while read -r n; do sed -n "${n}p" "$work/added" | cut -f1; done >&2
         exit 1
+    elif [ "$status" -ne 1 ]; then
+        reject "the privacy scan failed (grep exit status $status); check the patterns in $tokens"
     fi
 else
     echo "pre-commit: no private-token list at $tokens; the privacy scan was skipped" >&2
