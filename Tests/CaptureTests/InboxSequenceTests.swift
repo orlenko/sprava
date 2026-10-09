@@ -11,7 +11,9 @@ import Testing
 
 /// Random sequences of what can happen to the inbox, from fixed seeds: captures (private or not, empty or not),
 /// revisions, retractions, copies from a second device, crashes at a random cursor save, the clerk's hand-off, the
-/// person approving, rejecting, filing or discarding cards, and sweeps. After every clean sweep three things hold:
+/// person approving (after the approval path settles what the binder missed), rejecting, filing or discarding cards,
+/// the binder going out of reach and coming back, and sweeps. After every clean sweep with the binder in reach three
+/// things hold:
 /// 1. every line of each chain's current revision is accounted for: on a waiting card, listed as not filed yet, in
 ///    the binder, or declined by the person;
 /// 2. nothing from a chain ever marked private is unredacted in the binder (or lacks a waiting redaction), and no
@@ -54,6 +56,7 @@ import Testing
         var log: [String] = []
         var seed: UInt64 = 0
         var written = 0
+        var away = false
 
         func current(_ chain: Int) -> Event { events[chains[chain].last!]! }
         func ids(_ chain: Int) -> Set<String> { Set(chains[chain] + (copies[chain] ?? [])) }
@@ -183,17 +186,26 @@ import Testing
                     m.log.append("file \(card.id)")
                 }
             } else if rng.chance(70) || privacyOnly {
-                let done = (try? TekaStore(folder: s.folder).approve(card, now: pNow)) != nil
+                // The approval path first finishes what the binder missed while it was away, as the app's must.
+                // The card is read again after that: settling may have rewritten it private or withdrawn it.
+                guard s.inbox.settle(binder: s.folder, commands: s.commands, now: pNow),
+                      let fresh = ProposalStore.list(in: s.folder).map(\.0).first(where: { $0.id == card.id && $0.state == "proposed" }) else {
+                    m.log.append("approve \(card.id) waits")
+                    return false
+                }
+                let done = (try? TekaStore(folder: s.folder).approve(fresh, now: pNow)) != nil
                 m.log.append("approve \(card.id) \(done ? "applied" : "refused")")
             } else {
                 _ = try? TekaStore(folder: s.folder).reject(card, now: pNow)
                 m.declined.formUnion(titles(card) + s.inbox.notFiled(card))
                 m.log.append("reject \(card.id)")
             }
+        case 86..<91:  // the binder's volume goes away, or comes back
+            try toggleAway(s, m)
         default:       // a clean sweep
             _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
             m.log.append("sweep")
-            return true
+            return !m.away
         }
         return false
     }
@@ -210,18 +222,26 @@ import Testing
         let shown = Set(items.compactMap { $0["title"]?.stringValue } + cards.flatMap(titles))
         let trace = "seed \(seed):\n" + m.log.suffix(80).joined(separator: "\n")
 
+        /// What a failure report shows about a chain: its events' stages, its cards, and its journal lines.
+        func diagnose(_ chain: Int) -> String {
+            let state = s.inbox.loadState()
+            let stages = m.chains[chain].map { "\($0.prefix(8)) \(m.events[$0]!.revision): \(state.ingested[$0] ?? "-") clerk=\(state.clerk?[$0] ?? "-") \(m.events[$0]!.text.split(separator: "\n").map { $0.split(separator: " ").last ?? "" })" }
+                + (m.copies[chain] ?? []).map { "copy \($0.prefix(8)) \(m.events[$0]!.revision): \(state.ingested[$0] ?? "-")" }
+            let all = (ProposalStore.list(in: s.folder).map(\.0) + s.inbox.unfiled()).filter { p in
+                p.raw["provenance"]?["events"]?.arrayValue?.contains { m.ids(chain).contains($0.stringValue ?? "") } == true
+            }.map { "\($0.id.prefix(8)) \($0.state) \($0.raw["rejected_reason"]?.stringValue ?? "") \($0.title) \(titles($0).map { $0.split(separator: " ").last ?? "" }) nf=\(s.inbox.notFiled($0).count) private=\($0.raw["provenance"]?["private"] == .bool(true))" }
+            let journal = ((try? String(contentsOf: s.inbox.journalURL, encoding: .utf8)) ?? "").split(separator: "\n").filter { line in
+                m.ids(chain).contains { line.contains($0) } || line.contains("deferred") || line.contains("clerk_handoff")
+            }.suffix(40).joined(separator: "\n")
+            return "stages: \(stages)\ncards: \(all)\nprivates: \(m.ids(chain).filter { (state.privates ?? []).contains($0) }.count)\njournal: \(journal)\n\(trace)"
+        }
+
         for chain in m.chains.indices where !m.chains[chain].isEmpty {
             let current = m.current(chain)
             // 1. Every line of the current revision is accounted for.
             if !current.retracted {
                 for l in CaptureInbox.lines(of: current.text) where !(shown.contains(l.text) || notFiled.contains(l.text) || m.declined.contains(l.text)) {
-                    let state = s.inbox.loadState()
-                    let stages = m.chains[chain].map { "\($0.prefix(8)) \(m.events[$0]!.revision): \(state.ingested[$0] ?? "-") clerk=\(state.clerk?[$0] ?? "-") \(m.events[$0]!.text.split(separator: "\n").map { $0.split(separator: " ").last ?? "" })" }
-                        + (m.copies[chain] ?? []).map { "copy \($0.prefix(8)) \(m.events[$0]!.revision): \(state.ingested[$0] ?? "-")" }
-                    let all = (ProposalStore.list(in: s.folder).map(\.0) + s.inbox.unfiled()).filter { p in
-                        p.raw["provenance"]?["events"]?.arrayValue?.contains { m.ids(chain).contains($0.stringValue ?? "") } == true
-                    }.map { "\($0.id.prefix(8)) \($0.state) \($0.raw["rejected_reason"]?.stringValue ?? "") \($0.title) \(titles($0).map { $0.split(separator: " ").last ?? "" }) nf=\(s.inbox.notFiled($0).count)" }
-                    Issue.record("chain \(chain): the line \"\(l.text)\" is on no card, item or not-filed list\nstages: \(stages)\nbinder cards: \(all)\nwaiting: \(cards.filter { p in p.raw["provenance"]?["events"]?.arrayValue?.contains { m.ids(chain).contains($0.stringValue ?? "") } == true }.map { JSONWriter.compact(.object($0.raw)) })\n\(trace)")
+                    Issue.record("chain \(chain): the line \"\(l.text)\" is on no card, item or not-filed list\n\(diagnose(chain))")
                 }
             }
             // 2. Nothing from a private chain is unredacted.
@@ -232,11 +252,11 @@ import Testing
                     op["op"] == .str("update_item") && op["args"]?["set"]?["redact"] == .bool(true) ? op["args"]?["id"]?.stringValue : nil
                 })
                 for o in items where fromChain(.object(o)) && o["redact"] != .bool(true) && !redacting.contains(o["id"]?.stringValue ?? "") {
-                    Issue.record("chain \(chain): item \(o["id"]?.stringValue ?? "?") is unredacted\n\(trace)")
+                    Issue.record("chain \(chain): item \(o["id"]?.stringValue ?? "?") is unredacted\n\(diagnose(chain))")
                 }
                 for card in cards {
                     for op in card.ops where op["op"] == .str("add_item") && fromChain(op["args"]?["item"]) && op["args"]?["item"]?["redact"] != .bool(true) {
-                        Issue.record("chain \(chain): card \(card.id) adds an unredacted item\n\(trace)")
+                        Issue.record("chain \(chain): card \(card.id) adds an unredacted item\n\(diagnose(chain))")
                     }
                 }
             }
@@ -250,9 +270,18 @@ import Testing
             }
             let current = m.current(e.chain)
             if current.retracted || e.text != current.text {
-                Issue.record("card \(card.id) waits from chain \(e.chain) \(e.revision), but its current words are \(current.revision)\n\(trace)")
+                Issue.record("card \(card.id) waits from chain \(e.chain) \(e.revision), but its current words are \(current.revision)\n\(diagnose(e.chain))")
             }
         }
+    }
+
+    /// The binder's folder moves out of reach (a volume disconnected) or back. While it is away no invariant is
+    /// checked, since the binder cannot be read; once it is back, the next clean sweep must leave all three holding.
+    func toggleAway(_ s: PSetup, _ m: Model) throws {
+        let away = s.folder.deletingLastPathComponent().appendingPathComponent(s.folder.lastPathComponent + ".away")
+        if m.away { try FileManager.default.moveItem(at: away, to: s.folder) } else { try FileManager.default.moveItem(at: s.folder, to: away) }
+        m.away.toggle()
+        m.log.append(m.away ? "binder away" : "binder back")
     }
 
     func run(seed: UInt64, steps: Int) async throws {
@@ -264,6 +293,7 @@ import Testing
         for _ in 0..<steps {
             if try await step(s, m, &rng) { check(s, m, seed: seed) }
         }
+        if m.away { try toggleAway(s, m) }
         // Whatever happened, two clean sweeps settle everything.
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
@@ -271,7 +301,7 @@ import Testing
         check(s, m, seed: seed)
     }
 
-    @Test(arguments: [UInt64(7), 118, 221, 412])
+    @Test(arguments: [UInt64(7), 412, 1022, 1036])
     func randomSequencesKeepEveryCaptureAccountedFor(seed: UInt64) async throws {
         try await run(seed: seed, steps: 80)
     }

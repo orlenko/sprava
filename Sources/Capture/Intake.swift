@@ -288,6 +288,12 @@ public struct IntakeWatcher: Sendable {
         return flat.count > 240 ? String(flat.prefix(240)) + "\u{2026}" : flat
     }
 
+    /// Whether what came in on `channel` is private by default. Everything that reaches a binder's intake is other
+    /// people's material: documents, scans and email (adaptation-layer §2.8; capture-event-v0 §9), so every channel
+    /// is. A note the person wrote comes as a capture event, never through intake. The person may mark a filed
+    /// document or item otherwise on its card; the op log records that.
+    static func isPrivate(channel: String) -> Bool { true }
+
     func card(_ file: Candidate, sha: String?, reading: IntakeReading?, digests: [String: String], in row: ShelfRow,
               commands: Commands, now: Date) -> String? {
         guard let sha else { return nil }
@@ -332,6 +338,9 @@ public struct IntakeWatcher: Sendable {
                 document.set("kind", .str("attachment"))
             }
             document.set("source", .string(isMail ? "intake/mail" : "intake/"))
+            // Other people's material is private by default (adaptation-layer §2.8; capture-event-v0 §3.3): the filed
+            // copy is recorded redacted, and the person may change that on the card.
+            if Self.isPrivate(channel: reading?.channel ?? file.channel) { document.set("redact", .bool(true)) }
             document.set("provenance", .obj([("obtained", .object(obtained))]))
             ops.append(JSONObject([(key: "op", value: .str("file_document")),
                                    (key: "args", value: .obj([("document", .object(document)), ("from", .string("intake/" + name))]))]))
@@ -355,7 +364,8 @@ public struct IntakeWatcher: Sendable {
                 intake.set("facts", IntakeFacts.of(r, anchor: anchor).json)
             }
         }
-        let provenance = JSONObject([(key: "intake", value: .object(intake)), (key: "filed_by", value: .str("code, no model"))])
+        var provenance = JSONObject([(key: "intake", value: .object(intake)), (key: "filed_by", value: .str("code, no model"))])
+        if Self.isPrivate(channel: reading?.channel ?? file.channel) { provenance.set("private", .bool(true)) }
         let shown = Self.title(file.name, subject: reading?.subject)
         let title: String
         if reading?.held != nil { title = "Held: \u{201C}\(shown)\u{201D} was not read" }

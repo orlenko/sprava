@@ -25,6 +25,7 @@ extension CaptureInbox {
         package var examined: [String: Examined] = [:]        // device/name -> last seen
         var handoffs: [String: [Replacement]]? = [:]  // id -> the clerk's cards, named before any is saved, until its Tier 0 card gives way
         var committed: [String]? = []                 // ids whose clerk cards were all saved: the hand-off only goes forward now
+        package var deferred: [String: [String]]? = [:] // binder folder -> an event of each chain whose work it missed while away
         package struct Examined: Codable, Equatable {
             var size: Int
             var mtime: Double

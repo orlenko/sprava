@@ -1,3 +1,4 @@
+import BinderFormat
 import BinderStore
 import Foundation
 import SpravaKit
@@ -86,7 +87,14 @@ extension CaptureInbox {
         for (id, cards) in (state.handoffs ?? [:]).sorted(by: { $0.key < $1.key }) {
             let tier0 = state.cards[id]
             let binder = state.cardBinder?[id]
-            let forward = state.committed?.contains(id) == true || tier0.map { !tier0Pending($0, binder: binder) } ?? true
+            let committed = state.committed?.contains(id) == true
+            // What happened to a card in a binder that cannot be read now is not known: the record waits for it, unless
+            // the commit had saved every card and only the code-built card is left to give way.
+            let away = (cards.compactMap(\.binder) + [binder].compactMap { $0 }).contains {
+                !Teka.read(URL(fileURLWithPath: $0, isDirectory: true)).isAdopted
+            }
+            if away && !committed { continue }
+            let forward = committed || tier0.map { !tier0Pending($0, binder: binder) } ?? true
                 || cards.allSatisfy { written($0, commands: commands) }
             if forward {
                 switch tier0.map({ withdrawTier0($0, binder: binder, commands: commands, now: now) }) ?? .withdrawn {

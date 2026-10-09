@@ -21,6 +21,17 @@ public struct HLC: Codable, Sendable, Equatable {
 
     /// Orders stamps of one node: wall time, then the counter.
     func precedes(_ other: HLC) -> Bool { (wall_ms, counter) < (other.wall_ms, other.counter) }
+
+    /// The stamps a reader accepts (the reader schema; `CaptureEvent.check`): a wall time of 13 digits in
+    /// milliseconds, and a counter from 0 to 65535.
+    static let walls: ClosedRange<Int64> = 1_000_000_000_000...9_999_999_999_999
+    static let counters: ClosedRange<Int64> = 0...65_535
+    var isValid: Bool { Self.walls.contains(wall_ms) && Self.counters.contains(Int64(counter)) }
+
+    /// A stamp that would make the next note one no reader accepts.
+    public struct OutOfRange: Error, CustomStringConvertible {
+        public var description: String { "the note clock has run past what a reader accepts; the note was not saved" }
+    }
 }
 
 /// Flushes to stable storage by SpravaKit's one rule (`AtomicFile.flushToDisk`): `F_FULLFSYNC`, or `fsync` only on
@@ -71,10 +82,13 @@ public struct CaptureProducer: Sendable {
         // rolled-back one is raised to the highest stamp already published from this folder (§4.2).
         let node = deviceID.replacingOccurrences(of: "-", with: "")
         let stored = try StateFile.read(HLC.self, from: stateURL)
-        guard stored.map({ (0...65_535).contains($0.counter) }) ?? true else { throw StateFile.Unreadable(path: stateURL.path) }
+        // A stored stamp outside what a reader accepts is unreadable too: every note after it would be quarantined.
+        guard stored.map(\.isValid) ?? true else { throw StateFile.Unreadable(path: stateURL.path) }
         let previous = [stored, publishedStamp(node: node)].compactMap { $0 }.filter { $0.node == node }
             .max { $0.precedes($1) }
         let hlc = HLC.next(after: previous, node: node, now: savedAt)
+        // A note stamped past the reader's range (a counter rolled over at the last wall time) is never written.
+        guard hlc.isValid else { throw HLC.OutOfRange() }
         try AtomicFile.makePrivateFolder(stateURL.deletingLastPathComponent())
         try AtomicFile.write(try JSONEncoder().encode(hlc), to: stateURL)
 
@@ -107,7 +121,8 @@ public struct CaptureProducer: Sendable {
             guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(name)),
                   let stamp = (try? JSONParser.parse(data).value)?["hlc"], stamp["node"]?.stringValue == node,
                   let wall = stamp["wall_ms"]?.numberValue?.safeInteger, let counter = stamp["counter"]?.numberValue?.safeInteger,
-                  (0...65_535).contains(counter) else { continue }
+                  HLC.walls.contains(wall), HLC.counters.contains(counter) else { continue }
+            // Only a stamp a reader accepts counts: one malformed file never sets the clock for every later note.
             let found = HLC(wall_ms: wall, counter: Int(counter), node: node)
             if best.map({ $0.precedes(found) }) ?? true { best = found }
         }
@@ -267,7 +282,7 @@ public struct CaptureEvent: Sendable {
             return (.quarantined("hlc.node differs from the device id"), nil)
         }
         // The whole stamp, as the reader schema has it: a malformed one would sort as stale and be dropped unseen.
-        guard let wall = o["hlc"]?["wall_ms"]?.numberValue?.safeInteger, (1_000_000_000_000...9_999_999_999_999).contains(wall),
+        guard let wall = o["hlc"]?["wall_ms"]?.numberValue?.safeInteger, HLC.walls.contains(wall),
               let counter = o["hlc"]?["counter"]?.numberValue?.safeInteger, (0...65_535).contains(counter) else {
             return (.quarantined("hlc is not a valid clock stamp"), nil)
         }

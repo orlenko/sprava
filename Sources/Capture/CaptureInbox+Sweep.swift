@@ -30,6 +30,8 @@ extension CaptureInbox {
         let fm = FileManager.default
         // A card the person filed just before a crash leaves its Inbox copy behind; it goes now.
         dropFiled(binders: binders, commands: commands)
+        // A binder back after it could not be reached first gets the capture work it missed.
+        settleDeferred(binders, state: &state, commands: commands, now: now)
         // Raises to private that could not be written last time are tried again first.
         for (id, chain) in (state.raises ?? [:]).sorted(by: { $0.key < $1.key }) where raisePrivacy(chain: chain, binders: binders, commands: commands, now: now) {
             state.raises?[id] = nil
@@ -102,6 +104,8 @@ extension CaptureInbox {
                 }
             }
         }
+        // Work a binder missed that waited for an event this sweep finished is done now, not a sweep later.
+        if result.unsaved == nil { settleDeferred(binders, state: &state, commands: commands, now: now) }
         if (try? save(state)) == nil { result.unsaved = "state.json" }
         return result
     }
@@ -118,16 +122,13 @@ extension CaptureInbox {
         let registered = producer != nil && producer == event.app
         let new = state.ingested[id] == nil
         var earlierCopy = new ? earlierCapture(event, state: state) : nil
-        // Where the event stands in its chain: its own stamp, or the one it took over from an earlier copy.
-        var clock = state.clocks?[id] ?? Self.clockKey(event)
-        // An earlier copy of the same capture that crashed before its card was made (and got none) holds nothing yet:
-        // this copy carries the capture in the earlier one's place in the chain, and the earlier one counts as its
-        // duplicate from now on.
+        let clock = state.clocks?[id] ?? Self.clockKey(event)
+        // An earlier event with the same app, ref and revision that crashed before its card was made (and got none)
+        // holds nothing yet, so this one is no duplicate of it: it is ingested by its own stamp. That also keeps a
+        // second retraction, which repeats the triple of the first, from being taken for a copy of one left
+        // unfinished. The earlier one, when its sweep is finished, is stale or the same words as this one.
         if let earlier = earlierCopy, earlier != id, state.ingested[earlier] == "ingested",
-           !adoptOrphanCard(earlier, state: &state, binders: binders, deviceID: commands.deviceID) {
-            state.ingested[earlier] = "duplicate"
-            journal([("event", .string(earlier)), ("stage", .str("duplicate")), ("of", .string(id))])
-            clock = state.clocks?[earlier] ?? clock
+           !adoptOrphanCard(earlier, chain: registered ? chainIDs(of: event, state: state) : [], state: &state, binders: binders, commands: commands, now: now) {
             earlierCopy = nil
         }
         let chain = registered ? chainIDs(of: event, state: state).filter { $0 != id } : []
@@ -139,7 +140,7 @@ extension CaptureInbox {
         // What this revision is compared with is the newest event whose words are held by a card or a settled stage.
         // One that crashed before its card was made, or a stale revision, holds nothing, so its words are never
         // taken as already filed (§3.2, §5.3).
-        let holding = chain.filter { holdsContent($0, state: &state, binders: binders, deviceID: commands.deviceID) }
+        let holding = chain.filter { holdsContent($0, chain: chain + [id], state: &state, binders: binders, commands: commands, now: now) }
         let baseline = holding.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
         let currentRetracted = baseline.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
         // A deletion after the chain's current event, or a restore after its deletion, changes what the chain is:
@@ -153,7 +154,10 @@ extension CaptureInbox {
                 state.ingested[id] = "duplicate"
                 state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
                 if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
-                if registered, event.isPrivate { raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+                if registered, event.isPrivate {
+                    raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now)
+                    deferWork(of: id, chain: [earlier] + chain, binders: binders, commands: commands, state: &state)
+                }
                 journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
                 return
             }
@@ -167,6 +171,8 @@ extension CaptureInbox {
         // Ingesting is one durable step, recorded before anything else happens: no card is made from an event the
         // cursor on disk does not hold, since a card the cursor forgot would be made again (§5.3).
         guard checkpoint(state, &result) else { return }
+        // A binder that cannot be reached now misses what this event does to its chain; it is done there when it is back.
+        if registered, !chain.isEmpty { deferWork(of: id, chain: chain, binders: binders, commands: commands, state: &state) }
         if new {
             journal([("event", .string(id)), ("stage", .str("ingested")), ("bytes", .int(size))])
             result.ingested += 1
@@ -286,23 +292,29 @@ extension CaptureInbox {
     }
 
     /// Records in the cursor the card an event at "ingested" got before a crash, as its own sweep would have; false
-    /// when it has none. The clerk reads the event next.
-    func adoptOrphanCard(_ id: String, state: inout State, binders: [ShelfRow], deviceID: String) -> Bool {
-        guard state.ingested[id] == "ingested", let (card, folder) = orphanCard(id, binders: binders, deviceID: deviceID) else { return false }
+    /// when it has none. The clerk reads the event next. A private event raises its chain as its own sweep would have,
+    /// since that sweep's record of the raise was lost with the crash (capture-event-v0 §3.3).
+    func adoptOrphanCard(_ id: String, chain: [String], state: inout State, binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
+        guard state.ingested[id] == "ingested", let (card, folder) = orphanCard(id, binders: binders, deviceID: commands.deviceID) else { return false }
         state.cards[id] = card
         if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
         state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
         state.ingested[id] = folder == nil ? "unfiled" : "proposed"
         journal([("event", .string(id)), ("stage", .str("card_recovered"))])
+        let stored = storedEvent(id, paths: state.paths ?? [:])?["sensitivity"]
+        let carded = (folder.map { f in ProposalStore.list(in: f).map(\.0) } ?? unfiled()).first { $0.id == card }
+        if stored.map({ $0 != .str("unmarked") }) ?? false || carded?.raw["provenance"]?["private"] == .bool(true) {
+            raise(chain.filter { $0 != id }, for: id, state: &state, binders: binders, commands: commands, now: now)
+        }
         return true
     }
 
     /// Whether an event's words are held: by its card, or by a stage that settles them (nothing to file, nothing to
     /// change, the same text as an event whose words are held, retracted). An event that crashed before its card was
     /// made holds nothing unless that card is found now; a stale revision's words were never carded.
-    func holdsContent(_ id: String, state: inout State, binders: [ShelfRow], deviceID: String) -> Bool {
+    func holdsContent(_ id: String, chain: [String], state: inout State, binders: [ShelfRow], commands: Commands, now: Date) -> Bool {
         switch state.ingested[id] {
-        case "ingested": adoptOrphanCard(id, state: &state, binders: binders, deviceID: deviceID)
+        case "ingested": adoptOrphanCard(id, chain: chain, state: &state, binders: binders, commands: commands, now: now)
         case nil, "stale_revision", "duplicate": false
         default: true
         }

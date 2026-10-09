@@ -88,7 +88,8 @@ import Testing
         #expect(r.duplicates == 0)
         let cards = s.inbox.unfiled()
         #expect(cards.count == 1 && cards.first.map { fromEvent($0, copy) } == true)
-        #expect(try stage(s, a) == "duplicate" && stage(s, copy) == "unfiled")
+        // The first copy, finished after the second, is a stale revision of the chain the second now leads.
+        #expect(try stage(s, a) == "stale_revision" && stage(s, copy) == "unfiled")
         // A third copy is a duplicate of the one that carries the capture.
         _ = try event(s, early, ref: "C3", revision: "rev1", text: "Book the invented plumber")
         #expect(sweep(s).duplicates == 1 && s.inbox.unfiled().count == 1)

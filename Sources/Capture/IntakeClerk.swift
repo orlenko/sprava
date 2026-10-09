@@ -69,7 +69,17 @@ extension IntakeWatcher {
         let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)),
                                 (key: "model", value: .string(doc.model))])
         // The filing ops, with the clerk's title and date for the main document when code had none better.
-        var ops = tier0.ops
+        // The code-built card says whether the file is private; one written before it said so is, as intake always is.
+        let isPrivate = tier0.raw["provenance"]?["private"] != .bool(false)
+        var ops = tier0.ops.map { op -> JSONObject in
+            guard isPrivate, op["op"] == .str("file_document"), var args = op["args"]?.objectValue,
+                  var document = args["document"]?.objectValue, document["redact"] == nil else { return op }
+            document.set("redact", .bool(true))
+            args.set("document", .object(document))
+            var o = op
+            o.set("args", .object(args))
+            return o
+        }
         if var args = ops.first?["args"]?.objectValue, var document = args["document"]?.objectValue {
             if let title = doc.title, e.reading.subject == nil { document.set("title", .string(title)) }
             if document["date"] == nil, let d = doc.date { document.set("date", .string(d.description)) }
@@ -77,7 +87,8 @@ extension IntakeWatcher {
             args.set("document", .object(document))
             ops[0].set("args", .object(args))
         }
-        let event = CaptureEvent(raw: JSONObject([(key: "id", value: .string(e.id)), (key: "sensitivity", value: .str("unmarked")),
+        // The clerk's items are redacted as the file is private (capture-event-v0 §3.3).
+        let event = CaptureEvent(raw: JSONObject([(key: "id", value: .string(e.id)), (key: "sensitivity", value: .str(isPrivate ? "private" : "unmarked")),
                                                   (key: "source", value: .obj([("app", .str("sprava.intake")), ("kind", .string(e.reading.kind))]))]),
                                  url: URL(fileURLWithPath: "/dev/null"), digest: "")
         let interp = Interpretation(id: doc.id, event: e.id, model: doc.model)
@@ -88,6 +99,7 @@ extension IntakeWatcher {
 
         var provenance = tier0.raw["provenance"]?.objectValue ?? JSONObject()
         provenance.set("reading", .object(doc.json))
+        if isPrivate { provenance.set("private", .bool(true)) }
         if !doc.escalate.isEmpty { provenance.set("escalate", .array(doc.escalate.map(JSONValue.string))) }
         if !built.already.isEmpty { provenance.set("already_in_binder", .array(built.already.map(JSONValue.string))) }
         if !built.rejected.isEmpty { provenance.set("left_out", .array(built.rejected.map(JSONValue.string))) }
