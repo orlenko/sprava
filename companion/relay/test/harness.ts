@@ -118,6 +118,21 @@ export async function seedDevice(store: Store, options: { active?: boolean; expi
 
 export const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
+/**
+ * Sends a body the relay will refuse part-way: the status is taken as soon as the answer arrives, since the relay
+ * closes the connection while the client may still be writing (fetch would report only the broken pipe).
+ */
+export function sendOversized(url: string, method: string, headers: Record<string, string>, body: Uint8Array): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const req = request(url, { method, headers: { ...headers, 'Content-Length': String(body.length) } }, (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+        });
+        req.on('error', (error) => setTimeout(() => reject(error), 1000));
+        req.end(body);
+    });
+}
+
 /** Writes the owner record straight into a store, as a claim would; returns the owner token. */
 export async function seedOwner(store: Store): Promise<string> {
     const token = newToken();

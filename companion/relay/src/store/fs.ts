@@ -8,9 +8,9 @@
 // Names: keys are case-sensitive, and folders often are not (APFS by default). Each upper-case letter is stored as
 // `^` and its lower-case form, so two keys that differ only in case never share a file.
 import { randomBytes } from 'node:crypto';
-import { link, mkdir, open, readdir, readFile, rename, rmdir, unlink } from 'node:fs/promises';
+import { link, mkdir, open, readdir, readFile, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import type { Store } from './store.ts';
+import type { Listed, Store } from './store.ts';
 
 const TEMP = '.tmp-';
 const SEGMENT = /^[A-Za-z0-9._-]+$/;
@@ -128,6 +128,18 @@ export class FsStore implements Store {
         const keys: string[] = [];
         await this.#walk(join(this.root, ...base.map(encode)), base.map((s) => s + '/').join(''), prefix, keys);
         return keys.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    }
+
+    async listTimes(prefix: string): Promise<Listed[]> {
+        const listed: Listed[] = [];
+        for (const key of await this.list(prefix)) {
+            try {
+                listed.push({ key, modified: (await stat(this.#path(key))).mtimeMs });
+            } catch (error) {
+                if (!isMissing(error)) throw error;
+            }
+        }
+        return listed;
     }
 
     async #walk(folder: string, keyFolder: string, prefix: string, keys: string[]): Promise<void> {

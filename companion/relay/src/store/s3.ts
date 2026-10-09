@@ -2,8 +2,8 @@
 // Version 4 using only node:crypto, and addressed path-style so any S3-compatible host works.
 import { createHash, createHmac } from 'node:crypto';
 import type { S3Config } from '../config.ts';
-import type { Store } from './store.ts';
 import { childrenNamed, parseXml, type XmlElement } from './xml.ts';
+import type { Listed, Store } from './store.ts';
 
 export class S3Error extends Error {
     readonly status: number;
@@ -68,12 +68,12 @@ export class S3Store implements Store {
     }
 
     async list(prefix: string): Promise<string[]> {
-        return (await this.#listAll(prefix)).map((entry) => entry.key);
+        return (await this.listTimes(prefix)).map((entry) => entry.key);
     }
 
     /** Every page, each read whole and checked; a malformed or incomplete page fails the listing. */
-    async #listAll(prefix: string): Promise<{ key: string; modified: number }[]> {
-        const entries: { key: string; modified: number }[] = [];
+    async listTimes(prefix: string): Promise<Listed[]> {
+        const entries: Listed[] = [];
         let token: string | null = null;
         do {
             const query: Record<string, string> = { 'list-type': '2', prefix };

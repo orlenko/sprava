@@ -29,7 +29,7 @@ export interface S3Stub {
 export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSize?: number; listLagMs?: number } = {}): Promise<S3Stub> {
     const bucket = 'bucket-example';
     const objects = new Map<string, Uint8Array>();
-    const written = new Map<string, number>();
+    const times = new Map<string, number>();
     const requests: string[] = [];
     let failures = 0;
     let holding: ((key: string) => boolean) | null = null;
@@ -57,8 +57,8 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
             return reply(200, body);
         }
         if (req.method === 'GET' && key === '') {
-            const visible = new Map([...objects].filter(([k]) => Date.now() - (written.get(k) ?? 0) >= (options.listLagMs ?? 0)));
-            return reply(200, list(visible, url.searchParams, options.pageSize ?? 3));
+            const visible = new Map([...objects].filter(([k]) => Date.now() - (times.get(k) ?? 0) >= (options.listLagMs ?? 0)));
+            return reply(200, list(visible, times, url.searchParams, options.pageSize ?? 3));
         }
         const stored = objects.get(key);
         switch (req.method) {
@@ -73,7 +73,7 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
                 }
                 if (stored && req.headers['if-none-match'] === '*' && !options.ignoreIfNoneMatch) return reply(412);
                 objects.set(key, body);
-                written.set(key, Date.now());
+                times.set(key, Date.now());
                 return reply(200);
             case 'DELETE':
                 if (holding?.(key)) {
@@ -104,7 +104,10 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
             held.splice(0, held.length, ...held.filter((entry) => !landing.includes(entry)));
             for (const [key, body] of landing) {
                 if (body === null) objects.delete(key);
-                else objects.set(key, body);
+                else {
+                    objects.set(key, body);
+                    times.set(key, Date.now());
+                }
             }
         },
         nextListBody: (body) => {
@@ -114,7 +117,7 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
     };
 }
 
-function list(objects: Map<string, Uint8Array>, query: URLSearchParams, pageSize: number): string {
+function list(objects: Map<string, Uint8Array>, times: Map<string, number>, query: URLSearchParams, pageSize: number): string {
     const prefix = query.get('prefix') ?? '';
     const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
     const start = Number(query.get('continuation-token') ?? '0');
@@ -123,7 +126,7 @@ function list(objects: Map<string, Uint8Array>, query: URLSearchParams, pageSize
     const escape = (k: string): string => k.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     return (
         `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>${truncated}</IsTruncated>` +
-        page.map((k) => `<Contents><Key>${escape(k)}</Key><LastModified>${new Date(0).toISOString()}</LastModified><Size>1</Size></Contents>`).join('') +
+        page.map((k) => `<Contents><Key>${escape(k)}</Key><LastModified>${new Date(times.get(k) ?? 0).toISOString()}</LastModified><Size>1</Size></Contents>`).join('') +
         (truncated ? `<NextContinuationToken>${start + pageSize}</NextContinuationToken>` : '') +
         '</ListBucketResult>'
     );

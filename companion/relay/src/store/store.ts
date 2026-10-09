@@ -23,6 +23,13 @@ export interface Store {
     delete(key: string): Promise<void>;
     /** Every key under `prefix`, in ascending byte order. */
     list(prefix: string): Promise<string[]>;
+    /** The same, with when each object was last written (ms since the epoch), as the backend reports it. */
+    listTimes(prefix: string): Promise<Listed[]>;
+}
+
+export interface Listed {
+    key: string;
+    modified: number;
 }
 
 /** §6, §7.8: everything lives under the prefix `SPRAVA_INSTANCE/`, so a new instance never sees an old one. */
@@ -36,6 +43,7 @@ export function scoped(store: Store, instance: string): Store {
         sync: (key) => store.sync(root + key),
         delete: (key) => store.delete(root + key),
         list: async (prefix) => (await store.list(root + prefix)).map((key) => key.slice(root.length)),
+        listTimes: async (prefix) => (await store.listTimes(root + prefix)).map((e) => ({ key: e.key.slice(root.length), modified: e.modified })),
     };
 }
 
