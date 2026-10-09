@@ -42,6 +42,9 @@ let package = Package(
         .target(name: "Hub", dependencies: ["Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "HubTests", dependencies: ["Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport",
                                                      "SpravaKit"]),
+        .target(name: "Backup", dependencies: ["Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "BackupTests", dependencies: ["Backup", "Hub", "Shelf", "BinderStore", "BinderFormat",
+                                                        "SpravaTestSupport", "SpravaKit"]),
 
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
