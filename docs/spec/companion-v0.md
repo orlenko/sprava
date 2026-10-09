@@ -181,8 +181,12 @@ and the associated data binds it.
 
 The owner rotates after it revokes a device, and when the person asks:
 
-1. The owner marks the device revoked in its own records, in the same durable write retires its outcome work
-   (section 9.9), deletes that device's `Kd` from the Keychain, and calls `DELETE /v0/devices/{D}`.
+1. The owner takes that device's **decision lock** (section 9.2), so no request of it is being decided, and
+   finishes any of its decision records still `deciding` (section 9.6); if one cannot be finished now, the
+   revocation waits and the person is told why. Then it marks the device revoked in its own records, in the
+   same durable write retires its outcome work (section 9.9), releases the lock, deletes that device's `Kd`
+   from the Keychain, and calls `DELETE /v0/devices/{D}`. A request of a revoked device is never decided
+   afterwards (section 9.3, check 3).
 2. It takes the owner's **key lock** (section 5.2, step 4), makes a new `K` with epoch `e + 1` and a new
    `Kb` for every shown binder (binder ids stay), and stores
    them in the Keychain before uploading anything. If it stops partway, it finishes the rotation at its next
@@ -716,7 +720,10 @@ at the index's epoch yet is left out of the index until it has one (section 9.7)
 An item id is the binder's own (binder-v0 §5.6): a string of 1 to 200 characters and
 at most 800 encoded bytes, or a non-zero signed integer (section 3). An item whose id breaks this is left out of
 the view, and the Mac's Health line names it. Two item ids are the same when they have the same JSON type and the
-same value; strings compare as section 3 says, so `7` and `"7"` differ.
+same value; strings compare as section 3 says, so `7` and `"7"` differ. A binder that still needs migration
+(binder-v0 §9.6) can hold one id more than once: then every open item and closure entry with that id is left
+out of the view, and the Health line names the id, so the view stays valid and no action can reach the wrong
+record. A request naming such an id is a **conflict** (section 9.5, rule 2).
 
 `items` holds the binder's open items, except those with `dismissed: true`, which are never published
 (binder-v0 §5.7). A view is valid when the owner's signature verifies (section 4.5), `version` equals the
@@ -860,7 +867,7 @@ Health line says so.
    was removed, without proof"), and the person decides.
 2. **Visit devices in turn.** Take the devices that are active in the Mac's records, in a fixed order, starting
    one place after where the previous drain started, and skip any that is backing off. For each one, until
-   the drain's budget is spent:
+   the drain's budget is spent, holding that device's **decision lock** from step 1 to step 5:
    1. **Recover** any decision record of that device still `deciding` (section 9.6). If it cannot be
       finished, the device stops here.
    2. **List** one page: `GET /v0/requests/{D}?limit=25`.
@@ -939,7 +946,9 @@ decides, decides:
 
 1. The binder is currently shown, by its id in the Mac's own records. Otherwise **rejected** (`not-shown`). A
    binder turned off and on again has a new id, so a request for the old one is rejected.
-2. The item is in that binder, open or closed. Otherwise **rejected** (`not-in-binder`).
+2. The item is in that binder, open or closed. Otherwise **rejected** (`not-in-binder`). An id the binder holds
+   more than once, among its open items and closure entries, is a **conflict**: the Mac cannot tell which
+   record the person saw (section 8.5).
 3. `seen_version` is not above the binder's `reserved` version (section 9.7). Otherwise **rejected**
    (`future-version`).
 4. **Closed items.** A `done` on an item closed as done, or a `drop` on an item closed as dropped, is
@@ -1061,6 +1070,8 @@ To publish a view, the Mac takes a snapshot under the binder's write lock, in on
 1. Reserve the next version: `v = reserved + 1`.
 2. Read the binder. For each open item, hash its record. If the hash differs from the one recorded for the
    item, or there is none, the item's `changed_in` becomes `v`; otherwise it keeps its recorded `changed_in`.
+   An id the binder holds more than once (section 8.5) gets no hash and no `changed_in`, and any it had are
+   dropped, so once it is unique again its record starts with `changed_in` `v`.
 3. Build the view payload with `version` `v` from this reading.
 4. Write the new `reserved`, hashes and `changed_in` values durably, as one atomic write, before releasing the
    lock.
@@ -1467,6 +1478,12 @@ A vector, once committed, changes only with the protocol version. The cases:
     date-time with an offset, only a date (once alone and once beside a different `at`), and missing beside an
     `at`, and a document with no `title`: the exact view the Mac publishes
     (section 8.5), which the web app accepts as valid.
+21. `revocation`: a device revoked while a drain is deciding its request (the revocation waits, then the
+    request is never applied afterwards); a revocation that first finishes that device's `deciding` record;
+    one whose recovery is blocked, while another device's drain goes on.
+22. `repeated-ids`: a binder needing migration with two open items sharing an id, an open item and a closure
+    entry sharing one, and the ids `7` and `"7"` side by side: the exact view (the repeated ids left out, the
+    distinct ones kept), and a request naming a repeated id decided as a conflict.
 
 ## 15. Versioning
 
