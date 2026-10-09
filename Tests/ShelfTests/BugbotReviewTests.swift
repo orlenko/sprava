@@ -58,6 +58,21 @@ import Testing
         #expect(try Data(contentsOf: store.file) == newer)
     }
 
+    // MARK: - recent.json that is a FIFO is unreadable at once, never waited on
+
+    @Test func aRecentFileThatIsAFIFOIsRefusedAtOnce() throws {
+        let support = temp("recent-fifo")
+        let recent = RecentBinders(supportDirectory: support)
+        #expect(mkfifo(recent.file.path, 0o600) == 0)
+        let start = Date()
+        #expect(throws: StateFile.Unreadable.self) { try recent.readOpened() }
+        #expect(throws: StateFile.Unreadable.self) { try recent.touch(URL(fileURLWithPath: "/Invented/binder-a", isDirectory: true)) }
+        #expect(recent.opened().isEmpty)
+        #expect(Date().timeIntervalSince(start) < 5)
+        var st = stat()
+        #expect(lstat(recent.file.path, &st) == 0 && st.st_mode & S_IFMT == S_IFIFO)   // left as it is
+    }
+
     // MARK: - shelf.json is written by AtomicFile: private, whole, no temporary file left behind
 
     @Test func theShelfIsWrittenPrivatelyAndWhole() throws {

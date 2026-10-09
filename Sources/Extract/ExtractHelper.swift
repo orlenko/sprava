@@ -111,7 +111,8 @@ public enum ExtractHelper {
     private final class Delivery: @unchecked Sendable { var failed = false }
 
     /// Runs a helper already checked: the bytes on standard input, JSON back on standard output.
-    static func launch(_ helper: URL, data: Data, name: String, timeout: TimeInterval) throws -> Extractor.Result {
+    static func launch(_ helper: URL, data: Data, name: String, timeout: TimeInterval,
+                       maxAnswer: Int = 2 * Extractor.Limits().bytes) throws -> Extractor.Result {
         let task = Process()
         task.executableURL = helper
         task.arguments = [name]
@@ -133,9 +134,16 @@ public enum ExtractHelper {
             try? writer.close()
             delivered.signal()
         }
-        let out = output.fileHandleForReading.readDataToEndOfFile()
+        // The answer is read up to a bound, twice the input limit (attachments come back in base64): a helper a file
+        // took over cannot fill this unsandboxed process's memory.
+        var out = Data(), overflow = false
+        while let chunk = try? output.fileHandleForReading.read(upToCount: 1 << 20), !chunk.isEmpty {
+            out.append(chunk)
+            if out.count > maxAnswer { overflow = true; task.terminate(); break }
+        }
         task.waitUntilExit()
         killer.cancel()
+        if overflow { throw Failure(message: "the reader's answer was larger than the limit") }
         // The helper is gone, so its end of the pipe is closed and the write has ended or fails at once; a writer
         // still stuck after a short wait is abandoned, and the file is not read.
         let whole = delivered.wait(timeout: .now() + 5) == .success && !delivery.failed

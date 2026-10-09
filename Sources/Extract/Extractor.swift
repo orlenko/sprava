@@ -35,6 +35,13 @@ public enum Extractor {
         public var bytes = 200 * 1024 * 1024
         public var pages = 2000
         public var textChars = 5_000_000
+        /// Pixels one picture or one drawn PDF page may decode to, checked from the declared size before decoding:
+        /// a small file can declare a huge image (about 240 MB at 4 bytes a pixel).
+        public var pixels = 60_000_000
+        /// Bytes all the parts read from one archive may unpack to together; each part is also capped on its own.
+        public var unpacked = 200 * 1024 * 1024
+        /// MIME parts one message may have, at every level together: each attachment is read by its own helper run.
+        public var parts = 1000
         public init() {}
     }
 
@@ -101,10 +108,10 @@ public enum Extractor {
         switch sniffed {
         case .pdf: result = pdf(data, limits: limits)
         case .png, .jpeg, .heic, .tiff: result = image(data, limits: limits)
-        case .zip: result = office(data, name: name)
+        case .zip: result = office(data, name: name, limits: limits)
         case .rtf: result = rtf(data)
         case .markdownEmail: result = markdownEmail(decodedText(data))
-        case .eml: result = eml(data)
+        case .eml: result = eml(data, limits: limits)
         case .html, .text:
             // A message that did not read as one may carry an HTML part: it is held before either reading.
             let text = decodedText(data)

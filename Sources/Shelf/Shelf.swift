@@ -167,12 +167,15 @@ public struct RecentBinders: Sendable {
     /// When each binder was opened. A missing file is none; a file that exists but is not an object of dates, one
     /// entry being wrong included, throws (`StateFile.Unreadable`), so nothing ever saves over it.
     public func readOpened() throws -> [String: Date] {
-        var st = stat()
-        if lstat(file.path, &st) != 0 {
-            if errno == ENOENT { return [:] }
-            throw StateFile.Unreadable(path: file.path)
+        // Never through a link, never anything but a bounded regular file of this user: a FIFO is refused at once
+        // instead of waited on.
+        let data: Data
+        switch SafeFile.read(file, limit: 16 * 1024 * 1024) {
+        case .ok(let d): data = d
+        case .missing: return [:]
+        default: throw StateFile.Unreadable(path: file.path)
         }
-        guard let data = try? Data(contentsOf: file), case .object(let o)? = try? JSONParser.parse(data).value else {
+        guard case .object(let o)? = try? JSONParser.parse(data).value else {
             throw StateFile.Unreadable(path: file.path)
         }
         var out: [String: Date] = [:]

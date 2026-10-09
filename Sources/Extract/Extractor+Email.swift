@@ -6,8 +6,9 @@ extension Extractor {
 
     /// imap-extract's export: front matter (subject, from, date, to), then the body as Markdown.
     static func markdownEmail(_ text: String) -> Result {
-        let parts = text.components(separatedBy: "\n---\n")
-        let front = parts.first ?? ""
+        // Split once, at the first separator: the body is everything after it, however many it holds.
+        let cut = text.range(of: "\n---\n")
+        let front = cut.map { text[..<$0.lowerBound] } ?? text[...]
         func field(_ key: String) -> String? {
             for line in front.split(separator: "\n") where line.lowercased().hasPrefix(key + ":") {
                 var v = line.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
@@ -16,37 +17,43 @@ extension Extractor {
             }
             return nil
         }
-        let body = parts.dropFirst().joined(separator: "\n---\n")
+        let body = cut.map { String(text[$0.upperBound...]) } ?? ""
         let email = Email(subject: field("subject"), from: field("from"), to: field("to"), date: field("date"), messageID: nil, attachments: [])
         return Result(kind: "email", text: body, textFrom: "parsed", email: email)
     }
 
     /// A MIME message: headers, the text body (plain preferred, else HTML as text), and attachments.
-    static func eml(_ data: Data) -> Result {
+    static func eml(_ data: Data, limits: Limits = Limits()) -> Result {
         let raw = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
         let (headers, body) = splitHeaders(raw)
         var attachments: [Email.Attachment] = []
-        var tooDeep = false
-        let text = walk(headers: headers, body: body, attachments: &attachments, tooDeep: &tooDeep, depth: 0)?.text ?? ""
+        var state = Walk(maxParts: limits.parts)
+        let text = walk(headers: headers, body: body, attachments: &attachments, state: &state, depth: 0)?.text ?? ""
         let email = Email(subject: headers["subject"].map(decodeWords), from: headers["from"].map(decodeWords), to: headers["to"].map(decodeWords),
                           date: headers["date"], messageID: headers["message-id"], attachments: attachments)
-        // Parts below the nesting limit were not read, so the message is held rather than passed on as whole.
-        return Result(kind: "email", text: text, textFrom: "parsed", email: email,
-                      problem: tooDeep ? "its parts nest deeper than \(maxDepth) levels; the deeper ones were not read" : nil)
+        // Parts past the nesting or part limits were not read, so the message is held rather than passed on as whole.
+        let problem = state.tooDeep ? "its parts nest deeper than \(maxDepth) levels; the deeper ones were not read"
+            : state.tooMany ? "it has more than \(limits.parts) parts; the later ones were not read" : nil
+        return Result(kind: "email", text: text, textFrom: "parsed", email: email, problem: problem)
     }
 
+    /// What a walk through one message found past its limits, and how many parts it has met so far.
+    struct Walk { let maxParts: Int; var parts = 0; var tooDeep = false; var tooMany = false }
+
+    /// The header fields of an entity and its body, split at the first empty line.
     static func splitHeaders(_ s: String) -> ([String: String], String) {
-        let parts = s.components(separatedBy: "\n\n")
+        let blank = s.range(of: "\n\n")
+        let block = blank.map { s[..<$0.lowerBound] } ?? s[...]
         var headers: [String: String] = [:]
         var last: String?
-        for line in (parts.first ?? "").split(separator: "\n", omittingEmptySubsequences: false) {
+        for line in block.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.first == " " || line.first == "\t", let k = last { headers[k, default: ""] += " " + line.trimmingCharacters(in: .whitespaces); continue }
             guard let colon = line.firstIndex(of: ":") else { continue }
             let k = line[..<colon].lowercased()
             headers[k] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             last = k
         }
-        return (headers, parts.dropFirst().joined(separator: "\n\n"))
+        return (headers, blank.map { String(s[$0.upperBound...]) } ?? "")
     }
 
     /// The parameters after a header's value, as (lowercased key, value) pairs. A quoted value is one value whatever
@@ -111,8 +118,8 @@ extension Extractor {
     /// The body of an entity, collecting its attachments. Of a `multipart/alternative`, one representation is the
     /// body (plain text first); the parts of any other multipart are independent content, so every body part is
     /// kept, in order. A text part with a file name inside a multipart is an attachment, never a dropped part.
-    static func walk(headers: [String: String], body: String, attachments: inout [Email.Attachment], tooDeep: inout Bool, depth: Int) -> Body? {
-        guard depth < maxDepth else { tooDeep = true; return nil }
+    static func walk(headers: [String: String], body: String, attachments: inout [Email.Attachment], state: inout Walk, depth: Int) -> Body? {
+        guard depth < maxDepth else { state.tooDeep = true; return nil }
         let type = (headers["content-type"] ?? "text/plain").lowercased()
         let disposition = headers["content-disposition"]?.lowercased() ?? ""
         let filename = (fileParam(headers["content-disposition"], "filename") ?? fileParam(headers["content-type"], "name")).map(decodeWords)
@@ -126,10 +133,18 @@ extension Extractor {
         }
         if type.hasPrefix("multipart/"), let boundary = param(headers["content-type"], "boundary") {
             var bodies: [Body] = []
-            for part in body.components(separatedBy: "--" + boundary).dropFirst() {
-                if part.hasPrefix("--") { break }
+            // Parts are taken one at a time, never split all at once, and stop at the message's part limit: a body
+            // of a million delimiters is neither a million strings nor a million attachments to read.
+            let delimiter = "--" + boundary
+            var rest = body.range(of: delimiter).map { body[$0.upperBound...] }
+            while let current = rest, !current.hasPrefix("--") {
+                state.parts += 1
+                guard state.parts <= state.maxParts else { state.tooMany = true; break }
+                let end = current.range(of: delimiter)
+                let part = end.map { current[..<$0.lowerBound] } ?? current
                 let (h, b) = splitHeaders(String(part.drop { $0 == "\n" }))
-                if let found = walk(headers: h, body: b, attachments: &attachments, tooDeep: &tooDeep, depth: depth + 1) { bodies.append(found) }
+                if let found = walk(headers: h, body: b, attachments: &attachments, state: &state, depth: depth + 1) { bodies.append(found) }
+                rest = end.map { current[$0.upperBound...] }
             }
             // An empty representation is no body when another one holds the text.
             let filled = bodies.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

@@ -27,15 +27,25 @@ extension Extractor {
 
     // MARK: - Office formats (zip of XML): docx, xlsx, pptx, odt, ods, odp
 
-    static func office(_ data: Data, name: String) -> Result {
+    static func office(_ data: Data, name: String, limits: Limits = Limits()) -> Result {
         guard let entries = Zip.entries(data) else { return Result(kind: "document", text: "", textFrom: "parsed", problem: "the archive does not open") }
         let names = Set(entries.map(\.name))
         // A content part that is listed but does not read holds the whole document: the parts that did read are not
         // the document, and a reading never passes as whole when it is not.
         var unread: String?
+        // Every part read counts against one budget, by the size it declares, before it is unpacked: many small
+        // parts that each unpack to a lot, or many entries pointing at the same stored bytes, never add up past it
+        // (adaptation-layer §2). A stored part is copied whole, so the larger of its two sizes counts.
+        var budget = limits.unpacked, overBudget = false
         func read(_ e: Zip.Entry) -> String {
+            let cost = max(e.size, e.compressed)
+            guard !overBudget, cost <= budget else { overBudget = true; return "" }
+            budget -= cost
             guard let bytes = Zip.read(e, in: data) else { unread = unread ?? e.name; return "" }
             return String(decoding: bytes, as: UTF8.self)
+        }
+        func tooLarge() -> Result {
+            Result(kind: "document", text: "", textFrom: "parsed", problem: "it unpacks to more than the size limit (\(limits.unpacked / 1_048_576) MB)")
         }
         func xml(_ n: String) -> String? { entries.first { $0.name == n }.map(read) }
         // A password-protected OpenDocument lists its encrypted parts in its manifest: it is held, never read as if
@@ -43,6 +53,7 @@ extension Extractor {
         if xml("META-INF/manifest.xml")?.contains("encryption-data") == true {
             return Result(kind: "document", text: "", textFrom: "parsed", problem: "the document is protected by a password")
         }
+        if overBudget { return tooLarge() }
         var text = ""
         if let doc = xml("word/document.xml") {
             text = xmlText(doc, paragraph: "w:p", run: "w:t")
@@ -65,6 +76,7 @@ extension Extractor {
         } else {
             return Result(kind: "document", text: "", textFrom: "parsed", problem: "an archive, not a document Sprava reads")
         }
+        if overBudget { return tooLarge() }
         if let unread { return Result(kind: "document", text: "", textFrom: "parsed", problem: "a part of the document (\(unread)) does not read") }
         return Result(kind: "document", text: text, textFrom: "parsed")
     }

@@ -31,7 +31,8 @@ public struct IntakeReading: Sendable, Equatable {
     /// the helper the file is held, saying the reader is missing. A key or credential file (binder-v0 §3.3), alone or
     /// in the attachments folder, is never opened: the whole card is held, and the person can still file it. Every
     /// file is opened from `binder`, the folder the caller trusts, down, never through a link below it.
-    public static func read(_ file: URL, in binder: URL, attachments: [URL] = [], channel: String, reader: ExtractHelper.Reader) -> IntakeReading {
+    public static func read(_ file: URL, in binder: URL, attachments: [URL] = [], channel: String, reader: ExtractHelper.Reader,
+                            limits: Extractor.Limits = Extractor.Limits()) -> IntakeReading {
         if let key = ([file] + attachments).first(where: { DocumentPaths.isKeyFile($0.lastPathComponent) }) {
             return IntakeReading(kind: "unknown", textFrom: "parsed", text: "",
                                  held: "\u{201C}\(DocumentPaths.safeName(key.lastPathComponent))\u{201D} looks like a key or credential file and is not read",
@@ -47,7 +48,8 @@ public struct IntakeReading: Sendable, Equatable {
         if let e = result.email {
             r.subject = e.subject; r.from = e.from; r.to = e.to; r.date = e.date
         }
-        var parts: [(String, Result<Extractor.Result, Error>)] = []
+        // Each attachment is read when its turn comes, so no more are read, or held in memory, once the reading is full.
+        var parts: [(String, () throws -> Extractor.Result)] = []
         for a in result.email?.attachments ?? [] {
             // The helper drops a leading dot from an attachment's name, so `.netrc` arrives as `netrc`.
             if DocumentPaths.isKeyFile(a.name) || DocumentPaths.isKeyFile("." + a.name) {
@@ -55,16 +57,21 @@ public struct IntakeReading: Sendable, Equatable {
                 r.notes.append("attachment \u{201C}\(a.name)\u{201D} looks like a key or credential file and was not read")
                 continue
             }
-            parts.append((a.name, Result { try ExtractHelper.run(a.data, name: a.name, reader: reader) }))
+            parts.append((a.name, { try ExtractHelper.run(a.data, name: a.name, reader: reader) }))
         }
         // A file's name is made safe before it enters the text, as one inside a message is: no line break, control
         // or direction mark.
         for url in attachments {
-            parts.append((DocumentPaths.safeName(url.lastPathComponent), Result { try ExtractHelper.run(url, under: binder, reader: reader) }))
+            parts.append((DocumentPaths.safeName(url.lastPathComponent), { try ExtractHelper.run(url, under: binder, reader: reader) }))
         }
-        for (name, outcome) in parts {
+        // The text cap holds for the whole reading, the message and its attachments together (adaptation-layer §2):
+        // what passes it is cut, the rest is not read, and the card is held as the message alone would be.
+        let limit = limits.textChars
+        var length = r.text.unicodeScalars.count, full = false
+        for (name, read) in parts {
             r.attachments.append(name)
-            switch outcome {
+            if full { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: the reading reached the text limit"); continue }
+            switch Result(catching: read) {
             case .failure(let error): r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: \(error)")
             case .success(let a):
                 if let problem = a.problem { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: \(problem)"); continue }
@@ -72,8 +79,18 @@ public struct IntakeReading: Sendable, Equatable {
                 if a.mismatch { r.notes.append("attachment \u{201C}\(name)\u{201D} is not the kind of file its name says") }
                 // A forwarded message's own attachments are not read here; a note says so, never silence.
                 if let nested = a.email?.attachments, !nested.isEmpty { r.notes.append("attachment \u{201C}\(name)\u{201D} has \(nested.count) attachment(s) of its own that were not read") }
-                if !a.text.isEmpty { r.text += "\n\n\u{2014} Attachment: \(name) \u{2014}\n" + a.text }
+                guard !a.text.isEmpty else { continue }
+                let added = "\n\n\u{2014} Attachment: \(name) \u{2014}\n" + a.text
+                length += added.unicodeScalars.count
+                r.text += added
+                if length > limit {
+                    r.text = String(String.UnicodeScalarView(r.text.unicodeScalars.prefix(limit)))
+                    full = true
+                }
             }
+        }
+        if full, r.held == nil {
+            r.held = "longer than the text limit (\(limit) characters) with its attachments; only the start was read"
         }
         if r.held == nil, r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             r.notes.append(r.kind == "image" ? "no text found in the picture" : "no text found")
