@@ -579,8 +579,10 @@ either **write-once** with content fixed by its first writer, so a late write re
 A pairing is `open` when only `created.json` exists, `joined` with `joined.json`, `keyed` with `key.sha256`, and
 `acknowledged` with `ack`. The ordinal in a request's name is written as 16 decimal digits so that a listing of
 the prefix comes back in ordinal order. The relay keeps in memory, for each device, a map from `R` to its ordinal,
-rebuilt from that listing at start, so `requests/{D}/{R}` in the API finds the object; when two copies hold the
-same `R`, it keeps the one with the lower ordinal and deletes the other.
+so `requests/{D}/{R}` in the API finds the object. It rebuilds the map from that listing at start, and updates
+it from every listing of the bucket it reads for `GET /v0/requests/{D}`, so a request whose write began before
+a restart and landed after it is found as soon as it is listed. When two copies hold the same `R`, it keeps the
+one with the lower ordinal and deletes the other.
 
 At start, before serving, the relay repairs and cleans up, in this order, and never deletes a revocation
 marker:
@@ -697,7 +699,7 @@ at the index's epoch yet is left out of the index until it has one (section 9.7)
  "items": [{"id": <item id>, "changed_in": <integer>, "title": "...", "status": "...", "priority": "..."|null,
             "due": "YYYY-MM-DD"|null, "waiting_on": "..."|null, "follow_up_at": "YYYY-MM-DD"|null,
             "notes": "..."|null, "tags": [...], "contexts": [...]}],
- "closed": [{"id": <item id>, "title": "...", "closed_at": time|null, "how": "done"|"dropped"}],
+ "closed": [{"id": <item id>, "title": "...", "closed_at": time|"YYYY-MM-DD"|null, "how": "done"|"dropped"}],
  "documents": [{"title": "...", "date": "YYYY-MM-DD"|null}]}
 ```
 
@@ -710,14 +712,34 @@ same value; strings compare as section 3 says, so `7` and `"7"` differ.
 (binder-v0 §5.7). A view is valid when the owner's signature verifies (section 4.5), `version` equals the
 version in its name, item ids are unique across `items` and `closed`, every id in a bucket names an entry of
 `items`, every `changed_in` is from 1 to `version`, and its plaintext is at most 778,240 bytes; and when every
-field has its type: `generated_at` and `closed_at` are times (or `null` where shown), `today`, `due`,
+field has its type: `generated_at` is a time, `closed_at` is a time, a date or `null`, `today`, `due`,
 `follow_up_at` and document dates are dates (section 3) or `null`, `status` is `open`, `waiting` or `blocked`,
 `how` is `done` or `dropped`, `tags` and `contexts` are arrays of strings, and every other field shown as
-`"..."` is a string, or `null` where shown. `priority` is shown as it is, whatever the string. A `due` that is
-not a valid date in the binder is published as `null`. `changed_in` is the version of the first snapshot that
-carried the item's current record (section 9.7). If a binder's view would be larger than the limit, the Mac
-publishes it with every `notes` set to `null` and `notes_omitted` `true`, and the app says notes are not
-shown; if it is still too large, the Mac does not publish that binder and says so on its Health line.
+`"..."` is a string, or `null` where shown. `priority` is shown as it is, whatever the string. `changed_in` is
+the version of the first snapshot that carried the item's current record (section 9.7). If a binder's view
+would be larger than the limit, the Mac publishes it with every `notes` set to `null` and `notes_omitted`
+`true`, and the app says notes are not shown; if it is still too large, the Mac does not publish that snapshot
+and says so on its Health line. The index goes on naming the last version uploaded, if any (section 9.7), and
+the app shows that view's age (section 10.4).
+
+**From the binder to the view.** A binder the Mac can read may still hold values a v0 writer never writes,
+when it was adopted but needs migration (binder-v0 §9.6) or its processing log holds legacy entries. The Mac
+projects every value as follows, so that what it publishes is always valid:
+
+- `status`: `open`, `waiting` and `blocked` as they are; a missing or unknown status is published as `open`,
+  as binder-v0 §5.2 buckets it. An item in `open_items[]` with status `done` is not in `items`: it is in
+  `closed`, with `how` `done` and `closed_at` `null`, after every dated entry, as binder-v0 §5.2 lists it.
+- `due`, `follow_up_at` and a document's `date`: a value that is a valid date by binder-v0 §5.2 (`20260705`
+  and `2026-W27-1` included) is published as that date in `YYYY-MM-DD`; anything else as `null`.
+- `closed`: the closure entries in Recently closed, found and ordered as binder-v0 §5.2 says; an entry whose
+  `action` is neither `done` nor `dropped` is left out, as in the slice (binder-v0 §8.2). Its `closed_at` comes
+  from the closing date's source in that section: a `closed_at` that is an RFC 3339 date-time, or else an `at`
+  that is one, converted to UTC with any fraction of a second dropped; or else a `closed_at` that is only a
+  `YYYY-MM-DD` date, published as that date. A closure's `title` that is not a string is published as `""`.
+- `tags` and `contexts` keep only their string entries, in order; a field that is not an array is published
+  as `[]`. Any other field whose value does not have the type above is published as `null` where `null` is
+  shown, and an item that still cannot be published validly (a `title` that is not a string, say) is left out
+  of the view, and the Mac's Health line names it, as for an item id above.
 
 Buckets and their order follow binder-v0 §5.2, computed by the owner for the day in `today`; the eighth
 bucket, Recently closed, is `closed`, which holds the last 7 days.
@@ -840,8 +862,9 @@ Health line says so.
 **Retryable failures** leave the request on the relay and record nothing. There are two kinds:
 
 - **Device failures**: a binder that is busy or needs attention, met while deciding one of this device's
-  requests. The Mac stops that device for this drain: it takes no later step for any other request of that
-  device, whether or not it was fetched or opened, and leaves them all on the relay. So a request is never
+  requests, or a `404` for one of its listed requests (section 9.3). The Mac stops that device for this
+  drain: it takes no later step for any other request of that device, whether or not it was fetched or
+  opened, and leaves them all on the relay. So a request is never
   overtaken by a later one from the same device, and the sequence check of section 9.4 stays strict. The
   device then backs off: it is skipped for 1 minute, then 2, 4 and so on up to 1 hour, and the backoff resets
   after a drain in which the device decided a request. Device failures never count toward the companion
@@ -864,7 +887,8 @@ outcome and no journal line of its own. Only an authenticated request is ever de
    more.
 3. `D` is `active` in the Mac's records (not merely on the relay). Otherwise **discarded** (`not-active`).
 4. The body came whole and within 64 KiB (section 3.2). A body over the limit is **discarded** (`too-large`);
-   one cut short is a job failure (section 9.2).
+   one cut short is a job failure (section 9.2). A listed request the relay answers `404` for is a device
+   failure: it may still arrive, and no later request of that device may overtake it.
 5. The bytes are strict JSON (section 3.1) and a sealed object without `s`, with `kid` `"device"` and an `e`
    from 1 to the current epoch, and they open with `Kd` of `D` under the name `requests/{D}/{R}`. Otherwise
    **discarded** (`unreadable`). From here on the request is authenticated.
@@ -904,7 +928,8 @@ decides, decides:
 3. `seen_version` is not above the binder's `reserved` version (section 9.7). Otherwise **rejected**
    (`future-version`).
 4. **Closed items.** A `done` on an item closed as done, or a `drop` on an item closed as dropped, is
-   **applied** with no change. Any other request on a closed item is a **conflict**.
+   **applied** with no change. Any other request on a closed item is a **conflict**. An item in `open_items[]`
+   with status `done` counts as closed as done, as the view shows it (section 8.5).
 5. **Status.** The item's status must be one the table below allows for the type. Otherwise **conflict**.
 6. **Dates.** For `follow_up` and `postpone`, a `date` earlier than the Mac's today is a **conflict**.
 7. **As the person saw it.** The hash of the item's current record (section 9.7) must equal the hash in the
@@ -949,9 +974,10 @@ twice, never loses one, and never takes a logged op for one that took effect.
    - for a note: the complete capture event of section 9.5, with its id and `source.ref`;
    - for a conflict: the card's key `(D, R)` and its full contents (the device's label, the binder, the
      item's id and title as they were, the action and its date);
-   - for a rejection: the reason only (for `invalid`, the record holds the `seq` but no payload).
+   - for a rejection: the reason only (for `invalid`, the record holds the `seq` but no payload);
+   - for a request **applied** with no change (section 9.5, rule 4): **no effect**, recorded as such.
 2. **Apply.** Write that op under the binder's lock (binder-v0 §4.9 and §6.9), or that capture event, or the
-   card for `(D, R)`, exactly as recorded.
+   card for `(D, R)`, exactly as recorded. A rejection or no effect writes nothing.
 3. **Commit.** In one durable write: replace the decision record by the request's tombstone, raise
    `highest_seq` (section 9.4), count the decision toward the device's daily cap, and mark the device's outcomes
    as changed (section 9.9).
@@ -983,7 +1009,7 @@ device:
 - **A note.** If a capture event with the effect id exists, the outcome is `applied`; otherwise the recorded
   event is written now.
 - **A conflict.** The recorded card is created if no card for `(D, R)` exists.
-- **A rejection.** Nothing to apply.
+- **A rejection, or no effect.** Nothing to apply.
 
 Then it commits as in step 3. If recovery cannot finish now (the binder is busy or needs attention), that is
 a device failure (section 9.2): that device waits and backs off, and no other device is held up.
@@ -1096,10 +1122,13 @@ revision, which the device accepts.
 ### 9.8 The device's side of requests
 
 Several windows and tabs of one browser profile share one pairing. They coordinate through IndexedDB
-transactions, all with strict durability (section 10.2), and one Web Lock. An outbox entry is
-`{pairing generation, seq, R, type, state, sealed bytes}`, where the state is `queued` (never attempted),
-`attempted` (a network attempt may have reached the relay), `sent`, `not sent` (only ever for an entry never
-attempted), `conflict`, `rejected` or `unresolved`.
+transactions, all with strict durability (section 10.2), and one Web Lock. An outbox entry is `{pairing
+generation, seq, R, type, state, made_at, first_attempted_at, backoff, next_attempt_at, sealed bytes}`, where
+the state is `queued` (never attempted), `attempted` (a network attempt may have reached the relay),
+`sent`, `not sent` (only ever for an entry never attempted), `conflict`, `rejected` or `unresolved`. Times are
+on the device's clock: `made_at` is set when the entry is added, `first_attempted_at` when it first becomes
+`attempted`, and the retry delay `backoff` and `next_attempt_at` by step 2. They are stored with the entry, so
+every window, and the browser after a restart, sees the same deadlines.
 
 1. **Number and enqueue.** When the person acts, the window first checks the request against section 8
    (a note's length in characters and encoded bytes included) and tells the person if it is too long; nothing
@@ -1115,7 +1144,7 @@ attempted), `conflict`, `rejected` or `unresolved`.
      entry of generation `G`, state `not sent`, without sealed bytes, and tells the person. It is never sealed
      for another pairing.
 
-   An entry still `queued` 30 days after it was made becomes `not sent` and is never sent.
+   An entry still `queued` 30 days after its `made_at` becomes `not sent` and is never sent.
 
    (WebCrypto calls cannot run inside an IndexedDB transaction, which commits as soon as it waits on anything
    else, so sealing comes first.) The action shows as pending only once the transaction has completed.
@@ -1123,9 +1152,10 @@ attempted), `conflict`, `rejected` or `unresolved`.
    (`navigator.locks.request`, exclusive), and holds it for that attempt only:
    1. In one read transaction, it reads the current pairing generation and the lowest-`seq` entry that is
       `queued` or `attempted`. If the entry's generation is not the current one, or there is none, or sending
-      is suspended for the pairing (step 4 below), it sends nothing and releases the lock.
-   2. If the entry is `queued`, it sets it to `attempted`, in one transaction with strict durability, and
-      waits for it to complete. No byte leaves the device before that.
+      is suspended for the pairing (step 4 below), or the entry's `next_attempt_at` is still ahead (a value more
+      than 5 minutes ahead, after a clock change, counts as now), it sends nothing and releases the lock.
+   2. If the entry is `queued`, it sets it to `attempted` and its `first_attempted_at` to now, in one
+      transaction with strict durability, and waits for it to complete. No byte leaves the device before that.
    3. It sends that entry once, bounded to 30 seconds, with an `AbortController` that a removal can trigger.
    4. It records the result in one transaction with strict durability that is **conditional**: it looks up the
       entry by pairing generation, `R` and `seq`, and changes it only if it still exists and is still
@@ -1137,10 +1167,11 @@ attempted), `conflict`, `rejected` or `unresolved`.
       the whole pairing and keeps every key and entry: the relay's answer is not proof that the device was
       removed. It tells the person that the relay no longer accepts this phone, and leaves removal to them
       (step 4). On `429`, `507`, any `5xx`, a timeout
-      or a network error, it stays `attempted`. The window waits for the
+      or a network error, it stays `attempted`, its `backoff` becomes 2 seconds if it had none and doubles
+      otherwise, up to 5 minutes, and its `next_attempt_at` becomes now plus `backoff`. The window waits for the
       transaction to complete before it releases the lock.
-   5. It releases the lock before waiting. Backoff (2 seconds, doubling up to 5 minutes) happens without the
-      lock, and the next attempt takes it again and rechecks everything from step 1.
+   5. It releases the lock before waiting. The wait until `next_attempt_at` happens without the lock, and the
+      next attempt, from whichever window, takes it again and rechecks everything from step 1.
 
    A retry sends the same bytes, so the same `R` and `seq`. A browser without Web Locks is not supported.
 3. **Outcomes.** On every refresh the device finds its newest outcomes object and accepts it as section 10.3
@@ -1149,7 +1180,7 @@ attempted), `conflict`, `rejected` or `unresolved`.
    so is `unknown`, which leaves the entry `unresolved` ("your Mac no longer knows what became of this").
    `applied` removes the entry; `conflict` and `rejected` set its state, and the app shows it ("your Mac wants
    you to look at this", "your Mac refused this") until the person dismisses it. A `sent` or `attempted` entry
-   with no outcome 30 days after its first attempt becomes `unresolved` and stays visible ("your Mac never
+   with no outcome 30 days after its `first_attempted_at` becomes `unresolved` and stays visible ("your Mac never
    confirmed this") until dismissed; an outcome that arrives later still resolves it. Until then the action
    shows as pending.
 4. **Removing or replacing the pairing.** This happens only when the person asks. At the start the window
@@ -1294,6 +1325,9 @@ can set a revision or version, and a refused object never moves a high-water mar
 The device shows when the owner last published (the accepted index's `generated_at`) and when it last
 reached the relay. If the index is more than 26 hours old, it says so plainly ("Your Mac last published 2
 days ago"): the relay can withhold updates, and the device cannot tell that apart from a Mac that is off.
+It also shows a binder's view's own `generated_at` when that is more than 26 hours old, even under a fresh
+index: the Mac republishes every view at least daily (section 9.7), so an older view is one it could not
+publish again, such as a binder that grew too large (section 8.5).
 
 ## 11. What the relay can observe
 
@@ -1408,6 +1442,10 @@ A vector, once committed, changes only with the protocol version. The cases:
     `blocked`, closed as done, closed as dropped), the expected result of section 9.5: the op with its exact
     `args`, `applied` with no change, or a conflict. These are Mac-side cases; the web app uses them to decide
     which actions to offer.
+20. `view-projection`: a binder adopted but still needing migration, with an item of status `done`, one with no
+    status, `due` values `20260705`, `2026-W27-1` and `2026-02-30`, and closure entries whose `closed_at` is a
+    date-time with an offset, only a date, and missing beside an `at`: the exact view the Mac publishes
+    (section 8.5), which the web app accepts as valid.
 
 ## 15. Versioning
 
