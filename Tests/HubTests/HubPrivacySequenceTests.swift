@@ -307,8 +307,9 @@ import Testing
     }
 
     /// `outsideFirst`: items redacted at adoption at random, and outside edits the hub never saw (a tag added, a
-    /// redaction) before the first publication, which is checked like any other.
-    func run(seed: UInt64, steps: Int, outsideFirst: Bool = false) throws {
+    /// redaction) before the first publication, which is checked like any other. `retitle`: an outside edit that
+    /// redacts an item also gives it a new, private title, which the hub must never see while the redaction stands.
+    func run(seed: UInt64, steps: Int, outsideFirst: Bool = false, retitle: Bool = false) throws {
         var rng = SplitMix(state: seed)
         let root = try scratch()
         let redactedAtAdoption = outsideFirst ? Set((1...2).filter { _ in Bool.random(using: &rng) }) : []
@@ -375,8 +376,12 @@ import Testing
             switch kind {
             case 0:
                 let on = Bool.random(using: &rng)
-                trail.append("outside redact \(k) \(on)")
-                try editOutside(f, k) { if on { $0.set("redact", .bool(true)) } else { $0.remove("redact") } }
+                trail.append("outside redact \(k) \(on)\(on && retitle ? ", private title" : "")")
+                try editOutside(f, k) {
+                    guard on else { $0.remove("redact"); return }
+                    $0.set("redact", .bool(true))
+                    if retitle { $0.set("title", .string("Invented private title \(n)")) }
+                }
             case 1:
                 let on = Bool.random(using: &rng)
                 trail.append("outside slice_title \(k) \(on)")
@@ -448,5 +453,68 @@ import Testing
     @Test(arguments: [UInt64(3), 4, 5, 6, 7, 8, 9, 11])
     func randomSequencesFromOutsideEditsBeforeTheFirstPublication(seed: UInt64) throws {
         try run(seed: seed, steps: 80, outsideFirst: true)
+    }
+
+    // Round 4, MUST-FIX 1: outside redactions that also give the item a private title. Each seed reaches a redaction
+    // the hub keeps after an outside edit lifted it and added a hub title; each was checked to fail without the fix.
+    @Test(arguments: [UInt64(29), 81, 93, 104, 164, 182])
+    func randomSequencesWithPrivateTitles(seed: UInt64) throws {
+        try run(seed: seed, steps: 80, retitle: true)
+    }
+
+    // Round 4, MUST-FIX 1. An item adopted unredacted, without a hub title, that an outside edit redacts and gives a
+    // private title: the hub keeps the redaction once published, and once another outside edit lifts the redaction
+    // and adds a hub title it still shows `[redacted]`, never the private title the ratchet keeps for want of a
+    // confirmed hub title. A refused publish judges the slice by the same rule, so it keeps a slice that shows only
+    // `[redacted]`.
+    @Test func aKeptRedactionNeverShowsThePrivateTitle() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        try editOutside(f, "a-1") {
+            $0.set("redact", .bool(true))
+            $0.set("title", .str("Invented private title"))
+        }
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { Issue.record("publish failed"); return }
+        try editOutside(f, "a-1") {
+            $0.remove("redact")
+            $0.set("slice_title", .str("Invented outside hub title"))
+        }
+        func shown() throws -> String { String(decoding: try Data(contentsOf: sliceURL(s)), as: UTF8.self) }
+        let first = try slice(s)["items"]?.arrayValue?.first?["id"]
+
+        try editOutside(f, "a-2") { $0.set("priority", .str("invented-bad")) }
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(f, root: s, now: now, force: true) }
+        #expect(FileManager.default.fileExists(atPath: sliceURL(s).path))
+
+        try editOutside(f, "a-2") { $0.set("priority", .str("normal")) }
+        _ = try HubLane.publish(f, root: s, now: now, force: true)
+        let item = try slice(s)["items"]?.arrayValue?.first { $0["id"] == first }
+        #expect(item?["title"] == .str("[redacted]"))
+        #expect(item?["waiting_on"] == .str("[party]") && item?["link"] == .null)
+        #expect(try !shown().contains("Invented private title") && !shown().contains("Invented outside hub title"))
+    }
+
+    // Round 4, MUST-FIX 2. An item an outside edit left in `open_items` with status `done` is published with its
+    // title, party and link. Once it is redacted, a publish refused by another item withdraws the slice, as for an
+    // open item; rows shown once for closed items carry only their id and keep the slice.
+    @Test func aRefusedPublishWithdrawsALegacyDoneItemRedactedSince() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root)
+        try editOutside(f, "a-1") { $0.set("status", .str("done")) }
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { Issue.record("publish failed"); return }
+        let done = try slice(s)["items"]?.arrayValue?.first { $0["id"] == .str("tax-a-1") }
+        #expect(done?["status"] == .str("done") && done?["title"] == .str("Invented task 1"))
+
+        // A closure shown once does not count as showing more.
+        try userOp(f, "complete", args(("id", .str("a-3")), ("closed_at", .str("2026-10-07T10:00:00Z")), ("source", .str("user"))))
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { Issue.record("publish failed"); return }
+        #expect(try slice(s)["items"]?.arrayValue?.contains { $0["title"] == .str("[closed]") } == true)
+        try editOutside(f, "a-2") { $0.set("priority", .str("invented-bad")) }
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(f, root: s, now: now, force: true) }
+        #expect(FileManager.default.fileExists(atPath: sliceURL(s).path))
+
+        try editOutside(f, "a-1") { $0.set("redact", .bool(true)) }
+        #expect(throws: TekaStore.Refused.self) { try HubLane.publish(f, root: s, now: now, force: true) }
+        #expect(!FileManager.default.fileExists(atPath: sliceURL(s).path))
     }
 }
