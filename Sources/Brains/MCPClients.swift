@@ -66,10 +66,18 @@ public struct MCPClients: Codable, Sendable {
         SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// A new token: the fixed prefix `sprava_ct_` and 32 random bytes in hex, so scanners recognize it.
+    /// A new token: the fixed prefix `sprava_ct_` and 32 random bytes in hex, so scanners recognize it. The bytes
+    /// come from `arc4random_buf`, which cannot fail: a source whose failure went unnoticed would leave every byte
+    /// zero, and every such client would get the same token.
     public static func newToken() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
+        arc4random_buf(&bytes, bytes.count)
+        return token(bytes)
+    }
+
+    /// The token for 32 bytes.
+    static func token(_ bytes: [UInt8]) -> String {
+        precondition(bytes.count == 32)
         return "sprava_ct_" + bytes.map { String(format: "%02x", $0) }.joined()
     }
 

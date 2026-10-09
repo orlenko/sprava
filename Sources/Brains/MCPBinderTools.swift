@@ -9,11 +9,14 @@ import SpravaKit
 
 /// Which binders a client sees, and the read-only binder tools: list_binders and get_proposal (architecture 7.3, 7.6).
 extension MCPServer {
-    /// The binders this client may see: in its scope, and not at disclosure `none` as last confirmed by the person
-    /// (architecture 7.6; the privacy ratchet, 4.5).
+    /// The binders this client may see: in its scope, not blocked from federation, and not at disclosure `none` as
+    /// last confirmed by the person (architecture 7.6; the privacy ratchet, 4.5). A federation-blocked binder (a
+    /// stamped catalog without a valid `meta.disclosure`, a name that differs from its folder, writes blocked) has
+    /// no level that says what may leave it, so nothing does: the hub withdraws its slice, and a brain sees nothing
+    /// of it either. An absent disclosure would otherwise read as `full`.
     package func visible() -> [(ShelfRow, String)] {
         shelf().compactMap { row in
-            guard row.teka.isAdopted, let level = client.level(for: row.folder),
+            guard row.teka.isAdopted, !row.teka.federationBlocked, let level = client.level(for: row.folder),
                   PrivacyRatchet.disclosure(row) != "none" else { return nil }
             return (row, level)
         }
