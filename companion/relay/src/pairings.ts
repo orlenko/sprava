@@ -1,5 +1,10 @@
 // Pairings (companion-v0 §7.3): the owner opens one, a device joins it with the QR code's secret, the owner
 // posts the sealed key, and the device acknowledges it. The state is the furthest write-once part that exists.
+//
+// Locks (devices.ts): everything that reads a pairing's state and then changes it (join, key, acknowledgement,
+// expiry, deletion) runs under the lock of the pairing's device, so expiry can never run between a check and the
+// writes of an activation. Opening a pairing and the join's capacity checks take the creation lock, after the
+// device's lock, never before it.
 import { randomBytes } from 'node:crypto';
 import { decodeB64, encodeB64, formatTime, isId, newToken, sameSecret, sha256Hex, tokenHash } from './encoding.ts';
 import type { Devices } from './devices.ts';
@@ -20,84 +25,114 @@ interface Pairing {
     created: PairingCreated;
     parts: Set<string>;
     state: State;
+    expired: boolean;
 }
 
 const json = (value: unknown): Uint8Array => new Uint8Array(Buffer.from(JSON.stringify(value), 'utf8'));
+const missing = (): HttpError => new HttpError(404, 'There is no such pairing.');
 
 /** The pairing endpoints, and a sweep that deletes expired pairings (run every minute by the relay). */
 export function pairings(relay: Relay, devices: Devices): { routes: Route[]; sweep: () => Promise<void> } {
     const { store } = relay;
     const failedJoins = new Map<string, number>();
 
-    /** Reads a live pairing; null when it is missing or past its expiry, which then deletes it. */
-    async function find(p: string | undefined): Promise<Pairing | null> {
+    /** Reads a pairing as it is now; it changes nothing. */
+    async function read(p: string | undefined): Promise<Pairing | null> {
         if (!isId(p)) return null;
         const parts = new Set((await store.list(`pairings/${p}/`)).map((k) => k.slice(`pairings/${p}/`.length)));
         const created = parts.has('created.json') ? readRecord<PairingCreated>(await store.get(pairingKeys(p).created)) : null;
         if (created === null) return null;
-        const pairing: Pairing = { id: p, created, parts, state: stateOf(parts) };
-        if (Date.parse(created.expires_at) <= relay.now()) {
-            await expire(pairing);
-            return null;
+        return { id: p, created, parts, state: stateOf(parts), expired: !(Date.parse(created.expires_at) > relay.now()) };
+    }
+
+    /**
+     * Runs `work` on a live pairing under its device's lock, read again under the lock; an expired one is deleted
+     * there and answers 404. `held` says the caller already holds that lock (a device acting on its own pairing).
+     */
+    async function withPairing<T>(p: string | undefined, work: (pairing: Pairing) => Promise<T>, held: string | null = null): Promise<T> {
+        const first = await read(p);
+        if (first === null) throw missing();
+        const d = first.created.device_id;
+        const locked = async (): Promise<T> => {
+            const pairing = await read(p);
+            if (pairing === null) throw missing();
+            if (pairing.expired) {
+                await expireLocked(pairing);
+                throw missing();
+            }
+            return work(pairing);
+        };
+        if (held !== null) {
+            if (held !== d) throw new HttpError(403, 'This token may only use its own pairing.');
+            return locked();
         }
-        return pairing;
+        return relay.deviceLocks.run(d, locked);
     }
 
     /** §7.3: a pairing is deleted 10 minutes after it was made, with its device if that is still pending. */
-    async function expire(pairing: Pairing): Promise<void> {
+    async function expireLocked(pairing: Pairing): Promise<void> {
         const d = pairing.created.device_id;
-        if (await isPending(d)) await devices.deleteParts(d);
+        const pending = (await store.has(deviceKeys(d).record)) && !(await store.has(deviceKeys(d).active)) && !(await store.has(deviceKeys(d).revoked));
+        if (pending) await devices.deletePartsLocked(d);
         for (const part of pairing.parts) await store.delete(`pairings/${pairing.id}/${part}`);
         failedJoins.delete(pairing.id);
     }
 
-    async function isPending(d: string): Promise<boolean> {
-        return (await store.has(deviceKeys(d).record)) && !(await store.has(deviceKeys(d).active)) && !(await store.has(deviceKeys(d).revoked));
-    }
-
-    async function livePairings(): Promise<Pairing[]> {
-        const live: Pairing[] = [];
+    async function allPairings(): Promise<Pairing[]> {
+        const all: Pairing[] = [];
         for (const p of groupParts(await store.list('pairings/'), 'pairings').keys()) {
-            const pairing = await find(p);
-            if (pairing !== null) live.push(pairing);
+            const pairing = await read(p);
+            if (pairing !== null) all.push(pairing);
         }
-        return live;
+        return all;
     }
 
-    /** §7.8 rule 5, applied again before counting: an orphaned pending record never holds a device slot. */
-    async function countDevices(live: Pairing[]): Promise<number> {
-        let count = 0;
+    /** The pending devices whose pairing is gone or expired (§7.8 rule 5). */
+    async function orphans(live: Pairing[]): Promise<{ orphaned: string[]; counted: number }> {
+        const orphaned: string[] = [];
+        let counted = 0;
         for (const [d, parts] of groupParts(await store.list('devices/'), 'devices')) {
             if (!parts.has('record.json') || parts.has('revoked')) continue;
             if (!parts.has('active')) {
                 const record = readRecord<DeviceRecord>(await store.get(deviceKeys(d).record));
                 if (record === null || !live.some((p) => p.id === record.pairing_id)) {
-                    await store.delete(deviceKeys(d).record);
+                    orphaned.push(d);
                     continue;
                 }
             }
-            count++;
+            counted++;
         }
-        return count;
+        return { orphaned, counted };
     }
 
-    const ownPairing = async (call: Call): Promise<Pairing> => {
-        const pairing = await find(call.params.P);
+    /** §7.8 rule 5, applied again before counting: each orphaned pending device is deleted under its own lock. */
+    async function deleteOrphans(): Promise<void> {
+        const { orphaned } = await orphans((await allPairings()).filter((p) => !p.expired));
+        for (const d of orphaned) {
+            await relay.deviceLocks.run(d, async () => {
+                const { orphaned: still } = await orphans((await allPairings()).filter((p) => !p.expired));
+                if (still.includes(d) && !(await store.has(deviceKeys(d).active))) await devices.deletePartsLocked(d);
+            });
+        }
+    }
+
+    const ownDevice = (call: Call): string => {
         if (call.principal?.kind !== 'device' || call.principal.pairing !== call.params.P) {
             throw new HttpError(403, 'This token may only use its own pairing.');
         }
-        if (pairing === null) throw new HttpError(404, 'There is no such pairing.');
-        return pairing;
-    };
-    const ownerPairing = async (call: Call): Promise<Pairing> => {
-        const pairing = await find(call.params.P);
-        if (pairing === null) throw new HttpError(404, 'There is no such pairing.');
-        return pairing;
+        return call.principal.id;
     };
 
     const sweep = async (): Promise<void> => {
-        await livePairings();
+        for (const pairing of await allPairings()) {
+            if (!pairing.expired) continue;
+            await relay.deviceLocks.run(pairing.created.device_id, async () => {
+                const now = await read(pairing.id);
+                if (now !== null && now.expired) await expireLocked(now);
+            });
+        }
     };
+
     const routes: Route[] = [
         {
             method: 'POST',
@@ -111,20 +146,23 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                 if (typeof a !== 'string' || decodeB64(a)?.length !== 32 || !isId(d)) {
                     throw new HttpError(400, 'A pairing needs the owner public key (32 bytes in b64) and a device id.');
                 }
-                return relay.lock.run(async () => {
-                    const live = await livePairings();
-                    const used = (await store.list(`devices/${d}/`)).length > 0 || live.some((p) => p.created.device_id === d);
-                    if (used) throw new HttpError(409, 'That device id is already in use.');
-                    if (live.filter((p) => p.state === 'open').length >= MAX_OPEN || (await countDevices(live)) >= MAX_DEVICES) {
-                        throw new HttpError(507, 'There are too many open pairings or devices.');
-                    }
-                    const p = encodeB64(randomBytes(16));
-                    const secret = encodeB64(randomBytes(16));
-                    const expiresAt = formatTime(relay.now() + PAIRING_TTL_MS);
-                    const created: PairingCreated = { owner_public_key: a, device_id: d, secret_sha256: sha256Hex(secret), expires_at: expiresAt };
-                    await writeOnce(store, pairingKeys(p).created, json(created));
-                    return { status: 200, json: { pairing_id: p, secret, expires_at: expiresAt } };
-                });
+                await deleteOrphans();
+                return relay.deviceLocks.run(d, () =>
+                    relay.lock.run(async () => {
+                        const live = (await allPairings()).filter((p) => !p.expired);
+                        const used = (await store.list(`devices/${d}/`)).length > 0 || (await allPairings()).some((p) => p.created.device_id === d);
+                        if (used) throw new HttpError(409, 'That device id is already in use.');
+                        if (live.filter((p) => p.state === 'open').length >= MAX_OPEN || (await orphans(live)).counted >= MAX_DEVICES) {
+                            throw new HttpError(507, 'There are too many open pairings or devices.');
+                        }
+                        const p = encodeB64(randomBytes(16));
+                        const secret = encodeB64(randomBytes(16));
+                        const expiresAt = formatTime(relay.now() + PAIRING_TTL_MS);
+                        const created: PairingCreated = { owner_public_key: a, device_id: d, secret_sha256: sha256Hex(secret), expires_at: expiresAt };
+                        await writeOnce(store, pairingKeys(p).created, json(created));
+                        return { status: 200, json: { pairing_id: p, secret, expires_at: expiresAt } };
+                    }),
+                );
             },
         },
         {
@@ -138,23 +176,26 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
                 if (typeof secret !== 'string' || typeof b !== 'string' || decodeB64(b)?.length !== 32 || typeof hello !== 'string' || hello.length > 2048 || !decodeB64(hello)?.length) {
                     throw new HttpError(400, 'A join needs the secret, the device public key (32 bytes in b64) and the sealed hello in b64.');
                 }
-                return relay.lock.run(async () => {
-                    const pairing = await find(call.params.P);
-                    if (pairing === null) throw new HttpError(404, 'There is no such pairing.');
+                return withPairing(call.params.P, async (pairing) => {
                     if (!sameSecret(sha256Hex(secret), pairing.created.secret_sha256)) {
                         const failures = (failedJoins.get(pairing.id) ?? 0) + 1;
                         failedJoins.set(pairing.id, failures);
-                        if (failures >= MAX_FAILED_JOINS) await expire(pairing);
+                        if (failures >= MAX_FAILED_JOINS) await expireLocked(pairing);
                         throw new HttpError(403, 'The pairing secret is not right.');
                     }
                     const d = pairing.created.device_id;
-                    if (pairing.state !== 'open' || (await store.list(`devices/${d}/`)).length > 0) throw new HttpError(409, 'This pairing was already joined.');
+                    // Joined means joined.json exists. A join that failed part-way, whose writes may still land, left
+                    // at most a token nobody holds and a record every join writes alike (layout.ts).
+                    if (pairing.state !== 'open' || (await devices.revokedLocked(d))) throw new HttpError(409, 'This pairing was already joined.');
                     const token = newToken();
+                    const hash = tokenHash(token);
+                    await writeOnce(store, deviceKeys(d).token(hash), json({ joined_at: formatTime(relay.now()) }));
                     const record: DeviceRecord = { pairing_id: pairing.id };
-                    await writeOnce(store, deviceKeys(d).token(tokenHash(token)), json({ joined_at: formatTime(relay.now()) }));
                     if ((await writeOnce(store, deviceKeys(d).record, json(record))) === 'different') throw new HttpError(409, 'This pairing was already joined.');
-                    devices.remember(d, pairing.id, tokenHash(token));
-                    await writeOnce(store, pairingKeys(pairing.id).joined, json({ device_public_key: b, hello }));
+                    if ((await writeOnce(store, pairingKeys(pairing.id).joined, json({ device_public_key: b, hello }))) === 'different') {
+                        throw new HttpError(409, 'This pairing was already joined.');
+                    }
+                    devices.remember(d, pairing.id, hash);
                     return { status: 200, json: { device_id: d, device_token: token, expires_at: pairing.created.expires_at } };
                 });
             },
@@ -165,17 +206,18 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
             access: ['owner'],
             browser: false,
             async handle(call) {
-                const pairing = await ownerPairing(call);
-                const joined = pairing.state === 'open' ? null : readRecord<{ device_public_key: string; hello: string }>(await store.get(pairingKeys(pairing.id).joined));
-                return {
-                    status: 200,
-                    json: {
-                        state: pairing.state,
-                        device_id: joined === null ? null : pairing.created.device_id,
-                        device_public_key: joined?.device_public_key ?? null,
-                        hello: joined?.hello ?? null,
-                    },
-                };
+                return withPairing(call.params.P, async (pairing) => {
+                    const joined = pairing.state === 'open' ? null : readRecord<{ device_public_key: string; hello: string }>(await store.get(pairingKeys(pairing.id).joined));
+                    return {
+                        status: 200,
+                        json: {
+                            state: pairing.state,
+                            device_id: joined === null ? null : pairing.created.device_id,
+                            device_public_key: joined?.device_public_key ?? null,
+                            hello: joined?.hello ?? null,
+                        },
+                    };
+                });
             },
         },
         {
@@ -187,11 +229,10 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
             async handle(call) {
                 if (call.body.length === 0) throw new HttpError(400, 'The sealed key payload is required.');
                 const hash = new Uint8Array(Buffer.from(sha256Hex(call.body), 'ascii'));
-                return relay.lock.run(async () => {
-                    const pairing = await ownerPairing(call);
+                return withPairing(call.params.P, async (pairing) => {
                     const keys = pairingKeys(pairing.id);
                     const d = pairing.created.device_id;
-                    if (pairing.state === 'open' || (await devices.isRevoked(d))) throw new HttpError(409, 'This pairing cannot take a key now.');
+                    if (pairing.state === 'open' || (await devices.revokedLocked(d))) throw new HttpError(409, 'This pairing cannot take a key now.');
                     if (pairing.state === 'joined') {
                         // §7.3: the activation marker first, so a device that can fetch its key is always active.
                         await writeOnce(store, deviceKeys(d).active, EMPTY);
@@ -207,11 +248,17 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
             path: '/v0/pairings/:P/key',
             access: ['pending', 'active'],
             browser: true,
+            // Runs under the device's lock (guard), its revocation checked there.
             async handle(call) {
-                const pairing = await ownPairing(call);
-                const bytes = pairing.parts.has('ack') ? null : await store.get(pairingKeys(pairing.id).key);
-                if (bytes === null) throw new HttpError(404, 'The key is not there.');
-                return { status: 200, bytes };
+                return withPairing(
+                    call.params.P,
+                    async (pairing) => {
+                        const bytes = pairing.parts.has('ack') ? null : await store.get(pairingKeys(pairing.id).key);
+                        if (bytes === null) throw new HttpError(404, 'The key is not there.');
+                        return { status: 200, bytes };
+                    },
+                    ownDevice(call),
+                );
             },
         },
         {
@@ -220,14 +267,17 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
             access: ['pending', 'active'],
             browser: true,
             async handle(call) {
-                return relay.lock.run(async () => {
-                    const pairing = await ownPairing(call);
-                    if (pairing.state !== 'keyed' && pairing.state !== 'acknowledged') throw new HttpError(409, 'There is no key to acknowledge yet.');
-                    // §7.3: the acknowledgement, then the payload goes; key.sha256 stays until the pairing is deleted.
-                    await writeOnce(store, pairingKeys(pairing.id).ack, EMPTY);
-                    await store.delete(pairingKeys(pairing.id).key);
-                    return { status: 204 };
-                });
+                return withPairing(
+                    call.params.P,
+                    async (pairing) => {
+                        if (pairing.state !== 'keyed' && pairing.state !== 'acknowledged') throw new HttpError(409, 'There is no key to acknowledge yet.');
+                        // §7.3: the acknowledgement, then the payload goes; key.sha256 stays until the pairing is deleted.
+                        await writeOnce(store, pairingKeys(pairing.id).ack, EMPTY);
+                        await store.delete(pairingKeys(pairing.id).key);
+                        return { status: 204 };
+                    },
+                    ownDevice(call),
+                );
             },
         },
         {
@@ -237,10 +287,11 @@ export function pairings(relay: Relay, devices: Devices): { routes: Route[]; swe
             browser: false,
             async handle(call) {
                 if (!isId(call.params.P)) throw new HttpError(400, 'That is not a pairing id.');
-                await relay.lock.run(async () => {
-                    const pairing = await find(call.params.P);
-                    if (pairing !== null) await expire(pairing);
-                });
+                try {
+                    await withPairing(call.params.P, (pairing) => expireLocked(pairing));
+                } catch (error) {
+                    if (!(error instanceof HttpError && error.status === 404)) throw error;
+                }
                 return { status: 204 };
             },
         },
