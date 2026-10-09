@@ -183,12 +183,17 @@ The owner rotates after it revokes a device, and when the person asks:
 
 1. The owner marks the device revoked in its own records, in the same durable write retires its outcome work
    (section 9.9), deletes that device's `Kd` from the Keychain, and calls `DELETE /v0/devices/{D}`.
-2. It makes a new `K` with epoch `e + 1` and a new `Kb` for every shown binder (binder ids stay), and stores
+2. It takes the owner's **key lock** (section 5.2, step 4), makes a new `K` with epoch `e + 1` and a new
+   `Kb` for every shown binder (binder ids stay), and stores
    them in the Keychain before uploading anything. If it stops partway, it finishes the rotation at its next
    start; every step can be repeated.
-3. For each remaining active device, it writes `devices/{D}/keys/{e + 1}` (section 8.3), sealed with that
-   device's `Kd` and signed, recording the exact bytes durably before the first upload and sending those same
-   bytes on every retry, after a restart too (section 9.7, "Write-once uploads"). Only that device can read it.
+3. Still under the key lock, it seals `devices/{D}/keys/{e + 1}` (section 8.3) for each remaining active device
+   with that device's `Kd`, signs it, and records all those bytes durably in the same write as the new keys, so
+   the set of devices given keys is fixed while no pairing can become active. Then it releases the key lock,
+   and only then uploads them, sending those same bytes on every retry, after a restart too, which resumes from
+   what it recorded without the key lock (section 9.7, "Write-once uploads"). Only each device can read its own.
+   No network call is ever made under the key lock, and the key lock is never held while waiting for the
+   publish lock.
 4. It takes a new snapshot of every shown binder, uploads each as a new view version sealed with its new
    `Kb`, then publishes the index sealed with the new `K` (section 9.7). Old view versions are deleted once
    that index is published.
@@ -284,12 +289,17 @@ be the relay's `SPRAVA_WEB_ORIGIN`.
    it never stores a key under, or resets, the record of another device. It takes the device's rollback floor
    under the publish lock (section 9.7): it first finishes or supersedes any unfinished publication, then takes
    the published revision, which is then the highest revision it ever assigned; 0 only if it never assigned
-   one. It seals the `key` payload (section 8.2), which carries that floor and `S`, with `W`. Then, in one
-   durable write, it stores `Kd` in the Keychain under `D`, the sealed key payload, and the record changed to
-   active with its label and `highest_seq` 0 (section 9.1), so a restart can resend the same bytes. It writes
-   `devices/{D}/keys/{e}` for the current epoch `e` (section 8.3), signed, as a write-once upload (section 9.7),
-   and calls `PUT /v0/pairings/{P}/key` with the recorded bytes, repeating it after a restart until it gets
-   `204`. The relay makes the device active. If the person says the codes differ, the owner calls
+   one. It releases the publish lock, then takes the owner's **key lock**, which rotation steps 2 and 3 (section
+   4.4) also hold, so those steps either finish before this and the device gets the new epoch, or start after
+   the device is active and record new keys for it too. Under the key lock, with no network call, it checks the record once more, seals the
+   `key` payload (section 8.2), which carries the floor, the current epoch's `K` and `S`, with `W`, signs
+   `devices/{D}/keys/{e}` for that epoch `e` (section 8.3), and, in one durable write, stores `Kd` in the
+   Keychain under `D`, both sealed objects' bytes, and the record changed to active with its label and
+   `highest_seq` 0 (section 9.1). Then it releases the key lock. Only after that does it upload
+   `devices/{D}/keys/{e}` as a write-once upload (section 9.7) and call `PUT /v0/pairings/{P}/key` with the
+   recorded bytes, repeating both, after a restart too, from what it recorded, with a bounded backoff, until
+   it gets `204`, or a `404` after `expires_at` (section 7.3), when step 6 lists the device as not confirmed.
+   The relay makes the device active on `204`. If the person says the codes differ, the owner calls
    `DELETE /v0/pairings/{P}` instead.
 5. **Device.** Polls `GET /v0/pairings/{P}/key` every 2 seconds. When it gets the sealed key, it opens it with `W`
    and validates it (section 8.2). Then, in one IndexedDB transaction with strict durability, and only if its
@@ -854,8 +864,11 @@ Health line says so.
    1. **Recover** any decision record of that device still `deciding` (section 9.6). If it cannot be
       finished, the device stops here.
    2. **List** one page: `GET /v0/requests/{D}?limit=25`.
-   3. **Check.** Fetch each listed request and run the checks of section 9.3 on it, on its own.
-   4. **Decide** the requests that passed, in ascending `seq` (sections 9.4 and 9.5).
+   3. **Check.** Fetch each listed request and run the checks of section 9.3 on it, on its own; no outcome is
+      recorded yet.
+   4. **Decide** every authenticated request with a valid `seq` (checks 1 to 6 passed) in ascending `seq`
+      (sections 9.4 and 9.5). One that check 7 rejects is decided in its place in that order, never before a
+      lower `seq` still to decide.
    5. **Record** each outcome (section 9.6), then delete the request from the relay. A deletion that fails is
       repeated by the next run, which finds the request already decided.
 3. **Publish outcomes** for every device whose outcomes changed (section 9.9), whatever happened above.
@@ -901,8 +914,8 @@ outcome and no journal line of its own. Only an authenticated request is ever de
 
 ### 9.4 Order and replay
 
-For each device, the requests that passed section 9.3 are taken in ascending `seq`; two with the same `seq` are
-taken in the bytewise order of `R`. A request whose `seq` is not above the device's `highest_seq` (and whose
+For each device, the authenticated requests with a valid `seq` (section 9.3, checks 1 to 6), those check 7
+rejects included, are taken in ascending `seq`; two with the same `seq` are taken in the bytewise order of `R`. A request whose `seq` is not above the device's `highest_seq` (and whose
 `(D, R)` has no tombstone, section 9.3) is **rejected** (a replay, or one the relay held back), or gets `unknown`
 as the next paragraph says. Every other request, once decided, whatever its outcome, raises `highest_seq` to its
 `seq`. A retryable failure stops the device at once (section 9.2): its later requests wait, undecided, so they
@@ -960,7 +973,10 @@ it. There is at most one card for each `(D, R)`: creating a card that exists doe
 
 For `note`: the note is **applied**. The Mac writes a capture event exactly as capture-event-v0 §8.1 (in-app
 text) says, with a `source.ref` UUID minted when it decides (section 9.6) and the SHA-256 of `text` as
-`source.revision`, plus `binder_hint` when `binder` is given and that binder is currently shown, and
+`source.revision`, plus `binder_hint` when `binder` is given and that binder is currently shown: the binder's
+current name, which the Mac looks up from that id in its own records (capture-event-v0 matches hints by name;
+the companion's id is never written as a hint; a name longer than capture-event-v0 allows for a hint is not
+written, and the note is then filed as one without a hint), and
 `extensions.sprava.companion` `{"device_id": D, "request_id": R}`. The event's id is the effect id, so writing
 it twice makes one capture (capture-event-v0 §5.4).
 
@@ -1079,7 +1095,7 @@ including one after a restart, sends those bytes, so a retry of a stored object 
 writes, which the Mac never sent: the relay misbehaves. The Mac then reports it on its Health line and moves
 on: an index or outcomes object is published again at the next revision, a view version's record is dropped and a
 new snapshot taken, and a keys object, whose name is fixed by its epoch, is replaced by rotating again (section
-4.4). Recorded bytes are dropped once their object is superseded and deleted.
+4.4), a rotation scheduled after the current one has released its locks, never started from inside it. Recorded bytes are dropped once their object is superseded and deleted.
 
 **Publishing the index.** Under the **publish lock**, one lock for the whole companion:
 
