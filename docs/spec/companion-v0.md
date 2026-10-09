@@ -681,8 +681,10 @@ integers of at least 1, in decimal without leading zeros. Nothing else is accept
 - `GET /v0/objects/{name}` → bytes, with `ETag: "<SHA-256 of the bytes, in lowercase hex>"` (the quotes are
   part of the value). A request whose `If-None-Match` is exactly that value gets `304` with the same `ETag` and
   no body. Since an object never changes under its name, the tag never goes stale.
-- `DELETE /v0/objects/{name}` → `204`, also when the name does not exist. The relay writes the name's tombstone,
-  durably, then deletes the object (section 7.8). Then it raises the prefix's floor to the lowest number under it
+- `DELETE /v0/objects/{name}` → `204`, also when the name does not exist. The relay first writes, durably, the
+  name's deletion marker `intents/objects/{name}/deleting`, then its tombstone, then deletes the object (section
+  7.8). From the marker on, every `PUT` of the name is refused with `410`, so a tombstone that lands late can never
+  hide an upload acknowledged meanwhile; a marker that lands late only refuses uploads and is not a deletion. Then it raises the prefix's floor to the lowest number under it
   that the owner has not deleted, an upload that failed included (section 7.8, "Floors"), and deletes what the
   floor covers. A deleted name is never served (`404`) or listed, even when a late write brings a copy back; such a
   copy is deleted when a listing meets it, and an hourly sweep compacts every object prefix, so one no listing
@@ -823,6 +825,7 @@ deletion. So every object it keeps is one of two kinds:
 | `requests/{D}/{ordinal}-{R}` | write-once, named uniquely by its ordinal | a sealed request |
 | `ordinals/{D}/{block}` | write-once, written before any ordinal in the block is given; deleted, with its intents, once it ends at or below the device's floor, but never the device's highest while the device is kept, and with a revoked or deleted device | the name of the reserving process's lease, `leases/{rank}-{id}`: it reserves the ordinals `1,024 × block` to `1,024 × block + 1,023` for that process alone (section 7.6) |
 | `intents/{name}/{sha256}` | write-once, empty; the name says everything | the intent to write the object `{name}` (any name above but a lease's, a claim's, an owner record's, a tombstone's or a floor's) with the bytes whose SHA-256, in lowercase hex, is `{sha256}`. Written and confirmed before those bytes are sent. Deleted once nothing needs it: with its request, after the tombstone; once a floor covers its name; with a deleted device or pairing (but the intent of a device's revocation marker); with its ordinal reservation |
+| `intents/objects/{name}/deleting` | write-once, empty | the owner's deletion of the object `{name}` has begun: written, durably, before its tombstone. From then on every `PUT` of the name is refused with `410` (section 7.5); a marker that lands late only refuses uploads, and is not a deletion. Not an intent for bytes. Deleted with the name's other intents, once a floor covers it |
 | `tombstones/{name}` | write-once, empty | nothing: the object `{name}` (an object, a request, or a device's stored revocation) was deleted. Written, durably, before the object is deleted. Deleted once the floor of its scope covers it, or with its device; a deleted device's revocation tombstone stays, as its marker does |
 | `floors/{scope}/{n}` | write-once, empty; the name says everything | nothing: every name of the scope numbered below its highest floor counts as deleted. The scopes are `requests/{D}` (by ordinal) and, for each object prefix (section 7.5), `objects/{prefix}` without its last `/` (by revision, version or epoch). Written, durably, before anything it covers is deleted; lower floors are then deleted |
 
@@ -837,8 +840,10 @@ known cost, kept small by the owner's cleanup (section 9.7), which leaves few ob
 tombstone or a floor in these steps, under the lock that guards its name (those are written directly: their name
 is their content, or the SHA-256 of it):
 
-1. It checks the name's tombstone: a deleted name takes no bytes again, not even the same ones. For an object
-   the answer is `410` (section 7.5), not the refusal below.
+1. It checks the name's tombstone and, for an object, its deletion marker `intents/{name}/deleting`: a name
+   deleted, or whose deletion has begun, takes no bytes again, not even the same ones. For an object the answer
+   is `410` (section 7.5), not the refusal below. The deletion marker is not an intent for bytes, and the steps
+   below never read it as one.
 2. It reads the name. If it holds bytes, the write is decided: the same bytes are a retry, made durable again
    before they are acknowledged, and other bytes are refused.
 3. It lists `intents/{name}/`. An intent for other bytes refuses ours, however late the write it announced
@@ -846,7 +851,8 @@ is their content, or the SHA-256 of it):
 4. It writes its own intent, `intents/{name}/{sha256}` with `sha256` the SHA-256 of its bytes, and waits until
    the store confirms it. If that write fails, or its outcome is unknown, the call fails here and the bytes are
    never sent.
-5. It lists `intents/{name}/` again, and refuses if an intent for other bytes appeared meanwhile. Two writers
+5. It lists `intents/{name}/` again, and refuses if an intent for other bytes appeared meanwhile, or, for an
+   object, if its deletion marker did (then with `410`, as in step 1). Two writers
    that record intents at the same moment both see the other's and both refuse; in any order, at most one
    sends its bytes.
 6. Only then does it send the bytes.
@@ -863,7 +869,8 @@ even after its object is deleted. An intent holds nothing but a hash of bytes th
 
 **Tombstones.** An object the owner deletes (section 7.5), a request that is deleted (section 7.6) and a device's
 stored revocation when the owner deletes the device (section 7.4) could otherwise be written again by a late
-write. So the relay first writes the name's tombstone `tombstones/{name}`, durably, then deletes the object.
+write. So the relay first writes the name's tombstone `tombstones/{name}`, durably, then deletes the object; for
+an object, the deletion marker `intents/objects/{name}/deleting` comes before the tombstone (section 7.5).
 (These are the relay's; the Mac's outcome tombstones, section 9.1, are another thing.) From then on the name is
 dead: every write to it is refused (step 1 above), and every reader treats a copy that a late write brings back as
 deleted: it is never served or listed. Such a copy is deleted again when a listing meets it, and an hourly sweep
@@ -884,9 +891,11 @@ as `floors/objects/index/{n}`. Every floor follows one protocol:
   7.6); an object floor under the creation lock, which every `PUT` and `DELETE` of an object takes.
 - **To what.** Never above a name that was not deleted: the relay never retires a request or an object on its own.
   A request floor rises to the device's lowest pending ordinal (or, with nothing pending, the next ordinal it
-  would give). An object floor rises only past names the owner deleted, or names that never had an intent or a
-  copy: to the lowest number of the prefix that has an intent or a copy and no tombstone, or, with none, above
-  every number the prefix has held (a binder removed, section 9.7). Every upload records its intent first, and
+  would give). An object floor rises to the lowest uploaded number of the prefix (one with an upload's intent or a
+  copy) that has no tombstone, or, with none, to just above the highest uploaded number (a binder removed,
+  section 9.7). A prefix where nothing was ever uploaded has no floor: its deletion markers and tombstones stay
+  (below, "What bounds each kind"). A number never uploaded is passed only when it lies below an uploaded one, so a gap in the
+  numbers never stops the floor, and deleting a name that never existed retires nothing else. Every upload records its intent first, and
   only the floor removes it, so a copy the store has lost for a while, or an upload that failed, keeps its name
   live until the owner deletes it (below). A floor never exceeds 2^53 − 1, the highest valid number (section 3);
   that name's own tombstone then stays.
@@ -939,7 +948,9 @@ while its record and revocation stay until the owner deletes the device (section
 **What bounds each kind.** Every object the relay keeps is bounded by live data: what the owner keeps published,
 the devices it keeps paired, the pairings made in the last 10 minutes and the requests pending. The exceptions are
 owner-driven, one small object each, because a late write could otherwise bring back their device, pairing or
-binder, and their number grows only with what the owner itself makes: a removed binder's views floor; a removed
+binder, and their number grows only with what the owner itself makes: a removed binder's views floor, if it ever
+uploaded one, with the deletion markers and tombstones of any versions above its last upload (or of all its
+versions, if none was ever uploaded) that the Mac reserved but never uploaded and then deleted; a removed
 device's revocation marker and revocation tombstone; a deleted pairing's tombstone; and one claim intent and owner
 record per claim sent with the setup code.
 
@@ -952,8 +963,8 @@ record per claim sent with the setup code.
 | `pairings/{P}/` parts, with their intents | per pairing made in the last 10 minutes, whatever its state (at most 3 of them still `open` at once); deleted with the pairing |
 | `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
 | `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
-| `tombstones/objects/...`, `intents/objects/...` | per prefix, the names at or above its floor: what is published, uploads in progress, the owner's failed uploads, which only the owner can make and the Mac deletes (section 9.7), and names deleted out of order above the lowest kept; the floor deletes everything below it |
-| `floors/objects/...` | one per prefix in use: the index, each binder shown, each device kept; **exception**: a removed binder's views floor stays, one per binder ever shown (its id is never reused, so nothing new arrives under it, and only the floor refuses a late copy). A removed device's go with it |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, the names at or above its floor: what is published, uploads in progress, deletion markers (`{name}/deleting`) of names being deleted, the owner's failed uploads, which only the owner can make and the Mac deletes (section 9.7), and names deleted out of order above the lowest kept; the floor deletes everything below it |
+| `floors/objects/...` | one per prefix in use: the index, each binder shown, each device kept; **exception**: a removed binder's views floor stays, one per binder ever shown that uploaded at least one version (a binder removed before any upload has no floor, and keeps its deletion markers and tombstones instead; its id is never reused, so nothing new arrives under it, and only the floor refuses a late copy). A removed device's go with it |
 | `requests/{D}/...`, `intents/requests/{D}/...` | pending requests: at most 1,000 per device |
 | `tombstones/requests/{D}/...` | names deleted out of order above the device's floor: with its pending requests, at most 10,000 names per device, whatever the rate or the restarts (a device at the bound gets `507` until the Mac collects its oldest request, section 7.6) |
 | `floors/requests/{D}/...` | one per device kept |
