@@ -37,7 +37,7 @@ public struct IntakeFacts: Sendable, Equatable {
         for s in CaptureText.sentences(String(text.prefix(200_000))).prefix(2000) {
             // Only written dates count, never "Thursday": a full date, or one whose year is written in the sentence.
             if f.dates.count < 6, let found = DateGrammar.scan(s.text, anchor: anchor, locale: locale), let d = found.date,
-               DateGrammar.isFullDate(found.text) || CaptureText.asciiDigits(s.text).contains(String(d.year)), !f.dates.contains(d.description) {
+               DateGrammar.isFullDate(found.text, locale: locale) || CaptureText.asciiDigits(s.text).contains(String(d.year)), !f.dates.contains(d.description) {
                 f.dates.append(d.description)
             }
             if f.amounts.count < 6, let a = Amounts.scan(s.text), a.value > 0 {

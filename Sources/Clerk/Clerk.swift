@@ -57,10 +57,13 @@ public struct FilingBinder: Sendable, Equatable {
         public var kind: String?
         /// `open`, `waiting` or `blocked`: a wait that starts on an open item is a `set_status`.
         public var status: String?
+        /// Whether the item carries `recurrence`. Its completion needs `next_due` (binder-v0 §5.4), and the MVP leaves
+        /// recurring items to the hub (mvp.md feature 2), so the clerk never completes one.
+        public var recurring = false
         public var key: String { HubLane.idText(id) }
 
         package init(id: JSONValue, title: String, due: String? = nil, waitingOn: String? = nil, words: Set<String>,
-                     noDeadline: Bool = false, kind: String? = nil, status: String? = nil) {
+                     noDeadline: Bool = false, kind: String? = nil, status: String? = nil, recurring: Bool = false) {
             self.id = id
             self.title = title
             self.due = due
@@ -69,6 +72,7 @@ public struct FilingBinder: Sendable, Equatable {
             self.noDeadline = noDeadline
             self.kind = kind
             self.status = status
+            self.recurring = recurring
         }
     }
 
@@ -86,7 +90,8 @@ public struct FilingBinder: Sendable, Equatable {
             let waiting = item["waiting_on"]?.stringValue
             return Candidate(id: id, title: title, due: item["due"]?.stringValue, waitingOn: waiting,
                              words: significantWords(title + " " + (waiting ?? "")), noDeadline: item["no_deadline"] == .bool(true),
-                             kind: item["kind"]?.stringValue, status: item["status"]?.stringValue)
+                             kind: item["kind"]?.stringValue, status: item["status"]?.stringValue,
+                             recurring: item["recurrence"].map { !$0.isNull } ?? false)
         }
     }
 
@@ -229,8 +234,9 @@ public struct Clerk: Sendable {
         let raw = await extractWindows(text, instructions: instructions, words: windowWords, into: &interp)
 
         // Checks 1 to 4 and 6.
-        for (value, _) in raw {
-            guard let item = check(value, text: text, sentences: sentences, today: today, locale: locale, estimated: estimated) else {
+        for (value, window) in raw {
+            guard let item = check(value, text: text, sentences: sentences, today: today, locale: locale, estimated: estimated,
+                                   scope: [window], taken: interp.items) else {
                 interp.dropped += 1
                 continue
             }
@@ -253,7 +259,8 @@ public struct Clerk: Sendable {
             interp.calls += 1
             if let answer = try? await model.respond(instructions: instructions, prompt: prompt, task: .extraction, maxTokens: 6 * 110 + 64) {
                 for value in answer["items"]?.arrayValue ?? [] {
-                    guard let item = check(value, text: text, sentences: sentences, today: today, locale: locale, estimated: estimated),
+                    guard let item = check(value, text: text, sentences: sentences, today: today, locale: locale, estimated: estimated,
+                                           scope: missed, taken: interp.items),
                           missed.contains(item.sentence) else { continue }
                     if interp.items.contains(where: { $0.sentence == item.sentence && $0.action == item.action && Self.similar($0.title, item.title) }) { continue }
                     interp.items.append(item)
@@ -341,13 +348,33 @@ public struct Clerk: Sendable {
         return Double(x.intersection(y).count) / Double(min(x.count, y.count)) >= 0.8
     }
 
-    func check(_ value: JSONValue, text: String, sentences: [TextSpan], today: CalendarDate, locale: String, estimated: Bool = false) -> ClerkItem? {
-        guard let quote = value["quote"]?.stringValue, let sentence = CaptureText.anchor(quote, in: text, sentences: sentences) else { return nil }
+    /// Checks one item the model listed. `scope` is the text the model was shown (its window, or the sentences of a
+    /// second reading): the quote is anchored there only. `taken` are the items kept so far, for a quote that opens
+    /// more than one sentence.
+    func check(_ value: JSONValue, text: String, sentences: [TextSpan], today: CalendarDate, locale: String, estimated: Bool = false,
+               scope: [TextSpan]? = nil, taken: [ClerkItem] = []) -> ClerkItem? {
+        guard let quote = value["quote"]?.stringValue else { return nil }
         let title = Self.shorten((value["title"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines), to: 120)
         guard !title.isEmpty else { return nil }
         var action = value["action"]?.stringValue ?? "other"
         if !Self.actions.contains(action) { action = "other" }
+        // Check 1. A quote that opens several sentences ("Your renewal for the plan ..." twice) is placed by the
+        // words the item copied, its time words and amount, then on a sentence no like item holds yet, in text order.
+        var found = CaptureText.anchors(quote, in: text, sentences: sentences, scope: scope)
+        var ambiguous = false
+        if found.count > 1 {
+            for key in ["when_text", "amount_text"] {
+                guard let words = value[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty else { continue }
+                let holding = found.filter { CaptureText.containsWords($0.text, words) }
+                if !holding.isEmpty { found = holding }
+            }
+            let free = found.filter { s in !taken.contains { $0.sentence == s && $0.action == action && Self.similar($0.title, title) } }
+            if !free.isEmpty { found = free }
+            ambiguous = found.count > 1
+        }
+        guard let sentence = found.first else { return nil }
         var item = ClerkItem(title: title, action: action, sentence: sentence, people: [])
+        if ambiguous { item.flags.append("the quote opens more than one sentence") }
 
         // Check 4: people as whole words of the capture, never pronouns.
         for p in value["people"]?.arrayValue?.compactMap(\.stringValue) ?? [] {
@@ -374,7 +401,7 @@ public struct Clerk: Sendable {
             item.whenRole = DateGrammar.role(sentence: sentence.text, whenText: when, waiting: item.action == "wait")
             if let d = item.whenResolved, d < today { item.whenResolved = nil }   // never a past due date
             // An estimated capture time resolves only full dates (capture-event-v0 §6.6).
-            if estimated, !DateGrammar.isFullDate(when) { item.whenResolved = nil }
+            if estimated, !DateGrammar.isFullDate(when, locale: locale) { item.whenResolved = nil }
         }
 
         // Check 3: the amount text occurs in the sentence and parses above 0.
@@ -528,8 +555,9 @@ public struct Clerk: Sendable {
         }.filter { !($0.1.ops.isEmpty && $0.1.raw["provenance"]?["unfiled"] == nil) }
     }
 
-    /// The ops for a group of checked items: new items, completions and changes; items already in the binder and
-    /// items the v0 rules refuse are returned by title. New items are numbered from `firstNumber`.
+    /// The ops for a group of checked items: new items, completions and changes; items already in the binder, and
+    /// items the v0 rules refuse or a completion of a recurring item, are returned by title. New items are numbered
+    /// from `firstNumber`.
     package static func itemOps(_ items: [ClerkItem], event: ClerkInput, today: CalendarDate, actor: JSONObject, interp: Interpretation,
                         now: Date, firstNumber: Int = 1) -> (ops: [JSONObject], already: [String], rejected: [String]) {
         var ops: [JSONObject] = []
@@ -576,6 +604,11 @@ public struct Clerk: Sendable {
             switch relation {
             case "same":
                 already.append(item.match!.candidate.title)
+                continue
+            case "done" where item.match!.candidate.recurring:
+                // A completion of a recurring item would need its next date, and the hub keeps those for now: the
+                // person marks it done by hand, and the card says so (an op the binder refuses would block the card).
+                rejectedItems.append(item.title)
                 continue
             case "done":
                 built = [op("complete", JSONObject([(key: "id", value: item.match!.candidate.id),

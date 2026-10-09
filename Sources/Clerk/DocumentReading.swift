@@ -67,6 +67,24 @@ extension Clerk {
         return nil
     }
 
+    /// Verbs that ask for a task ("check" and "order" left out: "pay by check", "a money order"), and the ones that
+    /// ask for each action's own.
+    static let taskVerbs: Set<String> = actionVerbs.union(["submit", "return", "reply", "respond", "confirm", "attend", "register",
+                                                           "complete", "provide", "mail", "remit", "retourner", "répondre",
+                                                           "confirmer", "fournir", "remplir", "soumettre", "déposer", "envoyez",
+                                                           "signez", "retournez", "remplissez"]).subtracting(["check", "order"])
+    static let ownVerbs: [String: Set<String>] = [
+        "pay": ["pay", "remit", "payer", "payez"], "send": ["send", "email", "write", "mail", "return", "envoyer", "envoyez", "écrire"],
+        "file": ["file", "submit", "déposer", "soumettre"], "call": ["call", "appeler", "rappeler"],
+        "meet": ["meet", "attend"], "decide": ["decide", "décider"],
+    ]
+
+    /// Whether `sentence` (lower case) asks for no task but the action's own, so a date in it can belong to that action.
+    static func asksOnlyFor(_ action: String, _ sentence: String) -> Bool {
+        let words = Set(sentence.split(whereSeparator: { !$0.isLetter }).map(String.init))
+        return words.intersection(taskVerbs).isSubset(of: ownVerbs[action] ?? [])
+    }
+
     func documentInstructions() -> String {
         """
         You read one document the person received and say what it is.
@@ -163,7 +181,7 @@ extension Clerk {
             if !title.isEmpty { doc.title = title }
             // The date must be written in the document, as a full date, and resolve (capture-event-v0 §6.4 check 2).
             if let when = answer["date_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !when.isEmpty,
-               DateGrammar.isFullDate(when), CaptureText.containsWords(text, when),
+               DateGrammar.isFullDate(when, locale: locale), CaptureText.containsWords(text, when),
                let found = DateGrammar.resolve(when, anchor: today, locale: locale), let d = found.date, d <= today.adding(days: 366) {
                 doc.date = d
             }
@@ -181,17 +199,21 @@ extension Clerk {
         let raw = await extractWindows(text, instructions: documentItemInstructions(dated: dated, locale: locale), words: 200,
                                        maxWindows: Self.documentWindows, into: &interp)
         doc.unread = interp.unfiled.count
-        for (value, _) in raw {
-            guard var item = check(value, text: text, sentences: sentences, today: dated, locale: locale) else { doc.dropped += 1; continue }
+        for (value, window) in raw {
+            guard var item = check(value, text: text, sentences: sentences, today: dated, locale: locale, scope: [window], taken: interp.items) else {
+                doc.dropped += 1
+                continue
+            }
             // A document holds much that is not the person's to do: only actions, or anything with a date, become items.
             guard item.action != "note", ["other", "review", "wait"].contains(item.action) == false || item.whenResolved != nil else { continue }
             // Letters often say what to pay in one sentence and when in the next: a due date there is taken, and
-            // the card says so.
+            // the card says so. Only when the next sentence asks for nothing else: "Submit the permit application by
+            // November 1" is a task of its own, and its date is not the payment's.
             if item.whenResolved == nil, ["pay", "send", "file", "call", "meet", "decide"].contains(item.action),
                let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count {
                 let next = sentences[i + 1].text
                 let lower = next.lowercased()
-                if let found = DateGrammar.scan(next, anchor: dated, locale: locale), let d = found.date, d >= dated,
+                if Self.asksOnlyFor(item.action, lower), let found = DateGrammar.scan(next, anchor: dated, locale: locale), let d = found.date, d >= dated,
                    ["due", "by", "before", "deadline", "no later than", "échéance", "avant", "au plus tard", "dû", "due le"].contains(where: {
                        lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }) {
                     item.whenText = found.text
@@ -222,7 +244,8 @@ extension Clerk {
             if let answer = try? await model.respond(instructions: documentItemInstructions(dated: dated, locale: locale),
                                                      prompt: missed.map(\.text).joined(separator: " "), task: .extraction, maxTokens: 6 * 110 + 64) {
                 for value in answer["items"]?.arrayValue ?? [] {
-                    guard var item = check(value, text: text, sentences: sentences, today: dated, locale: locale), missed.contains(item.sentence),
+                    guard var item = check(value, text: text, sentences: sentences, today: dated, locale: locale, scope: Array(missed), taken: interp.items),
+                      missed.contains(item.sentence),
                           item.action != "note", item.whenResolved != nil,
                           !interp.items.contains(where: { $0.sentence == item.sentence && $0.action == item.action }) else { continue }
                     item.binder = binder?.name
@@ -252,10 +275,14 @@ extension Clerk {
             interp.items.sort { $0.sentence.start < $1.sentence.start }
         }
         // An item that took its date from the next sentence and an item read from that sentence with the same
-        // date are one task ("Your share is $1,240." / "The levy is due November 1."): the first, with its amount, stays.
+        // date and the same task are one ("Your share is $1,240." / "The levy is due November 1."): the first, with
+        // its amount, stays. A shared date alone is no evidence: a different task in that sentence stays.
         for item in interp.items where item.flags.contains("date taken from the next sentence") {
             guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
-            interp.items.removeAll { $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item }
+            interp.items.removeAll {
+                $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
+                    && ($0.action == item.action || Self.similar($0.title, item.title))
+            }
         }
         let found = interp.items.count
         interp.items = Array(interp.items.prefix(Self.documentItems))

@@ -139,16 +139,33 @@ public enum CaptureText {
     }
 
     /// Check 1: finds `quote` in `text`, case-insensitively with white space collapsed; returns the sentence that
-    /// holds its start.
+    /// holds its first occurrence.
     public static func anchor(_ quote: String, in text: String, sentences: [TextSpan]) -> TextSpan? {
+        anchors(quote, in: text, sentences: sentences).first
+    }
+
+    /// Every sentence that holds the start of an occurrence of `quote`, in text order. With `scope`, only
+    /// occurrences that start inside one of its spans count: an item is anchored in the window it was read from,
+    /// never in an earlier paragraph that opens with the same words.
+    public static func anchors(_ quote: String, in text: String, sentences: [TextSpan], scope: [TextSpan]? = nil) -> [TextSpan] {
         let q = normalized(quote.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\"“”«»"))).0
-        guard q.count >= 3 else { return nil }
+        guard q.count >= 3 else { return [] }
         let (hay, map) = normalized(text)
-        guard let r = hay.range(of: q) else { return nil }
-        let offset = hay.unicodeScalars.distance(from: hay.unicodeScalars.startIndex, to: r.lowerBound.samePosition(in: hay.unicodeScalars) ?? hay.unicodeScalars.startIndex)
-        guard offset < map.count else { return nil }
-        let at = map[offset]
-        return sentences.first { $0.start <= at && at < $0.end }
+        var out: [TextSpan] = []
+        var from = hay.startIndex
+        // Offsets are counted on from the last match, so a quote found many times costs one pass over the text.
+        var (counted, offset) = (hay.unicodeScalars.startIndex, 0)
+        while from < hay.endIndex, let r = hay.range(of: q, range: from..<hay.endIndex) {
+            from = hay.index(after: r.lowerBound)
+            let start = r.lowerBound.samePosition(in: hay.unicodeScalars) ?? counted
+            offset += hay.unicodeScalars.distance(from: counted, to: start)
+            counted = start
+            guard offset < map.count else { break }
+            let at = map[offset]
+            if let scope, !scope.contains(where: { $0.start <= at && at < $0.end }) { continue }
+            if let s = sentences.first(where: { $0.start <= at && at < $0.end }), !out.contains(s) { out.append(s) }
+        }
+        return out
     }
 
     /// Whether `needle` occurs in `hay` as whole words, case-insensitively with white space collapsed.

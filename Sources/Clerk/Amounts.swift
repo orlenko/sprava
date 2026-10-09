@@ -103,11 +103,20 @@ public enum Amounts {
         return add(product, &total)
     }
 
-    /// Finds an amount in a sentence by itself (digits with a currency, or number words with a currency word).
+    /// Digits with a currency right before them ("$625", "CAD 1 200") or right after, a scale word allowed between
+    /// ("625 dollars", "4 200,75 €", "2 million dollars"). A symbol after the number must not start another number:
+    /// in "Invoice 2026 $625" the dollar sign belongs to 625.
+    static var digitSpan: Regex<Substring> { #/(?:[$€]|\b(?:usd|cad|eur)\b)\s*[0-9][0-9 ,.]*(?:\s*(?:k|millions?|thousand|mille)\b)?|[0-9][0-9 ,.]*(?:\s*(?:k|millions?|thousand|mille)\b)?\s*(?:[$€¢](?!\s*[0-9])|\b(?:dollars?|euros?|bucks|usd|cad|eur|cents?)\b)/# }
+
+    /// Finds an amount in a sentence by itself (digits with a currency, or number words with a currency word). Only
+    /// digits next to their currency count, so an invoice number or a date in the sentence is never the amount.
     public static func scan(_ sentence: String) -> Parsed? {
         let lower = sentence.lowercased()
         let words = Set(lower.split(whereSeparator: { !$0.isLetter && $0 != "$" && $0 != "€" }).map(String.init))
         guard currencies.contains(where: { $0.0.count == 1 ? lower.contains($0.0) : words.contains($0.0) }) else { return nil }
-        return parse(sentence)
+        let text = CaptureText.asciiDigits(lower).replacingOccurrences(of: "\u{00A0}", with: " ").replacingOccurrences(of: "\u{202F}", with: " ")
+        if let m = text.firstMatch(of: digitSpan) { return parse(String(m.output)) }
+        // No digits by a currency: number words only ("twelve hundred dollars"); other digits are no amount.
+        return parse(text.replacing(/[0-9]+/, with: " "))
     }
 }

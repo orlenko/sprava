@@ -52,17 +52,7 @@ public enum DateGrammar {
     public static func resolve(_ raw: String, anchor today: CalendarDate, locale: String) -> Found? {
         // Digits of other scripts read as ASCII; every numeric pattern below matches [0-9] only, and every number
         // is converted with a checked `Int(_:)`: untrusted text never traps.
-        let text = CaptureText.asciiDigits(raw.lowercased()).replacingOccurrences(of: "’", with: "'")
-            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        guard !text.isEmpty else { return nil }
-        var words = text.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
-        // Strip prefixes and hedges.
-        let hadArticle = ["the", "le"].contains(words.dropFirst(words.first.map { ["by", "before", "on", "until", "d'ici", "avant"].contains($0) } == true ? 1 : 0).first ?? "")
-        let prefixes: Set<String> = ["by", "before", "on", "at", "the", "latest", "until", "around", "probably", "maybe",
-                                     "d'ici", "avant", "au", "plus", "tard", "jusqu'à", "sans", "doute", "le", "la", "à", "this", "ce", "cette", "of"]
-        while let w = words.first, prefixes.contains(w) { words.removeFirst() }
-        while let w = words.last, ["latest", "tard"].contains(w) { words.removeLast() }
-        let t = words.joined(separator: " ")
+        guard let (text, t, hadArticle) = stripped(raw) else { return nil }
         let fr = isFrench(locale)
         let originalWords = text.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
         let wasThis = originalWords.contains("this") || originalWords.contains("ce")
@@ -71,12 +61,7 @@ public enum DateGrammar {
         if let d = CalendarDate.strict(t) { return Found(text: raw, date: d) }
         if t.wholeMatch(of: /[0-9]{1,4}[\/.\-][0-9]{1,2}([\/.\-][0-9]{2,4})?/) != nil {
             // Day-first for fr-FR only; every other numeric form stays unresolved.
-            if locale.lowercased() == "fr-fr", let m = t.wholeMatch(of: /([0-9]{1,2})[\/.]([0-9]{1,2})[\/.]([0-9]{4})/),
-               let year = Int(m.output.3), let month = Int(m.output.2), let day = Int(m.output.1),
-               let d = CalendarDate(year: year, month: month, day: day) {
-                return Found(text: raw, date: d)
-            }
-            return Found(text: raw, date: nil)
+            return Found(text: raw, date: numericDate(t, locale: locale))
         }
         switch t {
         case "today", "tonight", "aujourd'hui", "ce soir": return Found(text: raw, date: today)
@@ -143,11 +128,35 @@ public enum DateGrammar {
         return nil
     }
 
-    /// A full date: ISO, or a month and day with a year. Only these resolve for an estimated capture time.
-    public static func isFullDate(_ text: String) -> Bool {
-        let t = CaptureText.asciiDigits(text.lowercased()).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        if CalendarDate.strict(t) != nil { return true }
-        let words = t.split(separator: " ").map(String.init)
+    /// The text as `resolve` reads it: lower case, ASCII digits, prefixes and hedges ("by", "le", "au plus tard")
+    /// stripped. Returns the cleaned text, what is left after stripping, and whether an article came first.
+    static func stripped(_ raw: String) -> (text: String, rest: String, article: Bool)? {
+        let text = CaptureText.asciiDigits(raw.lowercased()).replacingOccurrences(of: "’", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        guard !text.isEmpty else { return nil }
+        var words = text.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
+        let hadArticle = ["the", "le"].contains(words.dropFirst(words.first.map { ["by", "before", "on", "until", "d'ici", "avant"].contains($0) } == true ? 1 : 0).first ?? "")
+        let prefixes: Set<String> = ["by", "before", "on", "at", "the", "latest", "until", "around", "probably", "maybe",
+                                     "d'ici", "avant", "au", "plus", "tard", "jusqu'à", "sans", "doute", "le", "la", "à", "this", "ce", "cette", "of"]
+        while let w = words.first, prefixes.contains(w) { words.removeFirst() }
+        while let w = words.last, ["latest", "tard"].contains(w) { words.removeLast() }
+        return (text, words.joined(separator: " "), hadArticle)
+    }
+
+    /// A numeric date with its year, day first ("01/10/2026"): read for fr-FR only, every other locale leaves it.
+    static func numericDate(_ t: String, locale: String) -> CalendarDate? {
+        guard locale.lowercased() == "fr-fr", let m = t.wholeMatch(of: /([0-9]{1,2})[\/.]([0-9]{1,2})[\/.]([0-9]{4})/),
+              let year = Int(m.output.3), let month = Int(m.output.2), let day = Int(m.output.1) else { return nil }
+        return CalendarDate(year: year, month: month, day: day)
+    }
+
+    /// A full date: ISO, a month and day with a year, or a numeric date with its year that `resolve` reads in this
+    /// locale. Only these resolve for an estimated capture time, and only these date a document. The text is read
+    /// as `resolve` reads it, prefixes stripped.
+    public static func isFullDate(_ text: String, locale: String = "und") -> Bool {
+        guard let t = stripped(text)?.rest else { return false }
+        if CalendarDate.strict(t) != nil || numericDate(t, locale: locale) != nil { return true }
+        let words = t.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
         return words.contains { Int($0).map { $0 >= 1000 } ?? false } && words.contains { monthsEN.contains($0) || monthsFR.contains($0) }
     }
 
