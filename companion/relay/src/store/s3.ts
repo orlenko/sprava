@@ -3,6 +3,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import type { S3Config } from '../config.ts';
 import type { Store } from './store.ts';
+import { childrenNamed, parseXml, type XmlElement } from './xml.ts';
 
 export class S3Error extends Error {
     readonly status: number;
@@ -14,6 +15,9 @@ export class S3Error extends Error {
 }
 
 type Fetch = typeof fetch;
+
+/** Each attempt is bounded, so a whole write, retries included, ends well within the lease's warm-up (lease.ts). */
+export const ATTEMPT_MS = 10_000;
 
 export class S3Store implements Store {
     readonly #config: S3Config;
@@ -64,19 +68,23 @@ export class S3Store implements Store {
     }
 
     async list(prefix: string): Promise<string[]> {
-        const keys: string[] = [];
+        return (await this.#listAll(prefix)).map((entry) => entry.key);
+    }
+
+    /** Every page, each read whole and checked; a malformed or incomplete page fails the listing. */
+    async #listAll(prefix: string): Promise<{ key: string; modified: number }[]> {
+        const entries: { key: string; modified: number }[] = [];
         let token: string | null = null;
         do {
             const query: Record<string, string> = { 'list-type': '2', prefix };
             if (token !== null) query['continuation-token'] = token;
             const res = await this.#send('GET', null, query);
             if (res.status !== 200) throw new S3Error('LIST', res.status);
-            const xml = await res.text();
-            for (const match of xml.matchAll(/<Contents>[\s\S]*?<Key>([\s\S]*?)<\/Key>[\s\S]*?<\/Contents>/g)) keys.push(unescapeXml(match[1]!));
-            token = /<IsTruncated>true<\/IsTruncated>/.test(xml) ? unescapeXml(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1] ?? '') : null;
-            if (token === '') throw new S3Error('LIST', 200);
+            const page = parseListPage(await res.text(), prefix);
+            entries.push(...page.entries);
+            token = page.next;
         } while (token !== null);
-        return keys;
+        return entries;
     }
 
     /** One signed request, retried twice on a network error or a 5xx. */
@@ -97,7 +105,7 @@ export class S3Store implements Store {
                 ...this.#config,
             });
             try {
-                const init: RequestInit = { method, headers, signal: AbortSignal.timeout(30_000) };
+                const init: RequestInit = { method, headers, signal: AbortSignal.timeout(ATTEMPT_MS) };
                 if (body !== undefined) init.body = body;
                 const res = await this.#fetch(url, init);
                 if (res.status < 500 || attempt >= 2) return res;
@@ -174,8 +182,42 @@ function hmac(key: string | Buffer, data: string): Buffer {
     return createHmac('sha256', key).update(data).digest();
 }
 
-function unescapeXml(text: string): string {
-    return text.replace(/&(amp|lt|gt|quot|apos|#x[0-9a-fA-F]+|#[0-9]+);/g, (_, e: string) =>
-        e === 'amp' ? '&' : e === 'lt' ? '<' : e === 'gt' ? '>' : e === 'quot' ? '"' : e === 'apos' ? "'" : String.fromCodePoint(e[1] === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)),
-    );
+/**
+ * One ListObjectsV2 page, checked whole: the root, exactly one IsTruncated, a Key in every Contents, keys under the
+ * prefix, a KeyCount that matches, and a continuation token whenever the page is truncated. S3 can answer 200
+ * with a body that is cut short, which must fail rather than become a shorter listing.
+ */
+export function parseListPage(xml: string, prefix: string): { entries: { key: string; modified: number }[]; next: string | null } {
+    const fail = (): never => {
+        throw new S3Error('LIST', 200);
+    };
+    let root: XmlElement;
+    try {
+        root = parseXml(xml);
+    } catch {
+        return fail();
+    }
+    if (root.name !== 'ListBucketResult') fail();
+    const one = (name: string): XmlElement | null => {
+        const found = childrenNamed(root, name);
+        if (found.length > 1) fail();
+        return found[0] ?? null;
+    };
+    const truncated = one('IsTruncated')?.text;
+    if (truncated !== 'true' && truncated !== 'false') fail();
+    const entries = childrenNamed(root, 'Contents').map((contents) => {
+        const keys = childrenNamed(contents, 'Key');
+        const times = childrenNamed(contents, 'LastModified');
+        if (keys.length !== 1 || keys[0]!.text === '' || !keys[0]!.text.startsWith(prefix) || times.length > 1) fail();
+        const modified = times.length === 1 ? Date.parse(times[0]!.text) : 0;
+        if (Number.isNaN(modified)) fail();
+        return { key: keys[0]!.text, modified };
+    });
+    const count = one('KeyCount')?.text;
+    if (count !== undefined && Number(count) !== entries.length + childrenNamed(root, 'CommonPrefixes').length) fail();
+    const echoed = one('Prefix')?.text;
+    if (echoed !== undefined && echoed !== prefix) fail();
+    const next = one('NextContinuationToken')?.text ?? null;
+    if (truncated === 'true' && (next === null || next === '')) fail();
+    return { entries, next: truncated === 'true' ? next : null };
 }

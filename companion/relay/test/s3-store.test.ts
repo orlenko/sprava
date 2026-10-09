@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { S3Store, signV4 } from '../src/store/s3.ts';
+import { parseListPage, S3Store, signV4 } from '../src/store/s3.ts';
 import { Mutex, writeOnce } from '../src/store/store.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
 import { INSTANCE, startTestRelay } from './harness.ts';
@@ -80,4 +80,39 @@ test('s3: keys with characters that need encoding are signed and stored as they 
     await store.put('requests/AAAA-_x/0000000000000001-B_c-d', new Uint8Array([1]));
     assert.ok(stub.objects.has('requests/AAAA-_x/0000000000000001-B_c-d'));
     assert.deepEqual(await store.list('requests/'), ['requests/AAAA-_x/0000000000000001-B_c-d']);
+});
+
+test('s3: a malformed or incomplete listing page is an error, never a shorter listing', async () => {
+    const page = (inner: string) => `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>${inner}</ListBucketResult>`;
+    const good = page('<IsTruncated>false</IsTruncated><KeyCount>1</KeyCount><Contents><Key>p/a&amp;b</Key><LastModified>2026-10-08T07:00:00.000Z</LastModified></Contents>');
+    assert.deepEqual(parseListPage(good, 'p/'), { entries: [{ key: 'p/a&b', modified: Date.parse('2026-10-08T07:00:00Z') }], next: null });
+    const bad = {
+        'cut short': good.slice(0, good.indexOf('</Contents>')),
+        'no IsTruncated': page('<Contents><Key>p/a</Key></Contents>'),
+        'two IsTruncated': page('<IsTruncated>false</IsTruncated><IsTruncated>true</IsTruncated>'),
+        'truncated without a token': page('<IsTruncated>true</IsTruncated><Contents><Key>p/a</Key></Contents>'),
+        'a Contents without a Key': page('<IsTruncated>false</IsTruncated><Contents></Contents>'),
+        'a key outside the prefix': page('<IsTruncated>false</IsTruncated><Contents><Key>q/a</Key></Contents>'),
+        'a count that does not match': page('<IsTruncated>false</IsTruncated><KeyCount>2</KeyCount><Contents><Key>p/a</Key></Contents>'),
+        'another root': '<Error><Code>InternalError</Code></Error>',
+        'a bare ampersand': page('<IsTruncated>false</IsTruncated><Contents><Key>p/a&b</Key></Contents>'),
+        'text after the root': good + 'x',
+        'an empty body': '',
+    };
+    for (const [why, xml] of Object.entries(bad)) assert.throws(() => parseListPage(xml, 'p/'), /LIST failed/, why);
+    const { store, stub } = await open();
+    await store.put('p/1', new Uint8Array([1]));
+    stub.nextListBody(good.slice(0, good.indexOf('</Contents>')));
+    await assert.rejects(store.list('p/'), /LIST failed/);
+});
+
+test('s3: a write that failed may land later, so its key refuses other bytes until it is confirmed (§7.8)', async () => {
+    const { store, stub } = await open({ ignoreIfNoneMatch: true });
+    const lock = new Mutex();
+    stub.hold((key) => key === 'devices/D/record.json');
+    await assert.rejects(lock.run(() => writeOnce(store, 'devices/D/record.json', Buffer.from('A'))), /status 500/);
+    assert.equal(await lock.run(() => writeOnce(store, 'devices/D/record.json', Buffer.from('B'))), 'different');
+    stub.landHeld();
+    assert.equal(Buffer.from(stub.objects.get('devices/D/record.json')!).toString(), 'A');
+    assert.equal(await lock.run(() => writeOnce(store, 'devices/D/record.json', Buffer.from('A'))), 'same');
 });

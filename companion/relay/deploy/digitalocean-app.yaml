@@ -12,7 +12,9 @@ services:
     source_dir: companion/relay
     dockerfile_path: companion/relay/Dockerfile
     http_port: 8080
-    # Exactly one instance: rate limits and the creation lock live in its memory (spec section 7).
+    # Exactly one instance: rate limits and the creation lock live in its memory (spec section 7). App Platform
+    # starts the new container before it stops the old one on every deploy; the relay's lease fences the old one
+    # (src/lease.ts), and the new one serves only /v0/health for its first 50 seconds.
     instance_count: 1
     instance_size_slug: <the smallest size>
     health_check:

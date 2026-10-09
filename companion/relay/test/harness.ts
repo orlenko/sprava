@@ -20,16 +20,30 @@ export interface TestRelay {
     /** The whole folder, unscoped. */
     raw: Store;
     logs: string[];
+    ready: Promise<void>;
     close(): Promise<void>;
 }
+
+/** Tests take leases that are checked often and need no wait unless they ask for one. */
+export const TEST_LEASE = { checkMs: 50, warmupMs: 0 };
 
 export async function serve(handler: Handler): Promise<{ url: string; server: Server }> {
     const server = createServer((req, res) => void handler(req, res));
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    server.unref(); // a failed test that never closes it must not keep the run alive
     return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, server };
 }
 
-export async function startTestRelay(options: { raw?: Store; env?: Record<string, string>; now?: () => number } = {}): Promise<TestRelay> {
+export interface TestOptions {
+    raw?: Store;
+    env?: Record<string, string>;
+    now?: () => number;
+    lease?: { checkMs: number; warmupMs: number };
+    /** False to get the relay while it is still warming up. */
+    waitReady?: boolean;
+}
+
+export async function startTestRelay(options: TestOptions = {}): Promise<TestRelay> {
     const raw = options.raw ?? new FsStore(await mkdtemp(join(tmpdir(), 'sprava-relay-')));
     const config = readConfig({
         SPRAVA_INSTANCE: INSTANCE,
@@ -39,16 +53,22 @@ export async function startTestRelay(options: { raw?: Store; env?: Record<string
         ...options.env,
     });
     const logs: string[] = [];
-    const { relay, handler } = await startRelay(config, scoped(raw, INSTANCE), {
+    const started = await startRelay(config, scoped(raw, INSTANCE), {
         log: jsonLog((line) => logs.push(line)),
+        lease: options.lease ?? TEST_LEASE,
         ...(options.now ? { now: options.now } : {}),
     });
-    const { url, server } = await serve(handler);
+    if (options.waitReady !== false) await started.ready;
+    const { url, server } = await serve(started.handler);
     return {
         url,
-        relay,
+        relay: started.relay,
         raw,
         logs,
-        close: () => new Promise((resolve) => server.close(() => resolve())),
+        ready: started.ready,
+        close: () => {
+            started.stop();
+            return new Promise((resolve) => server.close(() => resolve()));
+        },
     };
 }

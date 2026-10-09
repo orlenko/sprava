@@ -13,6 +13,15 @@ export interface S3Stub {
     requests: string[];
     /** Answers the next n requests with 503, to test retries. */
     failNext(n: number): void;
+    /**
+     * Holds back every PUT to a key that `match` accepts: the client is answered 500, as if the write failed, but
+     * the stub keeps it and applies it only on `landHeld()`, as a store may when a write lands late.
+     */
+    hold(match: (key: string) => boolean): void;
+    /** Applies the held writes, in the order they arrived, and stops holding. */
+    landHeld(): void;
+    /** Answers the next listing with this body instead. */
+    nextListBody(body: string): void;
     close(): Promise<void>;
 }
 
@@ -21,6 +30,9 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
     const objects = new Map<string, Uint8Array>();
     const requests: string[] = [];
     let failures = 0;
+    let holding: ((key: string) => boolean) | null = null;
+    const held: [string, Uint8Array][] = [];
+    let listBody: string | null = null;
     const server = createServer(async (req, res) => {
         const body = await readAll(req);
         const url = new URL(req.url ?? '/', 'http://stub');
@@ -37,6 +49,11 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
         const [, b, ...rest] = url.pathname.split('/').map(decodeURIComponent);
         if (b !== bucket) return reply(404);
         const key = rest.join('/');
+        if (req.method === 'GET' && key === '' && listBody !== null) {
+            const body = listBody;
+            listBody = null;
+            return reply(200, body);
+        }
         if (req.method === 'GET' && key === '') return reply(200, list(objects, url.searchParams, options.pageSize ?? 3));
         const stored = objects.get(key);
         switch (req.method) {
@@ -45,6 +62,10 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
             case 'HEAD':
                 return reply(stored ? 200 : 404);
             case 'PUT':
+                if (holding?.(key)) {
+                    held.push([key, body]);
+                    return reply(500);
+                }
                 if (stored && req.headers['if-none-match'] === '*' && !options.ignoreIfNoneMatch) return reply(412);
                 objects.set(key, body);
                 return reply(200);
@@ -55,6 +76,7 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
         reply(405);
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    server.unref(); // a failed test that never closes it must not keep the run alive
     return {
         endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
         bucket,
@@ -62,6 +84,16 @@ export async function startS3Stub(options: { ignoreIfNoneMatch?: boolean; pageSi
         requests,
         failNext: (n) => {
             failures = n;
+        },
+        hold: (match) => {
+            holding = match;
+        },
+        landHeld: () => {
+            holding = null;
+            for (const [key, body] of held.splice(0)) objects.set(key, body);
+        },
+        nextListBody: (body) => {
+            listBody = body;
         },
         close: () => new Promise((resolve) => server.close(() => resolve())),
     };

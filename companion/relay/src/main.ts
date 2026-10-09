@@ -15,16 +15,22 @@ async function main(): Promise<void> {
     const log = jsonLog((line) => process.stdout.write(line + '\n'));
     try {
         const config = readConfig(process.env);
-        const { handler } = await startRelay(config, scoped(openStore(config), config.instance), { log });
-        const server = createServer({ requestTimeout: 65_000 }, (req, res) => void handler(req, res));
+        let stop = (): void => {};
+        const started = await startRelay(config, scoped(openStore(config), config.instance), { log, onFenced: () => stop() });
+        const server = createServer({ requestTimeout: 65_000 }, (req, res) => void started.handler(req, res));
         server.listen(config.port, () => log.event('listening', { port: config.port, storage: config.storage.kind }));
-        const stop = (): void => {
+        stop = (): void => {
+            started.stop();
             server.close(() => process.exit(0));
             server.closeIdleConnections();
             setTimeout(() => process.exit(0), 10_000).unref();
         };
         process.on('SIGTERM', stop);
         process.on('SIGINT', stop);
+        started.ready.catch(() => {
+            process.stderr.write('sprava-relay: The relay could not read its state; it stops.\n');
+            process.exit(1);
+        });
     } catch (error) {
         // A configuration error is a plain sentence naming the variable, never its value.
         const sentence = error instanceof ConfigError ? error.message : 'The relay could not start.';

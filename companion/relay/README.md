@@ -49,6 +49,14 @@ Cloudflare R2, MinIO). It must run as **exactly one instance**: its rate limits,
 lock live in its memory (spec sections 6 and 7), and two instances would break them. Serve it over HTTPS; plain
 HTTP is only for `localhost`.
 
+Hosts that redeploy by starting the new container before stopping the old one (App Platform does, with no
+option to stop first) briefly run two. The relay guards against that itself (`src/lease.ts`): each process takes
+a lease in the bucket, ranked above every earlier one, and checks before every write that no newer lease exists;
+an older process that finds one stops writing (`503`) and exits. A process that finds an earlier lease waits 50
+seconds before it reads its state or writes anything, so whatever the old one began has ended. During that wait
+it answers `/v0/health` and nothing else (`503` with `Retry-After`), so a restart or a deploy makes the relay
+unavailable for about a minute. Keep the health check on `/v0/health`, which answers throughout.
+
 1. Make a private bucket and an access key limited to it.
 2. Generate the two values only you should know. Keep them out of any file in a repository:
    ```sh
@@ -111,6 +119,7 @@ endpoint is checked against them:
 
 - `src/main.ts`: reads the environment, opens the store, serves.
 - `src/relay.ts`: the relay's shared state, what it checks before serving, and its routes.
+- `src/lease.ts`: one writer at a time, even while a host runs two containers.
 - `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.
 - `src/log.ts`: structured logs without content (section 12).
 - `src/encoding.ts`: b64, ids, tokens and their hashes, times (section 3).
