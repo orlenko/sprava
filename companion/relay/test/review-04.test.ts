@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { CLAIM_TIMING } from '../src/claim.ts';
 import { readConfig } from '../src/config.ts';
-import { newId, newToken, tokenHash } from '../src/encoding.ts';
+import { newId, newToken, sha256Hex, tokenHash } from '../src/encoding.ts';
 import { deviceKeys, ownerRecord } from '../src/layout.ts';
 import { SlidingWindow } from '../src/limits.ts';
 import { silentLog } from '../src/log.ts';
@@ -333,5 +333,26 @@ test("a self-revocation that lands after the owner deleted the device is never s
     assert.ok(await store.has(deviceKeys(device.id).revocation), 'the late write landed');
     assert.equal((await fetch(`${t.url}/v0/devices/${device.id}/revocation`, { headers: bearer(owner) })).status, 404);
     await t.close();
+    await stub.close();
+});
+
+test('a claim intent from a crashed process that lands after the warm-up blocks no claim (§6, §7.9)', async () => {
+    const stub = await startS3Stub({ ignoreIfNoneMatch: true });
+    const raw = new S3Store({ endpoint: stub.endpoint, bucket: stub.bucket, ...S3_CREDENTIALS });
+    const first = await startTestRelay({ raw, claimTiming: fast });
+    const [a, b] = [newToken(), newToken()];
+    stub.hold((key) => key.includes('/intents/owner.json/'));
+    assert.equal((await claimWith(first.url, SETUP_CODE, tokenHash(a))).status, 500, "A's slot is held");
+    await first.close();
+    stub.hold(() => false);
+    const second = await startTestRelay({ raw, claimTiming: fast }); // ready: its warm-up is over
+    stub.landHeld(); // A's slot lands now, from a lower-ranked process
+    assert.equal((await claimWith(second.url, SETUP_CODE, tokenHash(b))).status, 204, 'B claims all the same');
+    assert.equal((await fetch(`${second.url}/v0/devices`, { headers: bearer(b) })).status, 200);
+    await second.close();
+    const third = await startTestRelay({ raw, claimTiming: fast });
+    assert.equal(third.relay.ownerHash, tokenHash(b), 'and stays the owner');
+    assert.deepEqual(await scoped(raw, INSTANCE).list(`intents/owner.json/`), [`intents/owner.json/${sha256Hex(ownerRecord(tokenHash(b)))}`]);
+    await third.close();
     await stub.close();
 });
