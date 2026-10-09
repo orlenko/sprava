@@ -208,7 +208,10 @@ import Testing
         try FileManager.default.moveItem(at: e.primary, to: away.appendingPathComponent("primary"))
         try FileManager.default.moveItem(at: e.second, to: away.appendingPathComponent("second"))
         #expect(throws: Backup.Failure.self) { _ = try b.restore(record.backupID, now: now) }
-        try Data("{".utf8).write(to: e.folder.appendingPathComponent("catalog.json"))
+        // A partly restored file in the restore's private staging folder; the destination itself is untouched.
+        #expect(!FileManager.default.fileExists(atPath: e.folder.path))
+        let staging = Backup.staging(for: e.folder, id: record.backupID)
+        try Data("{".utf8).write(to: staging.appendingPathComponent("catalog.json"))
         try FileManager.default.moveItem(at: away.appendingPathComponent("primary"), to: e.primary)
         try FileManager.default.moveItem(at: away.appendingPathComponent("second"), to: e.second)
 

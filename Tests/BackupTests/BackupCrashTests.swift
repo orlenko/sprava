@@ -93,10 +93,10 @@ import Testing
         try run(b)
         b.atStep = nil
         let expected: [Operation: Set<String>] = [
-            .backup: ["backup.snapshotted#1"],
-            .offload: ["offload.snapshotted#1", "offload.verified#1", "offload.copied#1", "offload.unpublished#1", "offload.leaving#1",
+            .backup: ["backup.claimed#1", "backup.snapshotted#1"],
+            .offload: ["offload.claimed#1", "offload.written#1", "offload.snapshotted#1", "offload.verified#1", "offload.copied#1", "offload.unpublished#1", "offload.leaving#1",
                        "offload.removed#1", "offload.unshelved#1"],
-            .restore: ["restore.started#1", "restore.contents#1", "restore.shelved#1"],
+            .restore: ["restore.started#1", "restore.contents#1", "restore.installed#1", "restore.shelved#1"],
             .offloadAgain: ["offload.verified#1", "offload.unpublished#1", "offload.leaving#1", "offload.removed#1", "offload.unshelved#1"],
             .expunge: ["forget.claimed#1", "forget.recorded#1", "forget.journaled#1", "forget.rewritten#1", "forget.renamed#1"],
             .forgetOffloaded: ["forget.recorded#1", "forget.journaled#1", "forget.rewritten#1", "forget.renamed#1",
@@ -106,8 +106,28 @@ import Testing
 
         for key in images.taken {
             try images.restore(key)
+            // At every step boundary, every snapshot that exists has an owner, and a copy of the binder made now
+            // cannot step into its id: it is refused before the original is retried.
+            for repo in [e.primary, e.second] {
+                for snap in try b.engine(repo.path).snapshots() {
+                    for tag in snap.tags where tag.hasPrefix("binder:") {
+                        let gap = BackupIdentityTests.ownerGap(b, String(tag.dropFirst("binder:".count)))
+                        #expect(gap == nil, "\(op) at \(key): \(gap ?? "")")
+                    }
+                }
+            }
+            if (try? Backup.storedBackupID(e.folder)) != nil {
+                let copy = e.base.appendingPathComponent("copies/\(e.folder.lastPathComponent)", isDirectory: true)
+                try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: e.folder, to: copy)
+                #expect(throws: Backup.SharedBackupID.self, "\(op) at \(key)") { try b.backUp(copy, now: now) }
+                #expect(throws: Backup.SharedBackupID.self, "\(op) at \(key)") {
+                    try b.forgetDocument(in: copy, path: Self.letter, request: "invented-copy-deletion", now: now)
+                }
+                try FileManager.default.removeItem(at: copy)
+            }
             // What the person does meanwhile: a restored binder whose files are in place may be changed, and must keep it.
-            let edited = op == .restore && key != "restore.started#1"
+            let edited = op == .restore && ["restore.installed#1", "restore.shelved#1"].contains(key)
             if edited {
                 try Data("invented edit".utf8).write(to: e.folder.appendingPathComponent(Self.letter))
                 try bb.addLogEntry(e.folder, "invented approval after the restore")

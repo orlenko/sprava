@@ -19,7 +19,8 @@ import Testing
     var letter: String { Self.letter }
 
     enum Case: String, CaseIterable, CustomTestStringConvertible, Sendable {
-        case copyBeforeOffload, copyAfterRestore, copyAfterRestoringElsewhere, partialRestoreOnTheShelf, anotherBinderOnTheShelf,
+        case copyBeforeOffload, copyAfterRestore, copyAfterRestoringElsewhere, workPutWhereARestoreIsGoing, partialRestoreOnTheShelf,
+             anotherBinderOnTheShelf,
              forgetWithARepositoryAway, aSecondDeletionAtTheSamePath, forgetAfterDestinationsChanged
         var testDescription: String { rawValue }
     }
@@ -167,6 +168,32 @@ import Testing
             let mine = try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").map(\.id).filter { $0 != third }
             #expect(!mine.isEmpty && mine.allSatisfy { primary[$0] == false })
             #expect(try holding(b, e.second, letter).values.allSatisfy { !$0 })
+
+        case .workPutWhereARestoreIsGoing:
+            // A restore stops (a crash) once started, and again once its files are staged; each time the person puts
+            // work of their own where the binder is going. A retry never overwrites it, and finishes once it is moved.
+            let record = try offload(b, e.folder)
+            let images = BackupCrashTests.Images([e.base, e.folder.deletingLastPathComponent()])
+            defer { try? FileManager.default.removeItem(at: images.store) }
+            var watched = b
+            watched.atStep = { images.take($0) }
+            _ = try watched.restore(record.backupID, now: now)
+            for key in ["restore.started#1", "restore.contents#1"] {
+                try images.restore(key)
+                let work = e.folder.appendingPathComponent(letter)
+                try FileManager.default.createDirectory(at: work.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("invented new work".utf8).write(to: work)
+                let failed = message { _ = try b.restore(record.backupID, now: now) }
+                #expect(failed.contains(key == "restore.started#1" ? "already exists there" : "something was put at"), "\(key): \(failed)")
+                #expect(try String(contentsOf: work, encoding: .utf8) == "invented new work", "\(key): the person's work was overwritten")
+                #expect(try b.offloaded() == [record], "\(key)")
+                // Once the work is moved away, the retry finishes.
+                let moved = e.base.appendingPathComponent("invented-moved-work-\(key.prefix(13))")
+                try FileManager.default.moveItem(at: e.folder, to: moved)
+                _ = try b.restore(record.backupID, now: now)
+                #expect(try String(contentsOf: e.folder.appendingPathComponent(letter), encoding: .utf8) == "invented letter", "\(key)")
+                #expect(try b.offloaded().isEmpty, "\(key)")
+            }
 
         case .partialRestoreOnTheShelf, .anotherBinderOnTheShelf:
             let record = try offload(b, e.folder)
