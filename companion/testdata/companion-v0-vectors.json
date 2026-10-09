@@ -1,0 +1,66 @@
+{
+  "protocol": 0,
+  "about": "Test vectors of docs/spec/companion-v0.md section 14. Each case is numbered as there. Texts are UTF-8 strings, or hex where they are not valid UTF-8 or must be exact bytes.",
+  "b64": {
+    "case": 1,
+    "valid": [
+      { "hex": "", "b64": "" },
+      { "hex": "00", "b64": "AA" },
+      { "hex": "0001", "b64": "AAE" },
+      { "hex": "000102", "b64": "AAEC" },
+      { "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" }
+    ],
+    "invalid": [
+      { "why": "padding", "b64": "AA==" },
+      { "why": "padding", "b64": "AAE=" },
+      { "why": "plus, outside the alphabet", "b64": "+w" },
+      { "why": "slash, outside the alphabet", "b64": "/w" },
+      { "why": "non-zero trailing bits", "b64": "AB" },
+      { "why": "non-zero trailing bits", "b64": "AAF" },
+      { "why": "impossible length", "b64": "AAAAA" }
+    ]
+  },
+  "token-hash": {
+    "case": 9,
+    "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "sha256": "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0",
+    "wrong_reading": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd",
+    "refused_owner_token_sha256": "EA866A757E4C38BABFA8127CBE9A409D3E1F93A00FF1488FF735FCF917AFFFD0",
+    "refused_bearer": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+  },
+  "strict-json": {
+    "case": 11,
+    "refuse": [
+      { "why": "duplicate member", "text": "{\"a\":1,\"a\":2}" },
+      { "why": "duplicate member after escapes", "text": "{\"a\":1,\"\\u0061\":2}" },
+      { "why": "lone surrogate", "text": "{\"a\":\"\\ud800\"}" },
+      { "why": "lone low surrogate", "text": "{\"a\":\"\\udc00\"}" },
+      { "why": "malformed UTF-8", "hex": "7b2261223a22c328227d" },
+      { "why": "byte order mark", "hex": "efbbbf7b7d" },
+      { "why": "nesting 17 levels deep", "text": "[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]" },
+      { "why": "over the limit", "limit": 4096, "fill": { "before": "{\"a\":\"", "repeat": "x", "after": "\"}", "length": 4097 } }
+    ],
+    "accept": [
+      { "why": "a surrogate pair", "text": "{\"a\":\"\\ud83d\\ude00\"}" },
+      { "why": "nesting 16 levels deep", "text": "[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]" },
+      { "why": "at the limit", "limit": 4096, "fill": { "before": "{\"a\":\"", "repeat": "x", "after": "\"}", "length": 4096 } }
+    ],
+    "numbers": [
+      { "text": "-7", "item_id": true, "unsigned": false },
+      { "text": "0", "item_id": false, "unsigned": true },
+      { "text": "-0", "item_id": false, "unsigned": false },
+      { "text": "1.0", "item_id": false, "unsigned": false },
+      { "text": "1e2", "item_id": false, "unsigned": false },
+      { "text": "01", "item_id": false, "unsigned": false },
+      { "text": "9007199254740992", "item_id": false, "unsigned": false },
+      { "text": "9007199254740991", "item_id": true, "unsigned": true },
+      { "text": "-9007199254740991", "item_id": true, "unsigned": false }
+    ]
+  },
+  "serialization": {
+    "case": 12,
+    "string_hex": "225c2f08090a0c0d011fc3a9f09f9880",
+    "written_hex": "225c225c5c2f5c625c745c6e5c665c725c75303030315c7530303166c3a9f09f988022",
+    "encoded_size": 33
+  }
+}
