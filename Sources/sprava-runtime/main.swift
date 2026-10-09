@@ -1,0 +1,66 @@
+import Darwin
+import Foundation
+import Services
+import SpravaKit
+
+// sprava-runtime: the background process (architecture section 3), and with --watch the outside watcher
+// (architecture 3.3). launchd starts both from the app bundle. --dev uses a separate state folder, so a
+// development run never meets the installed app's data.
+
+var args = Array(CommandLine.arguments.dropFirst())
+let dev = args.contains("--dev")
+args.removeAll { $0 == "--dev" }
+
+// The same development folder `sprava dev` uses, so its brains and binders meet this runtime.
+let support = dev ? DevelopmentGuard.supportDirectory() : SpravaPaths.supportDirectory()
+let runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
+
+do {
+    try AtomicFile.makePrivateFolder(runtimeDir)
+} catch {
+    FileHandle.standardError.write(Data("cannot create \(runtimeDir.path): \(error)\n".utf8))
+    exit(1)
+}
+
+if args.first == "--watch" {
+    exit(OutsideWatcher(runtimeDir: runtimeDir).runOnce())
+}
+
+// The weekly fault drill, part two (mvp.md 1.2, M3 part 4): a hidden developer setting makes the runtime exit at
+// start, before its lease, so launchd keeps restarting it and the heartbeat goes stale.
+if let data = try? Data(contentsOf: support.appendingPathComponent("developer.json")),
+   (try? JSONParser.parse(data).value)?["drill_exit_at_start"] == .bool(true) {
+    AtomicFile.appendLine("\(ISOTime.string(Date())) drill exit_at_start", to: runtimeDir.appendingPathComponent("jobs.log"))
+    RuntimeState.recordStart(runtimeDir)   // the restart count keeps rising while no heartbeat is written
+    exit(75)
+}
+
+// Only the LaunchAgent's copy takes the production lease. A copy started by hand cannot receive XPC (the Mach
+// service is registered for launchd's job), and holding the lease it would keep the LaunchAgent's copy out.
+if !dev, ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] != "ca.orlenko.sprava.runtime", getppid() != 1 {
+    FileHandle.standardError.write(Data("sprava-runtime: run with --dev, or let launchd start it\n".utf8))
+    exit(64)
+}
+
+// A lease file that cannot be opened is reported and the process exits; it never crashes.
+let leaseOutcome: Lease.Outcome
+do {
+    leaseOutcome = try Lease.acquire(at: runtimeDir.appendingPathComponent("lease"))
+} catch {
+    AtomicFile.appendLine("\(ISOTime.string(Date())) lease_unavailable", to: runtimeDir.appendingPathComponent("jobs.log"))
+    FileHandle.standardError.write(Data("sprava-runtime: cannot take the lease: \(error)\n".utf8))
+    exit(1)
+}
+switch leaseOutcome {
+case .held(let pid):
+    // Another runtime holds the lease (an old copy still exiting after an update, or a copy started by hand).
+    // Record it and exit 0; launchd retries after its 10-second throttle (architecture 3.2).
+    AtomicFile.appendLine("\(ISOTime.string(Date())) lease held by pid \(pid.map(String.init) ?? "?")",
+                          to: runtimeDir.appendingPathComponent("lease-refusals.log"))
+    RuntimeState.recordRefusal(runtimeDir)
+    exit(0)
+case .acquired(let lease):
+    let runtime = Runtime(support: support, lease: lease)
+    runtime.start()
+    dispatchMain()
+}
