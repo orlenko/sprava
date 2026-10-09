@@ -1,14 +1,12 @@
 import AppKit
 import Combine
 import ServiceManagement
-import Backup
 import Services
-import Shelf
 import SpravaKit
 import SwiftUI
 
-/// The Health page's model (architecture 3.1, 3.3, 3.6). It reads the heartbeat file, so it can tell a dead
-/// runtime from a quiet one without talking to it.
+/// The Health page's model (architecture 3.1, 3.3, 3.6). It reads Services' health snapshot, heartbeat included, so
+/// it can tell a dead runtime from a quiet one without talking to it.
 @MainActor
 final class HealthModel: ObservableObject {
     static let runtimePlist = "ca.orlenko.sprava.runtime.plist"
@@ -23,12 +21,15 @@ final class HealthModel: ObservableObject {
     @Published var message: String?
     @Published var now = Date()
     @Published var findings: [Doctor.Finding] = []
+    /// Why the doctor could not tell which binders are this Mac's: the device id cannot be read.
+    @Published var deviceIDError: String?
     /// Starts recorded today in the runtime's own state file, which rises even when no heartbeat is written.
     @Published var startsToday = 0
-    @Published var backups: [(name: String, at: Date?, error: String?)] = []
+    @Published var backups: [HealthSnapshot.BackupLine] = []
     @Published var backupConfigured = false
     /// Why the backup settings cannot be read, if they cannot: not the same as backup not set up.
     @Published var backupSettingsError: String?
+    @Published var backgroundOffByChoice = false
     var lastDoctor: Date?
     var lastWake: Date?
     /// When the person last turned background work on or restarted it: launchd can take several seconds to
@@ -54,7 +55,8 @@ final class HealthModel: ObservableObject {
         }
     }
 
-    let runtimeDir = SpravaPaths.supportDirectory().appendingPathComponent("runtime", isDirectory: true)
+    let support = SpravaPaths.supportDirectory()
+    var runtimeDir: URL { HealthSnapshot.runtimeDirectory(support: support) }
     private var observers: [Any] = []
 
     init() {
@@ -67,47 +69,27 @@ final class HealthModel: ObservableObject {
     var runtime: SMAppService { .agent(plistName: Self.runtimePlist) }
     var watcher: SMAppService { .agent(plistName: Self.watchPlist) }
 
-    var backgroundOffByChoice: Bool {
-        FileManager.default.fileExists(atPath: runtimeDir.appendingPathComponent("background-off").path)
-    }
-
+    /// Everything the page shows comes from Services' health snapshot, read here in the app's process so it works
+    /// while the runtime is stopped; the page reads no support file or binder file itself.
     func refresh() {
         now = Date()
-        heartbeat = Heartbeat.read(runtimeDir.appendingPathComponent(Heartbeat.fileName))
+        let records = HealthSnapshot.runtime(support: support)
+        heartbeat = records.heartbeat
+        watchRecord = records.watchRecord
+        refusals = records.refusals
+        startsToday = records.startsToday
+        backgroundOffByChoice = records.backgroundOff
         runtimeStatus = runtime.status
         watchStatus = watcher.status
-        watchRecord = (try? String(contentsOf: runtimeDir.appendingPathComponent("watch.json"), encoding: .utf8))
-        let log = (try? String(contentsOf: runtimeDir.appendingPathComponent("lease-refusals.log"), encoding: .utf8)) ?? ""
-        refusals = Array(log.split(separator: "\n").suffix(3).map(String.init))
-        if let data = try? Data(contentsOf: runtimeDir.appendingPathComponent("state.json")),
-           let state = try? JSONParser.parse(data).value, state["day"]?.stringValue == CalendarDate.today().description {
-            startsToday = state["startsToday"]?.numberValue?.safeInteger.map(Int.init) ?? 0
-        }
-        // The doctor reads only; it runs here at most once a minute, so it works while the runtime is stopped.
+        // The doctor and the backup records read every binder on the Shelf: at most once a minute.
         if lastDoctor.map({ now.timeIntervalSince($0) > 60 }) ?? true {
             lastDoctor = now
-            let support = SpravaPaths.supportDirectory()
-            let url = LifeprojRegistry.defaultPath()
-            let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-            let rows = ShelfStore(supportDirectory: support).rows()
-            // Without a readable device id there is no telling which binders are this Mac's; the runtime's jobs say why.
-            findings = (try? DeviceID.load(support: support)).map { Doctor.run(rows: rows, deviceID: $0, registry: registry, support: support) } ?? []
-            // The app reads the backup's records only; the key stays with the runtime (docs/backup.md §7).
-            let backup = Backup(support: support, key: nil)
-            do {
-                backupConfigured = try backup.settings().primary != nil
-                backupSettingsError = nil
-            } catch {
-                backupConfigured = false
-                backupSettingsError = "\(error)"
-            }
-            let records = Dictionary(backup.status(checkUpload: false).binders.map { ($0.id, ($0.at, $0.error)) }, uniquingKeysWith: { a, _ in a })
-            backups = rows.filter(\.teka.isAdopted).map { row in
-                let id = (try? String(contentsOf: row.folder.appendingPathComponent(".sprava/backup-id"), encoding: .utf8))?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let rec = id.flatMap { records[$0] }
-                return (row.name, rec?.0.flatMap { ISOTime.date($0) }, rec?.1)
-            }
+            let checks = HealthSnapshot.checks(support: support)
+            findings = checks.findings
+            deviceIDError = checks.deviceIDError
+            backupConfigured = checks.backupConfigured
+            backupSettingsError = checks.backupSettingsError
+            backups = checks.backups
         }
     }
 
@@ -230,7 +212,8 @@ struct HealthView: View {
                 }
             }
             Section("Doctor") {
-                if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
+                if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(.red) }
+                else if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
                 ForEach(Array(model.findings.enumerated()), id: \.offset) { _, f in
                     HStack(alignment: .top) {
                         Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
