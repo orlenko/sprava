@@ -6,6 +6,8 @@ let package = Package(
     name: "Sprava",
     platforms: [.macOS("27.0")],
     products: [
+        .executable(name: "sprava", targets: ["sprava"]),
+        .executable(name: "sprava-runtime", targets: ["sprava-runtime"]),
         .executable(name: "sprava-extract", targets: ["sprava-extract"]),
         .executable(name: "sprava-mcp", targets: ["sprava-mcp"]),
     ],
@@ -50,7 +52,18 @@ let package = Package(
         .testTarget(name: "BrainsTests", dependencies: ["Brains", "CaptureTestSupport", "Capture", "Extract", "Shelf",
                                                         "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
+        // Layer 5: the command layer and what reads across areas.
+        .target(name: "Services", dependencies: ["Brains", "Backup", "Hub", "Capture", "Shelf", "BinderStore", "BinderFormat",
+                                                 "SpravaKit"]),
+        .testTarget(name: "ServicesTests", dependencies: ["Services", "Brains", "Backup", "CaptureTestSupport", "Capture",
+                                                          "ClerkTestSupport", "Clerk", "Extract", "Shelf", "BinderStore",
+                                                          "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
+
         // Layer 6: executables.
+        .executableTarget(name: "sprava", dependencies: ["Services", "Brains", "Hub", "Capture", "Clerk", "Extract", "Shelf",
+                                                         "BinderStore", "BinderFormat", "SpravaKit"]),
+        .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Brains", "Backup", "Hub", "Capture", "Clerk",
+                                                                 "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .executableTarget(name: "sprava-mcp", dependencies: ["Brains", "SpravaKit"]),
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
