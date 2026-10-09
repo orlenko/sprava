@@ -52,7 +52,9 @@ extension CaptureInbox {
         let members = privacyMembers(key, state: state)
         guard !members.isEmpty else { return true }
         let done = raisePrivacy(chain: members, binders: binders, commands: commands, now: now)
-        return done && unreachableBinders(binders, commands: commands).isEmpty
+        // The binders this Mac knows come partly from the record of the cards it wrote: while that cannot be read, a
+        // binder off the shelf may still hold the chain's items, so the debt stays.
+        return done && (try? commands.loadDigests()) != nil && unreachableBinders(binders, commands: commands).isEmpty
     }
 
     /// Pays every privacy debt it can; a debt is cleared only by a complete pass.

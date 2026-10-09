@@ -81,10 +81,15 @@ public struct CaptureInbox: Sendable {
             }
         }
         try flush(fd, step: "fsync \(url.lastPathComponent)")
+        // The folder too, so the journal's name survives a power loss the first time it is made.
+        try flush.folder(url.deletingLastPathComponent(), step: "flush \(url.lastPathComponent)'s folder")
     }
 
-    func notices() -> [String: String] {
-        guard let text = try? String(contentsOf: noticesURL, encoding: .utf8) else { return [:] }
+    /// The app's notices by event id. A journal that is there but cannot be read throws: read as empty, every note of
+    /// the app's would be taken in unverified and the binder the person chose lost for good.
+    func notices() throws -> [String: String] {
+        guard FileManager.default.fileExists(atPath: noticesURL.path) else { return [:] }
+        guard let text = try? String(contentsOf: noticesURL, encoding: .utf8) else { throw StateFile.Unreadable(path: noticesURL.path) }
         var out: [String: String] = [:]
         for line in text.split(separator: "\n") {
             guard let v = try? JSONParser.parse(String(line)).value, let e = v["event"]?.stringValue, let d = v["sha256"]?.stringValue else { continue }
@@ -101,12 +106,16 @@ public struct CaptureInbox: Sendable {
         AtomicFile.appendLine(JSONWriter.compact(.obj([("at", .string(ISOTime.string(Date())))] + fields)), to: journalURL)
     }
 
-    /// Keeps a copy of a malformed file with the reason, for the Health page. The original is never touched.
-    func quarantine(_ file: URL, device: String, reason: String) {
+    /// Keeps a copy of a malformed file with the reason, for the Health page. The original is never touched. False when
+    /// the reason could not be kept (the copy is kept when the file can be read).
+    @discardableResult
+    func quarantine(_ file: URL, device: String, reason: String) -> Bool {
         let folder = quarantineDir.appendingPathComponent(device, isDirectory: true)
-        guard case .ok(let data) = SafeFile.read(file), (try? AtomicFile.makePrivateFolder(folder)) != nil else { return }
-        try? AtomicFile.write(data, to: folder.appendingPathComponent(file.lastPathComponent))
-        try? AtomicFile.write(Data((reason + "\n").utf8), to: folder.appendingPathComponent(file.lastPathComponent + ".why"))
+        guard (try? AtomicFile.makePrivateFolder(folder)) != nil else { return false }
+        if case .ok(let data) = SafeFile.read(file), (try? AtomicFile.write(data, to: folder.appendingPathComponent(file.lastPathComponent))) == nil {
+            return false
+        }
+        return (try? AtomicFile.write(Data((reason + "\n").utf8), to: folder.appendingPathComponent(file.lastPathComponent + ".why"))) != nil
     }
 
     public struct SweepResult: Equatable, Sendable {

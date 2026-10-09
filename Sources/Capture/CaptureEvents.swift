@@ -84,7 +84,7 @@ public struct CaptureProducer: Sendable {
         let stored = try StateFile.read(HLC.self, from: stateURL)
         // A stored stamp outside what a reader accepts is unreadable too: every note after it would be quarantined.
         guard stored.map(\.isValid) ?? true else { throw StateFile.Unreadable(path: stateURL.path) }
-        let previous = [stored, publishedStamp(node: node)].compactMap { $0 }.filter { $0.node == node }
+        let previous = [stored, try publishedStamp(node: node)].compactMap { $0 }.filter { $0.node == node }
             .max { $0.precedes($1) }
         let hlc = HLC.next(after: previous, node: node, now: savedAt)
         // A note stamped past the reader's range (a counter rolled over at the last wall time) is never written.
@@ -113,9 +113,10 @@ public struct CaptureProducer: Sendable {
         return PreparedNote(event: event, bytes: bytes, digest: "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
     }
 
-    /// The highest stamp among the events already in this device's folder, or nil when there is none.
-    func publishedStamp(node: String) -> HLC? {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return nil }
+    /// The highest stamp among the events already in this device's folder, or nil when there is none. Throws when the
+    /// folder cannot be listed: a note stamped without knowing what was published could sort before it.
+    func publishedStamp(node: String) throws -> HLC? {
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
         var best: HLC?
         for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") {
             guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(name)),
@@ -161,6 +162,12 @@ public struct CaptureProducer: Sendable {
 
     static func publish(_ data: Data, as url: URL, flush: DiskFlush) throws {
         let temp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".tmp")
+        // A temporary of this event left by a write that crashed is removed once it is over an hour old, never sooner:
+        // another process may still be writing it (§5.2, CT-13).
+        var st = stat()
+        if lstat(temp.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG, Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) > 3600 {
+            unlink(temp.path)
+        }
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw AtomicFile.Failure(step: "create event", code: errno) }
         var ok = false
@@ -270,7 +277,13 @@ public struct CaptureEvent: Sendable {
         case .unreadable: return (.pending, nil)
         }
         guard let parsed = try? JSONParser.parse(data), case .object(let o) = parsed.value else {
-            return (.pending, nil)   // may be partly written by a sync client
+            // It may be partly written by a sync client; one unchanged for the grace period (an hour) is not
+            // arriving any more, and goes to quarantine, where Health shows it (§5.3).
+            var st = stat()
+            if lstat(url.path, &st) == 0, Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) > 3600 {
+                return (.quarantined("does not parse"), nil)
+            }
+            return (.pending, nil)
         }
         let format = o["format"]?.stringValue
         guard format == "sprava-capture-event" || format == "sprava-derived-event" else { return (.quarantined("unknown format"), nil) }
@@ -293,7 +306,8 @@ public struct CaptureEvent: Sendable {
                 return (.quarantined("missing \(key)"), nil)
             }
             guard Timestamp.parse(o["captured_at"]?.stringValue ?? "") != nil else { return (.quarantined("captured_at is not a real instant"), nil) }
-            guard o["source"]?["ref"]?.stringValue != nil, o["source"]?["revision"]?.stringValue != nil, o["source"]?["app"]?.stringValue != nil else {
+            // Not empty either (the reader schema's minLength): an empty ref would join unrelated captures in one chain.
+            guard ["ref", "revision", "app"].allSatisfy({ o["source"]?[$0]?.stringValue?.isEmpty == false }) else {
                 return (.quarantined("source needs app, ref and revision as text"), nil)
             }
             // Types, not only presence: a field of the wrong type is a malformed event, never an empty one.

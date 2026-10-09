@@ -123,9 +123,16 @@ extension IntakeWatcher {
             try ProposalStore.save(proposal, in: folder)
             try commands.trustProposals([proposal.id], in: folder)
         } catch {
-            e.state = "kept"
-            try? store.save(e)
-            return outcome
+            // A card saved but never trusted could never be approved: it goes, and the reading is tried again (once
+            // more at most, as for a model failure); the code-built card stays meanwhile.
+            let written = ProposalStore.dir(folder).appendingPathComponent("\(proposal.id).json")
+            if FileManager.default.fileExists(atPath: written.path), (try? FileManager.default.removeItem(at: written)) == nil {
+                try? TekaStore(folder: folder).reject(proposal, reason: "its digest could not be kept", now: now)
+            }
+            var back = loaded
+            back.state = loaded.attempts >= 2 ? "kept" : "pending"
+            try? store.save(back)
+            return ReadingOutcome()
         }
         // The reading names the new card, then the watcher follows it, so a file that changes or goes withdraws it;
         // only then does the code-built card go. When either cannot be written, the new card is taken back and the

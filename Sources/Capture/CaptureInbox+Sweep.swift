@@ -17,16 +17,17 @@ extension CaptureInbox {
         // capture again and save over what is there (capture-event-v0 §5.3).
         var state: State
         let producers: [String: String]
+        let notices: [String: String]
         do {
             state = try readState()
             producers = try readProducers()
             _ = try unfiledDigests()
+            notices = try self.notices()
         } catch {
             result.unreadable = (error as? ShelfStore.Unreadable).map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "capture state"
             journal([("stage", .str("state_unreadable"))])
             return result
         }
-        let notices = notices()
         let fm = FileManager.default
         // A card the person filed just before a crash leaves its Inbox copy behind; it goes now.
         dropFiled(binders: binders, commands: commands)
@@ -46,7 +47,8 @@ extension CaptureInbox {
                 if (try? device.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) != true { result.refusedFolders += 1 }
                 continue
             }
-            guard let names = try? fm.contentsOfDirectory(atPath: device.path) else { continue }
+            // A folder that cannot be listed now is out of reach, not empty: Health counts it.
+            guard let names = try? fm.contentsOfDirectory(atPath: device.path) else { result.refusedFolders += 1; continue }
             for name in names.sorted() where name.hasSuffix(".json") && !name.hasPrefix(".") {
                 let file = device.appendingPathComponent(name)
                 let stem = String(name.dropLast(5))
@@ -87,8 +89,8 @@ extension CaptureInbox {
                     journal([("event", logged), ("stage", .str("newer_format"))])
                 case .quarantined(let why):
                     result.quarantined += 1
-                    state.examined[key] = .init(size: size, mtime: mtime, outcome: "quarantined")
-                    quarantine(file, device: deviceName, reason: why)
+                    // Recorded as examined only once its copy and reason are kept, so Health never loses it.
+                    if quarantine(file, device: deviceName, reason: why) { state.examined[key] = .init(size: size, mtime: mtime, outcome: "quarantined") }
                     journal([("event", logged), ("stage", .str("quarantined")), ("reason", .string(why))])
                 case .complete(.derived):
                     state.ingested[stem] = "derived"
@@ -525,11 +527,13 @@ extension CaptureInbox {
         ids.map { ($0, rank($0, state: state)) }.max { $0.1 < $1.1 }?.0
     }
 
-    /// An event's HLC as text that sorts like the clock: wall time, counter, then the id breaks a tie.
+    /// An event's HLC as text that sorts like the clock: wall time, counter, node, then the id breaks a tie.
     static func clockKey(_ event: CaptureEvent) -> String {
         let wall = event.raw["hlc"]?["wall_ms"]?.numberValue?.safeInteger ?? 0
         let counter = event.raw["hlc"]?["counter"]?.numberValue?.safeInteger ?? 0
-        return String(format: "%016lld:%08lld:", wall, counter) + event.id
+        // Wall time, counter, then the node (capture-event-v0 §4.2); the id only breaks a tie of whole stamps.
+        let node = event.raw["hlc"]?["node"]?.stringValue ?? ""
+        return String(format: "%016lld:%08lld:", wall, counter) + node + ":" + event.id
     }
 
     /// Pending cards built from any event of a chain: unfiled ones, and proposals waiting in the binders this Mac

@@ -42,8 +42,9 @@ extension CaptureInbox {
                 continue
             }
             let parts = path.split(separator: "/").map(String.init)
-            let device = root.appendingPathComponent(parts[0], isDirectory: true)
+            // A path the cursor holds that is not "device/name" (a damaged cursor) sets the work aside, never traps.
             guard parts.count == 2 else { clerk[id] = "kept"; continue }
+            let device = root.appendingPathComponent(parts[0], isDirectory: true)
             let (check, checked) = CaptureEvent.check(device.appendingPathComponent(parts[1]), deviceFolder: device)
             // An event file that cannot be read now is read again later; only one found not to be a capture is kept.
             if check == .pending { continue }

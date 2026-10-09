@@ -28,9 +28,10 @@ import Testing
         #expect(intake?["held"]?.stringValue?.contains("key or credential file") == true)
         #expect(intake?["preview"] == nil && intake?["facts"] == nil)
         #expect(!JSONWriter.compact(.object(card.raw)).contains("INVENTED-SECRET"))
-        // Nothing waits for the clerk or a brain; the person can still file it.
+        // Nothing waits for the clerk or a brain. A key or credential file is never filed (binder-v0 §3.3; the
+        // transaction guard refuses it), so the held card names it and moves nothing.
         #expect(IntakeReadings(support: s.support).all().isEmpty)
-        #expect(card.ops.map { $0["op"]?.stringValue } == ["file_document"])
+        #expect(card.ops.isEmpty)
     }
 
     @Test func aKeyFileInAMessagesAttachmentsFolderHoldsTheMessage() throws {
@@ -44,7 +45,12 @@ import Testing
         #expect(card.title.hasPrefix("Held:"))
         #expect(card.raw["provenance"]?["intake"]?["held"]?.stringValue?.contains("id_ed25519") == true)
         #expect(IntakeReadings(support: s.support).all().isEmpty)
-        #expect(card.ops.count == 3)   // the message and both attachments can still be filed
+        // The message and the other attachment can still be filed; the key file never is, so the card stays one the
+        // person can approve, and the key stays where it was.
+        #expect(card.ops.count == 2)
+        #expect(!card.ops.contains { $0["args"]?["from"]?.stringValue?.contains("id_ed25519") == true })
+        _ = try TekaStore(folder: s.folder).approve(card, now: now)
+        #expect(FileManager.default.fileExists(atPath: s.folder.appendingPathComponent("intake/mail/levy attachments/id_ed25519").path))
     }
 
     // MARK: - 4. A correction card that could not be kept is tried again, once

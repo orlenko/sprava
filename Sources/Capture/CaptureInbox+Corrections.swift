@@ -273,11 +273,13 @@ extension CaptureInbox {
         p.raw["provenance"]?["events"] == .array([.string(event)]) && p.raw["provenance"]?["supersedes"] != nil
     }
 
-    /// The correction card `event` already has in `folder`: one waiting as Sprava wrote it, or one the person
-    /// approved; nil when there is none.
+    /// The correction card `event` already has in `folder`: one waiting as Sprava wrote it, or one the person acted on
+    /// (approved or rejected); nil when there is none.
     func madeCorrection(_ event: String, in folder: URL, commands: Commands) -> String? {
         ProposalStore.list(in: folder).map(\.0).first { p in
-            Self.isCorrection(p, of: event) && (p.state == "applied" || (p.state == "proposed" && commands.isTrusted(p.id, in: folder)))
+            // One the person rejected is their decision, kept on a retry; one Sprava took back itself is not.
+            Self.isCorrection(p, of: event) && (p.state == "applied" || (p.state == "proposed" && commands.isTrusted(p.id, in: folder))
+                || (p.state == "rejected" && !Self.withdrawnBySprava.contains(p.raw["rejected_reason"]?.stringValue ?? "")))
         }?.id
     }
 }

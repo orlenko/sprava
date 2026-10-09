@@ -75,6 +75,12 @@ public struct IntakeWatcher: Sendable {
         return (Int(s.st_size), Double(s.st_mtimespec.tv_sec) + Double(s.st_mtimespec.tv_nsec) / 1e9)
     }
 
+    /// Whether anything is at `url` (a link, a file, a folder), seen without following it.
+    static func exists(_ url: URL) -> Bool {
+        var s = stat()
+        return lstat(url.path, &s) == 0 || errno != ENOENT
+    }
+
     static func folderTime(_ url: URL) -> Double? {
         var s = stat()
         guard lstat(url.path, &s) == 0, s.st_mode & S_IFMT == S_IFDIR, s.st_uid == getuid() else { return nil }
@@ -98,7 +104,8 @@ public struct IntakeWatcher: Sendable {
     /// a folder briefly out of reach never reads as one whose files all went.
     static func listCandidates(in folder: URL) throws -> [Candidate] {
         let intake = folder.appendingPathComponent("intake")
-        guard folderTime(intake) != nil else { return [] }
+        // Only a folder that is not there is empty: one there but not a plain folder of this user is out of reach.
+        guard folderTime(intake) != nil else { if exists(intake) { throw UnlistedFolder(path: intake.path) }; return [] }
         let names = try contents(intake)
         var out: [Candidate] = names.sorted().compactMap { name in
             guard !name.hasPrefix("."), !["_converted", "mail"].contains(name), DocumentPaths.isIntake("intake/" + name),
@@ -106,7 +113,7 @@ public struct IntakeWatcher: Sendable {
             return Candidate(name: name, size: f.size, mtime: f.mtime)
         }
         let mail = intake.appendingPathComponent("mail")
-        guard folderTime(mail) != nil else { return out }
+        guard folderTime(mail) != nil else { if exists(mail) { throw UnlistedFolder(path: mail.path) }; return out }
         let messages = try contents(mail)
         for name in messages.sorted() {
             let ext = (name as NSString).pathExtension.lowercased()
@@ -330,7 +337,9 @@ public struct IntakeWatcher: Sendable {
 
         var ops: [JSONObject] = []
         var number = 0
-        for (index, name) in ([file.name] + file.attachments).enumerated() {
+        // A key or credential file is never filed (binder-v0 §3.3): the card holds it, it never moves it, so the card
+        // stays one the person can approve.
+        for (index, name) in ([file.name] + file.attachments).enumerated() where !DocumentPaths.isKeyFile(name) {
             let fileSHA = index == 0 ? sha : (digests[row.folder.appendingPathComponent("intake/" + name).path]
                 ?? DocumentPaths.sha256(of: row.folder.appendingPathComponent("intake/" + name)))
             guard let fileSHA else { return nil }
@@ -428,7 +437,7 @@ public struct IntakeWatcher: Sendable {
     /// digest it has now. A file whose digest cannot be taken matches nothing.
     static func filesSame(_ card: Proposal, file: Candidate, sha: String?, digests: [String: String], in folder: URL) -> Bool {
         var expected: [String: String] = [:]
-        for (index, name) in ([file.name] + file.attachments).enumerated() {
+        for (index, name) in ([file.name] + file.attachments).enumerated() where !DocumentPaths.isKeyFile(name) {
             let url = folder.appendingPathComponent("intake/" + name)
             guard let digest = index == 0 ? sha : (digests[url.path] ?? DocumentPaths.sha256(of: url)) else { return false }
             expected["intake/" + name] = digest
