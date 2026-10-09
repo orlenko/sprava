@@ -25,6 +25,10 @@ extension Backup {
         guard let record = st.offloaded.first(where: { $0.backupID == backupID }) else { throw Failure(message: "no such offloaded binder") }
         let s = try settings()
         let destination = (target ?? URL(fileURLWithPath: record.originalPath, isDirectory: true)).standardizedFileURL
+        // A live binder is never in a folder a sync service uploads (architecture 2.3), as adoption requires.
+        if Adoption.syncedLocation(destination) || Adoption.syncedLocation(destination.deletingLastPathComponent()) {
+            throw Failure(message: "\(destination.lastPathComponent) would be in a folder a sync service uploads; a live binder stays local. Choose another place")
+        }
         let live = ShelfStore(supportDirectory: support).rows(includeArchived: true)
             .contains { Self.realPath($0.folder) == Self.realPath(destination) }
         if live {
@@ -215,14 +219,18 @@ extension Backup {
         return try body(try engine(record.secondRepository ?? s.second), second)
     }
 
-    /// Removes peeked documents older than a day: plain copies of offloaded documents do not stay on the Mac.
+    /// Removes peeked documents older than a day: plain copies of offloaded documents do not stay on the Mac. So do
+    /// verification restores (offload, restore and drill checks) that Sprava stopped in the middle of, which would
+    /// otherwise stay as whole plain copies of binders. One still in use a day on only fails its check, safely.
     public func cleanPeeks(now: Date = Date()) {
-        let peeks = dir.appendingPathComponent("peek", isDirectory: true)
         let fm = FileManager.default
-        for name in (try? fm.contentsOfDirectory(atPath: peeks.path)) ?? [] {
-            let url = peeks.appendingPathComponent(name)
-            let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date ?? .distantPast
-            if now.timeIntervalSince(modified) > 86_400 { try? fm.removeItem(at: url) }
+        for folder in ["peek", "verify"] {
+            let parent = dir.appendingPathComponent(folder, isDirectory: true)
+            for name in (try? fm.contentsOfDirectory(atPath: parent.path)) ?? [] {
+                let url = parent.appendingPathComponent(name)
+                let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date ?? .distantPast
+                if now.timeIntervalSince(modified) > 86_400 { try? fm.removeItem(at: url) }
+            }
         }
     }
 }

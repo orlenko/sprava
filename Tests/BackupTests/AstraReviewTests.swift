@@ -11,7 +11,7 @@ import Testing
 @Suite(.serialized) struct AstraReviewTests {
     // MARK: - 3. The offload's last check and removal hold the binder lock
 
-    @Test func offloadRemovesTheFolderUnderTheBinderLock() throws {
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func offloadRemovesTheFolderUnderTheBinderLock() throws {
         let e = try BugbotBackupTests().env()
         let locked = BugbotBackupTests.Switch(false)
         let trash = e.trash
@@ -19,10 +19,13 @@ import Testing
             // A writer arriving now finds the binder locked, so no approval can slip in before the folder goes.
             locked.on = (try? TekaStore(folder: url).withLock(timeout: 0) {}) == nil
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        }, hubSpool: e.spool, uploadCheck: { _ in .notInICloud })
+        }, hubSpool: e.spool, uploadCheck: { _ in .uploaded })
+        // The record goes into the mirror with Sprava's state before the folder leaves, so the mirror is set up.
+        try b.setUp(primary: e.primary, iCloudKeychain: false)
         let id = try Backup.backupID(e.folder)
         var job = Backup.InProgress(path: e.folder.standardizedFileURL.path, stage: "leaving")
         job.snapshot = "invented-snapshot"
+        job.repository = try b.settings().primary
         job.manifestSHA = Backup.digest(try Backup.manifest(e.folder))
         job.root = try Backup.rootMetadata(e.folder)
         var st = Backup.State()

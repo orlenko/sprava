@@ -14,10 +14,28 @@ extension Backup {
 
     static let excludes = [".teka.lock", ".*.tmp", ".DS_Store"]
 
+    /// What a snapshot of Sprava's own state leaves out besides `excludes` (`backUpState`): the backup's own working
+    /// folders, and the runtime's logs with their rotations (§3.2), by their paths in the support folder, never by
+    /// extension: a capture's attachment may well end in `.log`. Anchored at the support folder as restic sees it
+    /// (symbolic links resolved by realpath(3), which keeps /private where Foundation drops it), with the pattern
+    /// characters in it taken literally.
+    func stateExcludes() -> [String] {
+        let resolved = realpath(support.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? Self.realPath(support)
+        let root = resolved.map { "*?[\\".contains($0) ? "\\\($0)" : String($0) }.joined()
+        return ["backup/cache", "backup/run", "backup/verify", "backup/peek"]
+            + ["jobs.log", "lease-refusals.log"].flatMap { ["\(root)/runtime/\($0)", "\(root)/runtime/\($0).[0-9]*"] }
+    }
+
     /// A binder's stable backup id, kept inside the binder so it survives a restore elsewhere. One is made only when
     /// none is there (`storedBackupID`).
     public static func backupID(_ folder: URL) throws -> String {
         if let id = try storedBackupID(folder) { return id }
+        // Only in a binder folder that is there: a binder moved or deleted since (a queued "back up now"), or on a disk
+        // that is away, never gets a skeleton of its old path made for it.
+        var info = stat()
+        guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+            throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
+        }
         let id = newBackupID()
         let url = folder.appendingPathComponent(".sprava/backup-id")
         try AtomicFile.makePrivateFolder(url.deletingLastPathComponent())
@@ -166,11 +184,12 @@ extension Backup {
         }
     }
 
-    /// Sprava's own state, minus the backup's cache and run files.
+    /// Sprava's own state, minus the backup's cache and run files, and minus the runtime's logs (§3.2,
+    /// `stateExcludes`).
     public func backUpState(now: Date = Date()) throws {
         var st = try state()
         _ = try engine(settings().primary).backup(support, tags: ["sprava", "sprava-state"],
-                                                  excludes: Self.excludes + ["backup/cache", "backup/run", "backup/verify", "backup/peek"])
+                                                  excludes: Self.excludes + stateExcludes())
         st.stateSnapshotAt = ISOTime.string(now)
         try save(st)
     }
@@ -469,6 +488,11 @@ extension Backup {
         /// Folders not backed up because they hold another binder's backup id (`SharedBackupID`); each also counts
         /// in `failed`.
         public var sharedBackupIDs: [String] = []
+        /// Folders of binders whose writes are blocked until the person approves a repair (`Teka.writesBlocked`): a
+        /// backup writes into the binder (its backup id, its folder's metadata), and an expunge cut off would put the
+        /// document it was taking out into a new snapshot, so none is taken; each counts in `failed` until it is put
+        /// right, so backups never stop in silence.
+        public var blockedBinders: [String] = []
     }
 
     /// Hourly snapshots of each live binder this Mac manages (skipped when unchanged), Sprava's state daily,
@@ -501,7 +525,12 @@ extension Backup {
         }
         // So is a restore whose files were all in place: only its bookkeeping is left.
         for id in st.restoredContents.keys.sorted() where (try? finishRestore(id)) == nil { fail("restore") }
-        for row in rows where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
+        for row in rows where row.teka.isAdopted && Owner.device(of: row.folder) == deviceID {
+            guard !row.teka.writesBlocked else {
+                m.failed += 1
+                m.blockedBinders.append(row.folder.standardizedFileURL.path)
+                continue
+            }
             guard let id = try? Self.backupID(row.folder) else {
                 m.failed += 1
                 continue

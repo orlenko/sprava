@@ -98,6 +98,9 @@ public struct Backup: Sendable {
         var manifestSHA: String?
         /// The binder folder's own metadata as it was then; a change to it is a change to the binder.
         var root: RootMetadata?
+        /// Set once a snapshot of Sprava's state holding the offload record is in the mirror (`leave`), so a retry
+        /// while iCloud uploads it only waits, and adds no snapshot of its own for iCloud to upload in turn.
+        var stateSaved = false
     }
 
     struct State: Codable {
@@ -238,7 +241,11 @@ public struct Backup: Sendable {
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
         s.primary = primary.standardizedFileURL.path
         s.iCloudKeychain = iCloudKeychain
-        s.resticSHA256 = Restic.sha256(of: binary)
+        // The pin is what keeps every later run to this restic (`engine`): a binary that cannot be read for it is refused.
+        guard let digest = Restic.sha256(of: binary) else {
+            throw Failure(message: "restic cannot be read to check it (\(binary.path)); nothing was changed")
+        }
+        s.resticSHA256 = digest
         // A new mirror must not share a fate with the second backup already chosen (§5), as setSecond requires.
         if let second = s.second { try Self.refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: primary) }
         let r = try engine(s.primary, settings: s)
@@ -390,6 +397,7 @@ extension Backup.InProgress {
         openItemsConfirmed = try c.decodeIfPresent(Int.self, forKey: .openItemsConfirmed) ?? 0
         manifestSHA = try c.decodeIfPresent(String.self, forKey: .manifestSHA)
         root = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .root)
+        stateSaved = try c.decodeIfPresent(Bool.self, forKey: .stateSaved) ?? false
     }
 }
 

@@ -116,16 +116,26 @@ public enum BackupKey {
         }
     }
 
-    static func put(_ key: String, account acct: String, synchronizable: Bool) throws {
+    /// The Keychain's item calls, which `put` makes; tests pass their own.
+    struct Items {
+        var update: (_ query: CFDictionary, _ attributes: CFDictionary) -> OSStatus
+        var add: (_ attributes: CFDictionary) -> OSStatus
+        static var system: Items { Items(update: { SecItemUpdate($0, $1) }, add: { SecItemAdd($0, nil) }) }
+    }
+
+    /// Stores the key under `acct`. An item already there is changed in place, never deleted first: a change the
+    /// Keychain refuses leaves the key that works, so unattended backups go on.
+    static func put(_ key: String, account acct: String, synchronizable: Bool, items: Items = .system) throws {
         var base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                    kSecAttrAccount as String: acct]
         if synchronizable { base[kSecAttrSynchronizable as String] = true }
-        SecItemDelete(base as CFDictionary)
-        var add = base
-        add[kSecValueData as String] = Data(key.utf8)
-        add[kSecAttrAccessible as String] = synchronizable ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        add[kSecAttrLabel as String] = "Sprava backup key"
-        let status = SecItemAdd(add as CFDictionary, nil)
+        let values: [String: Any] = [
+            kSecValueData as String: Data(key.utf8),
+            kSecAttrAccessible as String: synchronizable ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrLabel as String: "Sprava backup key",
+        ]
+        var status = items.update(base as CFDictionary, values as CFDictionary)
+        if status == errSecItemNotFound { status = items.add(base.merging(values) { $1 } as CFDictionary) }
         guard status == errSecSuccess else { throw Failure(message: "the Keychain refused the backup key (\(status))") }
     }
 }

@@ -36,9 +36,11 @@ extension Backup {
         guard !ProposalStore.list(in: folder).contains(where: { $0.0.state == "proposed" }) else {
             throw Failure(message: "cards are waiting for this binder; approve or reject them first")
         }
+        try refuseUnreadableCards(folder)
         // Nothing may wait in intake/ or outgoing/. In intake/, `_converted/` is regenerable text, and `mail/` is
         // looked into: its messages and their attachment folders wait like any file, while a mail monitor's `.env`
-        // and `state.json` are never filed (binder-v0 §3.3).
+        // and `state.json` are never filed (binder-v0 §3.3). A hidden file waits like any other; only what restic
+        // leaves out (`excludes`) does not.
         // Only a folder that is not there is empty; one that cannot be listed may hold anything.
         func waiting(_ sub: String, except: Set<String>) throws -> Bool {
             let url = folder.appendingPathComponent(sub)
@@ -50,9 +52,9 @@ extension Backup {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
                 throw Failure(message: "\(sub)/ cannot be listed; nothing was removed")
             }
-            return names.contains { !$0.hasPrefix(".") && !except.contains($0) }
+            return names.contains { !Self.leftOut($0) && !except.contains($0) }
         }
-        if try waiting("intake", except: ["mail", "_converted"]) || waiting("intake/mail", except: ["state.json"]) {
+        if try waiting("intake", except: ["mail", "_converted"]) || waiting("intake/mail", except: [".env", "state.json"]) {
             throw Failure(message: "files are waiting in intake/; deal with them first")
         }
         if try waiting("outgoing", except: []) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
@@ -151,29 +153,70 @@ extension Backup {
         return try continueOffload(id, now: now)
     }
 
+    /// A name restic never backs up (`excludes`): Finder's `.DS_Store`, the binder lock, a temporary file.
+    static func leftOut(_ name: String) -> Bool {
+        name == ".DS_Store" || name == ".teka.lock" || (name.hasPrefix(".") && name.hasSuffix(".tmp"))
+    }
+
+    /// Every entry of the proposals folder must be a card `ProposalStore.list` read: a card that cannot be read (bad
+    /// JSON, a name that is not its id, a link) may be one waiting, and would leave unseen. A proposals folder that is
+    /// not a real folder, or cannot be listed, may hold anything.
+    func refuseUnreadableCards(_ folder: URL) throws {
+        let cards = folder.appendingPathComponent(".sprava/proposals", isDirectory: true)
+        let unreadable = Failure(message: "a card of this binder cannot be read (in .sprava/proposals); nothing was removed. Put it right, then offload again")
+        var info = stat()
+        if lstat(cards.path, &info) != 0 {
+            guard errno == ENOENT else { throw unreadable }
+            return
+        }
+        guard info.st_mode & S_IFMT == S_IFDIR, let names = try? FileManager.default.contentsOfDirectory(atPath: cards.path) else { throw unreadable }
+        let read = Set(ProposalStore.list(in: folder).map { "\($0.0.id).json" })
+        if names.contains(where: { !Self.leftOut($0) && !read.contains($0) }) { throw unreadable }
+    }
+
+    /// The iCloud upload gate (§3.4, §6.1 step 4): nil once macOS reports every file of the mirror uploaded, else how
+    /// many still wait. A mirror macOS does not report as in iCloud at all (iCloud Drive off, or a folder outside it)
+    /// is a copy on this Mac only, so nothing leaves the Mac on it.
+    func uploadPending(_ repository: URL) throws -> Int? {
+        switch uploadCheck(repository) {
+        case .uploaded: return nil
+        case .waiting(let n): return n
+        case .notInICloud:
+            throw Failure(message: "the backup mirror is not in iCloud (is iCloud Drive on?), so it is not yet a copy off this Mac; nothing was removed")
+        }
+    }
+
     func continueOffload(_ id: String, now: Date) throws -> OffloadProgress {
         let s = try settings()
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
-        if job.stage == "leaving" { return try leave(id, folder: folder, &st) }
-        // The settings may have changed while the offload waited. A snapshot in a mirror the person has since
-        // replaced is not in the backups any more; a copy in a replaced second backup is made again; and two
+        // A folder already in the Trash only has its records left to finish.
+        if job.stage == "leaving", !FileManager.default.fileExists(atPath: folder.path) { return try leave(id, folder: folder, &st, now: now) }
+        // The settings may have changed while the offload waited, also while it waited to leave. A snapshot in a
+        // mirror the person has since replaced is not in the backups any more (nor is the state snapshot holding the
+        // record); a copy in a replaced second backup is made again, with the record and its state snapshot; and two
         // repositories that now share a fate are not two copies.
         try refuseSharedFate(s)
         guard job.repository != nil, job.repository == s.primary else {
             st.offloads[id] = nil
+            if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
             try save(st)
             throw Failure(message: "the mirror changed during the offload; nothing was removed. Offload again to back up into the new one")
         }
         if job.secondSnapshot != nil, job.secondRepository != s.second {
             job.secondSnapshot = nil
             job.secondRepository = nil
-            if job.stage == "copied" { job.stage = "verified" }
+            if job.stage == "copied" || job.stage == "leaving" {
+                if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
+                job.stage = "verified"
+                job.stateSaved = false
+            }
         }
+        if job.stage == "leaving" { return try leave(id, folder: folder, &st, now: now) }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" {
-            if case .waiting(let n) = uploadCheck(primary.repository) {
+            if let n = try uploadPending(primary.repository) {
                 job.stage = "waiting_for_upload"
                 st.offloads[id] = job
                 try save(st)
@@ -226,26 +269,45 @@ extension Backup {
         st.offloaded.append(record)
         try save(st)
         step("offload.leaving")
-        return try leave(id, folder: folder, &st)
+        return try leave(id, folder: folder, &st, now: now)
     }
 
     /// The last step: the folder goes to the Trash, so nothing is destroyed until the person empties it, and the
     /// Shelf forgets it. Runs again after an interruption, from the record kept before.
-    func leave(_ id: String, folder: URL, _ st: inout State) throws -> OffloadProgress {
+    ///
+    /// The record is the only way back to the binder in the app, so before the folder goes it is in the mirror too:
+    /// a snapshot of Sprava's state is taken, and the folder waits until iCloud has it (a Mac lost before the next
+    /// daily state snapshot would otherwise take the record with it).
+    func leave(_ id: String, folder: URL, _ st: inout State, now: Date) throws -> OffloadProgress {
         guard var job = st.offloads[id], let record = st.offloaded.first(where: { $0.backupID == id }) else {
             throw Failure(message: "the offload's record is missing; nothing was removed")
         }
         if FileManager.default.fileExists(atPath: folder.path) {
-            // The last comparison and the move to the Trash run under the binder's write lock, so no approval can
-            // land between them and leave with the folder while neither backup holds it.
+            if !job.stateSaved {
+                try backUpState(now: now)
+                st = try state()
+                job.stateSaved = true
+                st.offloads[id] = job
+                try save(st)
+            }
+            if let n = try uploadPending(try engine(settings().primary).repository) {
+                // The binder stays live while it waits: one that changed starts over, and is backed up as usual.
+                try refuseIfChanged(id, folder: folder, job, &st)
+                return .waitingForICloud(n)
+            }
+            // The last comparison, the hub withdrawal and the move to the Trash run under the binder's write lock, so
+            // no approval can land between them and leave with the folder while neither backup holds it, and no
+            // publish can put the binder's slice back on the hub after it was taken off.
             var removal: Error?
             try TekaStore(folder: folder).withLock {
                 try refuseIfChanged(id, folder: folder, job, &st)
+                try removeHubSlice(Teka.read(folder))
                 do { try removeFolder(folder) } catch { removal = error }
             }
             if let error = removal {
                 st.offloaded.removeAll { $0.backupID == id }
                 job.stage = "copied"
+                job.stateSaved = false
                 st.offloads[id] = job
                 try? save(st)
                 throw error

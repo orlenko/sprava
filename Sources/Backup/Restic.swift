@@ -40,9 +40,30 @@ public struct Restic: Sendable {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Writes the key to a private file for one run; the caller deletes it.
-    func keyFile() throws -> URL {
+    /// How long restic may go without progress before it is stopped (§3.3: a run is never killed for taking long,
+    /// only after a stretch with no progress). The long commands run without `-q`, so they report their progress.
+    public static let stallLimit: TimeInterval = 30 * 60
+
+    /// How long a restic asked to stop gets before it is killed, and a killed one before it is given up on.
+    var grace: TimeInterval = 5
+
+    /// The clock deadlines and the no-progress cutoff are measured on (`ResticProcess.clock`); tests pass their own.
+    var clock: @Sendable () -> TimeInterval = ResticProcess.uptime
+
+    /// restic reads its key files as it starts, so a file in the run folder older than this belongs to no run any
+    /// more: Sprava stopped (a crash, a power cut) before it could delete it.
+    static let staleRunFile: TimeInterval = 15 * 60
+
+    /// Writes the key to a private file for one run; the caller deletes it. Key files earlier runs left behind are
+    /// deleted first, so a key never stays on disk past the next run.
+    func keyFile(now: Date = Date()) throws -> URL {
         try AtomicFile.makePrivateFolder(runDir)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: runDir.path)) ?? [] {
+            let url = runDir.appendingPathComponent(name)
+            var info = stat()
+            guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
+            if now.timeIntervalSince1970 - TimeInterval(info.st_mtimespec.tv_sec) > Self.staleRunFile { unlink(url.path) }
+        }
         let url = runDir.appendingPathComponent(UUID().uuidString)
         try AtomicFile.write(Data((key + "\n").utf8), to: url)
         return url
@@ -54,9 +75,12 @@ public struct Restic: Sendable {
         public let stderr: String
     }
 
-    /// Runs one restic command. `extra` keys are added after the repository and key arguments.
+    /// Runs one restic command. `extra` keys are added after the repository and key arguments. Nothing waits on restic
+    /// without a bound (`ResticProcess`): a run that passes `timeout`, or makes no progress for `stall`, is stopped and
+    /// throws. With `stdoutTo`, restic's output goes into that file as it comes, never into memory.
     @discardableResult
-    public func run(_ args: [String], cwd: URL? = nil, otherKey: (repo: URL, key: String)? = nil, timeout: TimeInterval? = nil) throws -> Output {
+    public func run(_ args: [String], cwd: URL? = nil, otherKey: (repo: URL, key: String)? = nil, timeout: TimeInterval? = nil,
+                    stall: TimeInterval? = Restic.stallLimit, stallEndsAt marker: String? = nil, stdoutTo file: URL? = nil) throws -> Output {
         let keyURL = try keyFile()
         defer { unlink(keyURL.path) }
         var full = args + ["--repo", repository.path, "--password-file", keyURL.path, "--cache-dir", cacheDir.path]
@@ -68,41 +92,50 @@ public struct Restic: Sendable {
             full += ["--from-repo", other.repo.path, "--from-password-file", url.path]
         }
         defer { if let otherURL { unlink(otherURL.path) } }
-        let task = Process()
-        task.executableURL = binary
-        task.arguments = full
-        task.environment = ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "RESTIC_PROGRESS_FPS": "0.2"]
-        if let cwd { task.currentDirectoryURL = cwd }
-        // stdout is read here to its end; stderr goes to a private file read after restic exits. Nothing waits on a
-        // second thread: a reader queued on a dispatch queue may never get one while every cooperative thread is
-        // blocked in a call like this, and then every restic run in the process hangs.
-        let out = Pipe()
+        // stderr goes to a private file, unlinked at once: it is read back through its descriptor, and nothing of it
+        // outlives the run.
         let errURL = runDir.appendingPathComponent(UUID().uuidString + ".err")
-        guard FileManager.default.createFile(atPath: errURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-            throw Failure(message: "restic's error output cannot be kept in \(runDir.path)")
+        let err = open(errURL.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard err >= 0 else { throw Failure(message: "restic's error output cannot be kept in \(runDir.path)") }
+        unlink(errURL.path)
+        defer { close(err) }
+        var sink: Int32?
+        if let file {
+            let fd = open(file.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw Failure(message: "restic's output cannot be written to \(file.lastPathComponent)") }
+            sink = fd
         }
-        defer { unlink(errURL.path) }
-        let err = try FileHandle(forWritingTo: errURL)
-        defer { try? err.close() }
-        task.standardOutput = out
-        task.standardError = err
-        task.standardInput = FileHandle.nullDevice
-        try task.run()
-        var killer: DispatchWorkItem?
-        if let timeout {
-            let k = DispatchWorkItem { if task.isRunning { task.terminate() } }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: k)
-            killer = k
+        defer { if let sink { close(sink) } }
+        var process = ResticProcess(binary: binary, arguments: full,
+                                    environment: ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "RESTIC_PROGRESS_FPS": "0.2"],
+                                    cwd: cwd, timeout: timeout, stall: stall, stallEndsAt: marker, grace: grace)
+        process.clock = clock
+        let (ending, stdout) = try process.run(stderr: err, sink: sink)
+        let command = args.first ?? ""
+        let status: Int32
+        switch ending {
+        case .exited(let code): status = code
+        case .stopped(.timedOut): throw Failure(message: "restic \(command) took longer than \(Int(timeout ?? 0)) seconds and was stopped")
+        case .stopped(.stalled):
+            let span = stall ?? 0
+            throw Failure(message: "restic \(command) made no progress for \(span >= 60 ? "\(Int(span / 60)) minutes" : "\(Int(span)) seconds") and was stopped")
+        case .stopped(.failedWrite): throw Failure(message: "restic \(command)'s output could not be written, and restic was stopped")
         }
-        let stdout = out.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        killer?.cancel()
-        let stderr = (try? Data(contentsOf: errURL)) ?? Data()
-        return Output(status: task.terminationStatus, stdout: stdout, stderr: String(decoding: stderr, as: UTF8.self))
+        var stderr = Data()
+        var buffer = [UInt8](repeating: 0, count: 1 << 14)
+        var offset: off_t = 0
+        while stderr.count < 1 << 20 {
+            let n = buffer.withUnsafeMutableBytes { pread(err, $0.baseAddress, $0.count, offset) }
+            guard n > 0 else { break }
+            stderr.append(contentsOf: buffer[0..<n])
+            offset += off_t(n)
+        }
+        return Output(status: status, stdout: stdout, stderr: String(decoding: stderr, as: UTF8.self))
     }
 
-    func checked(_ args: [String], cwd: URL? = nil, otherKey: (repo: URL, key: String)? = nil, timeout: TimeInterval? = nil) throws -> Output {
-        let o = try run(args, cwd: cwd, otherKey: otherKey, timeout: timeout)
+    func checked(_ args: [String], cwd: URL? = nil, otherKey: (repo: URL, key: String)? = nil, timeout: TimeInterval? = nil,
+                 stallEndsAt marker: String? = nil, stdoutTo file: URL? = nil) throws -> Output {
+        let o = try run(args, cwd: cwd, otherKey: otherKey, timeout: timeout, stallEndsAt: marker, stdoutTo: file)
         guard o.status == 0 else {
             // restic's messages carry paths, never file contents; keep the first line, short.
             let line = o.stderr.split(separator: "\n").first.map(String.init) ?? "exit \(o.status)"
@@ -185,10 +218,17 @@ public struct Restic: Sendable {
         try checked(["tag", snapshot, "--add", tag, "-q"])
     }
 
-    /// Restores a snapshot's contents into `target`, verifying every restored file; resumable.
+    /// Restores a snapshot's contents into `target`, verifying every restored file; resumable. The no-progress cutoff
+    /// holds while restic restores (reading the repository, which may hang on a cloud or a disk), and ends with the
+    /// summary it prints when the files are in place: `--verify` then reads them back from the local target and
+    /// reports no progress through a pipe, so a long verification would pass for a stall.
     public func restore(_ snapshot: String, into target: URL) throws {
-        try checked(["restore", snapshot, "--target", target.path, "--verify", "--overwrite", "if-changed", "-q"])
+        try checked(["restore", snapshot, "--target", target.path, "--verify", "--overwrite", "if-changed", "--json"],
+                    stallEndsAt: Self.summaryMarker)
     }
+
+    /// What restic's `--json` summary line holds.
+    static let summaryMarker = #""message_type":"summary""#
 
     /// The entries a snapshot holds (files, folders, symbolic links), by their path inside the binder
     /// ("documents/deed.pdf"), as `Backup.manifest` lists a folder.
@@ -203,19 +243,27 @@ public struct Restic: Sendable {
         return out
     }
 
-    /// One file of a snapshot, by its path inside the binder ("/documents/deed.pdf").
+    /// One file of a snapshot, by its path inside the binder ("/documents/deed.pdf"), written to `file` as restic
+    /// reads it, so a large document is never held in memory; `file` appears only once it is whole. The partial file
+    /// has a short name of its own, so a document whose name is as long as a name can be still fits.
     public func dump(_ snapshot: String, path: String, to file: URL) throws {
-        let o = try checked(["dump", snapshot, path])
-        try AtomicFile.write(o.stdout, to: file)
+        let part = file.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString.prefix(8)).part")
+        do {
+            try checked(["dump", snapshot, path], stdoutTo: part)
+            guard rename(part.path, file.path) == 0 else { throw Failure(message: "the document could not be put in place") }
+        } catch {
+            unlink(part.path)
+            throw error
+        }
     }
 
     public func copy(_ snapshot: String, from source: Restic) throws {
-        try checked(["copy", snapshot, "-q"], otherKey: (source.repository, source.key))
+        try checked(["copy", snapshot], otherKey: (source.repository, source.key))
     }
 
     public func forget(tag: String, keepLast: Int, keepWithinDays: Int, keepMonthly: Int, keepYearly: Int) throws {
         try checked(["forget", "--tag", tag, "--group-by", "tags", "--keep-last", String(keepLast), "--keep-within", "\(keepWithinDays)d",
-                     "--keep-monthly", String(keepMonthly), "--keep-yearly", String(keepYearly), "--keep-tag", "offloaded", "--prune", "-q"])
+                     "--keep-monthly", String(keepMonthly), "--keep-yearly", String(keepYearly), "--keep-tag", "offloaded", "--prune"])
     }
 
     /// Rewrites the given snapshots, and only those, without the entry at `path` inside the binder
@@ -229,7 +277,7 @@ public struct Restic: Sendable {
         let pattern = "/" + path.map { "*?[\\".contains($0) ? "\\\($0)" : String($0) }.joined()
         // Snapshot ids are restic's own hex ids, never options; `run` adds the repository after them.
         guard snapshots.allSatisfy({ $0.wholeMatch(of: /[0-9a-f]{8,64}/) != nil }) else { throw Failure(message: "restic rewrite: not a snapshot id") }
-        try checked(["rewrite", "--exclude", pattern, "--forget", "-q"] + snapshots)
+        try checked(["rewrite", "--exclude", pattern, "--forget"] + snapshots)
     }
 
     /// The snapshots carrying `tag` that replaced one of `before`, by the id they replaced. A snapshot that is itself
@@ -243,11 +291,11 @@ public struct Restic: Sendable {
     }
 
     public func prune() throws {
-        try checked(["prune", "-q"])
+        try checked(["prune"])
     }
 
     public func check(readDataSubset: String? = nil) throws {
-        var args = ["check", "-q"]
+        var args = ["check"]
         if let subset = readDataSubset { args += ["--read-data-subset", subset] }
         try checked(args)
     }

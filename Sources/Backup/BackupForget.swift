@@ -206,7 +206,7 @@ extension Backup {
     /// repository that cannot be read keeps its journal, and throws.
     func reconcileRewrites(_ st: inout State, in repository: String? = nil) throws {
         for journal in st.rewrites where repository == nil || journal.repository == repository {
-            st.rename(try engine(journal.repository).replacements(of: Set(journal.before), tag: journal.tag))
+            st.rename(try engine(journal.repository).replacements(of: Set(journal.before), tag: journal.tag), in: journal.repository)
             st.rewrites.removeAll { $0 == journal }
             try save(st)
         }
@@ -214,24 +214,31 @@ extension Backup {
 }
 
 extension Backup.State {
-    /// Puts each snapshot a rewrite replaced under its new id, wherever a record names it.
-    mutating func rename(_ ids: [String: String]) {
+    /// Puts each snapshot a rewrite of `repository` replaced under its new id, wherever a record names it in that
+    /// repository. A copy of a snapshot that a rewrite made can have the same id in both repositories, so a field that
+    /// names another repository keeps its id: that repository still holds the old snapshot until it is rewritten too.
+    /// A field whose repository is not recorded (older records) is renamed.
+    mutating func rename(_ ids: [String: String], in repository: String) {
         guard !ids.isEmpty else { return }
-        func renamed(_ id: String?) -> String? { id.map { ids[$0] ?? $0 } }
+        func renamed(_ id: String?, _ repo: String?) -> String? {
+            guard repo == nil || repo == repository else { return id }
+            return id.map { ids[$0] ?? $0 }
+        }
+        func renamed(_ id: String) -> String { ids[id] ?? id }
         for i in offloaded.indices {
-            offloaded[i].snapshot = ids[offloaded[i].snapshot] ?? offloaded[i].snapshot
-            offloaded[i].secondSnapshot = renamed(offloaded[i].secondSnapshot)
+            if offloaded[i].repository == nil || offloaded[i].repository == repository { offloaded[i].snapshot = renamed(offloaded[i].snapshot) }
+            offloaded[i].secondSnapshot = renamed(offloaded[i].secondSnapshot, offloaded[i].secondRepository)
         }
         offloads = offloads.mapValues { job in
             var job = job
-            job.snapshot = renamed(job.snapshot)
-            job.secondSnapshot = renamed(job.secondSnapshot)
+            job.snapshot = renamed(job.snapshot, job.repository)
+            job.secondSnapshot = renamed(job.secondSnapshot, job.secondRepository)
             return job
         }
         func renamed(_ r: Restored) -> Restored {
             var r = r
-            r.snapshot = ids[r.snapshot] ?? r.snapshot
-            r.secondSnapshot = renamed(r.secondSnapshot)
+            if r.repository == nil || r.repository == repository { r.snapshot = renamed(r.snapshot) }
+            r.secondSnapshot = renamed(r.secondSnapshot, r.secondRepository)
             return r
         }
         restored = restored.mapValues(renamed)
@@ -242,11 +249,11 @@ extension Backup.State {
         }
         binders = binders.mapValues { b in
             var b = b
-            b.snapshot = renamed(b.snapshot)
+            b.snapshot = renamed(b.snapshot, nil)
             return b
         }
         for i in forgetting.indices {
-            for j in forgetting[i].scopes.indices {
+            for j in forgetting[i].scopes.indices where forgetting[i].scopes[j].repository == repository {
                 forgetting[i].scopes[j].snapshots = forgetting[i].scopes[j].snapshots.map { ids[$0] ?? $0 }
             }
         }

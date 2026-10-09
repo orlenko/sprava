@@ -48,12 +48,14 @@ import Testing
         return Env(base: base, support: base.appendingPathComponent("support"), folder: folder, trash: trash, spool: spool)
     }
 
-    func backup(_ e: Env, key: String = "TEST-KEY-AAAAA-BBBBB", failRemove: Switch? = nil, waiting: Switch? = nil) -> Backup {
+    /// A Backup whose mirror counts as uploaded to iCloud (`upload`), unless `waiting` is on.
+    func backup(_ e: Env, key: String = "TEST-KEY-AAAAA-BBBBB", failRemove: Switch? = nil, waiting: Switch? = nil,
+                upload: Backup.Upload = .uploaded) -> Backup {
         let trash = e.trash
         return Backup(support: e.support, key: key, removeFolder: { url in
             if failRemove?.on == true { throw CocoaError(.fileWriteNoPermission) }
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        }, hubSpool: e.spool, uploadCheck: { _ in waiting?.on == true ? .waiting(2) : .notInICloud })
+        }, hubSpool: e.spool, uploadCheck: { _ in waiting?.on == true ? .waiting(2) : upload })
     }
 
     /// Settings naming both repositories, written directly, for the checks that run before restic does.
@@ -66,8 +68,8 @@ import Testing
         return b
     }
 
-    func configured(_ e: Env, failRemove: Switch? = nil, waiting: Switch? = nil) throws -> Backup {
-        let b = backup(e, failRemove: failRemove, waiting: waiting)
+    func configured(_ e: Env, failRemove: Switch? = nil, waiting: Switch? = nil, upload: Backup.Upload = .uploaded) throws -> Backup {
+        let b = backup(e, failRemove: failRemove, waiting: waiting, upload: upload)
         try b.setUp(primary: e.primary, iCloudKeychain: false)
         try b.setSecond(e.second)
         return b

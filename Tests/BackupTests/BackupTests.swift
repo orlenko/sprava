@@ -26,7 +26,7 @@ import Testing
         // The hub's spool is a temporary folder too, never the person's.
         let backup = Backup(support: support, key: key, removeFolder: { url in
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        }, hubSpool: base.appendingPathComponent("spool"))
+        }, hubSpool: base.appendingPathComponent("spool"), uploadCheck: { _ in .uploaded })
         let folder = try makeTeka(fixture: "sprava-v0")
         try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("dev"))]), now: now)
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("correspondence/notary"), withIntermediateDirectories: true)
@@ -47,7 +47,8 @@ import Testing
         try s.backup.applyRetention(now: now)
         try s.backup.check(readData: true, now: now)
         try s.backup.drill(s.folder, now: now)
-        #expect(s.backup.status(checkUpload: true).upload == .notInICloud)
+        #expect(s.backup.status(checkUpload: true).upload == .uploaded)
+        #expect(Backup.uploadStatus(of: s.base.appendingPathComponent("icloud/Sprava Backup")) == .notInICloud)
     }
 
     @Test(.enabled(if: hasRestic)) func aWrongKeyCannotOpenTheMirror() throws {
