@@ -116,6 +116,10 @@ extension Runtime {
             if case .published(let n, let overwritten)? = synced.published {
                 log("hub binder=\(bid) published items=\(n)" + (overwritten ? " overwritten_by_other=true" : ""))
             }
+            // A binder that needs attention (a stamped catalog without a valid disclosure, among others) has its slice
+            // withdrawn and publishes nothing; the doctor names why. The reason may quote the catalog, so it is not logged.
+            if case .removed? = synced.published { log("hub binder=\(bid) slice_withdrawn=true") }
+            if case .notPublished? = synced.published { log("hub binder=\(bid) not_published=true") }
             if let error = synced.drainError { log("hub binder=\(bid) drain_error=\(type(of: error))") }
             if let error = synced.publishError { log("hub binder=\(bid) error=\(type(of: error))") }
             if synced.failed { failures.append(bid) }
@@ -145,9 +149,8 @@ extension Runtime {
             let slowest = result.latencies.max().map { " slowest_s=\(Int($0))" } ?? ""
             log("capture ingested=\(result.ingested) filed=\(result.filed) unfiled=\(result.unfiled) duplicates=\(result.duplicates) quarantined=\(result.quarantined) pending=\(result.pending) refused_folders=\(result.refusedFolders)" + slowest)
         }
-        if let file = result.unreadable { return .error(code: "capture_state_unreadable", culprit: file) }
-        if result.refusedFolders > 0 { return .error(code: "capture_folder_refused", culprit: "\(result.refusedFolders) folder(s)") }
-        return .ok   // a sweep that found nothing new still did its work
+        if let file = result.unsaved { log("capture state_unwritable=\(file)") }
+        return CaptureJob.outcome(result)
     }
 
     /// The intake watcher (mvp.md feature 4; adaptation-layer §4): a card for each file that holds still in a

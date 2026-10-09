@@ -1,4 +1,5 @@
 import BinderStore
+import CaptureTestSupport
 import Darwin
 import Foundation
 @testable import Services
@@ -129,14 +130,16 @@ import Testing
         #expect(nextSummaryTime(now: at, lastSent: "2026-10-06", calendar: toronto) > at)
     }
 
-    // 15. Recurrence and dismissed are not set in this version.
+    // 15. Recurrence and dismissed are not set in this version. The binder is owned by this Mac and the item has a
+    // due date, so the refusal is this version's rule: never the owner check, nor "recurrence needs a due".
     @Test func recurrenceCannotBeSet() throws {
         let root = try scratch()
         let f = try binder(root, name: "tax", catalog: lifeproj(name: "tax", items: [item("a-1")]))
-        try TekaStore(folder: f).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
         let c = Commands(support: root.appendingPathComponent("support"), deviceID: "dev")
+        try adoptAsCommand(f, commands: c, now: now, today: CalendarDate(year: 2026, month: 10, day: 7)!)
         let r = try req(c, [("command", .str("apply")), ("binder", .string(f.path)), ("op", .str("update_item")),
                             ("args", .obj([("id", .str("a-1")), ("set", .obj([("recurrence", .obj([("freq", .str("monthly")), ("day", .int(1))]))]))]))])
         #expect(r["ok"] == .bool(false))
+        #expect(r["error"]?.stringValue?.contains("recurrence and dismissed are not set or removed in this version") == true, "\(r)")
     }
 }

@@ -256,11 +256,22 @@ func note(_ args: [String]) {
     guard !args.isEmpty else { fail(usage) }
     let support = SpravaPaths.supportDirectory()
     let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID(support), support: support)
+    let note: CaptureProducer.PreparedNote
     do {
-        let (event, _) = try producer.writeNote(args.joined(separator: " "), binderHint: binder, startedAt: Date())
-        print(event["id"]?.stringValue ?? "")
+        note = try producer.prepareNote(args.joined(separator: " "), binderHint: binder, startedAt: Date())
     } catch {
-        fail("\(error)", code: 1)
+        fail("not saved: \(error)", code: 1)
+    }
+    // A failure after the event file is in place leaves the note saved: said so, with its id and status 0, so a
+    // retry never publishes it a second time.
+    switch NoteSave.publish(note, with: producer) {
+    case .saved(let id):
+        print(id)
+    case .savedNotConfirmed(let id, let reason):
+        print(id)
+        FileHandle.standardError.write(Data("saved, not confirmed: \(reason); do not write it again\n".utf8))
+    case .notSaved(let reason):
+        fail("not saved: \(reason)", code: 1)
     }
 }
 

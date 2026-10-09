@@ -45,6 +45,8 @@ Developer commands (invented data only; `sprava dev` refuses any folder in lifep
 ```sh
 sprava note "Call the notary by Friday"      # a typed note, as the app writes one
 sprava clerk "Pay the plumber 625 dollars next week" --binder "rental=Rental on Elm Street"
+./scripts/sign-dev-helper.sh                 # after each swift build: sign the file reader with its sandbox
+sprava read-document <invented-file>         # read a file as intake would (needs the signed reader)
 sprava clerk-gate Tests/ClerkGate/fixtures.json   # the clerk's release gate
 sprava dashboard <folder>                    # the DASHBOARD.md Sprava would write
 sprava measures --days 30                    # the shadow run's measures (mvp.md 1.2)
