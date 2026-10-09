@@ -88,7 +88,7 @@ test('an unclaimed relay refuses to start without a well-formed setup code (§6)
     await assert.rejects(startRelay(readConfig({ ...env, SPRAVA_SETUP_CODE: 'not-a-code' }), store, { log: silentLog, lease: TEST_LEASE }), ConfigError);
     await store.put('owner.json', Buffer.from('{"owner_token_sha256":"' + 'a'.repeat(64) + '"}'));
     const { relay } = await startRelay(readConfig({ ...env, SPRAVA_SETUP_CODE: 'not-a-code' }), store, { log: silentLog, lease: TEST_LEASE });
-    assert.equal(relay.claimed, true);
+    assert.equal(relay.ownerHash, 'a'.repeat(64));
 });
 
 // The core alone, with routes made for the test.

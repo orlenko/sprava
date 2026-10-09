@@ -84,7 +84,14 @@ write-once object records its bytes' intent first (`src/store/store.ts`).
 
 4. Point the host's health check at `GET /v0/health`. It answers `200` with
    `{"protocol":0,"claimed":false,"instance":"..."}` until the Mac claims the relay.
-5. In the Mac app, Settings › Phone: the relay's address and the setup code.
+5. In the Mac app, Settings › Phone: the relay's address and the setup code. The Mac claims the relay
+   (`POST /v0/claim`, spec section 6) and `/v0/health` then says `"claimed":true`. From then on the relay
+   ignores the setup code and refuses every other claim, even after a restart; remove `SPRAVA_SETUP_CODE` from
+   the host's settings. Until it is claimed, the relay serves nothing but health and claim.
+
+Wrong setup codes are answered `403`, and after five from one address within ten minutes, `429`. Behind a
+proxy that hides client addresses (App Platform's included) every client shares one address, so the count is
+in effect relay-wide; a correct code is never refused because of it.
 
 Starting over means a new `SPRAVA_INSTANCE` and a new setup code; the old data stays behind under the old
 prefix, which you may delete by hand.
@@ -127,6 +134,10 @@ endpoint is checked against them:
 - `src/main.ts`: reads the environment, opens the store, serves.
 - `src/relay.ts`: the relay's shared state, what it checks before serving, and its routes.
 - `src/lease.ts`: one writer at a time, even while a host runs two containers.
+- `src/claim.ts`: claiming the relay (section 6).
+- `src/devices.ts`: admitting device tokens, listing and revoking devices (sections 7.3, 7.4).
+- `src/startup.ts`: the repairs and cleanups before serving (section 7.8).
+- `src/layout.ts`: the names of what the relay keeps (section 7.8); `src/limits.ts`: in-memory counts.
 - `src/http.ts`: routing, cross-origin rules (section 7.7), tokens and roles (7.1), body limits, errors.
 - `src/log.ts`: structured logs without content (section 12).
 - `src/encoding.ts`: b64, ids, tokens and their hashes, times (section 3).
