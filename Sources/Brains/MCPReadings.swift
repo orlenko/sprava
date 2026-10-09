@@ -10,10 +10,13 @@ import SpravaKit
 /// The careful-reading tools: list_readings, read_document and finish_reading (adaptation-layer §4.4).
 extension MCPServer {
     /// A reading waiting for a careful reading, in a binder this client may see, whose card the person has not
-    /// rejected: exactly what list_readings offers (adaptation-layer §4.4).
+    /// rejected, and whose document is not private: exactly what list_readings offers (adaptation-layer §4.4;
+    /// architecture 7.3). A remembered reading id opens nothing list_readings would not show.
     func reading(_ args: JSONObject, in row: ShelfRow) -> IntakeReadings.Entry? {
-        guard case .string(let id)? = args["reading_id"] else { return nil }
-        return IntakeReadings(support: commands.support).escalation(id, in: row.folder.standardizedFileURL.path)
+        guard case .string(let id)? = args["reading_id"],
+              let e = IntakeReadings(support: commands.support).escalation(id, in: row.folder.standardizedFileURL.path),
+              mayShow(e, in: row, privacy: Self.privateDocuments(catalog: row.teka.catalog, folder: row.folder)) else { return nil }
+        return e
     }
 
     /// Marks a waiting reading as answered by a stored card. Nil when done or when the reading no longer waits; else
@@ -35,7 +38,13 @@ extension MCPServer {
         let names = Dictionary(rows.map { ($0.0.folder.standardizedFileURL.path, $0.0.teka.name) }, uniquingKeysWith: { a, _ in a })
         let levels = Dictionary(rows.map { ($0.0.folder.standardizedFileURL.path, PrivacyRatchet.disclosure($0.0)) },
                                 uniquingKeysWith: { a, _ in a })
-        let entries = IntakeReadings(support: commands.support).escalations(in: Set(names.keys))
+        let byPath = Dictionary(rows.map { ($0.0.folder.standardizedFileURL.path, $0.0) }, uniquingKeysWith: { a, _ in a })
+        let privacy = byPath.mapValues { Self.privateDocuments(catalog: $0.teka.catalog, folder: $0.folder) }
+        // A reading of a private document is not listed at all: its title, summary and file name are its content.
+        let entries = IntakeReadings(support: commands.support).escalations(in: Set(names.keys)).filter { e in
+            guard let row = byPath[e.binder] else { return false }
+            return mayShow(e, in: row, privacy: privacy[e.binder] ?? nil)
+        }
         // The binder's disclosure is the ceiling (architecture 7.6): a summary at full, a title at title, the class at kind.
         return Self.toolResult(.obj([("can_read_documents", .bool(client.readsDocuments)), ("readings", .array(entries.map { e in
             let level = levels[e.binder] ?? "none"

@@ -38,10 +38,14 @@ public final class LineReader {
     }
 }
 
-public func writeLine(_ fd: Int32, _ text: String) -> Bool {
+/// Writes one line. False when the peer is gone, or when a deadline is given and the line is not written by then: a
+/// socket with a send timeout (`setSendTimeout`) fails each stalled write, and a peer that takes a few bytes at a
+/// time still cannot hold the writer past the deadline.
+public func writeLine(_ fd: Int32, _ text: String, deadline: Date? = nil) -> Bool {
     let bytes = Array((text + "\n").utf8)
     var offset = 0
     while offset < bytes.count {
+        if let deadline, Date() > deadline { return false }
         let n = bytes.withUnsafeBytes { write(fd, $0.baseAddress! + offset, bytes.count - offset) }
         if n < 0 { if errno == EINTR { continue }; return false }
         offset += n
@@ -52,6 +56,12 @@ public func writeLine(_ fd: Int32, _ text: String) -> Bool {
 package func setTimeout(_ fd: Int32, seconds: Int) {
     var tv = timeval(tv_sec: seconds, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+}
+
+/// Bounds each write on the socket: one the peer does not take within `seconds` fails with EAGAIN.
+package func setSendTimeout(_ fd: Int32, seconds: Int) {
+    var tv = timeval(tv_sec: seconds, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 }
 
 func unixAddress(_ path: String) -> sockaddr_un? {
@@ -88,6 +98,12 @@ public final class MCPListener: @unchecked Sendable {
     public static let maxPerClient = 4
     /// How often an idle connection checks that its client still stands, so a revoked one is closed.
     package var idleCheckSeconds = 30
+    /// How long one reply may take to reach a client. A client that sends requests without reading the replies would
+    /// otherwise hold its connection, a thread and one of its slots for ever, and never reach the revocation check.
+    package var writeSeconds = 10
+
+    /// Authenticated connections open now.
+    package var openConnections: Int { lock.withLock { connections.count } }
 
     public init(support: URL, commands: Commands, queue: DispatchQueue, shelf: @escaping @Sendable () -> [ShelfRow],
                 log: @escaping @Sendable (String) -> Void) {
@@ -174,6 +190,7 @@ public final class MCPListener: @unchecked Sendable {
         var uid: uid_t = 0, gid: gid_t = 0
         guard getpeereid(conn, &uid, &gid) == 0, uid == getuid() else { return }
         setTimeout(conn, seconds: 3)
+        setSendTimeout(conn, seconds: writeSeconds)
         let reader = LineReader(fd: conn)
         reader.deadline = Date().addingTimeInterval(5)   // the whole preamble, not each read (a peer dripping bytes)
         guard case .line(let preamble) = reader.next(limit: Self.preambleLimit),
@@ -239,7 +256,10 @@ public final class MCPListener: @unchecked Sendable {
                 case .reply(let r?):
                     reply = r
                 }
-                if !writeLine(conn, reply) { return }
+                guard writeLine(conn, reply, deadline: Date().addingTimeInterval(TimeInterval(writeSeconds))) else {
+                    log("mcp client=\(client.id) closed=reply_not_taken")
+                    return
+                }
                 // Names, sizes and durations only, never content (architecture 3.7, 7.5): a method name the server
                 // does not know is logged as unknown_method, so no text a client chose reaches the log.
                 log("mcp client=\(client.id) method=\(MCPServer.loggedMethod(line)) bytes=\(reply.utf8.count) ms=\(Int(Date().timeIntervalSince(started) * 1000))")

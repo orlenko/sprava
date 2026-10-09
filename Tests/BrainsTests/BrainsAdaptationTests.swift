@@ -46,6 +46,7 @@ import Testing
         let body = JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: bb.addItem(1)["args"] ?? .obj([]))])
         let card = Proposal.make(title: "Invented filing card", actor: actor, ops: [body], now: now)
         try ProposalStore.save(card, in: s.folder)
+        try s.commands.trustProposals([card.id], in: s.folder)
         var e = IntakeReadings.Entry(id: "reading-1", binder: s.folder.standardizedFileURL.path, name: "letter.pdf",
                                      sha256: String(repeating: "0", count: 64), card: card.id,
                                      reading: IntakeReading(kind: "text", textFrom: "parsed", text: "An invented letter about a roof.", channel: "other"),

@@ -57,9 +57,12 @@ extension MCPServer {
     func getProposal(_ args: JSONObject) -> JSONValue {
         // A handle is a name, never a capability: it must belong to this client (architecture 7.3).
         guard let (row, _) = binder(args) else { return missing(args) }
-        guard case .string(let pid)? = args["proposal_id"],
-              let (p, _) = ProposalStore.list(in: row.folder).first(where: { $0.0.id == pid }),
-              p.actor["kind"] == .str("brain"), p.actor["model"]?.stringValue == client.id else { return Self.toolError("not found") }
+        // Only the card as Sprava last wrote it is believed: a state another program wrote (`applied`, say) is never
+        // reported, and neither is a card whose owner another program changed.
+        guard case .string(let pid)? = args["proposal_id"], let p = try? commands.loadTrusted(pid, in: row.folder),
+              p.actor["kind"] == .str("brain"), p.actor["model"]?.stringValue == client.id else {
+            return Self.toolError("not found, or changed outside Sprava")
+        }
         return Self.toolResult(.obj([("proposal_id", .string(p.id)), ("state", .string(p.state)),
                                      ("applied_ops", p.raw["applied_ops"] ?? .array([]))]))
     }

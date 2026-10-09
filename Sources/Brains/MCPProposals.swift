@@ -43,14 +43,22 @@ extension MCPServer {
 
     /// This client's card for a request id, or nil. Unlike `ProposalStore.list`, which skips what it cannot read, a
     /// card file that cannot be read or parsed throws: it may be this very request's card, and a second card for the
-    /// same request would leave two to approve once the first is readable again.
+    /// same request would leave two to approve once the first is readable again. Each card is read with
+    /// `SafeFile.read`: never through a link, never blocking on a FIFO (this runs on the command queue the person's
+    /// approvals share), only a plain file of this user. A card file that is refused or cannot be read just now
+    /// makes the folder uninspectable; a file gone since the listing is no card.
     static func card(for requestID: String, client: String, in folder: URL) throws -> Proposal? {
         var st = stat()
         if lstat(ProposalStore.dir(folder).path, &st) != 0, errno == ENOENT { return nil }   // no card was ever stored
         let dir = try ProposalStore.checkedDir(folder, create: false)
         for name in try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
         where name.hasSuffix(".json") && ProposalStore.isValidID(String(name.dropLast(5))) {
-            let data = try Data(contentsOf: dir.appendingPathComponent(name))
+            let data: Data
+            switch SafeFile.read(dir.appendingPathComponent(name)) {
+            case .ok(let d): data = d
+            case .missing: continue
+            case .refused, .unreadable: throw Uninspectable()
+            }
             guard case .object(let o) = try JSONParser.parse(data).value, o["id"]?.stringValue == String(name.dropLast(5)) else {
                 throw Uninspectable()
             }

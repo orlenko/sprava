@@ -43,10 +43,11 @@ extension MCPServer {
     static func openIntake(_ relative: String, in folder: URL) -> (fd: Int32, stamp: IntakeStamp)? {
         guard DocumentPaths.isIntake(relative), !DocumentPaths.isKeyFile(relative) else { return nil }
         let segments = relative.split(separator: "/").map(String.init)
-        var dir = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        // Every open is non-blocking, so nothing named here (a FIFO in particular) can hold the caller.
+        var dir = open(folder.path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC)
         guard dir >= 0 else { return nil }
         for segment in segments.dropLast() {
-            let next = openat(dir, segment, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            let next = openat(dir, segment, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
             close(dir)
             guard next >= 0 else { return nil }
             dir = next
