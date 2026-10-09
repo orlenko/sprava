@@ -22,10 +22,9 @@ extension Commands {
         let s = try backup.settings()
         let st = backup.status()
         let rows = ShelfStore(supportDirectory: support).rows()
-        let names = Dictionary(rows.compactMap { row -> (String, String)? in
-            guard let id = try? String(contentsOf: row.folder.appendingPathComponent(".sprava/backup-id"), encoding: .utf8) else { return nil }
-            return (id.trimmingCharacters(in: .whitespacesAndNewlines), row.name)
-        }, uniquingKeysWith: { a, _ in a })
+        // Read only, and never through a link: a status never makes a binder's backup id.
+        let names = Dictionary(rows.compactMap { row in Backup.existingBackupID(row.folder).map { ($0, row.name) } },
+                               uniquingKeysWith: { a, _ in a })
         var upload: JSONValue = .null
         switch st.upload {
         case .uploaded?: upload = .str("uploaded")

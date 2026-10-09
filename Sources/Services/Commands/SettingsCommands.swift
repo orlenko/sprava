@@ -27,10 +27,8 @@ extension Commands {
     }
 
     func doctor(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
-        let url = LifeprojRegistry.defaultPath()
-        let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
-        let rows = ShelfStore(supportDirectory: support).rows()
-        let findings = Doctor.run(rows: rows, deviceID: deviceID, registry: registry, support: support)
+        // The same read the app's Health page makes in its own process while the runtime is stopped.
+        let findings = try HealthSnapshot.doctorFindings(support: support, deviceID: deviceID)
         return JSONObject([(key: "findings", value: .array(findings.map {
             .obj([("level", .string($0.level.rawValue)), ("binder", $0.binder.map(JSONValue.string) ?? .null), ("text", .string($0.text))])
         }))])
