@@ -167,7 +167,8 @@ import Testing
         let second = OutsideEdits.settleAndTrust(rows, commands: c, backlog: backlog, now: now) { $0() }
         #expect(second.cards == 0 && second.untrusted == 1)
 
-        // Repaired, but the card was changed in between: the digest Sprava wrote is recorded, not the new bytes.
+        // Repaired, but the card was changed in between: neither the new bytes nor the digest Sprava wrote is
+        // recorded (BinderStore's trustChecked checks the file first), and the card leaves the backlog untrusted.
         try recorded.write(to: digests)
         let file = folder.appendingPathComponent(".sprava/proposals/\(id).json")
         let written = try Data(contentsOf: file)
@@ -177,7 +178,8 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: backlog.url.path))
         #expect(!c.isTrusted(id, in: folder))
         try written.write(to: file)
-        #expect(c.isTrusted(id, in: folder))
+        #expect(!c.isTrusted(id, in: folder))
+        #expect(try c.loadDigests()[c.key(folder, id)] == nil)
 
         // A fresh backlog (a restart) also finds what the file kept.
         try Data("not json".utf8).write(to: digests)
@@ -185,6 +187,23 @@ import Testing
         try recorded.write(to: digests)
         try TrustBacklog(support: c.support).retry(commands: c)
         #expect(c.isTrusted(id, in: folder))
+    }
+
+    @Test func aBacklogNeverTrustsACardThisProcessDidNotWrite() throws {
+        let ops = BugbotOpsTests()
+        let c = ops.commands()
+        let (folder, _) = try ops.readyBinder(c)
+        // A card another program dropped into the binder.
+        let card = Proposal.make(title: "Dropped in", actor: ops.user, ops: [ops.body("drop", .obj([
+            ("id", .str("item-0006")), ("closed_at", .str("2026-10-06T08:00:00Z")), ("source", .str("user"))]))], now: now)
+        let dir = folder.appendingPathComponent(".sprava/proposals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(JSONWriter.pretty(.object(card.raw)).utf8).write(to: dir.appendingPathComponent("\(card.id).json"))
+        let backlog = TrustBacklog(support: c.support)
+        #expect(throws: TrustBacklog.NotWrittenHere.self) { try backlog.trust([card.id], in: folder, commands: c) }
+        #expect(!c.isTrusted(card.id, in: folder))
+        #expect(backlog.count == 0)
+        #expect(!FileManager.default.fileExists(atPath: backlog.url.path))
     }
 
     // MARK: - Dashboard state that cannot be read is the job's error; other binders still render
