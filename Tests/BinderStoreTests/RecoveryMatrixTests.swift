@@ -267,6 +267,51 @@ import Testing
         }
     }
 
+    /// A status put back keeps the waiting fields that survived: `open` removes every waiting field it is not given.
+    @Test func aStatusPutBackKeepsTheWaitingFieldsThatSurvived() throws {
+        let (folder, store) = try adopted()
+        func status(_ s: String, _ party: String, _ date: String) -> TekaStore.OpBody {
+            .init(op: "set_status", args: JSONObject([(key: "id", value: .str("estate-example-2026-007")), (key: "status", value: .string(s)),
+                                                      (key: "waiting_on", value: .string(party)), (key: "follow_up_at", value: .string(date))]), actor: user)
+        }
+        try store.apply([status("waiting", "Invented office", "2026-10-20")], now: now)
+        try store.apply([status("open", "Invented later office", "2026-10-25")], now: now)
+        // Another program puts the status back to waiting, and nothing else.
+        let edited = setting(try catalog(folder), "open_items", "estate-example-2026-007", "status", .str("waiting"))
+        try Data(JSONWriter.pretty(.object(edited)).utf8).write(to: folder.appendingPathComponent("catalog.json"))
+        try store.settle(now: now)
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.raw["provenance"]?["overwritten_ops"] != nil })
+        #expect(card.raw["provenance"]?["manual_repair"] == nil)
+        try store.approve(card, now: now)
+        let item = try #require(try catalog(folder)["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-007") })
+        #expect(item["status"] == .str("open") && item["waiting_on"] == .str("Invented later office") && item["follow_up_at"] == .str("2026-10-25"))
+    }
+
+    /// A value the reader would refuse (an integer past the I-JSON range, a member name twice at any depth) is never
+    /// written: the guard refuses the change, and the writer refuses it too, with the catalog and log unchanged.
+    @Test func unsafeJSONIsNeverWritten() throws {
+        let (folder, store) = try adopted()
+        let catalogURL = folder.appendingPathComponent("catalog.json"), logURL = folder.appendingPathComponent(".sprava/ops.ndjson")
+        let before = (try Data(contentsOf: catalogURL), try Data(contentsOf: logURL))
+        func unchanged() throws -> Bool { try Data(contentsOf: catalogURL) == before.0 && Data(contentsOf: logURL) == before.1 }
+        let big = JSONObject([(key: "set", value: .obj([("example_counter", .number(JSONNumber(text: "9007199254740993")))]))])
+        #expect(throws: TransactionGuard.Rejection.self) { try store.apply([.init(op: "set_meta", args: big, actor: user)], now: now) }
+        #expect(try unchanged())
+        let twice = JSONObject([(key: "set", value: .obj([("example_nested", .object(JSONObject([(key: "a", value: .int(1)), (key: "a", value: .int(2))])))]))])
+        let card = Proposal.make(title: "Invented card", actor: user,
+                                 ops: [JSONObject([(key: "op", value: .str("set_meta")), (key: "args", value: .object(twice))])], now: now)
+        #expect(throws: TransactionGuard.Rejection.self) { try store.approve(card, now: now) }
+        #expect(try unchanged())
+        // The writer, the one place every catalog and op line passes, refuses on its own.
+        let (found, hash, _) = try store.readCatalog()
+        var unsafe = found
+        unsafe.set("example_counter", .number(JSONNumber(text: "-9007199254740993")))
+        #expect(throws: TekaStore.Refused.self) { try store.withLock { try store.write(catalog: unsafe, appending: [], expectedHash: hash) } }
+        #expect(throws: TekaStore.Refused.self) { try store.withLock { try store.appendLines([JSONObject([(key: "op", value: .str("abort")), (key: "args", value: .object(twice))])]) } }
+        #expect(try unchanged())
+        #expect(Teka.read(folder).safety.isSafe)
+    }
+
     /// An unrelated outside edit between an approval and a stale copy hides nothing: the approval is still found.
     @Test func anUnrelatedOutsideEditHidesNoEarlierLoss() throws {
         let (folder, store) = try adopted()

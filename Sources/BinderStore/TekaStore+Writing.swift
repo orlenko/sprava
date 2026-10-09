@@ -75,6 +75,10 @@ extension TekaStore {
     /// Steps 4 to 7 of the write protocol and steps 3 to 6 of binder-v0 §6.9.
     func write(catalog: JSONObject, appending lines: [JSONObject], expectedHash: String,
                moves: [(from: String, to: String, sha: String)] = []) throws {
+        // Every catalog Sprava writes passes here: never one its own reader would refuse (binder-v0 §4.8).
+        guard !TransactionGuard.isUnsafeJSON(.object(catalog)) else {
+            throw Refused(reason: "the catalog would hold unsafe JSON (a number out of range or a repeated member name); nothing was written")
+        }
         let text = JSONWriter.pretty(.object(catalog))
         let temp = folder.appendingPathComponent(".\(UUID().uuidString.lowercased()).tmp")
         // The new catalog is private while it is written and then takes the found catalog's permissions, so a change
@@ -125,6 +129,10 @@ extension TekaStore {
     }
 
     func appendLines(_ lines: [JSONObject]) throws {
+        // Every op line passes here: never one the op log's reader would refuse (binder-v0 §4.8).
+        guard !lines.contains(where: { TransactionGuard.isUnsafeJSON(.object($0)) }) else {
+            throw Refused(reason: "an op would hold unsafe JSON (a number out of range or a repeated member name); nothing was written")
+        }
         try AtomicFile.makePrivateFolder(spravaDir)
         // A torn tail, or a trailing batch shorter than its size, is copied aside and cut before the next append
         // (binder-v0 §6.9).

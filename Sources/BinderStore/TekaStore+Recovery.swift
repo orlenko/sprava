@@ -241,7 +241,7 @@ extension TekaStore {
         let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
         // Several ops rebuilt from one lost op name it once.
         var seen = Set<JSONValue>()
-        let overwritten = ops.compactMap { $0["id"] }.filter { seen.insert($0).inserted }
+        let overwritten = ops.flatMap { ($0["also_restores"]?.arrayValue ?? []) + [$0["id"]].compactMap { $0 } }.filter { seen.insert($0).inserted }
         var provenance = JSONObject([(key: "overwritten_ops", value: .array(overwritten))])
         if !rebuilt { provenance.set("manual_repair", .bool(true)) }
         return Proposal.make(title: rebuilt ? "A change of yours was overwritten by another program. Apply it again?"
@@ -448,9 +448,13 @@ extension TekaStore {
             switch cell.kind {
             case "open_items", "documents":
                 if cell.field.isEmpty {
-                    // A record the ops created is gone again. One they closed that is back is judged by its closure
-                    // entry: complete and drop always write one.
-                    if final != nil { whole.insert(i) }
+                    // A record the ops created is gone again, or one they closed is open again: its closure goes back
+                    // whole, unless the found log still closes it (the copy kept an earlier closure of it).
+                    if final != nil {
+                        whole.insert(i)
+                    } else if found["processing_log"]?.arrayValue?.contains(where: { $0["id"] == cell.id }) != true {
+                        whole.insert(i)
+                    }
                 } else if present(cell.kind, cell.id, in: foundCells), present(cell.kind, cell.id, in: expectedCells),
                           cell.field != "created_at" {
                     restore[i, default: [:]][Record(kind: cell.kind, id: cell.id), default: [:]][cell.field] = final
@@ -501,35 +505,60 @@ extension TekaStore {
         for i in whole where (rewrote[i] ?? []).contains(where: own) { byHand.insert(i) }
 
         var lost: [JSONObject] = []
+        // The fields of one record put back together, so the record is valid after the one op that writes them all,
+        // up to the next op made again whole; each op whose effect it restores is named on the card.
+        var pending: [(record: Record, fields: [String: JSONValue?], ops: [JSONObject])] = []
+        func flush() {
+            for p in pending {
+                for body in restoring(p.record.kind, p.record.id, p.fields, found: foundCells) {
+                    var line = body
+                    line.set("id", p.ops.last?["id"] ?? .null)
+                    line.set("actor", p.ops.last?["actor"] ?? .null)
+                    if p.ops.count > 1 { line.set("also_restores", .array(p.ops.dropLast().compactMap { $0["id"] })) }
+                    lost.append(line)
+                }
+            }
+            pending.removeAll()
+        }
         for (i, op) in ops.enumerated() where i < touched.count {
             guard ["user", "clerk", "brain"].contains(op["actor"]?["kind"]?.stringValue ?? "") else { continue }
             if whole.contains(i) {
+                flush()
                 var line = op
+                // A closure of an item that is not open as found, and that no op of this card makes again: closed
+                // already (by an earlier closure the copy kept), nothing to do; otherwise it cannot be made again.
+                if ["complete", "drop"].contains(op["op"]?.stringValue ?? ""), op["args"]?["next_due"] == nil,
+                   let id = op["args"]?["id"], !present("open_items", id, in: foundCells),
+                   !whole.contains(where: { created[Record(kind: "open_items", id: id)] == $0 }) {
+                    if found["processing_log"]?.arrayValue?.contains(where: { $0["id"] == id }) == true { continue }
+                    line.set("repair_by_hand", .bool(true))
+                }
                 if byHand.contains(i) { line.set("repair_by_hand", .bool(true)) }
                 lost.append(line)
                 continue
             }
             let records = (restore[i] ?? [:]).sorted { ($0.key.kind, canonicalText($0.key.id ?? .null)) < ($1.key.kind, canonicalText($1.key.id ?? .null)) }
             for (record, fields) in records {
-                for body in restoring(record.kind, record.id, fields, own: own) {
-                    var line = body
-                    line.set("id", op["id"] ?? .null)
-                    line.set("actor", op["actor"] ?? .null)
-                    lost.append(line)
+                if let k = pending.firstIndex(where: { $0.record == record }) {
+                    pending[k].fields.merge(fields) { _, new in new }
+                    pending[k].ops.append(op)
+                } else {
+                    pending.append((record, fields, [op]))
                 }
             }
         }
+        flush()
         return lost
     }
 
     /// The ops that put the given fields of one record, or of meta (`kind` "meta"), back to their approved values
-    /// (nil removes a field), touching nothing else. A field those ops may not write, or a status whose putting back
-    /// would remove the other program's own waiting fields, makes the op ask for a repair by hand.
-    static func restoring(_ kind: String, _ id: JSONValue?, _ fields: [String: JSONValue?], own: (Cell) -> Bool) -> [JSONObject] {
-        func op(_ type: String, _ args: [(String, JSONValue)], byHand: Bool = false) -> JSONObject {
-            var o = JSONObject([(key: "op", value: .string(type)), (key: "args", value: .obj(args))])
-            if byHand { o.set("repair_by_hand", .bool(true)) }
-            return o
+    /// (nil removes a field), touching nothing else on it: what they would do is tried on the record as found, and
+    /// ops that would write any other field, or not reach those values, ask for a repair by hand instead. A status
+    /// goes back through `set_status` with the waiting fields it carries, and with those that survived as found, so
+    /// that `open`, which removes the waiting fields it is not given, removes none.
+    static func restoring(_ kind: String, _ id: JSONValue?, _ fields: [String: JSONValue?], found: [Cell: JSONValue]) -> [JSONObject] {
+        func op(_ type: String, _ args: [(String, JSONValue)]) -> JSONObject {
+            JSONObject([(key: "op", value: .string(type)), (key: "args", value: .obj(args))])
         }
         func setAndUnset(_ f: [String: JSONValue?]) -> [(String, JSONValue)] {
             let keys = f.keys.sorted()
@@ -537,42 +566,65 @@ extension TekaStore {
             let unset = keys.filter { f[$0] == .some(nil) }
             return (set.isEmpty ? [] : [("set", .obj(set))]) + (unset.isEmpty ? [] : [("unset", .array(unset.map(JSONValue.string)))])
         }
-        var rest = fields
-        rest.removeValue(forKey: "id")
+        func foundValue(_ field: String) -> JSONValue? { found[Cell(kind: kind, id: id, field: field)] }
+        var target = fields
+        target.removeValue(forKey: "id")
+        var rest = target
+        var out: [JSONObject] = []
         switch kind {
         case "open_items":
             let id = id ?? .null
-            var out: [JSONObject] = []
             let waiting = ["waiting_on", "follow_up_at", "expected_by"]
             if let status = rest.removeValue(forKey: "status") {
-                // The status goes back through set_status with the waiting fields it carries; `open` removes the
-                // others, which must not be the other program's own.
                 var args: [(String, JSONValue)] = [("id", id), ("status", status ?? .null)]
                 for w in waiting {
-                    guard let value = rest[w] else { continue }
-                    if let value { args.append((w, value)); rest.removeValue(forKey: w) }
-                    else if status == .str("open") { rest.removeValue(forKey: w) }
+                    if let value = rest.removeValue(forKey: w) {
+                        // A waiting field put back with the status; one to remove is removed by `open` itself, or by
+                        // update_item below.
+                        if let value { args.append((w, value)) } else if status != .str("open") { rest[w] = .some(nil) }
+                    } else if let kept = foundValue(w) {
+                        args.append((w, kept))
+                    }
                 }
-                let valid = ["open", "waiting", "blocked"].contains(status?.stringValue ?? "")
-                let clears = status == .str("open") && waiting.contains { own(Cell(kind: kind, id: id, field: $0)) }
-                out.append(op("set_status", args, byHand: !valid || clears))
+                out.append(op("set_status", args))
             }
             if let dismissed = rest.removeValue(forKey: "dismissed") {
                 out.append(op(dismissed == .bool(true) ? "dismiss" : "undismiss", [("id", id)]))
             }
-            if !rest.isEmpty {
-                let removesRequired = rest.contains { ["title", "priority"].contains($0.key) && $0.value == nil }
-                out.append(op("update_item", [("id", id)] + setAndUnset(rest), byHand: removesRequired))
-            }
-            return out
+            if !rest.isEmpty { out.append(op("update_item", [("id", id)] + setAndUnset(rest))) }
         case "documents":
-            guard !rest.isEmpty else { return [] }
-            let removesRequired = rest.contains { ["title", "path"].contains($0.key) && $0.value == nil }
-            return [op("update_document", [("id", id ?? .null)] + setAndUnset(rest), byHand: removesRequired)]
+            if !rest.isEmpty { out.append(op("update_document", [("id", id ?? .null)] + setAndUnset(rest))) }
         default:
-            // Settings only set_meta may write; a privacy level, a name or a stamp goes through its own card.
-            let locked: Set<String> = ["name", "schema_version", "format", "format_version", "disclosure", "former_names"]
-            return rest.isEmpty ? [] : [op("set_meta", setAndUnset(rest), byHand: rest.keys.contains(where: locked.contains))]
+            if !rest.isEmpty { out.append(op("set_meta", setAndUnset(rest))) }
         }
+        guard !out.isEmpty else { return [] }
+
+        // Tried on the record as found, alone with the binder's settings: every field must end as it was or as asked,
+        // and the record must be valid afterwards, as the guard will require of it.
+        var record = JSONObject(), meta = JSONObject()
+        for (cell, value) in found where cell.kind == kind && cell.id == id && !cell.field.isEmpty { record.set(cell.field, value) }
+        for (cell, value) in found where cell.kind == "meta" { meta.set(cell.field, value) }
+        var trial = kind == "meta" ? JSONObject([(key: "meta", value: .object(record))])
+            : JSONObject([(key: "meta", value: .object(meta)), (key: kind, value: .array([.object(record)]))])
+        var exact = true
+        for body in out {
+            var line = body
+            line.set("id", .str("trial"))
+            line.set("at", .str("2000-01-01T00:00:00Z"))
+            line.set("actor", .obj([("kind", .str("user")), ("client", .str("trial"))]))
+            guard let next = try? OpApplier.apply(line, to: trial) else { exact = false; break }
+            trial = next
+        }
+        if exact {
+            let after = cells(trial)
+            let names = Set(record.keys).union(after.keys.filter { $0.kind == kind && $0.id == id && !$0.field.isEmpty }.map(\.field))
+            exact = names.allSatisfy { name in
+                after[Cell(kind: kind, id: id, field: name)] == (target[name] ?? foundValue(name))
+            }
+            if kind != "meta", let id {
+                exact = exact && !TransactionGuard.violations(trial).contains { $0.array == kind && $0.recordKey == canonicalText(id) }
+            }
+        }
+        return exact ? out : out.map { var o = $0; o.set("repair_by_hand", .bool(true)); return o }
     }
 }

@@ -19,6 +19,14 @@ public enum TransactionGuard {
         public var description: String { reasons.joined(separator: "; ") }
     }
 
+    /// Whether `value`, as Sprava would write it, is something a reader refuses or reads one way only (binder-v0
+    /// §4.8): an integer outside the I-JSON range, a number too large for a double, a member name twice in one
+    /// object, or a lone surrogate, at any depth. Checked on the written text, the bytes the reader will see.
+    public static func isUnsafeJSON(_ value: JSONValue) -> Bool {
+        guard let parsed = try? JSONParser.parse(Data(JSONWriter.compact(value).utf8)) else { return true }
+        return !parsed.safety.isSafe
+    }
+
     /// Every violation in a catalog, at its level's rules.
     public static func violations(_ catalog: JSONObject) -> Set<Violation> {
         let level = CatalogLevel.classify(catalog)
@@ -243,6 +251,10 @@ public enum TransactionGuard {
             }
             state = next
             do { hashes.append(try Canonical.hash(.object(state))) } catch { reasons.append("\(error)") }
+        }
+        // The catalog and the log stay readable: nothing is written that the reader would then refuse.
+        if reasons.isEmpty, ops.contains(where: { isUnsafeJSON(.object($0)) }) || isUnsafeJSON(.object(state)) {
+            reasons.append("the change holds a number out of range or a repeated member name, which no reader can take back")
         }
         if !reasons.isEmpty { throw Rejection(reasons: reasons) }
         return (state, hashes)

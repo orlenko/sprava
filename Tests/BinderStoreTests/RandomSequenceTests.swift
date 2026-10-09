@@ -189,9 +189,11 @@ import Testing
         }
     }
 
+
     // MARK: - Recovery
 
-    /// One place the sequence writes: a field of an item, of a document, or of meta.
+    /// One place the sequence writes: a field of an item, of a document, or of meta; or, with an empty field,
+    /// whether an item is still open (`true`) or closed (absent).
     struct Place: Hashable {
         let kind: String
         let id: String?
@@ -199,24 +201,32 @@ import Testing
         let optional: Bool
     }
 
+    /// Items to close, added before adoption.
+    static let closable = ["estate-example-2026-101", "estate-example-2026-102", "estate-example-2026-103"]
+
     static let places: [Place] = [
         Place(kind: "open_items", id: "estate-example-2026-007", field: "title", optional: false),
         Place(kind: "open_items", id: "estate-example-2026-007", field: "priority", optional: false),
         Place(kind: "open_items", id: "estate-example-2026-007", field: "link", optional: true),
+        Place(kind: "open_items", id: "estate-example-2026-007", field: "status", optional: false),
+        Place(kind: "open_items", id: "estate-example-2026-007", field: "waiting_on", optional: true),
+        Place(kind: "open_items", id: "estate-example-2026-007", field: "follow_up_at", optional: true),
         Place(kind: "open_items", id: "estate-example-2026-012", field: "title", optional: false),
         Place(kind: "open_items", id: "estate-example-2026-012", field: "tags", optional: true),
         Place(kind: "documents", id: "estate-example-doc-2026-002", field: "title", optional: false),
         Place(kind: "documents", id: "estate-example-doc-2026-002", field: "date", optional: true),
         Place(kind: "meta", id: nil, field: "invented_a", optional: true),
         Place(kind: "meta", id: nil, field: "invented_b", optional: true),
-    ]
+    ] + closable.map { Place(kind: "open_items", id: $0, field: "", optional: false) }
 
     static func value(_ c: JSONObject, _ p: Place) -> JSONValue? {
         if p.kind == "meta" { return c["meta"]?[p.field] }
-        return c[p.kind]?.arrayValue?.first { $0["id"] == p.id.map(JSONValue.string) }?[p.field]
+        let record = c[p.kind]?.arrayValue?.first { $0["id"] == p.id.map(JSONValue.string) }
+        return p.field.isEmpty ? record.map { _ in .bool(true) } : record?[p.field]
     }
 
     static func setting(_ c: JSONObject, _ p: Place, _ value: JSONValue?) -> JSONObject {
+        guard !p.field.isEmpty else { return c }
         func change(_ o: JSONObject) -> JSONObject {
             var o = o
             if let value { o.set(p.field, value) } else { o.remove(p.field) }
@@ -234,22 +244,61 @@ import Testing
         return out
     }
 
-    /// A value for a place, new on each call.
+    /// A value for a place, new on each call (a status is one of three).
     static func fresh(_ p: Place, _ n: Int, _ tag: String) -> JSONValue {
         switch p.field {
         case "priority": return .string(["high", "normal", "low"][n % 3])
+        case "status": return .string(["open", "waiting", "blocked"][n % 3])
         case "date": return .string(String(format: "2026-11-%02d", 1 + n % 28))
+        case "follow_up_at": return .string(String(format: "2026-12-%02d", 1 + n % 28))
         case "link": return .string("documents/\(tag)-\(n).pdf")
         case "tags": return .array([.string("\(tag)-\(n)")])
         default: return .string("Invented \(tag) \(n)")
         }
     }
 
-    /// Whatever the order of approvals, unrelated outside edits and stale copies, recovery offers back exactly the
-    /// approved values a copy took back, and never writes over a value of the other program's own.
+    /// The approval the sequence makes for a place: a field set or removed, a status set with or without its
+    /// waiting fields, or an open item completed or dropped.
+    func approval(_ p: Place, _ n: Int, _ rng: inout Seeded) -> TekaStore.OpBody? {
+        let id = JSONValue.string(p.id ?? "")
+        if p.field.isEmpty {
+            return .init(op: Bool.random(using: &rng) ? "complete" : "drop", args: JSONObject([(key: "id", value: id)]), actor: user)
+        }
+        if p.field == "status" {
+            var args = JSONObject([(key: "id", value: id), (key: "status", value: Self.fresh(p, n, "approved"))])
+            if Bool.random(using: &rng) {
+                args.set("waiting_on", .string("Invented party \(n)"))
+                args.set("follow_up_at", .string(String(format: "2026-12-%02d", 1 + n % 28)))
+            }
+            return .init(op: "set_status", args: args, actor: user)
+        }
+        let v: JSONValue? = p.optional && Int.random(in: 0..<5, using: &rng) == 0 ? nil : Self.fresh(p, n, "approved")
+        let set: [(key: String, value: JSONValue)] = v.map { [(key: "set", value: .obj([(p.field, $0)]))] } ?? [(key: "unset", value: .array([.string(p.field)]))]
+        switch p.kind {
+        case "meta": return .init(op: "set_meta", args: JSONObject(set), actor: user)
+        case "documents": return .init(op: "update_document", args: JSONObject([(key: "id", value: id)] + set), actor: user)
+        default: return .init(op: "update_item", args: JSONObject([(key: "id", value: id)] + set), actor: user)
+        }
+    }
+
+    /// Whatever the order of approvals (field changes, statuses, closures), unrelated outside edits and stale
+    /// copies, recovery offers back exactly the approved values a copy took back, never writes over a value of the
+    /// other program's own, and approving its card changes nothing outside what it puts back.
     @Test(arguments: [61_092_026, 11, 2026, 31_337] as [UInt64]) func recoveryOffersBackExactlyWhatWasApproved(_ seed: UInt64) throws {
         var rng = Seeded(state: seed)
-        let (folder, store) = try adopted()
+        let folder = try makeTeka(fixture: "sprava-v0") { folder in
+            let url = folder.appendingPathComponent("catalog.json")
+            var c = try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+            c.set("open_items", .array((c["open_items"]?.arrayValue ?? []) + Self.closable.map { id in
+                .obj([("id", .string(id)), ("title", .string("Invented task to close \(id.suffix(3))")), ("status", .str("open")),
+                      ("priority", .str("normal")), ("no_deadline", .bool(true)), ("kind", .str("other")),
+                      ("created_at", .str("2026-10-01T08:00:00Z")), ("updated_at", .str("2026-10-01T08:00:00Z"))])
+            }))
+            try Data(JSONWriter.pretty(.object(c)).utf8).write(to: url)
+        }
+        let store = TekaStore(folder: folder)
+        store.testHookFullSync = { _ in 0 }
+        try store.adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("test"))]), now: now)
         // For each place: the values it held since an outside edit last wrote it (or adoption), and whether an
         // approval wrote it last.
         var history: [Place: [JSONValue?]] = [:], approved: [Place: Bool] = [:]
@@ -262,18 +311,14 @@ import Testing
             n += 1
             let p = Self.places[Int.random(in: 0..<Self.places.count, using: &rng)]
             switch Int.random(in: 0..<8, using: &rng) {
-            case 0...3:   // an approval
-                let v: JSONValue? = p.optional && Int.random(in: 0..<5, using: &rng) == 0 ? nil : Self.fresh(p, n, "approved")
-                let set: [(String, JSONValue)] = v.map { [("set", .obj([(p.field, $0)]))] } ?? [("unset", .array([.string(p.field)]))]
-                let body: TekaStore.OpBody
-                switch p.kind {
-                case "meta": body = .init(op: "set_meta", args: JSONObject(set.map { (key: $0.0, value: $0.1) }), actor: user)
-                case "documents": body = .init(op: "update_document", args: JSONObject([(key: "id", value: .string(p.id!))] + set.map { (key: $0.0, value: $0.1) }), actor: user)
-                default: body = .init(op: "update_item", args: JSONObject([(key: "id", value: .string(p.id!))] + set.map { (key: $0.0, value: $0.1) }), actor: user)
-                }
-                if (try? store.apply([body], now: now)) != nil, Self.value(try read(folder), p) == v {
-                    history[p, default: []].append(v)
-                    approved[p] = true
+            case 0...3:   // an approval; every place it changed was written by an approval last
+                let before = try read(folder)
+                guard Self.value(before, p) != nil || !p.field.isEmpty, let body = approval(p, n, &rng),
+                      (try? store.apply([body], now: now)) != nil else { break }
+                let after = try read(folder)
+                for q in Self.places where Self.value(before, q) != Self.value(after, q) {
+                    history[q, default: []].append(Self.value(after, q))
+                    approved[q] = true
                 }
             default:
                 // Another program saves the catalog: an edit of one place on the current one, or a stale copy with
@@ -293,19 +338,30 @@ import Testing
                 // The rule, place by place: an approved value taken back to an earlier one, or removed, comes back;
                 // anything else stays as the copy has it.
                 var want: [Place: JSONValue?] = [:]
-                var lossy = false
+                var lost = Set<Place>()
                 for q in Self.places {
                     let e = Self.value(before, q), s = Self.value(stale, q)
-                    let lost = s != e && approved[q] == true && (s == nil || history[q]?.contains(s) == true)
-                    want[q] = lost ? e : s
-                    lossy = lossy || lost
+                    if s != e && approved[q] == true && (s == nil || history[q]?.contains(s) == true) { lost.insert(q) }
+                    want[q] = lost.contains(q) ? e : s
                 }
                 try write(stale, folder)
                 try store.settle(now: now)
+                let found = try read(folder)
                 let card = ProposalStore.list(in: folder).map(\.0).first { $0.state == "proposed" && $0.raw["provenance"]?["overwritten_ops"] != nil }
-                #expect((card != nil) == lossy, "seed \(seed) step \(step): a recovery card \(lossy ? "is missing" : "for nothing")")
-                if let card {
-                    #expect(card.raw["provenance"]?["manual_repair"] == nil, "seed \(seed) step \(step): not rebuilt")
+                #expect((card != nil) == !lost.isEmpty, "seed \(seed) step \(step): a recovery card \(lost.isEmpty ? "for nothing" : "is missing")")
+                if let card, card.raw["provenance"]?["manual_repair"] == .bool(true) {
+                    // Asked for a repair by hand only when putting the approved values back would leave a record
+                    // breaking the rules, which the guard would refuse. Nothing is then put back.
+                    var wanted = found
+                    for q in lost { wanted = Self.setting(wanted, q, Self.value(before, q)) }
+                    let broken = TransactionGuard.violations(wanted).contains { v in
+                        lost.contains { $0.id.map { canonicalText(.string($0)) } == v.recordKey && $0.kind == v.array }
+                    }
+                    #expect(broken, "seed \(seed) step \(step): asked for a repair by hand with nothing in the way")
+                    try store.reject(card, now: now)
+                    for q in lost { want[q] = Self.value(stale, q) }
+                    lost.removeAll()
+                } else if let card {
                     try store.approve(card, now: now)
                 }
                 let after = try read(folder)
@@ -316,8 +372,81 @@ import Testing
                     if s != e { history[q] = [s]; approved[q] = false }
                     if got != s { history[q, default: []].append(got); approved[q] = true }
                 }
+                // Approving the card changed nothing but what it put back: a closure made again takes its item and
+                // writes its log entry; every other place stays as the copy had it, byte for byte.
+                let reclosed = Set(lost.filter { $0.field.isEmpty }.compactMap(\.id))
+                let was = TekaStore.cells(found), then = TekaStore.cells(after)
+                for cell in Set(was.keys).union(then.keys) where was[cell] != then[cell] {
+                    let id = cell.id?.stringValue
+                    let repaired = lost.contains(Place(kind: cell.kind, id: id, field: cell.field, optional: true))
+                        || lost.contains(Place(kind: cell.kind, id: id, field: cell.field, optional: false))
+                        || (cell.kind == "open_items" && id.map(reclosed.contains) == true)
+                        || (cell.kind == "processing_log" && was[cell] == nil && !reclosed.isEmpty)
+                    #expect(repaired, "seed \(seed) step \(step): \(cell.kind) \(id ?? "") \(cell.field) changed outside the repair")
+                }
             }
             copies.append(try read(folder))
+        }
+    }
+
+    // MARK: - Writes stay readable
+
+    /// A random JSON value for a setting: plain values, integers at and past the I-JSON range, nested objects,
+    /// and now and then a member name twice. Says whether it is unsafe.
+    func randomSetting(_ rng: inout Seeded, depth: Int = 0) -> (JSONValue, unsafe: Bool) {
+        switch Int.random(in: 0..<(depth < 2 ? 6 : 4), using: &rng) {
+        case 0: return (.string("Invented \(Int.random(in: 0..<1000, using: &rng))"), false)
+        case 1:
+            let numbers: [(String, Bool)] = [("9007199254740991", false), ("-9007199254740991", false), ("9007199254740993", true),
+                                              ("-9007199254740993", true), ("19.99", false), ("1e400", true), ("42", false)]
+            let (text, unsafe) = numbers[Int.random(in: 0..<numbers.count, using: &rng)]
+            return (.number(JSONNumber(text: text)), unsafe)
+        case 2: return (.bool(Bool.random(using: &rng)), false)
+        case 3: return (.null, false)
+        case 4:
+            var entries: [(key: String, value: JSONValue)] = []
+            var unsafe = false
+            for i in 0..<Int.random(in: 1...3, using: &rng) {
+                let (v, u) = randomSetting(&rng, depth: depth + 1)
+                entries.append((key: "k\(i)", value: v))
+                unsafe = unsafe || u
+            }
+            if Int.random(in: 0..<4, using: &rng) == 0 {
+                entries.append((key: "k0", value: .str("twice")))
+                unsafe = true
+            }
+            return (.object(JSONObject(entries)), unsafe)
+        default:
+            let (v, u) = randomSetting(&rng, depth: depth + 1)
+            return (.array([v, .str("Invented")]), u)
+        }
+    }
+
+    /// Whatever settings are asked for, applied directly or approved on a card, every catalog and op line the store
+    /// writes reads back as written, never needing attention; an unsafe one is refused with nothing written.
+    @Test(arguments: [5, 77, 1_234] as [UInt64]) func everyWriteReadsBack(_ seed: UInt64) throws {
+        var rng = Seeded(state: seed)
+        let (folder, store) = try adopted()
+        let catalogURL = folder.appendingPathComponent("catalog.json"), logURL = folder.appendingPathComponent(".sprava/ops.ndjson")
+        for step in 0..<30 {
+            let (value, unsafe) = randomSetting(&rng)
+            let args = JSONObject([(key: "set", value: .obj([("invented_\(step)", value)]))])
+            let before = (try Data(contentsOf: catalogURL), try Data(contentsOf: logURL))
+            var applied = true
+            if Bool.random(using: &rng) {
+                do { try store.apply([.init(op: "set_meta", args: args, actor: user)], now: now) } catch { applied = false }
+            } else {
+                let card = Proposal.make(title: "Invented card", actor: user,
+                                         ops: [JSONObject([(key: "op", value: .str("set_meta")), (key: "args", value: .object(args))])], now: now)
+                do { try store.approve(card, now: now) } catch { applied = false }
+            }
+            #expect(applied == !unsafe, "seed \(seed) step \(step): \(unsafe ? "an unsafe value was written" : "a safe value was refused")")
+            if !applied {
+                #expect(try Data(contentsOf: catalogURL) == before.0 && Data(contentsOf: logURL) == before.1, "seed \(seed) step \(step): written anyway")
+            }
+            let teka = Teka.read(folder)
+            #expect(teka.safety.isSafe && !teka.writesBlocked, "seed \(seed) step \(step): \(teka.reasons)")
+            #expect((try? store.readCatalog()) != nil && (try? store.readOpLog()) != nil, "seed \(seed) step \(step): unreadable")
         }
     }
 }
