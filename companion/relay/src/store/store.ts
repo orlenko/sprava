@@ -50,23 +50,70 @@ export class Mutex {
     }
 }
 
-/** A lock per key, created on first use and dropped when idle, so memory follows only the keys in use. */
-export class KeyedMutex {
-    readonly #locks = new Map<string, { mutex: Mutex; users: number }>();
+/** A bounded wait for a keyed lock was refused: the queue was full, the deadline passed or the caller left. */
+export class LockBusy extends Error {}
 
-    async run<T>(key: string, work: () => Promise<T>): Promise<T> {
-        const entry = this.#locks.get(key) ?? { mutex: new Mutex(), users: 0 };
-        this.#locks.set(key, entry);
-        entry.users++;
+interface Waiter {
+    start: () => void;
+    bounded: boolean;
+}
+
+/**
+ * A lock per key, created on first use and dropped when idle, so memory follows only the keys in use. A caller can
+ * ask for a bounded wait: at most `limit` such callers queue per key, each leaves at `waitMs` or when `signal`
+ * aborts, and is then refused with LockBusy and never runs. Unbounded callers (the owner's revocations) still
+ * queue behind at most `limit` bounded ones.
+ */
+export class KeyedMutex {
+    readonly #queues = new Map<string, { busy: boolean; waiting: Waiter[] }>();
+
+    async run<T>(key: string, work: () => Promise<T>, bound?: { limit: number; waitMs: number; signal: AbortSignal }): Promise<T> {
+        const queue = this.#queues.get(key) ?? { busy: false, waiting: [] };
+        this.#queues.set(key, queue);
+        if (queue.busy) {
+            if (bound !== undefined && (bound.signal.aborted || queue.waiting.filter((w) => w.bounded).length >= bound.limit)) {
+                throw new LockBusy('too many calls are waiting');
+            }
+            await new Promise<void>((resolve, reject) => {
+                const waiter: Waiter = {
+                    start: () => {
+                        cleanup();
+                        resolve();
+                    },
+                    bounded: bound !== undefined,
+                };
+                const leave = (): void => {
+                    const at = queue.waiting.indexOf(waiter);
+                    if (at < 0) return;
+                    queue.waiting.splice(at, 1);
+                    cleanup();
+                    reject(new LockBusy('the wait ended'));
+                };
+                const timer = bound === undefined ? undefined : setTimeout(leave, bound.waitMs);
+                const cleanup = (): void => {
+                    if (timer !== undefined) clearTimeout(timer);
+                    bound?.signal.removeEventListener('abort', leave);
+                };
+                bound?.signal.addEventListener('abort', leave);
+                queue.waiting.push(waiter);
+            });
+        } else {
+            queue.busy = true;
+        }
         try {
-            return await entry.mutex.run(work);
+            return await work();
         } finally {
-            if (--entry.users === 0) this.#locks.delete(key);
+            const next = queue.waiting.shift();
+            if (next !== undefined) next.start();
+            else {
+                queue.busy = false;
+                if (this.#queues.get(key) === queue) this.#queues.delete(key);
+            }
         }
     }
 
     get size(): number {
-        return this.#locks.size;
+        return this.#queues.size;
     }
 }
 

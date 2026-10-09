@@ -64,7 +64,7 @@ export interface HttpOptions {
      * Runs a device's action once its body has arrived, under the lock its revocation also takes, after checking its
      * authorization again (devices.ts). Without it, a device revoked while its body was in flight would still act.
      */
-    guard?(principal: Principal & { kind: 'device' }, action: () => Promise<Reply>): Promise<Reply>;
+    guard?(principal: Principal & { kind: 'device' }, action: () => Promise<Reply>, signal: AbortSignal): Promise<Reply>;
     /** False while the relay starts or once it is fenced (lease.ts): only health is served then. */
     isReady?(): boolean;
     /** §7: a body that has not fully arrived within this time is dropped. */
@@ -174,8 +174,9 @@ async function run(req: IncomingMessage, r: Route, params: Record<string, string
             throw error;
         }
     }
-    const action = (): Promise<Reply> => r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '', signal: signals.get(req) ?? new AbortController().signal });
-    return principal?.kind === 'device' && options.guard ? options.guard(principal, action) : action();
+    const signal = signals.get(req) ?? new AbortController().signal;
+    const action = (): Promise<Reply> => r.handle({ params, query: url.searchParams, principal, body, json, address: req.socket.remoteAddress ?? '', signal });
+    return principal?.kind === 'device' && options.guard ? options.guard(principal, action, signal) : action();
 }
 
 /** Matches `/v0/a/:x/*rest` against the split path; null when it does not match. */

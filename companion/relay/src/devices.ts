@@ -5,13 +5,15 @@
 // respect to every request of the device in flight, whenever its body arrives. The order is: a device's lock,
 // then the creation lock (`Relay.lock`). Code holding the creation lock never takes a device lock, and nothing
 // holds two device locks. Methods named `...Locked` expect the device's lock to be held and never take it.
-import { formatTime, isId, sameSecret, tokenHash } from './encoding.ts';
+import { formatTime, isId, parseUnsigned, sameSecret, tokenHash } from './encoding.ts';
 import { HttpError, type Principal, type Reply, type Route } from './http.ts';
 import { deviceElsewhere, deviceKeys, EMPTY, groupParts, readRecord, type DeviceRecord, type TokenRecord } from './layout.ts';
 import type { Relay } from './relay.ts';
-import { deleteAll, writeOnce } from './store/store.ts';
+import { deleteAll, LockBusy, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
+const DEVICE_QUEUE = 8;
+const DEVICE_WAIT_MS = 10_000;
 
 /** What the relay remembers of devices. Only facts that never change back are cached (§7.8). */
 export class Devices {
@@ -60,8 +62,11 @@ export class Devices {
      * Runs a device's action under its lock, after checking again, in §7.3's order, its revocation marker, its record
      * and token, then its activation marker. A device revoked while its request was in flight gets 401.
      */
-    async guard(principal: Principal & { kind: 'device' }, action: () => Promise<Reply>): Promise<Reply> {
+    async guard(principal: Principal & { kind: 'device' }, action: () => Promise<Reply>, signal: AbortSignal): Promise<Reply> {
         const d = principal.id;
+        // A device's calls wait in a bounded queue, each with a deadline and dropped when its client leaves, so no
+        // device can pile up work or hold its owner's revocation behind a backlog.
+        const bound = { limit: DEVICE_QUEUE, waitMs: DEVICE_WAIT_MS, signal };
         return this.#relay.deviceLocks.run(d, async () => {
             const { store } = this.#relay;
             if (await this.revokedLocked(d)) throw new HttpError(401, 'A valid token is required.');
@@ -71,6 +76,9 @@ export class Devices {
             principal.active = await this.#isActive(d);
             await this.#touchLocked(d);
             return action();
+        }, bound).catch((error: unknown) => {
+            if (error instanceof LockBusy) throw new HttpError(503, 'This device has too many calls in progress; try again.', { 'Retry-After': '5' });
+            throw error;
         });
     }
 
@@ -160,9 +168,9 @@ export function deviceRoutes(relay: Relay, devices: Devices): Route[] {
             access: ['owner'],
             browser: false,
             async handle(call) {
-                const limit = call.query.has('limit') ? Number(call.query.get('limit')) : 50;
+                const limit = parseUnsigned(call.query.get('limit') ?? '50') ?? 0;
                 const after = call.query.get('after');
-                if (!/^[0-9]+$/.test(call.query.get('limit') ?? '50') || limit < 1 || limit > 50 || (after !== null && !isId(after))) {
+                if (limit < 1 || limit > 50 || (after !== null && !isId(after))) {
                     throw new HttpError(400, 'The limit must be from 1 to 50, and after a device id.');
                 }
                 const groups = groupParts(await relay.store.list('devices/'), 'devices');

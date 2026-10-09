@@ -120,7 +120,7 @@ export async function startRelay(config: Config, store: Store, options: RelayOpt
         webOrigin: config.webOrigin,
         log: options.log,
         authenticate: (token) => devices.authenticate(token),
-        guard: (principal, action) => devices.guard(principal, action),
+        guard: (principal, action, signal) => devices.guard(principal, action, signal),
         isClaimed: () => relay.ownerHash !== null,
         isReady: () => isReady && !lease.fenced,
         ...(options.bodyTimeoutMs === undefined ? {} : { bodyTimeoutMs: options.bodyTimeoutMs }),

@@ -10,7 +10,7 @@ import { SlidingWindow } from '../src/limits.ts';
 import { silentLog } from '../src/log.ts';
 import { ClaimConflict, startRelay } from '../src/relay.ts';
 import { S3Store } from '../src/store/s3.ts';
-import { KeyedMutex, scoped, type Store } from '../src/store/store.ts';
+import { KeyedMutex, LockBusy, scoped, type Store } from '../src/store/store.ts';
 import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, seedOwnerHash, SETUP_CODE, slowRequest, startTestRelay, TEST_LEASE, WEB_ORIGIN } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub } from './s3-stub.ts';
 import { vectors } from './vectors.ts';
@@ -169,5 +169,36 @@ test('queued claims are answered 503 at their deadline, the queue is bounded, an
     assert.equal((await first).status, 403);
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(reads, 1, 'the expired claims never ran');
+    await t.close();
+});
+
+test('a device cannot pile up calls: its queue is bounded, a call leaves at its deadline or when its client goes', async () => {
+    const locks = new KeyedMutex();
+    let release: () => void = () => {};
+    const holding = locks.run('D', () => new Promise<void>((r) => (release = r)));
+    const ran: string[] = [];
+    const bound = (signal: AbortSignal, waitMs = 5000) => ({ limit: 3, waitMs, signal });
+    const gone = new AbortController();
+    const first = locks.run('D', async () => void ran.push('first'), bound(new AbortController().signal));
+    const left = locks.run('D', async () => void ran.push('left'), bound(gone.signal));
+    const timed = locks.run('D', async () => void ran.push('timed'), bound(new AbortController().signal, 10));
+    await assert.rejects(locks.run('D', async () => void ran.push('overflow'), bound(new AbortController().signal)), LockBusy);
+    await assert.rejects(timed, LockBusy);
+    gone.abort();
+    await assert.rejects(left, LockBusy);
+    const owner = locks.run('D', async () => void ran.push('owner'));
+    release();
+    await Promise.all([holding, first, owner]);
+    assert.deepEqual(ran, ['first', 'owner'], 'refused calls never run; the owner gets through');
+    assert.equal(locks.size, 0);
+});
+
+test('device listing pages refuse non-canonical numbers (§3)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    for (const bad of ['01', '00050', '+5', '5.0']) {
+        assert.equal((await fetch(`${t.url}/v0/devices?limit=${bad}`, { headers: bearer(owner) })).status, 400, bad);
+    }
     await t.close();
 });
