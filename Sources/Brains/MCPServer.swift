@@ -1,6 +1,8 @@
 import BinderFormat
 import BinderStore
 import Capture
+import CryptoKit
+import Darwin
 import Foundation
 import Shelf
 import SpravaKit
@@ -251,6 +253,38 @@ public final class MCPServer: @unchecked Sendable {
         }
     }
 
+    /// The lowercase hex SHA-256 of the intake file a `file_document` op names, or nil. Every component is opened
+    /// from the binder folder down without following a link, and only a plain file of this user is read, so a link
+    /// anywhere in `intake/` never lets a brain test guesses against a file outside the binder; a key or credential
+    /// file is never read at all (binder-v0 §3.3).
+    static func intakeDigest(_ relative: String, in folder: URL) -> String? {
+        guard DocumentPaths.isIntake(relative), !DocumentPaths.isKeyFile(relative) else { return nil }
+        let segments = relative.split(separator: "/").map(String.init)
+        var dir = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard dir >= 0 else { return nil }
+        for segment in segments.dropLast() {
+            let next = openat(dir, segment, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            close(dir)
+            guard next >= 0 else { return nil }
+            dir = next
+        }
+        let fd = openat(dir, segments[segments.count - 1], O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        close(dir)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_uid == getuid() else { return nil }
+        var hasher = SHA256()
+        var buffer = [UInt8](repeating: 0, count: 1 << 20)
+        while true {
+            let n = read(fd, &buffer, buffer.count)
+            if n < 0 { if errno == EINTR { continue }; return nil }
+            if n == 0 { break }
+            hasher.update(data: buffer[0..<n])
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Whether Sprava recorded this proposal's digest, which approval requires (architecture 4.6).
     func isRecorded(_ id: String, in folder: URL) -> Bool { (try? commands.loadDigests())?[commands.key(folder, id)] != nil }
 
@@ -259,6 +293,20 @@ public final class MCPServer: @unchecked Sendable {
     func reading(_ args: JSONObject, in row: ShelfRow) -> IntakeReadings.Entry? {
         guard case .string(let id)? = args["reading_id"] else { return nil }
         return IntakeReadings(support: commands.support).escalation(id, in: row.folder.standardizedFileURL.path)
+    }
+
+    /// Marks a waiting reading as answered by a stored card. Nil when done or when the reading no longer waits; else
+    /// the error to return, so a reading never stays on the shared queue unseen behind a "proposed".
+    func markAnswered(_ id: String, by proposal: String, in row: ShelfRow, retryable: Bool) -> JSONValue? {
+        let readings = IntakeReadings(support: commands.support)
+        guard var e = readings.escalation(id, in: row.folder.standardizedFileURL.path) else { return nil }
+        e.escalation = "answered"
+        e.answer = proposal
+        guard (try? readings.save(e)) != nil else {
+            return Self.toolError("proposal \(proposal) was stored and waits for the person, but its reading could not be marked answered; "
+                                  + (retryable ? "send the same request again with the same request_id" : "do not propose it again"))
+        }
+        return nil
     }
 
     func call(_ name: String, _ args: JSONObject) -> JSONValue {
@@ -394,11 +442,16 @@ public final class MCPServer: @unchecked Sendable {
                     try? commands.trustProposals([p.id], in: row.folder)
                     guard isRecorded(p.id, in: row.folder) else { return Self.toolError("the proposal could not be recorded as written by Sprava; try again") }
                 }
+                // The reading the card answers may still be waiting (its update failed, or the runtime stopped before
+                // it): finish it now, so no other brain takes it up again.
+                if let id = p.raw["provenance"]?["reading"]?.stringValue, let problem = markAnswered(id, by: p.id, in: row, retryable: true) {
+                    return problem
+                }
                 return Self.toolResult(.obj([("proposal_id", .string(p.id)), ("state", .string(p.state))]))
             }
             for body in bodies where body["op"] == .str("file_document") {
                 let args = body["args"]
-                guard let from = args?["from"]?.stringValue, let sha = DocumentPaths.sha256(of: row.folder.appendingPathComponent(from)),
+                guard let from = args?["from"]?.stringValue, let sha = Self.intakeDigest(from, in: row.folder),
                       args?["document"]?["sha256"]?.stringValue == sha else {
                     return Self.toolError("file_document: \(args?["from"]?.stringValue ?? "from") is not in intake/, or sha256 is not its digest")
                 }
@@ -428,10 +481,8 @@ public final class MCPServer: @unchecked Sendable {
             guard isRecorded(proposal.id, in: row.folder) else {
                 return Self.toolError("the proposal was stored but could not be recorded as written by Sprava; send the same request again")
             }
-            if var e = answered {
-                e.escalation = "answered"
-                e.answer = proposal.id
-                try? IntakeReadings(support: commands.support).save(e)
+            if let answered, let problem = markAnswered(answered.id, by: proposal.id, in: row, retryable: requestID != nil) {
+                return problem
             }
             return Self.toolResult(.obj([("proposal_id", .string(proposal.id)), ("state", .str("proposed")),
                                          ("note", .str("Waiting for the person in the Sprava app. Nothing has changed yet."))]))

@@ -18,6 +18,8 @@ public final class LineReader {
     public func next(limit: Int) -> Outcome {
         while true {
             if let nl = buffer.firstIndex(of: 0x0A) {
+                // A whole line that arrived in one read is held to the limit too.
+                if nl > limit { return .tooLong }
                 let line = String(decoding: buffer[..<nl], as: UTF8.self)
                 buffer.removeSubrange(...nl)
                 return .line(line)

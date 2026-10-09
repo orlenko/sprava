@@ -44,15 +44,15 @@ public struct MCPClients: Codable, Sendable {
         public var description: String { "\(path) exists but cannot be read; it was left as it is" }
     }
 
-    /// The registry. A missing file is an empty registry; a file that exists but cannot be read or decoded throws,
-    /// so a command never saves over the other clients' records.
+    /// The registry. Only a file that is not there is an empty registry; one that exists but cannot be read or
+    /// decoded, or whose lookup fails (a link to a folder it may not enter, say), throws, so a command never saves
+    /// over the other clients' records. The rule of every state file (`StateFile.read`).
     public static func load(_ support: URL) throws -> MCPClients {
-        let file = url(support)
-        guard FileManager.default.fileExists(atPath: file.path) else { return MCPClients() }
-        guard let data = try? Data(contentsOf: file), let clients = try? JSONDecoder().decode(MCPClients.self, from: data) else {
-            throw Unreadable(path: file.path)
+        do {
+            return try StateFile.read(MCPClients.self, from: url(support)) ?? MCPClients()
+        } catch let e as StateFile.Unreadable {
+            throw Unreadable(path: e.path)
         }
-        return clients
     }
 
     public func save(_ support: URL) throws {
