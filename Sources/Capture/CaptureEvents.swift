@@ -198,11 +198,20 @@ public struct CaptureEvent: Sendable {
         if let e = Timestamp.parse(raw["ended_at"]?.stringValue ?? ""), let c = capturedAt, e >= c { return e }
         return capturedAt
     }
-    /// The cross-device dedupe key (capture-event-v0 §5.4).
-    public var dedupeKey: String {
-        let s = raw["source"]
-        return [s?["app"]?.stringValue, s?["ref"]?.stringValue, s?["revision"]?.stringValue].map { $0 ?? "" }.joined(separator: "|")
-    }
+    public var ref: String { raw["source"]?["ref"]?.stringValue ?? "" }
+    public var revision: String { raw["source"]?["revision"]?.stringValue ?? "" }
+
+    /// The cross-device dedupe key (capture-event-v0 §5.4): app, ref and revision as one JSON array, so two
+    /// different triples never share a key, whatever characters they hold.
+    public var dedupeKey: String { Self.key([app, ref, revision]) }
+    /// The key of the chain this event belongs to: app and ref, the same way (capture-event-v0 §3.2).
+    public var chainKey: String { Self.key([app, ref]) }
+
+    static func key(_ parts: [String]) -> String { JSONWriter.compact(.array(parts.map(JSONValue.string))) }
+
+    /// The keys an older cursor stored: the parts joined by "|". They are ambiguous only when a part holds a "|".
+    var legacyDedupeKey: String { [app, ref, revision].joined(separator: "|") }
+    var legacyChainKey: String { app + "|" + ref }
 
     public enum Check: Equatable {
         case complete(CaptureEvent.Kind)

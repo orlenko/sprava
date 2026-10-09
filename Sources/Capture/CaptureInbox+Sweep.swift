@@ -60,7 +60,9 @@ extension CaptureInbox {
                 guard lstat(file.path, &st) == 0 else { continue }
                 let size = Int(st.st_size)
                 let mtime = Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1e9
-                if let seen = state.examined[key], seen.size == size, seen.mtime == mtime, seen.outcome != "pending" { continue }
+                // A file deferred by a reader that knew fewer format versions is read again (capture-event-v0 §5.3).
+                if let seen = state.examined[key], seen.size == size, seen.mtime == mtime, seen.outcome != "pending",
+                   !seen.outcome.hasPrefix("deferred") || seen.outcome == Self.deferredOutcome { continue }
                 var (check, event) = CaptureEvent.check(file, deviceFolder: device)
                 if case .complete(.capture) = check, let e = event, let expected = producers[deviceName], e.app != expected {
                     check = .quarantined("source.app does not match the folder's registered producer")
@@ -81,7 +83,7 @@ extension CaptureInbox {
                     result.pending += 1
                     state.examined[key] = .init(size: size, mtime: mtime, outcome: "pending")
                 case .deferred:
-                    state.examined[key] = .init(size: size, mtime: mtime, outcome: "deferred")
+                    state.examined[key] = .init(size: size, mtime: mtime, outcome: Self.deferredOutcome)
                     journal([("event", logged), ("stage", .str("newer_format"))])
                 case .quarantined(let why):
                     result.quarantined += 1
@@ -104,25 +106,43 @@ extension CaptureInbox {
         return result
     }
 
+    /// How a deferred file is recorded: with the format versions this reader knows, so a reader that knows more
+    /// reads it again. Change it whenever `CaptureEvent.check` learns a new `format_version`.
+    static let deferredOutcome = "deferred:0"
+
     func ingest(_ event: CaptureEvent, device: String, producer: String?, notice: String?, size: Int, state: inout State,
                 result: inout SweepResult, binders: [ShelfRow], commands: Commands, now: Date) {
         let id = event.id
         let textHash = CaptureInbox.digest(Data(event.text.utf8))
         // Only a registered producer's own events can change a chain (architecture 8; capture-event-v0 §3.2).
         let registered = producer != nil && producer == event.app
-        let chainKey = event.app + "|" + (event.raw["source"]?["ref"]?.stringValue ?? "")
-        let chain = registered ? (state.chains?[chainKey] ?? []).filter { $0 != id } : []
-        // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2).
+        let new = state.ingested[id] == nil
+        var earlierCopy = new ? earlierCapture(event, state: state) : nil
+        // An earlier copy of the same capture that crashed before its card was made (and got none) holds nothing yet:
+        // this copy carries the capture, and the earlier one counts as its duplicate from now on, out of the chain.
+        if let earlier = earlierCopy, earlier != id, state.ingested[earlier] == "ingested",
+           !adoptOrphanCard(earlier, state: &state, binders: binders, deviceID: commands.deviceID) {
+            state.ingested[earlier] = "duplicate"
+            journal([("event", .string(earlier)), ("stage", .str("duplicate")), ("of", .string(id))])
+            earlierCopy = nil
+        }
+        let chain = registered ? chainIDs(of: event, state: state).filter { $0 != id && state.ingested[$0] != "duplicate" } : []
+        // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision older than
+        // it changes nothing.
         let clocks = state.clocks ?? [:]
         let current = chain.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
-        let currentRetracted = current.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
+        // What this revision is compared with is the newest event whose words are held by a card or a settled stage.
+        // One that crashed before its card was made, or a stale revision, holds nothing, so its words are never
+        // taken as already filed (§3.2, §5.3).
+        let holding = chain.filter { holdsContent($0, state: &state, binders: binders, deviceID: commands.deviceID) }
+        let baseline = holding.max { (clocks[$0] ?? "") < (clocks[$1] ?? "") }
+        let currentRetracted = baseline.map { ["retracted", "retracting"].contains(state.ingested[$0] ?? "") } ?? false
         // A deletion after the chain's current event, or a restore after its deletion, changes what the chain is:
         // neither repeats an earlier event of the same triple, so neither is taken for a duplicate (§3.2).
-        let transition = current.map { (clocks[$0] ?? "") < Self.clockKey(event) } == true && event.retracted != currentRetracted
+        let transition = baseline.map { (clocks[$0] ?? "") < Self.clockKey(event) } == true && event.retracted != currentRetracted
 
-        let new = state.ingested[id] == nil
         if new {
-            if let earlier = state.dedupe[event.dedupeKey], !transition {
+            if let earlier = earlierCopy, !transition {
                 // The same capture again: only a raise of sensitivity is applied (capture-event-v0 §3.2).
                 result.duplicates += 1
                 state.ingested[id] = "duplicate"
@@ -131,11 +151,11 @@ extension CaptureInbox {
                 return
             }
             state.ingested[id] = "ingested"
-            state.dedupe[event.dedupeKey] = id
+            state.captures = (state.captures ?? [:]).merging([event.dedupeKey: id]) { $1 }
             state.apps[id] = event.app
             state.texts = (state.texts ?? [:]).merging([id: textHash]) { $1 }
             state.clocks = (state.clocks ?? [:]).merging([id: Self.clockKey(event)]) { $1 }
-            if registered { state.chains = (state.chains ?? [:]).merging([chainKey: chain + [id]]) { $1 } }
+            if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
         }
         // Ingesting is one durable step, recorded before anything else happens: no card is made from an event the
         // cursor on disk does not hold, since a card the cursor forgot would be made again (§5.3).
@@ -168,10 +188,16 @@ extension CaptureInbox {
         // A chain raised to private stays private for every card made from it later (§3.3).
         let filedAs = Self.asFiled(event, privates: Set(state.privates ?? []), chain: chain)
         if filedAs.isPrivate { markPrivate([id], state: &state) }
+        // Verification (architecture 8): Sprava's own folder needs a matching notice; an unregistered folder is
+        // unverified; a hint is honoured only from a verified note of Sprava's own. Every card made from the event
+        // says when its source is unverified.
+        let own = producer == "sprava"
+        let verified = own ? notice == event.digest : producer != nil
+        let hint = own && verified ? event.binderHint : nil
         // A later event of the chain: the same text changes only sensitivity; other text replaces what still waits.
         // A restore after a deletion is new content to review, since what was filed may be dropped by now (§3.2).
         var replaces: String?
-        if let earlier = current, !currentRetracted {
+        if let earlier = baseline, !currentRetracted {
             if state.texts?[earlier] == textHash {
                 state.ingested[id] = "same_text"
                 journal([("event", .string(id)), ("stage", .str("same_text"))])
@@ -185,7 +211,7 @@ extension CaptureInbox {
             let corrections: [(URL?, String)]?
             do {
                 corrections = try correctionCards(filedAs, chain: chain, current: earlier, withdrawn: withdrawing, paths: state.paths ?? [:],
-                                                  binders: binders, commands: commands, now: now)
+                                                  verified: verified, binders: binders, commands: commands, now: now)
             } catch {
                 journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
                 return
@@ -205,24 +231,12 @@ extension CaptureInbox {
             }
         }
 
-        // Verification (architecture 8): Sprava's own folder needs a matching notice; an unregistered folder is
-        // unverified; a hint is honoured only from a verified note of Sprava's own.
-        let own = producer == "sprava"
-        let verified = own ? notice == event.digest : producer != nil
-        let hint = own && verified ? event.binderHint : nil
         let made: (String, URL?)
         do {
-            // A card made before a crash, whose id never reached the cursor, is kept, never made twice (§5.3): one that
-            // still waits, or a Tier 0 card the person already approved or rejected in a binder.
-            let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders, deviceID: commands.deviceID)
-            if let p = waitingUnfiled.first {
-                made = (p.id, nil)
-            } else if let (folder, p) = waitingFiled.first ?? actedOnCard(id, binders: binders, deviceID: commands.deviceID) {
-                made = (p.id, folder)
-            } else {
-                made = try card(for: filedAs, hint: hint, verified: verified, producer: producer ?? event.app,
-                                replaces: replaces, binders: binders, commands: commands, now: now)
-            }
+            // A card made before a crash, whose id never reached the cursor, is kept, never made twice (§5.3).
+            made = try orphanCard(id, binders: binders, deviceID: commands.deviceID)
+                ?? card(for: filedAs, hint: hint, verified: verified, producer: producer ?? event.app,
+                        replaces: replaces, binders: binders, commands: commands, now: now)
         } catch {
             // The stage stays "ingested", so the next sweep makes the card.
             journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
@@ -248,6 +262,66 @@ extension CaptureInbox {
         if result.unsaved == nil { journal([("stage", .str("state_unwritable"))]) }
         result.unsaved = "state.json"
         return false
+    }
+
+    /// The Tier 0 card event `id` got before a crash kept its id from the cursor: one still waiting, unfiled or in a
+    /// binder, or one the person already approved or rejected; nil when there is none.
+    func orphanCard(_ id: String, binders: [ShelfRow], deviceID: String) -> (String, URL?)? {
+        let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders, deviceID: deviceID)
+        if let p = waitingUnfiled.first { return (p.id, nil) }
+        if let (folder, p) = waitingFiled.first ?? actedOnCard(id, binders: binders, deviceID: deviceID) { return (p.id, folder) }
+        return nil
+    }
+
+    /// Records in the cursor the card an event at "ingested" got before a crash, as its own sweep would have; false
+    /// when it has none. The clerk reads the event next.
+    func adoptOrphanCard(_ id: String, state: inout State, binders: [ShelfRow], deviceID: String) -> Bool {
+        guard state.ingested[id] == "ingested", let (card, folder) = orphanCard(id, binders: binders, deviceID: deviceID) else { return false }
+        state.cards[id] = card
+        if let folder { state.cardBinder = (state.cardBinder ?? [:]).merging([id: folder.path]) { $1 } }
+        state.clerk = (state.clerk ?? [:]).merging([id: "pending"]) { $1 }
+        state.ingested[id] = folder == nil ? "unfiled" : "proposed"
+        journal([("event", .string(id)), ("stage", .str("card_recovered"))])
+        return true
+    }
+
+    /// Whether an event's words are held: by its card, or by a stage that settles them (nothing to file, nothing to
+    /// change, the same text as an event whose words are held, retracted). An event that crashed before its card was
+    /// made holds nothing unless that card is found now; a stale revision's words were never carded.
+    func holdsContent(_ id: String, state: inout State, binders: [ShelfRow], deviceID: String) -> Bool {
+        switch state.ingested[id] {
+        case "ingested": adoptOrphanCard(id, state: &state, binders: binders, deviceID: deviceID)
+        case nil, "stale_revision", "duplicate": false
+        default: true
+        }
+    }
+
+    /// The events of `event`'s chain, oldest first. A chain an older cursor kept under "app|ref" is used only for
+    /// the events whose own app and ref are this event's.
+    func chainIDs(of event: CaptureEvent, state: State) -> [String] {
+        if let ids = state.chainsByKey?[event.chainKey] { return ids }
+        return (state.chains?[event.legacyChainKey] ?? []).filter {
+            sameSource($0, as: event, parts: [event.app, event.ref], paths: state.paths ?? [:])
+        }
+    }
+
+    /// The first ingested copy of the same capture (app, ref and revision), if any. A key an older cursor kept as
+    /// "app|ref|revision" still matches.
+    func earlierCapture(_ event: CaptureEvent, state: State) -> String? {
+        if let id = state.captures?[event.dedupeKey] { return id }
+        guard let id = state.dedupe[event.legacyDedupeKey],
+              sameSource(id, as: event, parts: [event.app, event.ref, event.revision], paths: state.paths ?? [:]) else { return nil }
+        return id
+    }
+
+    /// Whether a key an older cursor joined with "|" for event `id` names `parts`. Joined parts that hold no "|"
+    /// can come from those parts only; otherwise the stored event says, and one that cannot be read does not match,
+    /// so a different note is carded rather than lost.
+    func sameSource(_ id: String, as event: CaptureEvent, parts: [String], paths: [String: String]) -> Bool {
+        if !parts.contains(where: { $0.contains("|") }) { return true }
+        guard let source = storedEvent(id, paths: paths)?["source"] else { return false }
+        let stored = ["app", "ref", "revision"].prefix(parts.count).map { source[$0]?.stringValue }
+        return stored == parts.map(Optional.some)
     }
 
     /// The Tier 0 card of event `id` the person already acted on in a binder this Mac manages, if any.

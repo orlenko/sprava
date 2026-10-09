@@ -8,9 +8,14 @@ import SpravaKit
 extension CaptureInbox {
     /// The text of an earlier event, read again from the capture folder; nil when it is gone or unreadable.
     func storedText(_ id: String, paths: [String: String]) -> String? {
+        storedEvent(id, paths: paths)?["text"]?.stringValue
+    }
+
+    /// An earlier event as read again from the capture folder; nil when it is gone or unreadable.
+    func storedEvent(_ id: String, paths: [String: String]) -> JSONValue? {
         guard let parts = paths[id]?.split(separator: "/").map(String.init), parts.count == 2,
               case .ok(let data) = SafeFile.read(root.appendingPathComponent(parts[0]).appendingPathComponent(parts[1])) else { return nil }
-        return (try? JSONParser.parse(data).value)?["text"]?.stringValue
+        return try? JSONParser.parse(data).value
     }
 
     /// Change cards for a corrected note whose earlier version was already filed (capture-event-v0 §3.2, §6.5).
@@ -21,12 +26,14 @@ extension CaptureInbox {
     /// words, as it came in or as the current text has it, gets the new line as its title when that differs (a
     /// clerk's title is its own words and stays); an item whose line is gone, now or in the current text, is offered to
     /// drop; and an item whose line cannot be identified is left alone. New lines, and lines whose waiting card this
-    /// correction withdrew, are proposed once: in the binder of the item filed from the nearest line, else unfiled. A
-    /// private correction redacts every item it touches.
+    /// correction withdrew, are proposed once: in the binder of the item filed from the nearest line, else unfiled. At
+    /// most ten lines become items; every other line to propose, and every line a withdrawn card listed as not filed
+    /// yet, is listed on the new card as not filed yet, so no words are lost to the cap or to a withdrawal. A
+    /// private correction redacts every item it touches; an unverified source is marked on every card (architecture 8).
     /// Returns (binder or nil for unfiled, card id) for each card saved; nil when nothing was filed from the chain.
     /// Throws when a card cannot be saved or trusted; the cards already made are found again on the retry.
     func correctionCards(_ event: CaptureEvent, chain: [String], current: String, withdrawn: [(URL?, Proposal)], paths: [String: String],
-                         binders: [ShelfRow], commands: Commands, now: Date) throws -> [(URL?, String)]? {
+                         verified: Bool = true, binders: [ShelfRow], commands: Commands, now: Date) throws -> [(URL?, String)]? {
         let ids = Set(chain)
         let newLines = Self.lines(of: event.text)
         typealias Lines = [(text: String, start: Int, end: Int)]
@@ -144,6 +151,31 @@ extension CaptureInbox {
             let before = placedAt.keys.filter { $0 < j }.max(), after = placedAt.keys.filter { $0 > j }.min()
             propose[j] = .some(before.flatMap { placedAt[$0] } ?? after.flatMap { placedAt[$0] })
         }
+        // Lines not filed yet: those a withdrawn card listed so (where that card waited), then the lines to propose past
+        // the tenth. Each new line once, and never one that is filed or proposed.
+        var notFiled: [Int: (target: URL?, reason: String)] = [:]
+        for (folder, p) in withdrawn {
+            guard let from = p.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue).first(where: ids.contains),
+                  let spans = p.raw["provenance"]?["unfiled"]?.arrayValue, let fates = step?.fates else { continue }
+            for span in spans {
+                guard let start = span["start"]?.numberValue?.safeInteger, let k = line(of: Int(start), in: from),
+                      let c = inCurrent(from, k), c < fates.count else { continue }
+                switch fates[c] {
+                case .same(let j), .changed(let j):
+                    let back = folder.flatMap { f in rows.contains { $0.folder == f } ? f : nil }
+                    if placedAt[j] == nil, propose[j] == nil, notFiled[j] == nil {
+                        notFiled[j] = (back, span["reason"]?.stringValue ?? "more_lines")
+                    }
+                case .removed: break
+                }
+            }
+        }
+        for j in propose.keys.sorted().dropFirst(10) { notFiled[j] = (propose[j]!, "more_lines") }
+        func unfiledSpans(_ target: URL?) -> [JSONValue] {
+            notFiled.keys.sorted().filter { notFiled[$0]!.target == target }.map { j in
+                .obj([("start", .int(newLines[j].start)), ("end", .int(newLines[j].end)), ("reason", .string(notFiled[j]!.reason))])
+            }
+        }
         let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
         var adds: [URL?: [JSONObject]] = [:]
         for j in propose.keys.sorted().prefix(10) {
@@ -168,17 +200,24 @@ extension CaptureInbox {
         var provenance = JSONObject([(key: "events", value: .array([.string(event.id)])), (key: "supersedes", value: .array(chain.map(JSONValue.string))),
                                      (key: "filed_by", value: .str("code, no model"))])
         if event.isPrivate { provenance.set("private", .bool(true)) }
+        if !verified { provenance.set("unverified_source", .bool(true)) }
+        func cardProvenance(_ target: URL?) -> JSONObject {
+            var p = provenance
+            let spans = unfiledSpans(target)
+            if !spans.isEmpty { p.set("unfiled", .array(spans)) }
+            return p
+        }
         var made: [(URL?, String)] = []
-        for folder in rows.map(\.folder) where ops[folder] != nil || adds[folder] != nil {
+        for folder in rows.map(\.folder) {
             let cardOps = (ops[folder] ?? []) + (adds[folder] ?? [])
-            guard !cardOps.isEmpty else { continue }
+            guard !cardOps.isEmpty || !unfiledSpans(folder).isEmpty else { continue }
             // A retry after a partial failure keeps the card this correction already made here, never a second one.
             if let kept = madeCorrection(event.id, in: folder, commands: commands) {
                 made.append((folder, kept))
                 continue
             }
             let card = Proposal.make(title: "A note was corrected. Change what was filed from it?", actor: actor, ops: cardOps,
-                                     provenance: provenance, now: now)
+                                     provenance: cardProvenance(folder), now: now)
             try ProposalStore.save(card, in: folder)
             do {
                 try commands.trustProposals([card.id], in: folder)
@@ -192,13 +231,15 @@ extension CaptureInbox {
             }
             made.append((folder, card.id))
         }
-        if let unfiledOps = adds[nil] {
+        let unfiledOps = adds[nil] ?? []
+        if !unfiledOps.isEmpty || !unfiledSpans(nil).isEmpty {
             if let kept = unfiled().first(where: { Self.isCorrection($0, of: event.id) }) {
                 made.append((nil, kept.id))
             } else {
                 let noun = event.raw["source"]?["kind"]?.stringValue == "dictation" ? "dictation" : "note"
-                var card = Proposal.make(title: "Corrected \(noun): add \(unfiledOps.count == 1 ? "a new line" : "\(unfiledOps.count) new lines")",
-                                         actor: actor, ops: unfiledOps, provenance: provenance, now: now).raw
+                let title = unfiledOps.isEmpty ? "Corrected \(noun): lines not filed yet"
+                    : "Corrected \(noun): add \(unfiledOps.count == 1 ? "a new line" : "\(unfiledOps.count) new lines")"
+                var card = Proposal.make(title: title, actor: actor, ops: unfiledOps, provenance: cardProvenance(nil), now: now).raw
                 card.set("binder", .str("not sure"))
                 try writeUnfiled(card)
                 made.append((nil, card["id"]?.stringValue ?? ""))

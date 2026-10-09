@@ -55,10 +55,15 @@ extension CaptureInbox {
     }
 
     func tier0Pending(_ card: String, binder: String?) -> Bool {
+        tier0Card(card, binder: binder) != nil
+    }
+
+    /// The code-built card while it still waits: in its binder, or in the Inbox.
+    func tier0Card(_ card: String, binder: String?) -> Proposal? {
         if let binder {
-            return ProposalStore.list(in: URL(fileURLWithPath: binder, isDirectory: true)).contains { $0.0.id == card && $0.0.state == "proposed" }
+            return ProposalStore.list(in: URL(fileURLWithPath: binder, isDirectory: true)).map(\.0).first { $0.id == card && $0.state == "proposed" }
         }
-        return unfiled().contains { $0.id == card }
+        return unfiled().first { $0.id == card }
     }
 
     public struct ClerkOutcome: Equatable, Sendable {
@@ -112,7 +117,17 @@ extension CaptureInbox {
         // A raise to private that came while the clerk was reading holds for its cards too (capture-event-v0 §3.2).
         let event = Self.asFiled(work.event, privates: Set(state.privates ?? []))
         let today = Clerk.captureDay(event.raw["captured_at"]?.stringValue ?? "") ?? CalendarDate.today(now: now)
-        let cards = Clerk.proposals(interp, event: event, today: today, client: commands.client, now: now)
+        var cards = Clerk.proposals(interp, event: event, today: today, client: commands.client, now: now)
+        // A source the code-built card marked unverified stays marked on every card that replaces it (architecture 8).
+        if tier0Card(work.tier0, binder: work.tier0Binder)?.raw["provenance"]?["unverified_source"] == .bool(true) {
+            cards = cards.map { binder, proposal in
+                var raw = proposal.raw
+                var provenance = raw["provenance"]?.objectValue ?? JSONObject()
+                provenance.set("unverified_source", .bool(true))
+                raw.set("provenance", .object(provenance))
+                return (binder, Proposal(raw: raw))
+            }
+        }
         guard !cards.isEmpty else {
             // Everything the clerk read is already in the binder: the code-built card stays, saying so.
             clerk[id] = "kept"

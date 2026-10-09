@@ -6,7 +6,8 @@ extension CaptureInbox {
     /// The cursor (capture-event-v0 §5.3): what happened to each event id, the dedupe keys, and the names examined.
     package struct State: Codable {
         package var ingested: [String: String] = [:]          // id -> stage
-        package var dedupe: [String: String] = [:]            // app|ref|revision -> id
+        package var dedupe: [String: String] = [:]            // app|ref|revision -> id, as older cursors kept it; read only
+        package var captures: [String: String]? = [:]         // ["app","ref","revision"] (CaptureEvent.dedupeKey) -> id
         var apps: [String: String] = [:]              // id -> source.app, for supersede chains
         package var cards: [String: String] = [:]             // id -> the proposal id of its card
         package var paths: [String: String]? = [:]            // id -> device/name, for the clerk
@@ -14,7 +15,8 @@ extension CaptureInbox {
         var hints: [String: String]? = [:]            // id -> the binder name a verified hint named
         package var clerk: [String: String]? = [:]            // id -> pending, retry, done, kept, acted, poison, failed, retracted, superseded
         package var attempts: [String: Int]? = [:]
-        var chains: [String: [String]]? = [:]         // app|ref -> event ids, oldest first (capture-event-v0 §3.2)
+        var chains: [String: [String]]? = [:]         // app|ref -> event ids, as older cursors kept them; read only
+        var chainsByKey: [String: [String]]? = [:]    // ["app","ref"] (CaptureEvent.chainKey) -> event ids, oldest first (§3.2)
         var texts: [String: String]? = [:]            // id -> SHA-256 of its text, to see a change that is not one
         var clocks: [String: String]? = [:]           // id -> its HLC as sortable text, to find a chain's current event
         package var raises: [String: [String]]? = [:]         // id -> a chain whose raise to private failed, retried each sweep
