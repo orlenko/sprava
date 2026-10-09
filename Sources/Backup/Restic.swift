@@ -132,7 +132,9 @@ public struct Restic: Sendable {
         public let filesChanged: Int
     }
 
-    /// Backs up `folder` from inside it, so the snapshot does not depend on where the folder sits.
+    /// Backs up `folder` from inside it, so the snapshot does not depend on where the folder sits. restic (0.19, macOS)
+    /// saves each entry's permission bits and extended attributes (Finder tags and comments, resource forks) by
+    /// default, and `restore` writes them back; no `--exclude-xattr` is ever passed (`Backup.manifest` compares them).
     public func backup(_ folder: URL, tags: [String], excludes: [String], skipIfUnchanged: Bool = true) throws -> BackupResult {
         var args = ["backup", ".", "--host", "sprava", "--json", "--pack-size", "64"]
         for t in tags { args += ["--tag", t] }
