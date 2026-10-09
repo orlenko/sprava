@@ -7,6 +7,7 @@ let package = Package(
     platforms: [.macOS("27.0")],
     products: [
         .executable(name: "sprava", targets: ["sprava"]),
+        .executable(name: "SpravaApp", targets: ["SpravaApp"]),
         .executable(name: "sprava-runtime", targets: ["sprava-runtime"]),
         .executable(name: "sprava-extract", targets: ["sprava-extract"]),
         .executable(name: "sprava-mcp", targets: ["sprava-mcp"]),
@@ -62,6 +63,9 @@ let package = Package(
         // Layer 6: executables.
         .executableTarget(name: "sprava", dependencies: ["Services", "Brains", "Hub", "Capture", "Clerk", "Extract", "Shelf",
                                                          "BinderStore", "BinderFormat", "SpravaKit"]),
+        .executableTarget(name: "SpravaApp", dependencies: ["Services", "Backup", "Capture", "Shelf", "BinderStore",
+                                                            "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "SpravaAppTests", dependencies: ["SpravaApp", "Shelf", "SpravaTestSupport", "SpravaKit"]),
         .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Brains", "Backup", "Hub", "Capture", "Clerk",
                                                                  "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .executableTarget(name: "sprava-mcp", dependencies: ["Brains", "SpravaKit"]),
