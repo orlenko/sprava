@@ -22,6 +22,7 @@ import Testing
 ///    retraction's removal card). Invented data only.
 @Suite(.serialized) struct InboxSequenceTests {
     let devices = ["aaaaaaaa-2222-4333-8444-5555555555e1", "bbbbbbbb-2222-4333-8444-5555555555e2"]
+    let unregistered = "00000000-2222-4333-8444-5555555555e0"
 
     struct Rng {
         var s: UInt64
@@ -57,6 +58,8 @@ import Testing
         var seed: UInt64 = 0
         var written = 0
         var away = false
+        var unwritable = false
+        var privateEvents = Set<String>()
 
         func current(_ chain: Int) -> Event { events[chains[chain].last!]! }
         func ids(_ chain: Int) -> Set<String> { Set(chains[chain] + (copies[chain] ?? [])) }
@@ -99,7 +102,10 @@ import Testing
         try AtomicFile.makePrivateFolder(folder)
         try CaptureProducer.publish(Data(JSONWriter.pretty(.object(o)).utf8), as: folder.appendingPathComponent("\(id).json"))
         m.events[id] = Event(chain: chain, revision: revision, text: text, retracted: retracted, device: device, wall: wall, counter: counter)
-        if `private` { m.privateChains.insert(chain) }
+        if `private` {
+            m.privateChains.insert(chain)
+            m.privateEvents.insert(id)
+        }
         return id
     }
 
@@ -145,13 +151,17 @@ import Testing
         case 42..<50:  // a copy of an event from the other device, the same stamp, sensitivity the same or raised
             guard let id = m.chains.flatMap({ $0 }).randomElement(using: &rng), let e = m.events[id] else { return false }
             let isPrivate = m.privateChains.contains(e.chain) || rng.chance(30)
+            // To the other registered device, or to a folder no producer is registered for (swept first, so its copy
+            // can get the card before the registered original is taken for its duplicate).
+            let target = rng.chance(40) ? unregistered : devices.first { $0 != e.device }!
             let copy = try publish(s, m, chain: e.chain, revision: e.revision, text: e.text, private: isPrivate, retracted: e.retracted,
-                                   device: devices.first { $0 != e.device }!, clock: (e.wall, e.counter))
+                                   device: target, clock: (e.wall, e.counter))
             m.copies[e.chain, default: []].append(copy)
-            m.log.append("copy \(e.chain) \(e.revision) private=\(isPrivate)")
+            m.log.append("copy \(e.chain) \(e.revision) private=\(isPrivate)\(target == unregistered ? " unregistered" : "")")
         case 50..<62:  // a sweep that stops at a random cursor save: one that fails, or the process killed right after one
             let saves = rng.below(6)
-            if rng.chance(50) {
+            // (No kill while the binder's cards are read-only: its files could not be put back.)
+            if rng.chance(50) || m.unwritable {
                 CursorCrash.after(saves, cursor: s.inbox.stateURL)
                 defer { CursorCrash.after(nil, cursor: s.inbox.stateURL) }
                 _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
@@ -166,7 +176,7 @@ import Testing
             let interp = await Clerk(model: RecordingModel([.obj([("items", .array(answer))])]))
                 .read(work.event, filing: [bFiling(s)], hint: work.hint, now: pNow)
             let crash = rng.chance(40) ? rng.below(3) : nil
-            if crash != nil, rng.chance(50) {
+            if crash != nil, rng.chance(50), !m.unwritable {
                 let at = try killAtAnySave(s, m, &rng) {
                     _ = s.inbox.commitClerk(work, interp, filing: [bFiling(s)], rows: pRows(s), commands: s.commands, seconds: 1, now: pNow)
                 }
@@ -205,6 +215,13 @@ import Testing
                     m.log.append("approve \(card.id) waits")
                     return false
                 }
+                // Invariant 2 at every approval: once settling lets it through, nothing on the card is in the clear when
+                // its chain is known to be private (a private event of it was taken in).
+                checkApprovable(fresh, s, m)
+                if m.unwritable {
+                    m.log.append("approve \(card.id) not tried: the binder's cards cannot be written")
+                    return false
+                }
                 let done = (try? TekaStore(folder: s.folder).approve(fresh, now: pNow)) != nil
                 m.log.append("approve \(card.id) \(done ? "applied" : "refused")")
             } else {
@@ -212,12 +229,16 @@ import Testing
                 m.declined.formUnion(titles(card) + s.inbox.notFiled(card))
                 m.log.append("reject \(card.id)")
             }
-        case 86..<91:  // the binder's volume goes away, or comes back
+        case 86..<89:  // the binder's volume goes away, or comes back
+            guard !m.unwritable else { return false }
             try toggleAway(s, m)
+        case 89..<91:  // the binder's cards cannot be written for a while (a raise then fails and stays pending), or can again
+            guard !m.away else { return false }
+            toggleUnwritable(s, m)
         case 91..<95:  // a capture's card changes an existing item (as the clerk's update of a matching item does)
             // Only for a revision the inbox has taken in and carded, as the clerk reads only those.
             let stages = s.inbox.loadState().ingested
-            guard !m.away, let chain = (0..<m.chains.count).filter({
+            guard !m.away, !m.unwritable, let chain = (0..<m.chains.count).filter({
                       !m.chains[$0].isEmpty && !m.current($0).retracted && ["unfiled", "proposed"].contains(stages[m.chains[$0].last!] ?? "")
                   }).randomElement(using: &rng),
                   let target = Teka.read(s.folder).items.compactMap(\.object).filter({ $0["status"] == .str("open") })
@@ -239,7 +260,7 @@ import Testing
         default:       // a clean sweep
             _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
             m.log.append("sweep")
-            return !m.away
+            return !m.away && !m.unwritable
         }
         return false
     }
@@ -265,7 +286,7 @@ import Testing
                 p.raw["provenance"]?["events"]?.arrayValue?.contains { m.ids(chain).contains($0.stringValue ?? "") } == true
             }.map { "\($0.id.prefix(8)) \($0.state) \($0.raw["rejected_reason"]?.stringValue ?? "") \($0.title) \(titles($0).map { $0.split(separator: " ").last ?? "" }) nf=\(s.inbox.notFiled($0).count) private=\($0.raw["provenance"]?["private"] == .bool(true))" }
             let journal = ((try? String(contentsOf: s.inbox.journalURL, encoding: .utf8)) ?? "").split(separator: "\n").filter { line in
-                m.ids(chain).contains { line.contains($0) } || line.contains("deferred") || line.contains("clerk_handoff")
+                m.ids(chain).contains { line.contains($0) } || line.contains("deferred") || line.contains("clerk_handoff") || line.contains("DBG")
             }.suffix(40).joined(separator: "\n")
             return "stages: \(stages)\ncards: \(all)\nprivates: \(m.ids(chain).filter { (state.privates ?? []).contains($0) }.count)\njournal: \(journal)\n\(trace)"
         }
@@ -314,6 +335,41 @@ import Testing
             let current = m.current(e.chain)
             if current.retracted || e.text != current.text {
                 Issue.record("card \(card.id) waits from chain \(e.chain) \(e.revision), but its current words are \(current.revision)\n\(diagnose(e.chain))")
+            }
+        }
+    }
+
+    /// The binder's cards folder becomes read-only (a raise or a withdrawal then fails and stays owed), or writable again.
+    /// No invariant is checked at a sweep meanwhile; approvals are still asked for, and must be held while anything
+    /// is owed.
+    func toggleUnwritable(_ s: PSetup, _ m: Model) {
+        let proposals = ProposalStore.dir(s.folder)
+        try? FileManager.default.createDirectory(at: proposals, withIntermediateDirectories: true)
+        chmod(proposals.path, m.unwritable ? 0o700 : 0o500)
+        m.unwritable.toggle()
+        m.log.append(m.unwritable ? "binder cards unwritable" : "binder cards writable")
+    }
+
+    /// Invariant 2 at an approval: when the card's chain is known to be private (one of its private events was taken
+    /// in), nothing it adds or changes is in the clear.
+    func checkApprovable(_ card: Proposal, _ s: PSetup, _ m: Model) {
+        let stages = s.inbox.loadState().ingested
+        let redacted = Set(Teka.read(s.folder).items.compactMap(\.object).filter { $0["redact"] == .bool(true) }.compactMap { $0["id"]?.stringValue })
+        let chains = Set((card.raw["provenance"]?["events"]?.arrayValue?.compactMap(\.stringValue) ?? []).compactMap { m.events[$0]?.chain })
+        for chain in chains where m.ids(chain).contains(where: { m.privateEvents.contains($0) && stages[$0] != nil }) {
+            let clear = card.ops.contains { op in
+                switch op["op"]?.stringValue {
+                case "add_item": op["args"]?["item"]?["redact"] != .bool(true)
+                // An update in the clear is fine on an item already redacted: the item stays so.
+                case "update_item": op["args"]?["set"]?["redact"] != .bool(true) && !redacted.contains(op["args"]?["id"]?.stringValue ?? "")
+                default: false
+                }
+            }
+            if clear {
+                let trace = m.log.suffix(60).joined(separator: "\n")
+                let state = s.inbox.loadState()
+                let stages = m.chains[chain].map { "\($0.prefix(8)) \(m.events[$0]!.revision): \(state.ingested[$0] ?? "-") private=\((state.privates ?? []).contains($0))" }
+                Issue.record("card \(card.id) of private chain \(chain) is let through for approval in the clear\n\(JSONWriter.compact(.object(card.raw)))\n\(stages)\nraises: \(state.raises ?? [:])\n\(trace)")
             }
         }
     }
@@ -399,6 +455,7 @@ import Testing
         for _ in 0..<steps {
             if try await step(s, m, &rng) { check(s, m, seed: seed) }
         }
+        if m.unwritable { toggleUnwritable(s, m) }
         if m.away { try toggleAway(s, m) }
         // Whatever happened, two clean sweeps settle everything.
         _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
@@ -407,7 +464,7 @@ import Testing
         check(s, m, seed: seed)
     }
 
-    @Test(arguments: [UInt64(7), 412, 1036, 1203])
+    @Test(arguments: [UInt64(1203), 1432, 1520, 1703])
     func randomSequencesKeepEveryCaptureAccountedFor(seed: UInt64) async throws {
         try await run(seed: seed, steps: 120)
     }

@@ -134,4 +134,65 @@ import Testing
         let redaction = try #require(pOpen(s).first { CaptureInbox.onlyRedacts($0) })
         #expect(redaction.ops.contains { $0["args"]?["id"] == .str("estate-example-2026-901") })
     }
+
+    // MARK: - 3. A copy from an unregistered folder that got the card belongs to the registered chain
+
+    let unregistered = "00000000-2222-4333-8444-5555555555e0"   // not registered, swept first
+
+    @Test func aRaiseAndACorrectionReachTheCardOfACopyFromAnUnregisteredFolder() throws {
+        for corrected in [false, true] {
+            let s = try pSetup()
+            try s.inbox.registerProducer(folder: adapter, app: "adapter")
+            let a = try pEvent(s, device: unregistered, app: "adapter", ref: "K4", revision: "rev1", text: "Call the invented roofer")
+            let b = try pEvent(s, device: adapter, app: "adapter", ref: "K4", revision: "rev1", text: "Call the invented roofer")
+            _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+            #expect(try s.inbox.readState().ingested[b] == "duplicate")
+            let card = try #require(s.inbox.unfiled().first { $0.raw["provenance"]?["events"] == .array([.string(a)]) })
+            try s.inbox.file(card.id, into: s.folder, commands: s.commands)
+
+            // The registered producer's later revision: private with the same words, or corrected words.
+            let c = try pEvent(s, device: adapter, app: "adapter", ref: "K4", revision: "rev2",
+                               text: corrected ? "Call the invented roofer Monday" : "Call the invented roofer") {
+                if !corrected { $0.set("sensitivity", .str("private")) }
+            }
+            _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+            let waiting = pOpen(s).first { $0.id == card.id }
+            if corrected {
+                #expect(waiting == nil, "the copy's card is withdrawn by the correction")
+                #expect(s.inbox.unfiled().contains { $0.raw["provenance"]?["events"]?.arrayValue?.contains(.string(c)) == true })
+            } else {
+                #expect(waiting?.raw["provenance"]?["private"] == .bool(true), "the copy's card is made private")
+                #expect(waiting?.ops.allSatisfy { $0["args"]?["item"]?["redact"] == .bool(true) } == true)
+            }
+        }
+    }
+
+    // MARK: - 4. Settling before an approval finishes a raise that failed
+
+    @Test func settlingFinishesARaiseThatFailedBeforeTheCardIsApproved() throws {
+        let s = try pSetup()
+        try s.inbox.registerProducer(folder: adapter, app: "adapter")
+        _ = try pEvent(s, device: adapter, app: "adapter", ref: "K5", revision: "rev1", text: "Call the invented roofer")
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        try s.inbox.file(try #require(s.inbox.unfiled().first).id, into: s.folder, commands: s.commands)
+        let card = try #require(pOpen(s).first)
+
+        // The binder's cards cannot be written while the raise runs, so it stays pending.
+        let proposals = ProposalStore.dir(s.folder)
+        chmod(proposals.path, 0o500)
+        _ = try pEvent(s, device: adapter, app: "adapter", ref: "K5", revision: "rev2", text: "Call the invented roofer") {
+            $0.set("sensitivity", .str("private"))
+        }
+        _ = s.inbox.sweep(binders: pRows(s), commands: s.commands, now: pNow)
+        #expect(try s.inbox.readState().raises?.isEmpty == false)
+        #expect(s.inbox.hasDeferredWork(in: s.folder))
+        #expect(!s.inbox.settle(binder: s.folder, commands: s.commands, now: pNow))   // still unwritable: the approval waits
+        chmod(proposals.path, 0o700)
+
+        // Writable again: settling, before any sweep, makes the card private, and only then may it be approved.
+        #expect(s.inbox.settle(binder: s.folder, commands: s.commands, now: pNow))
+        let fresh = try #require(pOpen(s).first { $0.id == card.id })
+        #expect(fresh.raw["provenance"]?["private"] == .bool(true))
+        #expect(fresh.ops.allSatisfy { $0["args"]?["item"]?["redact"] == .bool(true) })
+    }
 }

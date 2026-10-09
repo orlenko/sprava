@@ -118,8 +118,15 @@ extension CaptureInbox {
                 result: inout SweepResult, binders: [ShelfRow], commands: Commands, now: Date) {
         let id = event.id
         let textHash = CaptureInbox.digest(Data(event.text.utf8))
-        // Only a registered producer's own events can change a chain (architecture 8; capture-event-v0 §3.2).
+        // Only a registered producer's own events can change a chain (architecture 8; capture-event-v0 §3.2). An event
+        // from another folder that repeats the app, ref and revision of an event of a registered chain is the same
+        // capture: it belongs to that chain, so whatever the chain does later (a raise to private, a correction, a
+        // retraction) reaches its card too.
         let registered = producer != nil && producer == event.app
+        let registeredChain = state.chainsByKey?[event.chainKey] ?? []
+        let member = registered || registeredChain.contains(id) || state.captures?[event.dedupeKey].map { first in
+            first != id && registeredChain.contains(first)
+        } == true
         let new = state.ingested[id] == nil
         var earlierCopy = new ? earlierCapture(event, state: state) : nil
         let clock = state.clocks?[id] ?? Self.clockKey(event)
@@ -128,10 +135,25 @@ extension CaptureInbox {
         // second retraction, which repeats the triple of the first, from being taken for a copy of one left
         // unfinished. The earlier one, when its sweep is finished, is stale or the same words as this one.
         if let earlier = earlierCopy, earlier != id, state.ingested[earlier] == "ingested",
-           !adoptOrphanCard(earlier, chain: registered ? chainIDs(of: event, state: state) : [], state: &state, binders: binders, commands: commands, now: now) {
+           !adoptOrphanCard(earlier, chain: member ? chainIDs(of: event, state: state) : [], state: &state, binders: binders, commands: commands, now: now) {
             earlierCopy = nil
         }
-        let chain = registered ? chainIDs(of: event, state: state).filter { $0 != id } : []
+        var chain = member ? chainIDs(of: event, state: state).filter { $0 != id } : []
+        // An event from another folder with this registered event's app, ref and revision, taken in before it, joins
+        // the chain now (before it is decided whether this one repeats it): whatever the chain does later reaches its
+        // card, and a raise to private it carries reaches the chain.
+        var absorbed: String?
+        if registered, let first = earlierCapture(event, state: state), first != id, !chain.contains(first), state.ingested[first] != nil {
+            chain.insert(first, at: 0)
+            absorbed = first
+            if Set(state.privates ?? []).contains(first), chain.count > 1 {
+                deferWork(of: first, chain: chain, binders: binders, commands: commands, state: &state)
+                raise(chain.filter { $0 != first }, for: first, state: &state, binders: binders, commands: commands, now: now)
+            }
+        }
+        // A raise to private only ever makes more private, so it reaches the registered chain of the same app and ref even
+        // from a folder that cannot change that chain otherwise (capture-event-v0 §3.3).
+        let privacyChain = member ? chain : registeredChain.filter { $0 != id }
         // The current event of a chain is the one with the highest HLC (capture-event-v0 §3.2): a revision older than
         // it changes nothing. Duplicates count here: a second retraction taken for a copy of the first, because the
         // restore between them had not arrived yet, still makes that restore stale when it does.
@@ -153,11 +175,27 @@ extension CaptureInbox {
                 result.duplicates += 1
                 state.ingested[id] = "duplicate"
                 state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
-                if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
-                if registered, event.isPrivate {
+                // A registered event that repeats one from another folder brings that one, and its card, into the chain.
+                let members = chain.contains(earlier) ? chain : [earlier] + chain
+                if member { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: members + [id]]) { $1 } }
+                // The copy was carded while it was not yet in the chain, so its card and the chain's were never compared:
+                // whichever words are older now (the copy's, or the chain's before it) wait on cards that are out of
+                // date, and they go, as a correction would have taken them; the newest words' card holds the chain.
+                let held = (baseline.map { [$0] } ?? []) + [earlier]
+                if registered, absorbed == earlier, let newest = held.max(by: { (clocks[$0] ?? "") < (clocks[$1] ?? "") }),
+                   case let outdated = members.filter({ $0 != newest && state.texts?[$0] != state.texts?[newest] }), !outdated.isEmpty {
+                    if !withdraw(chain: outdated, reason: "replaced by a corrected note", state: &state, binders: binders,
+                                  deviceID: commands.deviceID, now: now) {
+                        // Left for each binder this Mac writes, finished there by the next sweep or before an approval.
+                        owe(id, binders: binders, commands: commands, state: &state)
+                    }
+                }
+                // Sensitivity only goes up, whoever sends it: a private copy raises what the copy repeats (§3.3).
+                if event.isPrivate {
                     // The binders out of reach are recorded first, so the raise's save carries them with the stage.
-                    deferWork(of: id, chain: [earlier] + chain, binders: binders, commands: commands, state: &state)
-                    raise([earlier] + chain, for: id, state: &state, binders: binders, commands: commands, now: now)
+                    let raised = members + privacyChain.filter { !members.contains($0) }
+                    deferWork(of: id, chain: raised, binders: binders, commands: commands, state: &state)
+                    raise(raised, for: id, state: &state, binders: binders, commands: commands, now: now)
                 }
                 journal([("event", .string(id)), ("stage", .str("duplicate")), ("of", .string(earlier))])
                 return
@@ -167,13 +205,20 @@ extension CaptureInbox {
             state.apps[id] = event.app
             state.texts = (state.texts ?? [:]).merging([id: textHash]) { $1 }
             state.clocks = (state.clocks ?? [:]).merging([id: clock]) { $1 }
-            if registered { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
+            if member { state.chainsByKey = (state.chainsByKey ?? [:]).merging([event.chainKey: chain + [id]]) { $1 } }
+        }
+        // A private event's raise of its chain is pending from the save that first holds the event, so no crash after
+        // it loses the raise (it is cleared once done).
+        if event.isPrivate, !privacyChain.isEmpty {
+            markPrivate(privacyChain + [id], state: &state)
+            state.raises = (state.raises ?? [:]).merging([id: privacyChain]) { $1 }
         }
         // Ingesting is one durable step, recorded before anything else happens: no card is made from an event the
         // cursor on disk does not hold, since a card the cursor forgot would be made again (§5.3).
         guard checkpoint(state, &result) else { return }
         // A binder that cannot be reached now misses what this event does to its chain; it is done there when it is back.
-        if registered, !chain.isEmpty { deferWork(of: id, chain: chain, binders: binders, commands: commands, state: &state) }
+        if member, !chain.isEmpty { deferWork(of: id, chain: chain, binders: binders, commands: commands, state: &state) }
+        else if event.isPrivate, !privacyChain.isEmpty { deferWork(of: id, chain: privacyChain, binders: binders, commands: commands, state: &state) }
         if new {
             journal([("event", .string(id)), ("stage", .str("ingested")), ("bytes", .int(size))])
             result.ingested += 1
@@ -184,11 +229,20 @@ extension CaptureInbox {
         // The first event of a chain records its privacy too, before any return below (empty, retracted), so a later
         // revision marked otherwise is still filed private.
         if event.isPrivate {
-            if current != nil { raise(chain, for: id, state: &state, binders: binders, commands: commands, now: now) }
+            if !privacyChain.isEmpty { raise(privacyChain, for: id, state: &state, binders: binders, commands: commands, now: now) }
             else { markPrivate([id], state: &state) }
         }
         // A revision that arrives late but is older than what the chain already has changes nothing else.
         if let current, (clocks[current] ?? "") > clock {
+            // A retraction left part done still finishes its part: what waits from the events before it goes, and what
+            // was filed from them is offered for removal. Nothing of the later events is touched.
+            if state.ingested[id] == "retracting" {
+                let before = chain.filter { (clocks[$0] ?? "") < clock }
+                let done = retract(chain: before, retraction: id, state: &state, binders: binders, commands: commands, now: now)
+                state.ingested[id] = done ? "retracted" : "retracting"
+                journal([("event", .string(id)), ("stage", .str(done ? "retracted" : "retract_failed"))])
+                return
+            }
             state.ingested[id] = "stale_revision"
             journal([("event", .string(id)), ("stage", .str("stale_revision"))])
             return
@@ -235,7 +289,12 @@ extension CaptureInbox {
                 journal([("event", .string(id)), ("stage", .str("card_failed")), ("code", .string("\(type(of: error))"))])
                 return
             }
-            withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, deviceID: commands.deviceID, now: now)
+            // What waits from the earlier words must go; when some of it cannot (its binder is read-only now), the stage stays
+            // "ingested" and the next sweep tries again: the cards this correction made are found again, never made twice.
+            guard withdraw(chain: chain, reason: "replaced by a corrected note", state: &state, binders: binders, deviceID: commands.deviceID, now: now) else {
+                journal([("event", .string(id)), ("stage", .str("withdraw_failed"))])
+                return
+            }
             if let made = corrections {
                 if let (folder, card) = made.first {
                     state.cards[id] = card
@@ -286,9 +345,14 @@ extension CaptureInbox {
     /// The Tier 0 card event `id` got before a crash kept its id from the cursor: one still waiting, unfiled or in a
     /// binder, or one the person already approved or rejected; nil when there is none.
     func orphanCard(_ id: String, binders: [ShelfRow], deviceID: String) -> (String, URL?)? {
+        // Only a card of this event's own words: made from it alone, and not one that only redacts or removes (a raise
+        // or a retraction of its chain names every event of the chain).
+        func own(_ p: Proposal) -> Bool {
+            p.raw["provenance"]?["events"] == .array([.string(id)]) && !Self.onlyRedacts(p) && p.raw["provenance"]?["retraction"] == nil
+        }
         let (waitingUnfiled, waitingFiled) = pendingCards(chain: [id], binders: binders, deviceID: deviceID)
-        if let p = waitingUnfiled.first { return (p.id, nil) }
-        if let (folder, p) = waitingFiled.first ?? actedOnCard(id, binders: binders, deviceID: deviceID) { return (p.id, folder) }
+        if let p = waitingUnfiled.first(where: own) { return (p.id, nil) }
+        if let (folder, p) = waitingFiled.first(where: { own($0.1) }) ?? actedOnCard(id, binders: binders, deviceID: deviceID) { return (p.id, folder) }
         return nil
     }
 

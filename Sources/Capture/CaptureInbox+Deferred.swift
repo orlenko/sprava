@@ -36,23 +36,74 @@ extension CaptureInbox {
         }
     }
 
-    /// Whether `folder` has capture work it missed while away. The approval of any card in it waits for `settle`.
-    public func hasDeferredWork(in folder: URL) -> Bool {
-        loadState().deferred?[folder.standardizedFileURL.path]?.isEmpty == false
+    /// Records that every binder this Mac writes still owes `event`'s chain its work, when part of it failed there (a
+    /// withdrawal that could not be written): it is finished like work a binder missed while away.
+    func owe(_ event: String, binders: [ShelfRow], commands: Commands, state: inout State) {
+        for row in binders where row.teka.isAdopted && Owner.device(of: row.folder) == commands.deviceID {
+            let path = row.folder.standardizedFileURL.path
+            var ids = state.deferred?[path] ?? []
+            if !ids.contains(event) { ids.append(event) }
+            state.deferred = (state.deferred ?? [:]).merging([path: ids]) { $1 }
+        }
     }
 
-    /// Finishes the capture work `folder` missed while away. Call it before approving a card in that binder: false
-    /// means some of it is still left (the binder cannot be written, or the cursor cannot be read or saved), and the
-    /// approval must wait, since an old card there may still add what a chain made private or retracted.
+    /// What the inbox still owes a binder before anything in it may be approved, all read from the cursor: a raise to
+    /// private not yet written everywhere (it may cover any binder), work the binder missed while away, and a
+    /// retraction left part done (its removal card redacts first when the chain is private).
+    enum Obligation: Equatable {
+        case raise(event: String, chain: [String])
+        case missed(event: String)
+        case retraction(event: String, chain: [String])
+    }
+
+    func obligations(in folder: URL, state: State) -> [Obligation] {
+        let path = folder.standardizedFileURL.path
+        let raises = (state.raises ?? [:]).sorted { $0.key < $1.key }.map { Obligation.raise(event: $0.key, chain: $0.value) }
+        let missed = (state.deferred?[path] ?? []).map { Obligation.missed(event: $0) }
+        // A retraction's part is the events before it; a later restore's cards are never its to withdraw.
+        let clocks = state.clocks ?? [:]
+        let retractions = state.ingested.filter { $0.value == "retracting" }.keys.sorted().map { id in
+            Obligation.retraction(event: id, chain: (state.chainsByKey?.values.first { $0.contains(id) } ?? []).filter {
+                $0 != id && (clocks[$0] ?? "") < (clocks[id] ?? "")
+            })
+        }
+        return raises + missed + retractions
+    }
+
+    /// Whether the inbox still owes `folder` anything (`obligations`). The approval of any card in it waits for
+    /// `settle`.
+    public func hasDeferredWork(in folder: URL) -> Bool {
+        !obligations(in: folder, state: loadState()).isEmpty
+    }
+
+    /// Finishes everything the inbox owes `folder` (`obligations`): raises to private, work it missed while away, and
+    /// retractions left part done. Call it before approving a card in that binder, and read the card again after it:
+    /// false means some of it is still left (the binder cannot be written, or the cursor cannot be read or saved), and
+    /// the approval must wait, since an old card there may still add what a chain made private or retracted.
     public func settle(binder folder: URL, commands: Commands, now: Date = Date()) -> Bool {
         guard var state = try? readState() else { return false }
         let path = folder.standardizedFileURL.path
-        guard state.deferred?[path]?.isEmpty == false else { return true }
-        let row = ShelfRow(folder: URL(fileURLWithPath: path, isDirectory: true), source: .picked, archived: false,
-                           teka: Teka.read(URL(fileURLWithPath: path, isDirectory: true)))
+        let owed = obligations(in: folder, state: state)
+        guard !owed.isEmpty else { return true }
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        let row = ShelfRow(folder: url, source: .picked, archived: false, teka: Teka.read(url))
+        // A binder this Mac cannot write now cannot have its cards made private: nothing in it is approved meanwhile.
+        guard row.teka.isAdopted, Owner.device(of: url) == commands.deviceID else { return false }
+        var complete = true
+        for obligation in owed {
+            switch obligation {
+            case .raise(_, let chain):
+                // Done here; the raise stays pending for the sweep until every binder and the Inbox have it.
+                if !raisePrivacy(chain: chain, binders: [row], commands: commands, now: now) { complete = false }
+            case .missed:
+                break
+            case .retraction(let event, let chain):
+                if !retract(chain: chain, retraction: event, state: &state, binders: [row], commands: commands, now: now) { complete = false }
+            }
+        }
         settleDeferred([row], state: &state, commands: commands, now: now)
         guard (try? save(state)) != nil else { return false }
-        return state.deferred?[path]?.isEmpty != false
+        return complete && state.deferred?[path]?.isEmpty != false
     }
 
     /// Finishes the deferred work of every binder in `binders` that is reachable again.
