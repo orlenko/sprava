@@ -219,6 +219,38 @@ export async function writeOnce(store: Store, key: string, body: Uint8Array): Pr
 export const TOMBSTONES = 'tombstones/';
 export const tombstoneOf = (key: string): string => `${TOMBSTONES}${key}`;
 
+/**
+ * Floors: `floors/{scope}/{n}`, empty, with n in 16 digits. Every name of the scope numbered below the highest floor
+ * counts as deleted, so one small object stands for every tombstone, intent and copy below it, which can then be
+ * deleted: bookkeeping stays bounded by live data (invariant 6). A floor is written durably before anything it
+ * covers is deleted, and lower floors are deleted after it; a late write of a lower floor changes nothing.
+ */
+export const FLOORS = 'floors/';
+const pad16 = (n: number): string => String(n).padStart(16, '0');
+
+export async function readFloor(store: Store, scope: string): Promise<number> {
+    const listed = (await store.list(`${FLOORS}${scope}/`)).map((key) => Number(key.slice(`${FLOORS}${scope}/`.length)));
+    return Math.max(0, ...listed.filter(Number.isSafeInteger));
+}
+
+export async function raiseFloor(store: Store, scope: string, floor: number): Promise<void> {
+    const mine = `${FLOORS}${scope}/${pad16(floor)}`;
+    await store.put(mine, new Uint8Array());
+    for (const key of await store.list(`${FLOORS}${scope}/`)) if (key !== mine) await store.delete(key);
+}
+
+/** Deletes a name whose late writes something else already refuses (a floor, a tombstone, a marker), with its intents. */
+export async function forget(store: Store, key: string): Promise<void> {
+    await store.delete(key);
+    for (const intent of await store.list(intentsOf(key))) await store.delete(intent);
+}
+
+/** The same for everything under a prefix, intents left without their object included. */
+export async function forgetAll(store: Store, prefix: string): Promise<void> {
+    await deleteAll(store, prefix);
+    await deleteAll(store, `${INTENTS}${prefix}`);
+}
+
 /** Deletes a name for good: its tombstone, durable, then the object. Repeating it is harmless. */
 export async function deleteForGood(store: Store, key: string): Promise<void> {
     await store.put(tombstoneOf(key), new Uint8Array());

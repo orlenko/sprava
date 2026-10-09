@@ -147,7 +147,7 @@ endpoint is checked against them:
   token refused (401) and shows the relay as needing a reset, a new `SPRAVA_INSTANCE`. Nothing is silently lost.
   The same reset applies if the binding claim's holder never retries: claiming is a one-time setup.
 
-### Every endpoint against the five invariants
+### Every endpoint against the six invariants
 
 Every write-once object below goes through `writeOnce` (`src/store/store.ts`): it is acknowledged only once the
 store confirmed it, a retry that finds it makes it durable first (invariant 2), and its intent fixes its bytes
@@ -168,10 +168,34 @@ adds what is particular to each endpoint.
 | `DELETE /v0/devices/{D}` | `revoked`, then deletions | an empty marker, never deleted | the device's lock |
 | `DELETE /v0/devices/self` | `revocation`, then `revoked` | the marker only once this revocation is the one stored | the device's lock (guard), after the body |
 | `GET /v0/devices/{D}/revocation` | nothing | | |
-| `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its tombstone, then the object | revision names; a deleted name refuses every PUT and a copy brought back is never served or listed; intents stay | the creation lock |
+| `PUT /v0/objects/{name}`, `DELETE` | the object; on deletion its tombstone, then the object, then the prefix's floor | revision names; a deleted name, or one below the floor, refuses every PUT with 410 (409 means other bytes are stored), and a copy brought back is never served or listed, and is deleted when met | the creation lock |
 | `GET /v0/objects...` | nothing | | the device's lock (guard), so no revoked device reads |
 | `POST /v0/requests/{R}` | `ordinals/{D}/{block}`, the request | a block holds one process's lease name; an ordinal is never given twice; 409 only when the stored copy is there and synced | the device's lock (guard), after the body |
-| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
+| `GET /v0/requests/{D}...`, `DELETE` | a deletion: tombstone, copy, then intents; then the device's floor | the intents are the durable record of what is pending, so a missing copy stays listed across restarts; a copy brought back after deletion reads as deleted; the floor `floors/requests/{D}/{ordinal}`, raised to the lowest pending ordinal, covers every name below it, so tombstones below it are deleted and what deletion leaves stays bounded | the device's lock |
+
+### What each kind of object is bounded by (invariant 6)
+
+Live data is what the owner keeps published, the devices it keeps paired, the pairings open now and the
+requests pending. Two kinds of marker are the stated exception: they outlive their device or pairing, one empty
+object each, because a late write could otherwise bring that device or pairing back, and their number grows only
+with pairings the owner itself makes.
+
+| Object | Bound |
+|---|---|
+| `claims/{hash}`, `owner.json` | one each (a second claim fails the start) |
+| `leases/{rank}-{id}` | one per process alive; a ready process deletes every lower one |
+| `devices/{D}/record.json`, `tokens/`, `active`, `last_seen`, `revocation` | per device kept (at most 20 pending and active, plus self-revoked ones until the owner deletes them); deleted, intents included, with the device |
+| `devices/{D}/revoked` (and its intent) | **exception**: one per device id the owner ever removed or abandoned |
+| `pairings/{P}/` parts (and their intents) | per pairing open (at most 3, for 10 minutes); deleted with the pairing |
+| `pairings/{P}/deleted` | **exception**: one per pairing the owner ever made |
+| `objects/{name}` | what the owner keeps published; a late copy of a deleted name is deleted when met, and by the hourly sweep |
+| `tombstones/objects/...`, `intents/objects/...` | per prefix, names above its floor: what is published plus names deleted out of order above the lowest kept; the floor deletes everything below it |
+| `floors/objects/{prefix}` | one per prefix: the index, each binder shown, each device kept (a removed device's go with it) |
+| `requests/{D}/`, `intents/requests/{D}/` | pending requests: at most 1,000 per device |
+| `tombstones/requests/{D}/` | names deleted above the device's floor, at most the requests made since its oldest pending one (120 an hour for at most 30 days) |
+| `floors/requests/{D}/` | one per device |
+| `ordinals/{D}/{block}` (and their intents) | the blocks above the device's floor plus its highest: at most the pending span over 1,024, plus one |
+| folders (local store) | only those holding an object; a folder left empty is removed |
 
 ## Layout
 

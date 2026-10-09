@@ -32,7 +32,15 @@ export const pairingKeys = (p: string) => ({
 });
 
 /** Everything of a device outside `devices/{D}/`: its pending requests, keys and outcomes objects. */
-export const deviceElsewhere = (d: string) => [`requests/${d}/`, `objects/devices/${d}/keys/`, `objects/devices/${d}/outcomes/`];
+export const deviceElsewhere = (d: string) => [
+    `requests/${d}/`,
+    `objects/devices/${d}/`,
+    `tombstones/requests/${d}/`,
+    `tombstones/objects/devices/${d}/`,
+    `floors/requests/${d}/`,
+    `floors/objects/devices/${d}/`,
+    `ordinals/${d}/`,
+];
 
 /**
  * `devices/{D}/record.json`, written once at join. It holds only what every join of the pairing derives alike, so

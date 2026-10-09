@@ -5,15 +5,13 @@ import { HttpError, type Route } from './http.ts';
 import { SlidingWindow } from './limits.ts';
 import type { Devices } from './devices.ts';
 import type { Relay } from './relay.ts';
-import { deleteForGood, intentsOf, isDeleted, writeOnce } from './store/store.ts';
+import { deleteForGood, forget, forgetAll, INTENTS, intentsOf, isDeleted, raiseFloor, readFloor, writeOnce } from './store/store.ts';
 
 const HOUR = 3_600_000;
 const PER_HOUR = 120;
 const MAX_PENDING = 1000;
 export const REQUEST_EXPIRY_MS = 30 * 24 * HOUR;
 const RESERVED = 'ordinals/';
-/** `floors/{D}/{ordinal}`: every request name of the device below the highest such ordinal counts as deleted. */
-const FLOORS = 'floors/';
 const TOMBSTONE = /^tombstones\/requests\/([A-Za-z0-9_-]{22})\/([0-9]{16})-([A-Za-z0-9_-]{22})$/;
 const pad = (n: number): string => String(n).padStart(16, '0');
 const BLOCK = 1024;
@@ -44,11 +42,9 @@ export function requests(relay: Relay, devices: Devices) {
     /** Per device, its floor (§7.6): read once from the bucket, raised only by this process. */
     const floors = new Map<string, number>();
 
+    /** `floors/requests/{D}/{ordinal}` (store.ts): every request name of the device below it counts as deleted. */
     async function floorLocked(d: string): Promise<number> {
-        if (!floors.has(d)) {
-            const listed = (await store.list(`${FLOORS}${d}/`)).map((key) => Number(key.slice(`${FLOORS}${d}/`.length)));
-            floors.set(d, Math.max(0, ...listed.filter(Number.isSafeInteger)));
-        }
+        if (!floors.has(d)) floors.set(d, await readFloor(store, `requests/${d}`));
         return floors.get(d)!;
     }
 
@@ -59,6 +55,8 @@ export function requests(relay: Relay, devices: Devices) {
      */
     async function refreshLocked(d: string): Promise<Map<string, Entry>> {
         if (await devices.revokedLocked(d)) {
+            // A revoked device keeps nothing here: what a late write left after its deletion goes too.
+            for (const prefix of [`requests/${d}/`, `tombstones/requests/${d}/`, `floors/requests/${d}/`, `${RESERVED}${d}/`]) await forgetAll(store, prefix);
             mailboxes.set(d, new Map());
             return mailboxes.get(d)!;
         }
@@ -136,16 +134,22 @@ export function requests(relay: Relay, devices: Devices) {
         if (mailbox === undefined) return;
         const lowest = Math.min(nextOrdinal.get(d) ?? 1, ...[...mailbox.values()].map((e) => e.ordinal));
         if (lowest <= (await floorLocked(d))) return;
-        await store.put(`${FLOORS}${d}/${pad(lowest)}`, new Uint8Array()); // durable before anything it covers goes
+        await raiseFloor(store, `requests/${d}`, lowest); // durable before anything it covers goes
         floors.set(d, lowest);
         for (const key of await store.list(`tombstones/requests/${d}/`)) {
             const match = TOMBSTONE.exec(key);
             if (match !== null && Number(match[2]) < lowest) await store.delete(key);
         }
-        for (const key of await store.list(`${FLOORS}${d}/`)) if (key !== `${FLOORS}${d}/${pad(lowest)}`) await store.delete(key);
         const blocks = await store.list(`${RESERVED}${d}/`);
         for (const key of blocks.slice(0, -1)) {
-            if ((Number(key.slice(`${RESERVED}${d}/`.length)) + 1) * BLOCK <= lowest) await store.delete(key);
+            if ((Number(key.slice(`${RESERVED}${d}/`.length)) + 1) * BLOCK <= lowest) await forget(store, key);
+        }
+        // Reservation intents whose reservation is gone (a forget cut short) go too.
+        for (const intent of await store.list(`${INTENTS}${RESERVED}${d}/`)) {
+            const block = intent.slice(`${INTENTS}${RESERVED}${d}/`.length).split('/')[0]!;
+            if (!blocks.includes(`${RESERVED}${d}/${block}`) || (Number(block) + 1) * BLOCK <= lowest) {
+                if (blocks.at(-1) !== `${RESERVED}${d}/${block}`) await store.delete(intent);
+            }
         }
     }
 

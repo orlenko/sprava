@@ -4,11 +4,11 @@ import { after, test } from 'node:test';
 import { newId } from '../src/encoding.ts';
 import { deviceKeys } from '../src/layout.ts';
 import { S3Store } from '../src/store/s3.ts';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FsStore } from '../src/store/fs.ts';
-import { scoped } from '../src/store/store.ts';
+import { Mutex, scoped, writeOnce } from '../src/store/store.ts';
 import { bearer, freshStore, INSTANCE, seedDevice, seedOwner, slowRequest, startTestRelay, type Seeded } from './harness.ts';
 import { S3_CREDENTIALS, startS3Stub, type S3Stub } from './s3-stub.ts';
 
@@ -206,7 +206,7 @@ test('a deleted object name is dead: a later PUT is 409, and a copy a late write
         fetch(t.url + path, { method, headers: bearer(token), ...(body ? { body } : {}) });
     assert.equal((await call('PUT', '/v0/objects/index/1', owner, new Uint8Array([1]))).status, 204);
     assert.equal((await call('DELETE', '/v0/objects/index/1', owner)).status, 204);
-    assert.equal((await call('PUT', '/v0/objects/index/1', owner, new Uint8Array([1]))).status, 409);
+    assert.equal((await call('PUT', '/v0/objects/index/1', owner, new Uint8Array([1]))).status, 410, 'gone, not other bytes');
     await store.put('objects/index/1', new Uint8Array([1])); // a late write lands
     assert.equal((await call('GET', '/v0/objects/index/1', device.token)).status, 404);
     assert.deepEqual(((await (await call('GET', '/v0/objects?prefix=index/', owner)).json()) as { names: string[] }).names, []);
@@ -250,10 +250,10 @@ test('what deletion leaves is bounded: drained requests leave no tombstones behi
         await drain();
     }
     assert.deepEqual(await store.list(`tombstones/requests/${device.id}/`), [], 'the floor covers every drained name');
-    assert.equal((await store.list(`floors/${device.id}/`)).length, 1);
+    assert.equal((await store.list(`floors/requests/${device.id}/`)).length, 1);
     assert.deepEqual(await store.list(`intents/requests/${device.id}/`), []);
     // A late copy below the floor counts as deleted, and is never listed again.
-    const [floorKey] = await store.list(`floors/${device.id}/`);
+    const [floorKey] = await store.list(`floors/requests/${device.id}/`);
     const below = Number(floorKey!.split('/').at(-1)) - 1;
     await store.put(`requests/${device.id}/${String(below).padStart(16, '0')}-${newId()}`, new Uint8Array([9]));
     const { requests } = (await (await fetch(`${t.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: unknown[] };
@@ -277,4 +277,65 @@ test('a mailbox whose copies are all missing is found at start, and deleting fro
     const { requests } = (await (await fetch(`${second.url}/v0/requests/${device.id}`, { headers: bearer(owner) })).json()) as { requests: { request_id: string }[] };
     assert.deepEqual(requests.map((x) => x.request_id), [b]);
     await second.close();
+});
+
+test('reservations and their intents are bounded: blocks the floor covers go, intents with them (§7.6)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const lock = new Mutex();
+    for (const block of [0, 1, 2]) {
+        await lock.run(() => writeOnce(store, `ordinals/${device.id}/${String(block).padStart(16, '0')}`, Buffer.from('an earlier process')));
+    }
+    const t = await startTestRelay({ raw });
+    for (let i = 0; i < 3; i++) {
+        const r = newId();
+        assert.equal((await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) })).status, 201);
+        assert.equal((await fetch(`${t.url}/v0/requests/${device.id}/${r}`, { method: 'DELETE', headers: bearer(owner) })).status, 204);
+    }
+    assert.deepEqual(await store.list(`ordinals/${device.id}/`), [`ordinals/${device.id}/${String(3).padStart(16, '0')}`]);
+    const intents = await store.list(`intents/ordinals/${device.id}/`);
+    assert.equal(intents.length, 1, 'only the kept block has its intent');
+    assert.ok(intents[0]!.startsWith(`intents/ordinals/${device.id}/${String(3).padStart(16, '0')}/`));
+    await t.close();
+});
+
+test('on disk, retired requests leave no folders behind (§7.8)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sprava-relay-'));
+    const raw = new FsStore(root);
+    const store = scoped(raw, INSTANCE);
+    const owner = await seedOwner(store);
+    const device = await seedDevice(store, { active: true });
+    const t = await startTestRelay({ raw });
+    for (let i = 0; i < 10; i++) {
+        const r = newId();
+        await fetch(`${t.url}/v0/requests/${r}`, { method: 'POST', body: new Uint8Array([1]), headers: bearer(device.token) });
+        await fetch(`${t.url}/v0/requests/${device.id}/${r}`, { method: 'DELETE', headers: bearer(owner) });
+    }
+    const instance = join(root, INSTANCE);
+    const top = await readdir(instance);
+    assert.ok(!top.includes('requests') && !top.includes('tombstones'), top.join());
+    assert.ok(!(await readdir(join(instance, 'intents'))).includes('requests'), 'no folder per request under intents');
+    await t.close();
+});
+
+test('a late copy of a deleted object is deleted when met, and the floor covers what is below the lowest kept (§7.5)', async () => {
+    const { raw, store } = await freshStore();
+    const owner = await seedOwner(store);
+    const t = await startTestRelay({ raw });
+    const call = (method: string, path: string, body?: Uint8Array) => fetch(t.url + path, { method, headers: bearer(owner), ...(body ? { body } : {}) });
+    for (const r of [1, 2, 3]) assert.equal((await call('PUT', `/v0/objects/index/${r}`, new Uint8Array([r]))).status, 204);
+    assert.equal((await call('DELETE', '/v0/objects/index/1')).status, 204);
+    assert.equal((await call('DELETE', '/v0/objects/index/3')).status, 204, 'out of order: its tombstone stays above the floor');
+    assert.deepEqual(await store.list('tombstones/objects/index/'), ['tombstones/objects/index/3'], 'the floor (2) covers 1');
+    assert.deepEqual(await store.list('intents/objects/index/1/'), []);
+    assert.equal((await call('PUT', '/v0/objects/index/1', new Uint8Array([1]))).status, 410, 'below the floor: gone');
+    assert.equal((await call('PUT', '/v0/objects/index/3', new Uint8Array([3]))).status, 410, 'tombstoned above it: gone');
+    assert.equal((await call('PUT', '/v0/objects/index/2', new Uint8Array([9]))).status, 409, 'other bytes than stored');
+    await store.put('objects/index/1', new Uint8Array([1])); // late copies land
+    await store.put('objects/index/3', new Uint8Array([3]));
+    assert.deepEqual(((await (await call('GET', '/v0/objects?prefix=index/')).json()) as { names: string[] }).names, ['index/2']);
+    assert.equal(await store.has('objects/index/1'), false, 'met, and deleted');
+    assert.equal(await store.has('objects/index/3'), false);
+    await t.close();
 });
