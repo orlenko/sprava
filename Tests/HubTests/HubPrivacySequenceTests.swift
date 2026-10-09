@@ -22,9 +22,10 @@ import Testing
         return root
     }
 
-    func item(_ n: Int) -> String {
+    func item(_ n: Int, redact: Bool = false) -> String {
         #"{"id":"a-\#(n)","title":"Invented task \#(n)","status":"open","priority":"normal","due":"2026-11-0\#(n)","#
-            + #""tags":["invented-tag-\#(n)"],"waiting_on":"Invented Party \#(n)","link":"docs/invented-file-\#(n).pdf"}"#
+            + #""tags":["invented-tag-\#(n)"],"waiting_on":"Invented Party \#(n)","link":"docs/invented-file-\#(n).pdf""#
+            + (redact ? #","redact":true}"# : "}")
     }
 
     func cat(_ f: URL) throws -> JSONObject {
@@ -35,11 +36,13 @@ import Testing
         try Data(JSONWriter.pretty(.object(c)).utf8).write(to: f.appendingPathComponent("catalog.json"))
     }
 
-    /// An adopted binder `tax` with `count` open items, published once to a spool with an inbox and an outbox.
-    func adoptedTax(_ root: URL, count: Int = 3) throws -> (URL, URL) {
+    /// An adopted binder `tax` with `count` open items (those in `redacted` redacted at adoption), published once to a
+    /// spool with an inbox and an outbox unless `publish` is false.
+    func adoptedTax(_ root: URL, count: Int = 3, redacted: Set<Int> = [], publish: Bool = true) throws -> (URL, URL) {
         let f = root.appendingPathComponent("tax", isDirectory: true)
         try FileManager.default.createDirectory(at: f, withIntermediateDirectories: true)
-        let text = #"{"meta":{"schema_version":2,"name":"tax"},"documents":[],"open_items":[\#((1...count).map(item).joined(separator: ","))],"processing_log":[]}"#
+        let items = (1...count).map { item($0, redact: redacted.contains($0)) }.joined(separator: ",")
+        let text = #"{"meta":{"schema_version":2,"name":"tax"},"documents":[],"open_items":[\#(items)],"processing_log":[]}"#
         try Data(text.utf8).write(to: f.appendingPathComponent("catalog.json"))
         try TekaStore(folder: f).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
         let s = root.appendingPathComponent("spool")
@@ -48,6 +51,7 @@ import Testing
             chmod(s.appendingPathComponent(sub).path, 0o700)
         }
         chmod(s.path, 0o700)
+        guard publish else { return (f, s) }
         guard case .published = try HubLane.publish(f, root: s, now: now) else { throw TekaStore.Refused(reason: "first publish failed") }
         return (f, s)
     }
@@ -181,6 +185,47 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: outbox.path))
     }
 
+    // Round 2, MUST-FIX 1. Before a binder's first publication the hub has seen none of its tags; a tag an outside
+    // edit gave a redacted item then is still held until the person allows it, whether a write of Sprava's recorded
+    // the outside edit or not. The baseline is the privacy ratchet's (adoption, or an op), never "nothing seen yet".
+    @Test(arguments: [false, true])
+    func anOutsideTagBeforeTheFirstPublicationIsHeld(recorded: Bool) throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root, count: 2, redacted: [1], publish: false)
+        try editOutside(f, "a-1") { $0.set("tags", .array([.str("invented-tag-1"), .str("invented-outside-tag")])) }
+        if recorded { try userOp(f, "update_item", args(("id", .str("a-2")), ("set", .obj([("priority", .str("high"))])))) }
+        _ = try? HubLane.publish(f, root: s, now: now)
+        if FileManager.default.fileExists(atPath: sliceURL(s).path) {
+            #expect(!String(decoding: try Data(contentsOf: sliceURL(s)), as: UTF8.self).contains("invented-outside-tag"))
+        }
+
+        // Once the person allows it, the tag is published.
+        let id = try #require(try PrivacyRatchet.ensureCard(folder: f, now: now))
+        let card = try ProposalStore.load(id, in: f, expectedDigest: nil)
+        try TekaStore(folder: f).approve(card, now: now)
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { Issue.record("publish failed"); return }
+        let redacted = try slice(s)["items"]?.arrayValue?.first { $0["title"] == .str("[redacted]") }
+        #expect(redacted?["tags"] == .array([.str("invented-tag-1"), .str("invented-outside-tag")]))
+    }
+
+    // An item an outside edit added, which no write of Sprava's has recorded yet, has no baseline in the ratchet: the
+    // tags the hub saw for it still limit it once an outside edit redacts it and adds one.
+    @Test func anUnrecordedItemKeepsTheTagsTheHubSaw() throws {
+        let root = try scratch()
+        let (f, s) = try adoptedTax(root, count: 2)
+        var c = try cat(f)
+        c.set("open_items", .array((c["open_items"]?.arrayValue ?? []) + [try JSONParser.parse(Data(item(3).utf8)).value]))
+        try write(c, f)
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { Issue.record("publish failed"); return }
+        try editOutside(f, "a-3") {
+            $0.set("redact", .bool(true))
+            $0.set("tags", .array([.str("invented-tag-3"), .str("invented-late-tag")]))
+        }
+        guard case .published = try HubLane.publish(f, root: s, now: now) else { Issue.record("publish failed"); return }
+        let redacted = try slice(s)["items"]?.arrayValue?.first { $0["title"] == .str("[redacted]") }
+        #expect(redacted?["tags"] == .array([.str("invented-tag-3")]))
+    }
+
     // MARK: - Random sequences
 
     struct SplitMix: RandomNumberGenerator {
@@ -261,14 +306,18 @@ import Testing
         return nil
     }
 
-    func run(seed: UInt64, steps: Int) throws {
+    /// `outsideFirst`: items redacted at adoption at random, and outside edits the hub never saw (a tag added, a
+    /// redaction) before the first publication, which is checked like any other.
+    func run(seed: UInt64, steps: Int, outsideFirst: Bool = false) throws {
         var rng = SplitMix(state: seed)
         let root = try scratch()
-        let (f, s) = try adoptedTax(root, count: 2)
+        let redactedAtAdoption = outsideFirst ? Set((1...2).filter { _ in Bool.random(using: &rng) }) : []
+        let (f, s) = try adoptedTax(root, count: 2, redacted: redactedAtAdoption, publish: !outsideFirst)
         var m = Model()
         for n in 1...2 { m.tags["a-\(n)"] = [.str("invented-tag-\(n)")] }
+        for n in redactedAtAdoption { m.redacted["a-\(n)"] = true }
         var openIDs = ["a-1", "a-2"]
-        var trail: [String] = []
+        var trail: [String] = ["adopted, redacted \(redactedAtAdoption.sorted())"]
 
         func observe() throws {
             // A publish that worked: what it showed redacted stands, and the hub saw its tags.
@@ -282,6 +331,38 @@ import Testing
                     m.tags[k, default: []].formUnion(shown["tags"]?.arrayValue ?? [])
                 }
             }
+        }
+
+        /// Publishes and checks the invariant; false when it broke.
+        func publishAndCheck(_ step: Int) throws -> Bool {
+            let result = try? HubLane.publish(f, root: s, now: now)
+            trail.append("publish -> \(result.map { "\($0)" } ?? "failed")")
+            if let why = try violation(f, s, m) {
+                Issue.record("seed \(seed), step \(step): \(why)\n\(trail.joined(separator: "\n"))")
+                return false
+            }
+            switch result {
+            case .published?, .unchanged?: try observe()
+            default: break
+            }
+            return true
+        }
+
+        if outsideFirst {
+            for k in openIDs {
+                if Bool.random(using: &rng) {
+                    trail.append("before the first publication: outside tag \(k)")
+                    try editOutside(f, k) {
+                        let tags = ($0["tags"]?.arrayValue ?? []) + [.str("invented-early-tag")]
+                        $0.set("tags", .array(tags))
+                    }
+                }
+                if Bool.random(using: &rng) {
+                    trail.append("before the first publication: outside redact \(k)")
+                    try editOutside(f, k) { $0.set("redact", .bool(true)) }
+                }
+            }
+            guard try publishAndCheck(-1) else { return }
         }
 
         for step in 0..<steps {
@@ -351,16 +432,7 @@ import Testing
                     openIDs.removeAll { $0 == k }
                 }
             default:
-                let result = try? HubLane.publish(f, root: s, now: now)
-                trail.append("publish -> \(result.map { "\($0)" } ?? "failed")")
-                if let why = try violation(f, s, m) {
-                    Issue.record("seed \(seed), step \(step): \(why)\n\(trail.joined(separator: "\n"))")
-                    return
-                }
-                switch result {
-                case .published?, .unchanged?: try observe()
-                default: break
-                }
+                guard try publishAndCheck(step) else { return }
             }
         }
     }
@@ -370,5 +442,11 @@ import Testing
     @Test(arguments: [UInt64(35), 1, 2, 10])
     func randomSequencesNeverShowMoreThanConfirmed(seed: UInt64) throws {
         try run(seed: seed, steps: 80)
+    }
+
+    // Round 2, MUST-FIX 1: sequences that start with outside edits the hub never saw, before the first publication.
+    @Test(arguments: [UInt64(3), 4, 5, 6, 7, 8, 9, 11])
+    func randomSequencesFromOutsideEditsBeforeTheFirstPublication(seed: UInt64) throws {
+        try run(seed: seed, steps: 80, outsideFirst: true)
     }
 }
