@@ -28,10 +28,12 @@ public enum Undo {
             catalog["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
         }
         // The item's `derived` with the names of `fields` as they were before the target and every other name as it
-        // is now, so a field confirmed since is never marked inferred again.
+        // is now, so a field confirmed since is never marked inferred again. The earlier order comes first, so an undo
+        // with nothing changed since gives back the very same array.
         func derivedRestored(_ id: JSONValue, before: JSONObject, fields: [String]) -> [JSONValue] {
             func names(_ o: JSONObject?) -> [String] { o?["derived"]?.arrayValue?.compactMap(\.stringValue) ?? [] }
-            let kept = names(currentItem(id)).filter { !fields.contains($0) } + names(before).filter { fields.contains($0) }
+            let now = names(currentItem(id)), was = names(before)
+            let kept = was.filter { fields.contains($0) || now.contains($0) } + now.filter { !fields.contains($0) && !was.contains($0) }
             return kept.map(JSONValue.string)
         }
         func unchangedSince(_ id: JSONValue, _ fields: [String]) throws {
@@ -88,52 +90,82 @@ public enum Undo {
             return ("set_status", a)
 
         case "dismiss", "undismiss":
-            guard let id = args["id"] else { throw Unsupported(message: "no item id") }
-            return (target["op"]?.stringValue == "dismiss" ? "undismiss" : "dismiss", JSONObject([(key: "id", value: id)]))
+            guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
+            // A dismiss of a hidden item (or an undismiss of a shown one) changed nothing; its opposite would.
+            let dismiss = target["op"]?.stringValue == "dismiss"
+            if (before["dismissed"] == .bool(true)) == dismiss {
+                throw Unsupported(message: "the item was already \(dismiss ? "hidden" : "shown"), so there is nothing to undo")
+            }
+            try unchangedSince(id, ["dismissed"])
+            return (dismiss ? "undismiss" : "dismiss", JSONObject([(key: "id", value: id)]))
 
         case "complete" where args["next_due"] != nil:
-            // Without `occurrence_due` the applier recorded the item's due date as it was then, so undo restores that.
-            guard let id = args["id"], let due = args["occurrence_due"] ?? itemBefore(id)?["due"] else {
-                throw Unsupported(message: "no occurrence")
+            // The due date the item had just before this completion is set back, with its `derived` flag as it was: a
+            // date the clerk inferred stays marked inferred (binder-v0 §6.10).
+            guard let id = args["id"], let before = itemBefore(id), let due = before["due"] else {
+                throw Unsupported(message: "the item's due date before this occurrence is unknown")
             }
             // A later completion advanced the series again; setting this occurrence back would erase that one too.
             try unchangedSince(id, ["due"])
-            return ("update_item", JSONObject([(key: "id", value: id), (key: "set", value: .obj([("due", due)]))]))
+            var set = JSONObject([(key: "due", value: due)])
+            let derived = derivedRestored(id, before: before, fields: ["due"])
+            if !derived.isEmpty || currentItem(id)?["derived"] != nil { set.set("derived", .array(derived)) }
+            return ("update_item", JSONObject([(key: "id", value: id), (key: "set", value: .object(set))]))
 
         case "complete", "drop":
-            // Reopen under a new id: the title and kind from the closure entry, the rest from its `final`. A dismissed
-            // item stays dismissed: `TekaStore.undo` follows the reopen with a `dismiss` in the same batch.
-            guard let closedID = args["id"], let entry = closureEntry(target, catalog: catalog)
-            else { throw Unsupported(message: "the closure entry is not in the processing log") }
+            // Reopen under a new id with every field the item had when it was closed (binder-v0 §6.10). A dismissed item
+            // stays dismissed: `TekaStore.undo` follows the reopen with a `dismiss` in the same batch. A field this version
+            // cannot write back with the same meaning refuses the undo, so it never reports success with a changed item.
+            guard let closedID = args["id"] else { throw Unsupported(message: "no item id") }
+            let source = try closedItem(target, catalog: catalog, stateBefore: stateBefore)
             // This version never writes `recurrence` (the guard refuses it), and reopening without it would quietly turn
-            // a series into a one-off: the undo is refused instead.
-            if let recurrence = entry["final"]?["recurrence"], recurrence != .null {
+            // a series into a one-off.
+            if let recurrence = source["recurrence"], recurrence != .null {
                 throw Unsupported(message: "this item repeated, and this version cannot reopen a repeating item; add it again instead")
             }
             var item = JSONObject()
             item.set("id", .string(try IDMint.next(catalog: catalog, opLog: opLog, year: year)))
-            item.set("title", entry["title"] ?? .str(""))
-            if let kind = entry["kind"] { item.set("kind", kind) }
-            // Nulls are dropped and compact or week dates written out, so the reopened item meets the v0 rules.
-            let final = entry["final"]?.objectValue ?? JSONObject()
-            for e in final.entries
-            where !["provenance", "created_at", "updated_at", "derived", "dismissed", "recurrence"].contains(e.key) && e.value != .null {
-                if ["due", "follow_up_at", "expected_by"].contains(e.key), case .string(let text) = e.value {
-                    guard let date = CalendarDate.strict(text) ?? CalendarDate.lenient(text) else { continue }
+            item.set("title", source["title"] ?? .str(""))
+            if let kind = source["kind"] { item.set("kind", kind) }
+            // Nulls are dropped, since null means absent. A compact or week date is written out and marked inferred, as
+            // adoption does (binder-v0 §9.4 step 3); a date that cannot be read refuses the undo.
+            var rewritten: [String] = []
+            for e in source.entries
+            where !["id", "title", "kind", "provenance", "created_at", "updated_at", "derived", "dismissed", "recurrence"].contains(e.key)
+                && e.value != .null {
+                if ["due", "follow_up_at", "expected_by"].contains(e.key) {
+                    guard case .string(let text) = e.value, let date = CalendarDate.strict(text) ?? CalendarDate.lenient(text) else {
+                        throw Unsupported(message: "its saved \(e.key) is not a date this version can read; add it again with its date")
+                    }
+                    if CalendarDate.strict(text) == nil { rewritten.append(e.key) }
                     item.set(e.key, .string(date.description))
                 } else {
                     item.set(e.key, e.value)
                 }
             }
-            if item["due"] == nil { item.set("no_deadline", .bool(true)) } else { item.remove("no_deadline") }
+            // Without a due date and without `no_deadline` the deadline was unknown; reopening must not make it "none".
+            let noDeadline = item["no_deadline"] == .bool(true)
+            if item["due"] == nil, !noDeadline {
+                throw Unsupported(message: "it had no due date and was not marked as having none; add it again with its date")
+            }
+            if item["due"] != nil, noDeadline {
+                throw Unsupported(message: "it had both a due date and no_deadline; add it again with the one that holds")
+            }
+            if item["due"] != nil { item.remove("no_deadline") }
+            if item["priority"] == nil {
+                throw Unsupported(message: "it had no priority, and this version will not choose one; add it again instead")
+            }
+            // Reopening is what undoing a closure means: a status of done (an item closed at adoption) becomes open, and a
+            // missing status already reads as open (binder-v0 §5.2).
             if item["status"] == nil || item["status"] == .str("done") { item.set("status", .str("open")) }
-            if item["priority"] == nil { item.set("priority", .str("normal")) }
             item.set("created_at", .string(at))
             item.set("updated_at", .string(at))
-            // Fields still inferred stay marked so, and the original provenance is kept, with the closed id added.
-            let derived = final["derived"]?.arrayValue?.filter { $0.stringValue.map { item[$0] != nil } ?? false } ?? []
+            // Fields still inferred stay marked so, a date written out is marked too, and the original provenance is
+            // kept, with the closed id added.
+            var derived = source["derived"]?.arrayValue?.filter { $0.stringValue.map { item[$0] != nil } ?? false } ?? []
+            for name in rewritten where !derived.contains(.string(name)) { derived.append(.string(name)) }
             if !derived.isEmpty { item.set("derived", .array(derived)) }
-            var provenance = final["provenance"]?.objectValue ?? JSONObject()
+            var provenance = source["provenance"]?.objectValue ?? JSONObject()
             provenance.set("reopened_from", closedID)
             if provenance["approved_by"] == nil { provenance.set("approved_by", .str("user")) }
             item.set("provenance", .object(provenance))
@@ -142,6 +174,22 @@ public enum Undo {
         case let other:
             throw Unsupported(message: "\(other ?? "this op") records a fact and cannot be undone")
         }
+    }
+
+    /// The item `target` closed, as it was then: the closure entry's `final` with the entry's title and kind, or, for
+    /// an entry without `final` (an outside edit removed it), the replayed item just before the closing op (binder-v0
+    /// §6.10). Throws when neither is there, so the person fills the item in again rather than get one of defaults.
+    static func closedItem(_ target: JSONObject, catalog: JSONObject, stateBefore: JSONObject) throws -> JSONObject {
+        guard let closedID = target["args"]?["id"], let entry = closureEntry(target, catalog: catalog) else {
+            throw Unsupported(message: "the closure entry is not in the processing log")
+        }
+        if case .object(var final)? = entry["final"] {
+            final.set("title", entry["title"] ?? .str(""))
+            if let kind = entry["kind"] { final.set("kind", kind) } else { final.remove("kind") }
+            return final
+        }
+        if let was = stateBefore["open_items"]?.arrayValue?.first(where: { $0["id"] == closedID })?.objectValue { return was }
+        throw Unsupported(message: "the item's fields before it was closed are not recorded; add it again instead")
     }
 
     /// The processing log entry the closure `target` wrote; nil when it is not there.
@@ -179,7 +227,7 @@ extension TekaStore {
             // An item hidden when it was closed comes back hidden: never shown on the dashboard or published (binder-v0
             // §5.7) only because its closure was undone.
             if op == "reopen", let newID = args["item"]?["id"],
-               Undo.closureEntry(log[index], catalog: catalog)?["final"]?["dismissed"] == .bool(true) {
+               (try? Undo.closedItem(log[index], catalog: catalog, stateBefore: before))?["dismissed"] == .bool(true) {
                 bodies.append(.init(op: "dismiss", args: JSONObject([(key: "id", value: newID)]), actor: actor,
                                     extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
             }
