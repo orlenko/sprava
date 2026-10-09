@@ -121,9 +121,10 @@ extension TekaStore {
         let lostOps: [JSONObject]
         if appended.isEmpty, reverted || ambiguous {
             lostOps = trailing
-        } else if appended.isEmpty, let (before, since) = Self.sincePreviousExternalEdit(log) {
+        } else if let (before, since) = Self.sincePreviousExternalEdit(effectiveLog) {
             // Every approved op since the previous external edit, not only the last batch: a copy saved from before
-            // several approvals undoes them all (architecture 4.5).
+            // several approvals undoes them all (architecture 4.5). A write just aborted is left out, through its
+            // abort in the effective log; the approvals before it are still checked.
             lostOps = Self.lostOps(found: catalog, expected: expected, before: before, ops: since)
         } else {
             lostOps = []
@@ -187,32 +188,36 @@ extension TekaStore {
 
     /// "Apply again" for ops another program overwrote: the same ops as new ops by the user. An added item or a
     /// filed document gets a placeholder, because its old id was used once and is never reused; later ops that named
-    /// it name the placeholder. A filing is recorded where the file already is, without `from`. When any lost op
-    /// cannot be rebuilt, the card lists them all and asks for a repair by hand; it is never a part of the batch
-    /// (binder-v0 §6.7 step 6).
+    /// it name the placeholder. A filing is recorded where the file already is, without `from`. A reopening reopens
+    /// as a new item again. Settings and log entries are written again as they were; a privacy level, a rename or a
+    /// migration is not (those go through their own cards). When any lost op cannot be rebuilt, the card lists them
+    /// all and asks for a repair by hand; it is never a part of the batch (binder-v0 §6.7 step 6).
     package static func reapplyCard(_ ops: [JSONObject], client: String, now: Date) -> Proposal? {
         var n = 0
         var renamed: [JSONValue: JSONValue] = [:]
         var rebuilt = true
+        func fresh(_ key: String, in args: inout JSONObject) {
+            guard var record = args[key]?.objectValue else { return }
+            n += 1
+            if let old = record["id"] { renamed[old] = .string("$new:\(n)") }
+            record.set("id", .string("$new:\(n)"))
+            args.set(key, .object(record))
+        }
         let bodies: [JSONObject] = ops.compactMap { op in
             guard let type = op["op"]?.stringValue, var args = op["args"]?.objectValue else { return nil }
             switch type {
             case "add_item":
-                if var item = args["item"]?.objectValue {
-                    n += 1
-                    if let old = item["id"] { renamed[old] = .string("$new:\(n)") }
-                    item.set("id", .string("$new:\(n)"))
-                    args.set("item", .object(item))
-                }
-            case "file_document":
-                if var document = args["document"]?.objectValue {
-                    n += 1
-                    document.set("id", .string("$new:\(n)"))
-                    args.set("document", .object(document))
-                }
-                args.remove("from")
-            case "update_item", "set_status", "complete", "drop":
+                fresh("item", in: &args)
+            case "reopen":
                 if let id = args["id"], let placeholder = renamed[id] { args.set("id", placeholder) }
+                fresh("item", in: &args)
+            case "file_document":
+                fresh("document", in: &args)
+                args.remove("from")
+            case "update_item", "set_status", "complete", "drop", "dismiss", "undismiss", "update_document":
+                if let id = args["id"], let placeholder = renamed[id] { args.set("id", placeholder) }
+            case "set_meta", "add_log_entry":
+                break
             default:
                 rebuilt = false
             }
@@ -253,96 +258,147 @@ extension TekaStore {
         return (before, Array(effective[(start + 1)...]))
     }
 
-    /// The ops among `ops` (applied in order to `before`) whose change the outside edit put back (binder-v0 §6.7
-    /// step 6): another program overwrote that part of the person's change. Replaying the ops gives every value each
-    /// field and record held in the interval. A value the outside edit left that is not the last one but is one of
-    /// those, the original or one in between (an editor that held a copy from halfway saved it), is a loss, and the
-    /// op that last set that field is offered again. A value no op ever wrote is the other program's own change and
-    /// is kept. An `update_item` is narrowed to its lost fields, so a change that survived is never written over.
+    /// One place of the catalog an op can write: a field of an item or a document (`field` empty for whether the
+    /// record is there at all), a processing_log entry by the op that wrote it, a meta field, or another top-level
+    /// key. Bookkeeping an op sets on its own (`updated_at`, `derived`) is no place of its own.
+    struct Cell: Hashable {
+        let kind: String
+        let id: JSONValue?
+        let field: String
+    }
+
+    /// Every cell of a catalog with its value.
+    static func cells(_ c: JSONObject) -> [Cell: JSONValue] {
+        var out: [Cell: JSONValue] = [:]
+        for e in c.entries {
+            switch e.key {
+            case "open_items", "documents":
+                for case .object(let r) in e.value.arrayValue ?? [] {
+                    guard let id = r["id"], out[Cell(kind: e.key, id: id, field: "")] == nil else { continue }
+                    out[Cell(kind: e.key, id: id, field: "")] = .bool(true)
+                    for f in r.entries where !["updated_at", "derived"].contains(f.key) { out[Cell(kind: e.key, id: id, field: f.key)] = f.value }
+                }
+            case "processing_log":
+                for entry in e.value.arrayValue ?? [] {
+                    if let op = entry["op_id"], op != .null { out[Cell(kind: e.key, id: op, field: "")] = entry }
+                }
+            case "meta":
+                if case .object(let meta) = e.value {
+                    for f in meta.entries { out[Cell(kind: "meta", id: nil, field: f.key)] = f.value }
+                } else {
+                    out[Cell(kind: "top", id: nil, field: "meta")] = e.value
+                }
+            default:
+                out[Cell(kind: "top", id: nil, field: e.key)] = e.value
+            }
+        }
+        return out
+    }
+
+    /// The ops among `ops` (applied in order to `before`) whose effect the outside edit took back (binder-v0 §6.7
+    /// step 6). One rule for every record kind: replaying the ops gives every value each cell held in the interval.
+    /// A cell whose found value differs from the latest approved one, and is the original or one in between (an
+    /// editor that held a copy from before or halfway saved it), or is missing where the ops put something, is a
+    /// loss, and the op that last wrote it is offered again. A value no op ever wrote is the other program's own
+    /// change and is kept. An `update_item` is narrowed to its lost fields, so a change that survived is never
+    /// written over. A record the interval created that is gone takes every op on it along, in order, so an item
+    /// added and then closed comes back added and closed.
     static func lostOps(found: JSONObject, expected: JSONObject, before: JSONObject, ops: [JSONObject]) -> [JSONObject] {
-        // Records are compared by id, so an unrelated edit elsewhere in the same array does not hide the loss.
-        func record(_ catalog: JSONObject, _ id: JSONValue) -> JSONValue? {
-            for key in ["open_items", "documents"] {
-                if let r = catalog[key]?.arrayValue?.first(where: { $0["id"] == id }) { return r }
-            }
-            return nil
-        }
-        func field(_ path: String) -> String { (try? JSONPatch.tokens(path))?.first ?? path }
-        func paths(_ a: JSONValue, _ b: JSONValue) -> [String] { JSONPatch.diff(from: a, to: b).compactMap { $0["path"]?.stringValue } }
-        // A field of a record (or, with no record, a path in the catalog): every value it held, and the op that
-        // last changed it.
-        struct Key: Hashable { let id: JSONValue?; let path: String }
-        var values: [Key: [JSONValue?]] = [:], lastSet: [Key: Int] = [:]
-        // A record's versions, and the op that last created or removed it.
-        var versions: [JSONValue: [JSONValue?]] = [:], lastPresence: [JSONValue: Int] = [:]
-        var touched: [[JSONValue]] = []
-        func note(_ key: Key, from old: JSONValue?, to new: JSONValue?, by i: Int) {
-            values[key, default: [old]].append(new)
-            lastSet[key] = i
-        }
-        var state = before
+        struct Record: Hashable { let kind: String; let id: JSONValue }
+        var values: [Cell: [JSONValue?]] = [:], setters: [Cell: [Int]] = [:]
+        var created: [Record: Int] = [:]
+        var touched: [Set<Record>] = []
+        // What each op that closed a record found in it, field by field.
+        var closed: [Int: [Record: [String: JSONValue]]] = [:]
+        var state = before, flat = cells(before)
         for (i, op) in ops.enumerated() {
-            let prior = state
-            guard let next = try? OpApplier.apply(op, to: prior) else { break }
+            guard let next = try? OpApplier.apply(op, to: state) else { break }
+            let flatNext = cells(next)
+            var records = Set<Record>()
+            var gone: [Record: [String: JSONValue]] = [:]
+            for cell in Set(flat.keys).union(flatNext.keys) where flat[cell] != flatNext[cell] {
+                values[cell, default: [flat[cell]]].append(flatNext[cell])
+                setters[cell, default: []].append(i)
+                if cell.kind == "open_items" || cell.kind == "documents", let id = cell.id {
+                    let record = Record(kind: cell.kind, id: id)
+                    records.insert(record)
+                    if cell.field.isEmpty, flat[cell] == nil { created[record] = i }
+                    if flatNext[Cell(kind: cell.kind, id: id, field: "")] == nil, !cell.field.isEmpty, let old = flat[cell] {
+                        gone[record, default: [:]][cell.field] = old
+                    }
+                }
+            }
+            if !gone.isEmpty { closed[i] = gone }
+            touched.append(records)
             state = next
-            let args = op["args"]?.objectValue ?? JSONObject()
-            let ids = [args["id"], args["item"]?["id"], args["document"]?["id"]].compactMap { $0 }
-            touched.append(ids)
-            if ids.isEmpty {
-                for path in paths(.object(prior), .object(next)) {
-                    note(Key(id: nil, path: path), from: JSONPatch.value(at: path, in: .object(prior)),
-                         to: JSONPatch.value(at: path, in: .object(next)), by: i)
-                }
-            }
-            for id in ids {
-                let opOld = record(prior, id), opNew = record(next, id)
-                guard opOld != opNew else { continue }
-                versions[id, default: [opOld]].append(opNew)
-                guard let opOld, let opNew else { lastPresence[id] = i; continue }
-                // Bookkeeping the op sets on its own (`updated_at`, `derived`) is no loss by itself.
-                for path in paths(opOld, opNew) where !["updated_at", "derived"].contains(field(path)) {
-                    note(Key(id: id, path: path), from: JSONPatch.value(at: path, in: opOld), to: JSONPatch.value(at: path, in: opNew), by: i)
-                }
-            }
+            flat = flatNext
         }
 
+        let foundCells = cells(found), expectedCells = cells(expected)
         var whole = Set<Int>()
         var fields: [Int: Set<String>] = [:]
-        // A record created or removed in the interval that the outside edit took back: gone again, or back as one
-        // of its earlier versions. A record that is there as it should be is judged by its fields below.
-        for (id, i) in lastPresence {
-            let current = record(found, id)
-            if (current == nil) != (record(expected, id) == nil), versions[id]?.contains(current) == true { whole.insert(i) }
-        }
-        for (key, i) in lastSet {
-            let holder: JSONValue?
-            if let id = key.id {
-                // A record the outside edit removed, or put back whole, is judged above.
-                guard let current = record(found, id), let final = record(expected, id) else { continue }
-                holder = current
-                guard JSONPatch.value(at: key.path, in: current) != JSONPatch.value(at: key.path, in: final) else { continue }
-            } else {
-                holder = .object(found)
-                guard JSONPatch.value(at: key.path, in: .object(found)) != JSONPatch.value(at: key.path, in: .object(expected)) else { continue }
-            }
-            guard let holder, values[key]?.contains(JSONPatch.value(at: key.path, in: holder)) == true else { continue }
-            if key.id == nil { whole.insert(i) } else { fields[i, default: []].insert(field(key.path)) }
-        }
-        // Every later op on a record whose creation is offered again goes with it, under its placeholder.
-        var recreated = Set<JSONValue>()
-        for i in touched.indices {
-            if whole.contains(i), ["add_item", "reopen", "file_document"].contains(ops[i]["op"]?.stringValue ?? "") {
-                recreated.formUnion(touched[i])
-            } else if !recreated.isDisjoint(with: touched[i]) {
+        for (cell, setBy) in setters {
+            guard let i = setBy.last else { continue }
+            let now = foundCells[cell], final = expectedCells[cell]
+            guard now != final, values[cell]?.contains(now) == true else { continue }
+            switch cell.kind {
+            case "open_items", "documents":
+                let id = cell.id ?? .null
+                if cell.field.isEmpty {
+                    // A record the ops created is gone again. One they closed that is back is judged by its closure
+                    // entry: complete and drop always write one.
+                    if final != nil { whole.insert(i) }
+                    continue
+                }
+                // A field of a record that is there now and should be. The op that created the record is never
+                // offered for a field: the record is there.
+                let present = Cell(kind: cell.kind, id: id, field: "")
+                guard foundCells[present] != nil, expectedCells[present] != nil,
+                      created[Record(kind: cell.kind, id: id)] != i else { continue }
+                fields[i, default: []].insert(cell.field)
+            default:
+                // A closure or log entry that is gone, a meta field or another key back as before.
                 whole.insert(i)
+            }
+        }
+        // A record the interval created that is gone now: every op on it goes with any of them that is offered.
+        var gone = Set(created.keys.filter { foundCells[Cell(kind: $0.kind, id: $0.id, field: "")] == nil })
+        var grew = true
+        while grew {
+            grew = false
+            for i in touched.indices where whole.contains(i) || fields[i] != nil {
+                let linked = touched[i].intersection(gone)
+                guard !linked.isEmpty else { continue }
+                gone.subtract(linked)
+                for j in touched.indices where !whole.contains(j) && !touched[j].isDisjoint(with: linked) {
+                    whole.insert(j)
+                    grew = true
+                }
+            }
+        }
+        // A closure offered again records the item as it is then. When the found copy holds an earlier state of a
+        // field the closure saw, the op that last wrote that field before the closure goes first.
+        var queue = whole.filter { closed[$0] != nil }.sorted()
+        while let i = queue.popLast() {
+            for (record, seen) in closed[i] ?? [:] where foundCells[Cell(kind: record.kind, id: record.id, field: "")] != nil {
+                let names = Set(seen.keys).union(foundCells.keys.filter { $0.kind == record.kind && $0.id == record.id && !$0.field.isEmpty }.map(\.field))
+                for name in names {
+                    let cell = Cell(kind: record.kind, id: record.id, field: name)
+                    let now = foundCells[cell]
+                    guard now != seen[name], values[cell]?.contains(now) == true,
+                          let j = setters[cell]?.last(where: { $0 < i }), created[record] != j else { continue }
+                    if ops[j]["op"] == .str("update_item") {
+                        fields[j, default: []].insert(name)
+                    } else if whole.insert(j).inserted, closed[j] != nil {
+                        queue.append(j)
+                    }
+                }
             }
         }
 
         var lost: [JSONObject] = []
         for (i, op) in ops.enumerated() where i < touched.count {
             guard ["user", "clerk", "brain"].contains(op["actor"]?["kind"]?.stringValue ?? "") else { continue }
-            // A closure whose processing_log entry is still there was not undone.
-            if let opID = op["id"], found["processing_log"]?.arrayValue?.contains(where: { $0["op_id"] == opID }) == true { continue }
             if whole.contains(i) {
                 lost.append(op)
             } else if let f = fields[i] {

@@ -170,11 +170,13 @@ public struct Proposal: Sendable {
 
 extension Proposal {
     static let touchingOps: Set<String> = ["update_item", "set_status", "complete", "drop", "dismiss", "undismiss"]
+    /// The prefix of a document's fingerprint key. No canonical id starts with a letter, nor does a pointer.
+    static let documentKey = "document:"
 
-    /// The canonical hash of each existing item the ops touch, keyed by the id's canonical text, and of each catalog
-    /// value a `set_meta` or `migrate` writes or removes, keyed by its JSON pointer (`absent` when there is none), so
-    /// a card that moves a meta value aside never removes one written since. A pointer starts with `/`, which no
-    /// canonical id does.
+    /// The canonical hash of each existing item the ops touch, keyed by the id's canonical text; of each document an
+    /// `update_document` changes, keyed by `document:` and its id; and of each catalog value a `set_meta` or
+    /// `migrate` writes or removes, keyed by its JSON pointer (`absent` when there is none), so a card that moves a
+    /// meta value aside never removes one written since. A pointer starts with `/`, which no canonical id does.
     public static func fingerprints(_ ops: [JSONObject], catalog: JSONObject?) -> JSONObject {
         var out = JSONObject()
         for op in ops where touchingOps.contains(op["op"]?.stringValue ?? "") {
@@ -182,6 +184,13 @@ extension Proposal {
                   let item = catalog?["open_items"]?.arrayValue?.first(where: { $0["id"] == id }),
                   let hash = try? Canonical.hash(item) else { continue }
             out.set(key, .string(hash))
+        }
+        // A document record a card changes, keyed apart from items, whose ids may be the same text.
+        for op in ops where op["op"] == .str("update_document") {
+            guard let id = op["args"]?["id"], let key = try? Canonical.serialize(id),
+                  let document = catalog?["documents"]?.arrayValue?.first(where: { $0["id"] == id }),
+                  let hash = try? Canonical.hash(document) else { continue }
+            out.set(documentKey + key, .string(hash))
         }
         for op in ops {
             let args = op["args"]?.objectValue ?? JSONObject()
@@ -215,6 +224,12 @@ extension Proposal {
             if e.key.hasPrefix("/") {
                 guard Proposal.metaFingerprint(e.key, in: catalog) != e.value.stringValue else { return nil }
                 return (try? JSONPatch.tokens(e.key))?.joined(separator: ".") ?? e.key
+            }
+            if e.key.hasPrefix(Proposal.documentKey) {
+                let id = String(e.key.dropFirst(Proposal.documentKey.count))
+                let document = catalog?["documents"]?.arrayValue?.first { (try? Canonical.serialize($0["id"] ?? .null)) == id }
+                guard let document else { return "document \(id) (no longer recorded)" }
+                return (try? Canonical.hash(document)) == e.value.stringValue ? nil : (document["title"]?.stringValue ?? id)
             }
             let item = items.first { (try? Canonical.serialize($0["id"] ?? .null)) == e.key }
             guard let item else { return "\(e.key) (no longer open)" }
