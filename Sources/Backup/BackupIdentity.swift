@@ -17,9 +17,15 @@ extension Backup {
             throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
         }
         let id = newBackupID()
-        let url = folder.appendingPathComponent(".sprava/backup-id")
-        try AtomicFile.makePrivateFolder(url.deletingLastPathComponent())
-        try AtomicFile.write(Data((id + "\n").utf8), to: url)
+        // `.sprava` is made inside the folder only, never with missing parents: a binder moved away meanwhile fails
+        // here instead of getting a skeleton of its old path.
+        let sprava = folder.appendingPathComponent(".sprava", isDirectory: true)
+        if mkdir(sprava.path, 0o700) != 0 {
+            guard errno == EEXIST, lstat(sprava.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+                throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
+            }
+        }
+        try AtomicFile.write(Data((id + "\n").utf8), to: sprava.appendingPathComponent("backup-id"))
         return id
     }
 
@@ -92,8 +98,15 @@ extension Backup {
             throw Failure(message: "this binder is being restored; finish the restore first")
         }
         // The folder owns the new id before it holds it: a crash between the two leaves a record of an id no folder
-        // holds, never an id no record reserves.
-        let id = Self.newBackupID()
+        // holds, never an id no record reserves. A retry finishes that record instead of minting another: a record
+        // for this folder under an id it does not hold, never backed up, can only be such an unfinished one.
+        let here = Self.realPath(folder)
+        let pending = st.binders.keys.sorted().first { id in
+            guard let record = st.binders[id], id != old, let path = record.path,
+                  Self.realPath(URL(fileURLWithPath: path)) == here else { return false }
+            return record.snapshot == nil && record.at == nil && record.repositories.isEmpty
+        }
+        let id = pending ?? Self.newBackupID()
         st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
         try save(st)
         step("ownid.recorded")
@@ -136,13 +149,20 @@ extension Backup {
     /// Whether the binder's final directory entry exists. `fileExists` folds a disconnected volume, an unreadable
     /// parent and a genuinely removed entry into false; an offload may finish only for the last of those. Opening the
     /// immediate parent proves it is available before ENOENT is accepted as a completed move to the Trash.
+    ///
+    /// A folder whose parent is gone too (an ancestor was moved or deleted) is missing the same way, proven from the
+    /// nearest ancestor that opens; a missing volume mount point (`/Volumes/<disk>`, a disk that is away) is not.
     static func folderEntry(_ folder: URL) -> FolderEntry {
         var info = stat()
         if lstat(folder.path, &info) == 0 { return .present }
         guard errno == ENOENT || errno == ENOTDIR else { return .unavailable }
         let parent = folder.deletingLastPathComponent()
+        if parent.standardizedFileURL.path == "/Volumes" { return .unavailable }
         let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return .unavailable }
+        guard fd >= 0 else {
+            guard errno == ENOENT, parent.standardizedFileURL.path != "/" else { return .unavailable }
+            return folderEntry(parent) == .missing ? .missing : .unavailable
+        }
         defer { close(fd) }
         if fstatat(fd, folder.lastPathComponent, &info, AT_SYMLINK_NOFOLLOW) == 0 { return .present }
         return errno == ENOENT ? .missing : .unavailable

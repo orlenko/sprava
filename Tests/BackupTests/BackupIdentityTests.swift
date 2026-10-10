@@ -106,7 +106,7 @@ import Testing
         try Data((id + "\n").utf8).write(to: copy.appendingPathComponent(".sprava/backup-id"))
         let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
         var st = Backup.State()
-        st.binders[id] = .init(path: base.appendingPathComponent("disconnected-volume/Binders/Original").path)
+        st.binders[id] = .init(path: "/Volumes/Invented-Disconnected-\(UUID().uuidString)/Binders/Original")
         #expect(throws: Backup.SharedBackupID.self) { _ = try b.claim(copy, &st) }
         #expect(st.binders[id]?.path?.hasSuffix("/Original") == true)
     }
@@ -121,7 +121,7 @@ import Testing
         let m = try Backup.manifest(folder)
         #expect(m["documents/current.pdf"] == "link deed.pdf")
         #expect(m["documents/empty"]?.hasPrefix("folder mode:") == true)
-        #expect(m["documents/deed.pdf"]?.wholeMatch(of: /[0-9a-f]{64} mode:[0-7]+( xattr:[0-9a-f]{64})?/) != nil)
+        #expect(m["documents/deed.pdf"]?.wholeMatch(of: /[0-9a-f]{64} mtime:[0-9]+\.[0-9]+ mode:[0-7]+( xattr:[0-9a-f]{64})?/) != nil)
 
         let hidden = folder.appendingPathComponent("documents/hidden")
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
@@ -175,5 +175,66 @@ import Testing
         let two = ["a": "link target", "b": "link other"]
         #expect(Backup.digest(one) != Backup.digest(two))
         #expect(Backup.digest(two) == Backup.digest(["b": "link other", "a": "link target"]))
+    }
+
+    @Test func aBinderWhoseAncestorMovedTakesItsIDAlong() throws {
+        let base = try temp("ancestor")
+        let original = base.appendingPathComponent("Projects/Binder", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let id = try Backup.backupID(original)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        _ = try b.claim(original, &st)
+        // The whole Projects folder is renamed: the binder's old parent is gone too.
+        try FileManager.default.moveItem(at: base.appendingPathComponent("Projects"), to: base.appendingPathComponent("Archive"))
+        let moved = base.appendingPathComponent("Archive/Binder", isDirectory: true)
+        #expect(Backup.folderEntry(original) == .missing)
+        #expect(try b.claim(moved, &st) == id)
+        #expect(st.binders[id]?.path == moved.standardizedFileURL.path)
+        // A disk that is away is not a move.
+        let away = URL(fileURLWithPath: "/Volumes/Invented-Away-\(UUID().uuidString)/Binders/Estate", isDirectory: true)
+        #expect(Backup.folderEntry(away) == .unavailable)
+    }
+
+    @Test func anInterruptedReassignmentIsFinishedNotRepeated() throws {
+        let base = try temp("reassign")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        let old = try b.claim(original, &st)
+        try b.save(st)
+        let copy = base.appendingPathComponent("Copy", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: copy)
+        // The new id is recorded, then writing it into the copy fails.
+        let sprava = copy.appendingPathComponent(".sprava")
+        chmod(sprava.path, 0o500)
+        #expect(throws: (any Error).self) { try b.giveOwnBackupID(copy) }
+        chmod(sprava.path, 0o700)
+        #expect(Backup.existingBackupID(copy) == old)
+        let pending = try #require(try b.state().binders.keys.first { $0 != old })
+        #expect(try b.giveOwnBackupID(copy) == pending)
+        #expect(try b.state().binders.count == 2)
+    }
+
+    @Test func modificationTimesAndHardLinksCount() throws {
+        let folder = try temp("mtime-links")
+        let a = folder.appendingPathComponent("a.pdf"), b = folder.appendingPathComponent("b.pdf")
+        try Data("invented same bytes".utf8).write(to: a)
+        let plain = try Backup.manifest(folder)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: a.path)
+        let touched = try Backup.manifest(folder)
+        #expect(touched["a.pdf"] != plain["a.pdf"])
+
+        // Two links to one file, then two separate files with the same bytes and times: not the same manifest.
+        try FileManager.default.linkItem(at: a, to: b)
+        let linked = try Backup.manifest(folder)
+        #expect(linked["b.pdf"]?.hasSuffix(" hardlink:a.pdf") == true)
+        try FileManager.default.removeItem(at: b)
+        try FileManager.default.copyItem(at: a, to: b)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: b.path)
+        let separate = try Backup.manifest(folder)
+        #expect(separate["b.pdf"] != linked["b.pdf"] || separate["a.pdf"] != linked["a.pdf"])
+        #expect(Backup.digest(separate) != Backup.digest(linked))
     }
 }

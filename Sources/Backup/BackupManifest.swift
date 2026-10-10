@@ -15,10 +15,17 @@ extension Backup {
     /// folder leaves sees it. A folder that cannot be listed or an entry that cannot be read throws: whatever a
     /// manifest left out could leave the Mac while the binder still counts as unchanged.
     ///
+    /// A file's modification time counts too, as restic saves and restores it, and so do hard links: a file that is
+    /// another link to one listed earlier names it (`hardlink:`), so linking or unlinking two identical files is a
+    /// change. A folder's own modification time follows its entries and is not compared; nor is ownership, which a
+    /// restore by the person (not root) cannot give back.
+    ///
     /// Left out are the attributes macOS itself keeps and a restore cannot give back (`volatileAttributes`): they
     /// would make every verification fail, and no person sets them. The binder folder's own metadata is not compared.
     static func manifest(_ folder: URL) throws -> [String: String] {
         var out: [String: String] = [:]
+        // The first path seen for each file with more than one link, by device and inode.
+        var linked: [String: String] = [:]
         func unreadable(_ rel: String) -> Failure {
             Failure(message: "\(rel.isEmpty ? "the binder" : rel) cannot be read; nothing was removed")
         }
@@ -44,7 +51,13 @@ extension Backup {
                     out[rel] = "link " + target
                 case S_IFREG:
                     guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
-                    out[rel] = sha + (try metadata())
+                    let mtime = " mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
+                    var link = ""
+                    if info.st_nlink > 1 {
+                        let inode = "\(info.st_dev):\(info.st_ino)"
+                        if let first = linked[inode] { link = " hardlink:" + first } else { linked[inode] = rel }
+                    }
+                    out[rel] = sha + mtime + (try metadata()) + link
                 default:
                     out[rel] = "special \(info.st_mode & S_IFMT)"
                 }
