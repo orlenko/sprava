@@ -1,0 +1,231 @@
+@testable import Backup
+import Darwin
+import Foundation
+import SpravaKit
+import Testing
+
+/// Regressions from the fifth calibrated review of the restacked Backup layer: metadata-only changes count as
+/// changes (Finder tags, permissions), and a deletion forgotten long ago is never forgotten again over newer backups.
+/// Repositories and binders live in temporary folders only. Invented data only.
+@Suite(.serialized) struct BackupLayerReview5Tests {
+    let now = Date(timeIntervalSince1970: 1_791_360_000)
+    let bb = BugbotBackupTests()
+    let letter = "correspondence/notary/letter.pdf"
+    let tags = "com.apple.metadata:_kMDItemUserTags"
+
+    func setAttribute(_ name: String, _ value: String, on url: URL) {
+        let bytes = Array(value.utf8)
+        #expect(setxattr(url.path, name, bytes, bytes.count, 0, 0) == 0)
+    }
+
+    func attribute(_ name: String, of url: URL) -> String? {
+        let size = getxattr(url.path, name, nil, 0, 0, 0)
+        guard size >= 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard getxattr(url.path, name, &buffer, size, 0, 0) == size else { return nil }
+        return String(decoding: buffer, as: UTF8.self)
+    }
+
+    // MARK: - 1. Metadata-only changes
+
+    @Test func theManifestSeesAttributesAndPermissions() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-metadata-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("documents"), withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("documents/invented.pdf")
+        try Data("invented".utf8).write(to: file)
+        let plain = try Backup.manifest(folder)
+
+        setAttribute(tags, "invented tag", on: file)
+        let tagged = try Backup.manifest(folder)
+        #expect(tagged["documents/invented.pdf"] != plain["documents/invented.pdf"])
+        setAttribute("com.apple.ResourceFork", "invented fork", on: file)
+        #expect(try Backup.manifest(folder)["documents/invented.pdf"] != tagged["documents/invented.pdf"])
+
+        let before = try Backup.manifest(folder)
+        #expect(chmod(file.path, 0o600) == 0)
+        #expect(try Backup.manifest(folder)["documents/invented.pdf"] != before["documents/invented.pdf"])
+        // A folder's own attributes count too.
+        let folderBefore = try Backup.manifest(folder)["documents"]
+        setAttribute("com.example.invented", "invented note", on: folder.appendingPathComponent("documents"))
+        #expect(try Backup.manifest(folder)["documents"] != folderBefore)
+        // What macOS keeps itself, and a restore cannot write back, is left out.
+        #expect(Backup.volatileAttributes.isSuperset(of: ["com.apple.provenance", "com.apple.macl"]))
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aTagAddedAfterARestoreIsOffloadedAndComesBack() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        guard case .done(let first) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        let restored = try b.restore(first.backupID, now: now)
+        // Only a Finder tag changes.
+        setAttribute(tags, "invented tag", on: restored.appendingPathComponent(letter))
+        guard case .done(let again) = try b.offload(restored, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(again.snapshot != first.snapshot, "the old snapshot, without the tag, was reused")
+        let back = try b.restore(again.backupID, now: now)
+        #expect(attribute(tags, of: back.appendingPathComponent(letter)) == "invented tag")
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aPermissionChangeAfterARestoreIsOffloaded() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        guard case .done(let first) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        let restored = try b.restore(first.backupID, now: now)
+        #expect(chmod(restored.appendingPathComponent(letter).path, 0o600) == 0)
+        guard case .done(let again) = try b.offload(restored, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(again.snapshot != first.snapshot)
+        let back = try b.restore(again.backupID, now: now)
+        var info = stat()
+        #expect(lstat(back.appendingPathComponent(letter).path, &info) == 0 && info.st_mode & 0o777 == 0o600)
+    }
+
+    // MARK: - The binder folder's own metadata (review 6)
+
+    let comment = "com.apple.metadata:kMDItemFinderComment"
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func theBinderFoldersCommentAndTagComeBack() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        setAttribute(comment, "invented binder comment", on: e.folder)
+        setAttribute(tags, "invented binder tag", on: e.folder)
+        #expect(chmod(e.folder.path, 0o750) == 0)
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(record.rootMetadata?.attributes[comment] == Data("invented binder comment".utf8))
+        let restored = try b.restore(record.backupID, now: now)
+        #expect(attribute(comment, of: restored) == "invented binder comment")
+        #expect(attribute(tags, of: restored) == "invented binder tag")
+        var info = stat()
+        #expect(lstat(restored.path, &info) == 0 && info.st_mode & 0o7777 == 0o750)
+
+        // Unchanged since the restore, it leaves on its pinned snapshot; a new comment on the folder alone is a
+        // change: a new snapshot, and the new comment comes back.
+        guard case .done(let same) = try b.offload(restored, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(same.snapshot == record.snapshot)
+        let again = try b.restore(same.backupID, now: now)
+        setAttribute(comment, "invented later comment", on: again)
+        guard case .done(let changed) = try b.offload(again, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(changed.snapshot != record.snapshot)
+        #expect(attribute(comment, of: try b.restore(changed.backupID, now: now)) == "invented later comment")
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aCommentOnTheFolderWhileWaitingRestartsTheOffload() throws {
+        let e = try bb.env()
+        let waiting = BugbotBackupTests.Switch(true)
+        let b = try bb.configured(e, waiting: waiting)
+        guard case .waitingForICloud = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("expected to wait for iCloud"); return
+        }
+        setAttribute(comment, "invented comment while waiting", on: e.folder)
+        waiting.on = false
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(Backup.backupID(e.folder), now: now) }
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        #expect(record.rootMetadata?.attributes[comment] == Data("invented comment while waiting".utf8))
+    }
+
+    // MARK: - Review 7: the folder's metadata in the snapshots; unreadable is never absent
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func theFolderCommentComesBackFromTheSnapshotAlone() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        setAttribute(comment, "invented binder comment", on: e.folder)
+        setAttribute(tags, "invented binder tag", on: e.folder)
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("not done"); return
+        }
+        // Both backups hold it.
+        for (repo, snap) in [(e.primary, record.snapshot), (e.second, record.secondSnapshot ?? "")] {
+            #expect(try b.engine(repo.path).files(snap).contains(Backup.folderMetadataPath), "\(repo.lastPathComponent)")
+        }
+        // A record without the metadata (as the state snapshot before the offload would hold it).
+        var st = try b.state()
+        st.offloaded = st.offloaded.map { var r = $0; r.rootMetadata = nil; return r }
+        try b.save(st)
+        let restored = try b.restore(record.backupID, now: now)
+        #expect(attribute(comment, of: restored) == "invented binder comment")
+        #expect(attribute(tags, of: restored) == "invented binder tag")
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func anOriginalWhoseIDCannotBeReadKeepsIt() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        try b.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        let copy = e.base.appendingPathComponent("copies/\(e.folder.lastPathComponent)", isDirectory: true)
+        try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: e.folder, to: copy)
+        let idFile = e.folder.appendingPathComponent(".sprava/backup-id")
+        #expect(chmod(idFile.path, 0) == 0)
+        defer { chmod(idFile.path, 0o600) }
+
+        let refused = (try? b.backUp(copy, now: now)) == nil
+        #expect(refused)
+        do {
+            try b.forgetDocument(in: copy, path: letter, request: "invented-deletion-1", now: now)
+            Issue.record("a copy forgot in the original's backups")
+        } catch let shared as Backup.SharedBackupID {
+            #expect(shared.holder.contains("cannot be read"))
+        }
+        #expect(try b.state().binders[id]?.path == e.folder.standardizedFileURL.path)
+        #expect(try b.state().forgetting.isEmpty)
+    }
+
+    @Test func anIntakeFolderThatCannotBeListedStopsTheOffload() throws {
+        let e = try bb.env()
+        let b = try bb.settingsOnly(e)
+        let intake = e.folder.appendingPathComponent("intake")
+        try FileManager.default.createDirectory(at: intake, withIntermediateDirectories: true)
+        try Data("invented scan".utf8).write(to: intake.appendingPathComponent("invented-scan.pdf"))
+        #expect(chmod(intake.path, 0) == 0)
+        defer { chmod(intake.path, 0o755) }
+        let failed: String
+        do { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now); failed = "" } catch { failed = "\(error)" }
+        #expect(failed.contains("intake/ cannot be listed"), "\(failed)")
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+    }
+
+    // MARK: - 2. A deletion forgotten long ago is never forgotten again
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func anOldDeletionAskedForAgainLeavesNewerBackups() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        try b.backUp(e.folder, now: now)
+        try FileManager.default.removeItem(at: e.folder.appendingPathComponent(letter))
+        #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now))
+
+        // Long after, the finished request has left the list; a new letter is filed at the same path and backed up.
+        let later = now.addingTimeInterval(40 * 86_400)
+        try b.forgetPending(now: later)
+        #expect(try b.state().forgetting.isEmpty)
+        #expect(try b.state().forgotten.map(\.request) == ["invented-deletion-1"])
+        try Data("invented new letter".utf8).write(to: e.folder.appendingPathComponent(letter))
+        let snap = try #require(try b.backUp(e.folder, now: later).snapshot)
+
+        // The old deletion asked for again is answered from its tombstone; the new letter's backup stays.
+        #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: later))
+        #expect(try b.state().forgetting.isEmpty)
+        #expect(try b.engine(e.primary.path).files(snap).contains(letter))
+        // The same id for another path is refused.
+        #expect(throws: Backup.Failure.self) {
+            try b.forgetDocument(in: e.folder, path: "correspondence/notary/other.pdf", request: "invented-deletion-1", now: later)
+        }
+        // A new deletion of the new letter is a request of its own, and does forget it.
+        #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-2", now: later))
+        #expect(try !b.engine(e.primary.path).snapshots(tag: "binder:\(Backup.backupID(e.folder))").contains { $0.id == snap })
+    }
+}
