@@ -115,4 +115,54 @@ import Testing
         #expect(active.readsDocuments)
         #expect(active.level(for: URL(fileURLWithPath: "/Invented/Unlisted")) == nil)
     }
+
+    @Test(arguments: [false, true]) func linkedStateDirectoriesAreNeverReadOrWritten(linkSupport: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-client-parent-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let support = root.appendingPathComponent("support")
+        let outside = root.appendingPathComponent("outside")
+        try MCPClients().save(outside)
+        if linkSupport {
+            try FileManager.default.createSymbolicLink(at: support, withDestinationURL: outside)
+        } else {
+            try AtomicFile.makePrivateFolder(support)
+            try FileManager.default.createSymbolicLink(at: support.appendingPathComponent("mcp"),
+                                                       withDestinationURL: outside.appendingPathComponent("mcp"))
+        }
+        let before = try Data(contentsOf: MCPClients.url(outside))
+        var clients = MCPClients()
+        _ = try clients.register(id: "invented", name: "Invented", binders: [:])
+        #expect(throws: MCPClients.Unreadable.self) { try MCPClients.load(support) }
+        #expect(throws: MCPClients.Unreadable.self) { try clients.save(support) }
+        #expect(try Data(contentsOf: MCPClients.url(outside)) == before)
+        try FileManager.default.removeItem(at: outside)
+        #expect(throws: MCPClients.Unreadable.self) { try MCPClients.load(support) }
+        #expect(throws: MCPClients.Unreadable.self) { try clients.save(support) }
+        #expect(!FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    @Test(arguments: [false, true]) func replacingAValidatedDirectoryNeverRedirectsRegistryIO(writing: Bool) throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-client-swap-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let support = base.appendingPathComponent("support"), outside = base.appendingPathComponent("outside")
+        try MCPClients().save(support)
+        var foreign = MCPClients()
+        _ = try foreign.register(id: "invented-outside", name: "Invented Outside", binders: [:])
+        try foreign.save(outside)
+        let before = try Data(contentsOf: MCPClients.url(outside))
+        let original = try Data(contentsOf: MCPClients.url(support))
+        let moved = base.appendingPathComponent("moved")
+        let swap = {
+            try FileManager.default.moveItem(at: support.appendingPathComponent("mcp"), to: moved)
+            try FileManager.default.createSymbolicLink(at: support.appendingPathComponent("mcp"),
+                                                       withDestinationURL: outside.appendingPathComponent("mcp"))
+        }
+        if writing {
+            #expect(throws: (any Error).self) { try MCPClients().save(support, beforeFile: swap) }
+        } else {
+            #expect(throws: MCPClients.Unreadable.self) { try MCPClients.load(support, beforeFile: swap) }
+        }
+        #expect(try Data(contentsOf: MCPClients.url(outside)) == before)
+        #expect(try Data(contentsOf: moved.appendingPathComponent("clients.json")) == original)
+    }
 }
