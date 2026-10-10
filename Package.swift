@@ -43,6 +43,10 @@ let package = Package(
         .testTarget(name: "HubTests", dependencies: ["Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport",
                                                      "SpravaKit"]),
 
+        // Backup capabilities arrive in small, independently tested increments.
+        .target(name: "Backup", dependencies: ["SpravaKit"]),
+        .testTarget(name: "BackupTests", dependencies: ["Backup"]),
+
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
