@@ -137,8 +137,10 @@ extension Backup {
 
     // MARK: - The binder folder's own metadata
     static func rootMetadata(_ folder: URL) throws -> RootMetadata {
+        // The binder folder itself, also when it is reached through a link (as `BinderSprava` opens it).
+        let path = folder.resolvingSymlinksInPath().path
         var info = stat()
-        guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, let values = attributes(folder.path) else {
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, let values = attributes(path) else {
             throw Failure(message: "the binder folder's own settings cannot be read; nothing was removed")
         }
         return RootMetadata(mode: Int(info.st_mode & 0o7777), attributes: values)

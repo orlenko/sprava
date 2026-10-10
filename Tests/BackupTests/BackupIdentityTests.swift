@@ -375,5 +375,21 @@ import Testing
         let id = try Backup.backupID(link)
         #expect(Backup.existingBackupID(real) == id)
         #expect(try Backup.backupID(link) == id)
+        #expect(try Backup.keepRootMetadata(link).mode == 0o775)
+    }
+
+    @Test func aBinderBehindALinkToADiskThatIsAwayKeepsItsID() throws {
+        let base = try temp("linked-away")
+        // Projects is a link to a folder on a disk that is not connected now.
+        try FileManager.default.createSymbolicLink(atPath: base.appendingPathComponent("Projects").path,
+                                                   withDestinationPath: "/Volumes/Invented-Away-\(UUID().uuidString)/Projects")
+        let recorded = base.appendingPathComponent("Projects/Binder", isDirectory: true)
+        #expect(Backup.folderEntry(recorded) == .unavailable)
+        // A file at a parent's path still means the binder is gone; a working link to a folder is followed.
+        let real = base.appendingPathComponent("Real", isDirectory: true)
+        try FileManager.default.createDirectory(at: real.appendingPathComponent("Binder"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: base.appendingPathComponent("Shortcut"), withDestinationURL: real)
+        #expect(Backup.folderEntry(base.appendingPathComponent("Shortcut/Binder", isDirectory: true)) == .present)
+        #expect(Backup.folderEntry(base.appendingPathComponent("Shortcut/Gone", isDirectory: true)) == .missing)
     }
 }

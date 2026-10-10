@@ -186,11 +186,16 @@ extension Backup {
         guard errno == ENOENT || errno == ENOTDIR else { return .unavailable }
         let parent = folder.deletingLastPathComponent()
         if parent.standardizedFileURL.path == "/Volumes" { return .unavailable }
-        let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        // The parent is opened through links, as the Shelf allows a binder to be reached through one.
+        let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fd >= 0 else {
-            // Something that is not a folder at the parent's path: the binder cannot be there.
-            if errno == ENOTDIR { return .missing }
-            guard errno == ENOENT, parent.standardizedFileURL.path != "/" else { return .unavailable }
+            guard errno == ENOENT || errno == ENOTDIR, parent.standardizedFileURL.path != "/" else { return .unavailable }
+            var entry = stat()
+            if lstat(parent.path, &entry) == 0 {
+                // A file at the parent's path: the binder cannot be there. A link whose target cannot be opened may
+                // lead to a disk that is away, so the binder may still be there.
+                return entry.st_mode & S_IFMT == S_IFLNK ? .unavailable : .missing
+            }
             return folderEntry(parent) == .missing ? .missing : .unavailable
         }
         defer { close(fd) }
