@@ -84,6 +84,8 @@ extension Backup {
             }
         }
         st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
+        // A folder that holds an id finishes any reassignment that was writing it: the id is no longer pending.
+        st.reassigning = st.reassigning.filter { $0.value.id != id }
         return id
     }
 
@@ -116,7 +118,10 @@ extension Backup {
         // holds, never an id no record reserves. The reassignment is recorded by the copy's path, so a retry
         // finishes it with the same new id instead of minting another.
         let id: String
-        if let pending = st.reassigning[key], pending.from == old {
+        // Only while the pending id is still reserved for this folder: its record may have moved with a folder that
+        // already holds it.
+        if let pending = st.reassigning[key], pending.from == old,
+           let reserved = st.binders[pending.id]?.path, Self.realPath(URL(fileURLWithPath: reserved)) == key {
             id = pending.id
         } else {
             id = Self.newBackupID()

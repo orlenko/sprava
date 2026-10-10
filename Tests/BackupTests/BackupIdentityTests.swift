@@ -413,4 +413,31 @@ import Testing
         #expect(secondID != pending)
         #expect(try b.state().binders.count == 3 && b.state().reassigning.isEmpty)
     }
+
+    @Test func aStaleReassignmentNeverHandsOutAnIDThatMovedOn() throws {
+        let base = try temp("stale-reassignment")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        let old = try b.claim(original, &st)
+        let a = base.appendingPathComponent("A", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: a)
+        // The copy at A got its new id N written, and the process stopped before clearing the reassignment.
+        let n = "0123456789abcdef0123456789abcdef"
+        st.binders[n] = .init(path: a.standardizedFileURL.path)
+        st.reassigning[Backup.realPath(a)] = .init(from: old, id: n)
+        try b.save(st)
+        try Backup.writeBackupID(n, into: a, creating: false)
+        // A moves to B, which is claimed there; another copy of the original then sits at A.
+        let moved = base.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.moveItem(at: a, to: moved)
+        st = try b.state()
+        #expect(try b.claim(moved, &st) == n)
+        try b.save(st)
+        try FileManager.default.copyItem(at: original, to: a)
+        let own = try b.giveOwnBackupID(a)
+        #expect(own != n && own != old)
+        #expect(try b.state().binders[n]?.path == moved.standardizedFileURL.path)
+    }
 }
