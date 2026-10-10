@@ -12,11 +12,12 @@ import Testing
     let now = Date(timeIntervalSince1970: 1_791_360_000)
 
     /// An adopted binder `tax` with one open item, and a spool with an inbox; published once unless `publish` is false.
-    func adopted(publish: Bool = true) throws -> (folder: URL, spool: URL) {
+    func adopted(publish: Bool = true, formerName: String? = nil) throws -> (folder: URL, spool: URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-hub-leaving-\(UUID().uuidString)")
         let folder = root.appendingPathComponent("tax", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let text = #"{"meta":{"schema_version":2,"name":"tax"},"documents":[],"open_items":[{"id":"a-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01","tags":["invented-tag"],"waiting_on":"Invented Party","link":"docs/invented-file.pdf"}],"processing_log":[]}"#
+        let former = formerName.map { #","former_names":[{"name":"\#($0)","until":"2099-01-01"}]"# } ?? ""
+        let text = #"{"meta":{"schema_version":2,"name":"tax"\#(former)},"documents":[],"open_items":[{"id":"a-1","title":"Invented task","status":"open","priority":"normal","due":"2026-11-01","tags":["invented-tag"],"waiting_on":"Invented Party","link":"docs/invented-file.pdf"}],"processing_log":[]}"#
         try Data(text.utf8).write(to: folder.appendingPathComponent("catalog.json"))
         try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
         let spool = root.appendingPathComponent("spool", isDirectory: true)
@@ -99,5 +100,27 @@ import Testing
         let big = #"{"teka":"tax","items":[{"id":"x","title":""# + String(repeating: "a", count: 17 << 20) + #""}]}"#
         try Data(big.utf8).write(to: target)
         #expect(HubLane.sliceOnSpool(at: target) != nil)
+    }
+
+    @Test func underACollidingNameASliceWithAnotherStampIsLeft() throws {
+        let (folder, spool) = try adopted()
+        let target = try slice(spool)
+        // The other binder's slice projects the same items, so it has the same hash, under a later stamp.
+        var slice = try JSONParser.parse(try Data(contentsOf: target)).value.objectValue!
+        slice.set("generated", .str("2099-01-01T00:00:00Z"))
+        let other = Data(JSONWriter.pretty(.object(slice)).utf8)
+        try other.write(to: target)
+        #expect(try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: true))
+        #expect(try Data(contentsOf: target) == other)
+    }
+
+    @Test func aSliceUnderAFormerNameGoesEvenWithoutCursors() throws {
+        let (folder, spool) = try adopted(formerName: "old-tax")
+        let former = try slice(spool, "old-tax")
+        try Data(#"{"teka":"old-tax","items":[]}"#.utf8).write(to: former)
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent(".sprava/cursors.json"))
+        #expect(try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: false, now: now))
+        #expect(!FileManager.default.fileExists(atPath: former.path))
+        #expect(!FileManager.default.fileExists(atPath: try slice(spool).path))
     }
 }

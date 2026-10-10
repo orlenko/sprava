@@ -44,30 +44,33 @@ extension HubLane {
         let own = ownCursors(teka.folder).map { reconciled($0, folder: teka.folder, inbox: inbox) }
         let byRecord = recordedOnly || teka.federationBlocked
         let recorded = own.map { recordedSlices($0, folder: teka.folder) } ?? []
-        // Each name to withdraw, with the hashes that prove a file there is Sprava's; nil removes it whatever it is.
-        // Slices recorded under other names go by `removeFormerSlice`.
-        var targets: [(name: String, hashes: Set<String>?)] = []
+        // Each name to withdraw, with the slices (hash, and stamp when recorded) that prove a file there is Sprava's;
+        // nil removes it whatever it is. Slices recorded under other names go by `removeFormerSlice`.
+        var targets: [(name: String, slices: [(hash: String, generated: String?)]?)] = []
         if !byRecord {
             targets.append((teka.name, nil))
         } else if !recorded.isEmpty {
             for name in Set(recorded.map(\.name)).sorted() {
-                targets.append((name, recordedOnly ? Set(recorded.filter { $0.name == name }.map(\.hash)) : nil))
+                let mine = recorded.filter { $0.name == name }.map { (hash: $0.hash, generated: $0.generated) }
+                targets.append((name, recordedOnly ? mine : nil))
             }
         } else {
             return false
         }
-        for (name, hashes) in targets {
+        for (name, slices) in targets {
             let url = try spoolFile(inbox, name, ".agenda.json")
             // By record, only a slice recognised as one Sprava recorded goes; one another program wrote is left. An
             // entry that cannot be read as a slice (malformed, a link) may be another binder's, or this one's: it is
             // left, and the withdrawal fails with the record kept, rather than report a slice gone that may not be.
-            if let hashes {
+            // Two binders that share a name can project the same items; the recorded stamp tells their slices apart.
+            if let slices {
                 var entry = stat()
                 if lstat(url.path, &entry) != 0, errno == ENOENT { continue }
                 guard let found = sliceOnSpool(at: url) else {
                     throw TekaStore.Refused(reason: "the slice under a shared name cannot be checked; nothing was withdrawn")
                 }
-                if !hashes.contains(found.hash) { continue }
+                let mine = slices.contains { $0.hash == found.hash && ($0.generated == nil || $0.generated == found.generated) }
+                if !mine { continue }
             }
             try removeSlice(url)
         }
@@ -87,14 +90,27 @@ extension HubLane {
     /// for this binder goes. The caller holds the binder's write lock, so no publish can put the slice back before
     /// the folder is gone. No spool, or no inbox in it, means no slice. Returns false when no slice can be identified
     /// safely: the binder must not leave while its slice may stay on the hub.
-    public static func withdrawBeforeLeaving(_ folder: URL, root: URL = spoolRoot(), nameCollides: Bool) throws -> Bool {
+    public static func withdrawBeforeLeaving(_ folder: URL, root: URL = spoolRoot(), nameCollides: Bool,
+                                             now: Date = Date()) throws -> Bool {
         var info = stat()
         if lstat(root.path, &info) != 0, errno == ENOENT { return true }
         try checkFolder(root, create: false)
         let inbox = root.appendingPathComponent("inbox", isDirectory: true)
         if lstat(inbox.path, &info) != 0, errno == ENOENT { return true }
         try checkFolder(inbox, create: false)
-        return try withdraw(Teka.read(folder), inbox: inbox, recordedOnly: nameCollides)
+        let teka = Teka.read(folder)
+        guard try withdraw(teka, inbox: inbox, recordedOnly: nameCollides) else { return false }
+        // A rename cut off before the next publish retired the slice under the old name, with cursors since lost,
+        // leaves that slice unrecorded. The binder's own unexpired former names are its own (binder-v0 §8.3): their
+        // slices go too, unless another binder here shares this name and so may share its history.
+        if !nameCollides {
+            let today = CalendarDate.today(now: now)
+            for former in teka.catalog?["meta"]?["former_names"]?.arrayValue ?? [] where isUnexpired(former, today: today) {
+                guard let name = former["name"]?.stringValue, name != teka.name else { continue }
+                try removeSlice(try spoolFile(inbox, name, ".agenda.json"))
+            }
+        }
+        return true
     }
 
     /// The largest slice read back from the spool: above any slice a catalog within its size limit (64 MiB) can
