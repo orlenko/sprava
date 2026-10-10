@@ -5,10 +5,29 @@ import SpravaKit
 /// The backup key (docs/backup.md §4). The runtime keeps a this-device-only copy in the Keychain so backups run
 /// unattended; the person keeps their own copy, or asks Sprava to keep one in iCloud Keychain.
 /// `SPRAVA_BACKUP_KEY_FILE` replaces the Keychain in tests and development runs.
-/// Host executables need provisioned Keychain access-group entitlements; ad-hoc development runs use the file override.
+/// Host executables (the app and the runtime) need the `keychain-access-groups` entitlement
+/// `$(TeamIdentifierPrefix)ca.orlenko.sprava`; ad-hoc development runs have no team and use the file override.
 extension BackupKey {
     static let service = "ca.orlenko.sprava.backup"
-    static let accessGroup = "group.ca.orlenko.sprava"
+    /// The access group both hosts share. It must match the signed entitlement exactly, team prefix included, so it
+    /// is derived from this process's signature rather than written down; without a team it is left out.
+    static let accessGroup: String? = accessGroup(team: signingTeam())
+
+    static func accessGroup(team: String?) -> String? {
+        guard let team, !team.isEmpty else { return nil }
+        return team + ".ca.orlenko.sprava"
+    }
+
+    static func signingTeam() -> String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let info = info as? [String: Any] else { return nil }
+        return info[kSecCodeInfoTeamIdentifier as String] as? String
+    }
     static let account = "repository-key"
     static let syncedAccount = "repository-key-icloud"
     static let rollbackAccount = "repository-key-rollback"
@@ -35,9 +54,11 @@ extension BackupKey {
     /// macOS needs the data-protection Keychain to enforce ThisDeviceOnly accessibility. Use the same namespace
     /// for every read, write and deletion, and explicitly distinguish local items from synchronized ones.
     static func query(account: String, synchronizable: Bool) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-         kSecAttrAccount as String: account, kSecAttrSynchronizable as String: synchronizable,
-         kSecAttrAccessGroup as String: accessGroup, kSecUseDataProtectionKeychain as String: true]
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account, kSecAttrSynchronizable as String: synchronizable,
+                                    kSecUseDataProtectionKeychain as String: true]
+        if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+        return query
     }
 
     static func readSystem(_ acct: String, synchronizable: Bool) -> (OSStatus, String?) {

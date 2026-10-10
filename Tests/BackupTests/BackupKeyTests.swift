@@ -207,6 +207,12 @@ import Testing
         }
     }
 
+    @Test func theAccessGroupCarriesTheSigningTeamPrefix() {
+        #expect(BackupKey.accessGroup(team: "INVNTTEAM1") == "INVNTTEAM1.ca.orlenko.sprava")
+        #expect(BackupKey.accessGroup(team: nil) == nil)
+        #expect(BackupKey.accessGroup(team: "") == nil)
+    }
+
     @Test func aPendingKeyDeletionFailureIsReported() {
         let keychain = BackupKey.Keychain(put: { _, _, _ in }, delete: { _, _ in errSecInteractionNotAllowed })
         #expect(throws: BackupKey.Failure.self) { try BackupKey.clearPending(environment: [:], keychain: keychain) }
