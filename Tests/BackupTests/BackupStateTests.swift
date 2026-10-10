@@ -30,6 +30,11 @@ import Testing
         settings.second = "/invented/second"
         settings.keepLast = 17
         try subject.save(settings)
+        // Without a restic pin, nothing runs until setup checks restic again, so it is not set up.
+        #expect(try !subject.isConfigured)
+        #expect(!subject.status().configured)
+        settings.resticSHA256 = String(repeating: "a", count: 64)
+        try subject.save(settings)
 
         var state = Backup.State()
         var record = Backup.State.BinderRecord()

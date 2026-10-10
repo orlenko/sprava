@@ -67,7 +67,12 @@ extension Backup {
     }
 
     /// Throws when the settings cannot be read, which is not the same as not set up.
-    public var isConfigured: Bool { get throws { try settings().primary != nil && key != nil } }
+    /// Settings without a restic pin are not set up: `engine` runs nothing until setup checks restic again.
+    public var isConfigured: Bool { get throws { Self.isConfigured(try settings(), key: key) } }
+
+    static func isConfigured(_ settings: Settings, key: String?) -> Bool {
+        settings.primary != nil && settings.resticSHA256 != nil && key != nil
+    }
 
     /// The default mirror: a folder in the person's iCloud Drive.
     public static var defaultPrimary: URL {
