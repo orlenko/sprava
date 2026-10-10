@@ -192,4 +192,30 @@ import Testing
         try subject.save(settings)
         #expect(try subject.engine(settings.primary).expectedSHA256 == settings.resticSHA256)
     }
+
+    @Test func aDiskImageIsNeverAnIndependentSecondBackup() throws {
+        let root = try temporary("disk-image")
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The internal disk is never independent, whatever the image check says.
+        #expect(!Backup.isIndependentSecondLocation(root, diskImageCheck: { _ in false }))
+        #expect(Backup.isDiskImage(URL(fileURLWithPath: "/")) == false)
+
+        let image = root.appendingPathComponent("invented.dmg")
+        let mount = root.appendingPathComponent("mnt", isDirectory: true)
+        func hdiutil(_ arguments: [String]) throws -> Int32 {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            process.arguments = arguments
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+        try #require(try hdiutil(["create", "-size", "5m", "-fs", "APFS", "-volname", "InventedImage", "-quiet", image.path]) == 0)
+        try #require(try hdiutil(["attach", "-nobrowse", "-quiet", "-mountpoint", mount.path, image.path]) == 0)
+        defer { _ = try? hdiutil(["detach", "-quiet", "-force", mount.path]) }
+        #expect(Backup.isDiskImage(mount) == true)
+        #expect(!Backup.isIndependentSecondLocation(mount.appendingPathComponent("Sprava Second")))
+        // A volume that cannot be identified fails closed.
+        #expect(!Backup.isIndependentSecondLocation(mount, diskImageCheck: { _ in nil }))
+    }
 }

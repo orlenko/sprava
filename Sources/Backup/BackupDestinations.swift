@@ -1,4 +1,5 @@
 import Darwin
+import DiskArbitration
 import Dispatch
 import FileProvider
 import Foundation
@@ -15,11 +16,14 @@ extension Backup {
         return rest.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.path
     }
 
-    /// A supported independent destination: a non-iCloud File Provider root or a non-internal volume.
+    /// A supported independent destination: a non-iCloud File Provider root or a non-internal volume that is a real
+    /// disk. A mounted disk image is refused: its backing file may sit in the mirror's iCloud folder, or on the
+    /// internal disk, and go with it.
     static func isIndependentSecondLocation(
         _ url: URL,
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
-        fileProviderCheck: (URL) -> Bool = { registeredFileProvider(at: $0) }
+        fileProviderCheck: (URL) -> Bool = { registeredFileProvider(at: $0) },
+        diskImageCheck: (URL) -> Bool? = { isDiskImage($0) }
     ) -> Bool {
         let destination = realPath(url)
         let providers = realPath(home.appendingPathComponent("Library/CloudStorage", isDirectory: true))
@@ -40,8 +44,21 @@ extension Backup {
         }
         guard lstat(existing.path, &info) == 0,
               let values = try? existing.resourceValues(forKeys: [.volumeIsInternalKey]),
-              let internalVolume = values.volumeIsInternal else { return false }
-        return !internalVolume
+              let internalVolume = values.volumeIsInternal, !internalVolume else { return false }
+        // A volume that cannot be identified is not trusted to be independent either.
+        return diskImageCheck(existing) == false
+    }
+
+    /// Whether the volume holding `url` is a mounted disk image, as DiskArbitration describes its device; nil when
+    /// it cannot say.
+    static func isDiskImage(_ url: URL) -> Bool? {
+        guard let session = DASessionCreate(kCFAllocatorDefault),
+              let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL),
+              let description = DADiskCopyDescription(disk) as? [String: Any] else { return nil }
+        let deviceProtocol = description[kDADiskDescriptionDeviceProtocolKey as String] as? String
+        let model = description[kDADiskDescriptionDeviceModelKey as String] as? String
+        guard deviceProtocol != nil || model != nil else { return nil }
+        return deviceProtocol == "Virtual Interface" || model?.trimmingCharacters(in: .whitespaces) == "Disk Image"
     }
 
     private final class FileProviderResult: @unchecked Sendable {
