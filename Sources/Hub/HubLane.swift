@@ -38,10 +38,11 @@ extension HubLane {
 
     /// The folders whose binder names collide with another known binder's, after case folding and NFC, unexpired
     /// former names included (binder-v0 §3.1). None of them publishes or drains: they would share one spool file.
-    /// A former name without a readable `until` counts as unexpired.
+    /// A former name without a readable `until` counts as unexpired. Every known binder takes part, one whose
+    /// catalog is corrupt or unreadable included (by its folder's name): only a folder that is not a binder is left out.
     public static func collidingFolders(_ rows: [ShelfRow], today: CalendarDate) -> Set<String> {
         var byName: [String: Set<String>] = [:]
-        for row in rows where row.teka.catalog != nil {
+        for row in rows where row.teka.states[.notATeka] == nil {
             var names = [row.teka.name]
             for former in row.teka.catalog?["meta"]?["former_names"]?.arrayValue ?? [] {
                 guard let name = former["name"]?.stringValue, isUnexpired(former, today: today) else { continue }
