@@ -147,11 +147,9 @@ extension Backup {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// What every binder write changes: the op log grows and the catalog is replaced (binder-v0 §6.9).
-    static func writeMark(_ folder: URL) -> String {
-        let log = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(".sprava/ops.ndjson").path))?[.size] as? Int
-        return "\(log ?? -1) \(DocumentPaths.sha256(of: folder.appendingPathComponent("catalog.json")) ?? "-")"
-    }
+    /// A mark for everything restic is to read. Comparing only the catalog and op log misses a document or intake
+    /// file written while restic is traversing another directory, and could call that partial snapshot current.
+    static func writeMark(_ folder: URL) throws -> String { digest(try manifest(folder)) }
 
     @discardableResult
     public func backUp(_ folder: URL, now: Date = Date()) throws -> Restic.BackupResult {
@@ -165,7 +163,7 @@ extension Backup {
         step("backup.claimed")
         do {
             try Self.keepRootMetadata(folder)
-            let before = Self.writeMark(folder)
+            let before = try Self.writeMark(folder)
             let result = try engine(s.primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
             afterSnapshot?()
             step("backup.snapshotted")
@@ -173,7 +171,7 @@ extension Backup {
             if let snap = result.snapshot { rec.snapshot = snap }
             // restic reads one file at a time, so a write that landed during the run may be only partly in this
             // snapshot. The binder then stays due, and the next run takes another.
-            if Self.writeMark(folder) == before { rec.at = ISOTime.string(now) }
+            if try Self.writeMark(folder) == before { rec.at = ISOTime.string(now) }
             rec.bytes = result.bytes
             rec.error = nil
             st.binders[id] = rec
@@ -188,10 +186,14 @@ extension Backup {
 
     /// Sprava's own state, minus the backup's cache and run files, and minus the runtime's logs (§3.2,
     /// `stateExcludes`).
-    public func backUpState(now: Date = Date()) throws {
-        var st = try state()
+    func writeStateSnapshot() throws {
         _ = try engine(settings().primary).backup(support, tags: ["sprava", "sprava-state"],
                                                   excludes: Self.excludes + stateExcludes())
+    }
+
+    public func backUpState(now: Date = Date()) throws {
+        var st = try state()
+        try writeStateSnapshot()
         st.stateSnapshotAt = ISOTime.string(now)
         try save(st)
     }
@@ -258,24 +260,38 @@ extension Backup {
         case waiting(Int)
     }
 
+    struct UploadEntry {
+        var regular: Bool?
+        var ubiquitous: Bool?
+        var uploaded: Bool?
+    }
+
+    static func uploadStatus(_ entries: [UploadEntry?]) -> Upload {
+        var pending = 0
+        var ubiquitous = false
+        for entry in entries {
+            guard let entry else { pending += 1; continue }
+            if entry.regular == false { continue }
+            guard entry.regular == true else { pending += 1; continue }
+            guard entry.ubiquitous == true else { pending += 1; continue }
+            ubiquitous = true
+            if entry.uploaded != true { pending += 1 }
+        }
+        if !ubiquitous { return .notInICloud }
+        return pending == 0 ? .uploaded : .waiting(pending)
+    }
+
     /// Whether macOS reports every file of a repository as uploaded to iCloud (docs/backup.md §3.4).
     public static func uploadStatus(of repository: URL) -> Upload {
         let keys: [URLResourceKey] = [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey, .isRegularFileKey]
         guard let walker = FileManager.default.enumerator(at: repository, includingPropertiesForKeys: keys) else { return .notInICloud }
-        var pending = 0
-        var ubiquitous = false
-        // A file whose upload state cannot be read is not counted as uploaded.
-        var unknown = 0
+        var entries: [UploadEntry?] = []
         for case let url as URL in walker {
-            guard let v = try? url.resourceValues(forKeys: Set(keys)) else { unknown += 1; continue }
-            guard v.isRegularFile == true else { continue }
-            if v.isUbiquitousItem == true {
-                ubiquitous = true
-                if v.ubiquitousItemIsUploaded != true { pending += 1 }
-            }
+            guard let v = try? url.resourceValues(forKeys: Set(keys)) else { entries.append(nil); continue }
+            entries.append(UploadEntry(regular: v.isRegularFile, ubiquitous: v.isUbiquitousItem,
+                                       uploaded: v.ubiquitousItemIsUploaded))
         }
-        if !ubiquitous { return .notInICloud }
-        return pending + unknown == 0 ? .uploaded : .waiting(pending + unknown)
+        return uploadStatus(entries)
     }
 
     // MARK: - Manifests
@@ -462,22 +478,31 @@ extension Backup {
 
     // MARK: - Restore drill (§8)
 
+    public enum DrillRepository: String, Codable, Sendable { case primary, second }
+
     /// Backs the binder up, restores the snapshot into a private temporary folder, compares, and cleans up.
-    public func drill(_ folder: URL, now: Date = Date()) throws {
+    public func drill(_ folder: URL, repository choice: DrillRepository = .primary, now: Date = Date()) throws {
         let s = try settings()
-        let primary = try engine(s.primary)
+        let path: String?
+        switch choice {
+        case .primary: path = s.primary
+        case .second:
+            guard s.second != nil else { throw Failure(message: "the second backup is not set up") }
+            path = s.second
+        }
+        let repository = try engine(path)
         var claimed = try state()
         let id = try claim(folder, &claimed)
-        claimed.rememberRepositories([s.primary], for: id)
+        claimed.rememberRepositories([path], for: id)
         try save(claimed)
         try Self.keepRootMetadata(folder)
-        _ = try primary.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes, skipIfUnchanged: false)
-        guard let snap = try primary.snapshots(tag: "binder:\(id)").last?.id else { throw Failure(message: "no snapshot to restore") }
+        _ = try repository.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes, skipIfUnchanged: false)
+        guard let snap = try repository.snapshots(tag: "binder:\(id)").last?.id else { throw Failure(message: "no snapshot to restore") }
         let target = dir.appendingPathComponent("verify/drill-\(id)", isDirectory: true)
         try? FileManager.default.removeItem(at: target)
         try AtomicFile.makePrivateFolder(target)
         defer { try? FileManager.default.removeItem(at: target) }
-        try primary.restore(snap, into: target)
+        try repository.restore(snap, into: target)
         guard try Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
         var st = try state()
         st.lastDrill = ISOTime.string(now)
@@ -493,7 +518,7 @@ extension Backup {
         public var stateSnapshot = false
         public var retention = false
         public var checked = false
-        /// What failed apart from the binders, by name (`backup_settings` or `backup_state` unreadable,
+        /// What failed apart from the binders, by name (`backup_settings` or `backup_state` unreadable, `backup_key` missing,
         /// `state_snapshot`, `retention`, `check`, `offload`, `forget`): each also counts in `failed` and stays due, so the next run tries it again.
         public var failedParts: [String] = []
         /// Folders not backed up because they hold another binder's backup id (`SharedBackupID`); each also counts
@@ -521,11 +546,16 @@ extension Backup {
             m.failed += 1
             if !m.failedParts.contains(part) { m.failedParts.append(part) }
         }
-        guard let configured = try? isConfigured else {
+        let configured: Settings
+        do { configured = try settings() } catch {
             fail("backup_settings")
             return m
         }
-        guard configured else { return m }
+        guard configured.primary != nil else { return m }
+        guard key != nil else {
+            fail("backup_key")
+            return m
+        }
         guard let st = try? state() else {
             fail("backup_state")
             return m
@@ -576,7 +606,7 @@ extension Backup {
             if (try? applyRetention(now: now)) != nil { m.retention = true } else { fail("retention") }
         }
         let primaryDue = due(\.lastCheck, 7 * 86_400)
-        let secondDue = ((try? settings())?.second != nil) && due(\.lastSecondCheck, 7 * 86_400)
+        let secondDue = configured.second != nil && due(\.lastSecondCheck, 7 * 86_400)
         if primaryDue || secondDue {
             let primaryReadData = primaryDue && due(\.lastReadData, 30 * 86_400)
             let secondReadData = secondDue && due(\.lastSecondReadData, 30 * 86_400)

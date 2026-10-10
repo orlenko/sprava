@@ -303,6 +303,15 @@ extension Backup {
                 try refuseIfChanged(id, folder: folder, job, &st)
                 return .waitingForICloud(n)
             }
+            // The replacement record is now durable off this Mac. Remove an earlier restored baseline's pins while
+            // the live folder is still here; a disconnected old repository then stops safely before anything moves.
+            if !job.oldPinsRemoved {
+                if let earlier = st.restored[id] { try unpinEarlierRestore(earlier, replacedBy: record) }
+                job.oldPinsRemoved = true
+                st.offloads[id] = job
+                if st.binders[id]?.snapshot != record.snapshot { st.binders[id]?.snapshot = record.snapshot }
+                try save(st)
+            }
             // The last comparison, the hub withdrawal and the move to the Trash run under the binder's write lock, so
             // no approval can land between them and leave with the folder while neither backup holds it, and no
             // publish can put the binder's slice back on the hub after it was taken off.
@@ -326,10 +335,33 @@ extension Backup {
         // failure here stops, and the retry finishes from the record (the folder is gone by then).
         try ShelfStore(supportDirectory: support).remove(folder)
         step("offload.unshelved")
+        if st.binders[id]?.snapshot != record.snapshot { st.binders[id]?.snapshot = record.snapshot }
         st.offloads[id] = nil
         st.restored[id] = nil
         try save(st)
         return .done(record)
+    }
+
+    /// Removes only the old `offloaded` pins. Restic keeps the otherwise identical snapshots under ordinary
+    /// retention, and `removeTag` is idempotent when another repository failed after this one succeeded.
+    func unpinEarlierRestore(_ earlier: State.Restored, replacedBy current: Offloaded) throws {
+        let s = try settings()
+        func key(_ repository: String, _ snapshot: String) -> String {
+            let real = Self.realPath(URL(fileURLWithPath: repository, isDirectory: true))
+            return "\(real)\u{0}\(snapshot)"
+        }
+        let replacements = Set([
+            (current.repository ?? s.primary).map { key($0, current.snapshot) },
+            (current.secondRepository ?? s.second).flatMap { repo in current.secondSnapshot.map { key(repo, $0) } },
+        ].compactMap { $0 })
+        let old: [(String?, String?)] = [
+            (earlier.repository ?? s.primary, earlier.snapshot),
+            (earlier.secondRepository ?? s.second, earlier.secondSnapshot),
+        ]
+        for (repository, snapshot) in old {
+            guard let repository, let snapshot, !replacements.contains(key(repository, snapshot)) else { continue }
+            try engine(repository).removeTag("offloaded", from: snapshot)
+        }
     }
 
     /// Restores a snapshot into a private temporary folder and lists it as `manifest` does; the folder is removed after.

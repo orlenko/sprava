@@ -575,4 +575,202 @@ import Testing
         #expect(lines.filter { $0.hasPrefix("forget ") }.allSatisfy { !$0.contains("--prune") })
         #expect(lines.filter { $0.hasPrefix("prune ") }.count == 1)
     }
+
+    // MARK: - Final review of 632487d
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aRewriteJournalIsInTheUploadedStateBeforeOriginalsAreForgotten() throws {
+        let e = try bb.env()
+        let waiting = BugbotBackupTests.Switch(false)
+        let b = try bb.configured(e, waiting: waiting)
+        _ = try b.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        waiting.on = true
+        #expect(try !b.forget(id, path: "correspondence/notary/letter.pdf", request: "invented-deletion-durable", now: now))
+
+        let repository = try b.engine(e.primary.path)
+        let stateSnapshot = try #require(try repository.snapshots(tag: "sprava-state").last?.id)
+        let recoveredFile = e.base.appendingPathComponent("invented-recovered-state.json")
+        try repository.dump(stateSnapshot, path: "/backup/state.json", to: recoveredFile)
+        let recovered = try JSONDecoder().decode(Backup.State.self, from: Data(contentsOf: recoveredFile))
+        #expect(recovered.rewrites.contains { $0.repository == e.primary.path && $0.before.count == 1 })
+        let snapshots = try repository.snapshots(tag: "sprava-state").count
+        #expect(try !b.forget(id, path: "correspondence/notary/letter.pdf", request: "invented-deletion-durable", now: now))
+        #expect(try repository.snapshots(tag: "sprava-state").count == snapshots)
+        waiting.on = false
+        #expect(try b.forget(id, path: "correspondence/notary/letter.pdf", request: "invented-deletion-durable", now: now))
+        #expect(try b.state().rewrites.isEmpty)
+        // Recover the uploaded pre-rewrite state after the rewrite: even though its local phase said "waiting", it
+        // follows restic's replacement link instead of retaining the now-missing original id.
+        try AtomicFile.write(try Data(contentsOf: recoveredFile), to: b.stateURL)
+        var recoveredState = try b.state()
+        try b.reconcileRewrites(&recoveredState)
+        #expect(recoveredState.rewrites.isEmpty)
+        let replacement = try #require(recoveredState.binders[id]?.snapshot)
+        #expect(try !repository.files(replacement).contains("correspondence/notary/letter.pdf"))
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aWaitingRewriteCheckpointsAgainAfterTheMirrorChanges() throws {
+        let e = try bb.env()
+        let waiting = BugbotBackupTests.Switch(false)
+        let b = try bb.configured(e, waiting: waiting)
+        _ = try b.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        waiting.on = true
+        #expect(try !b.forget(id, path: "correspondence/notary/letter.pdf", request: "invented-deletion-new-mirror", now: now))
+
+        let replacement = e.base.appendingPathComponent("icloud/Sprava Backup 2")
+        try b.setUp(primary: replacement, iCloudKeychain: false)
+        #expect(try b.engine(replacement.path).snapshots(tag: "sprava-state").isEmpty)
+        #expect(try !b.forget(id, path: "correspondence/notary/letter.pdf", request: "invented-deletion-new-mirror", now: now))
+        #expect(try b.engine(replacement.path).snapshots(tag: "sprava-state").count == 1)
+        #expect(try b.state().rewrites.first?.stateRepository == replacement.standardizedFileURL.path)
+
+        waiting.on = false
+        #expect(try b.forget(id, path: "correspondence/notary/letter.pdf", request: "invented-deletion-new-mirror", now: now))
+    }
+
+    @Test func everyUnconfirmedRegularRepositoryFilePreventsUploaded() {
+        let uploaded = Backup.UploadEntry(regular: true, ubiquitous: true, uploaded: true)
+        let local = Backup.UploadEntry(regular: true, ubiquitous: false, uploaded: nil)
+        let unknown = Backup.UploadEntry(regular: nil, ubiquitous: nil, uploaded: nil)
+        let directory = Backup.UploadEntry(regular: false, ubiquitous: false, uploaded: nil)
+        #expect(Backup.uploadStatus([uploaded, local, directory]) == .waiting(1))
+        #expect(Backup.uploadStatus([uploaded, unknown]) == .waiting(1))
+        #expect(Backup.uploadStatus([local]) == .notInICloud)
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aChangedReoffloadUnpinsTheEarlierCopies() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        guard case .done(let first) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("first offload did not finish"); return
+        }
+        let oldSecond = try #require(first.secondSnapshot)
+        let restored = try b.restore(first.backupID, now: now)
+        try Data("invented changed letter".utf8).write(to: restored.appendingPathComponent("correspondence/notary/letter.pdf"))
+        guard case .done(let second) = try b.offload(restored, deviceID: "dev", confirmOpenItems: true,
+                                                     now: now.addingTimeInterval(3600)) else {
+            Issue.record("second offload did not finish"); return
+        }
+        #expect(second.snapshot != first.snapshot)
+        #expect(second.secondSnapshot != oldSecond)
+        let primaryPins = try b.engine(e.primary.path).snapshots(tag: "offloaded").map(\.id)
+        let secondPins = try b.engine(e.second.path).snapshots(tag: "offloaded").map(\.id)
+        #expect(primaryPins.contains(second.snapshot) && !primaryPins.contains(first.snapshot))
+        #expect(secondPins.contains(try #require(second.secondSnapshot)) && !secondPins.contains(oldSecond))
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func oldPinCleanupFailsBeforeTheRestoredBinderLeaves() throws {
+        let e = try bb.env()
+        var b = try bb.configured(e)
+        guard case .done(let first) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("first offload did not finish"); return
+        }
+        let restored = try b.restore(first.backupID, now: now)
+        let replacement = e.base.appendingPathComponent("external/Sprava Second 2")
+        try b.setSecond(replacement)
+        try Data("invented changed letter".utf8).write(to: restored.appendingPathComponent("correspondence/notary/letter.pdf"))
+        let away = e.base.appendingPathComponent("invented-old-second-away")
+        b.atStep = { step in
+            if step == "offload.leaving" { try? FileManager.default.moveItem(at: e.second, to: away) }
+        }
+        #expect(throws: (any Error).self) {
+            _ = try b.offload(restored, deviceID: "dev", confirmOpenItems: true, now: now.addingTimeInterval(3600))
+        }
+        #expect(FileManager.default.fileExists(atPath: restored.path))
+        #expect(try b.state().offloads[first.backupID]?.stage == "leaving")
+
+        b.atStep = nil
+        try FileManager.default.moveItem(at: away, to: e.second)
+        guard case .done = try b.continueOffload(first.backupID, now: now.addingTimeInterval(3600)) else {
+            Issue.record("the retried offload did not finish"); return
+        }
+        #expect(try b.state().offloads[first.backupID] == nil)
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aSecondRepositoryAliasDoesNotUnpinTheCurrentCopy() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        guard case .done(let first) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("first offload did not finish"); return
+        }
+        let oldSecond = try #require(first.secondSnapshot)
+        let restored = try b.restore(first.backupID, now: now)
+        let alias = e.base.appendingPathComponent("invented-second-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: e.second)
+        try b.setSecond(alias)
+        guard case .done(let second) = try b.offload(restored, deviceID: "dev", confirmOpenItems: true,
+                                                     now: now.addingTimeInterval(3600)) else {
+            Issue.record("second offload did not finish"); return
+        }
+        #expect(second.snapshot == first.snapshot)
+        #expect(second.secondSnapshot == oldSecond)
+        #expect(try b.engine(alias.path).snapshots(tag: "offloaded").contains { $0.id == oldSecond })
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aQueuedDrillCanExerciseOnlyTheSecondRepository() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        let requests = BackupRequests(support: e.support)
+        let request = try requests.enqueue(.init(id: "invented-second-drill", kind: "drill", binder: e.folder.path,
+                                                 repository: "second", at: ISOTime.string(now)))
+        try requests.run(request, backup: b, deviceID: "dev", now: now, finishedAt: Date())
+        #expect(try requests.all().first?.state == "done")
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").isEmpty)
+        #expect(try b.engine(e.second.path).snapshots(tag: "binder:\(id)").count == 1)
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aNonCatalogWriteDuringASnapshotLeavesTheBinderDue() throws {
+        let e = try bb.env()
+        var b = try bb.configured(e)
+        let landed = e.folder.appendingPathComponent("correspondence/notary/invented-during-snapshot.pdf")
+        b.afterSnapshot = { try? Data("invented late document".utf8).write(to: landed) }
+        _ = try b.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.state().binders[id]?.at == nil)
+    }
+
+    @Test func specialOrLinkedBackupStateIsRefusedWithoutBlocking() throws {
+        let e = try bb.env()
+        let b = try bb.settingsOnly(e)
+        #expect(mkfifo(b.stateURL.path, 0o600) == 0)
+        let started = Date()
+        #expect(throws: Backup.Failure.self) { try b.state() }
+        #expect(Date().timeIntervalSince(started) < 2)
+        unlink(b.stateURL.path)
+        let target = e.base.appendingPathComponent("invented-state.json")
+        try Data("{}".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(at: b.stateURL, withDestinationURL: target)
+        #expect(throws: Backup.Failure.self) { try b.state() }
+
+        let blockedSupport = try temp("state-parent-file")
+        try Data("not a directory".utf8).write(to: blockedSupport.appendingPathComponent("backup"))
+        let blocked = Backup(support: blockedSupport, key: "TEST-KEY-AAAAA-BBBBB", resticBinary: nil,
+                             uploadCheck: { _ in .notInICloud })
+        #expect(throws: Backup.Failure.self) { try blocked.state() }
+    }
+
+    @Test func aLargeStateWrittenByBackupCanBeReadBack() throws {
+        let support = try temp("large-state")
+        let b = Backup(support: support, key: nil, resticBinary: nil, uploadCheck: { _ in .notInICloud })
+        let id = "0123456789abcdef0123456789abcdef"
+        let large = String(repeating: "a", count: 17 * 1024 * 1024)
+        var state = Backup.State()
+        state.restored[id] = .init(snapshot: "0123abcd", repository: "/invented/mirror", secondSnapshot: nil,
+                                   secondRepository: nil, manifest: ["documents/invented.pdf": large], bytes: 1, rootEntry: nil)
+        try b.save(state)
+        #expect(try b.state().restored[id]?.manifest["documents/invented.pdf"]?.count == large.count)
+    }
+
+    @Test func aConfiguredRepositoryWithoutItsKeyFailsMaintenance() throws {
+        let support = try temp("missing-key")
+        let b = Backup(support: support, key: nil, resticBinary: nil, uploadCheck: { _ in .notInICloud })
+        var settings = Backup.Settings()
+        settings.primary = support.appendingPathComponent("invented-mirror").path
+        try b.save(settings)
+        let maintenance = b.maintain(rows: [], deviceID: "dev", now: now)
+        #expect(maintenance.failed == 1)
+        #expect(maintenance.failedParts == ["backup_key"])
+    }
 }

@@ -101,6 +101,9 @@ public struct Backup: Sendable {
         /// Set once a snapshot of Sprava's state holding the offload record is in the mirror (`leave`), so a retry
         /// while iCloud uploads it only waits, and adds no snapshot of its own for iCloud to upload in turn.
         var stateSaved = false
+        /// The restored baseline's old retention pins are gone. Saved before the live folder leaves, so a retry never
+        /// needs an old, now-disconnected repository after the binder has already moved to the Trash.
+        var oldPinsRemoved = false
     }
 
     struct State: Codable {
@@ -175,6 +178,13 @@ public struct Backup: Sendable {
             var tag: String
             /// The snapshots carrying `tag` before the rewrite ran.
             var before: [String]
+            /// The journal has been snapshotted into the iCloud mirror. It may still be waiting for upload.
+            var stateSaved: Bool? = nil
+            /// Which mirror holds that state snapshot. A mirror change requires a new checkpoint before rewriting.
+            var stateRepository: String? = nil
+            /// `rewrite --forget` may have begun. Explicitly false means it is still waiting for the journal upload;
+            /// nil is an older journal, which was always written immediately before the rewrite.
+            var started: Bool? = nil
         }
     }
 
@@ -217,7 +227,22 @@ public struct Backup: Sendable {
     /// throws, so nothing ever saves over it: `offloaded` is the only way back to an offloaded binder. Only a missing
     /// directory entry is fresh: a link to a place that is away now (an unmounted disk) is unreadable, not empty.
     func state() throws -> State {
-        do { return try StateFile.read(State.self, from: stateURL) ?? State() } catch {
+        // Unlike small settings, this state contains complete manifests for restored binders. Keep a defensive cap,
+        // but one large enough for many legitimate manifests written by `save(State)` itself.
+        switch SafeFile.read(stateURL, limit: 256 * 1024 * 1024) {
+        case .missing:
+            // SafeFile also maps ENOTDIR to missing. Damaged parent state is never a fresh backup state.
+            var info = stat()
+            guard lstat(stateURL.path, &info) != 0, errno == ENOENT else {
+                throw Failure(message: "backup state is unreadable; nothing was changed (\(stateURL.path))")
+            }
+            return State()
+        case .ok(let data):
+            guard let state = try? JSONDecoder().decode(State.self, from: data) else {
+                throw Failure(message: "backup state is unreadable; nothing was changed (\(stateURL.path))")
+            }
+            return state
+        case .refused, .unreadable:
             throw Failure(message: "backup state is unreadable; nothing was changed (\(stateURL.path))")
         }
     }
@@ -467,6 +492,7 @@ extension Backup.InProgress {
         manifestSHA = try c.decodeIfPresent(String.self, forKey: .manifestSHA)
         root = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .root)
         stateSaved = try c.decodeIfPresent(Bool.self, forKey: .stateSaved) ?? false
+        oldPinsRemoved = try c.decodeIfPresent(Bool.self, forKey: .oldPinsRemoved) ?? false
     }
 }
 

@@ -14,18 +14,20 @@ public struct BackupRequests: Sendable {
         public var binder: String?           // a binder folder path, for offload, drill, backup_now
         public var backupID: String?         // an offloaded binder, for restore
         public var target: String?
+        public var repository: String?       // primary or second, for a drill (nil is primary)
         public var confirmOpenItems = false
         public var state = "queued"          // queued, running, waiting_for_icloud, done, failed, needs_confirmation
         public var message: String?
         public var at: String
 
-        package init(id: String, kind: String, binder: String? = nil, backupID: String? = nil, target: String? = nil,
+        package init(id: String, kind: String, binder: String? = nil, backupID: String? = nil, target: String? = nil, repository: String? = nil,
                      confirmOpenItems: Bool = false, state: String = "queued", message: String? = nil, at: String) {
             self.id = id
             self.kind = kind
             self.binder = binder
             self.backupID = backupID
             self.target = target
+            self.repository = repository
             self.confirmOpenItems = confirmOpenItems
             self.state = state
             self.message = message
@@ -74,7 +76,7 @@ public struct BackupRequests: Sendable {
     public func enqueue(_ r: Request) throws -> Request {
         try locked {
             var list = try all()
-            if let same = list.first(where: { $0.kind == r.kind && $0.binder == r.binder && $0.backupID == r.backupID
+            if let same = list.first(where: { $0.kind == r.kind && $0.binder == r.binder && $0.backupID == r.backupID && $0.repository == r.repository
                 && ["queued", "running", "waiting_for_icloud"].contains($0.state) }) { return same }
             list.append(r)
             try save(list)
@@ -140,7 +142,14 @@ public struct BackupRequests: Sendable {
                 outcome = { $0.state = "done"; $0.message = "restored"; $0.binder = url.path }
             case "drill":
                 guard let path = r.binder else { throw Backup.Failure(message: "no binder") }
-                try backup.drill(URL(fileURLWithPath: path, isDirectory: true), now: now)
+                let repository: Backup.DrillRepository
+                if let requested = r.repository {
+                    guard let choice = Backup.DrillRepository(rawValue: requested) else {
+                        throw Backup.Failure(message: "unknown drill repository")
+                    }
+                    repository = choice
+                } else { repository = .primary }
+                try backup.drill(URL(fileURLWithPath: path, isDirectory: true), repository: repository, now: now)
                 outcome = { $0.state = "done"; $0.message = "the restore drill passed" }
             case "backup_now":
                 guard let path = r.binder else { throw Backup.Failure(message: "no binder") }

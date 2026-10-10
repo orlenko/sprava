@@ -172,8 +172,36 @@ extension Backup {
                     if !targets.isEmpty {
                         // The snapshots are journaled before restic replaces them, and renamed in the records (this
                         // request's among them) only from what the repository shows afterwards, so a rewrite cut off
-                        // at any point is reconciled later.
-                        st.rewrites.append(State.Rewrite(repository: repo, tag: tag, before: listed.map(\.id)))
+                        // at any point is reconciled later. The journal is also snapshotted into the mirror and
+                        // uploaded before the originals are deleted: after loss of this Mac, recovered state can
+                        // still follow restic's `original` links to the replacements.
+                        let journal: Int
+                        if let waiting = st.rewrites.firstIndex(where: { $0.repository == repo && $0.tag == tag && $0.started == false }) {
+                            journal = waiting
+                        } else {
+                            st.rewrites.append(State.Rewrite(repository: repo, tag: tag, before: listed.map(\.id),
+                                                             stateSaved: false, stateRepository: nil, started: false))
+                            journal = st.rewrites.index(before: st.rewrites.endIndex)
+                            try save(st)
+                        }
+                        // Once written, retries only wait for that same repository data to upload. Creating another
+                        // state snapshot on each poll would itself give iCloud new work and could wait forever.
+                        let primary = try engine(s.primary).repository
+                        let checkpoint = st.rewrites[journal].stateRepository.map {
+                            Self.realPath(URL(fileURLWithPath: $0, isDirectory: true))
+                        }
+                        if st.rewrites[journal].stateSaved != true || checkpoint != Self.realPath(primary) {
+                            st.rewrites[journal].stateSaved = false
+                            st.rewrites[journal].stateRepository = primary.path
+                            try save(st)
+                            try writeStateSnapshot()
+                            st.rewrites[journal].stateSaved = true
+                            try save(st)
+                        }
+                        if let pending = try uploadPending(primary) {
+                            throw Failure(message: "the recovery record is waiting for iCloud to upload \(pending) file(s); no snapshot was rewritten")
+                        }
+                        st.rewrites[journal].started = true
                         try save(st)
                         step("forget.journaled")
                         try r.rewrite(snapshots: targets, excluding: path)
@@ -207,7 +235,12 @@ extension Backup {
     /// repository that cannot be read keeps its journal, and throws.
     func reconcileRewrites(_ st: inout State, in repository: String? = nil) throws {
         for journal in st.rewrites where repository == nil || journal.repository == repository {
-            st.rename(try engine(journal.repository).replacements(of: Set(journal.before), tag: journal.tag), in: journal.repository)
+            let replacements = try engine(journal.repository).replacements(of: Set(journal.before), tag: journal.tag)
+            // A local journal explicitly waiting for its state snapshot to upload is retained while no rewrite has
+            // happened. The uploaded copy has the same flag, though, so replacements must still be applied after
+            // loss of this Mac if the rewrite ran after that snapshot.
+            if journal.started == false && replacements.isEmpty { continue }
+            st.rename(replacements, in: journal.repository)
             st.rewrites.removeAll { $0 == journal }
             try save(st)
         }

@@ -218,6 +218,15 @@ public struct Restic: Sendable {
         try checked(["tag", snapshot, "--add", tag, "-q"])
     }
 
+    /// Removes a retention pin if that exact snapshot still carries it. Restic replaces the snapshot with an
+    /// otherwise equivalent one under a new id; callers use this only after no durable record needs the old id.
+    /// Looking it up first makes a retry after a partial multi-repository cleanup harmless.
+    public func removeTag(_ tag: String, from snapshot: String) throws {
+        guard snapshot.wholeMatch(of: /[0-9a-f]{8,64}/) != nil else { throw Failure(message: "restic tag: not a snapshot id") }
+        guard try snapshots(tag: tag).contains(where: { $0.id == snapshot }) else { return }
+        try checked(["tag", snapshot, "--remove", tag, "-q"])
+    }
+
     /// Restores a snapshot's contents into `target`, verifying every restored file; resumable. The no-progress cutoff
     /// holds while restic restores (reading the repository, which may hang on a cloud or a disk), and ends with the
     /// summary it prints when the files are in place: `--verify` then reads them back from the local target and
