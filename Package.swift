@@ -47,6 +47,10 @@ let package = Package(
         .target(name: "Backup", dependencies: ["SpravaKit"]),
         .testTarget(name: "BackupTests", dependencies: ["Backup"]),
 
+        // Registered brain clients, before the MCP transport and tools are added.
+        .target(name: "Brains", dependencies: ["SpravaKit"]),
+        .testTarget(name: "BrainsTests", dependencies: ["Brains", "SpravaKit"]),
+
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
