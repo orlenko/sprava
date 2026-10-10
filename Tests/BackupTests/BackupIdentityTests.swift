@@ -119,7 +119,7 @@ import Testing
         try Data("invented deed".utf8).write(to: folder.appendingPathComponent("documents/deed.pdf"))
         try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent("documents/current.pdf").path, withDestinationPath: "deed.pdf")
         let m = try Backup.manifest(folder)
-        #expect(m["documents/current.pdf"] == "link deed.pdf")
+        #expect(m["documents/current.pdf"] == "link 8:deed.pdf")
         // A link's own attribute counts, read without following it.
         let link = folder.appendingPathComponent("documents/current.pdf").path
         let note = Array("invented link note".utf8)
@@ -293,5 +293,87 @@ import Testing
         }
         try #require(bound == 0)
         #expect(try Backup.manifest(folder)["documents/s"] == nil)
+    }
+
+    @Test func exclusionsMatchResticsPatternExactly() throws {
+        let folder = try temp("tmp-names")
+        for name in [".tmp", "..tmp", ".invented.tmp", "invented.tmp"] {
+            try Data("invented".utf8).write(to: folder.appendingPathComponent(name))
+        }
+        let m = try Backup.manifest(folder)
+        #expect(m[".tmp"] != nil && m["invented.tmp"] != nil)
+        #expect(m["..tmp"] == nil && m[".invented.tmp"] == nil)
+    }
+
+    @Test func aLinkTargetCannotPassForMetadata() throws {
+        let folder = try temp("link-collision")
+        let plain = folder.appendingPathComponent("a")
+        try FileManager.default.createSymbolicLink(atPath: plain.path, withDestinationPath: "target")
+        let note = Array("invented".utf8)
+        #expect(setxattr(plain.path, "com.example.invented", note, note.count, 0, XATTR_NOFOLLOW) == 0)
+        let withAttribute = try #require(try Backup.manifest(folder)["a"])
+        try FileManager.default.removeItem(at: plain)
+        let suffix = String(withAttribute.dropFirst("link 6:target".count))
+        try FileManager.default.createSymbolicLink(atPath: plain.path, withDestinationPath: "target" + suffix)
+        #expect(try Backup.manifest(folder)["a"] != withAttribute)
+    }
+
+    @Test func aFIFOsPermissionsCount() throws {
+        let folder = try temp("fifo")
+        let fifo = folder.appendingPathComponent("pipe").path
+        #expect(mkfifo(fifo, 0o600) == 0)
+        let before = try #require(try Backup.manifest(folder)["pipe"])
+        #expect(chmod(fifo, 0o640) == 0)
+        #expect(try Backup.manifest(folder)["pipe"] != before)
+    }
+
+    @Test func aFileWhereTheBinderWasLetsTheMovedBinderKeepItsID() throws {
+        let base = try temp("file-in-place")
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        for replaceParent in [false, true] {
+            let original = base.appendingPathComponent("Projects-\(replaceParent)/Binder", isDirectory: true)
+            try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+            var st = Backup.State()
+            let id = try b.claim(original, &st)
+            let moved = base.appendingPathComponent("Archive-\(replaceParent)", isDirectory: true)
+            try FileManager.default.moveItem(at: original, to: moved)
+            // A file now sits where the binder, or its parent folder, was.
+            let replaced = replaceParent ? original.deletingLastPathComponent() : original
+            if replaceParent { try FileManager.default.removeItem(at: replaced) }
+            try Data("invented".utf8).write(to: replaced)
+            #expect(try b.claim(moved, &st) == id)
+            #expect(st.binders[id]?.path == moved.standardizedFileURL.path)
+        }
+    }
+
+    @Test func aReassignmentThatWroteItsIDIsFinishedOnRetry() throws {
+        let base = try temp("reassigned")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        let old = try b.claim(original, &st)
+        let copy = base.appendingPathComponent("Copy", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: copy)
+        // As if the process stopped after writing the copy's new id, before clearing the reassignment.
+        let new = "0123456789abcdef0123456789abcdef"
+        st.binders[new] = .init(path: copy.standardizedFileURL.path)
+        st.reassigning[old] = .init(path: copy.standardizedFileURL.path, id: new)
+        try b.save(st)
+        try Backup.writeBackupID(new, into: copy, creating: false)
+        #expect(try b.giveOwnBackupID(copy) == new)
+        #expect(try b.state().reassigning.isEmpty)
+    }
+
+    @Test func aBinderReachedThroughALinkOrWritableByItsGroupGetsAnID() throws {
+        let base = try temp("binder-roots")
+        let real = base.appendingPathComponent("Real", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        chmod(real.path, 0o775)
+        let link = base.appendingPathComponent("Linked")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let id = try Backup.backupID(link)
+        #expect(Backup.existingBackupID(real) == id)
+        #expect(try Backup.backupID(link) == id)
     }
 }

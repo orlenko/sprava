@@ -38,7 +38,10 @@ extension Backup {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { throw unreadable(prefix) }
             for name in names.sorted() {
                 // The names restic leaves out (`excludes`), wherever they are, and anything inside them.
-                if name == ".teka.lock" || name == ".DS_Store" || (name.hasPrefix(".") && name.hasSuffix(".tmp")) { continue }
+                // `.*.tmp` needs two dots of its own: `.tmp` alone is backed up.
+                if name == ".teka.lock" || name == ".DS_Store" || (name.utf8.count >= 5 && name.hasPrefix(".") && name.hasSuffix(".tmp")) {
+                    continue
+                }
                 let url = dir.appendingPathComponent(name)
                 let rel = prefix.isEmpty ? name : prefix + "/" + name
                 var info = stat()
@@ -56,7 +59,8 @@ extension Backup {
                     // A link's own attributes, read without following it: restic keeps those too. Its own
                     // modification time it does not give back on macOS (restic 0.19), so that is not compared.
                     guard let attributes = Self.attributesDigest(url.path) else { throw unreadable(rel) }
-                    out[rel] = "link " + target + (attributes.isEmpty ? "" : " xattr:" + attributes)
+                    // The target is length-prefixed: it may itself read like the metadata that follows it.
+                    out[rel] = "link \(target.utf8.count):" + target + (attributes.isEmpty ? "" : " xattr:" + attributes)
                 case S_IFREG:
                     guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
                     let mtime = " mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
@@ -69,7 +73,8 @@ extension Backup {
                 case S_IFSOCK:
                     continue
                 default:
-                    out[rel] = "special \(info.st_mode & S_IFMT)"
+                    // A FIFO or device node: restic keeps its permission bits and the device it stands for.
+                    out[rel] = "special \(info.st_mode & S_IFMT) mode:" + String(info.st_mode & 0o7777, radix: 8) + " rdev:\(info.st_rdev)"
                 }
             }
         }
@@ -151,13 +156,12 @@ extension Backup {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(metadata)
-        let url = folder.appendingPathComponent(folderMetadataPath)
-        if case .ok(let kept) = SafeFile.read(url), kept == data { return metadata }
-        var info = stat()
-        guard lstat(url.deletingLastPathComponent().path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+        guard let sprava = try? BinderSprava.open(folder, create: false) else {
             throw Failure(message: "the binder's .sprava folder is missing or not a folder; nothing was backed up")
         }
-        try AtomicFile.write(data, to: url)
+        let name = URL(fileURLWithPath: folderMetadataPath).lastPathComponent
+        if case .ok(let kept) = sprava.read(name, limit: 1024 * 1024), kept == data { return metadata }
+        try sprava.write(data, to: name)
         return metadata
     }
 

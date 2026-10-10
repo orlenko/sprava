@@ -13,7 +13,7 @@ extension Backup {
         // Only in a binder folder that is there: a binder moved or deleted since (a queued "back up now"), or on a disk
         // that is away, never gets a skeleton of its old path made for it.
         var info = stat()
-        guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+        guard stat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
             throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
         }
         let id = newBackupID()
@@ -21,16 +21,14 @@ extension Backup {
         return id
     }
 
-    /// Writes `.sprava/backup-id` through handles to the binder folder and its `.sprava` (`StateDirectory`): a
-    /// binder moved away meanwhile, or a link put in place of either folder, fails instead of being written through,
+    /// Writes `.sprava/backup-id` through handles to the binder folder and its `.sprava` (`BinderSprava`): a
+    /// binder moved away meanwhile, or a link put in place of `.sprava`, fails instead of being written through,
     /// and a new `.sprava` is flushed into the binder before the id counts.
     static func writeBackupID(_ id: String, into folder: URL, creating: Bool) throws {
-        let failure = Failure(message: "\(folder.lastPathComponent)'s backup id could not be written; nothing was backed up")
-        do {
-            guard let binder = try StateDirectory.open(folder),
-                  let sprava = try binder.directory(".sprava", create: creating) else { throw failure }
-            try sprava.write(Data((id + "\n").utf8), to: "backup-id")
-        } catch let error as Failure { throw error } catch { throw failure }
+        guard let sprava = try BinderSprava.open(folder, create: creating) else {
+            throw Failure(message: "\(folder.lastPathComponent)'s .sprava is missing; its backup id was not written")
+        }
+        try sprava.write(Data((id + "\n").utf8), to: "backup-id")
     }
 
     /// A folder holds another binder's backup id: it was copied, with `.sprava/backup-id`, from a binder that is still
@@ -72,14 +70,18 @@ extension Backup {
         // another one. One whose volume or id cannot be read may still hold it, so it keeps it.
         if let recorded = st.binders[id]?.path, Self.realPath(URL(fileURLWithPath: recorded)) != Self.realPath(folder) {
             let recordedURL = URL(fileURLWithPath: recorded, isDirectory: true)
-            if Self.folderEntry(recordedURL) == .unavailable {
+            switch Self.folderEntry(recordedURL) {
+            case .unavailable:
                 throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded + " (its location is unavailable)")
+            case .missing:
+                break
+            case .present:
+                let held: String?
+                do { held = try Self.storedBackupID(recordedURL) } catch {
+                    throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded + " (its backup id cannot be read)")
+                }
+                if held == id { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded) }
             }
-            let held: String?
-            do { held = try Self.storedBackupID(recordedURL) } catch {
-                throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded + " (its backup id cannot be read)")
-            }
-            if held == id { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: recorded) }
         }
         st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
         return id
@@ -92,6 +94,14 @@ extension Backup {
     public func giveOwnBackupID(_ folder: URL) throws -> String {
         guard let old = try Self.storedBackupID(folder) else { return try Self.backupID(folder) }
         var st = try state()
+        // A reassignment that wrote its id and stopped before clearing its record is finished: the folder already
+        // holds its own id.
+        let here = folder.standardizedFileURL.path
+        if let done = st.reassigning.first(where: { $0.value.id == old && Self.realPath(URL(fileURLWithPath: $0.value.path)) == Self.realPath(folder) }) {
+            st.reassigning[done.key] = nil
+            try save(st)
+            return old
+        }
         if let recorded = st.binders[old]?.path, Self.realPath(URL(fileURLWithPath: recorded)) == Self.realPath(folder) {
             throw Failure(message: "this binder's backups are kept under its backup id; only a copy gets a new one")
         }
@@ -104,7 +114,6 @@ extension Backup {
         // The folder owns the new id before it holds it: a crash between the two leaves a record of an id no folder
         // holds, never an id no record reserves. The reassignment is recorded by the id the copy holds, so a retry
         // finishes it with the same new id instead of minting another.
-        let here = folder.standardizedFileURL.path
         let id: String
         if let pending = st.reassigning[old], Self.realPath(URL(fileURLWithPath: pending.path)) == Self.realPath(folder) {
             id = pending.id
@@ -133,22 +142,22 @@ extension Backup {
     /// a special file, which is read without waiting on it, a file that cannot be read or holds something else)
     /// throws and is left as it is: a new id would cut the binder off from its snapshots and its records.
     static func storedBackupID(_ folder: URL) throws -> String? {
-        let sprava = folder.appendingPathComponent(".sprava")
-        let url = sprava.appendingPathComponent("backup-id")
         let unreadable = Failure(message: ".sprava/backup-id cannot be read; nothing was changed")
-        var st = stat()
-        if lstat(sprava.path, &st) != 0 {
-            guard errno == ENOENT else { throw unreadable }
-            return nil
+        let sprava: BinderSprava?
+        do { sprava = try BinderSprava.open(folder, create: false) } catch {
+            // A binder folder that is not there holds no id.
+            var info = stat()
+            if lstat(folder.path, &info) != 0, errno == ENOENT { return nil }
+            throw unreadable
         }
-        guard st.st_mode & S_IFMT == S_IFDIR else { throw unreadable }
-        if lstat(url.path, &st) != 0 {
-            guard errno == ENOENT else { throw unreadable }
-            return nil
+        guard let sprava else { return nil }
+        switch sprava.read("backup-id", limit: 64) {
+        case .missing: return nil
+        case .ok(let data):
+            guard let text = String(data: data, encoding: .utf8), text.wholeMatch(of: /[0-9a-f]{32}\n?/) != nil else { throw unreadable }
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .refused, .unreadable: throw unreadable
         }
-        guard case .ok(let data) = SafeFile.read(url, limit: 64), let text = String(data: data, encoding: .utf8),
-              text.wholeMatch(of: /[0-9a-f]{32}\n?/) != nil else { throw unreadable }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     enum FolderEntry: Equatable { case present, missing, unavailable }
@@ -161,7 +170,19 @@ extension Backup {
     /// nearest ancestor that opens; a missing volume mount point (`/Volumes/<disk>`, a disk that is away) is not.
     static func folderEntry(_ folder: URL) -> FolderEntry {
         var info = stat()
-        if lstat(folder.path, &info) == 0 { return .present }
+        if lstat(folder.path, &info) == 0 {
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR: return .present
+            case S_IFLNK:
+                // A binder reached through a link: the link's target decides; one that cannot be reached may be on
+                // a disk that is away.
+                guard stat(folder.path, &info) == 0 else { return .unavailable }
+                return info.st_mode & S_IFMT == S_IFDIR ? .present : .missing
+            default:
+                // A file where the binder was: the binder is not there.
+                return .missing
+            }
+        }
         guard errno == ENOENT || errno == ENOTDIR else { return .unavailable }
         let parent = folder.deletingLastPathComponent()
         if parent.standardizedFileURL.path == "/Volumes" { return .unavailable }

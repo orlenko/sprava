@@ -18,7 +18,7 @@ public enum SafeFile {
     }
 
     /// What a failed `open` means for the caller.
-    static func openFailure(_ code: Int32) -> Outcome {
+    package static func openFailure(_ code: Int32) -> Outcome {
         switch code {
         case ENOENT, ENOTDIR: .missing
         case ELOOP: .refused("a symbolic link")
@@ -28,7 +28,7 @@ public enum SafeFile {
     }
 
     /// Checks and reads an open file; split out so a test can hand in a descriptor that fails.
-    static func read(fd: Int32, limit: Int) -> Outcome {
+    package static func read(fd: Int32, limit: Int) -> Outcome {
         var st = stat()
         guard fstat(fd, &st) == 0 else { return .unreadable(String(cString: strerror(errno))) }
         guard st.st_mode & S_IFMT == S_IFREG else { return .refused("not a plain file") }
