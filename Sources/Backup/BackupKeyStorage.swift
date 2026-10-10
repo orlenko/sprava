@@ -248,7 +248,10 @@ extension BackupKey {
             if inICloudKeychain {
                 // Preserve the existing synchronized slot: its older key may already be on another Mac while
                 // a newly added item still waits for sync. Each recovery key has an independent, immutable name.
+                // Keys kept on this Mac only, after an earlier opt-out or replacement, go back too, so a new Mac
+                // can still open an older repository without typing.
                 if let previous = previous.synchronized { try archive(previous, in: keychain) }
+                for earlier in try localHistory(keychain) { try archive(earlier, in: keychain) }
                 try archive(key, in: keychain)
             }
             try keychain.put(key, account, false)

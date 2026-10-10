@@ -139,8 +139,19 @@ import Testing
             let keys = try BackupKey.recoveryKeys(environment: [:], keychain: device.keychain)
             #expect(keys.first == "INVNT-SECOND")
             #expect(Set(keys) == Set(["INVNT-FIRST", "INVNT-SECOND"]))
-            #expect(device.cloud.values.contains("INVNT-FIRST") == false)
+            // Opting in publishes every key this Mac keeps, so a new Mac can open older repositories too.
+            #expect(device.cloud.values.contains("INVNT-FIRST") == optedIn)
         }
+    }
+
+    @Test func optingBackInRepublishesKeysKeptOnThisMac() throws {
+        let device = Replica()
+        try BackupKey.store("INVNT-FIRST", inICloudKeychain: true, keychain: device.keychain)
+        try BackupKey.store("INVNT-SECOND", inICloudKeychain: true, keychain: device.keychain)
+        try BackupKey.store("INVNT-SECOND", inICloudKeychain: false, keychain: device.keychain)
+        try BackupKey.store("INVNT-SECOND", inICloudKeychain: true, keychain: device.keychain)
+        let newMac = Replica(device.cloud)
+        #expect(Set(try BackupKey.recoveryKeys(environment: [:], keychain: newMac.keychain)) == Set(["INVNT-FIRST", "INVNT-SECOND"]))
     }
 
     @Test func aReplacementWhoseHistoryCannotBeWrittenChangesNothing() throws {
