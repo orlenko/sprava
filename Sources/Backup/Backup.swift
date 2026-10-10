@@ -24,6 +24,9 @@ public struct Backup: Sendable {
     /// Runs at each durable step boundary of a multi-step operation, named; tests take an image of the disk there,
     /// as a crash would leave it, and run the operation again from that image.
     var atStep: (@Sendable (String) -> Void)?
+    /// Flushes the parent after a restored directory is renamed into place. Tests replace it to prove state is not
+    /// advanced when the durability barrier fails.
+    var flushRestoreParent: @Sendable (URL) throws -> Void
 
     func step(_ name: String) { atStep?(name) }
 
@@ -36,6 +39,7 @@ public struct Backup: Sendable {
         self.removeFolder = removeFolder
         self.hubSpool = hubSpool
         self.uploadCheck = uploadCheck
+        flushRestoreParent = { try AtomicFile.flushFolder($0, step: "flush restored binder's parent") }
     }
 
     public struct Failure: Error, CustomStringConvertible {
@@ -86,7 +90,7 @@ public struct Backup: Sendable {
 
     struct InProgress: Codable, Equatable {
         var path: String
-        var stage: String          // start, snapshotted, verified, waiting_for_upload, copied, leaving
+        var stage: String          // start, snapshotted, verified, waiting_for_upload, copied, leaving, abandoning
         var snapshot: String?
         /// The mirror `snapshot` is in: a job whose mirror the person has since replaced starts over.
         var repository: String?
@@ -269,7 +273,8 @@ public struct Backup: Sendable {
         if let pinned = try (candidate ?? settings()).resticSHA256, Restic.sha256(of: binary) != pinned {
             throw Failure(message: "restic changed since backup was set up; set it up again to trust the new one")
         }
-        return Restic(binary: binary, repository: URL(fileURLWithPath: path, isDirectory: true), key: key, support: support)
+        return Restic(binary: binary, repository: URL(fileURLWithPath: path, isDirectory: true), key: key, support: support,
+                      expectedSHA256: try (candidate ?? settings()).resticSHA256)
     }
 
     // MARK: - Setup
@@ -295,6 +300,9 @@ public struct Backup: Sendable {
             _ = try r.snapshots()   // throws when the key does not open it
         } else {
             try r.initRepository()
+        }
+        guard uploadCheck(r.repository) != .notInICloud else {
+            throw Failure(message: "the backup mirror must be in iCloud Drive; nothing was changed")
         }
         // States written before repository history was recorded know their last ordinary snapshot only through the
         // old setting. Preserve that destination before replacing it. Saving this first is harmless if saving the
@@ -322,12 +330,48 @@ public struct Backup: Sendable {
         s.second = folder.standardizedFileURL.path
         let second = try engine(s.second, settings: s)
         if second.isInitialized() { _ = try second.snapshots() } else { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) }
-        // As for a replaced mirror, migrate states from before repository history was recorded. A waiting or earlier
-        // offload may have copied a binder to the old second backup even when its current job no longer names it.
-        if let oldSecond, oldSecond != s.second {
+        if oldSecond != s.second {
             var st = try state()
-            for id in Array(st.binders.keys) {
-                st.rememberRepositories([oldSecond], for: id)
+            // A copy must never land in a repository that document expunging cannot discover. Record every possible
+            // destination before the first copy; a path that ultimately receives nothing is harmless history.
+            for record in st.offloaded {
+                st.rememberRepositories([s.second], for: record.backupID)
+            }
+            if let oldSecond {
+                // Older states may name the former second only in settings. Preserve it before migration can fail.
+                for id in Array(st.binders.keys) {
+                    st.rememberRepositories([oldSecond], for: id)
+                }
+            }
+            try save(st)
+            step("second.migration.recorded")
+            // An offloaded binder has no live copy on this Mac. Before the setting can leave its former second
+            // repository behind, copy every such pinned snapshot from its recorded mirror into the replacement and
+            // read it back. A retired or disconnected old second disk is therefore not needed for the migration.
+            for i in st.offloaded.indices {
+                let record = st.offloaded[i]
+                let source = try engine(record.repository ?? primaryPath)
+                let tagged = try source.snapshots(tag: "binder:\(record.backupID)")
+                guard let original = tagged.first(where: { $0.id == record.snapshot }), original.tags.contains("offloaded") else {
+                    throw Failure(message: "the pinned mirror snapshot for \(record.name) is missing; the second backup was not changed")
+                }
+                let expected = try Self.digest(restoredManifest(original.id, from: source, id: "second-source-\(record.backupID)"))
+                try second.copy(original.id, from: source)
+                step("second.migration.copied")
+                let candidates = try second.snapshots(tag: "binder:\(record.backupID)")
+                var verified: Restic.Snapshot?
+                for candidate in candidates.reversed() where candidate.tags.contains("offloaded") {
+                    if let manifest = try? restoredManifest(candidate.id, from: second, id: "second-copy-\(record.backupID)"),
+                       Self.digest(manifest) == expected {
+                        verified = candidate
+                        break
+                    }
+                }
+                guard let copy = verified else {
+                    throw Failure(message: "the pinned copy of \(record.name) could not be verified in the new second backup; the setting was not changed")
+                }
+                st.offloaded[i].secondSnapshot = copy.id
+                st.offloaded[i].secondRepository = s.second
             }
             try save(st)
         }

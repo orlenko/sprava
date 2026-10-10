@@ -27,6 +27,16 @@ extension Backup {
            let leaving = try state().offloads.first(where: { $0.value.path == folder.standardizedFileURL.path && $0.value.stage == "leaving" }) {
             return try continueOffload(leaving.key, now: now)
         }
+        // Abandonment has already proved the candidate snapshot unusable and journaled cleanup. Resume that cleanup
+        // before reading or validating the live binder, and before its older offloaded record can look like a shared
+        // backup id. This route is what makes every interruption after the journal durable.
+        var recovery = try state()
+        if let abandoning = recovery.offloads.first(where: {
+            $0.value.path == folder.standardizedFileURL.path && $0.value.stage == "abandoning"
+        }) {
+            try finishAbandoningOffload(abandoning.key, abandoning.value, &recovery)
+            throw Failure(message: "the earlier offload was abandoned safely; offload again to back up the current binder")
+        }
         try refuseSharedFate(s)
         let teka = Teka.read(folder)
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
@@ -79,10 +89,35 @@ extension Backup {
         // The folder's own metadata is part of the binder too (`RootMetadata`).
         // Kept inside the binder, so both backups hold it and their verification compares it (`keepRootMetadata`).
         let root = try Self.keepRootMetadata(folder)
-        if try job.stage == "snapshotted"
-            || (job.stage != "start" && (job.manifestSHA != Self.digest(Self.manifest(folder)) || job.root != root || job.repository != s.primary)) {
-            if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id } }
-            job = InProgress(path: job.path, stage: "start")
+        if job.stage == "abandoning" {
+            try finishAbandoningOffload(id, job, &st)
+            throw Failure(message: "the earlier offload was abandoned safely; offload again to back up the current binder")
+        }
+        // The public operation has the live binder in hand, so a completed verification/copy that became stale can
+        // release its pins and restart immediately. A direct `continueOffload` still stops after cleanup, which lets
+        // its caller report that the work it was continuing is no longer current.
+        if job.stage != "start", job.stage != "snapshotted" {
+            let changed = try job.manifestSHA != Self.digest(Self.manifest(folder)) || job.root != root || job.repository != s.primary
+            if changed {
+                try abandonOffload(id, job, &st)
+                job = InProgress(path: job.path, stage: "start")
+            }
+        }
+        // A crash after recording a snapshot resumes verification of that exact pinned snapshot. Replacing it on
+        // every retry would leave each abandoned `offloaded` tag outside retention forever.
+        if job.stage == "snapshotted", job.repository == s.primary {
+            guard let snap = job.snapshot, let expected = job.manifestSHA else {
+                throw Failure(message: "the offload's recorded snapshot is incomplete; nothing was removed")
+            }
+            let restored = try restoredManifest(snap, from: engine(job.repository), id: id)
+            guard Self.digest(restored) == expected else {
+                try abandonOffload(id, job, &st)
+                throw Failure(message: "the snapshot does not match the binder as it was snapshotted; nothing was removed")
+            }
+            job.stage = "verified"
+            st.offloads[id] = job
+            try save(st)
+            step("offload.verified")
         }
         if job.stage == "start" {
             // Nothing changed since a restore: the pinned snapshots are still the binder (§6.4), and the earlier
@@ -147,6 +182,7 @@ extension Backup {
                 guard restored == manifest else {
                     let missing = Set(manifest.keys).subtracting(restored.keys).count
                     let differ = manifest.filter { restored[$0.key] != nil && restored[$0.key] != $0.value }.count
+                    try abandonOffload(id, job, &st)
                     throw Failure(message: "the snapshot does not match the binder (\(missing) missing, \(differ) different); nothing was removed")
                 }
                 job.stage = "verified"
@@ -408,10 +444,35 @@ extension Backup {
     func refuseIfChanged(_ id: String, folder: URL, _ job: InProgress, _ st: inout State) throws {
         let manifest = try Self.manifest(folder), root = try Self.rootMetadata(folder)
         guard job.manifestSHA != Self.digest(manifest) || job.root != root else { return }
+        try abandonOffload(id, job, &st)
+        throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
+    }
+
+    /// Releases the retention pins of an offload that was proven unusable while its live binder is still present.
+    /// The abandoning stage is durable before a tag change can replace a snapshot id. A retry then goes directly to
+    /// idempotent cleanup instead of trying to restore the obsolete id as a still-snapshotted job.
+    func abandonOffload(_ id: String, _ job: InProgress, _ st: inout State) throws {
+        var marked = job
+        marked.stage = "abandoning"
+        st.offloads[id] = marked
+        try save(st)
+        step("offload.abandoning")
+        try finishAbandoningOffload(id, marked, &st)
+    }
+
+    func finishAbandoningOffload(_ id: String, _ job: InProgress, _ st: inout State) throws {
+        // The live binder is still here, so these no-longer-current snapshots need no retention pin. Remove the pins
+        // before forgetting the job; if a repository is away, the job remains and the cleanup is retried. removeTag is
+        // idempotent if a crash lands between repositories or before the state save.
+        if let repository = job.repository, let snapshot = job.snapshot {
+            try engine(repository).removeTag("offloaded", from: snapshot)
+        }
+        if let repository = job.secondRepository, let snapshot = job.secondSnapshot {
+            try engine(repository).removeTag("offloaded", from: snapshot)
+        }
         st.offloads[id] = nil
         st.offloaded.removeAll { $0.backupID == id }
         try save(st)
-        throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
     }
 
     /// Why a binder the hub does not trust with its name is not offloaded, in words the person can act on: the reasons

@@ -9,6 +9,12 @@ public enum BackupKey {
     static let service = "ca.orlenko.sprava.backup"
     static let account = "repository-key"
     static let syncedAccount = "repository-key-icloud"
+    static let rollbackAccount = "repository-key-rollback"
+
+    struct StoredKeys: Codable, Equatable {
+        var local: String?
+        var synchronized: String?
+    }
 
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
@@ -41,16 +47,34 @@ public enum BackupKey {
         ProcessInfo.processInfo.environment["SPRAVA_BACKUP_KEY_FILE"].flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
     }
 
+    static func readSystem(_ acct: String, synchronizable: Bool) -> (OSStatus, String?) {
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: acct, kSecReturnData as String: true]
+        if synchronizable { query[kSecAttrSynchronizable as String] = true }
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &out)
+        guard status == errSecSuccess, let data = out as? Data else { return (status, nil) }
+        return (status, String(decoding: data, as: UTF8.self))
+    }
+
     public static func load() -> String? {
         if let file = fileOverride { return (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return load(keychain: .system)
+    }
+
+    static func load(keychain: Keychain) -> String? {
+        // This item is the transaction journal for a key change. Until it is deleted, the old key remains the only
+        // committed one even if a crash has already changed either ordinary Keychain item.
+        let (rollbackStatus, rollbackText) = keychain.read(rollbackAccount, false)
+        if rollbackStatus == errSecSuccess {
+            guard let rollbackText, let data = rollbackText.data(using: .utf8),
+                  let keys = try? JSONDecoder().decode(StoredKeys.self, from: data) else { return nil }
+            return keys.local ?? keys.synchronized
+        }
+        guard rollbackStatus == errSecItemNotFound else { return nil }
         for acct in [account, syncedAccount] {
-            var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                        kSecAttrAccount as String: acct, kSecReturnData as String: true]
-            if acct == syncedAccount { query[kSecAttrSynchronizable as String] = true }
-            var out: CFTypeRef?
-            if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data {
-                return String(decoding: data, as: UTF8.self)
-            }
+            let (status, value) = keychain.read(acct, acct == syncedAccount)
+            if status == errSecSuccess, let value { return value }
         }
         return nil
     }
@@ -82,12 +106,22 @@ public enum BackupKey {
     struct Keychain {
         var put: (_ key: String, _ account: String, _ synchronizable: Bool) throws -> Void
         var delete: (_ account: String, _ synchronizable: Bool) -> OSStatus
+        var read: (_ account: String, _ synchronizable: Bool) -> (OSStatus, String?)
+        init(put: @escaping (_ key: String, _ account: String, _ synchronizable: Bool) throws -> Void,
+             delete: @escaping (_ account: String, _ synchronizable: Bool) -> OSStatus,
+             read: @escaping (_ account: String, _ synchronizable: Bool) -> (OSStatus, String?) = { _, _ in (errSecItemNotFound, nil) }) {
+            self.put = put
+            self.delete = delete
+            self.read = read
+        }
         static var system: Keychain {
             Keychain(put: { try BackupKey.put($0, account: $1, synchronizable: $2) }, delete: { acct, synchronizable in
                 var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                             kSecAttrAccount as String: acct]
                 if synchronizable { query[kSecAttrSynchronizable as String] = true }
                 return SecItemDelete(query as CFDictionary)
+            }, read: { acct, synchronizable in
+                readSystem(acct, synchronizable: synchronizable)
             })
         }
     }
@@ -105,14 +139,63 @@ public enum BackupKey {
     /// Choosing not to keep the key in iCloud Keychain takes an earlier copy out of it, or says it could not:
     /// a copy left there would stay as reachable as the person chose it not to be, and `load()` would still use it.
     static func store(_ key: String, inICloudKeychain: Bool, keychain: Keychain) throws {
-        try keychain.put(key, account, false)
-        if inICloudKeychain {
-            try keychain.put(key, syncedAccount, true)
-        } else {
-            let status = keychain.delete(syncedAccount, true)
+        func read(_ acct: String, _ synchronized: Bool) throws -> String? {
+            let (status, value) = keychain.read(acct, synchronized)
             guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw Failure(message: "the backup key could not be taken out of iCloud Keychain (\(status)); remove it there, or keep it there")
+                throw Failure(message: "the existing backup key could not be read (\(status)); nothing was changed")
             }
+            return value
+        }
+
+        func remove(_ acct: String, _ synchronized: Bool) throws {
+            let status = keychain.delete(acct, synchronized)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw Failure(message: "a backup key could not be removed from the Keychain (\(status))")
+            }
+        }
+
+        func restore(_ previous: StoredKeys) throws {
+            if let local = previous.local { try keychain.put(local, account, false) }
+            else { try remove(account, false) }
+            if let synchronized = previous.synchronized { try keychain.put(synchronized, syncedAccount, true) }
+            else { try remove(syncedAccount, true) }
+            try remove(rollbackAccount, false)
+        }
+
+        // Finish rolling back an interrupted earlier change before starting another. `load()` also reads this journal
+        // first, so every crash point keeps returning the old committed key.
+        if let journal = try read(rollbackAccount, false) {
+            guard let data = journal.data(using: .utf8), let previous = try? JSONDecoder().decode(StoredKeys.self, from: data) else {
+                throw Failure(message: "the saved backup-key rollback record is unreadable; nothing was changed")
+            }
+            try restore(previous)
+        }
+
+        let previous = StoredKeys(local: try read(account, false), synchronized: try read(syncedAccount, true))
+        let data = try JSONEncoder().encode(previous)
+        guard let journal = String(data: data, encoding: .utf8) else {
+            throw Failure(message: "the backup-key rollback record could not be made; nothing was changed")
+        }
+        try keychain.put(journal, rollbackAccount, false)
+
+        do {
+            if inICloudKeychain {
+                try keychain.put(key, syncedAccount, true)
+            } else {
+                let status = keychain.delete(syncedAccount, true)
+                guard status == errSecSuccess || status == errSecItemNotFound else {
+                    throw Failure(message: "the backup key could not be taken out of iCloud Keychain (\(status)); remove it there, or keep it there")
+                }
+            }
+            try keychain.put(key, account, false)
+            try remove(rollbackAccount, false)
+        } catch {
+            do {
+                try restore(previous)
+            } catch {
+                throw Failure(message: "the key change failed and its earlier Keychain values could not be restored (\(error))")
+            }
+            throw error
         }
     }
 

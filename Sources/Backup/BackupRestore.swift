@@ -128,6 +128,9 @@ extension Backup {
             guard (try? Self.storedBackupID(destination)) == id else {
                 throw Failure(message: "the restored files of \(destination.lastPathComponent) are missing; restore again")
             }
+            // The rename may have landed while its parent-directory flush failed. A retry must pass the same
+            // durability barrier before the restore journal can say the staged folder is gone.
+            try flushRestoreParent(destination.deletingLastPathComponent())
             return
         }
         do { try Self.refuseOccupied(destination) } catch {
@@ -138,6 +141,9 @@ extension Backup {
         guard rename(staging.path, destination.path) == 0 else {
             throw Failure(message: "the restored binder could not be moved to \(destination.lastPathComponent) (\(String(cString: strerror(errno)))); restore again")
         }
+        // The following state save says the staging folder is gone and the destination is installed. Make the rename
+        // durable first, so a power loss can never preserve that state while rolling the directory move back.
+        try flushRestoreParent(destination.deletingLastPathComponent())
     }
 
     /// Checks that a folder on the Shelf is all of an offloaded binder's snapshot (`restore`), reading it only. The

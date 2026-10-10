@@ -6,7 +6,9 @@ import SpravaKit
 /// runs them one at a time, off the command queue (architecture 2.1: the command queue never waits on slow work).
 public struct BackupRequests: Sendable {
     public let support: URL
-    public init(support: URL) { self.support = support }
+    let lockTimeout: TimeInterval
+    public init(support: URL) { self.support = support; lockTimeout = 3 }
+    init(support: URL, lockTimeout: TimeInterval) { self.support = support; self.lockTimeout = lockTimeout }
 
     public struct Request: Codable, Sendable, Equatable {
         public var id: String
@@ -44,15 +46,26 @@ public struct BackupRequests: Sendable {
     /// it, from different threads, and a lost update could leave a request "running" for ever. Another process that
     /// writes the file takes the same file lock; one that cannot be taken throws, and nothing is changed.
     func locked<T>(_ body: () throws -> T) throws -> T {
-        Self.lock.lock()
+        guard Self.lock.lock(before: Date().addingTimeInterval(lockTimeout)) else {
+            throw Backup.Failure(message: "the backup queue's lock cannot be taken within \(lockTimeout) seconds; nothing was changed")
+        }
         defer { Self.lock.unlock() }
         try? AtomicFile.makePrivateFolder(lockURL.deletingLastPathComponent())
         let fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw Backup.Failure(message: "the backup queue's lock cannot be opened; nothing was changed") }
         defer { close(fd) }
-        var taken = flock(fd, LOCK_EX)
-        while taken != 0 && errno == EINTR { taken = flock(fd, LOCK_EX) }
-        guard taken == 0 else { throw Backup.Failure(message: "the backup queue's lock cannot be taken; nothing was changed") }
+        let deadline = ProcessInfo.processInfo.systemUptime + lockTimeout
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            let code = errno
+            if code == EINTR { continue }
+            guard code == EWOULDBLOCK || code == EAGAIN else {
+                throw Backup.Failure(message: "the backup queue's lock cannot be taken; nothing was changed")
+            }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw Backup.Failure(message: "the backup queue's lock cannot be taken within \(lockTimeout) seconds; nothing was changed")
+            }
+            usleep(10_000)
+        }
         defer { flock(fd, LOCK_UN) }
         return try body()
     }

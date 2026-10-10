@@ -230,20 +230,31 @@ import Testing
     final class FakeKeychain: @unchecked Sendable {
         var calls: [String] = []
         var deleteStatus: OSStatus = errSecSuccess
+        var values: [String: String] = [:]
         var keychain: BackupKey.Keychain {
-            BackupKey.Keychain(put: { _, acct, sync in self.calls.append("put \(acct) \(sync)") },
-                               delete: { acct, sync in self.calls.append("delete \(acct) \(sync)"); return self.deleteStatus })
+            BackupKey.Keychain(put: { key, acct, sync in
+                self.calls.append("put \(acct) \(sync)")
+                self.values[acct] = key
+            }, delete: { acct, sync in
+                self.calls.append("delete \(acct) \(sync)")
+                if acct == BackupKey.syncedAccount, self.deleteStatus != errSecSuccess { return self.deleteStatus }
+                return self.values.removeValue(forKey: acct) == nil ? errSecItemNotFound : errSecSuccess
+            }, read: { acct, _ in
+                self.values[acct].map { (errSecSuccess, $0) } ?? (errSecItemNotFound, nil)
+            })
         }
     }
 
     @Test func optingOutOfICloudKeychainDeletesTheSynchronizedKey() throws {
         let fake = FakeKeychain()
         try BackupKey.store("INVNT-KEYAA-BBBBB", inICloudKeychain: true, keychain: fake.keychain)
-        #expect(fake.calls == ["put repository-key false", "put repository-key-icloud true"])
+        #expect(fake.calls == ["put repository-key-rollback false", "put repository-key-icloud true",
+                               "put repository-key false", "delete repository-key-rollback false"])
 
         fake.calls = []
         try BackupKey.store("INVNT-KEYAA-BBBBB", inICloudKeychain: false, keychain: fake.keychain)
-        #expect(fake.calls == ["put repository-key false", "delete repository-key-icloud true"])
+        #expect(fake.calls == ["put repository-key-rollback false", "delete repository-key-icloud true",
+                               "put repository-key false", "delete repository-key-rollback false"])
 
         // Nothing there to delete is fine; a deletion the Keychain refuses is reported.
         fake.deleteStatus = errSecItemNotFound

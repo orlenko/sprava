@@ -72,11 +72,22 @@ extension Backup {
     @discardableResult
     public func forgetDocument(in folder: URL, path: String, request: String, now: Date = Date()) throws -> Bool {
         guard DocumentPaths.isSafe(path, forFiling: false) else { throw Failure(message: "that document is not in the binder") }
-        // A binder never backed up has no snapshot to hold the document.
-        guard try Self.storedBackupID(folder) != nil else { return true }
+        var st = try state()
+        // A missing in-binder id is not proof that no backup exists: an outside edit may have removed it after this
+        // folder was recorded. Recover the one id whose recorded holder is this folder; ambiguity fails closed.
+        if try Self.storedBackupID(folder) == nil {
+            let here = Self.realPath(folder)
+            let known = st.binders.compactMap { id, record in
+                record.path.map { Self.realPath(URL(fileURLWithPath: $0, isDirectory: true)) == here ? id : nil } ?? nil
+            }
+            guard known.count <= 1 else { throw Failure(message: "this binder's recorded backup id is ambiguous; nothing was forgotten") }
+            guard let id = known.first else { return true }   // A binder never backed up has no snapshot to hold it.
+            let url = folder.appendingPathComponent(".sprava/backup-id")
+            try AtomicFile.makePrivateFolder(url.deletingLastPathComponent())
+            try AtomicFile.write(Data((id + "\n").utf8), to: url)
+        }
         // Forgetting rewrites every snapshot under the binder's backup id: a copy that carries another binder's id
         // would rewrite that binder's backups too, so it is refused (`claim`).
-        var st = try state()
         let id = try claim(folder, &st)
         try save(st)
         step("forget.claimed")

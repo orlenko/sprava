@@ -200,7 +200,10 @@ import Testing
 
     @Test(.enabled(if: BugbotBackupTests.hasRestic)) func offloadRefusesAMirrorThatIsNotInICloud() throws {
         let e = try bb.env()
-        let b = try bb.configured(e, upload: .notInICloud)
+        _ = try bb.configured(e)
+        // Setup now rejects a non-iCloud primary itself. Model iCloud becoming unavailable after a valid setup to
+        // retain this offload-specific regression.
+        let b = bb.backup(e, upload: .notInICloud)
         do {
             _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
             Issue.record("offloaded onto a mirror that is not in iCloud")
@@ -772,5 +775,284 @@ import Testing
         let maintenance = b.maintain(rows: [], deviceID: "dev", now: now)
         #expect(maintenance.failed == 1)
         #expect(maintenance.failedParts == ["backup_key"])
+    }
+
+    // MARK: - Final review of 831da3d
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func replacingTheSecondBackupMigratesEveryOffloadedBinderFirst() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        guard case .done(let first) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("the binder did not offload"); return
+        }
+        let away = e.base.appendingPathComponent("invented-retired-second")
+        try FileManager.default.moveItem(at: e.second, to: away)
+        let replacement = e.base.appendingPathComponent("external/Sprava Second Replacement")
+        try b.setSecond(replacement)
+        let migrated = try #require(try b.offloaded().first)
+        #expect(try b.settings().second == replacement.standardizedFileURL.path)
+        #expect(migrated.secondRepository == replacement.standardizedFileURL.path)
+        #expect(try b.engine(replacement.path).snapshots(tag: "offloaded").contains { $0.id == migrated.secondSnapshot })
+
+        // The new second copy is independently usable even with both the live binder and its original second disk gone.
+        let primaryAway = e.base.appendingPathComponent("invented-primary-away")
+        try FileManager.default.moveItem(at: e.primary, to: primaryAway)
+        #expect(try b.restore(first.backupID, now: now).path == e.folder.standardizedFileURL.path)
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aPartialSecondMigrationLeavesItsDestinationDiscoverable() throws {
+        let e = try bb.env()
+        var b = try bb.configured(e)
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("the binder did not offload"); return
+        }
+        let replacement = e.base.appendingPathComponent("external/Sprava Interrupted Replacement")
+        let away = e.base.appendingPathComponent("invented-interrupted-replacement")
+        let once = BugbotBackupTests.Switch(true)
+        b.atStep = { step in
+            if step == "second.migration.copied", once.on {
+                once.on = false
+                try? FileManager.default.moveItem(at: replacement, to: away)
+            }
+        }
+        #expect(throws: (any Error).self) { try b.setSecond(replacement) }
+        #expect(try b.settings().second == e.second.standardizedFileURL.path)
+        #expect(try b.state().binders[record.backupID]?.repositories.contains(replacement.standardizedFileURL.path) == true)
+    }
+
+    @Test func aFailedSynchronizedKeyChangeLeavesTheLocalKeyUntouched() {
+        var values = [BackupKey.account: "INVNT-OLDKY-AAAAA", BackupKey.syncedAccount: "INVNT-OLDKY-AAAAA"]
+        var calls: [String] = []
+        var refuseSynchronizedPut = true
+        var refuseSynchronizedDelete = false
+        let keychain = BackupKey.Keychain(put: { key, account, _ in
+            calls.append("put \(account)")
+            if account == BackupKey.syncedAccount, refuseSynchronizedPut, key == "INVNT-NEWKY-BBBBB" {
+                throw BackupKey.Failure(message: "invented refusal")
+            }
+            values[account] = key
+        }, delete: { account, _ in
+            calls.append("delete \(account)")
+            if account == BackupKey.syncedAccount, refuseSynchronizedDelete { return errSecInteractionNotAllowed }
+            return values.removeValue(forKey: account) == nil ? errSecItemNotFound : errSecSuccess
+        }, read: { account, _ in
+            values[account].map { (errSecSuccess, $0) } ?? (errSecItemNotFound, nil)
+        })
+        #expect(throws: BackupKey.Failure.self) {
+            try BackupKey.store("INVNT-NEWKY-BBBBB", inICloudKeychain: true, keychain: keychain)
+        }
+        #expect(values[BackupKey.account] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.syncedAccount] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.rollbackAccount] == nil)
+        #expect(calls == ["put \(BackupKey.rollbackAccount)", "put \(BackupKey.syncedAccount)", "put \(BackupKey.account)",
+                          "put \(BackupKey.syncedAccount)", "delete \(BackupKey.rollbackAccount)"])
+        calls = []
+        refuseSynchronizedPut = false
+        refuseSynchronizedDelete = true
+        #expect(throws: BackupKey.Failure.self) {
+            try BackupKey.store("INVNT-NEWKY-BBBBB", inICloudKeychain: false, keychain: keychain)
+        }
+        #expect(values[BackupKey.account] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.syncedAccount] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.rollbackAccount] == nil)
+    }
+
+    @Test func aFailedLocalKeyChangeRestoresTheCloudRecoveryKey() {
+        var values = [BackupKey.account: "INVNT-OLDKY-AAAAA", BackupKey.syncedAccount: "INVNT-OLDKY-AAAAA"]
+        var calls: [String] = []
+        let keychain = BackupKey.Keychain(put: { key, account, _ in
+            calls.append("put \(account)")
+            if account == BackupKey.account, key == "INVNT-NEWKY-BBBBB" { throw BackupKey.Failure(message: "invented local refusal") }
+            values[account] = key
+        }, delete: { account, _ in
+            calls.append("delete \(account)")
+            return values.removeValue(forKey: account) == nil ? errSecItemNotFound : errSecSuccess
+        }, read: { account, _ in
+            values[account].map { (errSecSuccess, $0) } ?? (errSecItemNotFound, nil)
+        })
+        #expect(throws: BackupKey.Failure.self) {
+            try BackupKey.store("INVNT-NEWKY-BBBBB", inICloudKeychain: true, keychain: keychain)
+        }
+        #expect(values[BackupKey.account] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.syncedAccount] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.rollbackAccount] == nil)
+        #expect(calls == [
+            "put \(BackupKey.rollbackAccount)", "put \(BackupKey.syncedAccount)", "put \(BackupKey.account)",
+            "put \(BackupKey.account)", "put \(BackupKey.syncedAccount)", "delete \(BackupKey.rollbackAccount)",
+        ])
+        calls = []
+        #expect(throws: BackupKey.Failure.self) {
+            try BackupKey.store("INVNT-NEWKY-BBBBB", inICloudKeychain: false, keychain: keychain)
+        }
+        #expect(values[BackupKey.account] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.syncedAccount] == "INVNT-OLDKY-AAAAA")
+        #expect(values[BackupKey.rollbackAccount] == nil)
+        #expect(calls == [
+            "put \(BackupKey.rollbackAccount)", "delete \(BackupKey.syncedAccount)", "put \(BackupKey.account)",
+            "put \(BackupKey.account)", "put \(BackupKey.syncedAccount)", "delete \(BackupKey.rollbackAccount)",
+        ])
+    }
+
+    @Test func anInterruptedKeyChangeKeepsLoadingAndCanRecoverTheCommittedKey() throws {
+        let previous = BackupKey.StoredKeys(local: nil, synchronized: "INVNT-OLDKY-AAAAA")
+        let journal = try #require(String(data: JSONEncoder().encode(previous), encoding: .utf8))
+        var values = [BackupKey.rollbackAccount: journal, BackupKey.syncedAccount: "INVNT-NEWKY-BBBBB"]
+        let keychain = BackupKey.Keychain(put: { key, account, _ in values[account] = key }, delete: { account, _ in
+            values.removeValue(forKey: account) == nil ? errSecItemNotFound : errSecSuccess
+        }, read: { account, _ in
+            values[account].map { (errSecSuccess, $0) } ?? (errSecItemNotFound, nil)
+        })
+        #expect(BackupKey.load(keychain: keychain) == "INVNT-OLDKY-AAAAA")
+        try BackupKey.store("INVNT-NEXTK-CCCCC", inICloudKeychain: true, keychain: keychain)
+        #expect(values[BackupKey.rollbackAccount] == nil)
+        #expect(BackupKey.load(keychain: keychain) == "INVNT-NEXTK-CCCCC")
+    }
+
+    @Test func aRestoreRenameIsFlushedBeforeItsStateCanAdvance() throws {
+        let base = try temp("restore-flush")
+        let destination = base.appendingPathComponent("Invented Binder", isDirectory: true)
+        let id = "0123456789abcdef0123456789abcdef"
+        let staging = Backup.staging(for: destination, id: id)
+        try AtomicFile.makePrivateFolder(staging.appendingPathComponent(".sprava", isDirectory: true))
+        try AtomicFile.write(Data((id + "\n").utf8), to: staging.appendingPathComponent(".sprava/backup-id"))
+        let contents = Backup.State.RestoredContents(path: destination.path, baseline: nil, staging: staging.path)
+        var b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .notInICloud })
+        let refusing = BugbotBackupTests.Switch(true)
+        let called = BugbotBackupTests.Switch(false)
+        b.flushRestoreParent = { _ in
+            called.on = true
+            if refusing.on { throw Backup.Failure(message: "invented flush refusal") }
+        }
+        #expect(throws: Backup.Failure.self) { try b.install(contents, id: id) }
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        // A retry recognizes that the rename landed, but still cannot advance while the same barrier fails.
+        called.on = false
+        #expect(throws: Backup.Failure.self) { try b.install(contents, id: id) }
+        #expect(called.on)
+        refusing.on = false
+        called.on = false
+        try b.install(contents, id: id)
+        #expect(called.on)
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aSnapshotInterruptedBeforeVerificationIsResumedWithoutAnotherPin() throws {
+        let e = try bb.env()
+        var b = try bb.configured(e)
+        let away = e.base.appendingPathComponent("invented-mirror-away")
+        b.atStep = { step in
+            if step == "offload.snapshotted" { try? FileManager.default.moveItem(at: e.primary, to: away) }
+        }
+        #expect(throws: (any Error).self) {
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
+        }
+        let id = try Backup.backupID(e.folder)
+        let interrupted = try #require(try b.state().offloads[id]?.snapshot)
+        try FileManager.default.moveItem(at: away, to: e.primary)
+        b.atStep = nil
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("the interrupted offload did not finish"); return
+        }
+        #expect(record.snapshot == interrupted)
+        #expect(try b.engine(e.primary.path).snapshots(tag: "offloaded").map(\.id) == [interrupted])
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aDefinitivelyMismatchingSnapshotIsUnpinnedAndRestartable() throws {
+        let e = try bb.env()
+        var b = try bb.configured(e)
+        let id = try Backup.backupID(e.folder)
+        let before = try Backup.digest(Backup.manifest(e.folder))
+        try Data("invented write during snapshot".utf8).write(to: e.folder.appendingPathComponent("correspondence/notary/letter.pdf"))
+        let primary = try b.engine(e.primary.path)
+        let result = try primary.backup(e.folder, tags: ["sprava", "binder:\(id)", "offloaded"], excludes: Backup.excludes,
+                                        skipIfUnchanged: false)
+        let snapshot = try #require(result.snapshot)
+        var state = try b.state()
+        var job = Backup.InProgress(path: e.folder.standardizedFileURL.path, stage: "snapshotted")
+        job.snapshot = snapshot
+        job.repository = e.primary.standardizedFileURL.path
+        job.manifestSHA = before
+        state.offloads[id] = job
+        try b.save(state)
+
+        let away = e.base.appendingPathComponent("invented-abandonment-away")
+        b.atStep = { step in
+            if step == "offload.abandoning" { try? FileManager.default.moveItem(at: e.primary, to: away) }
+        }
+        #expect(throws: (any Error).self) {
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
+        }
+        #expect(try b.state().offloads[id]?.stage == "abandoning")
+        // A re-offload can retain the restored binder's earlier record until the new one is safely leaving. Recovery
+        // must bypass the ordinary shared-id guard while abandonment cleans its interrupted pin.
+        var interrupted = try b.state()
+        interrupted.offloaded = [Backup.Offloaded(backupID: id, name: "estate-example", originalPath: job.path, snapshot: snapshot,
+                                                   secondSnapshot: nil, secondRepository: nil, bytes: 1, at: ISOTime.string(now), summary: "",
+                                                   documents: [], openItemsConfirmed: 0)]
+        try b.save(interrupted)
+        try FileManager.default.moveItem(at: away, to: e.primary)
+        b.atStep = nil
+        #expect(throws: Backup.Failure.self) {
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
+        }
+        #expect(try b.state().offloads[id] == nil)
+        #expect(try !primary.snapshots(tag: "offloaded").contains { $0.id == snapshot })
+        guard case .done(let replacement) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else {
+            Issue.record("the abandoned offload did not restart"); return
+        }
+        #expect(replacement.snapshot != snapshot)
+    }
+
+    @Test func everyResticCommandRechecksThePinnedExecutable() throws {
+        let base = try temp("restic-pin")
+        let binary = base.appendingPathComponent("restic")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: binary)
+        chmod(binary.path, 0o755)
+        let digest = try #require(Restic.sha256(of: binary))
+        let r = Restic(binary: binary, repository: base.appendingPathComponent("repo"), key: "TEST-KEY-AAAAA-BBBBB",
+                       support: base.appendingPathComponent("support"), expectedSHA256: digest)
+        #expect(try r.run(["version"]).status == 0)
+        let marker = base.appendingPathComponent("invented-ran")
+        try Data("#!/bin/sh\ntouch \"\(marker.path)\"\nexit 0\n".utf8).write(to: binary)
+        chmod(binary.path, 0o755)
+        #expect(throws: Restic.Failure.self) { try r.run(["version"]) }
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aPrimaryOutsideICloudIsNeverSavedAsTheMirror() throws {
+        let e = try bb.env()
+        let b = Backup(support: e.support, key: "TEST-KEY-AAAAA-BBBBB", uploadCheck: { _ in .notInICloud })
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false) }
+        #expect(try b.settings().primary == nil)
+    }
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aRecordedBinderWhoseBackupIDWasRemovedStillForgets() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        _ = try b.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        try FileManager.default.removeItem(at: e.folder.appendingPathComponent(".sprava/backup-id"))
+        try FileManager.default.removeItem(at: e.folder.appendingPathComponent("correspondence/notary/letter.pdf"))
+        #expect(try b.forgetDocument(in: e.folder, path: "correspondence/notary/letter.pdf", request: "invented-missing-id", now: now))
+        #expect(try Backup.storedBackupID(e.folder) == id)
+        for snapshot in try b.engine(e.primary.path).snapshots(tag: "binder:\(id)") {
+            #expect(try !b.engine(e.primary.path).files(snapshot.id).contains("correspondence/notary/letter.pdf"))
+        }
+    }
+
+    @Test func aHeldRequestQueueLockStopsAtItsDeadline() throws {
+        let support = try temp("request-lock")
+        let requests = BackupRequests(support: support, lockTimeout: 0.05)
+        try AtomicFile.makePrivateFolder(requests.lockURL.deletingLastPathComponent())
+        let fd = open(requests.lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        #expect(fd >= 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+        #expect(flock(fd, LOCK_EX) == 0)
+        let started = Date()
+        #expect(throws: Backup.Failure.self) {
+            try requests.enqueue(.init(id: "invented-held-lock", kind: "backup_now", binder: "/Invented/Binder", at: ISOTime.string(now)))
+        }
+        #expect(Date().timeIntervalSince(started) < 1)
+        #expect(!FileManager.default.fileExists(atPath: requests.url.path))
     }
 }

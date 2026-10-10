@@ -254,7 +254,8 @@ import Testing
         let b = backup(e)
         try b.setUp(primary: e.primary, iCloudKeychain: false)
         let other = e.base.appendingPathComponent("other/Sprava Backup")
-        try Backup(support: e.base.appendingPathComponent("support2"), key: "OTHER-KEY-CCCCC").setUp(primary: other, iCloudKeychain: false)
+        try Backup(support: e.base.appendingPathComponent("support2"), key: "OTHER-KEY-CCCCC",
+                   uploadCheck: { _ in .uploaded }).setUp(primary: other, iCloudKeychain: false)
         let wrong = backup(e, key: "WRONG-KEY-DDDDD")
         #expect(throws: (any Error).self) { try wrong.setUp(primary: other, iCloudKeychain: false) }
         #expect(try b.settings().primary == e.primary.standardizedFileURL.path)

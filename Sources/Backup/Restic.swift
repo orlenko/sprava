@@ -12,16 +12,20 @@ public struct Restic: Sendable {
     public let key: String
     public let cacheDir: URL
     public let runDir: URL
+    /// The executable digest trusted at setup. Checked again immediately before every command, because a long-lived
+    /// Restic value can outlive a Homebrew upgrade or another replacement of the file at this path.
+    public let expectedSHA256: String?
 
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
         public var description: String { message }
     }
 
-    public init(binary: URL, repository: URL, key: String, support: URL) {
+    public init(binary: URL, repository: URL, key: String, support: URL, expectedSHA256: String? = nil) {
         self.binary = binary
         self.repository = repository
         self.key = key
+        self.expectedSHA256 = expectedSHA256
         cacheDir = support.appendingPathComponent("backup/cache", isDirectory: true)
         runDir = support.appendingPathComponent("backup/run", isDirectory: true)
     }
@@ -81,6 +85,9 @@ public struct Restic: Sendable {
     @discardableResult
     public func run(_ args: [String], cwd: URL? = nil, otherKey: (repo: URL, key: String)? = nil, timeout: TimeInterval? = nil,
                     stall: TimeInterval? = Restic.stallLimit, stallEndsAt marker: String? = nil, stdoutTo file: URL? = nil) throws -> Output {
+        if let expectedSHA256, Self.sha256(of: binary) != expectedSHA256 {
+            throw Failure(message: "restic changed since backup was set up; set it up again to trust the new one")
+        }
         let keyURL = try keyFile()
         defer { unlink(keyURL.path) }
         var full = args + ["--repo", repository.path, "--password-file", keyURL.path, "--cache-dir", cacheDir.path]
