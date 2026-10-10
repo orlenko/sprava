@@ -84,9 +84,20 @@ import Testing
             } else {
                 try Data("{ invented, not json".utf8).write(to: target)
             }
-            #expect(try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: true))
+            // Left in place, and the withdrawal fails with the record kept: it is not known to be gone.
+            #expect(throws: TekaStore.Refused.self) { _ = try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: true) }
             var info = stat()
             #expect(lstat(target.path, &info) == 0)
+            #expect(HubLane.loadCursors(folder).sliceName != nil)
         }
+    }
+
+    @Test func aSliceLargerThanTheDefaultReadLimitIsStillRecognised() throws {
+        let (_, spool) = try adopted()
+        let target = try slice(spool)
+        // An invented slice of 17 MiB, above SafeFile's default limit, is read back to be checked.
+        let big = #"{"teka":"tax","items":[{"id":"x","title":""# + String(repeating: "a", count: 17 << 20) + #""}]}"#
+        try Data(big.utf8).write(to: target)
+        #expect(HubLane.sliceOnSpool(at: target) != nil)
     }
 }

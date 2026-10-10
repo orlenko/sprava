@@ -58,9 +58,17 @@ extension HubLane {
         }
         for (name, hashes) in targets {
             let url = try spoolFile(inbox, name, ".agenda.json")
-            // By record, only a slice recognised as one Sprava recorded goes: one another program wrote, or one that
-            // cannot be read as a slice (malformed, a link), may be another binder's and is left.
-            if let hashes, !(sliceOnSpool(at: url).map { hashes.contains($0.hash) } ?? false) { continue }
+            // By record, only a slice recognised as one Sprava recorded goes; one another program wrote is left. An
+            // entry that cannot be read as a slice (malformed, a link) may be another binder's, or this one's: it is
+            // left, and the withdrawal fails with the record kept, rather than report a slice gone that may not be.
+            if let hashes {
+                var entry = stat()
+                if lstat(url.path, &entry) != 0, errno == ENOENT { continue }
+                guard let found = sliceOnSpool(at: url) else {
+                    throw TekaStore.Refused(reason: "the slice under a shared name cannot be checked; nothing was withdrawn")
+                }
+                if !hashes.contains(found.hash) { continue }
+            }
             try removeSlice(url)
         }
         guard var cursors = byRecord ? own : reconciled(try readCursors(teka.folder), folder: teka.folder, inbox: inbox) else {
@@ -89,13 +97,17 @@ extension HubLane {
         return try withdraw(Teka.read(folder), inbox: inbox, recordedOnly: nameCollides)
     }
 
+    /// The largest slice read back from the spool: above any slice a catalog within its size limit (64 MiB) can
+    /// project to, so every slice Sprava wrote can be recognised.
+    static let sliceReadLimit = 256 << 20
+
     /// The canonical hash of a slice on the spool, `generated` left out; nil when it cannot be read as JSON. Only a
     /// regular file is read, never through a link, so a FIFO there cannot stall the publish.
     static func sliceHash(at url: URL) -> String? { sliceOnSpool(at: url)?.hash }
 
     /// `sliceHash`, and the slice's `generated` stamp.
     static func sliceOnSpool(at url: URL) -> (hash: String, generated: String?)? {
-        guard case .ok(let data) = SafeFile.read(url), let value = try? JSONParser.parse(data).value,
+        guard case .ok(let data) = SafeFile.read(url, limit: sliceReadLimit), let value = try? JSONParser.parse(data).value,
               let hash = try? Canonical.hash(stripGenerated(value)) else { return nil }
         return (hash, value["generated"]?.stringValue)
     }
