@@ -49,6 +49,9 @@ extension Backup {
                 guard errno == ENOENT else { throw Failure(message: "\(sub)/ cannot be checked; nothing was removed") }
                 return false
             }
+            guard info.st_mode & S_IFMT == S_IFDIR else {
+                throw Failure(message: "\(sub)/ is not a real folder; nothing was removed")
+            }
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
                 throw Failure(message: "\(sub)/ cannot be listed; nothing was removed")
             }

@@ -453,4 +453,126 @@ import Testing
         try BackupKey.put("INVNT-NEWKY", account: "repository-key", synchronizable: false, items: adding)
         #expect(calls == ["update", "add"])
     }
+
+    // MARK: - Final review of 954ff7f
+
+    @Test(.enabled(if: BugbotBackupTests.hasRestic)) func aFailedSecondReadCheckRetriesTheSamePart() throws {
+        let e = try bb.env()
+        let b = try bb.configured(e)
+        try b.check(readData: true, now: now)
+        #expect(try b.state().readDataPart == 1)
+        #expect(try b.state().secondReadDataPart == 1)
+
+        let later = now.addingTimeInterval(31 * 86_400)
+        let away = e.second.deletingLastPathComponent().appendingPathComponent("invented-away")
+        try FileManager.default.moveItem(at: e.second, to: away)
+        #expect(throws: (any Error).self) { try b.check(readData: true, now: later) }
+        var st = try b.state()
+        #expect(st.readDataPart == 2 && st.lastReadData == ISOTime.string(later))
+        #expect(st.secondReadDataPart == 1 && st.lastSecondReadData == ISOTime.string(now))
+
+        try FileManager.default.moveItem(at: away, to: e.second)
+        let retried = later.addingTimeInterval(3600)
+        #expect(b.maintain(rows: [], deviceID: "dev", now: retried).checked)
+        st = try b.state()
+        #expect(st.secondReadDataPart == 2 && st.lastSecondReadData == ISOTime.string(retried))
+    }
+
+    @Test func aRestoreKeepsTrackingStagingItCannotRemove() throws {
+        let e = try bb.env()
+        let b = try bb.settingsOnly(e)
+        let id = "0123456789abcdef0123456789abcdef"
+        let old = e.base.appendingPathComponent("old/Estate", isDirectory: true)
+        let newer = e.base.appendingPathComponent("new/Estate", isDirectory: true)
+        var st = Backup.State()
+        st.offloaded = [Backup.Offloaded(backupID: id, name: "estate-example", originalPath: old.path, snapshot: "0123abcd",
+                                         repository: e.primary.path, secondSnapshot: nil, secondRepository: nil, bytes: 1,
+                                         at: ISOTime.string(now), summary: "", documents: [], openItemsConfirmed: 0)]
+        st.restoring[id] = old.path
+        try b.save(st)
+        let staging = Backup.staging(for: old, id: id)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let document = staging.appendingPathComponent("deed.pdf")
+        try Data("invented restored document".utf8).write(to: document)
+        #expect(chflags(document.path, UInt32(UF_IMMUTABLE)) == 0)
+        defer { chflags(document.path, 0) }
+
+        #expect(throws: Backup.Failure.self) { _ = try b.restore(id, to: newer, now: now) }
+        #expect(try b.state().restoring[id] == old.path)
+        #expect(FileManager.default.fileExists(atPath: document.path))
+    }
+
+    @Test func linkedWorkFoldersStopAnOffload() throws {
+        let e = try bb.env()
+        let b = try bb.settingsOnly(e)
+        let outside = e.base.appendingPathComponent("invented-empty-outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let outgoing = e.folder.appendingPathComponent("outgoing", isDirectory: true)
+        try? FileManager.default.removeItem(at: outgoing)
+        try FileManager.default.createSymbolicLink(at: outgoing, withDestinationURL: outside)
+        do {
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
+            Issue.record("a linked outgoing folder was accepted")
+        } catch let failure as Backup.Failure {
+            #expect(failure.message.contains("not a real folder"))
+        }
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+    }
+
+    @Test func specialOrLinkedSettingsFilesAreRefusedWithoutBlocking() throws {
+        let support = try temp("settings-entry")
+        let b = Backup(support: support, key: "TEST-KEY-AAAAA-BBBBB", resticBinary: nil, uploadCheck: { _ in .notInICloud })
+        try AtomicFile.makePrivateFolder(b.dir)
+        #expect(mkfifo(b.settingsURL.path, 0o600) == 0)
+        let started = Date()
+        #expect(throws: Backup.Failure.self) { try b.settings() }
+        #expect(Date().timeIntervalSince(started) < 2)
+        unlink(b.settingsURL.path)
+        let target = support.appendingPathComponent("invented-settings.json")
+        try Data("{}".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(at: b.settingsURL, withDestinationURL: target)
+        #expect(throws: Backup.Failure.self) { try b.settings() }
+
+        let blockedSupport = try temp("settings-parent-file")
+        try Data("not a directory".utf8).write(to: blockedSupport.appendingPathComponent("backup"))
+        let blocked = Backup(support: blockedSupport, key: nil, resticBinary: nil, uploadCheck: { _ in .notInICloud })
+        #expect(throws: Backup.Failure.self) { try blocked.settings() }
+    }
+
+    @Test func aTerminalRequestGetsItsCompletionTime() throws {
+        let support = try temp("request-time")
+        let requests = BackupRequests(support: support)
+        let finished = Date()
+        let started = finished.addingTimeInterval(-2 * 86_400)
+        let request = try requests.enqueue(.init(id: "invented-request", kind: "invented-unknown", at: ISOTime.string(started)))
+        let b = Backup(support: support, key: nil, resticBinary: nil, uploadCheck: { _ in .notInICloud })
+        try requests.run(request, backup: b, deviceID: "dev", now: started, finishedAt: finished)
+        let saved = try #require(requests.all().first)
+        #expect(saved.state == "failed" && saved.at == ISOTime.string(finished))
+    }
+
+    @Test func retentionForgetsEveryBinderThenPrunesOnce() throws {
+        let base = try temp("retention")
+        let log = base.appendingPathComponent("restic-arguments.log")
+        let binary = base.appendingPathComponent("restic")
+        let script = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '\(log.path)'\nexit 0\n"
+        try Data(script.utf8).write(to: binary)
+        chmod(binary.path, 0o755)
+        let b = Backup(support: base.appendingPathComponent("support"), key: "TEST-KEY-AAAAA-BBBBB", resticBinary: binary,
+                       uploadCheck: { _ in .uploaded })
+        var settings = Backup.Settings()
+        settings.primary = base.appendingPathComponent("mirror").path
+        try b.save(settings)
+        var st = Backup.State()
+        st.binders["0123456789abcdef0123456789abcdef"] = .init()
+        st.binders["fedcba9876543210fedcba9876543210"] = .init()
+        try b.save(st)
+
+        try b.applyRetention(now: now)
+        let lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(lines.count == 3)
+        #expect(lines.filter { $0.hasPrefix("forget ") }.count == 2)
+        #expect(lines.filter { $0.hasPrefix("forget ") }.allSatisfy { !$0.contains("--prune") })
+        #expect(lines.filter { $0.hasPrefix("prune ") }.count == 1)
+    }
 }

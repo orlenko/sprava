@@ -261,9 +261,11 @@ public struct Restic: Sendable {
         try checked(["copy", snapshot], otherKey: (source.repository, source.key))
     }
 
-    public func forget(tag: String, keepLast: Int, keepWithinDays: Int, keepMonthly: Int, keepYearly: Int) throws {
-        try checked(["forget", "--tag", tag, "--group-by", "tags", "--keep-last", String(keepLast), "--keep-within", "\(keepWithinDays)d",
-                     "--keep-monthly", String(keepMonthly), "--keep-yearly", String(keepYearly), "--keep-tag", "offloaded", "--prune"])
+    public func forget(tag: String, keepLast: Int, keepWithinDays: Int, keepMonthly: Int, keepYearly: Int, prune: Bool = true) throws {
+        var args = ["forget", "--tag", tag, "--group-by", "tags", "--keep-last", String(keepLast), "--keep-within", "\(keepWithinDays)d",
+                    "--keep-monthly", String(keepMonthly), "--keep-yearly", String(keepYearly), "--keep-tag", "offloaded"]
+        if prune { args.append("--prune") }
+        try checked(args)
     }
 
     /// Rewrites the given snapshots, and only those, without the entry at `path` inside the binder

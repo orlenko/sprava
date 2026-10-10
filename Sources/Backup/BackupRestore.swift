@@ -53,7 +53,15 @@ extension Backup {
         // the destination itself: whatever the person puts there meanwhile is never overwritten (`install`).
         let staging = Self.staging(for: destination, id: backupID)
         if let earlier = st.restoring[backupID], earlier != destination.path {
-            try? FileManager.default.removeItem(at: Self.staging(for: URL(fileURLWithPath: earlier, isDirectory: true), id: backupID))
+            let old = Self.staging(for: URL(fileURLWithPath: earlier, isDirectory: true), id: backupID)
+            var info = stat()
+            if lstat(old.path, &info) == 0 {
+                do { try FileManager.default.removeItem(at: old) } catch {
+                    throw Failure(message: "the earlier partial restore at \(old.lastPathComponent) could not be removed; restore to its original destination again")
+                }
+            } else if errno != ENOENT {
+                throw Failure(message: "the earlier partial restore at \(old.lastPathComponent) cannot be checked; restore to its original destination again")
+            }
         }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try AtomicFile.makePrivateFolder(staging)

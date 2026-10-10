@@ -112,6 +112,9 @@ public struct Backup: Sendable {
         var lastSecondCheck: String?
         var lastReadData: String?
         var readDataPart = 0
+        /// The second backup's read-back rotation advances only when that repository succeeds.
+        var lastSecondReadData: String?
+        var secondReadDataPart = 0
         var lastDrill: String?
         var offloads: [String: InProgress] = [:]
         var offloaded: [Offloaded] = []
@@ -183,12 +186,22 @@ public struct Backup: Sendable {
     /// throws, so backups never stop in silence and nothing saves over the person's choices (the second backup,
     /// retention).
     public func settings() throws -> Settings {
-        var info = stat()
-        if lstat(settingsURL.path, &info) != 0 {
-            guard errno == ENOENT else { throw Failure(message: "backup settings cannot be read; nothing was changed (\(settingsURL.path))") }
+        let data: Data
+        switch SafeFile.read(settingsURL, limit: 1024 * 1024) {
+        case .missing:
+            // SafeFile also reports ENOTDIR as missing. Only an actually absent settings entry is fresh; a regular
+            // file where backup/ should be is damaged state and must stop maintenance rather than disable it quietly.
+            var info = stat()
+            guard lstat(settingsURL.path, &info) != 0, errno == ENOENT else {
+                throw Failure(message: "backup settings cannot be read; nothing was changed (\(settingsURL.path))")
+            }
             return Settings()
+        case .ok(let read):
+            data = read
+        case .refused, .unreadable:
+            throw Failure(message: "backup settings cannot be read; nothing was changed (\(settingsURL.path))")
         }
-        guard let data = try? Data(contentsOf: settingsURL), let s = try? JSONDecoder().decode(Settings.self, from: data) else {
+        guard let s = try? JSONDecoder().decode(Settings.self, from: data) else {
             throw Failure(message: "backup settings are unreadable; nothing was changed (\(settingsURL.path))")
         }
         return s
@@ -387,6 +400,8 @@ extension Backup.State {
         lastSecondCheck = try c.decodeIfPresent(String.self, forKey: .lastSecondCheck)
         lastReadData = try c.decodeIfPresent(String.self, forKey: .lastReadData)
         readDataPart = try c.decodeIfPresent(Int.self, forKey: .readDataPart) ?? 0
+        lastSecondReadData = try c.decodeIfPresent(String.self, forKey: .lastSecondReadData)
+        secondReadDataPart = try c.decodeIfPresent(Int.self, forKey: .secondReadDataPart) ?? 0
         lastDrill = try c.decodeIfPresent(String.self, forKey: .lastDrill)
         offloads = try c.decodeIfPresent([String: Backup.InProgress].self, forKey: .offloads) ?? [:]
         offloaded = try c.decodeIfPresent([Backup.Offloaded].self, forKey: .offloaded) ?? []

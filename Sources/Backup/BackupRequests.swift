@@ -121,7 +121,7 @@ public struct BackupRequests: Sendable {
     /// Runs one request with the given backup; the runtime calls this off the command queue. It throws, without
     /// running the request, when the queue cannot record it as running; and when the queue cannot record how it
     /// ended, so the request does not sit "running" unnoticed (`recoverInterrupted` marks it failed at the next start).
-    public func run(_ r: Request, backup: Backup, deviceID: String, now: Date = Date()) throws {
+    public func run(_ r: Request, backup: Backup, deviceID: String, now: Date = Date(), finishedAt: Date? = nil) throws {
         try update(r.id) { $0.state = "running"; $0.at = ISOTime.string(now) }
         let outcome: (inout Request) -> Void
         do {
@@ -154,6 +154,11 @@ public struct BackupRequests: Sendable {
         } catch {
             outcome = { $0.state = "failed"; $0.message = "\(error)" }
         }
-        try update(r.id, outcome)
+        // The day for which a terminal result remains visible begins when the work ends, not when it began.
+        let ended = ISOTime.string(finishedAt ?? Date())
+        try update(r.id) {
+            outcome(&$0)
+            if ["done", "failed", "needs_confirmation"].contains($0.state) { $0.at = ended }
+        }
     }
 }

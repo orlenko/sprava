@@ -202,8 +202,10 @@ extension Backup {
         let r = try engine(s.primary)
         var st = try state()
         for id in st.binders.keys.sorted() {
-            try r.forget(tag: "binder:\(id)", keepLast: s.keepLast, keepWithinDays: s.keepWithinDays, keepMonthly: s.keepMonthly, keepYearly: s.keepYearly)
+            try r.forget(tag: "binder:\(id)", keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
+                         keepMonthly: s.keepMonthly, keepYearly: s.keepYearly, prune: false)
         }
+        if !st.binders.isEmpty { try r.prune() }
         st.lastForget = ISOTime.string(now)
         try save(st)
     }
@@ -212,21 +214,21 @@ extension Backup {
     /// other copy of an offloaded binder, so it is checked too (§5), with its own date: one that is away or damaged
     /// stays due and fails the check, while the mirror's check still counts.
     public func check(readData: Bool, now: Date = Date()) throws {
-        try check(readData: readData, primary: true, second: true, now: now)
+        try check(readPrimaryData: readData, readSecondData: readData, primary: true, second: true, now: now)
     }
 
-    func check(readData: Bool, primary: Bool, second: Bool, now: Date) throws {
+    func check(readPrimaryData: Bool, readSecondData: Bool, primary: Bool, second: Bool, now: Date) throws {
         let s = try settings()
         var st = try state()
-        let part = st.readDataPart % 12 + 1
-        func run(_ r: Restic) throws {
+        func run(_ r: Restic, readData: Bool, part: Int) throws {
             if readData { try r.check(readDataSubset: "\(part)/12") } else { try r.check() }
         }
         var failure: Error?
         if primary {
+            let part = st.readDataPart % 12 + 1
             do {
-                try run(try engine(s.primary))
-                if readData {
+                try run(try engine(s.primary), readData: readPrimaryData, part: part)
+                if readPrimaryData {
                     st.readDataPart = part
                     st.lastReadData = ISOTime.string(now)
                 }
@@ -234,8 +236,13 @@ extension Backup {
             } catch { failure = error }
         }
         if second, s.second != nil {
+            let part = st.secondReadDataPart % 12 + 1
             do {
-                try run(try engine(s.second))
+                try run(try engine(s.second), readData: readSecondData, part: part)
+                if readSecondData {
+                    st.secondReadDataPart = part
+                    st.lastSecondReadData = ISOTime.string(now)
+                }
                 st.lastSecondCheck = ISOTime.string(now)
             } catch { failure = failure ?? Failure(message: "the second backup failed its check (\(error))") }
         }
@@ -571,8 +578,10 @@ extension Backup {
         let primaryDue = due(\.lastCheck, 7 * 86_400)
         let secondDue = ((try? settings())?.second != nil) && due(\.lastSecondCheck, 7 * 86_400)
         if primaryDue || secondDue {
-            let readData = due(\.lastReadData, 30 * 86_400)
-            if (try? check(readData: readData, primary: primaryDue, second: secondDue, now: now)) != nil {
+            let primaryReadData = primaryDue && due(\.lastReadData, 30 * 86_400)
+            let secondReadData = secondDue && due(\.lastSecondReadData, 30 * 86_400)
+            if (try? check(readPrimaryData: primaryReadData, readSecondData: secondReadData,
+                           primary: primaryDue, second: secondDue, now: now)) != nil {
                 m.checked = true
             } else {
                 fail("check")
