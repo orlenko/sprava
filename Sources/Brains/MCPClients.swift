@@ -50,18 +50,33 @@ public struct MCPClients: Codable, Sendable {
         public var description: String { "the brain client registry cannot be read; it was left as it is" }
     }
 
+    /// Retain the actual state-directory handles through the file operation; validating paths alone still
+    /// allows another process to replace a directory with a link between the check and the read or write.
+    private static func registryFolder(_ support: URL, create: Bool) throws -> StateDirectory? {
+        do {
+            guard let root = try StateDirectory.open(support, create: create) else { return nil }
+            return try root.directory("mcp", create: create)
+        } catch { throw Unreadable(path: url(support).path) }
+    }
+
     /// The registry. Only a file that is not there is an empty registry; one that exists but cannot be read or
     /// decoded, or whose lookup fails, throws, so a command never saves over the other clients' records. This runs
     /// on the shared MCP command queue, so it also refuses links and special files without ever blocking on them.
     public static func load(_ support: URL) throws -> MCPClients {
+        try load(support, beforeFile: {})
+    }
+
+    static func load(_ support: URL, beforeFile: () throws -> Void) throws -> MCPClients {
+        guard let folder = try registryFolder(support, create: false) else { return MCPClients() }
+        try beforeFile()
         let file = url(support)
         let data: Data
-        switch SafeFile.read(file, limit: maximumBytes) {
+        let outcome: SafeFile.Outcome
+        do { outcome = try folder.read("clients.json", limit: maximumBytes) }
+        catch { throw Unreadable(path: file.path) }
+        switch outcome {
         case .missing:
-            // ENOTDIR also maps to missing. Only a genuinely absent final entry is a fresh registry; a bad parent
-            // must not be interpreted as permission to replace it later.
-            var info = stat()
-            guard lstat(file.path, &info) != 0, errno == ENOENT else { throw Unreadable(path: file.path) }
+            // The retained directory is revalidated by StateDirectory, so a missing child is genuinely fresh.
             return MCPClients()
         case .ok(let read): data = read
         case .refused, .unreadable: throw Unreadable(path: file.path)
@@ -71,14 +86,20 @@ public struct MCPClients: Codable, Sendable {
     }
 
     public func save(_ support: URL) throws {
+        try save(support, beforeFile: {})
+    }
+
+    func save(_ support: URL, beforeFile: () throws -> Void) throws {
         let e = JSONEncoder()
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try e.encode(self)
         guard data.count <= Self.maximumBytes else {
             throw Failure(message: "the brain client registry is too large; its saved records were left as they are")
         }
-        try AtomicFile.makePrivateFolder(Self.url(support).deletingLastPathComponent())
-        try AtomicFile.write(data, to: Self.url(support))
+        guard let folder = try Self.registryFolder(support, create: true) else { throw Unreadable(path: Self.url(support).path) }
+        try beforeFile()
+        do { try folder.write(data, to: "clients.json") }
+        catch { throw Failure(message: "the brain client registry could not be saved") }
     }
 
     public static func hash(_ token: String) -> String {
