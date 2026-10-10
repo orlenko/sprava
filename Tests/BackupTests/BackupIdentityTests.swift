@@ -21,7 +21,8 @@ import Testing
     enum Case: String, CaseIterable, CustomTestStringConvertible, Sendable {
         case copyBeforeOffload, copyAfterRestore, copyAfterRestoringElsewhere, workPutWhereARestoreIsGoing, partialRestoreOnTheShelf,
              anotherBinderOnTheShelf,
-             forgetWithARepositoryAway, aSecondDeletionAtTheSamePath, forgetAfterDestinationsChanged
+             forgetWithARepositoryAway, aSecondDeletionAtTheSamePath, forgetAfterDestinationsChanged,
+             forgetAfterPrimaryChanged, forgetAfterDrillAndPrimaryChanged
         var testDescription: String { rawValue }
     }
 
@@ -268,6 +269,33 @@ import Testing
                 let mine = try b.engine(repo.path).snapshots(tag: "binder:\(id)").map(\.id)
                 #expect(!mine.isEmpty && mine.allSatisfy { held[$0] == false }, "\(repo.lastPathComponent) still holds the letter")
             }
+
+        case .forgetAfterPrimaryChanged:
+            // An ordinary live-binder snapshot remains in an old mirror after the person chooses a new one. Its
+            // repository stays with the binder's record, so expunging a document reaches the old copy too.
+            _ = try b.backUp(e.folder, now: now)
+            let oldPrimary = e.primary
+            let newPrimary = e.base.appendingPathComponent("icloud/Sprava Backup 2", isDirectory: true)
+            try b.setUp(primary: newPrimary, iCloudKeychain: false)
+            try FileManager.default.removeItem(at: e.folder.appendingPathComponent(letter))
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now))
+            let scopes = try #require(try b.state().forgetting.first?.scopes).map(\.repository)
+            #expect(Set(scopes).isSuperset(of: [oldPrimary.path, newPrimary.path]))
+            let held = try holding(b, oldPrimary, letter)
+            let mine = try b.engine(oldPrimary.path).snapshots(tag: "binder:\(id)").map(\.id)
+            #expect(!mine.isEmpty && mine.allSatisfy { held[$0] == false }, "the old mirror still holds the letter")
+
+        case .forgetAfterDrillAndPrimaryChanged:
+            // A drill also writes a binder snapshot, without making it the ordinary latest-snapshot record.
+            try b.drill(e.folder, now: now)
+            let oldPrimary = e.primary
+            let newPrimary = e.base.appendingPathComponent("icloud/Sprava Backup 2", isDirectory: true)
+            try b.setUp(primary: newPrimary, iCloudKeychain: false)
+            try FileManager.default.removeItem(at: e.folder.appendingPathComponent(letter))
+            #expect(try b.forgetDocument(in: e.folder, path: letter, request: "invented-deletion-1", now: now))
+            let held = try holding(b, oldPrimary, letter)
+            let mine = try b.engine(oldPrimary.path).snapshots(tag: "binder:\(id)").map(\.id)
+            #expect(!mine.isEmpty && mine.allSatisfy { held[$0] == false }, "the drill's old snapshot still holds the letter")
         }
     }
 }

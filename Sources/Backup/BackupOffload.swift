@@ -64,7 +64,9 @@ extension Backup {
         var st = try state()
         let id = try claim(folder, &st)
         try refuseSharedID(id, folder: folder, &st)
-        // Saved before restic writes anything under the id (`backUp`).
+        // Saved before restic writes anything under the id (`backUp`), including the repository that may then hold
+        // a snapshot even if the process stops before its id is recorded.
+        st.rememberRepositories([s.primary], for: id)
         try save(st)
         step("offload.claimed")
         var job = st.offloads[id] ?? InProgress(path: folder.standardizedFileURL.path, stage: "start")
@@ -225,6 +227,9 @@ extension Backup {
             try refuseIfChanged(id, folder: folder, job, &st)
             let second = try engine(s.second)
             if job.secondSnapshot == nil {
+                // A copy may have landed even if restic or Sprava stops before its id is recorded.
+                st.rememberRepositories([s.second], for: id)
+                try save(st)
                 try second.copy(job.snapshot!, from: primary)
                 let copies = try second.snapshots(tag: "binder:\(id)")
                 guard let copy = copies.last else { throw Failure(message: "the copy to the second backup did not appear") }

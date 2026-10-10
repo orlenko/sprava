@@ -157,14 +157,16 @@ extension Backup {
     public func backUp(_ folder: URL, now: Date = Date()) throws -> Restic.BackupResult {
         var st = try state()
         let id = try claim(folder, &st)
-        // The claim is saved before restic writes anything under the id: a snapshot never exists without an owner a
-        // copy would have to get past.
+        let s = try settings()
+        // The claim and repository are saved before restic writes anything under the id: a snapshot never exists
+        // without an owner, nor without a durable record of every repository that may hold it.
+        st.rememberRepositories([s.primary], for: id)
         try save(st)
         step("backup.claimed")
         do {
             try Self.keepRootMetadata(folder)
             let before = Self.writeMark(folder)
-            let result = try engine(settings().primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
+            let result = try engine(s.primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
             afterSnapshot?()
             step("backup.snapshotted")
             var rec = st.binders[id] ?? State.BinderRecord()
@@ -455,9 +457,11 @@ extension Backup {
 
     /// Backs the binder up, restores the snapshot into a private temporary folder, compares, and cleans up.
     public func drill(_ folder: URL, now: Date = Date()) throws {
-        let primary = try engine(settings().primary)
+        let s = try settings()
+        let primary = try engine(s.primary)
         var claimed = try state()
         let id = try claim(folder, &claimed)
+        claimed.rememberRepositories([s.primary], for: id)
         try save(claimed)
         try Self.keepRootMetadata(folder)
         _ = try primary.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes, skipIfUnchanged: false)

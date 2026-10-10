@@ -143,6 +143,9 @@ public struct Backup: Sendable {
             var at: String?
             var bytes: Int64 = 0
             var error: String?
+            /// Every repository that may hold this binder's snapshots. Kept after destinations and offload records
+            /// change, so expunging a document can remove it from every old copy too.
+            var repositories: [String] = []
         }
         struct Restored: Codable, Equatable {
             var snapshot: String
@@ -238,6 +241,7 @@ public struct Backup: Sendable {
     /// cannot be read are never saved over. A mirror in or around the second backup is refused.
     public func setUp(primary: URL, iCloudKeychain: Bool) throws {
         var s = try settings()
+        let oldPrimary = s.primary
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
         s.primary = primary.standardizedFileURL.path
         s.iCloudKeychain = iCloudKeychain
@@ -254,6 +258,18 @@ public struct Backup: Sendable {
         } else {
             try r.initRepository()
         }
+        // States written before repository history was recorded know their last ordinary snapshot only through the
+        // old setting. Preserve that destination before replacing it. Saving this first is harmless if saving the
+        // setting then fails; the old repository really may hold those snapshots.
+        if let oldPrimary, oldPrimary != s.primary {
+            var st = try state()
+            // Older drills and interrupted first backups may have written snapshots without recording their ids, so
+            // every claimed binder is a possible owner in the old repository.
+            for id in Array(st.binders.keys) {
+                st.rememberRepositories([oldPrimary], for: id)
+            }
+            try save(st)
+        }
         try save(s)
     }
 
@@ -262,11 +278,21 @@ public struct Backup: Sendable {
     public func setSecond(_ folder: URL) throws {
         var s = try settings()
         guard let primaryPath = s.primary else { throw Failure(message: "set up backup first") }
+        let oldSecond = s.second
         try Self.refuseSharedFate(folder, primary: URL(fileURLWithPath: primaryPath, isDirectory: true))
         let primary = try engine(s.primary)
         s.second = folder.standardizedFileURL.path
         let second = try engine(s.second, settings: s)
         if second.isInitialized() { _ = try second.snapshots() } else { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) }
+        // As for a replaced mirror, migrate states from before repository history was recorded. A waiting or earlier
+        // offload may have copied a binder to the old second backup even when its current job no longer names it.
+        if let oldSecond, oldSecond != s.second {
+            var st = try state()
+            for id in Array(st.binders.keys) {
+                st.rememberRepositories([oldSecond], for: id)
+            }
+            try save(st)
+        }
         try save(s)
     }
 
@@ -370,6 +396,23 @@ extension Backup.State {
         rewrites = try c.decodeIfPresent([Rewrite].self, forKey: .rewrites) ?? []
         forgetting = try c.decodeIfPresent([Backup.Forgetting].self, forKey: .forgetting) ?? []
         forgotten = try c.decodeIfPresent([Forgotten].self, forKey: .forgotten) ?? []
+        // Fold every repository named by older state into the durable per-binder history before its transient record
+        // can later be replaced or removed.
+        for record in offloaded {
+            rememberRepositories([record.repository, record.secondRepository], for: record.backupID)
+        }
+        for (id, job) in offloads {
+            rememberRepositories([job.repository, job.secondRepository], for: id)
+        }
+        for (id, record) in restored {
+            rememberRepositories([record.repository, record.secondRepository], for: id)
+        }
+        for (id, contents) in restoredContents {
+            rememberRepositories([contents.baseline?.repository, contents.baseline?.secondRepository], for: id)
+        }
+        for request in forgetting {
+            rememberRepositories(request.scopes.map { Optional($0.repository) }, for: request.backupID)
+        }
     }
 }
 
@@ -381,6 +424,17 @@ extension Backup.State.BinderRecord {
         at = try c.decodeIfPresent(String.self, forKey: .at)
         bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
         error = try c.decodeIfPresent(String.self, forKey: .error)
+        repositories = try c.decodeIfPresent([String].self, forKey: .repositories) ?? []
+    }
+}
+
+extension Backup.State {
+    mutating func rememberRepositories(_ repositories: [String?], for id: String) {
+        var record = binders[id] ?? BinderRecord()
+        for repository in repositories.compactMap({ $0 }) where !record.repositories.contains(repository) {
+            record.repositories.append(repository)
+        }
+        binders[id] = record
     }
 }
 

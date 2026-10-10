@@ -122,6 +122,7 @@ extension Backup {
         var out: [String] = []
         let restored = [st.restored[id], st.restoredContents[id]?.baseline].compactMap { $0 }
         let named: [String?] = [s.primary, s.second]
+            + (st.binders[id]?.repositories ?? []).map(Optional.some)
             + st.offloaded.filter { $0.backupID == id }.flatMap { [$0.repository, $0.secondRepository] }
             + restored.flatMap { [$0.repository, $0.secondRepository] }
             + [st.offloads[id]?.repository, st.offloads[id]?.secondRepository]
