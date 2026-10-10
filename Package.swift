@@ -51,6 +51,10 @@ let package = Package(
         .target(name: "Brains", dependencies: ["SpravaKit"]),
         .testTarget(name: "BrainsTests", dependencies: ["Brains", "SpravaKit"]),
 
+        // Runtime services arrive separately from commands and scheduling.
+        .target(name: "Services", dependencies: ["SpravaKit"]),
+        .testTarget(name: "ServicesTests", dependencies: ["Services"]),
+
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
