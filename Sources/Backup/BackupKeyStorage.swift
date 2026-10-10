@@ -256,6 +256,9 @@ extension BackupKey {
             try keychain.put(try journal(committed), rollbackAccount, false)
             localCommitted = true
             if !inICloudKeychain {
+                // Keep every cloud copy on this Mac before it leaves iCloud: an older key may be the only one
+                // that opens an earlier repository.
+                try keepLocally([try read(syncedAccount, true)] + (previous.recovery ?? [:]).values.sorted(), in: keychain)
                 let status = keychain.delete(syncedAccount, true)
                 guard status == errSecSuccess || status == errSecItemNotFound else {
                     throw Failure(message: "the backup key could not be taken out of iCloud Keychain (\(status)); remove it there, or keep it there")
@@ -270,9 +273,11 @@ extension BackupKey {
                     guard passes <= 8 else {
                         throw Failure(message: "older backup keys keep reappearing in iCloud Keychain; remove them there, or keep the key there")
                     }
-                    let names = try recoveryRecords(keychain).keys.sorted()
-                    if names.isEmpty { emptyPasses += 1 }
-                    else { emptyPasses = 0; for name in names { try remove(name, true) } }
+                    let records = try recoveryRecords(keychain)
+                    if records.isEmpty { emptyPasses += 1; continue }
+                    emptyPasses = 0
+                    try keepLocally(records.sorted { $0.key < $1.key }.map(\.value), in: keychain)
+                    for name in records.keys.sorted() { try remove(name, true) }
                 }
             }
             try remove(rollbackAccount, false)

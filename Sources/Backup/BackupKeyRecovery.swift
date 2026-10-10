@@ -20,6 +20,31 @@ extension BackupKey {
         try keychain.put(key, name, true)
     }
 
+    static let historyAccount = "repository-key-history"
+
+    /// Earlier keys this Mac keeps on the device only after the person opts out of iCloud Keychain, so taking the
+    /// cloud copies away never loses the only key to an older repository or snapshot.
+    static func localHistory(_ keychain: Keychain) throws -> [String] {
+        let (status, text) = keychain.read(historyAccount, false)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let text, let data = text.data(using: .utf8),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else {
+            throw Failure(message: "the earlier backup keys kept on this Mac could not be read (\(status))")
+        }
+        return keys
+    }
+
+    static func keepLocally(_ values: [String?], in keychain: Keychain) throws {
+        var keys = try localHistory(keychain)
+        let before = keys.count
+        for case let value? in values where !keys.contains(value) { keys.append(value) }
+        guard keys.count != before else { return }
+        guard let text = String(data: try JSONEncoder().encode(keys), encoding: .utf8) else {
+            throw Failure(message: "the earlier backup keys could not be kept on this Mac")
+        }
+        try keychain.put(text, historyAccount, false)
+    }
+
     /// Password data must be fetched individually: SecItemCopyMatching forbids ReturnData with MatchLimitAll.
     static func synchronizedAccounts() -> (OSStatus, [String]) {
         var q = query(account: syncedAccount, synchronizable: true)
@@ -90,6 +115,7 @@ extension BackupKey {
                 }
                 append(cloud)
             }
+            for value in try localHistory(keychain) { append(value) }
             for value in try recoveryRecords(keychain).sorted(by: { $0.key < $1.key }).map(\.value) where !keys.contains(value) {
                 keys.append(value)
             }

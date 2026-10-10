@@ -131,6 +131,17 @@ import Testing
         #expect(BackupKey.load(keychain: device.keychain) == "INVNT-SECOND")
     }
 
+    @Test func optingOutKeepsEarlierKeysOnThisMacOnly() throws {
+        let device = Replica()
+        try BackupKey.store("INVNT-FIRST", inICloudKeychain: true, keychain: device.keychain)
+        try BackupKey.store("INVNT-SECOND", inICloudKeychain: true, keychain: device.keychain)
+        try BackupKey.store("INVNT-SECOND", inICloudKeychain: false, keychain: device.keychain)
+        #expect(device.cloud.isEmpty)
+        let keys = try BackupKey.recoveryKeys(environment: [:], keychain: device.keychain)
+        #expect(keys.first == "INVNT-SECOND")
+        #expect(Set(keys) == Set(["INVNT-FIRST", "INVNT-SECOND"]))
+    }
+
     @Test func optingOutAlsoRemovesARecoveryRecordThatArrivesDuringCleanup() throws {
         let device = Replica([BackupKey.account: "INVNT-CURRENT"])
         let late = "INVNT-DELAYD"
@@ -139,6 +150,7 @@ import Testing
         }
         try BackupKey.store("INVNT-CURRENT", inICloudKeychain: false, keychain: device.keychain)
         #expect(device.cloud.isEmpty)
+        #expect(try BackupKey.recoveryKeys(environment: [:], keychain: device.keychain).contains(late))
     }
 
     @Test func optingOutFailsInsteadOfLoopingWhenRecordsKeepReappearing() throws {
