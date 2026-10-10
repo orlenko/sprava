@@ -159,7 +159,9 @@ import Testing
             #expect(throws: BackupKey.Failure.self) { try BackupKey.recoveryKeys(environment: environment, keychain: keychain) }
             #expect(BackupKey.load(environment: environment, keychain: keychain) == nil)
             #expect(BackupKey.loadPending(environment: environment, keychain: keychain) == nil)
-            BackupKey.clearPending(environment: environment, keychain: keychain)
+            #expect(throws: BackupKey.Failure.self) {
+                try BackupKey.clearPending(environment: environment, keychain: keychain)
+            }
             #expect(throws: BackupKey.Failure.self) {
                 try BackupKey.store("INVNT-KEYAA", inICloudKeychain: false, environment: environment, keychain: keychain)
             }
@@ -180,7 +182,7 @@ import Testing
         #expect(BackupKey.loadPending(environment: environment, keychain: fake.keychain) == "INVNT-PENDG")
         #expect(BackupKey.load(environment: environment, keychain: fake.keychain) == nil)
         try BackupKey.store("INVNT-COMMT", inICloudKeychain: false, environment: environment, keychain: fake.keychain)
-        BackupKey.clearPending(environment: environment, keychain: fake.keychain)
+        try BackupKey.clearPending(environment: environment, keychain: fake.keychain)
         #expect(BackupKey.loadPending(environment: environment, keychain: fake.keychain) == nil)
         #expect(BackupKey.load(environment: environment, keychain: fake.keychain) == "INVNT-COMMT")
         #expect(fake.calls.isEmpty && fake.values.isEmpty)
@@ -191,6 +193,7 @@ import Testing
                                          (BackupKey.rollbackAccount, false), (BackupKey.syncedAccount, true)] {
             let expected = BackupKey.query(account: account, synchronizable: synchronized)
             #expect(expected[kSecUseDataProtectionKeychain as String] as? Bool == true)
+            #expect(expected[kSecAttrAccessGroup as String] as? String == BackupKey.accessGroup)
             #expect(expected[kSecAttrSynchronizable as String] as? Bool == synchronized)
             #expect(expected[kSecAttrAccount as String] as? String == account)
             let items = BackupKey.Items(update: { query, attributes in
@@ -202,5 +205,10 @@ import Testing
             }, add: { _ in Issue.record("an existing item should be updated"); return errSecSuccess })
             try BackupKey.put("INVNT-KEYAA", account: account, synchronizable: synchronized, items: items)
         }
+    }
+
+    @Test func aPendingKeyDeletionFailureIsReported() {
+        let keychain = BackupKey.Keychain(put: { _, _, _ in }, delete: { _, _ in errSecInteractionNotAllowed })
+        #expect(throws: BackupKey.Failure.self) { try BackupKey.clearPending(environment: [:], keychain: keychain) }
     }
 }

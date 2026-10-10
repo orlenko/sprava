@@ -10,6 +10,8 @@ import Testing
         var afterPut: ((String, String) throws -> Void)?
         var refuseDelete: ((String) -> OSStatus?)?
         var listStatus: OSStatus = errSecSuccess
+        var afterList: ((Int) -> Void)?
+        var lists = 0
         var writes = 0
         init(_ values: [String: String] = [:]) { self.values = values }
         var cloud: [String: String] {
@@ -27,7 +29,12 @@ import Testing
             }, read: { account, _ in
                 self.values[account].map { (errSecSuccess, $0) } ?? (errSecItemNotFound, nil)
             })
-            keychain.accounts = { (self.listStatus, self.cloud.keys.filter { $0.hasPrefix(BackupKey.recoveryPrefix) }) }
+            keychain.accounts = {
+                self.lists += 1
+                let names = self.cloud.keys.filter { $0.hasPrefix(BackupKey.recoveryPrefix) }
+                self.afterList?(self.lists)
+                return (self.listStatus, names)
+            }
             return keychain
         }
     }
@@ -122,6 +129,26 @@ import Testing
         try BackupKey.store("INVNT-SECOND", inICloudKeychain: false, keychain: device.keychain)
         #expect(device.cloud.isEmpty)
         #expect(BackupKey.load(keychain: device.keychain) == "INVNT-SECOND")
+    }
+
+    @Test func optingOutAlsoRemovesARecoveryRecordThatArrivesDuringCleanup() throws {
+        let device = Replica([BackupKey.account: "INVNT-CURRENT"])
+        let late = "INVNT-DELAYD"
+        device.afterList = { pass in
+            if pass == 2 { device.values[BackupKey.recoveryAccount(late)] = late }
+        }
+        try BackupKey.store("INVNT-CURRENT", inICloudKeychain: false, keychain: device.keychain)
+        #expect(device.cloud.isEmpty)
+    }
+
+    @Test func optingOutFailsInsteadOfLoopingWhenRecordsKeepReappearing() throws {
+        let device = Replica([BackupKey.account: "INVNT-CURRENT"])
+        let stubborn = "INVNT-STUBRN"
+        device.afterList = { _ in device.values[BackupKey.recoveryAccount(stubborn)] = stubborn }
+        #expect(throws: BackupKey.Failure.self) {
+            try BackupKey.store("INVNT-CURRENT", inICloudKeychain: false, keychain: device.keychain)
+        }
+        #expect(BackupKey.load(keychain: device.keychain) == "INVNT-CURRENT")
     }
 
     @Test func aFailedOptOutDoesNotRepublishCopiesAlreadyRemoved() throws {

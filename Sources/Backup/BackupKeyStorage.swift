@@ -8,6 +8,7 @@ import SpravaKit
 /// Host executables need provisioned Keychain access-group entitlements; ad-hoc development runs use the file override.
 extension BackupKey {
     static let service = "ca.orlenko.sprava.backup"
+    static let accessGroup = "group.ca.orlenko.sprava"
     static let account = "repository-key"
     static let syncedAccount = "repository-key-icloud"
     static let rollbackAccount = "repository-key-rollback"
@@ -36,7 +37,7 @@ extension BackupKey {
     static func query(account: String, synchronizable: Bool) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: account, kSecAttrSynchronizable as String: synchronizable,
-         kSecUseDataProtectionKeychain as String: true]
+         kSecAttrAccessGroup as String: accessGroup, kSecUseDataProtectionKeychain as String: true]
     }
 
     static func readSystem(_ acct: String, synchronizable: Bool) -> (OSStatus, String?) {
@@ -125,18 +126,21 @@ extension BackupKey {
         return status == errSecSuccess ? value : nil
     }
 
-    public static func clearPending() {
-        clearPending(environment: ProcessInfo.processInfo.environment, keychain: .system)
+    public static func clearPending() throws {
+        try clearPending(environment: ProcessInfo.processInfo.environment, keychain: .system)
     }
 
-    static func clearPending(environment: [String: String], keychain: Keychain) {
-        do {
-            if let file = try fileOverride(environment: environment) {
-                try? FileManager.default.removeItem(at: file.appendingPathExtension("pending"))
-                return
-            }
-        } catch { return }
-        _ = keychain.delete(pendingAccount, false)
+    static func clearPending(environment: [String: String], keychain: Keychain) throws {
+        if let file = try fileOverride(environment: environment) {
+            do { try FileManager.default.removeItem(at: file.appendingPathExtension("pending")) }
+            catch CocoaError.fileNoSuchFile { return }
+            catch { throw Failure(message: "the pending backup key could not be removed (\(error))") }
+            return
+        }
+        let status = keychain.delete(pendingAccount, false)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(message: "the pending backup key could not be removed from the Keychain (\(status))")
+        }
     }
 
     /// The Keychain calls `store` makes; tests pass their own, so no test touches the person's Keychain.
@@ -256,7 +260,20 @@ extension BackupKey {
                 guard status == errSecSuccess || status == errSecItemNotFound else {
                     throw Failure(message: "the backup key could not be taken out of iCloud Keychain (\(status)); remove it there, or keep it there")
                 }
-                for name in (previous.recovery ?? [:]).keys.sorted() { try remove(name, true) }
+                // Re-list until two consecutive reads are empty, so a record that synchronizes while cleanup runs is
+                // caught instead of being missed by the transaction's initial snapshot. Records that keep coming back
+                // fail the opt-out rather than loop forever. A record another Mac adds after this returns is outside
+                // any one Mac's reach; the journal stays committed, so the next store sweeps again.
+                var emptyPasses = 0, passes = 0
+                while emptyPasses < 2 {
+                    passes += 1
+                    guard passes <= 8 else {
+                        throw Failure(message: "older backup keys keep reappearing in iCloud Keychain; remove them there, or keep the key there")
+                    }
+                    let names = try recoveryRecords(keychain).keys.sorted()
+                    if names.isEmpty { emptyPasses += 1 }
+                    else { emptyPasses = 0; for name in names { try remove(name, true) } }
+                }
             }
             try remove(rollbackAccount, false)
         } catch {
