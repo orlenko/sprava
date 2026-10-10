@@ -73,4 +73,20 @@ import Testing
         // Colliding, and nothing recorded: no slice can be named safely.
         #expect(try !HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: true))
     }
+
+    @Test func underACollidingNameAnUnreadableEntryIsLeft() throws {
+        for replacement in ["malformed", "link"] {
+            let (folder, spool) = try adopted()
+            let target = try slice(spool)
+            try FileManager.default.removeItem(at: target)
+            if replacement == "link" {
+                try FileManager.default.createSymbolicLink(atPath: target.path, withDestinationPath: "elsewhere.json")
+            } else {
+                try Data("{ invented, not json".utf8).write(to: target)
+            }
+            #expect(try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: true))
+            var info = stat()
+            #expect(lstat(target.path, &info) == 0)
+        }
+    }
 }

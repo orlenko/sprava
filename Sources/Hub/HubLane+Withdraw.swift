@@ -58,7 +58,9 @@ extension HubLane {
         }
         for (name, hashes) in targets {
             let url = try spoolFile(inbox, name, ".agenda.json")
-            if let hashes, let found = sliceOnSpool(at: url), !hashes.contains(found.hash) { continue }
+            // By record, only a slice recognised as one Sprava recorded goes: one another program wrote, or one that
+            // cannot be read as a slice (malformed, a link), may be another binder's and is left.
+            if let hashes, !(sliceOnSpool(at: url).map { hashes.contains($0.hash) } ?? false) { continue }
             try removeSlice(url)
         }
         guard var cursors = byRecord ? own : reconciled(try readCursors(teka.folder), folder: teka.folder, inbox: inbox) else {
