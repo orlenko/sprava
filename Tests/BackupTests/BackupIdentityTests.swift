@@ -439,4 +439,55 @@ import Testing
         #expect(try b.claim(moved, &st) == n)
         #expect(st.binders[n]?.path == moved.standardizedFileURL.path)
     }
+
+    @Test func aFileSavedWhileItIsReadFailsTheManifest() throws {
+        let folder = try temp("saved-during-read")
+        let file = folder.appendingPathComponent("letter.pdf")
+        try Data("invented first version".utf8).write(to: file)
+        // An editor saves by renaming a new file into place, right after the old one was hashed.
+        #expect(throws: Backup.Failure.self) {
+            _ = try Backup.manifest(folder, afterRead: { url in
+                try? Data("invented second version".utf8).write(to: url, options: .atomic)
+            })
+        }
+        #expect(try Backup.manifest(folder)["letter.pdf"] != nil)
+    }
+
+    @Test func aReplacementAtAReassignedPathNeitherFinishesNorAbandonsBadly() throws {
+        let base = try temp("replacement-at-path")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        let old = try b.claim(original, &st)
+        try b.save(st)
+        let a = base.appendingPathComponent("A", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: a)
+
+        // The reservation is recorded, and writing it into A fails; A is then replaced by another copy.
+        chmod(a.appendingPathComponent(".sprava").path, 0o500)
+        #expect(throws: (any Error).self) { try b.giveOwnBackupID(a) }
+        chmod(a.appendingPathComponent(".sprava").path, 0o700)
+        let abandoned = try #require(try b.state().reassigning[Backup.realPath(a)]?.id)
+        try FileManager.default.removeItem(at: a)
+        try FileManager.default.copyItem(at: original, to: a)
+        let own = try b.giveOwnBackupID(a)
+        #expect(own != abandoned && own != old)
+        // The abandoned reservation leaves no phantom record behind.
+        #expect(try b.state().binders[abandoned] == nil)
+        #expect(try b.state().binders.count == 2)
+
+        // A copy that holds a finished reassignment's id at its path, but is not the folder that was reassigned,
+        // does not finish it.
+        let n = "0123456789abcdef0123456789abcdef"
+        let c = base.appendingPathComponent("C", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: c)
+        st = try b.state()
+        st.binders[n] = .init(path: c.standardizedFileURL.path)
+        st.reassigning[Backup.realPath(c)] = .init(from: old, id: n, folder: "0:0")
+        try b.save(st)
+        try Backup.writeBackupID(n, into: c, creating: false)
+        #expect(throws: Backup.Failure.self) { try b.giveOwnBackupID(c) }
+        #expect(try b.state().reassigning[Backup.realPath(c)] != nil)
+    }
 }

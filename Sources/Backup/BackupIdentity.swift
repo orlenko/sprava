@@ -96,11 +96,14 @@ extension Backup {
     public func giveOwnBackupID(_ folder: URL) throws -> String {
         guard let old = try Self.storedBackupID(folder) else { return try Self.backupID(folder) }
         var st = try state()
-        // A reassignment that wrote its id and stopped before clearing its record is finished: the folder already
-        // holds its own id.
+        // A reassignment that wrote its id and stopped before clearing its record is finished: the same folder (by
+        // device and inode, never another put at its path) already holds its own id. The id is written once more, so
+        // it is flushed even when the first write's final flush failed after its rename.
         let here = folder.standardizedFileURL.path
         let key = Self.realPath(folder)
-        if st.reassigning[key]?.id == old {
+        let identity = Self.folderIdentity(folder)
+        if let pending = st.reassigning[key], pending.id == old, pending.folder != nil, pending.folder == identity {
+            try Self.writeBackupID(old, into: folder, creating: false)
             st.reassigning[key] = nil
             try save(st)
             return old
@@ -120,11 +123,17 @@ extension Backup {
         let id: String
         // Only while the pending id is still reserved for this folder: its record may have moved with a folder that
         // already holds it.
-        let identity = Self.folderIdentity(folder)
         if let pending = st.reassigning[key], pending.from == old, pending.folder != nil, pending.folder == identity,
            let reserved = st.binders[pending.id]?.path, Self.realPath(URL(fileURLWithPath: reserved)) == key {
             id = pending.id
         } else {
+            // An earlier reservation for another folder at this path is abandoned: its empty record goes, so it never
+            // shows as a binder. A folder that did receive that id makes a new record when it is next claimed.
+            if let stale = st.reassigning[key], let record = st.binders[stale.id], let path = record.path,
+               Self.realPath(URL(fileURLWithPath: path)) == key,
+               record.snapshot == nil, record.at == nil, record.repositories.isEmpty {
+                st.binders[stale.id] = nil
+            }
             id = Self.newBackupID()
             st.reassigning[key] = .init(from: old, id: id, folder: identity)
         }

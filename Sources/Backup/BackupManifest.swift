@@ -27,7 +27,10 @@ extension Backup {
     ///
     /// Left out are the attributes macOS itself keeps and a restore cannot give back (`volatileAttributes`): they
     /// would make every verification fail, and no person sets them. The binder folder's own metadata is not compared.
-    static func manifest(_ folder: URL) throws -> [String: String] {
+    static func manifest(_ folder: URL) throws -> [String: String] { try manifest(folder, afterRead: { _ in }) }
+
+    /// `manifest`, with a hook that runs after each file is hashed; tests land a save there.
+    static func manifest(_ folder: URL, afterRead: (URL) -> Void) throws -> [String: String] {
         var out: [String: String] = [:]
         // The first path seen for each file with more than one link, by device and inode.
         var linked: [String: String] = [:]
@@ -63,6 +66,17 @@ extension Backup {
                     out[rel] = "link \(target.utf8.count):" + target + (attributes.isEmpty ? "" : " xattr:" + attributes)
                 case S_IFREG:
                     guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
+                    afterRead(url)
+                    // The digest counts only for the file that was there before and after it was read: an editor's
+                    // save (a new file renamed into place, or a write) during the read fails the manifest.
+                    var after = stat()
+                    guard lstat(url.path, &after) == 0, after.st_dev == info.st_dev, after.st_ino == info.st_ino,
+                          after.st_size == info.st_size, after.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
+                          after.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec,
+                          after.st_ctimespec.tv_sec == info.st_ctimespec.tv_sec,
+                          after.st_ctimespec.tv_nsec == info.st_ctimespec.tv_nsec else {
+                        throw Failure(message: "\(rel) changed while it was read; nothing was removed")
+                    }
                     let mtime = " mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
                     var link = ""
                     if info.st_nlink > 1 {
