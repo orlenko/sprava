@@ -358,7 +358,7 @@ import Testing
         // As if the process stopped after writing the copy's new id, before clearing the reassignment.
         let new = "0123456789abcdef0123456789abcdef"
         st.binders[new] = .init(path: copy.standardizedFileURL.path)
-        st.reassigning[old] = .init(path: copy.standardizedFileURL.path, id: new)
+        st.reassigning[Backup.realPath(copy)] = .init(from: old, id: new)
         try b.save(st)
         try Backup.writeBackupID(new, into: copy, creating: false)
         #expect(try b.giveOwnBackupID(copy) == new)
@@ -391,5 +391,26 @@ import Testing
         try FileManager.default.createSymbolicLink(at: base.appendingPathComponent("Shortcut"), withDestinationURL: real)
         #expect(Backup.folderEntry(base.appendingPathComponent("Shortcut/Binder", isDirectory: true)) == .present)
         #expect(Backup.folderEntry(base.appendingPathComponent("Shortcut/Gone", isDirectory: true)) == .missing)
+    }
+
+    @Test func twoCopiesKeepTheirOwnPendingReassignments() throws {
+        let base = try temp("two-copies")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        _ = try b.claim(original, &st)
+        try b.save(st)
+        let first = base.appendingPathComponent("First", isDirectory: true), second = base.appendingPathComponent("Second", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: first)
+        try FileManager.default.copyItem(at: original, to: second)
+        chmod(first.appendingPathComponent(".sprava").path, 0o500)
+        #expect(throws: (any Error).self) { try b.giveOwnBackupID(first) }
+        chmod(first.appendingPathComponent(".sprava").path, 0o700)
+        let pending = try #require(try b.state().reassigning[Backup.realPath(first)]?.id)
+        let secondID = try b.giveOwnBackupID(second)
+        #expect(try b.giveOwnBackupID(first) == pending)
+        #expect(secondID != pending)
+        #expect(try b.state().binders.count == 3 && b.state().reassigning.isEmpty)
     }
 }

@@ -10,10 +10,24 @@ import SpravaKit
 final class BinderSprava {
     private let binder: Int32
     private let fd: Int32
+    /// The resolved binder path the handles were opened at.
+    private let path: String
 
-    private init(binder: Int32, fd: Int32) {
+    private init(binder: Int32, fd: Int32, path: String) {
         self.binder = binder
         self.fd = fd
+        self.path = path
+    }
+
+    /// The held folders must still be the binder at its path and its `.sprava`: one renamed and replaced since is
+    /// never written into.
+    private func validate() throws {
+        var held = stat(), entry = stat(), sprava = stat(), named = stat()
+        guard fstat(binder, &held) == 0, lstat(path, &entry) == 0, held.st_dev == entry.st_dev, held.st_ino == entry.st_ino,
+              fstat(fd, &sprava) == 0, fstatat(binder, ".sprava", &named, AT_SYMLINK_NOFOLLOW) == 0,
+              sprava.st_dev == named.st_dev, sprava.st_ino == named.st_ino else {
+            throw Backup.Failure(message: "the binder or its .sprava folder changed while it was being written; nothing was changed")
+        }
     }
 
     deinit {
@@ -42,7 +56,7 @@ final class BinderSprava {
             close(binder)
             throw Backup.Failure(message: "\(folder.lastPathComponent)/.sprava is not a folder")
         }
-        let handle = BinderSprava(binder: binder, fd: fd)
+        let handle = BinderSprava(binder: binder, fd: fd, path: resolved)
         if created { try AtomicFile.flushToDisk(binder, step: "flush the binder folder after making .sprava") }
         return handle
     }
@@ -76,6 +90,7 @@ final class BinderSprava {
             }
         }
         try AtomicFile.flushToDisk(file, step: "flush .sprava/\(name)")
+        try validate()
         guard renameat(fd, temporary, fd, name) == 0 else {
             throw Backup.Failure(message: ".sprava/\(name) could not be replaced (\(String(cString: strerror(errno))))")
         }

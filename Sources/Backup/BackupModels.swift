@@ -88,12 +88,13 @@ extension Backup {
         var rewrites: [Rewrite] = []
         /// Documents deleted for good that the backups are to forget, waiting or done (`forgetDocument`).
         var forgetting: [Forgetting] = []
-        /// Reassignments under way (`giveOwnBackupID`): the new id, recorded before it is written into the copy, by
-        /// the backup id the copy held, so a retry finishes it instead of minting another.
+        /// Reassignments under way (`giveOwnBackupID`), by the copy's resolved path: the id it held and the new one,
+        /// recorded before the new one is written, so a retry finishes it instead of minting another. Several copies
+        /// of one binder each keep their own.
         var reassigning: [String: Reassignment] = [:]
 
         struct Reassignment: Codable, Equatable {
-            var path: String
+            var from: String
             var id: String
         }
         /// Tombstones of finished forgetting requests no longer shown: which deletion, in which binder, at which path.

@@ -97,8 +97,9 @@ extension Backup {
         // A reassignment that wrote its id and stopped before clearing its record is finished: the folder already
         // holds its own id.
         let here = folder.standardizedFileURL.path
-        if let done = st.reassigning.first(where: { $0.value.id == old && Self.realPath(URL(fileURLWithPath: $0.value.path)) == Self.realPath(folder) }) {
-            st.reassigning[done.key] = nil
+        let key = Self.realPath(folder)
+        if st.reassigning[key]?.id == old {
+            st.reassigning[key] = nil
             try save(st)
             return old
         }
@@ -112,20 +113,20 @@ extension Backup {
             throw Failure(message: "this binder is being restored; finish the restore first")
         }
         // The folder owns the new id before it holds it: a crash between the two leaves a record of an id no folder
-        // holds, never an id no record reserves. The reassignment is recorded by the id the copy holds, so a retry
+        // holds, never an id no record reserves. The reassignment is recorded by the copy's path, so a retry
         // finishes it with the same new id instead of minting another.
         let id: String
-        if let pending = st.reassigning[old], Self.realPath(URL(fileURLWithPath: pending.path)) == Self.realPath(folder) {
+        if let pending = st.reassigning[key], pending.from == old {
             id = pending.id
         } else {
             id = Self.newBackupID()
-            st.reassigning[old] = .init(path: here, id: id)
+            st.reassigning[key] = .init(from: old, id: id)
         }
         st.binders[id, default: State.BinderRecord()].path = here
         try save(st)
         step("ownid.recorded")
         try Self.writeBackupID(id, into: folder, creating: false)
-        st.reassigning[old] = nil
+        st.reassigning[key] = nil
         try save(st)
         return id
     }
