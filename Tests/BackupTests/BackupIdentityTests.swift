@@ -120,6 +120,12 @@ import Testing
         try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent("documents/current.pdf").path, withDestinationPath: "deed.pdf")
         let m = try Backup.manifest(folder)
         #expect(m["documents/current.pdf"] == "link deed.pdf")
+        // A link's own attribute counts, read without following it.
+        let link = folder.appendingPathComponent("documents/current.pdf").path
+        let note = Array("invented link note".utf8)
+        #expect(setxattr(link, "com.example.invented", note, note.count, 0, XATTR_NOFOLLOW) == 0)
+        #expect(try Backup.manifest(folder)["documents/current.pdf"] != m["documents/current.pdf"])
+        #expect(try Backup.manifest(folder)["documents/deed.pdf"] == m["documents/deed.pdf"])
         #expect(m["documents/empty"]?.hasPrefix("folder mode:") == true)
         #expect(m["documents/deed.pdf"]?.wholeMatch(of: /[0-9a-f]{64} mtime:[0-9]+\.[0-9]+ mode:[0-7]+( xattr:[0-9a-f]{64})?/) != nil)
 

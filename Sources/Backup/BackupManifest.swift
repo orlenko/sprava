@@ -17,8 +17,9 @@ extension Backup {
     ///
     /// A file's modification time counts too, as restic saves and restores it, and so do hard links: a file that is
     /// another link to one listed earlier names it (`hardlink:`), so linking or unlinking two identical files is a
-    /// change. A folder's own modification time follows its entries and is not compared; nor is ownership, which a
-    /// restore by the person (not root) cannot give back.
+    /// change. A folder's own modification time follows its entries and is not compared; nor is a symbolic link's,
+    /// which restic does not restore on macOS, nor ownership, which a restore by the person (not root) cannot give
+    /// back.
     ///
     /// Left out are the attributes macOS itself keeps and a restore cannot give back (`volatileAttributes`): they
     /// would make every verification fail, and no person sets them. The binder folder's own metadata is not compared.
@@ -48,7 +49,10 @@ extension Backup {
                     try walk(url, rel)
                 case S_IFLNK:
                     guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { throw unreadable(rel) }
-                    out[rel] = "link " + target
+                    // A link's own attributes, read without following it: restic keeps those too. Its own
+                    // modification time it does not give back on macOS (restic 0.19), so that is not compared.
+                    guard let attributes = Self.attributesDigest(url.path) else { throw unreadable(rel) }
+                    out[rel] = "link " + target + (attributes.isEmpty ? "" : " xattr:" + attributes)
                 case S_IFREG:
                     guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
                     let mtime = " mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
