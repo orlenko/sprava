@@ -2,8 +2,12 @@ import Foundation
 
 /// Backup, offload and restore (docs/backup.md). One restic repository in iCloud Drive holds a snapshot per
 /// binder and one of Sprava's own state; a second repository elsewhere holds the copies offloading requires.
+///
+/// A value for one operation: callers make a new one for each job or command, so it reads the backup key as it is
+/// then, after a setup or a key replacement too.
 public struct Backup: Sendable {
     public let support: URL
+    /// The backup key, read once when the value is made (`BackupKey.load()`).
     public let key: String?
     public let resticBinary: URL?
     /// Whether iCloud has uploaded a repository (`uploadStatus(of:)`; tests pass their own).

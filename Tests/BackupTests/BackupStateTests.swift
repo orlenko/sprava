@@ -155,4 +155,36 @@ import Testing
         #expect(Backup.isIndependentSecondLocation(destination, home: home, fileProviderCheck: { $0 == provider }))
         #expect(!Backup.isIndependentSecondLocation(destination, home: home, fileProviderCheck: { _ in false }))
     }
+
+    @Test func aLinkInPlaceOfTheBackupFolderIsNeverFollowed() throws {
+        let root = try temporary("linked-folder")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let invented = Data(#"{"primary": "/invented/elsewhere"}"#.utf8)
+        try invented.write(to: elsewhere.appendingPathComponent("settings.json"))
+        let subject = backup(root)
+        try FileManager.default.createSymbolicLink(at: subject.dir, withDestinationURL: elsewhere)
+        #expect(throws: Backup.Failure.self) { _ = try subject.settings() }
+        #expect(throws: Backup.Failure.self) { try subject.save(Backup.Settings()) }
+        #expect(throws: Backup.Failure.self) { try subject.save(Backup.State()) }
+        #expect(try Data(contentsOf: elsewhere.appendingPathComponent("settings.json")) == invented)
+        #expect(!FileManager.default.fileExists(atPath: elsewhere.appendingPathComponent("state.json").path))
+    }
+
+    @Test func settingsWithoutAResticPinRunNothing() throws {
+        let root = try temporary("unpinned")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binary = root.appendingPathComponent("restic")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: binary)
+        let subject = Backup(support: root, key: "INVNT-STATE-KEYAA", resticBinary: binary,
+                             uploadCheck: { _ in .uploaded }, secondLocationCheck: { _ in true })
+        var settings = Backup.Settings()
+        settings.primary = root.appendingPathComponent("mirror").path
+        try subject.save(settings)
+        #expect(throws: Backup.Failure.self) { _ = try subject.engine(settings.primary) }
+        settings.resticSHA256 = Restic.sha256(of: binary)
+        try subject.save(settings)
+        #expect(try subject.engine(settings.primary).expectedSHA256 == settings.resticSHA256)
+    }
 }
