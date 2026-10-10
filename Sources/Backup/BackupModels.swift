@@ -96,6 +96,9 @@ extension Backup {
         struct Reassignment: Codable, Equatable {
             var from: String
             var id: String
+            /// The copy's folder ("device:inode"): a retry reuses the id only for that same folder, never for another
+            /// put at its path after it moved away.
+            var folder: String?
         }
         /// Tombstones of finished forgetting requests no longer shown: which deletion, in which binder, at which path.
         var forgotten: [Forgotten] = []

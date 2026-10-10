@@ -67,7 +67,10 @@ final class BinderSprava {
         repeat { file = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK) } while file < 0 && errno == EINTR
         if file < 0 { return SafeFile.openFailure(errno) }
         defer { close(file) }
-        return SafeFile.read(fd: file, limit: limit)
+        let outcome = SafeFile.read(fd: file, limit: limit)
+        // What was read counts only while the held folders are still the binder's.
+        guard (try? validate()) != nil else { return .unreadable("the binder or its .sprava folder changed while it was read") }
+        return outcome
     }
 
     /// Replaces `name` in `.sprava` atomically: a new file, flushed, renamed over the old one, and the folder flushed.

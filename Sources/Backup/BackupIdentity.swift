@@ -120,12 +120,13 @@ extension Backup {
         let id: String
         // Only while the pending id is still reserved for this folder: its record may have moved with a folder that
         // already holds it.
-        if let pending = st.reassigning[key], pending.from == old,
+        let identity = Self.folderIdentity(folder)
+        if let pending = st.reassigning[key], pending.from == old, pending.folder != nil, pending.folder == identity,
            let reserved = st.binders[pending.id]?.path, Self.realPath(URL(fileURLWithPath: reserved)) == key {
             id = pending.id
         } else {
             id = Self.newBackupID()
-            st.reassigning[key] = .init(from: old, id: id)
+            st.reassigning[key] = .init(from: old, id: id, folder: identity)
         }
         st.binders[id, default: State.BinderRecord()].path = here
         try save(st)
@@ -134,6 +135,13 @@ extension Backup {
         st.reassigning[key] = nil
         try save(st)
         return id
+    }
+
+    /// A folder's device and inode, which a move keeps and a replacement at the same path does not.
+    static func folderIdentity(_ folder: URL) -> String? {
+        var info = stat()
+        guard stat(folder.path, &info) == 0 else { return nil }
+        return "\(info.st_dev):\(info.st_ino)"
     }
 
     static func newBackupID() -> String { UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "") }

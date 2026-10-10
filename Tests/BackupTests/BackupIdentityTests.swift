@@ -358,7 +358,7 @@ import Testing
         // As if the process stopped after writing the copy's new id, before clearing the reassignment.
         let new = "0123456789abcdef0123456789abcdef"
         st.binders[new] = .init(path: copy.standardizedFileURL.path)
-        st.reassigning[Backup.realPath(copy)] = .init(from: old, id: new)
+        st.reassigning[Backup.realPath(copy)] = .init(from: old, id: new, folder: Backup.folderIdentity(copy))
         try b.save(st)
         try Backup.writeBackupID(new, into: copy, creating: false)
         #expect(try b.giveOwnBackupID(copy) == new)
@@ -426,18 +426,17 @@ import Testing
         // The copy at A got its new id N written, and the process stopped before clearing the reassignment.
         let n = "0123456789abcdef0123456789abcdef"
         st.binders[n] = .init(path: a.standardizedFileURL.path)
-        st.reassigning[Backup.realPath(a)] = .init(from: old, id: n)
+        st.reassigning[Backup.realPath(a)] = .init(from: old, id: n, folder: Backup.folderIdentity(a))
         try b.save(st)
         try Backup.writeBackupID(n, into: a, creating: false)
-        // A moves to B, which is claimed there; another copy of the original then sits at A.
+        // A moves to B; another copy of the original then sits at A, before or after B is claimed.
         let moved = base.appendingPathComponent("B", isDirectory: true)
         try FileManager.default.moveItem(at: a, to: moved)
-        st = try b.state()
-        #expect(try b.claim(moved, &st) == n)
-        try b.save(st)
         try FileManager.default.copyItem(at: original, to: a)
         let own = try b.giveOwnBackupID(a)
         #expect(own != n && own != old)
-        #expect(try b.state().binders[n]?.path == moved.standardizedFileURL.path)
+        st = try b.state()
+        #expect(try b.claim(moved, &st) == n)
+        #expect(st.binders[n]?.path == moved.standardizedFileURL.path)
     }
 }
