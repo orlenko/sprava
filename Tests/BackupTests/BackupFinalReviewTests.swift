@@ -231,7 +231,7 @@ import Testing
                 held.on = id.map { (try? String(contentsOf: probeFile, encoding: .utf8))?.contains("\"backupID\" : \"\($0)\"") == true } ?? false
             }
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        }, hubSpool: e.spool, uploadCheck: { _ in .uploaded })
+        }, hubSpool: e.spool, uploadCheck: { _ in .uploaded }, secondLocationCheck: { _ in true })
         try b.setUp(primary: e.primary, iCloudKeychain: false)
         try b.setSecond(e.second)
         guard case .done = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) else { Issue.record("not done"); return }

@@ -19,6 +19,9 @@ public struct Backup: Sendable {
     public let hubSpool: URL
     /// Whether iCloud has uploaded a repository (`uploadStatus(of:)`; tests pass their own).
     public let uploadCheck: @Sendable (URL) -> Upload
+    /// Whether a second repository is on an independent destination: an external volume or a supported non-iCloud
+    /// file-provider root. Tests substitute this because their repositories deliberately live on one temporary disk.
+    let secondLocationCheck: @Sendable (URL) -> Bool
     /// Runs right after restic has read a binder; tests use it to land a write during a snapshot.
     var afterSnapshot: (@Sendable () -> Void)?
     /// Runs at each durable step boundary of a multi-step operation, named; tests take an image of the disk there,
@@ -33,12 +36,23 @@ public struct Backup: Sendable {
     public init(support: URL, key: String? = BackupKey.load(), resticBinary: URL? = Restic.locate(),
                 removeFolder: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
                 hubSpool: URL = HubLane.spoolRoot(), uploadCheck: @escaping @Sendable (URL) -> Upload = { Backup.uploadStatus(of: $0) }) {
+        self.init(support: support, key: key, resticBinary: resticBinary, removeFolder: removeFolder, hubSpool: hubSpool,
+                  uploadCheck: uploadCheck, secondLocationCheck: { Backup.isIndependentSecondLocation($0) })
+    }
+
+    /// Test seam for repositories that deliberately share a temporary volume. Production callers always use the
+    /// public initializer and the real independent-destination check.
+    init(support: URL, key: String?, resticBinary: URL? = Restic.locate(),
+         removeFolder: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
+         hubSpool: URL = HubLane.spoolRoot(), uploadCheck: @escaping @Sendable (URL) -> Upload,
+         secondLocationCheck: @escaping @Sendable (URL) -> Bool) {
         self.support = support
         self.key = key
         self.resticBinary = resticBinary
         self.removeFolder = removeFolder
         self.hubSpool = hubSpool
         self.uploadCheck = uploadCheck
+        self.secondLocationCheck = secondLocationCheck
         flushRestoreParent = { try AtomicFile.flushFolder($0, step: "flush restored binder's parent") }
     }
 
@@ -294,7 +308,7 @@ public struct Backup: Sendable {
         }
         s.resticSHA256 = digest
         // A new mirror must not share a fate with the second backup already chosen (§5), as setSecond requires.
-        if let second = s.second { try Self.refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: primary) }
+        if let second = s.second { try refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: primary) }
         let r = try engine(s.primary, settings: s)
         if r.isInitialized() {
             _ = try r.snapshots()   // throws when the key does not open it
@@ -314,7 +328,73 @@ public struct Backup: Sendable {
             for id in Array(st.binders.keys) {
                 st.rememberRepositories([oldPrimary], for: id)
             }
+            // Record the candidate before copying. If migration is interrupted after restic writes but before its id
+            // is recorded, document expunging still discovers that repository later.
+            for record in st.offloaded {
+                st.rememberRepositories([s.primary], for: record.backupID)
+            }
             try save(st)
+            step("primary.migration.recorded")
+
+            // An offloaded binder has no live folder to back up into the replacement later. Copy every pinned
+            // snapshot now, using either its old mirror or its independently recorded second copy as the source,
+            // then restore and compare it before making the new mirror active.
+            for i in st.offloaded.indices {
+                let record = st.offloaded[i]
+                let choices: [(String?, String?)] = [
+                    (record.repository ?? oldPrimary, record.snapshot),
+                    (record.secondRepository ?? s.second, record.secondSnapshot),
+                    // A previous attempt may have copied either source and stopped before updating the record.
+                    (s.primary, record.snapshot),
+                    (s.primary, record.secondSnapshot),
+                ]
+                var source: (Restic, Restic.Snapshot, String)?
+                for (repository, snapshot) in choices {
+                    guard let repository, let snapshot, let candidate = try? engine(repository, settings: s),
+                          let found = try? candidate.snapshots(tag: "binder:\(record.backupID)").first(where: {
+                              $0.id == snapshot && $0.tags.contains("offloaded")
+                          }),
+                          let manifest = try? restoredManifest(found.id, from: candidate,
+                                                               id: "primary-source-\(record.backupID)")
+                    else { continue }
+                    source = (candidate, found, Self.digest(manifest))
+                    break
+                }
+                guard let (sourceRepository, sourceSnapshot, expected) = source else {
+                    throw Failure(message: "neither pinned copy of \(record.name) can be read; the mirror was not changed")
+                }
+                if Self.realPath(sourceRepository.repository) != Self.realPath(r.repository) {
+                    try r.copy(sourceSnapshot.id, from: sourceRepository)
+                    step("primary.migration.copied")
+                }
+                let candidates = try r.snapshots(tag: "binder:\(record.backupID)")
+                var verified: Restic.Snapshot?
+                for candidate in candidates.sorted(by: { ($0.id == sourceSnapshot.id) && ($1.id != sourceSnapshot.id) })
+                    where candidate.tags.contains("offloaded") {
+                    if let manifest = try? restoredManifest(candidate.id, from: r, id: "primary-copy-\(record.backupID)"),
+                       Self.digest(manifest) == expected {
+                        verified = candidate
+                        break
+                    }
+                }
+                guard let copy = verified else {
+                    throw Failure(message: "the pinned copy of \(record.name) could not be verified in the new mirror; the mirror was not changed")
+                }
+                st.offloaded[i].snapshot = copy.id
+                st.offloaded[i].repository = s.primary
+                if st.binders[record.backupID]?.snapshot == record.snapshot {
+                    st.binders[record.backupID]?.snapshot = copy.id
+                }
+            }
+            try save(st)
+            step("primary.migration.finished")
+
+            if !st.offloaded.isEmpty {
+                // The repository must also carry the only catalog of those offloaded binders before the setting
+                // points at it. A crash after this checkpoint can recover both their data and their records.
+                _ = try r.backup(support, tags: ["sprava", "sprava-state"], excludes: Self.excludes + stateExcludes())
+                step("primary.migration.state")
+            }
         }
         try save(s)
     }
@@ -325,7 +405,7 @@ public struct Backup: Sendable {
         var s = try settings()
         guard let primaryPath = s.primary else { throw Failure(message: "set up backup first") }
         let oldSecond = s.second
-        try Self.refuseSharedFate(folder, primary: URL(fileURLWithPath: primaryPath, isDirectory: true))
+        try refuseSharedFate(folder, primary: URL(fileURLWithPath: primaryPath, isDirectory: true))
         let primary = try engine(s.primary)
         s.second = folder.standardizedFileURL.path
         let second = try engine(s.second, settings: s)
@@ -389,21 +469,52 @@ public struct Backup: Sendable {
         return rest.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.path
     }
 
-    static func refuseSharedFate(_ second: URL, primary: URL) throws {
-        let a = realPath(second), b = realPath(primary)
+    /// A supported independent destination: any folder below macOS's File Provider root for non-iCloud services,
+    /// or a folder whose nearest existing ancestor is on a non-internal volume. An arbitrary folder on the startup
+    /// disk is not a second backup: losing the Mac would lose both repositories.
+    static func isIndependentSecondLocation(_ url: URL) -> Bool {
+        let destination = realPath(url)
+        let providers = realPath(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/CloudStorage", isDirectory: true))
+        if destination.hasPrefix(providers + "/") {
+            // The first component is the provider's macOS-managed root. Requiring it to exist prevents a made-up
+            // `CloudStorage/Foo` path from being created as an ordinary local folder and mistaken for a synced copy.
+            let relative = destination.dropFirst(providers.count + 1)
+            guard let providerName = relative.split(separator: "/").first else { return false }
+            var provider = stat()
+            let root = URL(fileURLWithPath: providers, isDirectory: true).appendingPathComponent(String(providerName), isDirectory: true)
+            return lstat(root.path, &provider) == 0 && provider.st_mode & S_IFMT == S_IFDIR
+        }
+
+        var existing = URL(fileURLWithPath: destination, isDirectory: true)
+        var info = stat()
+        while lstat(existing.path, &info) != 0, existing.path != "/" {
+            existing.deleteLastPathComponent()
+        }
+        guard lstat(existing.path, &info) == 0,
+              let values = try? existing.resourceValues(forKeys: [.volumeIsInternalKey]),
+              let internalVolume = values.volumeIsInternal else { return false }
+        return !internalVolume
+    }
+
+    func refuseSharedFate(_ second: URL, primary: URL) throws {
+        let a = Self.realPath(second), b = Self.realPath(primary)
         if a == b || a.hasPrefix(b + "/") || b.hasPrefix(a + "/") {
             throw Failure(message: "the second backup must be a folder of its own, not the iCloud mirror or a folder in or around it")
         }
-        let iCloud = realPath(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents", isDirectory: true))
+        let iCloud = Self.realPath(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents", isDirectory: true))
         if a == iCloud || a.hasPrefix(iCloud + "/") {
             throw Failure(message: "the second backup cannot be in iCloud Drive: losing the account would lose both copies; choose an external disk or another cloud service's folder")
+        }
+        guard secondLocationCheck(second) else {
+            throw Failure(message: "the second backup must be on an external disk or in another cloud service's folder; a folder on this Mac is not an independent copy")
         }
     }
 
     /// The same check on the saved settings, before an offload counts the two repositories as independent copies.
     func refuseSharedFate(_ s: Settings) throws {
         guard let primary = s.primary, let second = s.second else { return }
-        try Self.refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: URL(fileURLWithPath: primary, isDirectory: true))
+        try refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: URL(fileURLWithPath: primary, isDirectory: true))
     }
 
     // MARK: - Health

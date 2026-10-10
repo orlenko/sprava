@@ -11,6 +11,23 @@ import SpravaKit
 extension Backup {
     // MARK: - Offload (docs/backup.md §6.1)
 
+    enum FolderEntry: Equatable { case present, missing, unavailable }
+
+    /// Whether the binder's final directory entry exists. `fileExists` folds a disconnected volume, an unreadable
+    /// parent and a genuinely removed entry into false; an offload may finish only for the last of those. Opening the
+    /// immediate parent proves it is available before ENOENT is accepted as a completed move to the Trash.
+    static func folderEntry(_ folder: URL) -> FolderEntry {
+        var info = stat()
+        if lstat(folder.path, &info) == 0 { return .present }
+        guard errno == ENOENT || errno == ENOTDIR else { return .unavailable }
+        let parent = folder.deletingLastPathComponent()
+        let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return .unavailable }
+        defer { close(fd) }
+        if fstatat(fd, folder.lastPathComponent, &info, AT_SYMLINK_NOFOLLOW) == 0 { return .present }
+        return errno == ENOENT ? .missing : .unavailable
+    }
+
     public enum OffloadProgress: Equatable, Sendable {
         case waitingForICloud(Int)
         case done(Offloaded)
@@ -23,9 +40,12 @@ extension Backup {
         guard s.primary != nil else { throw Failure(message: "set up backup first") }
         guard s.second != nil else { throw Failure(message: "offloading needs a second backup; choose one in Backup settings") }
         // An offload that stopped after its folder went to the Trash only has its records left to finish.
-        if !FileManager.default.fileExists(atPath: folder.path),
-           let leaving = try state().offloads.first(where: { $0.value.path == folder.standardizedFileURL.path && $0.value.stage == "leaving" }) {
-            return try continueOffload(leaving.key, now: now)
+        if let leaving = try state().offloads.first(where: { $0.value.path == folder.standardizedFileURL.path && $0.value.stage == "leaving" }) {
+            switch Self.folderEntry(folder) {
+            case .missing: return try continueOffload(leaving.key, now: now)
+            case .unavailable: throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
+            case .present: break
+            }
         }
         // Abandonment has already proved the candidate snapshot unusable and journaled cleanup. Resume that cleanup
         // before reading or validating the live binder, and before its older offloaded record can look like a shared
@@ -233,7 +253,13 @@ extension Backup {
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
         // A folder already in the Trash only has its records left to finish.
-        if job.stage == "leaving", !FileManager.default.fileExists(atPath: folder.path) { return try leave(id, folder: folder, &st, now: now) }
+        if job.stage == "leaving" {
+            switch Self.folderEntry(folder) {
+            case .missing: return try leave(id, folder: folder, &st, now: now)
+            case .unavailable: throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
+            case .present: break
+            }
+        }
         // The settings may have changed while the offload waited, also while it waited to leave. A snapshot in a
         // mirror the person has since replaced is not in the backups any more (nor is the state snapshot holding the
         // record); a copy in a replaced second backup is made again, with the record and its state snapshot; and two
@@ -271,17 +297,20 @@ extension Backup {
                 try save(st)
                 try second.copy(job.snapshot!, from: primary)
                 let copies = try second.snapshots(tag: "binder:\(id)")
-                guard let copy = copies.last else { throw Failure(message: "the copy to the second backup did not appear") }
-                // restic copies only the data the second backup's index lacks, and never reads back what it lists, so
-                // a damaged file there would pass unseen: the copy is restored and compared, as the snapshot was.
-                guard try Self.digest(restoredManifest(copy.id, from: second, id: id)) == job.manifestSHA else {
-                    throw Failure(message: "the copy in the second backup does not match the binder; nothing was removed. Check the second backup before offloading again")
+                // Another operation may have added a newer snapshot for this binder after `copy` landed but before
+                // its id was recorded. Prefer the source id (restic normally preserves it), then search only pinned
+                // copies and prove their contents. Never let list order select an unrelated drill snapshot.
+                let ordered = copies.sorted { ($0.id == job.snapshot) && ($1.id != job.snapshot) }
+                var copy: Restic.Snapshot?
+                for candidate in ordered where candidate.tags.contains("offloaded") {
+                    if let manifest = try? restoredManifest(candidate.id, from: second, id: id),
+                       Self.digest(manifest) == job.manifestSHA {
+                        copy = candidate
+                        break
+                    }
                 }
-                // The copy carries the snapshot's tags, `offloaded` among them, which keeps it from retention. Tagging
-                // it here would give it a new id (restic rewrites a snapshot to change its tags), so one without the
-                // pin is refused instead, never recorded as pinned.
-                guard copy.tags.contains("offloaded") else {
-                    throw Failure(message: "the copy in the second backup is not pinned against retention; nothing was removed")
+                guard let copy else {
+                    throw Failure(message: "the copy in the second backup does not match the binder; nothing was removed. Check the second backup before offloading again")
                 }
                 job.secondSnapshot = copy.id
                 job.secondRepository = s.second
@@ -326,7 +355,10 @@ extension Backup {
         guard var job = st.offloads[id], let record = st.offloaded.first(where: { $0.backupID == id }) else {
             throw Failure(message: "the offload's record is missing; nothing was removed")
         }
-        if FileManager.default.fileExists(atPath: folder.path) {
+        switch Self.folderEntry(folder) {
+        case .unavailable:
+            throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
+        case .present:
             if !job.stateSaved {
                 try backUpState(now: now)
                 st = try state()
@@ -366,6 +398,8 @@ extension Backup {
                 throw error
             }
             step("offload.removed")
+        case .missing:
+            break
         }
         // A Shelf that still lists the folder would later refuse its restore there ("a binder on the Shelf"), so a
         // failure here stops, and the retry finishes from the record (the folder is gone by then).
@@ -433,7 +467,9 @@ extension Backup {
                 + "If this one is a copy, give it its own backup id; if that one is being restored, finish the restore first")
         }
         if let job = st.offloads[id], job.path != path {
-            guard job.stage != "leaving", !FileManager.default.fileExists(atPath: job.path) else { throw refused(job.path) }
+            guard job.stage != "leaving", Self.folderEntry(URL(fileURLWithPath: job.path, isDirectory: true)) == .missing else {
+                throw refused(job.path)
+            }
             st.offloads[id] = nil
         }
         let ownLeaving = st.offloads[id]?.stage == "leaving"

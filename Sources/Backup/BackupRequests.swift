@@ -73,7 +73,23 @@ public struct BackupRequests: Sendable {
     /// The queue. Only a missing file is empty; one that cannot be read or decoded throws, so nothing ever saves
     /// over the restores, backups and waiting offloads it holds.
     public func all() throws -> [Request] {
-        try StateFile.read([Request].self, from: url) ?? []
+        let data: Data
+        switch SafeFile.read(url, limit: 16 * 1024 * 1024) {
+        case .missing:
+            // ENOTDIR also maps to missing. Only a genuinely absent final entry is a fresh queue.
+            var info = stat()
+            guard lstat(url.path, &info) != 0, errno == ENOENT else {
+                throw Backup.Failure(message: "the backup queue cannot be read; nothing was changed")
+            }
+            return []
+        case .ok(let read): data = read
+        case .refused, .unreadable:
+            throw Backup.Failure(message: "the backup queue cannot be read; nothing was changed")
+        }
+        guard let requests = try? JSONDecoder().decode([Request].self, from: data) else {
+            throw Backup.Failure(message: "the backup queue is unreadable; nothing was changed")
+        }
+        return requests
     }
 
     func save(_ list: [Request]) throws {
@@ -81,7 +97,7 @@ public struct BackupRequests: Sendable {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         // Finished requests are kept for a day so the app can show how they ended.
         let cutoff = Date().addingTimeInterval(-86_400)
-        let kept = list.filter { r in !["done", "failed"].contains(r.state) || (ISOTime.date(r.at) ?? Date()) > cutoff }
+        let kept = list.filter { r in !["done", "failed", "needs_confirmation"].contains(r.state) || (ISOTime.date(r.at) ?? Date()) > cutoff }
         try AtomicFile.write(try e.encode(kept), to: url)
     }
 

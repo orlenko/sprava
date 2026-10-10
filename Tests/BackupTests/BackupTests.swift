@@ -26,7 +26,7 @@ import Testing
         // The hub's spool is a temporary folder too, never the person's.
         let backup = Backup(support: support, key: key, removeFolder: { url in
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        }, hubSpool: base.appendingPathComponent("spool"), uploadCheck: { _ in .uploaded })
+        }, hubSpool: base.appendingPathComponent("spool"), uploadCheck: { _ in .uploaded }, secondLocationCheck: { _ in true })
         let folder = try makeTeka(fixture: "sprava-v0")
         try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("dev"))]), now: now)
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("correspondence/notary"), withIntermediateDirectories: true)

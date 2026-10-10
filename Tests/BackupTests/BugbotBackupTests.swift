@@ -55,7 +55,8 @@ import Testing
         return Backup(support: e.support, key: key, removeFolder: { url in
             if failRemove?.on == true { throw CocoaError(.fileWriteNoPermission) }
             try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
-        }, hubSpool: e.spool, uploadCheck: { _ in waiting?.on == true ? .waiting(2) : upload })
+        }, hubSpool: e.spool, uploadCheck: { _ in waiting?.on == true ? .waiting(2) : upload },
+                      secondLocationCheck: { _ in true })
     }
 
     /// Settings naming both repositories, written directly, for the checks that run before restic does.
