@@ -126,7 +126,7 @@ import Testing
         #expect(setxattr(link, "com.example.invented", note, note.count, 0, XATTR_NOFOLLOW) == 0)
         #expect(try Backup.manifest(folder)["documents/current.pdf"] != m["documents/current.pdf"])
         #expect(try Backup.manifest(folder)["documents/deed.pdf"] == m["documents/deed.pdf"])
-        #expect(m["documents/empty"]?.hasPrefix("folder mode:") == true)
+        #expect(m["documents/empty"]?.hasPrefix("folder mtime:") == true)
         #expect(m["documents/deed.pdf"]?.wholeMatch(of: /[0-9a-f]{64} mtime:[0-9]+\.[0-9]+ mode:[0-7]+( xattr:[0-9a-f]{64})?/) != nil)
 
         let hidden = folder.appendingPathComponent("documents/hidden")
@@ -242,5 +242,56 @@ import Testing
         let separate = try Backup.manifest(folder)
         #expect(separate["b.pdf"] != linked["b.pdf"] || separate["a.pdf"] != linked["a.pdf"])
         #expect(Backup.digest(separate) != Backup.digest(linked))
+    }
+
+    @Test func anEmptyRecordOfAMovedBinderIsNeverTakenForAPendingReassignment() throws {
+        let base = try temp("empty-record")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        let source = try b.claim(original, &st)
+        // Another binder was claimed at Place, never backed up, then moved away; a copy of Original now sits there.
+        let place = base.appendingPathComponent("Place", isDirectory: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+        let earlier = try b.claim(place, &st)
+        try b.save(st)
+        try FileManager.default.moveItem(at: place, to: base.appendingPathComponent("Elsewhere"))
+        try FileManager.default.copyItem(at: original, to: place)
+        let own = try b.giveOwnBackupID(place)
+        #expect(own != earlier && own != source)
+        #expect(Backup.existingBackupID(base.appendingPathComponent("Elsewhere")) == earlier)
+        #expect(try b.state().reassigning.isEmpty)
+    }
+
+    @Test func aFileWhereTheParentWasMeansTheBinderIsGone() throws {
+        let base = try temp("enotdir")
+        try Data("invented".utf8).write(to: base.appendingPathComponent("Projects"))
+        #expect(Backup.folderEntry(base.appendingPathComponent("Projects/Binder", isDirectory: true)) == .missing)
+    }
+
+    @Test func foldersCountTheirTimesAndSocketsAreLeftOut() throws {
+        let folder = try temp("folder-times")
+        let documents = folder.appendingPathComponent("documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        let before = try Backup.manifest(folder)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_600_000_000)], ofItemAtPath: documents.path)
+        #expect(try Backup.manifest(folder)["documents"] != before["documents"])
+
+        // A socket, which restic does not back up, is not in the manifest either.
+        let socketPath = documents.appendingPathComponent("s").path
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            for (i, byte) in socketPath.utf8.enumerated() where i < buffer.count - 1 { buffer[i] = byte }
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        try #require(bound == 0)
+        #expect(try Backup.manifest(folder)["documents/s"] == nil)
     }
 }

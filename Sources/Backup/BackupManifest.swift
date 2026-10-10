@@ -8,6 +8,10 @@ import SpravaKit
 extension Backup {
     // MARK: - Manifests
 
+    /// What restic leaves out of every snapshot (docs/backup.md §3.2): the binder lock, temporary files, and the
+    /// Finder's view settings, which macOS rewrites on every visit. `manifest` leaves out the same names.
+    static let excludes = [".teka.lock", ".*.tmp", ".DS_Store"]
+
     /// Every entry under `folder` that a snapshot holds, as restic backs it up: a file with its SHA-256, a symbolic
     /// link with its target, a folder as such; files and folders also with their permission bits and extended
     /// attributes, which restic saves and restores on macOS (Finder tags and comments, resource forks, quarantine),
@@ -15,11 +19,11 @@ extension Backup {
     /// folder leaves sees it. A folder that cannot be listed or an entry that cannot be read throws: whatever a
     /// manifest left out could leave the Mac while the binder still counts as unchanged.
     ///
-    /// A file's modification time counts too, as restic saves and restores it, and so do hard links: a file that is
-    /// another link to one listed earlier names it (`hardlink:`), so linking or unlinking two identical files is a
-    /// change. A folder's own modification time follows its entries and is not compared; nor is a symbolic link's,
-    /// which restic does not restore on macOS, nor ownership, which a restore by the person (not root) cannot give
-    /// back.
+    /// A file's or folder's modification time counts too, as restic saves and restores it, and so do hard links: a
+    /// file that is another link to one listed earlier names it (`hardlink:`), so linking or unlinking two identical
+    /// files is a change. A symbolic link's own time is not compared, as restic does not restore it on macOS; nor is
+    /// ownership, which a restore by the person (not root) cannot give back. Sockets are left out, as restic leaves
+    /// them out.
     ///
     /// Left out are the attributes macOS itself keeps and a restore cannot give back (`volatileAttributes`): they
     /// would make every verification fail, and no person sets them. The binder folder's own metadata is not compared.
@@ -45,7 +49,7 @@ extension Backup {
                 }
                 switch info.st_mode & S_IFMT {
                 case S_IFDIR:
-                    out[rel] = "folder" + (try metadata())
+                    out[rel] = "folder mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)" + (try metadata())
                     try walk(url, rel)
                 case S_IFLNK:
                     guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { throw unreadable(rel) }
@@ -62,6 +66,8 @@ extension Backup {
                         if let first = linked[inode] { link = " hardlink:" + first } else { linked[inode] = rel }
                     }
                     out[rel] = sha + mtime + (try metadata()) + link
+                case S_IFSOCK:
+                    continue
                 default:
                     out[rel] = "special \(info.st_mode & S_IFMT)"
                 }

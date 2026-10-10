@@ -17,16 +17,20 @@ extension Backup {
             throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
         }
         let id = newBackupID()
-        // `.sprava` is made inside the folder only, never with missing parents: a binder moved away meanwhile fails
-        // here instead of getting a skeleton of its old path.
-        let sprava = folder.appendingPathComponent(".sprava", isDirectory: true)
-        if mkdir(sprava.path, 0o700) != 0 {
-            guard errno == EEXIST, lstat(sprava.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
-                throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
-            }
-        }
-        try AtomicFile.write(Data((id + "\n").utf8), to: sprava.appendingPathComponent("backup-id"))
+        try writeBackupID(id, into: folder, creating: true)
         return id
+    }
+
+    /// Writes `.sprava/backup-id` through handles to the binder folder and its `.sprava` (`StateDirectory`): a
+    /// binder moved away meanwhile, or a link put in place of either folder, fails instead of being written through,
+    /// and a new `.sprava` is flushed into the binder before the id counts.
+    static func writeBackupID(_ id: String, into folder: URL, creating: Bool) throws {
+        let failure = Failure(message: "\(folder.lastPathComponent)'s backup id could not be written; nothing was backed up")
+        do {
+            guard let binder = try StateDirectory.open(folder),
+                  let sprava = try binder.directory(".sprava", create: creating) else { throw failure }
+            try sprava.write(Data((id + "\n").utf8), to: "backup-id")
+        } catch let error as Failure { throw error } catch { throw failure }
     }
 
     /// A folder holds another binder's backup id: it was copied, with `.sprava/backup-id`, from a binder that is still
@@ -98,19 +102,22 @@ extension Backup {
             throw Failure(message: "this binder is being restored; finish the restore first")
         }
         // The folder owns the new id before it holds it: a crash between the two leaves a record of an id no folder
-        // holds, never an id no record reserves. A retry finishes that record instead of minting another: a record
-        // for this folder under an id it does not hold, never backed up, can only be such an unfinished one.
-        let here = Self.realPath(folder)
-        let pending = st.binders.keys.sorted().first { id in
-            guard let record = st.binders[id], id != old, let path = record.path,
-                  Self.realPath(URL(fileURLWithPath: path)) == here else { return false }
-            return record.snapshot == nil && record.at == nil && record.repositories.isEmpty
+        // holds, never an id no record reserves. The reassignment is recorded by the id the copy holds, so a retry
+        // finishes it with the same new id instead of minting another.
+        let here = folder.standardizedFileURL.path
+        let id: String
+        if let pending = st.reassigning[old], Self.realPath(URL(fileURLWithPath: pending.path)) == Self.realPath(folder) {
+            id = pending.id
+        } else {
+            id = Self.newBackupID()
+            st.reassigning[old] = .init(path: here, id: id)
         }
-        let id = pending ?? Self.newBackupID()
-        st.binders[id, default: State.BinderRecord()].path = folder.standardizedFileURL.path
+        st.binders[id, default: State.BinderRecord()].path = here
         try save(st)
         step("ownid.recorded")
-        try AtomicFile.write(Data((id + "\n").utf8), to: folder.appendingPathComponent(".sprava/backup-id"))
+        try Self.writeBackupID(id, into: folder, creating: false)
+        st.reassigning[old] = nil
+        try save(st)
         return id
     }
 
@@ -160,6 +167,8 @@ extension Backup {
         if parent.standardizedFileURL.path == "/Volumes" { return .unavailable }
         let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
+            // Something that is not a folder at the parent's path: the binder cannot be there.
+            if errno == ENOTDIR { return .missing }
             guard errno == ENOENT, parent.standardizedFileURL.path != "/" else { return .unavailable }
             return folderEntry(parent) == .missing ? .missing : .unavailable
         }

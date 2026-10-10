@@ -51,7 +51,8 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
 
 - Each binder folder, as one snapshot per binder, tagged with the binder's opaque id (never its name, so the
   tags say nothing even to someone who has the key and reads the snapshot list over the person's shoulder).
-  Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, temporary files (`.*.tmp`).
+  Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, temporary files (`.*.tmp`), and
+  the Finder's `.DS_Store` view settings, which macOS rewrites on every visit.
 - Sprava's own state, as its own snapshot: the Shelf, settings, the capture store, unfiled cards, the clerk's
   records, integration settings (`~/Library/Application Support/Sprava`, minus logs and caches).
 - Never: the Keychain. Integration passwords and brain tokens are re-entered after a restore onto a new Mac.
