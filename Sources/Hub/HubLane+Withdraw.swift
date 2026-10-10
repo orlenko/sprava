@@ -72,6 +72,21 @@ extension HubLane {
         return true
     }
 
+    /// Takes a binder's slice off the hub before the binder leaves this Mac (an offload), by the rules of
+    /// `withdraw`: with `nameCollides` (another binder here has the same name) only a slice Sprava recorded writing
+    /// for this binder goes. The caller holds the binder's write lock, so no publish can put the slice back before
+    /// the folder is gone. No spool, or no inbox in it, means no slice. Returns false when no slice can be identified
+    /// safely: the binder must not leave while its slice may stay on the hub.
+    public static func withdrawBeforeLeaving(_ folder: URL, root: URL = spoolRoot(), nameCollides: Bool) throws -> Bool {
+        var info = stat()
+        if lstat(root.path, &info) != 0, errno == ENOENT { return true }
+        try checkFolder(root, create: false)
+        let inbox = root.appendingPathComponent("inbox", isDirectory: true)
+        if lstat(inbox.path, &info) != 0, errno == ENOENT { return true }
+        try checkFolder(inbox, create: false)
+        return try withdraw(Teka.read(folder), inbox: inbox, recordedOnly: nameCollides)
+    }
+
     /// The canonical hash of a slice on the spool, `generated` left out; nil when it cannot be read as JSON. Only a
     /// regular file is read, never through a link, so a FIFO there cannot stall the publish.
     static func sliceHash(at url: URL) -> String? { sliceOnSpool(at: url)?.hash }
