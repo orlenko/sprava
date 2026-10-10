@@ -242,6 +242,9 @@ extension BackupKey {
 
         var localCommitted = false
         do {
+            // The key being replaced may be the only one that opens an earlier repository; keep it on this Mac
+            // before the local slot and the journal move on.
+            if let replaced = previous.local, replaced != key { try keepLocally([replaced], in: keychain) }
             if inICloudKeychain {
                 // Preserve the existing synchronized slot: its older key may already be on another Mac while
                 // a newly added item still waits for sync. Each recovery key has an independent, immutable name.

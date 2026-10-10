@@ -131,6 +131,30 @@ import Testing
         #expect(BackupKey.load(keychain: device.keychain) == "INVNT-SECOND")
     }
 
+    @Test func replacingAKeyKeepsTheReplacedOneOnThisMac() throws {
+        for optedIn in [false, true] {
+            let device = Replica()
+            try BackupKey.store("INVNT-FIRST", inICloudKeychain: false, keychain: device.keychain)
+            try BackupKey.store("INVNT-SECOND", inICloudKeychain: optedIn, keychain: device.keychain)
+            let keys = try BackupKey.recoveryKeys(environment: [:], keychain: device.keychain)
+            #expect(keys.first == "INVNT-SECOND")
+            #expect(Set(keys) == Set(["INVNT-FIRST", "INVNT-SECOND"]))
+            #expect(device.cloud.values.contains("INVNT-FIRST") == false)
+        }
+    }
+
+    @Test func aReplacementWhoseHistoryCannotBeWrittenChangesNothing() throws {
+        let device = Replica()
+        try BackupKey.store("INVNT-FIRST", inICloudKeychain: false, keychain: device.keychain)
+        device.afterPut = { account, _ in
+            if account == BackupKey.historyAccount { throw BackupKey.Failure(message: "invented refusal") }
+        }
+        #expect(throws: BackupKey.Failure.self) {
+            try BackupKey.store("INVNT-SECOND", inICloudKeychain: false, keychain: device.keychain)
+        }
+        #expect(BackupKey.load(keychain: device.keychain) == "INVNT-FIRST")
+    }
+
     @Test func optingOutKeepsEarlierKeysOnThisMacOnly() throws {
         let device = Replica()
         try BackupKey.store("INVNT-FIRST", inICloudKeychain: true, keychain: device.keychain)
