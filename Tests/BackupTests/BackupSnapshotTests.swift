@@ -151,6 +151,8 @@ import Testing
         let b = try configured(e)
         try b.backUp(e.folder, now: now)
         try b.check(readData: true, now: now)
+        try b.drill(e.folder, now: now)
+        try b.drill(e.folder, repository: .second, now: now)
         let id = try Backup.backupID(e.folder)
         let moved = e.base.appendingPathComponent("icloud/Sprava Backup Moved")
         try b.setUp(primary: moved, iCloudKeychain: false)
@@ -159,11 +161,13 @@ import Testing
         #expect(try b.state().binders[id]?.snapshot == nil && b.state().binders[id]?.at == nil)
         // The old mirror's checks do not count for the new one; the second backup's still do.
         var checked = try b.state()
-        #expect(checked.lastCheck == nil && checked.lastReadData == nil && checked.readDataPart == 0)
+        #expect(checked.lastCheck == nil && checked.lastReadData == nil && checked.readDataPart == 0 && checked.lastDrill == nil)
+        #expect(checked.lastSecondDrill == ISOTime.string(now))
         #expect(checked.lastSecondCheck == ISOTime.string(now) && checked.secondReadDataPart == 1)
         try b.setSecond(e.base.appendingPathComponent("external/Another Second"))
         checked = try b.state()
         #expect(checked.lastSecondCheck == nil && checked.lastSecondReadData == nil && checked.secondReadDataPart == 0)
+        #expect(checked.lastSecondDrill == nil)
         try b.setSecond(e.second)
 
         // An offloaded binder's pinned snapshots are its only copies: no repository moves away from them yet.

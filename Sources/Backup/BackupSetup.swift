@@ -46,10 +46,11 @@ extension Backup {
                 st.binders[id]?.snapshot = nil
                 st.binders[id]?.at = nil
             }
-            // The old mirror's checks say nothing about the new one: it is due for both, from its first part.
+            // The old mirror's checks and drill say nothing about the new one: it is due for each, from its first part.
             st.lastCheck = nil
             st.lastReadData = nil
             st.readDataPart = 0
+            st.lastDrill = nil
             try save(st)
         }
         try save(s)
@@ -74,6 +75,7 @@ extension Backup {
             st.lastSecondCheck = nil
             st.lastSecondReadData = nil
             st.secondReadDataPart = 0
+            st.lastSecondDrill = nil
             try save(st)
         }
         try save(s)
