@@ -42,7 +42,7 @@ extension Backup {
         try save(st)
         step("backup.claimed")
         do {
-            try Self.keepRootMetadata(folder)
+            let root = try Self.keepRootMetadata(folder)
             let before = try Self.writeMark(folder)
             let r = try engine(s.primary)
             let result = try r.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
@@ -64,7 +64,8 @@ extension Backup {
             }
             // restic reads one file at a time, so a write that landed during the run may be only partly in this
             // snapshot. The binder then stays due, and the next run takes another.
-            if try Self.writeMark(folder) == before { rec.at = ISOTime.string(now) }
+            // The folder's own settings must also still be those kept in the snapshot's metadata file.
+            if try Self.writeMark(folder) == before, try Self.rootMetadata(folder) == root { rec.at = ISOTime.string(now) }
             rec.bytes = result.bytes
             rec.error = nil
             st.binders[id] = rec

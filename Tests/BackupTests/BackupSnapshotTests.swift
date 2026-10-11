@@ -175,6 +175,13 @@ import Testing
             try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false)
         }
         #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false) }
+        // A record with no second copy recorded cannot be checked in a second backup either.
+        var s = Backup.Settings()
+        s.primary = e.primary.path
+        s.resticSHA256 = Restic.sha256(of: try #require(Restic.locate()))
+        try b.save(s)
+        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second) }
+        try? FileManager.default.removeItem(at: b.settingsURL)
         st.offloaded = []
         try b.save(st)
         try b.setUp(primary: e.primary, iCloudKeychain: false)

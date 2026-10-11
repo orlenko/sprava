@@ -108,10 +108,15 @@ extension Backup {
 
     /// Every offloaded binder's pinned snapshot (`pin` of its record) must be in `r`, or nothing is changed.
     func refuseMissingPins(in r: Restic, _ pin: (Offloaded) -> String?) throws {
-        let pins = try state().offloaded.compactMap(pin)
-        guard !pins.isEmpty else { return }
+        let records = try state().offloaded
+        guard !records.isEmpty else { return }
+        // A record without that pin (an older one) cannot be checked, so it cannot be accepted either.
+        let pins = records.map(pin)
+        guard !pins.contains(nil) else {
+            throw Failure(message: "an offloaded binder's copy cannot be checked in this repository; nothing was changed")
+        }
         let held = Set(try r.snapshots().filter { $0.tags.contains("offloaded") }.map(\.id))
-        guard pins.allSatisfy(held.contains) else {
+        guard pins.allSatisfy({ held.contains($0!) }) else {
             throw Failure(message: "this repository does not hold every offloaded binder's copy; nothing was changed")
         }
     }
