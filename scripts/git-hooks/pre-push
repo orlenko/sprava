@@ -22,6 +22,18 @@ for lib in lock.sh suites.sh; do [ -r "$hook_dir/$lib" ] || fail "pre-push: $hoo
 # Read every ref first: the tests must not consume the hook's standard input.
 cat > "$work/refs"
 
+# The shape of each pushed branch (scripts/pr-check.sh in this checkout, when it has one), before any suite runs.
+if [ -x scripts/pr-check.sh ]; then
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ "$local_sha" = "$zero" ] && continue
+        case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
+        branch=${local_ref#refs/heads/}
+        scripts/pr-check.sh "$local_sha" > "$work/shape" 2>&1 && shaped=0 || shaped=$?
+        awk -v b="$branch" '{ print "pre-push: " b ": " $0 }' "$work/shape" >&2
+        [ "$shaped" -eq 0 ] || fail "pre-push: $branch is refused by scripts/pr-check.sh"
+    done < "$work/refs"
+fi
+
 # Every commit new to the remote, oldest first, once each even when several pushed refs share it.
 : > "$work/all"
 while read -r local_ref local_sha remote_ref remote_sha; do
