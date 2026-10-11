@@ -267,4 +267,27 @@ extension BackupOffloadLeaveTests {
         try b.refuseMissingPins(in: b.engine(e.primary.path)) { $0.snapshot }
         #expect(throws: Backup.Failure.self) { try b.refuseMissingPins(in: b.engine(e.primary.path)) { _ in "0000\(record.snapshot)" } }
     }
+
+    @Test(.enabled(if: hasRestic)) func whileItWaitsToLeaveTheBinderKeepsItsRealPlaceAndItsID() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        let shortcuts = e.base.appendingPathComponent("Shortcuts", isDirectory: true)
+        try FileManager.default.createDirectory(at: shortcuts, withIntermediateDirectories: true)
+        let link = shortcuts.appendingPathComponent(e.folder.lastPathComponent)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: e.folder)
+        #expect(try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        b.atStep = nil
+        // The checkpoint's record already names the real place, not the link.
+        #expect(try b.state().offloads[id]?.record?.originalPath == Backup.realPath(e.folder))
+        // The binder is moved away and a changed copy of it put at its place: the copy is not the binder leaving.
+        let moved = e.base.appendingPathComponent("Elsewhere", isDirectory: true)
+        try FileManager.default.moveItem(at: e.folder, to: moved)
+        try FileManager.default.copyItem(at: moved, to: e.folder)
+        try Data("invented change".utf8).write(to: e.folder.appendingPathComponent("correspondence/notary/copy.pdf"))
+        #expect(throws: Backup.SharedBackupID.self) { _ = try b.backUp(link, now: now) }
+        #expect(throws: Backup.SharedBackupID.self) { _ = try b.backUp(e.folder, now: now) }
+    }
 }

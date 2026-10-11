@@ -60,8 +60,13 @@ extension Backup {
         let id = try Self.backupID(folder)
         func other(_ path: String) -> Bool { !Self.sameFolder(URL(fileURLWithPath: path, isDirectory: true), folder) }
         // The binder an offload is taking away still holds its id until it has left (its record is kept first).
-        // Once its move to the Trash is recorded, the binder has left: a folder at its path is a copy.
-        let leaving = st.offloads[id].map { !other($0.path) && $0.leavingTarget == nil } ?? false
+        // Once its move to the Trash is recorded, the binder has left: a folder at its path is a copy. Before that,
+        // only the binder itself (the same folder, or an identical copy) is the one leaving; another folder put at
+        // its path meanwhile is not, and the id stays reserved from it.
+        let leaving = st.offloads[id].map { !other($0.path) && $0.leavingTarget == nil && Self.isTheBinder(folder, id, $0) } ?? false
+        if let job = st.offloads[id], !other(job.path), job.stage == "leaving", !leaving {
+            throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: job.path + " (leaving)")
+        }
         if !leaving, let record = st.offloaded.first(where: { $0.backupID == id }) {
             // The folder a restore of it is going into is the binder itself.
             let restoring = st.restoredContents[id]?.path ?? st.restoring[id]

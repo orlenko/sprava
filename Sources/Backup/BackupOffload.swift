@@ -300,7 +300,7 @@ extension Backup {
             throw NeedsConfirmation(openItems: unconfirmed.map(\.title))
         }
         let record = Offloaded(
-            backupID: id, name: teka.name, originalPath: job.path, snapshot: snap, repository: job.repository,
+            backupID: id, name: teka.name, originalPath: Self.realPath(folder), snapshot: snap, repository: job.repository,
             secondSnapshot: job.secondSnapshot, secondRepository: job.secondRepository, bytes: job.bytes, at: ISOTime.string(now),
             summary: teka.catalog?["meta"]?["description"]?.stringValue ?? "",
             documents: (teka.catalog?["documents"]?.arrayValue ?? []).compactMap { d in
