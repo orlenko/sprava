@@ -126,6 +126,13 @@ extension Backup {
         let id: String
         // Only while the pending id is still reserved for this folder: its record may have moved with a folder that
         // already holds it.
+        // A copy that moved since its reservation was recorded (by device and inode) takes the reservation along.
+        if st.reassigning[key] == nil, let identity,
+           let moved = st.reassigning.first(where: { $0.value.folder == identity && $0.value.from == old }) {
+            st.reassigning[moved.key] = nil
+            st.reassigning[key] = moved.value
+            if st.binders[moved.value.id] != nil { st.binders[moved.value.id]?.path = here }
+        }
         if let pending = st.reassigning[key], pending.from == old, pending.folder != nil, pending.folder == identity,
            let reserved = st.binders[pending.id]?.path, Self.sameFolder(URL(fileURLWithPath: reserved, isDirectory: true), folder) {
             id = pending.id

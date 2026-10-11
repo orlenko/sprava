@@ -218,4 +218,18 @@ import Testing
             }
         }
     }
+
+    @Test func aLinksAttributeChangedLaterInTheReadFailsTheManifest() throws {
+        let folder = try temp("link-changed-later")
+        let link = folder.appendingPathComponent("a-link")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "z.bin")
+        try Data("invented later file".utf8).write(to: folder.appendingPathComponent("z.bin"))
+        #expect(throws: Backup.Failure.self) {
+            _ = try Backup.manifest(folder, afterRead: { url in
+                guard url.lastPathComponent == "z.bin" else { return }
+                let note = Array("invented note".utf8)
+                _ = setxattr(link.path, "com.example.invented", note, note.count, 0, XATTR_NOFOLLOW)
+            })
+        }
+    }
 }

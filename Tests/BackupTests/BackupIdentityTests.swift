@@ -350,4 +350,26 @@ import Testing
         // Read again (as a retry would after a failed flush): it is flushed and returned unchanged.
         #expect(try Backup.backupID(folder) == id)
     }
+
+    @Test func aCopyMovedBeforeItsRetryKeepsItsReservation() throws {
+        let base = try temp("moved-before-retry")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        _ = try b.claim(original, &st)
+        try b.save(st)
+        let copy = base.appendingPathComponent("Copy", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: copy)
+        chmod(copy.appendingPathComponent(".sprava").path, 0o500)
+        #expect(throws: (any Error).self) { try b.giveOwnBackupID(copy) }
+        chmod(copy.appendingPathComponent(".sprava").path, 0o700)
+        let reserved = try #require(try b.state().reassigning[Backup.realPath(copy)]?.id)
+        let moved = base.appendingPathComponent("Moved", isDirectory: true)
+        try FileManager.default.moveItem(at: copy, to: moved)
+        #expect(try b.giveOwnBackupID(moved) == reserved)
+        let after = try b.state()
+        #expect(after.reassigning.isEmpty && after.binders.count == 2)
+        #expect(after.binders[reserved]?.path == moved.standardizedFileURL.path)
+    }
 }

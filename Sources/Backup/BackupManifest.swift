@@ -40,11 +40,14 @@ extension Backup {
         // Everything read counts only when it is still the same, unchanged, once the whole binder was read: each
         // folder (device, inode, times) and each file (also its size) is checked again at the end, so a save into a
         // folder or file read earlier fails the manifest instead of being missed.
+        func state(of info: stat) -> [Int] {
+            [Int(info.st_dev), Int(info.st_ino), Int(info.st_mode), Int(info.st_size), info.st_mtimespec.tv_sec,
+             info.st_mtimespec.tv_nsec, info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec]
+        }
         func state(_ url: URL, follow: Bool) -> [Int]? {
             var info = stat()
             guard (follow ? stat(url.path, &info) : lstat(url.path, &info)) == 0 else { return nil }
-            return [Int(info.st_dev), Int(info.st_ino), Int(info.st_mode), Int(info.st_size), info.st_mtimespec.tv_sec,
-                    info.st_mtimespec.tv_nsec, info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec]
+            return state(of: info)
         }
         var read: [(url: URL, rel: String, follow: Bool, state: [Int])] = []
         func walk(_ dir: URL, _ prefix: String) throws {
@@ -82,6 +85,7 @@ extension Backup {
                     guard let attributes = Self.attributesDigest(url.path) else { throw unreadable(rel) }
                     // The target is length-prefixed: it may itself read like the metadata that follows it.
                     out[rel] = "link \(target.utf8.count):" + target + (attributes.isEmpty ? "" : " xattr:" + attributes)
+                    read.append((url, rel, false, state(of: info)))
                 case S_IFREG:
                     guard let sha = DocumentPaths.sha256(of: url) else { throw unreadable(rel) }
                     afterRead(url)
@@ -110,6 +114,7 @@ extension Backup {
                     guard let attributes = Self.attributesDigest(url.path) else { throw unreadable(rel) }
                     out[rel] = "special \(info.st_mode & S_IFMT) mode:" + String(info.st_mode & 0o7777, radix: 8) + " rdev:\(info.st_rdev)"
                         + (attributes.isEmpty ? "" : " xattr:" + attributes)
+                    read.append((url, rel, false, state(of: info)))
                 }
             }
         }
