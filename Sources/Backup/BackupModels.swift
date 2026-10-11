@@ -74,6 +74,8 @@ extension Backup {
         var lastSecondReadData: String?
         var secondReadDataPart = 0
         var lastDrill: String?
+        /// A drill of the second backup, kept apart: it says nothing about restoring from the mirror.
+        var lastSecondDrill: String?
         var offloads: [String: InProgress] = [:]
         var offloaded: [Offloaded] = []
         var restored: [String: Restored] = [:]
@@ -253,6 +255,7 @@ extension Backup.State {
         lastSecondReadData = try c.decodeIfPresent(String.self, forKey: .lastSecondReadData)
         secondReadDataPart = try c.decodeIfPresent(Int.self, forKey: .secondReadDataPart) ?? 0
         lastDrill = try c.decodeIfPresent(String.self, forKey: .lastDrill)
+        lastSecondDrill = try c.decodeIfPresent(String.self, forKey: .lastSecondDrill)
         offloads = try c.decodeIfPresent([String: Backup.InProgress].self, forKey: .offloads) ?? [:]
         offloaded = try c.decodeIfPresent([Backup.Offloaded].self, forKey: .offloaded) ?? []
         restored = try c.decodeIfPresent([String: Restored].self, forKey: .restored) ?? [:]

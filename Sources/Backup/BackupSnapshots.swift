@@ -77,17 +77,27 @@ extension Backup {
     /// Weekly forget and prune per binder, by the retention rule; offloaded snapshots are always kept.
     public func applyRetention(now: Date = Date()) throws {
         let s = try settings()
-        let r = try engine(s.primary)
         var st = try state()
         // Sprava's own state snapshots follow the same rule as the binders', so a capture attachment deleted long ago
         // does not stay in them for ever.
-        for tag in st.binders.keys.sorted().map({ "binder:\($0)" }) + ["sprava-state"] {
-            try r.forget(tag: tag, keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
-                         keepMonthly: s.keepMonthly, keepYearly: s.keepYearly, prune: false)
+        let tags = st.binders.keys.sorted().map { "binder:\($0)" } + ["sprava-state"]
+        func apply(_ r: Restic) throws {
+            for tag in tags {
+                try r.forget(tag: tag, keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
+                             keepMonthly: s.keepMonthly, keepYearly: s.keepYearly, prune: false)
+            }
+            try r.prune()
         }
-        try r.prune()
+        try apply(engine(s.primary))
         st.lastForget = ISOTime.string(now)
         try save(st)
+        // The second backup holds pinned copies (always kept) and its own drill snapshots, which follow the rule too.
+        // One that is away fails here and is tried with the next weekly run; the mirror's retention still counts.
+        if s.second != nil {
+            do { try apply(engine(s.second)) } catch {
+                throw Failure(message: "retention could not run on the second backup (\(error))")
+            }
+        }
     }
 
     /// Weekly structure check; monthly, one twelfth of the data read back, rotating. The second backup holds the only
@@ -166,7 +176,10 @@ extension Backup {
         try repository.restore(snap, into: target)
         guard try Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
         var st = try state()
-        st.lastDrill = ISOTime.string(now)
+        switch choice {
+        case .primary: st.lastDrill = ISOTime.string(now)
+        case .second: st.lastSecondDrill = ISOTime.string(now)
+        }
         try save(st)
     }
 }

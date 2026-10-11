@@ -25,19 +25,27 @@ extension Backup {
         }
         if changing { try refuseMovingOffloadedBinders() }
         let r = try engine(s.primary, settings: s)
+        // A repository this setup makes in a folder that was not there is taken away again if the place is refused.
+        let wasThere = FileManager.default.fileExists(atPath: r.repository.path)
         if r.isInitialized() {
             _ = try r.snapshots()   // throws when the key does not open it
         } else {
             try r.initRepository()
         }
         guard uploadCheck(r.repository) != .notInICloud else {
+            if !wasThere { try? FileManager.default.removeItem(at: r.repository) }
             throw Failure(message: "the backup mirror must be in iCloud Drive; nothing was changed")
         }
         if changing, let oldPrimary {
             // Snapshots already in the old mirror stay there: record it, so expunging a document reaches it too.
             // Saving this first is harmless if saving the setting then fails.
             var st = try state()
-            for id in Array(st.binders.keys) { st.rememberRepositories([oldPrimary], for: id) }
+            for id in Array(st.binders.keys) {
+                st.rememberRepositories([oldPrimary], for: id)
+                // Its last snapshot is in the old mirror: in the new one each binder is due, and not shown as backed up.
+                st.binders[id]?.snapshot = nil
+                st.binders[id]?.at = nil
+            }
             // The old mirror's checks say nothing about the new one: it is due for both, from its first part.
             st.lastCheck = nil
             st.lastReadData = nil

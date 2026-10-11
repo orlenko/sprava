@@ -103,6 +103,8 @@ import Testing
         let e = try env()
         #expect(throws: Backup.Failure.self) { try backup(e, upload: .notInICloud).setUp(primary: e.primary, iCloudKeychain: false) }
         #expect(try backup(e).settings().primary == nil)
+        // The repository setup made there is taken away again.
+        #expect(!FileManager.default.fileExists(atPath: e.primary.path))
     }
 
     @Test(.enabled(if: hasRestic)) func aMirrorInsideTheSecondBackupIsRefused() throws {
@@ -153,6 +155,8 @@ import Testing
         let moved = e.base.appendingPathComponent("icloud/Sprava Backup Moved")
         try b.setUp(primary: moved, iCloudKeychain: false)
         #expect(try b.state().binders[id]?.repositories.contains(e.primary.standardizedFileURL.path) == true)
+        // The binder's last snapshot is in the old mirror: in the new one it is due, and not shown as backed up.
+        #expect(try b.state().binders[id]?.snapshot == nil && b.state().binders[id]?.at == nil)
         // The old mirror's checks do not count for the new one; the second backup's still do.
         var checked = try b.state()
         #expect(checked.lastCheck == nil && checked.lastReadData == nil && checked.readDataPart == 0)
@@ -192,10 +196,14 @@ import Testing
         try b.backUpState(now: now)
         try b.applyRetention(now: now)
         try b.check(readData: true, now: now)
-        try b.drill(e.folder, now: now)
         try b.drill(e.folder, repository: .second, now: now)
+        // A drill of the second backup says nothing about restoring from the mirror.
+        #expect(try b.state().lastDrill == nil && b.state().lastSecondDrill == ISOTime.string(now))
+        try b.drill(e.folder, now: now)
         let st = try b.state()
         #expect(st.lastDrill == ISOTime.string(now) && st.stateSnapshotAt == ISOTime.string(now))
+        // Retention runs on both repositories, and the second backup's drill snapshots follow it too.
+        try b.applyRetention(now: now)
     }
 
     @Test(.enabled(if: hasRestic)) func theDrillRestoresTheSnapshotItTookNotTheLatestByTime() throws {
