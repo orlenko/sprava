@@ -277,8 +277,9 @@ import Testing
 
         try b.applyRetention(now: now)
         let lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
-        #expect(lines.count == 3)
-        #expect(lines.filter { $0.hasPrefix("forget ") }.count == 2)
+        #expect(lines.count == 4)
+        #expect(lines.filter { $0.hasPrefix("forget ") }.count == 3)
+        #expect(lines.contains { $0.hasPrefix("forget ") && $0.contains("sprava-state") })
         #expect(lines.filter { $0.hasPrefix("forget ") }.allSatisfy { !$0.contains("--prune") })
         #expect(lines.filter { $0.hasPrefix("prune ") }.count == 1)
         #expect(try b.state().lastForget == ISOTime.string(now))

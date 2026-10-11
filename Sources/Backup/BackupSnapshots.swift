@@ -79,11 +79,13 @@ extension Backup {
         let s = try settings()
         let r = try engine(s.primary)
         var st = try state()
-        for id in st.binders.keys.sorted() {
-            try r.forget(tag: "binder:\(id)", keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
+        // Sprava's own state snapshots follow the same rule as the binders', so a capture attachment deleted long ago
+        // does not stay in them for ever.
+        for tag in st.binders.keys.sorted().map({ "binder:\($0)" }) + ["sprava-state"] {
+            try r.forget(tag: tag, keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
                          keepMonthly: s.keepMonthly, keepYearly: s.keepYearly, prune: false)
         }
-        if !st.binders.isEmpty { try r.prune() }
+        try r.prune()
         st.lastForget = ISOTime.string(now)
         try save(st)
     }
