@@ -268,4 +268,40 @@ import Testing
         #expect(try b.offload(through, deviceID: "dev", confirmOpenItems: true, now: now) == .copied)
         #expect(try pinned(b, e.primary, Backup.backupID(e.folder)).count == 1)
     }
+
+    @Test(.enabled(if: hasRestic)) func exemptIntakeNamesCountOnlyWithTheirOwnTypeAndCardsOnlyWhenDone() throws {
+        let e = try env()
+        let b = try configured(e)
+        // A file named _converted is not the converted-text folder: it waits.
+        try FileManager.default.createDirectory(at: e.folder.appendingPathComponent("intake"), withIntermediateDirectories: true)
+        try Data("invented".utf8).write(to: e.folder.appendingPathComponent("intake/_converted"))
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) }
+        try FileManager.default.removeItem(at: e.folder.appendingPathComponent("intake/_converted"))
+        // A card in a state Sprava does not know may be waiting.
+        let card = Proposal.make(title: "Invented card", actor: JSONObject([(key: "kind", value: .str("user"))]), ops: [], now: now)
+        try ProposalStore.save(card, in: e.folder)
+        let file = e.folder.appendingPathComponent(".sprava/proposals/\(card.id).json")
+        let edited = try String(contentsOf: file, encoding: .utf8).replacingOccurrences(of: "\"proposed\"", with: "\"invented-state\"")
+        try Data(edited.utf8).write(to: file)
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) }
+        #expect(try b.state().offloads.isEmpty)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aChangeWhileWaitingForICloudStartsOverWithoutWaiting() throws {
+        let e = try env()
+        let waiting = Switch(true)
+        let b = try configured(e, waiting: waiting)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
+        let id = try Backup.backupID(e.folder)
+        try Data("invented later page".utf8).write(to: e.folder.appendingPathComponent("correspondence/notary/second.pdf"))
+        // iCloud still has not uploaded, yet the obsolete snapshot is not waited on: the offload is abandoned.
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now) }
+        #expect(try b.state().offloads[id] == nil && pinned(b, e.primary, id).isEmpty)
+    }
+
+    @Test func aSecondBackupInACloudServiceFolderIsACloudProviderLocation() {
+        let home = URL(fileURLWithPath: "/Users/invented-person", isDirectory: true)
+        #expect(Backup.isCloudProviderLocation(home.appendingPathComponent("Library/CloudStorage/Invented-Drive/Sprava"), home: home))
+        #expect(!Backup.isCloudProviderLocation(URL(fileURLWithPath: "/Volumes/Invented Disk/Sprava"), home: home))
+    }
 }

@@ -41,39 +41,8 @@ extension Backup {
         try refuseSharedFate(s)
         let teka = Teka.read(folder)
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
-        // Its hub slice is named by its catalog, so a binder whose name differs from its folder's (an outside edit may
-        // have given it another binder's name) or cannot be read is put right first (`HubLane.withdrawBeforeLeaving`).
-        guard !teka.federationBlocked else { throw Failure(message: Self.notOffloadable(teka) + "; put it right, then offload again") }
-        guard !ProposalStore.list(in: folder).contains(where: { $0.0.state == "proposed" }) else {
-            throw Failure(message: "cards are waiting for this binder; approve or reject them first")
-        }
-        try refuseUnreadableCards(folder)
-        // Nothing may wait in intake/ or outgoing/. In intake/, `_converted/` is regenerable text, and `mail/` is
-        // looked into: its messages and their attachment folders wait like any file, while a mail monitor's `.env`
-        // and `state.json` are never filed (binder-v0 §3.3). A hidden file waits like any other; only what restic
-        // leaves out (`excludes`) does not.
-        // Only a folder that is not there is empty; one that cannot be listed may hold anything.
-        func waiting(_ sub: String, except: Set<String>) throws -> Bool {
-            let url = folder.appendingPathComponent(sub)
-            var info = stat()
-            if lstat(url.path, &info) != 0 {
-                guard errno == ENOENT else { throw Failure(message: "\(sub)/ cannot be checked; nothing was removed") }
-                return false
-            }
-            guard info.st_mode & S_IFMT == S_IFDIR else {
-                throw Failure(message: "\(sub)/ is not a real folder; nothing was removed")
-            }
-            guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
-                throw Failure(message: "\(sub)/ cannot be listed; nothing was removed")
-            }
-            return names.contains { !Self.leftOut($0) && !except.contains($0) }
-        }
-        if try waiting("intake", except: ["mail", "_converted"]) || waiting("intake/mail", except: [".env", "state.json"]) {
-            throw Failure(message: "files are waiting in intake/; deal with them first")
-        }
-        if try waiting("outgoing", except: []) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
-        let open = teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }
-        if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open.map(\.title)) }
+        let open = try Self.refuseNotReady(folder, teka)
+        if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open) }
 
         var st = try state()
         let id = try claim(folder, &st)
@@ -223,6 +192,57 @@ extension Backup {
         }
     }
 
+    /// What stops a binder from leaving, checked when the offload starts and again before its copies are accepted
+    /// (work may arrive meanwhile): the titles of its open items, for the person to confirm, or a failure.
+    static func refuseNotReady(_ folder: URL, _ teka: Teka) throws -> [String] {
+        // Its hub slice is named by its catalog, so a binder whose name differs from its folder's (an outside edit may
+        // have given it another binder's name) or cannot be read is put right first (`HubLane.withdrawBeforeLeaving`).
+        guard !teka.federationBlocked else { throw Failure(message: Self.notOffloadable(teka) + "; put it right, then offload again") }
+        // A card is done only when it is applied or rejected: any other state, a torn or edited one too, may be waiting.
+        guard ProposalStore.list(in: folder).allSatisfy({ ["applied", "rejected"].contains($0.0.state) }) else {
+            throw Failure(message: "cards are waiting for this binder; approve or reject them first")
+        }
+        try refuseUnreadableCards(folder)
+        // Nothing may wait in intake/ or outgoing/. In intake/, `_converted/` is regenerable text, and `mail/` is
+        // looked into: its messages and their attachment folders wait like any file, while a mail monitor's `.env`
+        // and `state.json` are never filed (binder-v0 §3.3). Each is left out only with its own type: a file named
+        // `_converted`, or a folder named `.env`, waits like anything else. A hidden file waits like any other; only
+        // what restic leaves out (`excludes`) does not. Only a folder that is not there is empty; one that cannot be
+        // listed may hold anything.
+        func waiting(_ sub: String, except: [String: mode_t]) throws -> Bool {
+            let url = folder.appendingPathComponent(sub)
+            var info = stat()
+            if lstat(url.path, &info) != 0 {
+                guard errno == ENOENT else { throw Failure(message: "\(sub)/ cannot be checked; nothing was removed") }
+                return false
+            }
+            guard info.st_mode & S_IFMT == S_IFDIR else {
+                throw Failure(message: "\(sub)/ is not a real folder; nothing was removed")
+            }
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
+                throw Failure(message: "\(sub)/ cannot be listed; nothing was removed")
+            }
+            return names.contains { name in
+                guard !Self.leftOut(name) else { return false }
+                guard let type = except[name] else { return true }
+                var entry = stat()
+                return lstat(url.appendingPathComponent(name).path, &entry) != 0 || entry.st_mode & S_IFMT != type
+            }
+        }
+        if try waiting("intake", except: ["mail": S_IFDIR, "_converted": S_IFDIR])
+            || waiting("intake/mail", except: [".env": S_IFREG, "state.json": S_IFREG]) {
+            throw Failure(message: "files are waiting in intake/; deal with them first")
+        }
+        if try waiting("outgoing", except: [:]) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
+        return teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }.map(\.title)
+    }
+
+    /// Whether a second backup is in another cloud service's folder (`~/Library/CloudStorage`), whose upload must be
+    /// seen before its copy counts as off this Mac; an external disk's copy counts once written.
+    static func isCloudProviderLocation(_ url: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
+        realPath(url).hasPrefix(realPath(home.appendingPathComponent("Library/CloudStorage", isDirectory: true)) + "/")
+    }
+
     /// A name restic never backs up (`excludes`): Finder's `.DS_Store`, the binder lock, a temporary file (`.*.tmp`,
     /// as `manifest` reads it).
     static func leftOut(_ name: String) -> Bool {
@@ -232,7 +252,7 @@ extension Backup {
     /// Every entry of the proposals folder must be a card `ProposalStore.list` read: a card that cannot be read (bad
     /// JSON, a name that is not its id, a link) may be one waiting, and would leave unseen. A proposals folder that is
     /// not a real folder, or cannot be listed, may hold anything.
-    func refuseUnreadableCards(_ folder: URL) throws {
+    static func refuseUnreadableCards(_ folder: URL) throws {
         let cards = folder.appendingPathComponent(".sprava/proposals", isDirectory: true)
         let unreadable = Failure(message: "a card of this binder cannot be read (in .sprava/proposals); nothing was removed. Put it right, then offload again")
         var info = stat()
@@ -382,7 +402,7 @@ extension Backup {
             job.secondSnapshot = nil
             job.secondRepository = nil
             job.secondPinsBefore = nil
-            if job.stage == "copied" || job.stage == "copying" {
+            if job.stage == "copied" || job.stage == "copying" || job.stage == "waiting_for_second_upload" {
                 job.stage = "verified"
                 job.stateSaved = false
             }
@@ -392,6 +412,8 @@ extension Backup {
         if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" || job.stage == "copying" {
+            // A binder that changed while it waits starts over now, never after a long wait on an obsolete snapshot.
+            try refuseIfChanged(id, folder: folder, job, &st)
             if job.stage != "copying", let n = try uploadPending(primary.repository) {
                 job.stage = "waiting_for_upload"
                 st.offloads[id] = job
@@ -432,14 +454,34 @@ extension Backup {
                 job.secondSnapshot = copy.id
                 job.secondPinsBefore = nil
             }
+            job.stage = "waiting_for_second_upload"
+            st.offloads[id] = job
+            try save(st)
+        }
+        if job.stage == "waiting_for_second_upload" {
+            // A second backup in another cloud service's folder holds the copy off this Mac only once uploaded.
+            if let second = job.secondRepository, Self.isCloudProviderLocation(URL(fileURLWithPath: second, isDirectory: true)) {
+                switch uploadCheck(URL(fileURLWithPath: second, isDirectory: true)) {
+                case .uploaded: break
+                case .waiting(let n): return .waitingForICloud(n)
+                case .notInICloud:
+                    throw Failure(message: "the second backup's upload cannot be confirmed, so it is not yet a copy off this Mac; nothing was removed")
+                }
+            }
             job.stage = "copied"
             st.offloads[id] = job
             try save(st)
             step("offload.copied")
         }
         guard job.stage == "copied" else { throw Failure(message: "offload stopped at \(job.stage)") }
-        // Both backups hold a verified copy; the binder leaves this Mac in the next step (`leave`).
+        // Both backups hold a verified copy; the binder leaves this Mac in the next step (`leave`). Work that arrived
+        // since the offload started (a card, a file in intake/ or outgoing/, an open item not confirmed) keeps it.
         try refuseIfChanged(id, folder: folder, job, &st)
+        let open = try Self.refuseNotReady(folder, Teka.read(folder))
+        if open.count > job.openItemsConfirmed {
+            try abandonOffload(id, job, &st)
+            throw NeedsConfirmation(openItems: open)
+        }
         return .copied
     }
 
