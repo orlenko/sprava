@@ -32,6 +32,9 @@ extension Backup {
         // An offloaded binder's pinned copies are not in a new, empty repository; an existing one may be the old mirror
         // found again after the settings were lost, so it is accepted, with every record reset.
         if fresh || (oldPrimary != nil && changing) { try refuseMovingOffloadedBinders() }
+        // With no mirror on record, an existing repository is accepted only if it holds every offloaded binder's
+        // pinned snapshot: one that opens with the key may still be another repository.
+        if !fresh, oldPrimary == nil { try refuseMissingPins(in: r) { $0.snapshot } }
         // A repository this setup makes in a folder that was not there is taken away again if the place is refused.
         let wasThere = FileManager.default.fileExists(atPath: r.repository.path)
         if fresh {
@@ -79,6 +82,7 @@ extension Backup {
         let fresh = !second.isInitialized()
         let changing = oldSecond != s.second
         if fresh || (oldSecond != nil && changing) { try refuseMovingOffloadedBinders() }
+        if !fresh, oldSecond == nil { try refuseMissingPins(in: second) { $0.secondSnapshot } }
         if fresh { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) } else { _ = try second.snapshots() }
         guard changing || fresh else { return try save(s) }
         let previous = try state()
@@ -99,6 +103,16 @@ extension Backup {
         do { try save(s) } catch {
             try? save(previous)
             throw error
+        }
+    }
+
+    /// Every offloaded binder's pinned snapshot (`pin` of its record) must be in `r`, or nothing is changed.
+    func refuseMissingPins(in r: Restic, _ pin: (Offloaded) -> String?) throws {
+        let pins = try state().offloaded.compactMap(pin)
+        guard !pins.isEmpty else { return }
+        let held = Set(try r.snapshots().filter { $0.tags.contains("offloaded") }.map(\.id))
+        guard pins.allSatisfy(held.contains) else {
+            throw Failure(message: "this repository does not hold every offloaded binder's copy; nothing was changed")
         }
     }
 

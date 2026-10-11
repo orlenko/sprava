@@ -165,7 +165,8 @@ import Testing
         try b.check(readData: false, now: now)
         let id = try Backup.backupID(e.folder)
         try FileManager.default.removeItem(at: b.settingsURL)
-        // A new, empty mirror while a binder is offloaded is refused; the old mirror found again is accepted.
+        // While a binder is offloaded, neither a new, empty mirror nor an existing one without its pinned copy is
+        // accepted; with nothing offloaded, the old mirror found again is.
         var st = try b.state()
         st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: e.folder.path, snapshot: "0123abcd",
                                          bytes: 1, at: ISOTime.string(now), summary: "invented", documents: [], openItemsConfirmed: 0)]
@@ -173,6 +174,9 @@ import Testing
         #expect(throws: Backup.Failure.self) {
             try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false)
         }
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false) }
+        st.offloaded = []
+        try b.save(st)
         try b.setUp(primary: e.primary, iCloudKeychain: false)
         st = try b.state()
         #expect(st.binders[id]?.at == nil && st.binders[id]?.snapshot == nil && st.lastCheck == nil)
