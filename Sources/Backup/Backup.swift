@@ -15,6 +15,13 @@ public struct Backup: Sendable {
     /// Whether a second repository is on an independent destination: an external volume or a supported non-iCloud
     /// file-provider root. Tests substitute this because their repositories deliberately live on one temporary disk.
     let secondLocationCheck: @Sendable (URL) -> Bool
+    /// Runs right after restic has read a binder; tests use it to land a write during a snapshot.
+    var afterSnapshot: (@Sendable () -> Void)?
+    /// Runs at each durable step boundary of a multi-step operation, named; tests take an image of the disk there,
+    /// as a crash would leave it, and run the operation again from that image.
+    var atStep: (@Sendable (String) -> Void)?
+
+    func step(_ name: String) { atStep?(name) }
 
     public init(support: URL, key: String? = BackupKey.load(), resticBinary: URL? = Restic.locate(),
                 uploadCheck: @escaping @Sendable (URL) -> Upload = { Backup.uploadStatus(of: $0) }) {

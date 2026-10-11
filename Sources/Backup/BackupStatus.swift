@@ -76,7 +76,9 @@ extension Backup {
         var stateError: String?
         do { state = try self.state() } catch { stateError = "\(error)" }
         return Status(configured: Self.isConfigured(settings, key: key), secondConfigured: settings.second != nil,
-                      binders: state.binders.sorted { $0.key < $1.key }.map { ($0.key, $0.value.at, $0.value.error) },
+                      // A reservation for a copy's new id is not a binder until a folder holds it.
+                      binders: state.binders.filter { id, _ in !state.reassigning.values.contains { $0.id == id } }
+                          .sorted { $0.key < $1.key }.map { ($0.key, $0.value.at, $0.value.error) },
                       upload: checkUpload ? settings.primary.map { uploadCheck(URL(fileURLWithPath: $0)) } : nil,
                       lastCheck: state.lastCheck, lastDrill: state.lastDrill, offloaded: state.offloaded.count,
                       pending: state.offloads.count, stateError: stateError, settingsError: settingsError,

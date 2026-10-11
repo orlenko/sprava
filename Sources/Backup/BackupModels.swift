@@ -88,6 +88,18 @@ extension Backup {
         var rewrites: [Rewrite] = []
         /// Documents deleted for good that the backups are to forget, waiting or done (`forgetDocument`).
         var forgetting: [Forgetting] = []
+        /// Reassignments under way (`giveOwnBackupID`), by the copy's resolved path: the id it held and the new one,
+        /// recorded before the new one is written, so a retry finishes it instead of minting another. Several copies
+        /// of one binder each keep their own.
+        var reassigning: [String: Reassignment] = [:]
+
+        struct Reassignment: Codable, Equatable {
+            var from: String
+            var id: String
+            /// The copy's folder ("device:inode"): a retry reuses the id only for that same folder, never for another
+            /// put at its path after it moved away.
+            var folder: String?
+        }
         /// Tombstones of finished forgetting requests no longer shown: which deletion, in which binder, at which path.
         var forgotten: [Forgotten] = []
 
@@ -249,6 +261,7 @@ extension Backup.State {
         rewrites = try c.decodeIfPresent([Rewrite].self, forKey: .rewrites) ?? []
         forgetting = try c.decodeIfPresent([Backup.Forgetting].self, forKey: .forgetting) ?? []
         forgotten = try c.decodeIfPresent([Forgotten].self, forKey: .forgotten) ?? []
+        reassigning = try c.decodeIfPresent([String: Reassignment].self, forKey: .reassigning) ?? [:]
         for record in offloaded {
             rememberRepositories([record.repository, record.secondRepository], for: record.backupID)
         }
