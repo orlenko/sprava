@@ -19,7 +19,9 @@ extension Backup {
         // A new mirror must not share a fate with the second backup already chosen (§5), as setSecond requires. Setup
         // again at the same mirror (to trust an updated restic) checks nothing new, so a second disk that is away
         // does not stop it.
-        let changing = oldPrimary.map { $0 != s.primary } ?? false
+        // No mirror on record (a first setup, or settings that were lost while the state survived) counts as a change:
+        // whatever the state says about binders is not known to be about this repository.
+        let changing = oldPrimary != s.primary
         if let second = s.second, oldPrimary != s.primary {
             try refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: primary)
         }
@@ -27,7 +29,9 @@ extension Backup {
         // A repository made here is new and empty, also at the mirror's own path when the old one is gone: like a
         // move, it holds none of the binders' snapshots and none of an offloaded binder's pinned copies.
         let fresh = !r.isInitialized()
-        if oldPrimary != nil, changing || fresh { try refuseMovingOffloadedBinders() }
+        // An offloaded binder's pinned copies are not in a new, empty repository; an existing one may be the old mirror
+        // found again after the settings were lost, so it is accepted, with every record reset.
+        if fresh || (oldPrimary != nil && changing) { try refuseMovingOffloadedBinders() }
         // A repository this setup makes in a folder that was not there is taken away again if the place is refused.
         let wasThere = FileManager.default.fileExists(atPath: r.repository.path)
         if fresh {
@@ -39,7 +43,7 @@ extension Backup {
             if !wasThere { try? FileManager.default.removeItem(at: r.repository) }
             throw Failure(message: "the backup mirror must be in iCloud Drive; nothing was changed")
         }
-        guard oldPrimary != nil, changing || fresh else { return try save(s) }
+        guard changing || fresh else { return try save(s) }
         let previous = try state()
         var st = previous
         for id in Array(st.binders.keys) {
@@ -73,10 +77,10 @@ extension Backup {
         let second = try engine(s.second, settings: s)
         // As for the mirror, a repository made here (at a new path, or at the old one when it is gone) is empty.
         let fresh = !second.isInitialized()
-        let changing = oldSecond.map { $0 != s.second } ?? false
-        if oldSecond != nil, changing || fresh { try refuseMovingOffloadedBinders() }
+        let changing = oldSecond != s.second
+        if fresh || (oldSecond != nil && changing) { try refuseMovingOffloadedBinders() }
         if fresh { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) } else { _ = try second.snapshots() }
-        guard oldSecond != nil, changing || fresh else { return try save(s) }
+        guard changing || fresh else { return try save(s) }
         let previous = try state()
         var st = previous
         // Older states may name the former second only in settings. Record it before the setting moves on.

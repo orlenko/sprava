@@ -158,6 +158,26 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: e.second.appendingPathComponent("config").path))
     }
 
+    @Test(.enabled(if: hasRestic)) func lostSettingsWithSurvivingStateResetTheRecords() throws {
+        let e = try env()
+        let b = try configured(e)
+        try b.backUp(e.folder, now: now)
+        try b.check(readData: false, now: now)
+        let id = try Backup.backupID(e.folder)
+        try FileManager.default.removeItem(at: b.settingsURL)
+        // A new, empty mirror while a binder is offloaded is refused; the old mirror found again is accepted.
+        var st = try b.state()
+        st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: e.folder.path, snapshot: "0123abcd",
+                                         bytes: 1, at: ISOTime.string(now), summary: "invented", documents: [], openItemsConfirmed: 0)]
+        try b.save(st)
+        #expect(throws: Backup.Failure.self) {
+            try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false)
+        }
+        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        st = try b.state()
+        #expect(st.binders[id]?.at == nil && st.binders[id]?.snapshot == nil && st.lastCheck == nil)
+    }
+
     @Test(.enabled(if: hasRestic)) func aWrongKeyNeverReplacesTheWorkingMirror() throws {
         let e = try env()
         let b = backup(e)
