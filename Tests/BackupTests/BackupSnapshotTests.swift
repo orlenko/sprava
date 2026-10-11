@@ -288,6 +288,12 @@ import Testing
         let captures = e.support.appendingPathComponent("Captures/invented-device", isDirectory: true)
         try FileManager.default.createDirectory(at: captures, withIntermediateDirectories: true)
         try Data("invented attachment\n".utf8).write(to: captures.appendingPathComponent("0b6f1a52-6f0e-4c1e-9a55-3c2f8e1d7a10.file-1.log"))
+        let mcp = e.support.appendingPathComponent("mcp", isDirectory: true)
+        try FileManager.default.createDirectory(at: mcp.appendingPathComponent("audit"), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: mcp.appendingPathComponent("clients.json"))
+        for name in ["invented-client.ndjson", "invented-client.ndjson.1"] {
+            try Data("{}\n".utf8).write(to: mcp.appendingPathComponent("audit/\(name)"))
+        }
         try b.backUpState(now: now)
         let r = try b.engine(e.primary.path)
         let snap = try #require(try r.snapshots(tag: "sprava-state").last)
@@ -295,6 +301,7 @@ import Testing
         #expect(files.contains("runtime/settings.json"))
         #expect(files.contains("Captures/invented-device/0b6f1a52-6f0e-4c1e-9a55-3c2f8e1d7a10.file-1.log"))
         #expect(!files.contains { $0.hasPrefix("runtime/") && $0.contains(".log") })
+        #expect(files.contains("mcp/clients.json") && !files.contains { $0.hasPrefix("mcp/audit") })
     }
 
     @Test func retentionForgetsEveryBinderThenPrunesOnce() throws {

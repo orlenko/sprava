@@ -8,15 +8,17 @@ extension Backup {
     // MARK: - Snapshots
 
     /// What a snapshot of Sprava's own state leaves out besides `excludes` (`backUpState`): the backup's own working
-    /// folders, and the runtime's logs with their rotations (§3.2), by their paths in the support folder, never by
-    /// extension: a capture's attachment may well end in `.log`. Anchored at the support folder as restic sees it
-    /// (symbolic links resolved by realpath(3), which keeps /private where Foundation drops it), with the pattern
-    /// characters in it taken literally.
+    /// folders, and the runtime's and the MCP clients' logs with their rotations (§3.2), by their paths in the support
+    /// folder, never by extension: a capture's attachment may well end in `.log`. Anchored at the support folder as
+    /// restic sees it (symbolic links resolved by realpath(3), which keeps /private where Foundation drops it), with the
+    /// pattern characters in it taken literally.
     func stateExcludes() -> [String] {
         let resolved = realpath(support.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? Self.realPath(support)
         let root = resolved.map { "*?[\\".contains($0) ? "\\\($0)" : String($0) }.joined()
         return ["backup/cache", "backup/run", "backup/verify", "backup/peek"]
             + ["jobs.log", "lease-refusals.log"].flatMap { ["\(root)/runtime/\($0)", "\(root)/runtime/\($0).[0-9]*"] }
+            // The MCP clients' audit logs and their rotations (architecture: never backed up); clients.json stays.
+            + ["\(root)/mcp/audit"]
     }
 
     /// A mark for everything restic is to read. Comparing only the catalog and op log misses a document or intake
