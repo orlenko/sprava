@@ -113,7 +113,7 @@ Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`)
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
 | `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`; the key file when `SPRAVA_BACKUP_KEY_FILE` names one there) |
-| `Services` and `sprava-runtime` | the rest of `runtime/`: `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
+| `Services` and `sprava-runtime` | `device-id`, and the rest of `runtime/`: `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
 A new state file is added to this table in the PR that creates it.
 
