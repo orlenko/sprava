@@ -225,7 +225,16 @@ extension Backup {
             case S_IFLNK:
                 // A binder reached through a link: the link's target decides; one that cannot be reached may be on
                 // a disk that is away.
-                guard stat(folder.path, &info) == 0 else { return .unavailable }
+                guard stat(folder.path, &info) == 0 else {
+                    // A link whose target is gone from a place that can be checked leads nowhere: the binder is not
+                    // there. A chain of links is not followed.
+                    guard errno == ENOENT, let to = try? FileManager.default.destinationOfSymbolicLink(atPath: folder.path) else {
+                        return .unavailable
+                    }
+                    let target = URL(fileURLWithPath: to, relativeTo: folder.deletingLastPathComponent()).standardizedFileURL
+                    var link = stat()
+                    return lstat(target.path, &link) == 0 ? .unavailable : folderEntry(target)
+                }
                 return info.st_mode & S_IFMT == S_IFDIR ? .present : .missing
             default:
                 // A file where the binder was: the binder is not there.

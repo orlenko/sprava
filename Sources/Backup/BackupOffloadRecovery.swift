@@ -52,6 +52,19 @@ extension Backup {
         }
     }
 
+    /// For a leaving binder no longer at its path: the copies its record names are still in the current backups.
+    /// Nothing is changed when they are not; the job and its pins stay, and the offload cannot finish.
+    func requireRecordedCopies(_ id: String, _ job: InProgress, _ s: Settings) throws {
+        let kept = Failure(message: "the binder is not where its offload started, and the backups no longer hold the copies "
+            + "its offload recorded; nothing was finished, and the copies left stay pinned")
+        guard let mirror = job.repository, mirror == s.primary, let snap = job.snapshot,
+              try engine(mirror).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap }) else { throw kept }
+        if let second = job.secondRepository {
+            guard second == s.second, let copy = job.secondSnapshot,
+                  try engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) else { throw kept }
+        }
+    }
+
     func verifySnapshotted(_ id: String, _ job: inout InProgress, _ st: inout State) throws {
         guard let snap = job.snapshot, let expected = job.manifestSHA else {
             throw Failure(message: "the offload's recorded snapshot is incomplete; nothing was removed")

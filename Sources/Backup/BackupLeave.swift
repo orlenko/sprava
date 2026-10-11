@@ -31,37 +31,33 @@ extension Backup {
             // the offload's path was one, and the records are left.
             try Self.removeLink(folder, to: target)
         } else {
-            switch Self.folderEntry(folder) {
-            case .unavailable:
+            let entry = Self.folderEntry(folder)
+            guard entry != .unavailable else {
                 throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
-            case .missing:
-                // No move recorded: a state snapshot restored after this Mac was lost, or a binder the person moved.
-                // Either way its copies stay pinned and its record is kept (see above), once the checkpoint holding
-                // the record is in iCloud.
-                if job.stateSaved, let n = try uploadPending(try engine(settings().primary).repository) { return .waitingForICloud(n) }
-            case .present where !Self.isTheBinder(folder, id, job):
-                // Another folder is at the binder's path now: the binder is gone from it, and the other is left alone.
-                break
-            case .present:
-                if !job.stateSaved {
-                    // Marked before the snapshot, so the snapshot and every state after it know a checkpoint exists.
-                    job.checkpointed = true
-                    st.offloads[id] = job
-                    try save(st)
-                    try backUpState(now: now)
-                    st = try state()
-                    job.stateSaved = true
-                    st.offloads[id] = job
-                    try save(st)
-                    step("offload.stateSaved")
-                }
-                if let n = try uploadPending(try engine(settings().primary).repository) {
-                    // The binder stays live while it waits: one that changed starts over, and is backed up as usual.
-                    try refuseIfChanged(id, folder: folder, job, &st)
-                    return .waitingForICloud(n)
-                }
-                try moveToTrash(id, folder, &job, &st, nameCollides: nameCollides(folder), now: now)
             }
+            // Missing with no move recorded (a state snapshot restored after this Mac was lost, or a binder the person
+            // moved), or another folder at its path now: the binder is gone from it, its copies stay pinned and its
+            // record is kept (see above); the other folder is left alone. Either way, as for a binder still here, a
+            // checkpoint holding the record is taken and is in iCloud first.
+            let here = entry == .present && Self.isTheBinder(folder, id, job)
+            if !job.stateSaved {
+                // Marked before the snapshot, so the snapshot and every state after it know a checkpoint exists.
+                job.checkpointed = true
+                st.offloads[id] = job
+                try save(st)
+                try backUpState(now: now)
+                st = try state()
+                job.stateSaved = true
+                st.offloads[id] = job
+                try save(st)
+                step("offload.stateSaved")
+            }
+            if let n = try uploadPending(try engine(settings().primary).repository) {
+                // The binder stays live while it waits: one that changed starts over, and is backed up as usual.
+                if here { try refuseIfChanged(id, folder: folder, job, &st) }
+                return .waitingForICloud(n)
+            }
+            if here { try moveToTrash(id, folder, &job, &st, nameCollides: nameCollides(folder), now: now) }
         }
         // A Shelf that still lists the folder would later refuse its restore there ("a binder on the Shelf"), so a
         // failure here stops, and the retry finishes from the record (the folder is gone by then). Both the path the

@@ -157,8 +157,13 @@ extension Backup {
             if try Self.undoStagedMove(&job, id) {
                 st.offloads[id] = job
                 try save(st)
-            } else if job.leavingTarget != nil || Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job) {
-                // Gone: moved to the Trash, or (no move recorded) missing, which `leave` explains is never abandoned.
+            } else if job.leavingTarget != nil {
+                // Gone to the Trash: its record is offloaded already, and only the cleanup is left.
+                return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
+            } else if Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job) {
+                // Gone from its path with no move recorded, which `leave` explains is never abandoned; finished only
+                // while the backups still hold the copies its record names.
+                try requireRecordedCopies(id, job, s)
                 return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
             }
         }
