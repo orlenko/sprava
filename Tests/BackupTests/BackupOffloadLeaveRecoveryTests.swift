@@ -47,9 +47,14 @@ extension BackupOffloadLeaveTests {
         try Backup.removeLink(away, to: place)
         var info = stat()
         #expect(lstat(away.path, &info) == 0)
-        // The link to the binder's own place, which leads nowhere now: removed, also one reaching it through another.
-        let chained = base.appendingPathComponent("Chained Alias")
-        try FileManager.default.createSymbolicLink(at: chained, withDestinationURL: link)
+        // The link to the binder's own place, which leads nowhere now: removed, also one reaching it through a long
+        // chain of others.
+        var chained = link
+        for hop in 1...12 {
+            let next = base.appendingPathComponent("Chained Alias \(hop)")
+            try FileManager.default.createSymbolicLink(at: next, withDestinationURL: chained)
+            chained = next
+        }
         try FileManager.default.removeItem(at: place)
         try Backup.removeLink(chained, to: place)
         #expect(lstat(chained.path, &info) != 0)
@@ -310,5 +315,43 @@ extension BackupOffloadLeaveTests {
         waiting.on = false
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.offloaded().isEmpty)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aLiveBinderWhoseCopyLostItsPinDoesNotLeave() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        b.atStep = nil
+        // The mirror copy loses its pin while the binder waits: retention could prune it, so the binder stays.
+        let snap = try #require(try b.state().offloads[id]?.snapshot)
+        try b.engine(e.primary.path).removeTag("offloaded", from: snap)
+        waiting.on = false
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+        #expect(try b.offloaded().isEmpty)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aLinkedBinderStillAtItsRealPlaceIsNotTakenForGone() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        let shortcuts = e.base.appendingPathComponent("Shortcuts", isDirectory: true)
+        try FileManager.default.createDirectory(at: shortcuts, withIntermediateDirectories: true)
+        let link = shortcuts.appendingPathComponent(e.folder.lastPathComponent)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: e.folder)
+        #expect(try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        b.atStep = nil
+        // The link is removed while the binder waits; the binder itself is still at its own place.
+        try FileManager.default.removeItem(at: link)
+        waiting.on = false
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
+        #expect(FileManager.default.fileExists(atPath: e.folder.path))
+        #expect(try b.offloaded().isEmpty)
+        #expect(try b.state().offloads[id] == nil)
     }
 }

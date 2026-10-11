@@ -170,6 +170,14 @@ extension Backup {
         step("offload.removed")
     }
 
+    /// Whether a binder reached through a link is still at its own place though the link is gone or leads elsewhere
+    /// now: it has not left, and its offload must not finish as if it had.
+    static func isAtItsRealPlace(_ id: String, _ job: InProgress, _ folder: URL) -> Bool {
+        guard let real = job.record?.originalPath, !sameFolder(URL(fileURLWithPath: real, isDirectory: true), folder) else { return false }
+        let place = URL(fileURLWithPath: real, isDirectory: true)
+        return folderEntry(place) == .present && isTheBinder(place, id, job)
+    }
+
     /// Whether the folder under the staging name is the binder set aside: the same folder, or one holding its backup
     /// id and exactly what its backups hold.
     static func isStagedBinder(_ staging: URL, _ id: String, _ job: InProgress) -> Bool {
@@ -235,10 +243,11 @@ extension Backup {
         guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK else { return }
         // A link that reaches a folder again (another one, put at the binder's place since) is kept, and so is one
         // that leads elsewhere (a replacement whose disk is away): only the link to the binder's own place goes.
-        // The link may reach the place through other links (a chain), each followed in turn.
+        // The link may reach the place through other links (a chain), each followed in turn, as far as the system
+        // follows them.
         guard stat(folder.path, &info) != 0 else { return }
         var hop = folder, reaches = false
-        for _ in 0..<8 where !reaches {
+        for _ in 0..<Int(MAXSYMLINKS) where !reaches {
             guard let to = try? FileManager.default.destinationOfSymbolicLink(atPath: hop.path) else { break }
             hop = URL(fileURLWithPath: to, relativeTo: hop.deletingLastPathComponent()).standardizedFileURL
             reaches = realPath(hop) == realPath(target)

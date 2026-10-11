@@ -160,7 +160,8 @@ extension Backup {
             } else if job.leavingTarget != nil {
                 // Gone to the Trash: its record is offloaded already, and only the cleanup is left.
                 return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
-            } else if Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job) {
+            } else if Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job),
+                      !Self.isAtItsRealPlace(id, job, folder) {
                 // Gone from its path with no move recorded, which `leave` explains is never abandoned; finished only
                 // while the backups still hold the copies its record names.
                 try requireRecordedCopies(id, job, s)
@@ -210,8 +211,8 @@ extension Backup {
         try requireMirrorSnapshot(id, &job, &st)
         if job.stage == "copied" || job.stage == "waiting_for_second_upload" || job.stage == "leaving" {
             if let copy = job.secondSnapshot, let second = job.secondRepository,
-               try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) {
-                // A pending record names the copy that is gone: it is made again with the new copy.
+               try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy && $0.tags.contains("offloaded") }) {
+                // A pending record names the copy that is gone (or no longer pinned): it is made again with the new copy.
                 job.record = nil
                 job.secondSnapshot = nil
                 job.secondPinsBefore = nil
