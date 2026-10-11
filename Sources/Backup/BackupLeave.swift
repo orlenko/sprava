@@ -109,6 +109,8 @@ extension Backup {
             job.leavingTarget = real.path
             job.leavingIdentity = Self.folderIdentity(real)
             job.staging = staging.path
+            // The time it leaves, saved with the intent: a retry after the Trash move keeps it.
+            job.record?.at = ISOTime.string(now)
             st.offloads[id] = job
             try save(st)
             guard renamex_np(real.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
@@ -136,9 +138,8 @@ extension Backup {
                 return
             }
             step("offload.trashed")
-            // In the Trash now: from here on the job stays leaving whatever fails, as the binder is gone. The time it
-            // left is saved at once; a failed save leaves the move recorded, and the retry finishes.
-            job.record?.at = ISOTime.string(now)
+            // In the Trash now: from here on the job stays leaving whatever fails, as the binder is gone; a failed
+            // save leaves the move recorded, and the retry finishes.
             st.offloads[id] = job
             // Offloaded from this moment: the record joins the offloaded ones (so no repository it needs can be
             // replaced), while the job stays for the cleanup left.
@@ -165,6 +166,14 @@ extension Backup {
         step("offload.removed")
     }
 
+    /// Whether the folder under the staging name is the binder set aside: the same folder, or one holding its backup
+    /// id and exactly what its backups hold.
+    static func isStagedBinder(_ staging: URL, _ id: String, _ job: InProgress) -> Bool {
+        if let recorded = job.leavingIdentity, folderIdentity(staging) == recorded { return true }
+        guard (try? storedBackupID(staging)) == id, let manifest = try? manifest(staging) else { return false }
+        return digest(manifest) == job.manifestSHA
+    }
+
     /// Whether the folder at the binder's path is the binder that began to leave: the same folder (device and
     /// inode), or one holding its backup id and exactly what its backups hold (a copy put back, which loses nothing
     /// in leaving). Another folder put there since is not.
@@ -179,7 +188,7 @@ extension Backup {
     /// binder's: the name is its own), or forgets a recorded move whose rename never happened. True when the binder
     /// is back where it was; false when the move went through (or none was recorded). A staged binder that cannot be
     /// put back (its place is taken) stops, and stays set aside.
-    static func undoStagedMove(_ job: inout InProgress) throws -> Bool {
+    static func undoStagedMove(_ job: inout InProgress, _ id: String) throws -> Bool {
         guard let targetPath = job.leavingTarget else { return false }
         let target = URL(fileURLWithPath: targetPath, isDirectory: true)
         let unavailable = Failure(message: "the binder's place cannot be checked (its disk may be away); the offload was left unfinished")
@@ -187,6 +196,14 @@ extension Backup {
         switch job.staging.map({ folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) }) ?? .missing {
         case .unavailable:
             throw unavailable
+        case .present where !isStagedBinder(URL(fileURLWithPath: job.staging ?? "", isDirectory: true), id, job):
+            // Something else under the staging name (the rename to it never happened): not touched; the binder is
+            // where it was, or gone.
+            switch folderEntry(target) {
+            case .unavailable: throw unavailable
+            case .missing: return false
+            case .present: if folderIdentity(target) != job.leavingIdentity { return false }
+            }
         case .present:
             // Put back without replacing anything at its place, an empty folder included.
             guard let stagingPath = job.staging, renamex_np(stagingPath, target.path, UInt32(RENAME_EXCL)) == 0 else {

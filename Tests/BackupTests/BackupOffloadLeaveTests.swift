@@ -332,7 +332,7 @@ import Testing
         away.leavingTarget = away.path
         away.staging = "/Volumes/Invented-Away-\(UUID().uuidString)/Binders/.sprava-leaving-0123"
         away.leavingIdentity = "1:2"
-        #expect(throws: Backup.Failure.self) { _ = try Backup.undoStagedMove(&away) }
+        #expect(throws: Backup.Failure.self) { _ = try Backup.undoStagedMove(&away, "0123") }
         #expect(away.leavingTarget != nil)
         // Set aside, with an empty folder now at its place: it is not put back over it.
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-leave-undo-\(UUID().uuidString)")
@@ -343,7 +343,8 @@ import Testing
         var taken = Backup.InProgress(path: place.path, stage: "leaving")
         taken.leavingTarget = place.path
         taken.staging = staging.path
-        #expect(throws: Backup.Failure.self) { _ = try Backup.undoStagedMove(&taken) }
+        taken.leavingIdentity = Backup.folderIdentity(staging)
+        #expect(throws: Backup.Failure.self) { _ = try Backup.undoStagedMove(&taken, "0123") }
         #expect(FileManager.default.fileExists(atPath: staging.path) && FileManager.default.fileExists(atPath: place.path))
     }
 
@@ -360,5 +361,21 @@ import Testing
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.state().offloads[id] == nil)
         #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").contains { $0.tags.contains("offloaded") })
+    }
+
+    @Test(.enabled(if: hasRestic)) func aSecondBackupReplacedAfterTheCheckpointKeepsTheCheckpointsCopyPinned() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        let checkpointed = try #require(try b.state().offloads[id]?.secondSnapshot)
+        // The second backup is replaced while the binder waits to leave; the copy the checkpoint names stays pinned.
+        try b.setSecond(e.base.appendingPathComponent("external/Another Second"))
+        waiting.on = false
+        b.atStep = nil
+        _ = try b.continueOffload(id, now: now, nameCollides: { _ in false })
+        #expect(try b.engine(e.second.path).snapshots(tag: "binder:\(id)").contains { $0.id == checkpointed && $0.tags.contains("offloaded") })
     }
 }

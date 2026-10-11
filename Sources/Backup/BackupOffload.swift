@@ -154,7 +154,7 @@ extension Backup {
             // A move to the Trash that was cut off: a binder still set aside under its staging name is put back, and
             // one whose rename never happened is where it was; either goes through every check below again before
             // leaving. Only a binder that is gone skips them: its records are all that is left.
-            if try Self.undoStagedMove(&job) {
+            if try Self.undoStagedMove(&job, id) {
                 st.offloads[id] = job
                 try save(st)
             } else if job.leavingTarget != nil || Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job) {
@@ -185,7 +185,8 @@ extension Backup {
             throw Failure(message: "the mirror changed during the offload; nothing was removed. Offload again to back up into the new one")
         }
         if job.secondRepository != nil, job.secondRepository != s.second {
-            try releaseSecond(id, job)
+            // A checkpoint holding this job as leaving names that copy: it stays pinned (see `finishAbandoningOffload`).
+            if !job.checkpointed { try releaseSecond(id, job) }
             job.secondSnapshot = nil
             job.secondRepository = nil
             job.secondPinsBefore = nil
