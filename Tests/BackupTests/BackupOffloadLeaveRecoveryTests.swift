@@ -294,4 +294,21 @@ extension BackupOffloadLeaveTests {
         #expect(throws: Backup.SharedBackupID.self) { _ = try b.backUp(link, now: now) }
         #expect(throws: Backup.SharedBackupID.self) { _ = try b.backUp(e.folder, now: now) }
     }
+
+    @Test(.enabled(if: hasRestic)) func aMissingBinderWhoseCopyLostItsPinIsNotFinished() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        b.atStep = nil
+        // The mirror copy loses its pin (a manual tag edit), and the binder is moved away: retention could prune it.
+        let snap = try #require(try b.state().offloads[id]?.snapshot)
+        try b.engine(e.primary.path).removeTag("offloaded", from: snap)
+        try FileManager.default.moveItem(at: e.folder, to: e.base.appendingPathComponent("Elsewhere", isDirectory: true))
+        waiting.on = false
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
+        #expect(try b.offloaded().isEmpty)
+    }
 }

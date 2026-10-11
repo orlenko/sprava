@@ -52,7 +52,8 @@ extension Backup {
         }
     }
 
-    /// For a leaving binder no longer at its path: the copies its record names are still in the current backups.
+    /// For a leaving binder no longer at its path: the copies its record names are still in the current backups, and
+    /// still pinned (only a pinned snapshot is kept by retention).
     /// Nothing is changed when they are not; the job and its pins stay, and the offload cannot finish.
     func requireRecordedCopies(_ id: String, _ job: InProgress, _ s: Settings) throws {
         let kept = Failure(message: "the binder is not where its offload started, and the backups no longer hold the copies "
@@ -60,10 +61,12 @@ extension Backup {
         // Two copies only while the repositories are still independent (a saved second path may lead elsewhere now).
         try refuseSharedFate(s)
         guard let mirror = job.repository, mirror == s.primary, let snap = job.snapshot,
-              try engine(mirror).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap }) else { throw kept }
+              try engine(mirror).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap && $0.tags.contains("offloaded") })
+        else { throw kept }
         if let second = job.secondRepository {
             guard second == s.second, let copy = job.secondSnapshot,
-                  try engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) else { throw kept }
+                  try engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy && $0.tags.contains("offloaded") })
+            else { throw kept }
         }
     }
 
