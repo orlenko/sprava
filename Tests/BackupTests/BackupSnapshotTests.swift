@@ -135,6 +135,26 @@ import Testing
         try FileManager.default.moveItem(at: away, to: e.second)
     }
 
+    @Test(.enabled(if: hasRestic)) func aRepositoryMadeAgainAtItsOwnPathStartsEmpty() throws {
+        let e = try env()
+        let b = try configured(e)
+        try b.backUp(e.folder, now: now)
+        try b.check(readData: true, now: now)
+        let id = try Backup.backupID(e.folder)
+        // The mirror's folder is gone; setup again at the same path makes an empty one.
+        try FileManager.default.removeItem(at: e.primary)
+        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        var st = try b.state()
+        #expect(st.binders[id]?.snapshot == nil && st.binders[id]?.at == nil && st.lastCheck == nil)
+        // The second backup's folder is gone too: while a binder is offloaded, it is not made again empty.
+        try FileManager.default.removeItem(at: e.second)
+        st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: e.folder.path, snapshot: "0123abcd",
+                                         bytes: 1, at: ISOTime.string(now), summary: "invented", documents: [], openItemsConfirmed: 0)]
+        try b.save(st)
+        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second) }
+        #expect(!FileManager.default.fileExists(atPath: e.second.appendingPathComponent("config").path))
+    }
+
     @Test(.enabled(if: hasRestic)) func aWrongKeyNeverReplacesTheWorkingMirror() throws {
         let e = try env()
         let b = backup(e)

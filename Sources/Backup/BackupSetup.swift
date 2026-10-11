@@ -23,37 +23,38 @@ extension Backup {
         if let second = s.second, oldPrimary != s.primary {
             try refuseSharedFate(URL(fileURLWithPath: second, isDirectory: true), primary: primary)
         }
-        if changing { try refuseMovingOffloadedBinders() }
         let r = try engine(s.primary, settings: s)
+        // A repository made here is new and empty, also at the mirror's own path when the old one is gone: like a
+        // move, it holds none of the binders' snapshots and none of an offloaded binder's pinned copies.
+        let fresh = !r.isInitialized()
+        if oldPrimary != nil, changing || fresh { try refuseMovingOffloadedBinders() }
         // A repository this setup makes in a folder that was not there is taken away again if the place is refused.
         let wasThere = FileManager.default.fileExists(atPath: r.repository.path)
-        if r.isInitialized() {
-            _ = try r.snapshots()   // throws when the key does not open it
-        } else {
+        if fresh {
             try r.initRepository()
+        } else {
+            _ = try r.snapshots()   // throws when the key does not open it
         }
         guard uploadCheck(r.repository) != .notInICloud else {
             if !wasThere { try? FileManager.default.removeItem(at: r.repository) }
             throw Failure(message: "the backup mirror must be in iCloud Drive; nothing was changed")
         }
-        if changing, let oldPrimary {
+        guard oldPrimary != nil, changing || fresh else { return try save(s) }
+        let previous = try state()
+        var st = previous
+        for id in Array(st.binders.keys) {
             // Snapshots already in the old mirror stay there: record it, so expunging a document reaches it too.
-            // Saving this first is harmless if saving the setting then fails.
-            var st = try state()
-            for id in Array(st.binders.keys) {
-                st.rememberRepositories([oldPrimary], for: id)
-                // Its last snapshot is in the old mirror: in the new one each binder is due, and not shown as backed up.
-                st.binders[id]?.snapshot = nil
-                st.binders[id]?.at = nil
-            }
-            // The old mirror's checks and drill say nothing about the new one: it is due for each, from its first part.
-            st.lastCheck = nil
-            st.lastReadData = nil
-            st.readDataPart = 0
-            st.lastDrill = nil
-            try save(st)
+            if changing, let oldPrimary { st.rememberRepositories([oldPrimary], for: id) }
+            // Its last snapshot is not in this mirror: here each binder is due, and not shown as backed up.
+            st.binders[id]?.snapshot = nil
+            st.binders[id]?.at = nil
         }
-        try save(s)
+        // The old mirror's checks and drill say nothing about this one: it is due for each, from its first part.
+        st.lastCheck = nil
+        st.lastReadData = nil
+        st.readDataPart = 0
+        st.lastDrill = nil
+        try saveTogether(st, s, previous: previous)
     }
 
     /// The second backup offloading requires: another cloud service's folder or an external disk. It must not
@@ -64,21 +65,33 @@ extension Backup {
         let oldSecond = s.second
         try refuseSharedFate(folder, primary: URL(fileURLWithPath: primaryPath, isDirectory: true))
         s.second = folder.standardizedFileURL.path
-        if let oldSecond, oldSecond != s.second { try refuseMovingOffloadedBinders() }
         let primary = try engine(s.primary)
         let second = try engine(s.second, settings: s)
-        if second.isInitialized() { _ = try second.snapshots() } else { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) }
-        if let oldSecond, oldSecond != s.second {
-            // Older states may name the former second only in settings. Record it before the setting moves on.
-            var st = try state()
-            for id in Array(st.binders.keys) { st.rememberRepositories([oldSecond], for: id) }
-            st.lastSecondCheck = nil
-            st.lastSecondReadData = nil
-            st.secondReadDataPart = 0
-            st.lastSecondDrill = nil
-            try save(st)
+        // As for the mirror, a repository made here (at a new path, or at the old one when it is gone) is empty.
+        let fresh = !second.isInitialized()
+        let changing = oldSecond.map { $0 != s.second } ?? false
+        if oldSecond != nil, changing || fresh { try refuseMovingOffloadedBinders() }
+        if fresh { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) } else { _ = try second.snapshots() }
+        guard oldSecond != nil, changing || fresh else { return try save(s) }
+        let previous = try state()
+        var st = previous
+        // Older states may name the former second only in settings. Record it before the setting moves on.
+        if changing, let oldSecond { for id in Array(st.binders.keys) { st.rememberRepositories([oldSecond], for: id) } }
+        st.lastSecondCheck = nil
+        st.lastSecondReadData = nil
+        st.secondReadDataPart = 0
+        st.lastSecondDrill = nil
+        try saveTogether(st, s, previous: previous)
+    }
+
+    /// Saves the state for a new repository, then the settings naming it. If the settings cannot be saved, the
+    /// earlier state is put back: the old repository stays configured, with its records as they were.
+    func saveTogether(_ st: State, _ s: Settings, previous: State) throws {
+        try save(st)
+        do { try save(s) } catch {
+            try? save(previous)
+            throw error
         }
-        try save(s)
     }
 
     /// An offloaded binder's only copies are its pinned snapshots. Moving a repository must first copy and verify
