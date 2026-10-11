@@ -70,6 +70,9 @@ extension Backup {
         var leavingTarget: String?
         /// That folder's device and inode, so a retry tells the binder from another folder put at its path since.
         var leavingIdentity: String?
+        /// The binder folder's device and inode when it began to leave, before the state snapshot and its upload: a
+        /// folder found at its path afterwards that is not the binder is left alone.
+        var binderIdentity: String?
         /// The hidden name beside it the folder is moved to and checked at before it goes to the Trash.
         var staging: String?
         /// The record kept for the binder while it leaves; it joins the offloaded records only once the folder went,
@@ -339,6 +342,7 @@ extension Backup.InProgress {
         oldPinsRemoved = try c.decodeIfPresent(Bool.self, forKey: .oldPinsRemoved) ?? false
         leavingTarget = try c.decodeIfPresent(String.self, forKey: .leavingTarget)
         leavingIdentity = try c.decodeIfPresent(String.self, forKey: .leavingIdentity)
+        binderIdentity = try c.decodeIfPresent(String.self, forKey: .binderIdentity)
         staging = try c.decodeIfPresent(String.self, forKey: .staging)
         record = try c.decodeIfPresent(Backup.Offloaded.self, forKey: .record)
     }

@@ -262,4 +262,67 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: staging.path))
         #expect(try b.offloaded().isEmpty)
     }
+
+    @Test func onlyALinkThatLeadsNowhereIsRemoved() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-leave-link-\(UUID().uuidString)")
+        let other = base.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let link = base.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
+        // It reaches a folder (another binder, put at the old place since): kept.
+        try Backup.removeLink(link, to: base.appendingPathComponent("Gone"))
+        #expect(FileManager.default.fileExists(atPath: link.path))
+        try FileManager.default.removeItem(at: other)
+        try Backup.removeLink(link, to: base.appendingPathComponent("Gone"))
+        var info = stat()
+        #expect(lstat(link.path, &info) != 0)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aStagedBinderThatCannotBePutBackKeepsTheJobLeaving() throws {
+        let e = try env()
+        var b = try configured(e)
+        let id = try Backup.backupID(e.folder)
+        let staging = e.folder.deletingLastPathComponent().appendingPathComponent(".sprava-leaving-\(id)", isDirectory: true)
+        let folder = e.folder
+        // Once it is set aside: a write makes the last comparison fail, and a folder now at its place blocks putting
+        // it back.
+        b.atStep = { step in
+            guard step == "offload.staged" else { return }
+            try? Data("invented late write".utf8).write(to: staging.appendingPathComponent("correspondence/notary/late.pdf"))
+            // (A folder with something in it: an empty one would simply be replaced.)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? Data("invented".utf8).write(to: folder.appendingPathComponent("blocker.txt"))
+        }
+        #expect(throws: Backup.Failure.self) {
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
+        }
+        let job = try #require(try b.state().offloads[id])
+        #expect(job.stage == "leaving" && job.record != nil && job.staging != nil)
+        #expect(FileManager.default.fileExists(atPath: staging.path))
+        // Once the place is free again, the retry puts it back first; the change then starts the offload over.
+        try FileManager.default.removeItem(at: folder)
+        b.atStep = nil
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("correspondence/notary/late.pdf").path))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    @Test(.enabled(if: hasRestic)) func anotherFolderAtTheBinderPathIsLeftAlone() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        // The binder is moved away during the wait, and another folder takes its place.
+        let away = e.base.appendingPathComponent("Away", isDirectory: true)
+        try FileManager.default.moveItem(at: e.folder, to: away)
+        try FileManager.default.createDirectory(at: e.folder, withIntermediateDirectories: true)
+        try Data("invented other folder".utf8).write(to: e.folder.appendingPathComponent("note.txt"))
+        waiting.on = false
+        b.atStep = nil
+        guard case .done = try b.continueOffload(id, now: now, nameCollides: { _ in false }) else { Issue.record("not done"); return }
+        #expect(FileManager.default.fileExists(atPath: e.folder.appendingPathComponent("note.txt").path))
+        #expect(try b.offloaded().map(\.backupID) == [id])
+    }
 }

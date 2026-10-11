@@ -36,7 +36,7 @@ extension Backup {
         if let leaving = try state().offloads.first(where: {
             $0.value.stage == "leaving" && Self.sameFolder(URL(fileURLWithPath: $0.value.path, isDirectory: true), folder)
         }) {
-            if leaving.value.leavingTarget != nil || Self.folderEntry(folder) == .missing {
+            if leaving.value.leavingTarget != nil || Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, leaving.key, leaving.value) {
                 return try continueOffload(leaving.key, now: now, nameCollides: nameCollides)
             }
             if Self.folderEntry(folder) == .unavailable {
@@ -157,7 +157,7 @@ extension Backup {
             if try Self.undoStagedMove(&job) {
                 st.offloads[id] = job
                 try save(st)
-            } else if job.leavingTarget != nil || Self.folderEntry(folder) == .missing {
+            } else if job.leavingTarget != nil || Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job) {
                 // Gone: moved to the Trash, or (no move recorded) missing, which `leave` explains is never abandoned.
                 return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
             }
@@ -306,6 +306,7 @@ extension Backup {
         // lost; it joins the offloaded records once the folder went.
         job.stage = "leaving"
         job.record = record
+        job.binderIdentity = Self.folderIdentity(folder)
         st.offloads[id] = job
         try save(st)
         step("offload.leaving")

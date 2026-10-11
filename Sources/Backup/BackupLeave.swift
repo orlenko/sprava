@@ -38,6 +38,9 @@ extension Backup {
                 // No move recorded: a state snapshot restored after this Mac was lost, or a binder the person moved.
                 // Either way its copies stay pinned and its record is kept (see above).
                 break
+            case .present where !Self.isTheBinder(folder, id, job):
+                // Another folder is at the binder's path now: the binder is gone from it, and the other is left alone.
+                break
             case .present:
                 if !job.stateSaved {
                     try backUpState(now: now)
@@ -133,18 +136,39 @@ extension Backup {
             // left is saved at once; a failed save leaves the move recorded, and the retry finishes.
             job.record?.at = ISOTime.string(now)
             st.offloads[id] = job
+            // Offloaded from this moment: the record joins the offloaded ones (so no repository it needs can be
+            // replaced), while the job stays for the cleanup left.
+            if let record = job.record {
+                st.offloaded.removeAll { $0.backupID == id }
+                st.offloaded.append(record)
+            }
             try save(st)
         }
         if let error = stays {
-            job.stage = "copied"
-            job.stateSaved = false
-            job.record = nil
+            // Back where it was (or never moved): it stays, and waits to leave again. One that could not be put back
+            // (its volume went away, its place was taken) is still set aside: the job stays leaving, with its record,
+            // so the retry puts it back first and nothing unpins its copies meanwhile.
+            if job.staging == nil {
+                job.stage = "copied"
+                job.stateSaved = false
+                job.record = nil
+            }
             st.offloads[id] = job
             try? save(st)
             throw error
         }
         try Self.removeLink(folder, to: URL(fileURLWithPath: job.leavingTarget ?? folder.path, isDirectory: true))
         step("offload.removed")
+    }
+
+    /// Whether the folder at the binder's path is the binder that began to leave: the same folder (device and
+    /// inode), or one holding its backup id and exactly what its backups hold (a copy put back, which loses nothing
+    /// in leaving). Another folder put there since is not.
+    static func isTheBinder(_ folder: URL, _ id: String, _ job: InProgress) -> Bool {
+        guard let recorded = job.binderIdentity else { return true }
+        if folderIdentity(folder) == recorded { return true }
+        guard (try? storedBackupID(folder)) == id, let manifest = try? manifest(folder) else { return false }
+        return digest(manifest) == job.manifestSHA
     }
 
     /// Puts back a binder an interrupted move to the Trash left under its staging name (a folder there is this
@@ -175,6 +199,8 @@ extension Backup {
         guard target.standardizedFileURL.path != folder.standardizedFileURL.path else { return }
         var info = stat()
         guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK else { return }
+        // A link that reaches a folder again (another one, put at the binder's place since) is kept.
+        guard stat(folder.path, &info) != 0 else { return }
         guard unlink(folder.path) == 0 || errno == ENOENT else {
             throw Failure(message: "the link to the offloaded binder could not be removed; the offload finishes when tried again")
         }
