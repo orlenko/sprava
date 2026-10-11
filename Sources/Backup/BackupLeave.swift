@@ -36,8 +36,9 @@ extension Backup {
                 throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
             case .missing:
                 // No move recorded: a state snapshot restored after this Mac was lost, or a binder the person moved.
-                // Either way its copies stay pinned and its record is kept (see above).
-                break
+                // Either way its copies stay pinned and its record is kept (see above), once the checkpoint holding
+                // the record is in iCloud.
+                if job.stateSaved, let n = try uploadPending(try engine(settings().primary).repository) { return .waitingForICloud(n) }
             case .present where !Self.isTheBinder(folder, id, job):
                 // Another folder is at the binder's path now: the binder is gone from it, and the other is left alone.
                 break
@@ -67,9 +68,14 @@ extension Backup {
         // offload had and the real folder go, as either may be the one on the Shelf.
         // A path where a folder is again (another one, put there since) keeps its row: it is not this binder.
         let shelf = ShelfStore(supportDirectory: support)
-        for path in Set([folder.standardizedFileURL.path, job.leavingTarget].compactMap { $0 })
-            where Self.folderEntry(URL(fileURLWithPath: path, isDirectory: true)) == .missing {
-            try shelf.remove(URL(fileURLWithPath: path, isDirectory: true))
+        for path in Set([folder.standardizedFileURL.path, job.leavingTarget].compactMap { $0 }) {
+            switch Self.folderEntry(URL(fileURLWithPath: path, isDirectory: true)) {
+            case .missing: try shelf.remove(URL(fileURLWithPath: path, isDirectory: true))
+            case .present: break
+            case .unavailable:
+                // Its disk may be away: the row is taken off once it can be checked, so the job waits.
+                throw Failure(message: "the binder's old place cannot be checked (its disk may be away); the offload finishes when it can")
+            }
         }
         step("offload.unshelved")
         let done = job.record ?? record

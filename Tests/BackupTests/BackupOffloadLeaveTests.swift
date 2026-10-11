@@ -209,8 +209,10 @@ import Testing
         try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
         let moved = archive.appendingPathComponent(e.folder.lastPathComponent, isDirectory: true)
         try FileManager.default.moveItem(at: e.folder, to: moved)
-        waiting.on = false
         b.atStep = nil
+        // It still waits for the checkpoint holding its record to be in iCloud.
+        #expect(try b.continueOffload(id, now: now, nameCollides: { _ in false }) == .waitingForICloud(3))
+        waiting.on = false
         // Missing without a recorded move is never abandoned: its copies stay pinned and its record is kept, and the
         // binder where it is now is refused under the offloaded id (it can be given its own) rather than lost.
         guard case .done = try b.continueOffload(id, now: now, nameCollides: { _ in false }) else { Issue.record("not done"); return }
@@ -377,5 +379,29 @@ import Testing
         b.atStep = nil
         _ = try b.continueOffload(id, now: now, nameCollides: { _ in false })
         #expect(try b.engine(e.second.path).snapshots(tag: "binder:\(id)").contains { $0.id == checkpointed && $0.tags.contains("offloaded") })
+    }
+
+    @Test func aRecordedMoveProtectsTheRepositoriesAndReservesTheID() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-leave-guard-\(UUID().uuidString)")
+        let place = base.appendingPathComponent("Estate", isDirectory: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+        let id = try Backup.backupID(place)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded },
+                       secondLocationCheck: { _ in true })
+        // The binder went to the Trash (its move recorded); a copy with its id now sits at its place.
+        var job = Backup.InProgress(path: place.path, stage: "leaving")
+        job.leavingTarget = place.path
+        var st = Backup.State()
+        st.offloads[id] = job
+        st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: place.path, snapshot: "0123abcd",
+                                         bytes: 1, at: "2026-10-07T00:00:00Z", summary: "invented", documents: [], openItemsConfirmed: 0)]
+        try b.save(st)
+        #expect(throws: Backup.Failure.self) { try b.refuseMovingOffloadedBinders() }
+        st.offloaded = []
+        try b.save(st)
+        #expect(throws: Backup.Failure.self) { try b.refuseMovingOffloadedBinders() }
+        st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: place.path, snapshot: "0123abcd",
+                                         bytes: 1, at: "2026-10-07T00:00:00Z", summary: "invented", documents: [], openItemsConfirmed: 0)]
+        #expect(throws: Backup.SharedBackupID.self) { _ = try b.claim(place, &st) }
     }
 }
