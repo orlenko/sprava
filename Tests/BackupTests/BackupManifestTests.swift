@@ -201,4 +201,21 @@ import Testing
         #expect(setxattr(fifo, "com.example.invented", note, note.count, 0, XATTR_NOFOLLOW) == 0)
         #expect(try Backup.manifest(folder)["pipe"] != before)
     }
+
+    @Test func aSaveIntoAFolderReadEarlierFailsTheManifest() throws {
+        let folder = try temp("saved-into-earlier-folder")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("documents"), withIntermediateDirectories: true)
+        try Data("invented".utf8).write(to: folder.appendingPathComponent("documents/a.pdf"))
+        try Data("invented later file".utf8).write(to: folder.appendingPathComponent("z.bin"))
+        // documents/ was read already; while z.bin is hashed, a save lands in documents/, and then in a.pdf.
+        for target in ["documents/new.txt", "documents/a.pdf"] {
+            #expect(throws: Backup.Failure.self) {
+                _ = try Backup.manifest(folder, afterRead: { url in
+                    if url.lastPathComponent == "z.bin" {
+                        try? Data("invented save".utf8).write(to: folder.appendingPathComponent(target))
+                    }
+                })
+            }
+        }
+    }
 }

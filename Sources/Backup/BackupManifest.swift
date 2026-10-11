@@ -37,21 +37,23 @@ extension Backup {
         func unreadable(_ rel: String) -> Failure {
             Failure(message: "\(rel.isEmpty ? "the binder" : rel) cannot be read; nothing was removed")
         }
-        // A folder's entries count only when the folder is the same, unchanged, before it is listed and after
-        // everything under it was read: a file saved into it meanwhile fails the manifest instead of being missed.
-        func folderState(_ dir: URL) -> [Int]? {
+        // Everything read counts only when it is still the same, unchanged, once the whole binder was read: each
+        // folder (device, inode, times) and each file (also its size) is checked again at the end, so a save into a
+        // folder or file read earlier fails the manifest instead of being missed.
+        func state(_ url: URL, follow: Bool) -> [Int]? {
             var info = stat()
-            guard stat(dir.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return nil }
-            return [Int(info.st_dev), Int(info.st_ino), info.st_mtimespec.tv_sec, info.st_mtimespec.tv_nsec,
-                    info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec]
+            guard (follow ? stat(url.path, &info) : lstat(url.path, &info)) == 0 else { return nil }
+            return [Int(info.st_dev), Int(info.st_ino), Int(info.st_mode), Int(info.st_size), info.st_mtimespec.tv_sec,
+                    info.st_mtimespec.tv_nsec, info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec]
         }
+        var read: [(url: URL, rel: String, follow: Bool, state: [Int])] = []
         func walk(_ dir: URL, _ prefix: String) throws {
-            guard let before = folderState(dir) else { throw unreadable(prefix) }
+            // The binder folder itself may be reached through a link; the folders inside it are read as they are.
+            let follow = prefix.isEmpty
+            guard let before = state(dir, follow: follow), mode_t(before[2]) & S_IFMT == S_IFDIR else { throw unreadable(prefix) }
+            read.append((dir, prefix, follow, before))
             try entries(dir, prefix)
             afterRead(dir)
-            guard folderState(dir) == before else {
-                throw Failure(message: "\(prefix.isEmpty ? "the binder" : prefix) changed while it was read; nothing was removed")
-            }
         }
         func entries(_ dir: URL, _ prefix: String) throws {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { throw unreadable(prefix) }
@@ -93,6 +95,7 @@ extension Backup {
                           after.st_ctimespec.tv_nsec == info.st_ctimespec.tv_nsec else {
                         throw Failure(message: "\(rel) changed while it was read; nothing was removed")
                     }
+                    if let checked = state(url, follow: false) { read.append((url, rel, false, checked)) }
                     let mtime = " mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
                     var link = ""
                     if info.st_nlink > 1 {
@@ -111,6 +114,9 @@ extension Backup {
             }
         }
         try walk(folder, "")
+        for entry in read where state(entry.url, follow: entry.follow) != entry.state {
+            throw Failure(message: "\(entry.rel.isEmpty ? "the binder" : entry.rel) changed while it was read; nothing was removed")
+        }
         return out
     }
 
