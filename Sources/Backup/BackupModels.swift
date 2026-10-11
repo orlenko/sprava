@@ -51,6 +51,9 @@ extension Backup {
         /// The already-pinned snapshots when a new offload snapshot was about to be written. If the process stops
         /// after restic commits but before its id is saved, the new pin is the set difference and can be recovered.
         var pinsBeforeWrite: [String]?
+        /// The same for the copy into the second backup (`secondRepository`), saved before `restic copy` runs, so a
+        /// copy that landed before its id was saved is found, or unpinned when the offload is abandoned.
+        var secondPinsBefore: [String]?
         /// The binder folder's own metadata as it was then; a change to it is a change to the binder.
         var root: RootMetadata?
         /// Set once a snapshot of Sprava's state holding the offload record is in the mirror (`leave`), so a retry
@@ -316,6 +319,7 @@ extension Backup.InProgress {
         openItemsConfirmed = try c.decodeIfPresent(Int.self, forKey: .openItemsConfirmed) ?? 0
         manifestSHA = try c.decodeIfPresent(String.self, forKey: .manifestSHA)
         pinsBeforeWrite = try c.decodeIfPresent([String].self, forKey: .pinsBeforeWrite)
+        secondPinsBefore = try c.decodeIfPresent([String].self, forKey: .secondPinsBefore)
         root = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .root)
         stateSaved = try c.decodeIfPresent(Bool.self, forKey: .stateSaved) ?? false
         oldPinsRemoved = try c.decodeIfPresent(Bool.self, forKey: .oldPinsRemoved) ?? false

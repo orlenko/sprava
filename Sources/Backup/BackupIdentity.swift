@@ -66,7 +66,12 @@ extension Backup {
             let restoring = st.restoredContents[id]?.path ?? st.restoring[id]
             if restoring.map(other) ?? true { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: record.originalPath + " (offloaded)") }
         }
-        if let job = st.offloads[id], other(job.path) { throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: job.path) }
+        // An offload still waiting at a folder that is gone (the binder moved meanwhile) holds the id no longer; the
+        // offload itself is abandoned when it next runs.
+        if let job = st.offloads[id], other(job.path),
+           job.stage == "leaving" || Self.folderEntry(URL(fileURLWithPath: job.path, isDirectory: true)) != .missing {
+            throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: job.path)
+        }
         if let path = st.restoredContents[id]?.path ?? st.restoring[id], other(path) {
             throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: path)
         }
