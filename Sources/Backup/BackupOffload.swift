@@ -39,10 +39,8 @@ extension Backup {
             if leaving.value.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
                 return try continueOffload(leaving.key, now: now, nameCollides: { _ in nameCollides })
             }
-            switch Self.folderEntry(folder) {
-            case .missing: return try continueOffload(leaving.key, now: now, nameCollides: { _ in nameCollides })
-            case .unavailable: throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
-            case .present: break
+            if Self.folderEntry(folder) == .unavailable {
+                throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
             }
         }
         // Abandonment has already proved the candidate snapshot unusable and journaled cleanup. Resume that cleanup
@@ -152,10 +150,11 @@ extension Backup {
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
-        // A folder already in the Trash only has its records left to finish (the path the offload had may be a
-        // link to it, now leading nowhere: the real folder it went as says so).
-        if job.stage == "leaving", Self.folderEntry(folder) == .missing
-            || job.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
+        // A folder already in the Trash only has its records left to finish: the move was recorded first, so the real
+        // folder it went as says so (the path the offload had may be a link to it, now leading nowhere). A folder that
+        // is missing without that record was moved by the person, and is handled below as a moved binder.
+        if job.stage == "leaving",
+           job.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
             return try leave(id, folder: folder, &st, nameCollides: false, now: now)
         }
         // An interruption is recovered here as well as in `offload`, so a queued continuation never sticks.

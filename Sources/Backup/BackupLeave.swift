@@ -89,8 +89,15 @@ extension Backup {
                 }
                 try Self.removeLink(folder, to: URL(fileURLWithPath: job.leavingTarget ?? folder.path, isDirectory: true))
                 step("offload.removed")
+                // The record says when the binder left this Mac, not when its offload began.
+                if let i = st.offloaded.firstIndex(where: { $0.backupID == id && $0.snapshot == snap }) {
+                    st.offloaded[i].at = ISOTime.string(now)
+                }
             case .missing:
-                break
+                // Gone without the Trash move recorded: the person moved it (the offload never moved it). It is
+                // still live elsewhere, so the offload is abandoned and its record goes.
+                try abandonOffload(id, job, &st)
+                throw Failure(message: "the binder is no longer where its offload started; nothing was removed. Offload it again")
             }
         }
         // A Shelf that still lists the folder would later refuse its restore there ("a binder on the Shelf"), so a
@@ -105,7 +112,7 @@ extension Backup {
         if st.binders[id]?.snapshot != record.snapshot { st.binders[id]?.snapshot = record.snapshot }
         st.offloads[id] = nil
         try save(st)
-        return .done(record)
+        return .done(st.offloaded.first { $0.backupID == id && $0.snapshot == snap } ?? record)
     }
 
     /// Removes the link the offload's path was, once the real folder is gone; a failure stops, and the retry

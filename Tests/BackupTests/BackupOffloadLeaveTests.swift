@@ -195,4 +195,25 @@ import Testing
         // The real folder was on the Shelf; it is off it now.
         #expect(ShelfStore(supportDirectory: e.support).pickedFolders().isEmpty)
     }
+
+    @Test(.enabled(if: hasRestic)) func aBinderMovedWhileWaitingToLeaveIsNotTakenForOffloaded() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(3))
+        // Moved in the Finder to another folder while the record's upload waits.
+        let archive = e.base.appendingPathComponent("Archive", isDirectory: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        let moved = archive.appendingPathComponent(e.folder.lastPathComponent, isDirectory: true)
+        try FileManager.default.moveItem(at: e.folder, to: moved)
+        waiting.on = false
+        b.atStep = nil
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
+        // Not offloaded: no record, no pins, and it is backed up where it is now.
+        #expect(try b.offloaded().isEmpty && b.state().offloads[id] == nil)
+        #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").allSatisfy { !$0.tags.contains("offloaded") })
+        _ = try b.backUp(moved, now: now)
+    }
 }
