@@ -111,8 +111,10 @@ extension Backup {
             job.leavingTarget = real.path
             job.leavingIdentity = Self.folderIdentity(real)
             job.staging = staging.path
-            // The time it leaves, saved with the intent: a retry after the Trash move keeps it.
+            // The time it leaves and the binder's own place (not a link to it), saved with the intent: a retry after
+            // the Trash move keeps them, and a restore puts the binder back where it really was.
             job.record?.at = ISOTime.string(now)
+            job.record?.originalPath = real.path
             st.offloads[id] = job
             try save(st)
             guard renamex_np(real.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
@@ -231,8 +233,11 @@ extension Backup {
         guard target.standardizedFileURL.path != folder.standardizedFileURL.path else { return }
         var info = stat()
         guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK else { return }
-        // A link that reaches a folder again (another one, put at the binder's place since) is kept.
-        guard stat(folder.path, &info) != 0 else { return }
+        // A link that reaches a folder again (another one, put at the binder's place since) is kept, and so is one
+        // that leads elsewhere (a replacement whose disk is away): only the link to the binder's own place goes.
+        guard stat(folder.path, &info) != 0,
+              let to = try? FileManager.default.destinationOfSymbolicLink(atPath: folder.path),
+              realPath(URL(fileURLWithPath: to, relativeTo: folder.deletingLastPathComponent())) == realPath(target) else { return }
         guard unlink(folder.path) == 0 || errno == ENOENT else {
             throw Failure(message: "the link to the offloaded binder could not be removed; the offload finishes when tried again")
         }

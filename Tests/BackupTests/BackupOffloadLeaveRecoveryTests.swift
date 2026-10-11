@@ -32,18 +32,24 @@ extension BackupOffloadLeaveTests {
         #expect(try b.offloaded().isEmpty)
     }
 
-    @Test func onlyALinkThatLeadsNowhereIsRemoved() throws {
+    @Test func onlyALinkToTheBinderPlaceThatLeadsNowhereIsRemoved() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-leave-link-\(UUID().uuidString)")
-        let other = base.appendingPathComponent("Other", isDirectory: true)
-        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let place = base.appendingPathComponent("Estate", isDirectory: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
         let link = base.appendingPathComponent("Alias")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
-        // It reaches a folder (another binder, put at the old place since): kept.
-        try Backup.removeLink(link, to: base.appendingPathComponent("Gone"))
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: place)
+        // It reaches a folder (another binder, put at the binder's place since): kept.
+        try Backup.removeLink(link, to: place)
         #expect(FileManager.default.fileExists(atPath: link.path))
-        try FileManager.default.removeItem(at: other)
-        try Backup.removeLink(link, to: base.appendingPathComponent("Gone"))
+        // A replacement link to a disk that is away: kept, too.
+        let away = base.appendingPathComponent("Away Alias")
+        try FileManager.default.createSymbolicLink(atPath: away.path, withDestinationPath: "/Volumes/Invented-Away-\(UUID().uuidString)/Estate")
+        try Backup.removeLink(away, to: place)
         var info = stat()
+        #expect(lstat(away.path, &info) == 0)
+        // The link to the binder's own place, which leads nowhere now: removed.
+        try FileManager.default.removeItem(at: place)
+        try Backup.removeLink(link, to: place)
         #expect(lstat(link.path, &info) != 0)
     }
 
@@ -246,5 +252,19 @@ extension BackupOffloadLeaveTests {
         try FileManager.default.createSymbolicLink(at: e.second, withDestinationURL: e.primary)
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.state().offloads[id]?.stage == "leaving")
+    }
+
+    @Test(.enabled(if: hasRestic)) func lostSettingsAcceptOnlyRepositoriesHoldingALeavingBindersCopies() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        try FileManager.default.moveItem(at: e.folder, to: e.base.appendingPathComponent("Elsewhere", isDirectory: true))
+        let record = try #require(try b.state().offloads[id]?.record)
+        // Its pending record counts as an offloaded one: a repository must hold its copy to be accepted.
+        try b.refuseMissingPins(in: b.engine(e.primary.path)) { $0.snapshot }
+        #expect(throws: Backup.Failure.self) { try b.refuseMissingPins(in: b.engine(e.primary.path)) { _ in "0000\(record.snapshot)" } }
     }
 }

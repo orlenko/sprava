@@ -147,8 +147,10 @@ import Testing
             Issue.record("the binder did not leave")
             return
         }
-        // The real folder is in the Trash, not only the link to it, and the link is gone too.
+        // The real folder is in the Trash, not only the link to it, and the link is gone too. The record keeps the
+        // real place, where a restore puts it back.
         #expect(!FileManager.default.fileExists(atPath: e.folder.path))
+        #expect(try b.offloaded().first?.originalPath == Backup.realPath(e.folder))
         var info = stat()
         #expect(lstat(link.path, &info) != 0)
     }
