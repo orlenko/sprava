@@ -95,8 +95,9 @@ extension Backup {
     func finishAbandoningOffload(_ id: String, _ job: InProgress, _ st: inout State) throws {
         // The live binder is still here, so these no-longer-current snapshots need no retention pin. Remove the pins
         // before forgetting the job; if a repository is away, the job remains and the cleanup is retried. removeTag is
-        // idempotent if a crash lands between repositories or before the state save.
-        if let repository = job.repository {
+        // idempotent if a crash lands between repositories or before the state save. A job a state snapshot holds as
+        // leaving keeps its pins: that snapshot, restored after this Mac is lost, would finish the offload from them.
+        if let repository = job.repository, !job.checkpointed {
             let primary = try engine(repository)
             if let snapshot = job.snapshot { try primary.removeTag("offloaded", from: snapshot) }
             // A write cut off before its snapshot id was saved leaves a pin only the intent can tell apart.
@@ -106,7 +107,7 @@ extension Backup {
                 }
             }
         }
-        try releaseSecond(id, job)
+        if !job.checkpointed { try releaseSecond(id, job) }
         st.offloads[id] = nil
         // Only the record this offload made (once it had one), never an earlier offload's.
         st.offloaded.removeAll { $0.backupID == id && job.snapshot != nil && $0.snapshot == job.snapshot }

@@ -325,4 +325,40 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: e.folder.appendingPathComponent("note.txt").path))
         #expect(try b.offloaded().map(\.backupID) == [id])
     }
+
+    @Test func aCutOffMoveIsNeverTakenForDoneWhileItsDiskIsAwayOrItsPlaceTaken() throws {
+        // The binder's disk is away: neither its place nor its staging name can be checked, so the job waits.
+        var away = Backup.InProgress(path: "/Volumes/Invented-Away-\(UUID().uuidString)/Binders/Estate", stage: "leaving")
+        away.leavingTarget = away.path
+        away.staging = "/Volumes/Invented-Away-\(UUID().uuidString)/Binders/.sprava-leaving-0123"
+        away.leavingIdentity = "1:2"
+        #expect(throws: Backup.Failure.self) { _ = try Backup.undoStagedMove(&away) }
+        #expect(away.leavingTarget != nil)
+        // Set aside, with an empty folder now at its place: it is not put back over it.
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-leave-undo-\(UUID().uuidString)")
+        let place = base.appendingPathComponent("Estate", isDirectory: true)
+        let staging = base.appendingPathComponent(".sprava-leaving-0123", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+        var taken = Backup.InProgress(path: place.path, stage: "leaving")
+        taken.leavingTarget = place.path
+        taken.staging = staging.path
+        #expect(throws: Backup.Failure.self) { _ = try Backup.undoStagedMove(&taken) }
+        #expect(FileManager.default.fileExists(atPath: staging.path) && FileManager.default.fileExists(atPath: place.path))
+    }
+
+    @Test(.enabled(if: hasRestic)) func anOffloadAbandonedAfterItsCheckpointKeepsItsPins() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        // The binder changes after the state snapshot holding it as leaving was taken: the offload starts over, but
+        // that snapshot, restored after this Mac is lost, would finish the offload, so its copies stay pinned.
+        try Data("invented later page".utf8).write(to: e.folder.appendingPathComponent("correspondence/notary/second.pdf"))
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
+        #expect(try b.state().offloads[id] == nil)
+        #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").contains { $0.tags.contains("offloaded") })
+    }
 }

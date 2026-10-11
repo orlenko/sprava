@@ -43,6 +43,10 @@ extension Backup {
                 break
             case .present:
                 if !job.stateSaved {
+                    // Marked before the snapshot, so the snapshot and every state after it know a checkpoint exists.
+                    job.checkpointed = true
+                    st.offloads[id] = job
+                    try save(st)
                     try backUpState(now: now)
                     st = try state()
                     job.stateSaved = true
@@ -107,7 +111,7 @@ extension Backup {
             job.staging = staging.path
             st.offloads[id] = job
             try save(st)
-            guard rename(real.path, staging.path) == 0 else {
+            guard renamex_np(real.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
                 job.leavingTarget = nil
                 job.leavingIdentity = nil
                 job.staging = nil
@@ -123,7 +127,7 @@ extension Backup {
                 }
                 try removeFolder(staging)
             } catch {
-                if rename(staging.path, real.path) == 0 {
+                if renamex_np(staging.path, real.path, UInt32(RENAME_EXCL)) == 0 {
                     job.leavingTarget = nil
                     job.leavingIdentity = nil
                     job.staging = nil
@@ -178,14 +182,23 @@ extension Backup {
     static func undoStagedMove(_ job: inout InProgress) throws -> Bool {
         guard let targetPath = job.leavingTarget else { return false }
         let target = URL(fileURLWithPath: targetPath, isDirectory: true)
-        var info = stat()
-        if let stagingPath = job.staging, lstat(stagingPath, &info) == 0, info.st_mode & S_IFMT == S_IFDIR {
-            guard rename(stagingPath, target.path) == 0 else {
+        let unavailable = Failure(message: "the binder's place cannot be checked (its disk may be away); the offload was left unfinished")
+        // A place that cannot be checked (a disk that is away) is not a move that went through: the job waits.
+        switch job.staging.map({ folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) }) ?? .missing {
+        case .unavailable:
+            throw unavailable
+        case .present:
+            // Put back without replacing anything at its place, an empty folder included.
+            guard let stagingPath = job.staging, renamex_np(stagingPath, target.path, UInt32(RENAME_EXCL)) == 0 else {
                 throw Failure(message: "the binder is set aside beside its place, which is taken; nothing was removed. "
                     + "Make room for it, then continue the offload")
             }
-        } else if folderIdentity(target) != job.leavingIdentity {
-            return false
+        case .missing:
+            switch folderEntry(target) {
+            case .unavailable: throw unavailable
+            case .missing: return false
+            case .present: if folderIdentity(target) != job.leavingIdentity { return false }
+            }
         }
         job.leavingTarget = nil
         job.leavingIdentity = nil

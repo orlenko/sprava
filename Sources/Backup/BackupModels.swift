@@ -73,6 +73,9 @@ extension Backup {
         /// The binder folder's device and inode when it began to leave, before the state snapshot and its upload: a
         /// folder found at its path afterwards that is not the binder is left alone.
         var binderIdentity: String?
+        /// A state snapshot holding this job while it was leaving was taken: restored after this Mac is lost, it
+        /// finishes the offload from that record, so the binder's pins stay even if the offload is abandoned later.
+        var checkpointed = false
         /// The hidden name beside it the folder is moved to and checked at before it goes to the Trash.
         var staging: String?
         /// The record kept for the binder while it leaves; it joins the offloaded records only once the folder went,
@@ -343,6 +346,7 @@ extension Backup.InProgress {
         leavingTarget = try c.decodeIfPresent(String.self, forKey: .leavingTarget)
         leavingIdentity = try c.decodeIfPresent(String.self, forKey: .leavingIdentity)
         binderIdentity = try c.decodeIfPresent(String.self, forKey: .binderIdentity)
+        checkpointed = try c.decodeIfPresent(Bool.self, forKey: .checkpointed) ?? false
         staging = try c.decodeIfPresent(String.self, forKey: .staging)
         record = try c.decodeIfPresent(Backup.Offloaded.self, forKey: .record)
     }
