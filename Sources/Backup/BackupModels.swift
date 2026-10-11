@@ -68,6 +68,13 @@ extension Backup {
         /// The binder folder itself (links resolved), saved before it goes to the Trash: a retry knows it went, and
         /// takes it off the Shelf, also when the path the offload has was a link now gone.
         var leavingTarget: String?
+        /// That folder's device and inode, so a retry tells the binder from another folder put at its path since.
+        var leavingIdentity: String?
+        /// The hidden name beside it the folder is moved to and checked at before it goes to the Trash.
+        var staging: String?
+        /// The record kept for the binder while it leaves; it joins the offloaded records only once the folder went,
+        /// so a binder still here is never listed as offloaded.
+        var record: Offloaded?
     }
 
     struct State: Codable {
@@ -331,6 +338,9 @@ extension Backup.InProgress {
         stateSaved = try c.decodeIfPresent(Bool.self, forKey: .stateSaved) ?? false
         oldPinsRemoved = try c.decodeIfPresent(Bool.self, forKey: .oldPinsRemoved) ?? false
         leavingTarget = try c.decodeIfPresent(String.self, forKey: .leavingTarget)
+        leavingIdentity = try c.decodeIfPresent(String.self, forKey: .leavingIdentity)
+        staging = try c.decodeIfPresent(String.self, forKey: .staging)
+        record = try c.decodeIfPresent(Backup.Offloaded.self, forKey: .record)
     }
 }
 

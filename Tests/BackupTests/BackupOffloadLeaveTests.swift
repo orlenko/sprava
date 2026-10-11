@@ -78,7 +78,7 @@ import Testing
         // The binder's slice on the hub, as a publish leaves it under the binder's own name.
         let published = try slice(e)
         try Data(#"{"teka":"invented","items":[]}"#.utf8).write(to: published)
-        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) else {
+        guard case .done(let record) = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) else {
             Issue.record("the binder did not leave")
             return
         }
@@ -99,7 +99,7 @@ import Testing
         // iCloud has the binder's copies, then stops uploading as the record's state snapshot is written.
         b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
         let id = try Backup.backupID(e.folder)
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(3))
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
         #expect(FileManager.default.fileExists(atPath: e.folder.path))
         #expect(try b.state().offloads[id]?.stage == "leaving" && b.state().offloads[id]?.stateSaved == true)
         waiting.on = false
@@ -114,11 +114,11 @@ import Testing
         let fail = Switch(true)
         let b = try configured(e, failRemove: fail)
         let id = try Backup.backupID(e.folder)
-        #expect(throws: (any Error).self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: (any Error).self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         #expect(FileManager.default.fileExists(atPath: e.folder.path))
         #expect(try b.offloaded().isEmpty && b.state().offloads[id]?.stage == "copied")
         fail.on = false
-        guard case .done = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) else {
+        guard case .done = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) else {
             Issue.record("the binder did not leave on retry")
             return
         }
@@ -130,7 +130,7 @@ import Testing
         let b = try configured(e)
         // Another binder here has the same name, and Sprava recorded no slice for this one.
         #expect(throws: Backup.Failure.self) {
-            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: true, now: now)
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in true }, now: now)
         }
         #expect(FileManager.default.fileExists(atPath: e.folder.path))
         #expect(try b.offloaded().isEmpty)
@@ -143,7 +143,7 @@ import Testing
         try FileManager.default.createDirectory(at: shortcuts, withIntermediateDirectories: true)
         let link = shortcuts.appendingPathComponent(e.folder.lastPathComponent)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: e.folder)
-        guard case .done = try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) else {
+        guard case .done = try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) else {
             Issue.record("the binder did not leave")
             return
         }
@@ -159,7 +159,7 @@ import Testing
         var b = try configured(e, waiting: waiting)
         b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
         let id = try Backup.backupID(e.folder)
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(3))
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
         // The second backup's disk is swapped for an empty repository at the same path.
         try FileManager.default.removeItem(at: e.second)
         try b.engine(e.second.path).initRepository()
@@ -183,7 +183,7 @@ import Testing
         b.atStep = { step in
             if step == "offload.trashed" { try? FileManager.default.copyItem(at: e.support, to: state) }
         }
-        _ = try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         try FileManager.default.removeItem(at: e.support)
         try FileManager.default.copyItem(at: state, to: e.support)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: e.folder)
@@ -196,13 +196,14 @@ import Testing
         #expect(ShelfStore(supportDirectory: e.support).pickedFolders().isEmpty)
     }
 
-    @Test(.enabled(if: hasRestic)) func aBinderMovedWhileWaitingToLeaveIsNotTakenForOffloaded() throws {
+    @Test(.enabled(if: hasRestic)) func aBinderMovedWhileWaitingToLeaveKeepsItsCopiesPinned() throws {
         let e = try env()
         let waiting = Switch(false)
         var b = try configured(e, waiting: waiting)
         b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
         let id = try Backup.backupID(e.folder)
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(3))
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        #expect(try b.offloaded().isEmpty)
         // Moved in the Finder to another folder while the record's upload waits.
         let archive = e.base.appendingPathComponent("Archive", isDirectory: true)
         try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
@@ -210,10 +211,55 @@ import Testing
         try FileManager.default.moveItem(at: e.folder, to: moved)
         waiting.on = false
         b.atStep = nil
-        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
-        // Not offloaded: no record, no pins, and it is backed up where it is now.
-        #expect(try b.offloaded().isEmpty && b.state().offloads[id] == nil)
-        #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").allSatisfy { !$0.tags.contains("offloaded") })
-        _ = try b.backUp(moved, now: now)
+        // Missing without a recorded move is never abandoned: its copies stay pinned and its record is kept, and the
+        // binder where it is now is refused under the offloaded id (it can be given its own) rather than lost.
+        guard case .done = try b.continueOffload(id, now: now, nameCollides: { _ in false }) else { Issue.record("not done"); return }
+        #expect(try b.offloaded().map(\.backupID) == [id])
+        #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").contains { $0.tags.contains("offloaded") })
+        #expect(throws: Backup.SharedBackupID.self) { _ = try b.backUp(moved, now: now) }
+        #expect(FileManager.default.fileExists(atPath: moved.path))
+    }
+
+    @Test(.enabled(if: hasRestic)) func theStateSnapshotRestoredAfterTheBinderLeftFinishesTheOffload() throws {
+        let e = try env()
+        var b = try configured(e)
+        let id = try Backup.backupID(e.folder)
+        // Sprava's state as the state snapshot holds it: taken with the binder waiting to leave.
+        let image = e.base.appendingPathComponent("state-as-snapshotted")
+        b.atStep = { step in if step == "offload.leaving" { try? FileManager.default.copyItem(at: e.support, to: image) } }
+        guard case .done = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) else {
+            Issue.record("the binder did not leave")
+            return
+        }
+        b.atStep = nil
+        // This Mac is lost; its state is restored from that snapshot on another, where the binder is not.
+        try FileManager.default.removeItem(at: e.support)
+        try FileManager.default.copyItem(at: image, to: e.support)
+        #expect(try b.offloaded().isEmpty)
+        let result = try b.continueOffloads(nameCollides: { _ in false }, now: now)[id].map { try $0.get() }
+        guard case .done(let record) = result else { Issue.record("not finished: \(String(describing: result))"); return }
+        #expect(try b.offloaded().map(\.backupID) == [id])
+        #expect(try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").contains { $0.id == record.snapshot && $0.tags.contains("offloaded") })
+        #expect(try b.engine(e.second.path).snapshots(tag: "binder:\(id)").contains { $0.id == record.secondSnapshot && $0.tags.contains("offloaded") })
+    }
+
+    @Test(.enabled(if: hasRestic)) func aWriteToTheStagedFolderKeepsTheBinderHere() throws {
+        let e = try env()
+        var b = try configured(e)
+        let id = try Backup.backupID(e.folder)
+        let staging = e.folder.deletingLastPathComponent().appendingPathComponent(".sprava-leaving-\(id)", isDirectory: true)
+        // A program with the binder open writes once it is moved aside, before the last comparison.
+        b.atStep = { step in
+            if step == "offload.staged" {
+                try? Data("invented late write".utf8).write(to: staging.appendingPathComponent("correspondence/notary/late.pdf"))
+            }
+        }
+        #expect(throws: Backup.Failure.self) {
+            _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
+        }
+        // Back in its place, with the write, and not offloaded.
+        #expect(FileManager.default.fileExists(atPath: e.folder.appendingPathComponent("correspondence/notary/late.pdf").path))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(try b.offloaded().isEmpty)
     }
 }

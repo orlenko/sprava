@@ -70,30 +70,30 @@ extension Backup.OffloadProgress {
     @Test(.enabled(if: hasRestic)) func anOffloadNeedsTheSecondBackupAndThisMacsBinder() throws {
         let e = try env()
         let b = try configured(e, second: false)
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         try b.setSecond(e.second)
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "another-mac", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "another-mac", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         #expect(try b.state().offloads.isEmpty)
     }
 
     @Test(.enabled(if: hasRestic)) func openItemsNeedConfirmationAndWaitingFilesStopIt() throws {
         let e = try env()
         let b = try configured(e)
-        #expect(throws: Backup.NeedsConfirmation.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: false, nameCollides: false, now: now) }
+        #expect(throws: Backup.NeedsConfirmation.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: false, nameCollides: { _ in false }, now: now) }
         // A file waiting in intake/, or one in outgoing/, stops it; a monitor's settings in intake/mail do not.
         try FileManager.default.createDirectory(at: e.folder.appendingPathComponent("intake/mail"), withIntermediateDirectories: true)
         try Data("invented".utf8).write(to: e.folder.appendingPathComponent("intake/mail/.env"))
         try Data("x".utf8).write(to: e.folder.appendingPathComponent("intake/scan.pdf"))
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         try FileManager.default.removeItem(at: e.folder.appendingPathComponent("intake/scan.pdf"))
         try FileManager.default.createDirectory(at: e.folder.appendingPathComponent("outgoing"), withIntermediateDirectories: true)
         try Data("x".utf8).write(to: e.folder.appendingPathComponent("outgoing/letter.pdf"))
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         // A card that cannot be read may be one waiting.
         try FileManager.default.removeItem(at: e.folder.appendingPathComponent("outgoing/letter.pdf"))
         try FileManager.default.createDirectory(at: e.folder.appendingPathComponent(".sprava/proposals"), withIntermediateDirectories: true)
         try Data("{ invented, not a card".utf8).write(to: e.folder.appendingPathComponent(".sprava/proposals/invented.json"))
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         #expect(try b.state().offloads.isEmpty)
         #expect(FileManager.default.fileExists(atPath: e.folder.path))
     }
@@ -104,7 +104,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let b = try configured(e)
         let id = try Backup.backupID(e.folder)
-        let record = try #require(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record)
+        let record = try #require(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record)
         #expect(record.repository == e.primary.standardizedFileURL.path && record.backupID == id)
         #expect(try pinned(b, e.primary, id) == [record.snapshot])
         #expect(try pinned(b, e.second, id) == [try #require(record.secondSnapshot)])
@@ -123,7 +123,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let waiting = Switch(true)
         let b = try configured(e, waiting: waiting)
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(2))
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(2))
         let id = try Backup.backupID(e.folder)
         #expect(try b.state().offloads[id]?.stage == "waiting_for_upload")
         #expect(try pinned(b, e.second, id).isEmpty)
@@ -135,7 +135,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let waiting = Switch(true)
         let b = try configured(e, waiting: waiting)
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         let id = try Backup.backupID(e.folder)
         try Data("invented later page".utf8).write(to: e.folder.appendingPathComponent("correspondence/notary/second.pdf"))
         waiting.on = false
@@ -143,7 +143,7 @@ extension Backup.OffloadProgress {
         #expect(try b.state().offloads[id] == nil)
         #expect(try pinned(b, e.primary, id).isEmpty)
         // Offloading again backs up the binder as it is now.
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record != nil)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record != nil)
         #expect(try pinned(b, e.primary, id).count == 1)
     }
 
@@ -181,12 +181,17 @@ extension Backup.OffloadProgress {
 
     /// Everything an offload changes: Sprava's state, both repositories, the binder, the Trash and the hub's spool.
     func everything(_ e: Env) -> [URL] {
-        [e.support, e.primary, e.second, e.folder, e.base.appendingPathComponent("trash"), e.base.appendingPathComponent("spool")]
+        // The hidden name beside the binder it is moved to just before the Trash is part of the disk too.
+        let staging = (try? Backup.backupID(e.folder)).map {
+            e.folder.deletingLastPathComponent().appendingPathComponent(".sprava-leaving-\($0)", isDirectory: true)
+        }
+        return [e.support, e.primary, e.second, e.folder, e.base.appendingPathComponent("trash"), e.base.appendingPathComponent("spool")]
+            + (staging.map { [$0] } ?? [])
     }
 
     static let steps = ["offload.claimed", "offload.written", "offload.snapshotted", "offload.verified", "offload.copying",
-                        "offload.copied", "offload.leaving", "offload.stateSaved", "offload.unpublished", "offload.removed",
-                        "offload.unshelved"]
+                        "offload.copied", "offload.leaving", "offload.stateSaved", "offload.unpublished", "offload.staged",
+                        "offload.trashed", "offload.removed", "offload.unshelved"]
 
     @Test(.enabled(if: hasRestic), arguments: steps)
     func anInterruptedOffloadResumesWithOnePinInEachBackup(step: String) throws {
@@ -195,12 +200,12 @@ extension Backup.OffloadProgress {
         let id = try Backup.backupID(e.folder)
         let image = Image(everything(e), at: step)
         b.atStep = { image.take($0) }
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record != nil)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record != nil)
         #expect(image.taken)
         // As if Sprava had stopped there: the disk as it was, then the offload again.
         try image.restore()
         b.atStep = nil
-        let record = try #require(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record)
+        let record = try #require(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record)
         #expect(try pinned(b, e.primary, id) == [record.snapshot])
         #expect(try pinned(b, e.second, id) == [try #require(record.secondSnapshot)])
         #expect(try b.offloaded().map(\.backupID) == [id] && b.pendingOffloads().isEmpty)
@@ -215,7 +220,7 @@ extension Backup.OffloadProgress {
         let id = try Backup.backupID(e.folder)
         let image = Image(everything(e), at: step)
         b.atStep = { image.take($0) }
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         try image.restore()
         b.atStep = nil
         let record = try #require(try b.continueOffloads(nameCollides: { _ in false }, now: now)[id].map { try $0.get() }?.record)
@@ -230,7 +235,7 @@ extension Backup.OffloadProgress {
         let id = try Backup.backupID(e.folder)
         let image = Image(everything(e), at: "offload.copying")
         b.atStep = { image.take($0) }
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         try image.restore()
         b.atStep = nil
         // The copy landed, and Sprava stopped before saving its id; then the binder changed.
@@ -247,7 +252,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let waiting = Switch(true)
         let b = try configured(e, waiting: waiting)
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         let id = try Backup.backupID(e.folder)
         #expect(try pinned(b, e.primary, id).count == 1)
         waiting.on = false
@@ -261,7 +266,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let waiting = Switch(true)
         let b = try configured(e, waiting: waiting)
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         let id = try Backup.backupID(e.folder)
         // Moved into another folder, under its own name.
         let parent = e.base.appendingPathComponent("Archive", isDirectory: true)
@@ -274,7 +279,7 @@ extension Backup.OffloadProgress {
         waiting.on = false
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try pinned(b, e.primary, id).isEmpty)
-        #expect(try b.offload(moved, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record != nil)
+        #expect(try b.offload(moved, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record != nil)
     }
 
     @Test(.enabled(if: hasRestic)) func anOffloadResumesThroughALinkToTheSameFolder() throws {
@@ -282,12 +287,12 @@ extension Backup.OffloadProgress {
         let waiting = Switch(true)
         let b = try configured(e, waiting: waiting)
         let id = try Backup.backupID(e.folder)
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(2))
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(2))
         let alias = e.base.appendingPathComponent("Alias", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: e.folder.deletingLastPathComponent())
         waiting.on = false
         let through = alias.appendingPathComponent(e.folder.lastPathComponent, isDirectory: true)
-        #expect(try b.offload(through, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record != nil)
+        #expect(try b.offload(through, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record != nil)
         #expect(try pinned(b, e.primary, id).count == 1)
     }
 
@@ -297,7 +302,7 @@ extension Backup.OffloadProgress {
         // A file named _converted is not the converted-text folder: it waits.
         try FileManager.default.createDirectory(at: e.folder.appendingPathComponent("intake"), withIntermediateDirectories: true)
         try Data("invented".utf8).write(to: e.folder.appendingPathComponent("intake/_converted"))
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         try FileManager.default.removeItem(at: e.folder.appendingPathComponent("intake/_converted"))
         // A superseded card is done (binder-v0 §6.5); one in a state Sprava does not know may be waiting.
         let replaced = Proposal.make(title: "Invented replaced card", actor: JSONObject([(key: "kind", value: .str("user"))]), ops: [], now: now)
@@ -311,7 +316,7 @@ extension Backup.OffloadProgress {
         let file = e.folder.appendingPathComponent(".sprava/proposals/\(card.id).json")
         let edited = try String(contentsOf: file, encoding: .utf8).replacingOccurrences(of: "\"proposed\"", with: "\"invented-state\"")
         try Data(edited.utf8).write(to: file)
-        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) }
+        #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         #expect(try b.state().offloads.isEmpty)
     }
 
@@ -319,7 +324,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let waiting = Switch(true)
         let b = try configured(e, waiting: waiting)
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         let id = try Backup.backupID(e.folder)
         try Data("invented later page".utf8).write(to: e.folder.appendingPathComponent("correspondence/notary/second.pdf"))
         // iCloud still has not uploaded, yet the obsolete snapshot is not waited on: the offload is abandoned.
@@ -357,7 +362,7 @@ extension Backup.OffloadProgress {
         // Stopped right after the copies were accepted.
         let image = Image(everything(e), at: "offload.copied")
         b.atStep = { image.take($0) }
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         try image.restore()
         b.atStep = nil
         // The second backup's disk is replaced: an empty repository at the same path.
@@ -374,7 +379,7 @@ extension Backup.OffloadProgress {
         let id = try Backup.backupID(e.folder)
         let image = Image(everything(e), at: "offload.snapshotted")
         b.atStep = { image.take($0) }
-        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now)
         try image.restore()
         b.atStep = nil
         // The mirror is made again empty at its own path: the recorded snapshot is gone.
@@ -382,6 +387,6 @@ extension Backup.OffloadProgress {
         try b.setUp(primary: e.primary, iCloudKeychain: false)
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.state().offloads[id] == nil)
-        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now).record != nil)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record != nil)
     }
 }

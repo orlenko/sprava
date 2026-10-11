@@ -25,9 +25,9 @@ extension Backup {
     }
 
     /// Offloads a finished binder. Runs every step it can now; when iCloud has not uploaded yet, it stops, and the
-    /// queued request runs it again later. `nameCollides` says whether another binder here shares this one's name
-    /// (`HubLane.collidingFolders`): its hub slice is then withdrawn only by Sprava's record.
-    public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, nameCollides: Bool,
+    /// queued request runs it again later. `nameCollides` answers, when the binder leaves, whether another binder
+    /// here shares its name (`HubLane.collidingFolders`): its hub slice is then withdrawn only by Sprava's record.
+    public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, nameCollides: (URL) -> Bool,
                         now: Date = Date()) throws -> OffloadProgress {
         let s = try settings()
         guard s.primary != nil else { throw Failure(message: "set up backup first") }
@@ -36,8 +36,8 @@ extension Backup {
         if let leaving = try state().offloads.first(where: {
             $0.value.stage == "leaving" && Self.sameFolder(URL(fileURLWithPath: $0.value.path, isDirectory: true), folder)
         }) {
-            if leaving.value.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
-                return try continueOffload(leaving.key, now: now, nameCollides: { _ in nameCollides })
+            if leaving.value.leavingTarget != nil || Self.folderEntry(folder) == .missing {
+                return try continueOffload(leaving.key, now: now, nameCollides: nameCollides)
             }
             if Self.folderEntry(folder) == .unavailable {
                 throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
@@ -142,7 +142,7 @@ extension Backup {
             try save(st)
             step("offload.verified")
         }
-        return try continueOffload(id, now: now, nameCollides: { _ in nameCollides })
+        return try continueOffload(id, now: now, nameCollides: nameCollides)
     }
 
     func continueOffload(_ id: String, now: Date, nameCollides: (URL) -> Bool) throws -> OffloadProgress {
@@ -150,12 +150,10 @@ extension Backup {
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
-        // A folder already in the Trash only has its records left to finish: the move was recorded first, so the real
-        // folder it went as says so (the path the offload had may be a link to it, now leading nowhere). A folder that
-        // is missing without that record was moved by the person, and is handled below as a moved binder.
-        if job.stage == "leaving",
-           job.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
-            return try leave(id, folder: folder, &st, nameCollides: false, now: now)
+        // A binder whose move to the Trash was recorded, or whose folder is gone, only has the leaving step left
+        // (`leave` says why a missing folder never abandons a leaving offload).
+        if job.stage == "leaving", job.leavingTarget != nil || Self.folderEntry(folder) == .missing {
+            return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
         }
         // An interruption is recovered here as well as in `offload`, so a queued continuation never sticks.
         try recoverInterrupted(id, &job, &st)
@@ -176,8 +174,6 @@ extension Backup {
         // now share a fate are not two copies. Pins in a repository left behind are released, not forgotten.
         try refuseSharedFate(s)
         guard job.repository != nil, job.repository == s.primary else {
-            // A record kept for leaving names the replaced mirror: it goes with the job.
-            if job.stage == "leaving" { job.stage = "copied" }
             try abandonOffload(id, job, &st)
             throw Failure(message: "the mirror changed during the offload; nothing was removed. Offload again to back up into the new one")
         }
@@ -187,8 +183,8 @@ extension Backup {
             job.secondRepository = nil
             job.secondPinsBefore = nil
             if job.stage == "copied" || job.stage == "copying" || job.stage == "waiting_for_second_upload" || job.stage == "leaving" {
-                // A record kept for leaving names the replaced copy: it is made again with the new one.
-                if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id && $0.snapshot == job.snapshot } }
+                // A pending record names the replaced copy: it is made again with the new one.
+                job.record = nil
                 job.stage = "verified"
                 job.stateSaved = false
             }
@@ -202,8 +198,8 @@ extension Backup {
         if job.stage == "copied" || job.stage == "waiting_for_second_upload" || job.stage == "leaving" {
             if let copy = job.secondSnapshot, let second = job.secondRepository,
                try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) {
-                // A record kept for leaving names the copy that is gone: it is made again with the new copy.
-                if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id && $0.snapshot == job.snapshot } }
+                // A pending record names the copy that is gone: it is made again with the new copy.
+                job.record = nil
                 job.secondSnapshot = nil
                 job.secondPinsBefore = nil
                 job.stage = "verified"
@@ -212,7 +208,7 @@ extension Backup {
                 try save(st)
             }
         }
-        if job.stage == "leaving" { return try leave(id, folder: folder, &st, nameCollides: nameCollides(folder), now: now) }
+        if job.stage == "leaving" { return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now) }
         if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" || job.stage == "copying" {
@@ -299,14 +295,14 @@ extension Backup {
                 return .init(title: d["title"]?.stringValue ?? p, path: p)
             },
             openItemsConfirmed: job.openItemsConfirmed, rootMetadata: job.root)
-        // The record is kept before the folder goes, so a failure from here on can be finished, never lost.
+        // The record is kept with the job before the folder goes, so a failure from here on can be finished, never
+        // lost; it joins the offloaded records once the folder went.
         job.stage = "leaving"
+        job.record = record
         st.offloads[id] = job
-        st.offloaded.removeAll { $0.backupID == id && $0.snapshot == snap }
-        st.offloaded.append(record)
         try save(st)
         step("offload.leaving")
-        return try leave(id, folder: folder, &st, nameCollides: nameCollides(folder), now: now)
+        return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
     }
 
     /// Finishes offloads that were waiting. `nameCollides` answers, per binder folder, whether another binder here
