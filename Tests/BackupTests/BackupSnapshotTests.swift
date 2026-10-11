@@ -140,12 +140,15 @@ import Testing
         let b = try configured(e)
         try b.backUp(e.folder, now: now)
         try b.check(readData: true, now: now)
+        try b.backUpState(now: now)
+        try b.applyRetention(now: now)
         let id = try Backup.backupID(e.folder)
         // The mirror's folder is gone; setup again at the same path makes an empty one.
         try FileManager.default.removeItem(at: e.primary)
         try b.setUp(primary: e.primary, iCloudKeychain: false)
         var st = try b.state()
         #expect(st.binders[id]?.snapshot == nil && st.binders[id]?.at == nil && st.lastCheck == nil)
+        #expect(st.stateSnapshotAt == nil && st.lastForget == nil)
         // The second backup's folder is gone too: while a binder is offloaded, it is not made again empty.
         try FileManager.default.removeItem(at: e.second)
         st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: e.folder.path, snapshot: "0123abcd",

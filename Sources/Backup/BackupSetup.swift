@@ -55,6 +55,9 @@ extension Backup {
         st.lastReadData = nil
         st.readDataPart = 0
         st.lastDrill = nil
+        // Nor does its state snapshot or retention run: both are due in this one.
+        st.stateSnapshotAt = nil
+        st.lastForget = nil
         try saveTogether(st, s, previous: previous)
     }
 
