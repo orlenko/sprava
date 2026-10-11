@@ -258,6 +258,15 @@ import Testing
         #expect(record.at == ISOTime.string(now) && record.snapshot != nil && record.error == nil)
     }
 
+    @Test(.enabled(if: hasRestic)) func aChangeToTheFoldersOwnSettingsDuringADrillFailsIt() throws {
+        let e = try env()
+        var b = try configured(e)
+        let folder = e.folder
+        b.afterSnapshot = { _ = chmod(folder.path, 0o700) }
+        #expect(throws: Backup.Failure.self) { try b.drill(e.folder, now: now) }
+        #expect(try b.state().lastDrill == nil)
+    }
+
     @Test(.enabled(if: hasRestic)) func aChangeToTheFoldersOwnSettingsDuringASnapshotLeavesTheBinderDue() throws {
         let e = try env()
         var b = try configured(e)

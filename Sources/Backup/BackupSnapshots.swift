@@ -166,17 +166,21 @@ extension Backup {
         let id = try claim(folder, &claimed)
         claimed.rememberRepositories([path], for: id)
         try save(claimed)
-        try Self.keepRootMetadata(folder)
+        let root = try Self.keepRootMetadata(folder)
         // The snapshot this drill just took, by its id: the latest by time may be an older one taken under a clock
         // that was ahead.
         let taken = try repository.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes, skipIfUnchanged: false)
+        afterSnapshot?()
         guard let snap = taken.snapshot else { throw Failure(message: "no snapshot to restore") }
         let target = dir.appendingPathComponent("verify/drill-\(id)", isDirectory: true)
         try? FileManager.default.removeItem(at: target)
         try AtomicFile.makePrivateFolder(target)
         defer { try? FileManager.default.removeItem(at: target) }
         try repository.restore(snap, into: target)
-        guard try Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
+        // The folder's own settings are compared too: the snapshot holds them as they were kept before it.
+        guard try Self.manifest(target) == Self.manifest(folder), try Self.rootMetadata(folder) == root else {
+            throw Failure(message: "the restored copy differs from the binder")
+        }
         var st = try state()
         switch choice {
         case .primary:
