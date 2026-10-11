@@ -21,7 +21,9 @@ extension Backup {
 
     /// A mark for everything restic is to read. Comparing only the catalog and op log misses a document or intake
     /// file written while restic is traversing another directory, and could call that partial snapshot current.
-    static func writeMark(_ folder: URL) throws -> String { digest(try manifest(folder)) }
+    /// The binder folder's own metadata is part of it too (`keepRootMetadata`), so a change to it during the run
+    /// leaves the binder due as well.
+    static func writeMark(_ folder: URL) throws -> String { digest(try manifest(folder)) + " " + (try rootMetadata(folder)).entry }
 
     @discardableResult
     public func backUp(_ folder: URL, now: Date = Date()) throws -> Restic.BackupResult {
@@ -177,7 +179,15 @@ extension Backup {
         guard try Self.manifest(target) == Self.manifest(folder) else { throw Failure(message: "the restored copy differs from the binder") }
         var st = try state()
         switch choice {
-        case .primary: st.lastDrill = ISOTime.string(now)
+        case .primary:
+            st.lastDrill = ISOTime.string(now)
+            // The restored copy matched the binder as it is, so this snapshot in the mirror is the binder's backup.
+            var record = st.binders[id] ?? State.BinderRecord()
+            record.snapshot = snap
+            record.at = ISOTime.string(now)
+            record.bytes = taken.bytes
+            record.error = nil
+            st.binders[id] = record
         case .second: st.lastSecondDrill = ISOTime.string(now)
         }
         try save(st)

@@ -249,6 +249,24 @@ import Testing
         #expect(try b.state().binders[id]?.at == ISOTime.string(now))
     }
 
+    @Test(.enabled(if: hasRestic)) func aDrillOfTheMirrorCountsAsTheBindersBackup() throws {
+        let e = try env()
+        let b = try configured(e)
+        try b.drill(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        let record = try #require(try b.state().binders[id])
+        #expect(record.at == ISOTime.string(now) && record.snapshot != nil && record.error == nil)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aChangeToTheFoldersOwnSettingsDuringASnapshotLeavesTheBinderDue() throws {
+        let e = try env()
+        var b = try configured(e)
+        let folder = e.folder
+        b.afterSnapshot = { _ = chmod(folder.path, 0o700) }
+        #expect(try b.backUp(e.folder, now: now).snapshot != nil)
+        #expect(try b.state().binders[Backup.backupID(e.folder)]?.at == nil)
+    }
+
     @Test(.enabled(if: hasRestic)) func theStateSnapshotLeavesTheRuntimesLogsOutAndKeepsCaptures() throws {
         let e = try env()
         let b = try configured(e)
