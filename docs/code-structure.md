@@ -102,7 +102,8 @@ Moves that broke the earlier cycles:
 
 ### 4.1 State files by owner
 
-Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`). Files inside a binder
+Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`), except the capture root,
+which `SPRAVA_CAPTURE_ROOT` can put anywhere (for development). Files inside a binder
 (`.sprava/`, `catalog.json`, `DASHBOARD.md`) belong to `BinderStore`, except `.sprava/cursors.json` and
 `.sprava/slice-key`, which belong to `Hub`.
 
@@ -113,7 +114,7 @@ Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`)
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
 | `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`; the key file when `SPRAVA_BACKUP_KEY_FILE` names one there) |
-| `Services` and `sprava-runtime` | `device-id`, and the rest of `runtime/`: `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
+| `Services` | `device-id`, and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
 A new state file is added to this table in the PR that creates it.
 

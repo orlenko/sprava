@@ -243,9 +243,9 @@ up". The Keychain code path (1,100 lines across `BackupKeyStorage`, `BackupKeyRe
 calls) has no executable in the repository that can run it. Tests run the file path only. That is not a bug
 in the code; it is a missing prerequisite that must be written down and gated:
 
-- A Developer ID identity and two entitlement files (`Resources/SpravaApp.entitlements`,
-  `Resources/sprava-runtime.entitlements`, each with `keychain-access-groups` =
-  `$(TeamIdentifierPrefix)ca.orlenko.sprava`) that `build-app.sh` applies when `SPRAVA_SIGN_IDENTITY` is set,
+- A Developer ID identity and an entitlement file for the runtime only (`Resources/sprava-runtime.entitlements`,
+  with `keychain-access-groups` = `$(TeamIdentifierPrefix)ca.orlenko.sprava`; the app gets no access group,
+  since no app code path touches the key, next bullet) that `build-app.sh` applies when `SPRAVA_SIGN_IDENTITY` is set,
   and refuses to combine with ad-hoc signing silently (print which key store the build will use).
 - Only the runtime loads the key (verified: `BackupKey.load` is called only as the default argument of
   `Backup.init`, `Backup/Backup.swift:26`; `HealthSnapshot.checks` passes `key: nil`; `sprava` and
@@ -253,8 +253,10 @@ in the code; it is a missing prerequisite that must be written down and gated:
   needs the access group for reading, only for the setup commands it sends over XPC, which run in the runtime.
 - The XPC pin must be re-derived at the same time (the comment at `XPC.swift:27` already says: Developer ID
   replaces the cdhash pin with `anchor apple generic` and the team). Put both in one "signed build" checklist
-  in `docs/manual-checks.md`, and add a `Doctor` finding "running ad hoc: backup key store is the file" so
-  the Health page says it.
+  in `docs/manual-checks.md`, and add a `Doctor` finding that names the key store actually selected (the file
+  when `SPRAVA_BACKUP_KEY_FILE` is set; otherwise the Keychain, which an ad-hoc build reaches with no access
+  group) so the Health page says it. (Corrected after review: `BackupKey.load` picks the file only when the
+  override is set, and otherwise calls the Keychain whatever the signature.)
 
 ### 2.7 PR sizing and checks
 
@@ -385,7 +387,7 @@ model as a rule violation.
 
 The order minimizes forward references and puts the testable groundwork first:
 
-1. Groundwork (behavior-preserving, main only): R1 to R4 of section 4 that the pending code lands onto:
+1. Groundwork (behavior-preserving, main only): R1 to R3 of section 4 that the pending code lands onto:
    `StateFile` over `StateDirectory`; the hook checks; the code-structure amendments (state-file table, rule
    3.5, the `Commands` extension pattern).
 2. #17a Services core: Jobs, Heartbeat, Scheduler (new, pure), DeviceID, XPCProtocol, XPCPeer, RequestQueues.
@@ -418,7 +420,7 @@ Behavior-preserving first. Sizes are estimates of changed lines including tests.
 | R6 | Capture tests by behavior: fold the 24 review-named files into `InboxSweepTests`, `InboxCarryTests`, `IntakeTests`, `PrivacyTests`, `CorrectionsTests`; suites keep their names so history is greppable. Two PRs of about 900 | CaptureTests | 2 × 900 | preserving |
 | R7 | Same for BinderStoreTests (13 review-named files) and HubTests (6) | BinderStoreTests, HubTests | 2 × 700 | preserving |
 | R8 | `Commands.isRecorded` public, so Brains stops using the `package` digest key | BinderStore | 40 | preserving |
-| R9 | Signing prerequisite: entitlement files, `SPRAVA_SIGN_IDENTITY` in `build-app.sh`, a Doctor finding "ad-hoc build: key store is the file", `docs/manual-checks.md` checklist | Resources, scripts, Services (Doctor) | 200 | changes a Health line only |
+| R9 | Signing prerequisite: entitlement files, `SPRAVA_SIGN_IDENTITY` in `build-app.sh`, a Doctor finding naming the key store in use, `docs/manual-checks.md` checklist | Resources, scripts, Services (Doctor) | 200 | changes a Health line only |
 | R10 | `Adoption.swift` (439): split the synced-location checks and the stamp out; move-only | BinderStore | 450 moved | preserving |
 | R11 | Debug assertion that binder writes run on the command queue, injected as a closure on `TransactionGuard` | BinderStore, Services | 80 | preserving in release |
 | R12 | Issue #230: Shelf exclusion list for offloaded folders | Shelf | 150 | behavior |
@@ -444,11 +446,14 @@ Where tests cannot reach today, and the seam that fixes each:
 | Keychain store | file override in tests, no executable runs the Keychain path | a `KeyStore` protocol with `FileKeyStore` and `KeychainKeyStore`, chosen in one place by the signature (team present or not), so the ad-hoc app runs the file store deliberately, and the signed build is the only one that touches the Keychain |
 
 Checks for the hooks (R2), each a few lines of shell in `pr-check.sh`, run by pre-push on
-`$(git merge-base origin/main HEAD)..HEAD` of each pushed ref:
+`$(git merge-base origin/main <sha>)..<sha>` for the commit each pushed ref names (never `HEAD`, which may be
+another branch):
 
 1. Lines changed (`git diff --shortstat`): warn above 500, refuse above 1,000 unless `SPRAVA_ALLOW_LARGE=1`.
 2. Domain targets touched: the set of `Sources/<t>` for `t` in layers 1 to 6 (not SpravaKit, not Services,
-   not tests, not executables); refuse when more than one unless allowed. This would have flagged #225.
+   not tests, not executables); refuse when more than one unless allowed. (#225 touched Backup and SpravaKit,
+   one domain target by this count; check 1 would have refused it for its 1,270 lines. SpravaKit is exempt
+   because any feature may add a shared helper there.)
 3. Stale base: if `git merge-base origin/main HEAD` is more than 20 first-parent commits behind `origin/main`,
    warn and print the real diff size against the merge base, so a PR description never carries an inherited
    total.
