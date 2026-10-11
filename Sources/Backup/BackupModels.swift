@@ -65,6 +65,9 @@ extension Backup {
         /// The restored baseline's old retention pins are gone. Saved before the live folder leaves, so a retry never
         /// needs an old, now-disconnected repository after the binder has already moved to the Trash.
         var oldPinsRemoved = false
+        /// The binder folder itself (links resolved), saved before it goes to the Trash: a retry knows it went, and
+        /// takes it off the Shelf, also when the path the offload has was a link now gone.
+        var leavingTarget: String?
     }
 
     struct State: Codable {
@@ -327,6 +330,7 @@ extension Backup.InProgress {
         root = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .root)
         stateSaved = try c.decodeIfPresent(Bool.self, forKey: .stateSaved) ?? false
         oldPinsRemoved = try c.decodeIfPresent(Bool.self, forKey: .oldPinsRemoved) ?? false
+        leavingTarget = try c.decodeIfPresent(String.self, forKey: .leavingTarget)
     }
 }
 

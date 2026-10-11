@@ -152,4 +152,47 @@ import Testing
         var info = stat()
         #expect(lstat(link.path, &info) != 0)
     }
+
+    @Test(.enabled(if: hasRestic)) func aSecondBackupEmptiedWhileTheBinderWaitsToLeaveGetsTheCopyAgain() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now) == .waitingForICloud(3))
+        // The second backup's disk is swapped for an empty repository at the same path.
+        try FileManager.default.removeItem(at: e.second)
+        try b.engine(e.second.path).initRepository()
+        waiting.on = false
+        b.atStep = nil
+        let result = try b.continueOffloads(nameCollides: { _ in false }, now: now)[id].map { try $0.get() }
+        guard case .done(let record) = result else { Issue.record("the binder did not leave: \(String(describing: result))"); return }
+        let copy = try #require(record.secondSnapshot)
+        #expect(try b.engine(e.second.path).snapshots(tag: "binder:\(id)").contains { $0.id == copy })
+    }
+
+    @Test(.enabled(if: hasRestic)) func aBinderReachedThroughALinkLeavesTheShelfAndFinishesAfterAnInterruption() throws {
+        let e = try env()
+        var b = try configured(e)
+        let link = e.base.appendingPathComponent("Shortcuts/\(e.folder.lastPathComponent)")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: e.folder)
+        let id = try Backup.backupID(e.folder)
+        // Stopped right after the real folder went to the Trash, before the link was removed.
+        let state = e.base.appendingPathComponent("state-image")
+        b.atStep = { step in
+            if step == "offload.trashed" { try? FileManager.default.copyItem(at: e.support, to: state) }
+        }
+        _ = try b.offload(link, deviceID: "dev", confirmOpenItems: true, nameCollides: false, now: now)
+        try FileManager.default.removeItem(at: e.support)
+        try FileManager.default.copyItem(at: state, to: e.support)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: e.folder)
+        b.atStep = nil
+        let result = try b.continueOffloads(nameCollides: { _ in false }, now: now)[id].map { try $0.get() }
+        guard case .done = result else { Issue.record("the offload did not finish: \(String(describing: result))"); return }
+        var info = stat()
+        #expect(lstat(link.path, &info) != 0)
+        // The real folder was on the Shelf; it is off it now.
+        #expect(ShelfStore(supportDirectory: e.support).pickedFolders().isEmpty)
+    }
 }

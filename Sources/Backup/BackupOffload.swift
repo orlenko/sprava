@@ -36,6 +36,9 @@ extension Backup {
         if let leaving = try state().offloads.first(where: {
             $0.value.stage == "leaving" && Self.sameFolder(URL(fileURLWithPath: $0.value.path, isDirectory: true), folder)
         }) {
+            if leaving.value.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
+                return try continueOffload(leaving.key, now: now, nameCollides: { _ in nameCollides })
+            }
             switch Self.folderEntry(folder) {
             case .missing: return try continueOffload(leaving.key, now: now, nameCollides: { _ in nameCollides })
             case .unavailable: throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
@@ -149,8 +152,10 @@ extension Backup {
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
-        // A folder already in the Trash only has its records left to finish.
-        if job.stage == "leaving", Self.folderEntry(folder) == .missing {
+        // A folder already in the Trash only has its records left to finish (the path the offload had may be a
+        // link to it, now leading nowhere: the real folder it went as says so).
+        if job.stage == "leaving", Self.folderEntry(folder) == .missing
+            || job.leavingTarget.map({ Self.folderEntry(URL(fileURLWithPath: $0, isDirectory: true)) == .missing }) == true {
             return try leave(id, folder: folder, &st, nameCollides: false, now: now)
         }
         // An interruption is recovered here as well as in `offload`, so a queued continuation never sticks.
@@ -195,18 +200,21 @@ extension Backup {
         // empty at the same path (a replaced disk) does not. A missing mirror snapshot starts the offload over; a
         // missing second copy is made again.
         try requireMirrorSnapshot(id, &job, &st)
-        if job.stage == "leaving" { return try leave(id, folder: folder, &st, nameCollides: nameCollides(folder), now: now) }
-        if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
-        if job.stage == "copied" || job.stage == "waiting_for_second_upload" {
+        if job.stage == "copied" || job.stage == "waiting_for_second_upload" || job.stage == "leaving" {
             if let copy = job.secondSnapshot, let second = job.secondRepository,
                try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) {
+                // A record kept for leaving names the copy that is gone: it is made again with the new copy.
+                if job.stage == "leaving" { st.offloaded.removeAll { $0.backupID == id && $0.snapshot == job.snapshot } }
                 job.secondSnapshot = nil
                 job.secondPinsBefore = nil
                 job.stage = "verified"
+                job.stateSaved = false
                 st.offloads[id] = job
                 try save(st)
             }
         }
+        if job.stage == "leaving" { return try leave(id, folder: folder, &st, nameCollides: nameCollides(folder), now: now) }
+        if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" || job.stage == "copying" {
             // A binder that changed while it waits starts over now, never after a long wait on an obsolete snapshot.
