@@ -45,6 +45,8 @@ extension Backup {
             let root = try Self.keepRootMetadata(folder)
             let before = try Self.writeMark(folder)
             let r = try engine(s.primary)
+            // restic chooses the parent as of the run's start, so the lookup below uses the same moment.
+            let started = Date()
             let result = try r.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
             afterSnapshot?()
             step("backup.snapshotted")
@@ -53,11 +55,11 @@ extension Backup {
                 rec.snapshot = snap
             } else {
                 // Nothing changed since the parent restic compared with, which may be one a run cut off before its
-                // record was saved. Restic chooses it as this folder's latest snapshot (same host, same absolute path)
+                // record was saved. Restic chooses it as this folder's latest snapshot (host "sprava", same absolute path)
                 // not dated in the future (a clock that was ahead); the same rule finds it here.
                 let path = realpath(folder.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? Self.realPath(folder)
                 if let parent = try r.snapshots(tag: "binder:\(id)")
-                    .filter({ $0.paths == [path] && ($0.date ?? .distantFuture) <= Date() })
+                    .filter({ $0.hostname == "sprava" && $0.paths == [path] && ($0.date ?? .distantFuture) <= started })
                     .max(by: { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }) {
                     rec.snapshot = parent.id
                 }

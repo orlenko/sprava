@@ -232,6 +232,8 @@ public struct Restic: Sendable {
         public var bytes: Int64? = nil
         /// The paths restic backed up (absolute: a binder's folder), which with the host choose a run's parent.
         public var paths: [String] = []
+        /// The host restic recorded; Sprava's runs use "sprava".
+        public var hostname: String = ""
 
         /// `time` as a date ("2026-10-09T00:59:52.345658-04:00"; restic writes nanoseconds, which ISO8601DateFormatter
         /// does not read, so the fraction is added apart). Nil when it cannot be read.
@@ -252,7 +254,8 @@ public struct Restic: Sendable {
             return Snapshot(id: id, time: s["time"]?.stringValue ?? "", tags: s["tags"]?.arrayValue?.compactMap(\.stringValue) ?? [],
                             original: s["original"]?.stringValue,
                             bytes: s["summary"]?["total_bytes_processed"]?.numberValue?.safeInteger,
-                            paths: s["paths"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+                            paths: s["paths"]?.arrayValue?.compactMap(\.stringValue) ?? [],
+                            hostname: s["hostname"]?.stringValue ?? "")
         }
     }
 
