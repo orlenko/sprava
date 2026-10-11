@@ -490,4 +490,23 @@ import Testing
         #expect(throws: Backup.Failure.self) { try b.giveOwnBackupID(c) }
         #expect(try b.state().reassigning[Backup.realPath(c)] != nil)
     }
+
+    @Test func aFileAddedWhileTheBinderIsReadFailsTheManifest() throws {
+        let folder = try temp("added-during-read")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("documents"), withIntermediateDirectories: true)
+        try Data("invented".utf8).write(to: folder.appendingPathComponent("documents/a.pdf"))
+        for (watched, added) in [("documents", "documents/new.txt"), ("", "new.txt")] {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(added))
+            let target = folder.appendingPathComponent(watched).standardizedFileURL.path
+            #expect(throws: Backup.Failure.self) {
+                _ = try Backup.manifest(folder, afterRead: { url in
+                    // A save lands in a folder just after it was listed.
+                    if url.standardizedFileURL.path == target {
+                        try? Data("invented new".utf8).write(to: folder.appendingPathComponent(added))
+                    }
+                })
+            }
+        }
+        #expect(try Backup.manifest(folder)["new.txt"] != nil)
+    }
 }

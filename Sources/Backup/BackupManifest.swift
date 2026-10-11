@@ -29,7 +29,7 @@ extension Backup {
     /// would make every verification fail, and no person sets them. The binder folder's own metadata is not compared.
     static func manifest(_ folder: URL) throws -> [String: String] { try manifest(folder, afterRead: { _ in }) }
 
-    /// `manifest`, with a hook that runs after each file is hashed; tests land a save there.
+    /// `manifest`, with a hook that runs after each file is hashed and each folder is read; tests land a save there.
     static func manifest(_ folder: URL, afterRead: (URL) -> Void) throws -> [String: String] {
         var out: [String: String] = [:]
         // The first path seen for each file with more than one link, by device and inode.
@@ -37,7 +37,23 @@ extension Backup {
         func unreadable(_ rel: String) -> Failure {
             Failure(message: "\(rel.isEmpty ? "the binder" : rel) cannot be read; nothing was removed")
         }
+        // A folder's entries count only when the folder is the same, unchanged, before it is listed and after
+        // everything under it was read: a file saved into it meanwhile fails the manifest instead of being missed.
+        func folderState(_ dir: URL) -> [Int]? {
+            var info = stat()
+            guard stat(dir.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return nil }
+            return [Int(info.st_dev), Int(info.st_ino), info.st_mtimespec.tv_sec, info.st_mtimespec.tv_nsec,
+                    info.st_ctimespec.tv_sec, info.st_ctimespec.tv_nsec]
+        }
         func walk(_ dir: URL, _ prefix: String) throws {
+            guard let before = folderState(dir) else { throw unreadable(prefix) }
+            try entries(dir, prefix)
+            afterRead(dir)
+            guard folderState(dir) == before else {
+                throw Failure(message: "\(prefix.isEmpty ? "the binder" : prefix) changed while it was read; nothing was removed")
+            }
+        }
+        func entries(_ dir: URL, _ prefix: String) throws {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { throw unreadable(prefix) }
             for name in names.sorted() {
                 // The names restic leaves out (`excludes`), wherever they are, and anything inside them.
