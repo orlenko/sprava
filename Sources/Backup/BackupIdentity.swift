@@ -232,13 +232,16 @@ extension Backup {
                 // a disk that is away.
                 guard stat(folder.path, &info) == 0 else {
                     // A link whose target is gone from a place that can be checked leads nowhere: the binder is not
-                    // there. A chain of links is not followed.
-                    guard errno == ENOENT, let to = try? FileManager.default.destinationOfSymbolicLink(atPath: folder.path) else {
-                        return .unavailable
+                    // there. A chain of links is followed to its end, as far as the system follows links.
+                    guard errno == ENOENT else { return .unavailable }
+                    var hop = folder
+                    for _ in 0..<Int(MAXSYMLINKS) {
+                        guard let to = try? FileManager.default.destinationOfSymbolicLink(atPath: hop.path) else { return .unavailable }
+                        hop = URL(fileURLWithPath: to, relativeTo: hop.deletingLastPathComponent()).standardizedFileURL
+                        var link = stat()
+                        guard lstat(hop.path, &link) == 0, link.st_mode & S_IFMT == S_IFLNK else { return folderEntry(hop) }
                     }
-                    let target = URL(fileURLWithPath: to, relativeTo: folder.deletingLastPathComponent()).standardizedFileURL
-                    var link = stat()
-                    return lstat(target.path, &link) == 0 ? .unavailable : folderEntry(target)
+                    return .unavailable
                 }
                 return info.st_mode & S_IFMT == S_IFDIR ? .present : .missing
             default:

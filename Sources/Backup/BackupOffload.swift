@@ -160,8 +160,13 @@ extension Backup {
             } else if job.leavingTarget != nil {
                 // Gone to the Trash: its record is offloaded already, and only the cleanup is left.
                 return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
-            } else if Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, id, job),
-                      !Self.isAtItsRealPlace(id, job, folder) {
+            } else if !(Self.folderEntry(folder) == .present && Self.isTheBinder(folder, id, job)) {
+                // The offload's path no longer leads to the binder, which is still at its own place (a link removed or
+                // retargeted): it has not left, and the offload is abandoned, not finished.
+                if Self.isAtItsRealPlace(id, job, folder) {
+                    try abandonOffload(id, job, &st)
+                    throw Failure(message: "the binder is no longer where its offload started; nothing was removed. Offload it again")
+                }
                 // Gone from its path with no move recorded, which `leave` explains is never abandoned; finished only
                 // while the backups still hold the copies its record names.
                 try requireRecordedCopies(id, job, s)

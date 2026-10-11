@@ -210,11 +210,11 @@ extension Backup {
             throw unavailable
         case .present where !isStagedBinder(URL(fileURLWithPath: job.staging ?? "", isDirectory: true), id, job):
             // Something else under the staging name (the rename to it never happened): not touched; the binder is
-            // where it was, or gone.
+            // where it was (the same folder, or an identical copy put back), or gone.
             switch folderEntry(target) {
             case .unavailable: throw unavailable
             case .missing: return false
-            case .present: if folderIdentity(target) != job.leavingIdentity { return false }
+            case .present: if folderIdentity(target) != job.leavingIdentity && !isTheBinder(target, id, job) { return false }
             }
         case .present:
             // Put back without replacing anything at its place, an empty folder included.
@@ -226,7 +226,7 @@ extension Backup {
             switch folderEntry(target) {
             case .unavailable: throw unavailable
             case .missing: return false
-            case .present: if folderIdentity(target) != job.leavingIdentity { return false }
+            case .present: if folderIdentity(target) != job.leavingIdentity && !isTheBinder(target, id, job) { return false }
             }
         }
         job.leavingTarget = nil
