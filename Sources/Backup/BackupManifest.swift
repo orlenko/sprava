@@ -207,8 +207,13 @@ extension Backup {
             throw Failure(message: "the binder's .sprava folder is missing or not a folder; nothing was backed up")
         }
         let name = URL(fileURLWithPath: folderMetadataPath).lastPathComponent
-        if case .ok(let kept) = sprava.read(name, limit: 1024 * 1024), kept == data { return metadata }
-        try sprava.write(data, to: name)
+        let kept: Data? = if case .ok(let read) = sprava.read(name, limit: 1024 * 1024) { read } else { nil }
+        if kept != data { try sprava.write(data, to: name) }
+        // What was kept counts only if the folder still has it: a tag or permission change meanwhile would otherwise
+        // leave the snapshot with the old one.
+        guard try rootMetadata(folder) == metadata else {
+            throw Failure(message: "the binder folder's own settings changed while they were kept; nothing was backed up")
+        }
         return metadata
     }
 

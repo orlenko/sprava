@@ -399,4 +399,15 @@ import Testing
         #expect(after.reassigning.isEmpty && after.binders.count == 2)
         #expect(after.binders[reserved]?.path == moved.standardizedFileURL.path)
     }
+
+    @Test func aPendingReservationIsNotShownAsABinder() throws {
+        let base = try temp("pending-status")
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        st.binders["0123456789abcdef0123456789abcdef"] = .init(path: base.appendingPathComponent("Original").path)
+        st.binders["fedcba9876543210fedcba9876543210"] = .init(path: base.appendingPathComponent("Deleted-Copy").path)
+        st.reassigning["/invented/Deleted-Copy"] = .init(from: "0123456789abcdef0123456789abcdef", id: "fedcba9876543210fedcba9876543210", folder: "1:2")
+        try b.save(st)
+        #expect(b.status(checkUpload: false).binders.map(\.id) == ["0123456789abcdef0123456789abcdef"])
+    }
 }
