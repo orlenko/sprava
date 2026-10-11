@@ -13,7 +13,7 @@ extension Backup {
         s.iCloudKeychain = iCloudKeychain
         // The pin is what keeps every later run to this restic (`engine`): a binary that cannot be read for it is refused.
         guard let digest = Restic.sha256(of: binary) else {
-            throw Failure(message: "restic cannot be read to check it (\(binary.path)); nothing was changed")
+            throw Failure(message: "restic cannot be read to check it; nothing was changed")
         }
         s.resticSHA256 = digest
         // A new mirror must not share a fate with the second backup already chosen (§5), as setSecond requires. Setup
@@ -48,6 +48,7 @@ extension Backup {
             // Its last snapshot is not in this mirror: here each binder is due, and not shown as backed up.
             st.binders[id]?.snapshot = nil
             st.binders[id]?.at = nil
+            st.binders[id]?.error = nil
         }
         // The old mirror's checks and drill say nothing about this one: it is due for each, from its first part.
         st.lastCheck = nil

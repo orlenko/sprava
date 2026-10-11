@@ -51,10 +51,11 @@ extension Backup {
             var rec = st.binders[id] ?? State.BinderRecord()
             if let snap = result.snapshot {
                 rec.snapshot = snap
-            } else if let latest = try r.snapshots(tag: "binder:\(id)").last?.id {
-                // Nothing changed since the latest snapshot, which may be one a run cut off before its record was
-                // saved: that one is the binder's backup.
-                rec.snapshot = latest
+            } else if let parent = try r.snapshots(tag: "binder:\(id)").filter({ ($0.date ?? .distantFuture) <= Date() })
+                        .max(by: { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }) {
+                // Nothing changed since the parent restic compared with: its latest snapshot not dated in the future
+                // (a clock that was ahead), which may be one a run cut off before its record was saved.
+                rec.snapshot = parent.id
             }
             // restic reads one file at a time, so a write that landed during the run may be only partly in this
             // snapshot. The binder then stays due, and the next run takes another.

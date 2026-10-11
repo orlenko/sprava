@@ -15,7 +15,7 @@ extension Backup {
 
     /// One file in the backup folder; nil only when it, or a folder above it, is absent.
     func readBackupFile(_ name: String, limit: Int, what: String) throws -> Data? {
-        let unreadable = Failure(message: "\(what) cannot be read; nothing was changed (\(dir.appendingPathComponent(name).path))")
+        let unreadable = Failure(message: "\(what) cannot be read; nothing was changed")
         do {
             guard let directory = try backupDirectory(create: false) else { return nil }
             switch try directory.read(name, limit: limit) {
@@ -39,7 +39,7 @@ extension Backup {
     public func settings() throws -> Settings {
         guard let data = try readBackupFile("settings.json", limit: 1024 * 1024, what: "backup settings") else { return Settings() }
         guard let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
-            throw Failure(message: "backup settings are unreadable; nothing was changed (\(settingsURL.path))")
+            throw Failure(message: "backup settings are unreadable; nothing was changed")
         }
         return settings
     }
@@ -55,7 +55,7 @@ extension Backup {
         // Complete manifests can be large. Keep a defensive cap that remains ample for legitimate saved state.
         guard let data = try readBackupFile("state.json", limit: 256 * 1024 * 1024, what: "backup state") else { return State() }
         guard let state = try? JSONDecoder().decode(State.self, from: data) else {
-            throw Failure(message: "backup state is unreadable; nothing was changed (\(stateURL.path))")
+            throw Failure(message: "backup state is unreadable; nothing was changed")
         }
         return state
     }

@@ -178,7 +178,7 @@ import Testing
         try b.setUp(primary: moved, iCloudKeychain: false)
         #expect(try b.state().binders[id]?.repositories.contains(e.primary.standardizedFileURL.path) == true)
         // The binder's last snapshot is in the old mirror: in the new one it is due, and not shown as backed up.
-        #expect(try b.state().binders[id]?.snapshot == nil && b.state().binders[id]?.at == nil)
+        #expect(try b.state().binders[id]?.snapshot == nil && b.state().binders[id]?.at == nil && b.state().binders[id]?.error == nil)
         // The old mirror's checks do not count for the new one; the second backup's still do.
         var checked = try b.state()
         #expect(checked.lastCheck == nil && checked.lastReadData == nil && checked.readDataPart == 0 && checked.lastDrill == nil)
@@ -257,6 +257,40 @@ import Testing
         try b.save(st)
         #expect(try b.backUp(e.folder, now: now).snapshot == nil)
         #expect(try b.state().binders[id]?.snapshot == first)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aSkippedRunRecordsTheParentResticUsed() throws {
+        let e = try env()
+        let b = try configured(e)
+        let current = try #require(try b.backUp(e.folder, now: now).snapshot)
+        let id = try Backup.backupID(e.folder)
+        // A snapshot of other contents, taken under a clock that was ahead, is the latest by date.
+        let letter = e.folder.appendingPathComponent("correspondence/notary/letter.pdf")
+        let original = try Data(contentsOf: letter)
+        try Data("invented earlier letter".utf8).write(to: letter)
+        _ = try b.engine(e.primary.path).run(["backup", ".", "--host", "sprava", "--tag", "sprava", "--tag", "binder:\(id)",
+                                              "--time", "2099-01-01 00:00:00"], cwd: e.folder)
+        try original.write(to: letter)
+        try FileManager.default.setAttributes([.modificationDate: try #require(
+            try b.engine(e.primary.path).snapshots(tag: "binder:\(id)").first { $0.id == current }?.date)], ofItemAtPath: letter.path)
+        var st = try b.state()
+        st.binders[id]?.snapshot = nil
+        try b.save(st)
+        let rerun = try b.backUp(e.folder, now: now)
+        #expect(try b.state().binders[id]?.snapshot == (rerun.snapshot ?? current))
+        #expect(try b.state().binders[id]?.snapshot != b.engine(e.primary.path).snapshots(tag: "binder:\(id)").last { $0.date ?? .distantPast > Date() }?.id)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aFailedBackupKeepsNoFileNameInItsError() throws {
+        let e = try env()
+        let b = try configured(e)
+        let secret = e.folder.appendingPathComponent("correspondence/notary/invented-private-name.pdf")
+        try Data("invented".utf8).write(to: secret)
+        chmod(secret.path, 0o000)
+        defer { chmod(secret.path, 0o644) }
+        #expect(throws: (any Error).self) { try b.backUp(e.folder, now: now) }
+        let error = try #require(try b.state().binders[Backup.backupID(e.folder)]?.error)
+        #expect(!error.contains("invented-private-name") && !error.contains(e.folder.lastPathComponent))
     }
 
     @Test(.enabled(if: hasRestic)) func aMovedBinderTakesItsRecordAlong() throws {

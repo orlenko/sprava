@@ -18,7 +18,7 @@ extension Backup {
         // that is away, never gets a skeleton of its old path made for it.
         var info = stat()
         guard stat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
-            throw Failure(message: "\(folder.lastPathComponent) is not there any more; nothing was backed up")
+            throw Failure(message: "the binder is not there any more; nothing was backed up")
         }
         let id = newBackupID()
         try writeBackupID(id, into: folder, creating: true)
@@ -30,7 +30,7 @@ extension Backup {
     /// and a new `.sprava` is flushed into the binder before the id counts.
     static func writeBackupID(_ id: String, into folder: URL, creating: Bool) throws {
         guard let sprava = try BinderSprava.open(folder, create: creating) else {
-            throw Failure(message: "\(folder.lastPathComponent)'s .sprava is missing; its backup id was not written")
+            throw Failure(message: "the binder's .sprava is missing; its backup id was not written")
         }
         try sprava.write(Data((id + "\n").utf8), to: "backup-id")
     }
@@ -40,9 +40,10 @@ extension Backup {
     public struct SharedBackupID: Error, CustomStringConvertible {
         public let folder: String
         public let holder: String
+        /// Names no folder (architecture §3.7): `folder` and `holder` are for the page that shows them.
         public var description: String {
-            "\(URL(fileURLWithPath: folder).lastPathComponent) has the backup id of another binder (\(holder)), so its backups would mix "
-                + "with that binder's; nothing was changed. If it is a copy, give it its own backup id"
+            "this folder has the backup id of another binder, so its backups would mix with that binder's; nothing was "
+                + "changed. If it is a copy, give it its own backup id"
         }
     }
 
