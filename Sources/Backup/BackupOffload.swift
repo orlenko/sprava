@@ -2,11 +2,13 @@ import BinderFormat
 import BinderStore
 import Darwin
 import Foundation
+import Hub
+import Shelf
 import SpravaKit
 
-/// Offloading a finished binder (docs/backup.md §6.1), first part: a verified snapshot pinned in the mirror and a
-/// verified copy in the second backup, each step journaled so an interruption resumes or is abandoned safely. The
-/// binder leaves this Mac in the next part (`leave`).
+/// Offloading a finished binder (docs/backup.md §6.1): a verified snapshot pinned in the mirror and a verified copy
+/// in the second backup, each step journaled so an interruption resumes or is abandoned safely; then the binder
+/// leaves this Mac (`leave`, in BackupLeave.swift).
 extension Backup {
     // MARK: - Offload (docs/backup.md §6.1)
 
@@ -18,16 +20,29 @@ extension Backup {
 
     public enum OffloadProgress: Equatable, Sendable {
         case waitingForICloud(Int)
-        /// Both backups hold a verified copy of the binder as it is.
-        case copied
+        /// The binder left this Mac; its record is the way back.
+        case done(Offloaded)
     }
 
     /// Offloads a finished binder. Runs every step it can now; when iCloud has not uploaded yet, it stops, and the
-    /// queued request runs it again later.
-    func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, now: Date = Date()) throws -> OffloadProgress {
+    /// queued request runs it again later. `nameCollides` answers, when the binder leaves, whether another binder
+    /// here shares its name (`HubLane.collidingFolders`): its hub slice is then withdrawn only by Sprava's record.
+    public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, nameCollides: (URL) -> Bool,
+                        now: Date = Date()) throws -> OffloadProgress {
         let s = try settings()
         guard s.primary != nil else { throw Failure(message: "set up backup first") }
         guard s.second != nil else { throw Failure(message: "offloading needs a second backup; choose one in Backup settings") }
+        // An offload that stopped after its folder went to the Trash only has its records left to finish.
+        if let leaving = try state().offloads.first(where: {
+            $0.value.stage == "leaving" && Self.sameFolder(URL(fileURLWithPath: $0.value.path, isDirectory: true), folder)
+        }) {
+            if leaving.value.leavingTarget != nil || Self.folderEntry(folder) == .missing || !Self.isTheBinder(folder, leaving.key, leaving.value) {
+                return try continueOffload(leaving.key, now: now, nameCollides: nameCollides)
+            }
+            if Self.folderEntry(folder) == .unavailable {
+                throw Failure(message: "the binder's folder cannot be checked; the offload was left unfinished")
+            }
+        }
         // Abandonment has already proved the candidate snapshot unusable and journaled cleanup. Resume that cleanup
         // before reading or validating the live binder, and before its older offloaded record can look like a shared
         // backup id. This route is what makes every interruption after the journal durable.
@@ -127,14 +142,37 @@ extension Backup {
             try save(st)
             step("offload.verified")
         }
-        return try continueOffload(id, now: now)
+        return try continueOffload(id, now: now, nameCollides: nameCollides)
     }
 
-    func continueOffload(_ id: String, now: Date) throws -> OffloadProgress {
+    func continueOffload(_ id: String, now: Date, nameCollides: (URL) -> Bool) throws -> OffloadProgress {
         let s = try settings()
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
+        if job.stage == "leaving" {
+            // A move to the Trash that was cut off: a binder still set aside under its staging name is put back, and
+            // one whose rename never happened is where it was; either goes through every check below again before
+            // leaving. Only a binder that is gone skips them: its records are all that is left.
+            if try Self.undoStagedMove(&job, id) {
+                st.offloads[id] = job
+                try save(st)
+            } else if job.leavingTarget != nil {
+                // Gone to the Trash: its record is offloaded already, and only the cleanup is left.
+                return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
+            } else if !(Self.folderEntry(folder) == .present && Self.isTheBinder(folder, id, job)) {
+                // The offload's path no longer leads to the binder, which is still at its own place (a link removed or
+                // retargeted): it has not left, and the offload is abandoned, not finished.
+                if Self.isAtItsRealPlace(id, job, folder) {
+                    try abandonOffload(id, job, &st)
+                    throw Failure(message: "the binder is no longer where its offload started; nothing was removed. Offload it again")
+                }
+                // Gone from its path with no move recorded, which `leave` explains is never abandoned; finished only
+                // while the backups still hold the copies its record names.
+                try requireRecordedCopies(id, job, s)
+                return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
+            }
+        }
         // An interruption is recovered here as well as in `offload`, so a queued continuation never sticks.
         try recoverInterrupted(id, &job, &st)
         guard job.stage != "start" else {
@@ -158,11 +196,14 @@ extension Backup {
             throw Failure(message: "the mirror changed during the offload; nothing was removed. Offload again to back up into the new one")
         }
         if job.secondRepository != nil, job.secondRepository != s.second {
-            try releaseSecond(id, job)
+            // A checkpoint holding this job as leaving names that copy: it stays pinned (see `finishAbandoningOffload`).
+            if !job.checkpointed { try releaseSecond(id, job) }
             job.secondSnapshot = nil
             job.secondRepository = nil
             job.secondPinsBefore = nil
-            if job.stage == "copied" || job.stage == "copying" || job.stage == "waiting_for_second_upload" {
+            if job.stage == "copied" || job.stage == "copying" || job.stage == "waiting_for_second_upload" || job.stage == "leaving" {
+                // A pending record names the replaced copy: it is made again with the new one.
+                job.record = nil
                 job.stage = "verified"
                 job.stateSaved = false
             }
@@ -173,17 +214,21 @@ extension Backup {
         // empty at the same path (a replaced disk) does not. A missing mirror snapshot starts the offload over; a
         // missing second copy is made again.
         try requireMirrorSnapshot(id, &job, &st)
-        if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
-        if job.stage == "copied" || job.stage == "waiting_for_second_upload" {
+        if job.stage == "copied" || job.stage == "waiting_for_second_upload" || job.stage == "leaving" {
             if let copy = job.secondSnapshot, let second = job.secondRepository,
-               try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) {
+               try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy && $0.tags.contains("offloaded") }) {
+                // A pending record names the copy that is gone (or no longer pinned): it is made again with the new copy.
+                job.record = nil
                 job.secondSnapshot = nil
                 job.secondPinsBefore = nil
                 job.stage = "verified"
+                job.stateSaved = false
                 st.offloads[id] = job
                 try save(st)
             }
         }
+        if job.stage == "leaving" { return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now) }
+        if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" || job.stage == "copying" {
             // A binder that changed while it waits starts over now, never after a long wait on an obsolete snapshot.
@@ -250,24 +295,46 @@ extension Backup {
             try save(st)
             step("offload.copied")
         }
-        guard job.stage == "copied" else { throw Failure(message: "offload stopped at \(job.stage)") }
-        // Both backups hold a verified copy; the binder leaves this Mac in the next step (`leave`). Work that arrived
-        // since the offload started (a card, a file in intake/ or outgoing/, an open item not confirmed) keeps it.
+        guard job.stage == "copied", let snap = job.snapshot else { throw Failure(message: "offload stopped at \(job.stage)") }
+        // Work that arrived since the offload started (a card, a file in intake/ or outgoing/, an open item not
+        // confirmed) keeps the binder here.
         try refuseIfChanged(id, folder: folder, job, &st)
-        let unconfirmed = try Self.unconfirmed(Self.refuseNotReady(folder, Teka.read(folder)), job)
+        let teka = Teka.read(folder)
+        let unconfirmed = try Self.unconfirmed(Self.refuseNotReady(folder, teka), job)
         if !unconfirmed.isEmpty {
             try abandonOffload(id, job, &st)
             throw NeedsConfirmation(openItems: unconfirmed.map(\.title))
         }
-        return .copied
+        let record = Offloaded(
+            backupID: id, name: teka.name, originalPath: Self.realPath(folder), snapshot: snap, repository: job.repository,
+            secondSnapshot: job.secondSnapshot, secondRepository: job.secondRepository, bytes: job.bytes, at: ISOTime.string(now),
+            summary: teka.catalog?["meta"]?["description"]?.stringValue ?? "",
+            documents: (teka.catalog?["documents"]?.arrayValue ?? []).compactMap { d in
+                guard let p = d["path"]?.stringValue else { return nil }
+                return .init(title: d["title"]?.stringValue ?? p, path: p)
+            },
+            openItemsConfirmed: job.openItemsConfirmed, rootMetadata: job.root)
+        // The record is kept with the job before the folder goes, so a failure from here on can be finished, never
+        // lost; it joins the offloaded records once the folder went.
+        job.stage = "leaving"
+        job.record = record
+        job.binderIdentity = Self.folderIdentity(folder)
+        st.offloads[id] = job
+        try save(st)
+        step("offload.leaving")
+        return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
     }
 
-    func continueOffloads(now: Date = Date()) -> [String: Result<OffloadProgress, Failure>] {
+    /// Finishes offloads that were waiting. `nameCollides` answers, per binder folder, whether another binder here
+    /// shares its name (`HubLane.collidingFolders`).
+    public func continueOffloads(nameCollides: (URL) -> Bool, now: Date = Date()) -> [String: Result<OffloadProgress, Failure>] {
         var out: [String: Result<OffloadProgress, Failure>] = [:]
         let ids: [String]
         do { ids = try state().offloads.keys.sorted() } catch { return ["state": .failure(Failure(message: "\(error)"))] }
         for id in ids {
-            do { out[id] = .success(try continueOffload(id, now: now)) } catch { out[id] = .failure(Failure(message: "\(error)")) }
+            do { out[id] = .success(try continueOffload(id, now: now, nameCollides: nameCollides)) } catch {
+                out[id] = .failure(Failure(message: "\(error)"))
+            }
         }
         return out
     }

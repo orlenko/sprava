@@ -40,7 +40,10 @@ extension HubLane {
     /// when no slice can be identified that safely.
     /// Every slice the cursors record (`recordedSlices`) counts as Sprava's, once a cut-off publish's pending one is
     /// settled (`reconciled`).
-    static func withdraw(_ teka: Teka, inbox: URL, recordedOnly: Bool = false) throws -> Bool {
+    /// `recordInBinder: false` (a binder about to leave) leaves the binder's cursors as they are: the binder leaves
+    /// exactly as its backups hold it, and a retry after the move was refused still finds the record to name the
+    /// slice by (now gone, so nothing to remove).
+    static func withdraw(_ teka: Teka, inbox: URL, recordedOnly: Bool = false, recordInBinder: Bool = true) throws -> Bool {
         let own = ownCursors(teka.folder).map { reconciled($0, folder: teka.folder, inbox: inbox) }
         let byRecord = recordedOnly || teka.federationBlocked
         let recorded = own.map { recordedSlices($0, folder: teka.folder) } ?? []
@@ -78,6 +81,7 @@ extension HubLane {
             return true
         }
         if !byRecord { try removeFormerSlice(cursors, teka: teka, inbox: inbox) }
+        guard recordInBinder else { return true }
         cursors.sliceHash = nil
         cursors.sliceName = nil
         cursors.pending = nil
@@ -89,7 +93,8 @@ extension HubLane {
     /// `withdraw`: with `nameCollides` (another binder here has the same name) only a slice Sprava recorded writing
     /// for this binder goes. The caller holds the binder's write lock, so no publish can put the slice back before
     /// the folder is gone. No spool, or no inbox in it, means no slice. Returns false when no slice can be identified
-    /// safely: the binder must not leave while its slice may stay on the hub.
+    /// safely: the binder must not leave while its slice may stay on the hub. Nothing is written into the binder:
+    /// it leaves exactly as its backups hold it.
     public static func withdrawBeforeLeaving(_ folder: URL, root: URL = spoolRoot(), nameCollides: Bool,
                                              now: Date = Date()) throws -> Bool {
         var info = stat()
@@ -99,7 +104,7 @@ extension HubLane {
         if lstat(inbox.path, &info) != 0, errno == ENOENT { return true }
         try checkFolder(inbox, create: false)
         let teka = Teka.read(folder)
-        guard try withdraw(teka, inbox: inbox, recordedOnly: nameCollides) else { return false }
+        guard try withdraw(teka, inbox: inbox, recordedOnly: nameCollides, recordInBinder: false) else { return false }
         // A rename cut off before the next publish retired the slice under the old name, with cursors since lost,
         // leaves that slice unrecorded. The binder's own unexpired former names are its own (binder-v0 §8.3): their
         // slices go too, unless another binder here shares this name and so may share its history.

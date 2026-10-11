@@ -39,9 +39,13 @@ import Testing
     @Test func aPublishedSliceIsTakenOff() throws {
         let (folder, spool) = try adopted()
         #expect(FileManager.default.fileExists(atPath: try slice(spool).path))
+        let cursors = try Data(contentsOf: folder.appendingPathComponent(".sprava/cursors.json"))
         #expect(try TekaStore(folder: folder).withLock { try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: false) })
         #expect(!FileManager.default.fileExists(atPath: try slice(spool).path))
-        #expect(HubLane.loadCursors(folder).sliceName == nil)
+        // Nothing is written into the binder, which leaves as its backups hold it; a retry (the move to the Trash
+        // was refused) still names the slice by its record, under a shared name too, and finds it gone.
+        #expect(try Data(contentsOf: folder.appendingPathComponent(".sprava/cursors.json")) == cursors)
+        #expect(try HubLane.withdrawBeforeLeaving(folder, root: spool, nameCollides: true))
     }
 
     @Test func noSpoolOrNoInboxMeansNoSlice() throws {

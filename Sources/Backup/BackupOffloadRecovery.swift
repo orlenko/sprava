@@ -42,13 +42,32 @@ extension Backup {
 
     /// A crash after recording a snapshot resumes verification of that exact pinned snapshot. Replacing it on every
     /// retry would leave each abandoned `offloaded` tag outside retention for ever.
-    /// A job that has a mirror snapshot goes on only while the mirror holds it; otherwise it is abandoned (its other
+    /// A job that has a mirror snapshot goes on only while the mirror holds it, pinned; otherwise it is abandoned (its other
     /// pins released) and the binder is offloaded again from the start.
     func requireMirrorSnapshot(_ id: String, _ job: inout InProgress, _ st: inout State) throws {
         guard let snap = job.snapshot, let repository = job.repository, !["start", "writing", "abandoning"].contains(job.stage) else { return }
-        guard try engine(repository).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap }) else {
+        // Pinned, too: only a pinned snapshot is kept by retention (it is made with its pin).
+        guard try engine(repository).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap && $0.tags.contains("offloaded") }) else {
             try abandonOffload(id, job, &st)
-            throw Failure(message: "the mirror no longer holds the offload's snapshot; nothing was removed. Offload again")
+            throw Failure(message: "the mirror no longer holds the offload's pinned snapshot; nothing was removed. Offload again")
+        }
+    }
+
+    /// For a leaving binder no longer at its path: the copies its record names are still in the current backups, and
+    /// still pinned (only a pinned snapshot is kept by retention).
+    /// Nothing is changed when they are not; the job and its pins stay, and the offload cannot finish.
+    func requireRecordedCopies(_ id: String, _ job: InProgress, _ s: Settings) throws {
+        let kept = Failure(message: "the binder is not where its offload started, and the backups no longer hold the copies "
+            + "its offload recorded; nothing was finished, and the copies left stay pinned")
+        // Two copies only while the repositories are still independent (a saved second path may lead elsewhere now).
+        try refuseSharedFate(s)
+        guard let mirror = job.repository, mirror == s.primary, let snap = job.snapshot,
+              try engine(mirror).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap && $0.tags.contains("offloaded") })
+        else { throw kept }
+        if let second = job.secondRepository {
+            guard second == s.second, let copy = job.secondSnapshot,
+                  try engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy && $0.tags.contains("offloaded") })
+            else { throw kept }
         }
     }
 
@@ -95,8 +114,9 @@ extension Backup {
     func finishAbandoningOffload(_ id: String, _ job: InProgress, _ st: inout State) throws {
         // The live binder is still here, so these no-longer-current snapshots need no retention pin. Remove the pins
         // before forgetting the job; if a repository is away, the job remains and the cleanup is retried. removeTag is
-        // idempotent if a crash lands between repositories or before the state save.
-        if let repository = job.repository {
+        // idempotent if a crash lands between repositories or before the state save. A job a state snapshot holds as
+        // leaving keeps its pins: that snapshot, restored after this Mac is lost, would finish the offload from them.
+        if let repository = job.repository, !job.checkpointed {
             let primary = try engine(repository)
             if let snapshot = job.snapshot { try primary.removeTag("offloaded", from: snapshot) }
             // A write cut off before its snapshot id was saved leaves a pin only the intent can tell apart.
@@ -106,7 +126,7 @@ extension Backup {
                 }
             }
         }
-        try releaseSecond(id, job)
+        if !job.checkpointed { try releaseSecond(id, job) }
         st.offloads[id] = nil
         // Only the record this offload made (once it had one), never an earlier offload's.
         st.offloaded.removeAll { $0.backupID == id && job.snapshot != nil && $0.snapshot == job.snapshot }

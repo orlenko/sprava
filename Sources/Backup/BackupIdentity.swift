@@ -60,7 +60,13 @@ extension Backup {
         let id = try Self.backupID(folder)
         func other(_ path: String) -> Bool { !Self.sameFolder(URL(fileURLWithPath: path, isDirectory: true), folder) }
         // The binder an offload is taking away still holds its id until it has left (its record is kept first).
-        let leaving = st.offloads[id].map { !other($0.path) } ?? false
+        // Once its move to the Trash is recorded, the binder has left: a folder at its path is a copy. Before that,
+        // only the binder itself (the same folder, or an identical copy) is the one leaving; another folder put at
+        // its path meanwhile is not, and the id stays reserved from it.
+        let leaving = st.offloads[id].map { !other($0.path) && $0.leavingTarget == nil && Self.isTheBinder(folder, id, $0) } ?? false
+        if let job = st.offloads[id], !other(job.path), job.stage == "leaving", !leaving {
+            throw SharedBackupID(folder: folder.standardizedFileURL.path, holder: job.path + " (leaving)")
+        }
         if !leaving, let record = st.offloaded.first(where: { $0.backupID == id }) {
             // The folder a restore of it is going into is the binder itself.
             let restoring = st.restoredContents[id]?.path ?? st.restoring[id]
@@ -224,7 +230,19 @@ extension Backup {
             case S_IFLNK:
                 // A binder reached through a link: the link's target decides; one that cannot be reached may be on
                 // a disk that is away.
-                guard stat(folder.path, &info) == 0 else { return .unavailable }
+                guard stat(folder.path, &info) == 0 else {
+                    // A link whose target is gone from a place that can be checked leads nowhere: the binder is not
+                    // there. A chain of links is followed to its end, as far as the system follows links.
+                    guard errno == ENOENT else { return .unavailable }
+                    var hop = folder
+                    for _ in 0..<Int(MAXSYMLINKS) {
+                        guard let to = try? FileManager.default.destinationOfSymbolicLink(atPath: hop.path) else { return .unavailable }
+                        hop = URL(fileURLWithPath: to, relativeTo: hop.deletingLastPathComponent()).standardizedFileURL
+                        var link = stat()
+                        guard lstat(hop.path, &link) == 0, link.st_mode & S_IFMT == S_IFLNK else { return folderEntry(hop) }
+                    }
+                    return .unavailable
+                }
                 return info.st_mode & S_IFMT == S_IFDIR ? .present : .missing
             default:
                 // A file where the binder was: the binder is not there.

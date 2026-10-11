@@ -65,6 +65,22 @@ extension Backup {
         /// The restored baseline's old retention pins are gone. Saved before the live folder leaves, so a retry never
         /// needs an old, now-disconnected repository after the binder has already moved to the Trash.
         var oldPinsRemoved = false
+        /// The binder folder itself (links resolved), saved before it goes to the Trash: a retry knows it went, and
+        /// takes it off the Shelf, also when the path the offload has was a link now gone.
+        var leavingTarget: String?
+        /// That folder's device and inode, so a retry tells the binder from another folder put at its path since.
+        var leavingIdentity: String?
+        /// The binder folder's device and inode when it began to leave, before the state snapshot and its upload: a
+        /// folder found at its path afterwards that is not the binder is left alone.
+        var binderIdentity: String?
+        /// A state snapshot holding this job while it was leaving was taken: restored after this Mac is lost, it
+        /// finishes the offload from that record, so the binder's pins stay even if the offload is abandoned later.
+        var checkpointed = false
+        /// The hidden name beside it the folder is moved to and checked at before it goes to the Trash.
+        var staging: String?
+        /// The record kept for the binder while it leaves; it joins the offloaded records only once the folder went,
+        /// so a binder still here is never listed as offloaded.
+        var record: Offloaded?
     }
 
     struct State: Codable {
@@ -327,6 +343,12 @@ extension Backup.InProgress {
         root = try c.decodeIfPresent(Backup.RootMetadata.self, forKey: .root)
         stateSaved = try c.decodeIfPresent(Bool.self, forKey: .stateSaved) ?? false
         oldPinsRemoved = try c.decodeIfPresent(Bool.self, forKey: .oldPinsRemoved) ?? false
+        leavingTarget = try c.decodeIfPresent(String.self, forKey: .leavingTarget)
+        leavingIdentity = try c.decodeIfPresent(String.self, forKey: .leavingIdentity)
+        binderIdentity = try c.decodeIfPresent(String.self, forKey: .binderIdentity)
+        checkpointed = try c.decodeIfPresent(Bool.self, forKey: .checkpointed) ?? false
+        staging = try c.decodeIfPresent(String.self, forKey: .staging)
+        record = try c.decodeIfPresent(Backup.Offloaded.self, forKey: .record)
     }
 }
 

@@ -108,7 +108,9 @@ extension Backup {
 
     /// Every offloaded binder's pinned snapshot (`pin` of its record) must be in `r`, or nothing is changed.
     func refuseMissingPins(in r: Restic, _ pin: (Offloaded) -> String?) throws {
-        let records = try state().offloaded
+        // The pending records of binders that left (or are not here to leave) count as offloaded ones.
+        let st = try state()
+        let records = st.offloaded + st.offloads.filter { Self.leftWithoutRecord($0.key, $0.value) }.compactMap(\.value.record)
         guard !records.isEmpty else { return }
         // A record without that pin (an older one) cannot be checked, so it cannot be accepted either.
         let pins = records.map(pin)
@@ -121,10 +123,22 @@ extension Backup {
         }
     }
 
+    /// A leaving binder whose copies are all there is, though its record is not among the offloaded ones yet: its move
+    /// to the Trash is recorded, or it is not at its path (a checkpoint restored on a Mac without it, a binder moved).
+    static func leftWithoutRecord(_ id: String, _ job: InProgress) -> Bool {
+        guard job.leavingTarget == nil else { return true }
+        guard job.stage == "leaving", job.record != nil else { return false }
+        let folder = URL(fileURLWithPath: job.path, isDirectory: true)
+        return !(folderEntry(folder) == .present && isTheBinder(folder, id, job))
+    }
+
     /// An offloaded binder's only copies are its pinned snapshots. Moving a repository must first copy and verify
     /// them in the new one; until that migration exists, a move is refused while any binder is offloaded.
     func refuseMovingOffloadedBinders() throws {
-        guard try state().offloaded.isEmpty else {
+        // A binder whose move to the Trash is recorded is offloaded already, whatever cleanup is left; one leaving that
+        // is not at its path (a checkpoint restored on another Mac, a binder moved) finishes from its copies alone.
+        let st = try state()
+        guard st.offloaded.isEmpty, !st.offloads.contains(where: { Self.leftWithoutRecord($0.key, $0.value) }) else {
             throw Failure(message: "an offloaded binder's only copies are in the current backups; restore it before moving them")
         }
     }
