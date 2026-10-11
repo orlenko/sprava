@@ -42,7 +42,7 @@ extension Backup {
         let teka = Teka.read(folder)
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
         let open = try Self.refuseNotReady(folder, teka)
-        if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open) }
+        if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open.map(\.title)) }
 
         var st = try state()
         let id = try claim(folder, &st)
@@ -90,6 +90,7 @@ extension Backup {
                 }
             }
             job.openItemsConfirmed = open.count
+            job.confirmedItems = open.map(\.idText)
             let manifest = try Self.manifest(folder)
             job.manifestSHA = Self.digest(manifest)
             job.root = root
@@ -193,8 +194,8 @@ extension Backup {
     }
 
     /// What stops a binder from leaving, checked when the offload starts and again before its copies are accepted
-    /// (work may arrive meanwhile): the titles of its open items, for the person to confirm, or a failure.
-    static func refuseNotReady(_ folder: URL, _ teka: Teka) throws -> [String] {
+    /// (work may arrive meanwhile): its open items, for the person to confirm, or a failure.
+    static func refuseNotReady(_ folder: URL, _ teka: Teka) throws -> [Item] {
         // Its hub slice is named by its catalog, so a binder whose name differs from its folder's (an outside edit may
         // have given it another binder's name) or cannot be read is put right first (`HubLane.withdrawBeforeLeaving`).
         guard !teka.federationBlocked else { throw Failure(message: Self.notOffloadable(teka) + "; put it right, then offload again") }
@@ -234,7 +235,14 @@ extension Backup {
             throw Failure(message: "files are waiting in intake/; deal with them first")
         }
         if try waiting("outgoing", except: [:]) { throw Failure(message: "files are waiting in outgoing/; deal with them first") }
-        return teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }.map(\.title)
+        return teka.items.filter { $0.declaredStatus != .done && !$0.isDismissed }
+    }
+
+    /// The open items the person has not confirmed for this offload: any whose id was not among those confirmed (or,
+    /// for a job recorded before ids were kept, any beyond the number confirmed).
+    static func unconfirmed(_ open: [Item], _ job: InProgress) -> [Item] {
+        guard let confirmed = job.confirmedItems else { return open.count > job.openItemsConfirmed ? open : [] }
+        return open.filter { !confirmed.contains($0.idText) }
     }
 
     /// Whether a second backup is in another cloud service's folder (`~/Library/CloudStorage`), whose upload must be
@@ -410,6 +418,23 @@ extension Backup {
             try save(st)
         }
         if job.stage == "snapshotted" { try verifySnapshotted(id, &job, &st) }
+        // Copies accepted earlier count only while their repositories still hold them: one made again empty at the
+        // same path (a replaced disk) does not. A missing second copy is made again; a missing mirror snapshot starts
+        // the offload over.
+        if job.stage == "copied" || job.stage == "waiting_for_second_upload", let snap = job.snapshot {
+            guard try engine(s.primary).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap }) else {
+                try abandonOffload(id, job, &st)
+                throw Failure(message: "the mirror no longer holds the offload's snapshot; nothing was removed. Offload again")
+            }
+            if let copy = job.secondSnapshot, let second = job.secondRepository,
+               try !engine(second).snapshots(tag: "binder:\(id)").contains(where: { $0.id == copy }) {
+                job.secondSnapshot = nil
+                job.secondPinsBefore = nil
+                job.stage = "verified"
+                st.offloads[id] = job
+                try save(st)
+            }
+        }
         let primary = try engine(s.primary)
         if job.stage == "verified" || job.stage == "waiting_for_upload" || job.stage == "copying" {
             // A binder that changed while it waits starts over now, never after a long wait on an obsolete snapshot.
@@ -465,7 +490,10 @@ extension Backup {
                 case .uploaded: break
                 case .waiting(let n): return .waitingForICloud(n)
                 case .notInICloud:
-                    throw Failure(message: "the second backup's upload cannot be confirmed, so it is not yet a copy off this Mac; nothing was removed")
+                    // Only iCloud reports an upload state Sprava can read; another service's folder cannot be
+                    // confirmed yet (issue #224), so its copy does not count, and nothing leaves on it.
+                    throw Failure(message: "the second backup's upload cannot be confirmed for this cloud service, so it is not yet a copy "
+                        + "off this Mac; nothing was removed. Use an external disk as the second backup to offload")
                 }
             }
             job.stage = "copied"
@@ -477,10 +505,10 @@ extension Backup {
         // Both backups hold a verified copy; the binder leaves this Mac in the next step (`leave`). Work that arrived
         // since the offload started (a card, a file in intake/ or outgoing/, an open item not confirmed) keeps it.
         try refuseIfChanged(id, folder: folder, job, &st)
-        let open = try Self.refuseNotReady(folder, Teka.read(folder))
-        if open.count > job.openItemsConfirmed {
+        let unconfirmed = try Self.unconfirmed(Self.refuseNotReady(folder, Teka.read(folder)), job)
+        if !unconfirmed.isEmpty {
             try abandonOffload(id, job, &st)
-            throw NeedsConfirmation(openItems: open)
+            throw NeedsConfirmation(openItems: unconfirmed.map(\.title))
         }
         return .copied
     }

@@ -304,4 +304,29 @@ import Testing
         #expect(Backup.isCloudProviderLocation(home.appendingPathComponent("Library/CloudStorage/Invented-Drive/Sprava"), home: home))
         #expect(!Backup.isCloudProviderLocation(URL(fileURLWithPath: "/Volumes/Invented Disk/Sprava"), home: home))
     }
+
+    @Test func anOpenItemSwappedForAnotherNeedsConfirming() throws {
+        func item(_ id: String) throws -> Item {
+            Item(raw: try JSONParser.parse(Data(#"{"id":"\#(id)","title":"Invented \#(id)","status":"open"}"#.utf8)).value, index: 0)
+        }
+        var job = Backup.InProgress(path: "/invented/binder", stage: "copied")
+        job.openItemsConfirmed = 1
+        job.confirmedItems = ["a-1"]
+        // The same number of open items, but a different one: it was never confirmed.
+        #expect(Backup.unconfirmed([try item("a-2")], job).map(\.idText) == ["a-2"])
+        #expect(Backup.unconfirmed([try item("a-1")], job).isEmpty)
+    }
+
+    @Test(.enabled(if: hasRestic)) func aSecondBackupMadeAgainEmptyAtItsPathGetsTheCopyAgain() throws {
+        let e = try env()
+        let b = try configured(e)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) == .copied)
+        let id = try Backup.backupID(e.folder)
+        // The second backup's disk is replaced: an empty repository at the same path.
+        try FileManager.default.removeItem(at: e.second)
+        try b.setSecond(e.second)
+        #expect(try pinned(b, e.second, id).isEmpty)
+        #expect(try b.continueOffload(id, now: now) == .copied)
+        #expect(try pinned(b, e.second, id) == [try #require(b.state().offloads[id]?.secondSnapshot)])
+    }
 }
