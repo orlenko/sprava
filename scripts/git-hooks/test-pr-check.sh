@@ -72,6 +72,14 @@ if run && grep -q '1 domain target(s)' "$root/out"; then
     else bad "targets: refused for another reason"; fi
 else bad "targets: one domain target with SpravaKit and Services was refused"; fi
 
+# Non-ASCII names, which git quotes unless asked not to, still count toward targets and long files.
+new_repo unicode
+add "Sources/Shelf/Résumé.swift" 450
+add Sources/Hub/Lane.swift 10
+if ! run && grep -q 'touches 2 domain targets (Hub Shelf)' "$root/out" && grep -q 'over 400 lines: Sources/Shelf/Résumé.swift (450 lines)' "$root/out"; then
+    ok "unicode: a non-ASCII name counts its target and its length"
+else bad "unicode: a non-ASCII name was missed"; fi
+
 new_repo reviewnamed
 printf 'let more = 1\n' >> "$repo/Tests/ShelfTests/ShelfTests.swift"
 git -C "$repo" commit -q -am "Extend"
@@ -121,6 +129,13 @@ elif grep -q 'pre-push: work: pr-check: touches 2 domain targets' "$root/out" &&
     if git -C "$repo" push -q origin work > "$root/out" 2>&1 && grep -q 'pre-push: work: +10/-0 in Shelf' "$root/out"; then
         ok "pre-push: a refused branch is not pushed; once fixed it is, with its summary line"
     else bad "pre-push: the fixed branch was not pushed"; fi
+    # Pushed by commit id, the branch is named by the remote ref and checked all the same.
+    add Sources/Hub/Lane.swift 10
+    if git -C "$repo" push -q origin "$(git -C "$repo" rev-parse HEAD):refs/heads/other" > "$root/out" 2>&1; then
+        bad "pre-push: a commit id pushed to a branch skipped the check"
+    elif grep -q 'pre-push: other: pr-check: touches 2 domain targets' "$root/out"; then
+        ok "pre-push: a commit id pushed to a branch is checked as that branch"
+    else bad "pre-push: the commit id push was refused for another reason"; fi
 else bad "pre-push: refused for another reason, or something was pushed"; fi
 
 echo "$passed passed, $failed failed"

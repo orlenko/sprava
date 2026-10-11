@@ -24,17 +24,29 @@ numstat=$(git diff --numstat -M --no-ext-diff "$base" "$head")
 added=$(printf '%s\n' "$numstat" | awk '$1 ~ /^[0-9]+$/ { n += $1 } END { print n + 0 }')
 removed=$(printf '%s\n' "$numstat" | awk '$2 ~ /^[0-9]+$/ { n += $2 } END { print n + 0 }')
 lines=$((added + removed))
+# Paths are read NUL-delimited, so git never quotes a name (a non-ASCII one included); a name with a newline in it
+# would split in two, which no Sprava file has.
+names() { git diff -z --name-only --no-ext-diff "$base" "$head" "$@" | tr '\0' '\n'; }
 # Every path a change touches, the old and the new name of a rename both.
-paths=$(git diff --name-only --no-renames --no-ext-diff "$base" "$head")
+paths=$(names --no-renames)
 targets=$(printf '%s\n' "$paths" | sed -n -E "s#^Sources/($domain)/.*#\\1#p" | sort -u | tr '\n' ' ' | sed 's/ $//')
 target_count=$(printf '%s' "$targets" | wc -w | tr -d ' ')
 behind=$(git rev-list --count --first-parent "$base..$main")
-new_files=$(git diff --name-only -M --diff-filter=AR --no-ext-diff "$base" "$head")
+new_files=$(names -M --diff-filter=AR)
 review_named=$(printf '%s\n' "$new_files" | grep -E "$review_names" || true)
-long_files=$(git diff --name-only -M --diff-filter=AMR --no-ext-diff "$base" "$head" -- '*.swift' | while read -r f; do
-    n=$(git cat-file -p "$head:$f" | wc -l | tr -d ' ')
-    [ "$n" -le "$max_file" ] || echo "$f ($n lines)"
-done)
+long_files=""
+changed_swift=$(names -M --diff-filter=AMR -- '*.swift')
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    blob=$(git cat-file blob "$head:$f") || { echo "pr-check: cannot read $f at $head" >&2; exit 2; }
+    n=$(printf '%s\n' "$blob" | wc -l | tr -d ' ')
+    [ "$n" -le "$max_file" ] || long_files="$long_files$f ($n lines)
+"
+done <<EOF
+$changed_swift
+EOF
+long_files=${long_files%
+}
 
 echo "+$added/-$removed in ${targets:-no domain target}, $target_count domain target(s), base $behind behind $main_ref"
 status=0
