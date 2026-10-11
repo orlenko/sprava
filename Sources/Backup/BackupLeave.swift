@@ -235,9 +235,15 @@ extension Backup {
         guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK else { return }
         // A link that reaches a folder again (another one, put at the binder's place since) is kept, and so is one
         // that leads elsewhere (a replacement whose disk is away): only the link to the binder's own place goes.
-        guard stat(folder.path, &info) != 0,
-              let to = try? FileManager.default.destinationOfSymbolicLink(atPath: folder.path),
-              realPath(URL(fileURLWithPath: to, relativeTo: folder.deletingLastPathComponent())) == realPath(target) else { return }
+        // The link may reach the place through other links (a chain), each followed in turn.
+        guard stat(folder.path, &info) != 0 else { return }
+        var hop = folder, reaches = false
+        for _ in 0..<8 where !reaches {
+            guard let to = try? FileManager.default.destinationOfSymbolicLink(atPath: hop.path) else { break }
+            hop = URL(fileURLWithPath: to, relativeTo: hop.deletingLastPathComponent()).standardizedFileURL
+            reaches = realPath(hop) == realPath(target)
+        }
+        guard reaches else { return }
         guard unlink(folder.path) == 0 || errno == ENOENT else {
             throw Failure(message: "the link to the offloaded binder could not be removed; the offload finishes when tried again")
         }

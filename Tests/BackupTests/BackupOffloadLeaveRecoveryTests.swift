@@ -47,8 +47,12 @@ extension BackupOffloadLeaveTests {
         try Backup.removeLink(away, to: place)
         var info = stat()
         #expect(lstat(away.path, &info) == 0)
-        // The link to the binder's own place, which leads nowhere now: removed.
+        // The link to the binder's own place, which leads nowhere now: removed, also one reaching it through another.
+        let chained = base.appendingPathComponent("Chained Alias")
+        try FileManager.default.createSymbolicLink(at: chained, withDestinationURL: link)
         try FileManager.default.removeItem(at: place)
+        try Backup.removeLink(chained, to: place)
+        #expect(lstat(chained.path, &info) != 0)
         try Backup.removeLink(link, to: place)
         #expect(lstat(link.path, &info) != 0)
     }
