@@ -277,7 +277,13 @@ import Testing
         try Data("invented".utf8).write(to: e.folder.appendingPathComponent("intake/_converted"))
         #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) }
         try FileManager.default.removeItem(at: e.folder.appendingPathComponent("intake/_converted"))
-        // A card in a state Sprava does not know may be waiting.
+        // A superseded card is done (binder-v0 §6.5); one in a state Sprava does not know may be waiting.
+        let replaced = Proposal.make(title: "Invented replaced card", actor: JSONObject([(key: "kind", value: .str("user"))]), ops: [], now: now)
+        try ProposalStore.save(replaced, in: e.folder)
+        let replacedFile = e.folder.appendingPathComponent(".sprava/proposals/\(replaced.id).json")
+        try Data(try String(contentsOf: replacedFile, encoding: .utf8)
+            .replacingOccurrences(of: "\"proposed\"", with: "\"superseded\"").utf8).write(to: replacedFile)
+        #expect(try Backup.refuseNotReady(e.folder, Teka.read(e.folder)).count >= 0)
         let card = Proposal.make(title: "Invented card", actor: JSONObject([(key: "kind", value: .str("user"))]), ops: [], now: now)
         try ProposalStore.save(card, in: e.folder)
         let file = e.folder.appendingPathComponent(".sprava/proposals/\(card.id).json")

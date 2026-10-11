@@ -13,8 +13,9 @@ extension Backup {
         // Its hub slice is named by its catalog, so a binder whose name differs from its folder's (an outside edit may
         // have given it another binder's name) or cannot be read is put right first (`HubLane.withdrawBeforeLeaving`).
         guard !teka.federationBlocked else { throw Failure(message: Self.notOffloadable(teka) + "; put it right, then offload again") }
-        // A card is done only when it is applied or rejected: any other state, a torn or edited one too, may be waiting.
-        guard ProposalStore.list(in: folder).allSatisfy({ ["applied", "rejected"].contains($0.0.state) }) else {
+        // A card is done only when it is applied, rejected or superseded (binder-v0 §6.5): any other state, a torn or
+        // edited one too, may be waiting.
+        guard ProposalStore.list(in: folder).allSatisfy({ ["applied", "rejected", "superseded"].contains($0.0.state) }) else {
             throw Failure(message: "cards are waiting for this binder; approve or reject them first")
         }
         try refuseUnreadableCards(folder)

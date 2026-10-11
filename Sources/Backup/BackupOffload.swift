@@ -75,16 +75,18 @@ extension Backup {
         if job.stage == "start" {
             let primary = try engine(s.primary)
             if !open.isEmpty {
-                // The person's confirmation goes into the binder's history before the snapshot, once: an offload cut
-                // off after writing it finds it there when it starts over the same day.
+                // The person's confirmation goes into the binder's history before the snapshot, once for these items:
+                // an offload cut off after writing it finds it there when it starts over the same day, while a
+                // confirmation of other items (one replaced meanwhile) is a new entry.
                 let title = "Offloaded with \(open.count) open item(s), confirmed"
                 let date = CalendarDate.today(now: now).description
+                let confirmed = Self.digest(Dictionary(open.map { (Self.confirmationKey($0), "") }, uniquingKeysWith: { first, _ in first }))
                 let logged = (teka.catalog?["processing_log"]?.arrayValue ?? []).contains {
-                    $0["action"]?.stringValue == "offloaded" && $0["title"]?.stringValue == title && $0["date"]?.stringValue == date
+                    $0["action"]?.stringValue == "offloaded" && $0["date"]?.stringValue == date && $0["confirmed"]?.stringValue == confirmed
                 }
                 if !logged {
                     let entry = JSONObject([(key: "entry", value: .obj([("action", .str("offloaded")), ("title", .string(title)),
-                                                                        ("date", .string(date))]))])
+                                                                        ("date", .string(date)), ("confirmed", .string(confirmed))]))])
                     try TekaStore(folder: folder).apply([.init(op: "add_log_entry", args: entry,
                                                                actor: JSONObject([(key: "kind", value: .str("user"))]))], now: now)
                     step("offload.confirmed")
