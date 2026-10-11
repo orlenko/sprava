@@ -20,38 +20,15 @@ extension Backup {
     ///
     /// The move itself is staged under the binder's write lock: the folder is renamed to a hidden name beside it, so
     /// no program can write to it by its path any more, compared there once more, and only then moved to the Trash.
-    /// Its identity is recorded first, so a retry tells the binder from another folder put at its path since.
+    /// Its place, identity and staging name are recorded first: a retry puts a binder still set aside back, and goes
+    /// through every check again (`undoStagedMove`), and tells the binder from another folder put at its path since.
     func leave(_ id: String, folder: URL, _ st: inout State, nameCollides: (URL) -> Bool, now: Date) throws -> OffloadProgress {
         guard var job = st.offloads[id], let record = job.record else {
             throw Failure(message: "the offload's record is missing; nothing was removed")
         }
         if let target = job.leavingTarget.map({ URL(fileURLWithPath: $0, isDirectory: true) }) {
-            // A staged move under way: finish it, or start over if the rename never happened.
-            if let staging = job.staging.map({ URL(fileURLWithPath: $0, isDirectory: true) }),
-               Self.folderIdentity(staging) == job.leavingIdentity {
-                do { try trashStaged(id, staging, &job, &st, now: now) } catch {
-                    // It changed while staged: back where it was, and it stays.
-                    if rename(staging.path, target.path) == 0 {
-                        job.leavingTarget = nil
-                        job.leavingIdentity = nil
-                        job.staging = nil
-                    }
-                    job.stage = "copied"
-                    job.stateSaved = false
-                    job.record = nil
-                    st.offloads[id] = job
-                    try? save(st)
-                    throw error
-                }
-            } else if Self.folderIdentity(target) == job.leavingIdentity {
-                job.leavingTarget = nil
-                job.leavingIdentity = nil
-                job.staging = nil
-                st.offloads[id] = job
-                try save(st)
-                return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
-            }
-            // Otherwise the binder already went (whatever is at its path now is another folder).
+            // The binder went to the Trash (`continueOffload` puts back one still set aside): only the link to it, if
+            // the offload's path was one, and the records are left.
             try Self.removeLink(folder, to: target)
         } else {
             switch Self.folderEntry(folder) {
@@ -81,10 +58,11 @@ extension Backup {
         // A Shelf that still lists the folder would later refuse its restore there ("a binder on the Shelf"), so a
         // failure here stops, and the retry finishes from the record (the folder is gone by then). Both the path the
         // offload had and the real folder go, as either may be the one on the Shelf.
+        // A path where a folder is again (another one, put there since) keeps its row: it is not this binder.
         let shelf = ShelfStore(supportDirectory: support)
-        try shelf.remove(folder)
-        if let target = job.leavingTarget, target != folder.standardizedFileURL.path {
-            try shelf.remove(URL(fileURLWithPath: target, isDirectory: true))
+        for path in Set([folder.standardizedFileURL.path, job.leavingTarget].compactMap { $0 })
+            where Self.folderEntry(URL(fileURLWithPath: path, isDirectory: true)) == .missing {
+            try shelf.remove(URL(fileURLWithPath: path, isDirectory: true))
         }
         step("offload.unshelved")
         let done = job.record ?? record
@@ -134,15 +112,28 @@ extension Backup {
                 return
             }
             step("offload.staged")
-            do { try trashStaged(id, staging, &job, &st, now: now) } catch {
-                // Put back where it was: it stays, as it was.
+            // The last comparison, now that no program reaches it by its path, then the Trash. Either failing puts it
+            // back where it was, and it stays.
+            do {
+                guard try job.manifestSHA == Self.digest(Self.manifest(staging)), try job.root == Self.rootMetadata(staging) else {
+                    throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
+                }
+                try removeFolder(staging)
+            } catch {
                 if rename(staging.path, real.path) == 0 {
                     job.leavingTarget = nil
                     job.leavingIdentity = nil
                     job.staging = nil
                 }
                 stays = error
+                return
             }
+            step("offload.trashed")
+            // In the Trash now: from here on the job stays leaving whatever fails, as the binder is gone. The time it
+            // left is saved at once; a failed save leaves the move recorded, and the retry finishes.
+            job.record?.at = ISOTime.string(now)
+            st.offloads[id] = job
+            try save(st)
         }
         if let error = stays {
             job.stage = "copied"
@@ -156,17 +147,26 @@ extension Backup {
         step("offload.removed")
     }
 
-    /// The staged folder, compared once more (no program writes to it by its path any more), then to the Trash; the
-    /// time it left is saved at once.
-    func trashStaged(_ id: String, _ staging: URL, _ job: inout InProgress, _ st: inout State, now: Date) throws {
-        guard try job.manifestSHA == Self.digest(Self.manifest(staging)), try job.root == Self.rootMetadata(staging) else {
-            throw Failure(message: "the binder changed during the offload; nothing was removed. Offload again to back up the change")
+    /// Puts back a binder an interrupted move to the Trash left under its staging name (a folder there is this
+    /// binder's: the name is its own), or forgets a recorded move whose rename never happened. True when the binder
+    /// is back where it was; false when the move went through (or none was recorded). A staged binder that cannot be
+    /// put back (its place is taken) stops, and stays set aside.
+    static func undoStagedMove(_ job: inout InProgress) throws -> Bool {
+        guard let targetPath = job.leavingTarget else { return false }
+        let target = URL(fileURLWithPath: targetPath, isDirectory: true)
+        var info = stat()
+        if let stagingPath = job.staging, lstat(stagingPath, &info) == 0, info.st_mode & S_IFMT == S_IFDIR {
+            guard rename(stagingPath, target.path) == 0 else {
+                throw Failure(message: "the binder is set aside beside its place, which is taken; nothing was removed. "
+                    + "Make room for it, then continue the offload")
+            }
+        } else if folderIdentity(target) != job.leavingIdentity {
+            return false
         }
-        try removeFolder(staging)
-        step("offload.trashed")
-        job.record?.at = ISOTime.string(now)
-        st.offloads[id] = job
-        try save(st)
+        job.leavingTarget = nil
+        job.leavingIdentity = nil
+        job.staging = nil
+        return true
     }
 
     /// Removes the link the offload's path was, once the real folder is gone; a failure stops, and the retry

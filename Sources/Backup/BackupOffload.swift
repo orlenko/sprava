@@ -150,10 +150,17 @@ extension Backup {
         var st = try state()
         guard var job = st.offloads[id] else { throw Failure(message: "no offload in progress") }
         let folder = URL(fileURLWithPath: job.path, isDirectory: true)
-        // A binder whose move to the Trash was recorded, or whose folder is gone, only has the leaving step left
-        // (`leave` says why a missing folder never abandons a leaving offload).
-        if job.stage == "leaving", job.leavingTarget != nil || Self.folderEntry(folder) == .missing {
-            return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
+        if job.stage == "leaving" {
+            // A move to the Trash that was cut off: a binder still set aside under its staging name is put back, and
+            // one whose rename never happened is where it was; either goes through every check below again before
+            // leaving. Only a binder that is gone skips them: its records are all that is left.
+            if try Self.undoStagedMove(&job) {
+                st.offloads[id] = job
+                try save(st)
+            } else if job.leavingTarget != nil || Self.folderEntry(folder) == .missing {
+                // Gone: moved to the Trash, or (no move recorded) missing, which `leave` explains is never abandoned.
+                return try leave(id, folder: folder, &st, nameCollides: nameCollides, now: now)
+            }
         }
         // An interruption is recovered here as well as in `offload`, so a queued continuation never sticks.
         try recoverInterrupted(id, &job, &st)

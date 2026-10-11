@@ -210,6 +210,10 @@ extension Backup.OffloadProgress {
         #expect(try pinned(b, e.second, id) == [try #require(record.secondSnapshot)])
         #expect(try b.offloaded().map(\.backupID) == [id] && b.pendingOffloads().isEmpty)
         #expect(!FileManager.default.fileExists(atPath: e.folder.path))
+        // Nothing is left set aside beside the binder's place: it is in the Trash.
+        let staging = e.folder.deletingLastPathComponent().appendingPathComponent(".sprava-leaving-\(id)")
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(try !FileManager.default.contentsOfDirectory(atPath: e.base.appendingPathComponent("trash").path).isEmpty)
     }
 
     @Test(.enabled(if: hasRestic), arguments: ["offload.written", "offload.snapshotted", "offload.verified", "offload.copying",
