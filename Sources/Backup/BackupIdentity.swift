@@ -9,7 +9,11 @@ extension Backup {
     /// A binder's stable backup id, kept inside the binder so it survives a restore elsewhere. One is made only when
     /// none is there (`storedBackupID`).
     public static func backupID(_ folder: URL) throws -> String {
-        if let id = try storedBackupID(folder) { return id }
+        if let id = try storedBackupID(folder) {
+            // An id may be visible before it is durable (a write whose last flush failed): flush it before it counts.
+            try BinderSprava.open(folder, create: false)?.flush()
+            return id
+        }
         // Only in a binder folder that is there: a binder moved or deleted since (a queued "back up now"), or on a disk
         // that is away, never gets a skeleton of its old path made for it.
         var info = stat()
@@ -53,8 +57,7 @@ extension Backup {
     /// document in the copy would rewrite the offloaded binder's pinned backups.
     func claim(_ folder: URL, _ st: inout State) throws -> String {
         let id = try Self.backupID(folder)
-        let here = Self.realPath(folder)
-        func other(_ path: String) -> Bool { Self.realPath(URL(fileURLWithPath: path, isDirectory: true)) != here }
+        func other(_ path: String) -> Bool { !Self.sameFolder(URL(fileURLWithPath: path, isDirectory: true), folder) }
         // The binder an offload is taking away still holds its id until it has left (its record is kept first).
         let leaving = st.offloads[id].map { !other($0.path) } ?? false
         if !leaving, let record = st.offloaded.first(where: { $0.backupID == id }) {
@@ -68,7 +71,7 @@ extension Backup {
         }
         // The record moves only once the recorded folder is seen not to hold the id: it is gone, or holds no id or
         // another one. One whose volume or id cannot be read may still hold it, so it keeps it.
-        if let recorded = st.binders[id]?.path, Self.realPath(URL(fileURLWithPath: recorded)) != Self.realPath(folder) {
+        if let recorded = st.binders[id]?.path, !Self.sameFolder(URL(fileURLWithPath: recorded, isDirectory: true), folder) {
             let recordedURL = URL(fileURLWithPath: recorded, isDirectory: true)
             switch Self.folderEntry(recordedURL) {
             case .unavailable:
@@ -108,13 +111,13 @@ extension Backup {
             try save(st)
             return old
         }
-        if let recorded = st.binders[old]?.path, Self.realPath(URL(fileURLWithPath: recorded)) == Self.realPath(folder) {
+        if let recorded = st.binders[old]?.path, Self.sameFolder(URL(fileURLWithPath: recorded, isDirectory: true), folder) {
             throw Failure(message: "this binder's backups are kept under its backup id; only a copy gets a new one")
         }
-        if let job = st.offloads[old], Self.realPath(URL(fileURLWithPath: job.path)) == Self.realPath(folder) {
+        if let job = st.offloads[old], Self.sameFolder(URL(fileURLWithPath: job.path, isDirectory: true), folder) {
             throw Failure(message: "this binder is being offloaded; finish or cancel that first")
         }
-        if let path = st.restoredContents[old]?.path ?? st.restoring[old], Self.realPath(URL(fileURLWithPath: path)) == Self.realPath(folder) {
+        if let path = st.restoredContents[old]?.path ?? st.restoring[old], Self.sameFolder(URL(fileURLWithPath: path, isDirectory: true), folder) {
             throw Failure(message: "this binder is being restored; finish the restore first")
         }
         // The folder owns the new id before it holds it: a crash between the two leaves a record of an id no folder
@@ -124,7 +127,7 @@ extension Backup {
         // Only while the pending id is still reserved for this folder: its record may have moved with a folder that
         // already holds it.
         if let pending = st.reassigning[key], pending.from == old, pending.folder != nil, pending.folder == identity,
-           let reserved = st.binders[pending.id]?.path, Self.realPath(URL(fileURLWithPath: reserved)) == key {
+           let reserved = st.binders[pending.id]?.path, Self.sameFolder(URL(fileURLWithPath: reserved, isDirectory: true), folder) {
             id = pending.id
         } else {
             // An earlier reservation for another folder at this path is abandoned: its empty record goes, so it never
@@ -144,6 +147,14 @@ extension Backup {
         st.reassigning[key] = nil
         try save(st)
         return id
+    }
+
+    /// Whether two paths name one folder: the same path with links resolved, or, when both are there, the same
+    /// device and inode (on a case-insensitive volume, `Binder` and `binder` are one folder).
+    static func sameFolder(_ a: URL, _ b: URL) -> Bool {
+        if realPath(a) == realPath(b) { return true }
+        var x = stat(), y = stat()
+        return stat(a.path, &x) == 0 && stat(b.path, &y) == 0 && x.st_dev == y.st_dev && x.st_ino == y.st_ino
     }
 
     /// A folder's device and inode, which a move keeps and a replacement at the same path does not.

@@ -61,6 +61,12 @@ final class BinderSprava {
         return handle
     }
 
+    /// Flushes `.sprava` and the binder folder, so what is visible in them is on disk.
+    func flush() throws {
+        try AtomicFile.flushToDisk(fd, step: "flush .sprava")
+        try AtomicFile.flushToDisk(binder, step: "flush the binder folder")
+    }
+
     /// A regular file of this user in `.sprava`, never through a link.
     func read(_ name: String, limit: Int) -> SafeFile.Outcome {
         var file: Int32

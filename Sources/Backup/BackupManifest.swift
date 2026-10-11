@@ -104,7 +104,9 @@ extension Backup {
                     continue
                 default:
                     // A FIFO or device node: restic keeps its permission bits and the device it stands for.
+                    guard let attributes = Self.attributesDigest(url.path) else { throw unreadable(rel) }
                     out[rel] = "special \(info.st_mode & S_IFMT) mode:" + String(info.st_mode & 0o7777, radix: 8) + " rdev:\(info.st_rdev)"
+                        + (attributes.isEmpty ? "" : " xattr:" + attributes)
                 }
             }
         }
