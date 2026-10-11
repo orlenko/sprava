@@ -313,8 +313,13 @@ import Testing
         job.openItemsConfirmed = 1
         job.confirmedItems = ["a-1"]
         // The same number of open items, but a different one: it was never confirmed.
+        job.confirmedItems = [Backup.confirmationKey(try item("a-1"))]
         #expect(Backup.unconfirmed([try item("a-2")], job).map(\.idText) == ["a-2"])
         #expect(Backup.unconfirmed([try item("a-1")], job).isEmpty)
+        // A number and the same digits as text are two ids.
+        let number = Item(raw: try JSONParser.parse(Data(#"{"id":7,"title":"Invented","status":"open"}"#.utf8)).value, index: 0)
+        job.confirmedItems = [Backup.confirmationKey(number)]
+        #expect(Backup.unconfirmed([try item("7")], job).count == 1)
     }
 
     @Test(.enabled(if: hasRestic)) func aSecondBackupMadeAgainEmptyAtItsPathGetsTheCopyAgain() throws {
@@ -328,5 +333,22 @@ import Testing
         #expect(try pinned(b, e.second, id).isEmpty)
         #expect(try b.continueOffload(id, now: now) == .copied)
         #expect(try pinned(b, e.second, id) == [try #require(b.state().offloads[id]?.secondSnapshot)])
+    }
+
+    @Test(.enabled(if: hasRestic)) func aMirrorMadeAgainEmptyAfterTheSnapshotStartsTheOffloadOver() throws {
+        let e = try env()
+        var b = try configured(e)
+        let id = try Backup.backupID(e.folder)
+        let image = Image([e.support, e.primary, e.second], at: "offload.snapshotted")
+        b.atStep = { image.take($0) }
+        _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now)
+        try image.restore()
+        b.atStep = nil
+        // The mirror is made again empty at its own path: the recorded snapshot is gone.
+        try FileManager.default.removeItem(at: e.primary)
+        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now) }
+        #expect(try b.state().offloads[id] == nil)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, now: now) == .copied)
     }
 }
