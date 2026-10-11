@@ -44,11 +44,18 @@ extension Backup {
         do {
             try Self.keepRootMetadata(folder)
             let before = try Self.writeMark(folder)
-            let result = try engine(s.primary).backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
+            let r = try engine(s.primary)
+            let result = try r.backup(folder, tags: ["sprava", "binder:\(id)"], excludes: Self.excludes)
             afterSnapshot?()
             step("backup.snapshotted")
             var rec = st.binders[id] ?? State.BinderRecord()
-            if let snap = result.snapshot { rec.snapshot = snap }
+            if let snap = result.snapshot {
+                rec.snapshot = snap
+            } else if let latest = try r.snapshots(tag: "binder:\(id)").last?.id {
+                // Nothing changed since the latest snapshot, which may be one a run cut off before its record was
+                // saved: that one is the binder's backup.
+                rec.snapshot = latest
+            }
             // restic reads one file at a time, so a write that landed during the run may be only partly in this
             // snapshot. The binder then stays due, and the next run takes another.
             if try Self.writeMark(folder) == before { rec.at = ISOTime.string(now) }

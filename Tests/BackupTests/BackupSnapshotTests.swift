@@ -225,6 +225,20 @@ import Testing
         #expect(try b.state().lastDrill == ISOTime.string(now))
     }
 
+    @Test(.enabled(if: hasRestic)) func aSnapshotWhoseRecordWasLostIsRecordedOnTheNextRun() throws {
+        let e = try env()
+        let b = try configured(e)
+        let first = try #require(try b.backUp(e.folder, now: now).snapshot)
+        // As if the run had stopped right after restic wrote the snapshot, before its record was saved.
+        let id = try Backup.backupID(e.folder)
+        var st = try b.state()
+        st.binders[id]?.snapshot = nil
+        st.binders[id]?.at = nil
+        try b.save(st)
+        #expect(try b.backUp(e.folder, now: now).snapshot == nil)
+        #expect(try b.state().binders[id]?.snapshot == first)
+    }
+
     @Test(.enabled(if: hasRestic)) func aMovedBinderTakesItsRecordAlong() throws {
         let e = try env()
         let b = try configured(e)
