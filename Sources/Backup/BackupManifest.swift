@@ -119,7 +119,9 @@ extension Backup {
             }
         }
         try walk(folder, "")
-        for entry in read where state(entry.url, follow: entry.follow) != entry.state {
+        // In reverse order, so each folder is checked after everything under it: a save into a folder while later
+        // entries are checked is still seen.
+        for entry in read.reversed() where state(entry.url, follow: entry.follow) != entry.state {
             throw Failure(message: "\(entry.rel.isEmpty ? "the binder" : entry.rel) changed while it was read; nothing was removed")
         }
         return out

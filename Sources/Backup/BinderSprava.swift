@@ -57,7 +57,8 @@ final class BinderSprava {
             throw Backup.Failure(message: "\(folder.lastPathComponent)/.sprava is not a folder")
         }
         let handle = BinderSprava(binder: binder, fd: fd, path: resolved)
-        if created { try AtomicFile.flushToDisk(binder, step: "flush the binder folder after making .sprava") }
+        // A `.sprava` found where one is to be made may be left by a creation whose flush failed: flush it again.
+        if create || created { try AtomicFile.flushToDisk(binder, step: "flush the binder folder after making .sprava") }
         return handle
     }
 

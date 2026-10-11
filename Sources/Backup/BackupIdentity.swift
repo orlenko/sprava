@@ -105,6 +105,14 @@ extension Backup {
         let here = folder.standardizedFileURL.path
         let key = Self.realPath(folder)
         let identity = Self.folderIdentity(folder)
+        // A copy that moved since its reservation was recorded (found by device and inode, before or after its new
+        // id was written) takes the reservation along.
+        if st.reassigning[key] == nil, let identity,
+           let moved = st.reassigning.first(where: { $0.value.folder == identity && ($0.value.from == old || $0.value.id == old) }) {
+            st.reassigning[moved.key] = nil
+            st.reassigning[key] = moved.value
+            if st.binders[moved.value.id] != nil { st.binders[moved.value.id]?.path = here }
+        }
         if let pending = st.reassigning[key], pending.id == old, pending.folder != nil, pending.folder == identity {
             try Self.writeBackupID(old, into: folder, creating: false)
             st.reassigning[key] = nil
@@ -126,13 +134,6 @@ extension Backup {
         let id: String
         // Only while the pending id is still reserved for this folder: its record may have moved with a folder that
         // already holds it.
-        // A copy that moved since its reservation was recorded (by device and inode) takes the reservation along.
-        if st.reassigning[key] == nil, let identity,
-           let moved = st.reassigning.first(where: { $0.value.folder == identity && $0.value.from == old }) {
-            st.reassigning[moved.key] = nil
-            st.reassigning[key] = moved.value
-            if st.binders[moved.value.id] != nil { st.binders[moved.value.id]?.path = here }
-        }
         if let pending = st.reassigning[key], pending.from == old, pending.folder != nil, pending.folder == identity,
            let reserved = st.binders[pending.id]?.path, Self.sameFolder(URL(fileURLWithPath: reserved, isDirectory: true), folder) {
             id = pending.id
@@ -233,9 +234,11 @@ extension Backup {
             guard errno == ENOENT || errno == ENOTDIR, parent.standardizedFileURL.path != "/" else { return .unavailable }
             var entry = stat()
             if lstat(parent.path, &entry) == 0 {
-                // A file at the parent's path: the binder cannot be there. A link whose target cannot be opened may
-                // lead to a disk that is away, so the binder may still be there.
-                return entry.st_mode & S_IFMT == S_IFLNK ? .unavailable : .missing
+                // A file at the parent's path: the binder cannot be there. A link that leads to a file is the same;
+                // one whose target cannot be reached may lead to a disk that is away, so the binder may still be there.
+                guard entry.st_mode & S_IFMT == S_IFLNK else { return .missing }
+                var target = stat()
+                return stat(parent.path, &target) == 0 && target.st_mode & S_IFMT != S_IFDIR ? .missing : .unavailable
             }
             return folderEntry(parent) == .missing ? .missing : .unavailable
         }

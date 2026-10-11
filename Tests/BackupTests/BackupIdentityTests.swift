@@ -235,6 +235,11 @@ import Testing
                                                    withDestinationPath: "/Volumes/Invented-Away-\(UUID().uuidString)/Projects")
         let recorded = base.appendingPathComponent("Projects/Binder", isDirectory: true)
         #expect(Backup.folderEntry(recorded) == .unavailable)
+        // Pointed at a file instead, the link proves the binder cannot be there.
+        try Data("invented".utf8).write(to: base.appendingPathComponent("a-file"))
+        try FileManager.default.removeItem(at: base.appendingPathComponent("Projects"))
+        try FileManager.default.createSymbolicLink(atPath: base.appendingPathComponent("Projects").path, withDestinationPath: "a-file")
+        #expect(Backup.folderEntry(recorded) == .missing)
         // A file at a parent's path still means the binder is gone; a working link to a folder is followed.
         let real = base.appendingPathComponent("Real", isDirectory: true)
         try FileManager.default.createDirectory(at: real.appendingPathComponent("Binder"), withIntermediateDirectories: true)
@@ -349,6 +354,28 @@ import Testing
         let id = try Backup.backupID(folder)
         // Read again (as a retry would after a failed flush): it is flushed and returned unchanged.
         #expect(try Backup.backupID(folder) == id)
+    }
+
+    @Test func aCopyMovedAfterItsIDWasWrittenFinishesItsReassignment() throws {
+        let base = try temp("moved-after-write")
+        let original = base.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let b = Backup(support: base.appendingPathComponent("support"), key: nil, resticBinary: nil, uploadCheck: { _ in .uploaded })
+        var st = Backup.State()
+        let old = try b.claim(original, &st)
+        let copy = base.appendingPathComponent("Copy", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: copy)
+        let n = "0123456789abcdef0123456789abcdef"
+        st.binders[n] = .init(path: copy.standardizedFileURL.path)
+        st.reassigning[Backup.realPath(copy)] = .init(from: old, id: n, folder: Backup.folderIdentity(copy))
+        try b.save(st)
+        try Backup.writeBackupID(n, into: copy, creating: false)
+        let moved = base.appendingPathComponent("Moved", isDirectory: true)
+        try FileManager.default.moveItem(at: copy, to: moved)
+        #expect(try b.giveOwnBackupID(moved) == n)
+        let after = try b.state()
+        #expect(after.reassigning.isEmpty && after.binders.count == 2)
+        #expect(after.binders[n]?.path == moved.standardizedFileURL.path)
     }
 
     @Test func aCopyMovedBeforeItsRetryKeepsItsReservation() throws {
