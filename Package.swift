@@ -45,7 +45,7 @@ let package = Package(
 
         // Backup capabilities arrive in small, independently tested increments.
         .target(name: "Backup", dependencies: ["BinderFormat", "SpravaKit"]),
-        .testTarget(name: "BackupTests", dependencies: ["Backup"]),
+        .testTarget(name: "BackupTests", dependencies: ["Backup", "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Registered brain clients, before the MCP transport and tools are added.
         .target(name: "Brains", dependencies: ["SpravaKit"]),

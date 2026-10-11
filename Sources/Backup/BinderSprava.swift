@@ -40,21 +40,21 @@ final class BinderSprava {
     static func open(_ folder: URL, create: Bool) throws -> BinderSprava? {
         let resolved = folder.resolvingSymlinksInPath().path
         let binder = Darwin.open(resolved, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard binder >= 0 else { throw Backup.Failure(message: "\(folder.lastPathComponent) is not there any more, or is not a folder") }
+        guard binder >= 0 else { throw Backup.Failure(message: "the binder is not there any more, or is not a folder") }
         var created = false
         var fd = openat(binder, ".sprava", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0, errno == ENOENT {
             guard create else { close(binder); return nil }
             guard mkdirat(binder, ".sprava", 0o700) == 0 || errno == EEXIST else {
                 close(binder)
-                throw Backup.Failure(message: "\(folder.lastPathComponent)/.sprava could not be made")
+                throw Backup.Failure(message: "the binder's .sprava could not be made")
             }
             created = true
             fd = openat(binder, ".sprava", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
         guard fd >= 0 else {
             close(binder)
-            throw Backup.Failure(message: "\(folder.lastPathComponent)/.sprava is not a folder")
+            throw Backup.Failure(message: "the binder's .sprava is not a folder")
         }
         let handle = BinderSprava(binder: binder, fd: fd, path: resolved)
         // A `.sprava` found where one is to be made may be left by a creation whose flush failed: flush it again.

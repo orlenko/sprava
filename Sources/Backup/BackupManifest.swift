@@ -35,7 +35,7 @@ extension Backup {
         // The first path seen for each file with more than one link, by device and inode.
         var linked: [String: String] = [:]
         func unreadable(_ rel: String) -> Failure {
-            Failure(message: "\(rel.isEmpty ? "the binder" : rel) cannot be read; nothing was removed")
+            Failure(message: "\(rel.isEmpty ? "the binder" : "an entry of the binder") cannot be read; nothing was removed")
         }
         // Everything read counts only when it is still the same, unchanged, once the whole binder was read: each
         // folder (device, inode, times) and each file (also its size) is checked again at the end, so a save into a
@@ -97,7 +97,7 @@ extension Backup {
                           after.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec,
                           after.st_ctimespec.tv_sec == info.st_ctimespec.tv_sec,
                           after.st_ctimespec.tv_nsec == info.st_ctimespec.tv_nsec else {
-                        throw Failure(message: "\(rel) changed while it was read; nothing was removed")
+                        throw Failure(message: "a file of the binder changed while it was read; nothing was removed")
                     }
                     if let checked = state(url, follow: false) { read.append((url, rel, false, checked)) }
                     let mtime = " mtime:\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
@@ -122,7 +122,7 @@ extension Backup {
         // In reverse order, so each folder is checked after everything under it: a save into a folder while later
         // entries are checked is still seen.
         for entry in read.reversed() where state(entry.url, follow: entry.follow) != entry.state {
-            throw Failure(message: "\(entry.rel.isEmpty ? "the binder" : entry.rel) changed while it was read; nothing was removed")
+            throw Failure(message: "the binder changed while it was read; nothing was removed")
         }
         return out
     }
