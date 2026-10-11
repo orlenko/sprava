@@ -284,6 +284,27 @@ import Testing
         #expect(try b.state().binders[id]?.snapshot != b.engine(e.primary.path).snapshots(tag: "binder:\(id)").last { $0.date ?? .distantPast > Date() }?.id)
     }
 
+    @Test(.enabled(if: hasRestic)) func aSkippedRunRecordsTheParentAtItsOwnPath() throws {
+        let e = try env()
+        let b = try configured(e)
+        let atA = try #require(try b.backUp(e.folder, now: now).snapshot)
+        let id = try Backup.backupID(e.folder)
+        // An edited copy at another place, under the same id, is backed up later; then the original is back at A.
+        let original = e.folder
+        let aside = e.base.appendingPathComponent("aside", isDirectory: true)
+        try FileManager.default.moveItem(at: original, to: aside)
+        let copyParent = e.base.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.createDirectory(at: copyParent, withIntermediateDirectories: true)
+        let copy = copyParent.appendingPathComponent(original.lastPathComponent, isDirectory: true)
+        try FileManager.default.copyItem(at: aside, to: copy)
+        try Data("invented edit".utf8).write(to: copy.appendingPathComponent("correspondence/notary/edit.pdf"))
+        _ = try b.backUp(copy, now: now)
+        try FileManager.default.removeItem(at: copy)
+        try FileManager.default.moveItem(at: aside, to: original)
+        let rerun = try b.backUp(original, now: now)
+        #expect(try b.state().binders[id]?.snapshot == (rerun.snapshot ?? atA))
+    }
+
     @Test(.enabled(if: hasRestic)) func aFailedBackupKeepsNoFileNameInItsError() throws {
         let e = try env()
         let b = try configured(e)

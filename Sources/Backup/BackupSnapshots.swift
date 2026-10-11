@@ -51,11 +51,16 @@ extension Backup {
             var rec = st.binders[id] ?? State.BinderRecord()
             if let snap = result.snapshot {
                 rec.snapshot = snap
-            } else if let parent = try r.snapshots(tag: "binder:\(id)").filter({ ($0.date ?? .distantFuture) <= Date() })
-                        .max(by: { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }) {
-                // Nothing changed since the parent restic compared with: its latest snapshot not dated in the future
-                // (a clock that was ahead), which may be one a run cut off before its record was saved.
-                rec.snapshot = parent.id
+            } else {
+                // Nothing changed since the parent restic compared with, which may be one a run cut off before its
+                // record was saved. Restic chooses it as this folder's latest snapshot (same host, same absolute path)
+                // not dated in the future (a clock that was ahead); the same rule finds it here.
+                let path = realpath(folder.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? Self.realPath(folder)
+                if let parent = try r.snapshots(tag: "binder:\(id)")
+                    .filter({ $0.paths == [path] && ($0.date ?? .distantFuture) <= Date() })
+                    .max(by: { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }) {
+                    rec.snapshot = parent.id
+                }
             }
             // restic reads one file at a time, so a write that landed during the run may be only partly in this
             // snapshot. The binder then stays due, and the next run takes another.
