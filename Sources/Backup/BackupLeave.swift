@@ -186,8 +186,8 @@ extension Backup {
         return digest(manifest) == job.manifestSHA
     }
 
-    /// Puts back a binder an interrupted move to the Trash left under its staging name (a folder there is this
-    /// binder's: the name is its own), or forgets a recorded move whose rename never happened. True when the binder
+    /// Puts back a binder an interrupted move to the Trash left under its staging name (only when the folder there is
+    /// this binder, `isStagedBinder`), or forgets a recorded move whose rename never happened. True when the binder
     /// is back where it was; false when the move went through (or none was recorded). A staged binder that cannot be
     /// put back (its place is taken) stops, and stays set aside.
     static func undoStagedMove(_ job: inout InProgress, _ id: String) throws -> Bool {

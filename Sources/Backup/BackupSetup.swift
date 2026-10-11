@@ -124,9 +124,15 @@ extension Backup {
     /// An offloaded binder's only copies are its pinned snapshots. Moving a repository must first copy and verify
     /// them in the new one; until that migration exists, a move is refused while any binder is offloaded.
     func refuseMovingOffloadedBinders() throws {
-        // A binder whose move to the Trash is recorded is offloaded already, whatever cleanup is left.
+        // A binder whose move to the Trash is recorded is offloaded already, whatever cleanup is left; one leaving that
+        // is not at its path (a checkpoint restored on another Mac, a binder moved) finishes from its copies alone.
         let st = try state()
-        guard st.offloaded.isEmpty, !st.offloads.values.contains(where: { $0.leavingTarget != nil }) else {
+        let gone = st.offloads.contains { id, job in
+            job.leavingTarget != nil || (job.stage == "leaving" && job.record != nil
+                && !(Self.folderEntry(URL(fileURLWithPath: job.path, isDirectory: true)) == .present
+                     && Self.isTheBinder(URL(fileURLWithPath: job.path, isDirectory: true), id, job)))
+        }
+        guard st.offloaded.isEmpty, !gone else {
             throw Failure(message: "an offloaded binder's only copies are in the current backups; restore it before moving them")
         }
     }

@@ -217,12 +217,34 @@ extension BackupOffloadLeaveTests {
         let id = try Backup.backupID(e.folder)
         #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
         b.atStep = nil
-        // Moved away while it waits, and the second backup is replaced: the copy its record names is not in it.
-        try FileManager.default.moveItem(at: e.folder, to: e.base.appendingPathComponent("Elsewhere", isDirectory: true))
+        // The second backup is replaced while it waits (allowed while the binder is here), then the binder is moved
+        // away: the copy its record names is not in the second backup now.
         try b.setSecond(e.base.appendingPathComponent("external/Another Second"))
+        try FileManager.default.moveItem(at: e.folder, to: e.base.appendingPathComponent("Elsewhere", isDirectory: true))
         waiting.on = false
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.offloaded().isEmpty)
+        #expect(try b.state().offloads[id]?.stage == "leaving")
+    }
+
+    @Test(.enabled(if: hasRestic)) func aLeavingBinderNotHereProtectsItsRepositories() throws {
+        let e = try env()
+        let waiting = Switch(false)
+        var b = try configured(e, waiting: waiting)
+        b.atStep = { if $0 == "offload.leaving" { waiting.on = true } }
+        let id = try Backup.backupID(e.folder)
+        #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
+        b.atStep = nil
+        // While the binder is here, its offload starts over with new repositories; once it is not (moved away, or a
+        // checkpoint restored on a Mac without it), its copies are all there is, and the repositories stay.
+        try b.refuseMovingOffloadedBinders()
+        try FileManager.default.moveItem(at: e.folder, to: e.base.appendingPathComponent("Elsewhere", isDirectory: true))
+        #expect(throws: Backup.Failure.self) { try b.refuseMovingOffloadedBinders() }
+        // A second path that leads into the mirror now is not a second copy: the offload does not finish.
+        waiting.on = false
+        try FileManager.default.removeItem(at: e.second)
+        try FileManager.default.createSymbolicLink(at: e.second, withDestinationURL: e.primary)
+        #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.state().offloads[id]?.stage == "leaving")
     }
 }

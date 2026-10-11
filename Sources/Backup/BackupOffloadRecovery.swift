@@ -57,6 +57,8 @@ extension Backup {
     func requireRecordedCopies(_ id: String, _ job: InProgress, _ s: Settings) throws {
         let kept = Failure(message: "the binder is not where its offload started, and the backups no longer hold the copies "
             + "its offload recorded; nothing was finished, and the copies left stay pinned")
+        // Two copies only while the repositories are still independent (a saved second path may lead elsewhere now).
+        try refuseSharedFate(s)
         guard let mirror = job.repository, mirror == s.primary, let snap = job.snapshot,
               try engine(mirror).snapshots(tag: "binder:\(id)").contains(where: { $0.id == snap }) else { throw kept }
         if let second = job.secondRepository {
