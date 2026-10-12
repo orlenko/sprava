@@ -1,7 +1,7 @@
 #!/bin/sh
 # Lists the worktrees under .claude/worktrees that hold nothing unmerged, and removes them with --apply:
 #   ./scripts/dev/prune-worktrees.sh [--apply]
-# A worktree goes when it has no uncommitted, untracked or ignored files other than build products (.build/, .swiftpm/,
+# A worktree goes when it has no uncommitted, untracked or ignored files other than build products (.build/,
 # build/, .DS_Store; git's own removal check does not look at ignored files, so this one does) and its HEAD is already in origin/main or in one of
 # origin's branches (so nothing in it exists only there). Its local branch is deleted only when merged into
 # origin/main. The main checkout and anything outside its .claude/worktrees are never touched; it works the same
@@ -13,7 +13,7 @@ git fetch -q --prune origin
 git worktree list --porcelain | awk '/^worktree /{print substr($0, 10)}' | while read -r wt; do
     case "$wt" in "$top"/.claude/worktrees/*) ;; *) continue ;; esac
     if ! changes=$(git -C "$wt" status --porcelain --untracked-files=normal --ignored 2>/dev/null); then echo "keep  $wt (status failed)"; continue; fi
-    if [ -n "$(printf '%s\n' "$changes" | grep -vE '^!! (\.build/|\.swiftpm/|build/|(.*/)?\.DS_Store)$' | grep -v '^$')" ]; then
+    if [ -n "$(printf '%s\n' "$changes" | grep -vE '^!! (\.build/|build/|(.*/)?\.DS_Store)$' | grep -v '^$')" ]; then
         echo "keep  $wt (uncommitted, untracked or ignored files)"; continue
     fi
     head=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || continue
