@@ -1,6 +1,5 @@
 #!/bin/sh
 # Build build/Sprava.app (ad-hoc signed with the hardened runtime, not launched). Pass SwiftPM options through, e.g. -c release.
-# The bundle holds the products that exist so far; sprava-mcp joins it with the Brains slice.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -17,6 +16,7 @@ plutil -lint Resources/App-Info.plist
 swift build --product SpravaApp "$@"
 swift build --product sprava "$@"
 swift build --product sprava-runtime "$@"
+swift build --product sprava-mcp "$@"
 swift build --product sprava-extract "$@"
 plutil -lint Resources/LaunchAgents/*.plist
 bin_dir=$(swift build --show-bin-path "$@")
@@ -29,6 +29,7 @@ cp LICENSE "$bundle/Contents/Resources/LICENSE.txt"
 cp "$bin_dir/SpravaApp" "$bundle/Contents/MacOS/SpravaApp"
 cp "$bin_dir/sprava" "$bundle/Contents/MacOS/sprava"
 cp "$bin_dir/sprava-runtime" "$bundle/Contents/MacOS/sprava-runtime"
+cp "$bin_dir/sprava-mcp" "$bundle/Contents/MacOS/sprava-mcp"
 cp "$bin_dir/sprava-extract" "$bundle/Contents/MacOS/sprava-extract"
 # restic, the backup engine (docs/backup.md section 10): a pinned release, signed with the app.
 restic_bin="${SPRAVA_RESTIC:-$(command -v restic || true)}"
@@ -40,6 +41,7 @@ cp "$(realpath "$restic_bin")" "$bundle/Contents/MacOS/restic"
 restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
 [ -f "$restic_license" ] && cp "$restic_license" "$bundle/Contents/Resources/restic-LICENSE.txt"
 codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.restic "$bundle/Contents/MacOS/restic"
+codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.mcp "$bundle/Contents/MacOS/sprava-mcp"
 # The runtime refuses a helper that does not run sandboxed, so a helper signed without its entitlement stops the build.
 plutil -lint Resources/sprava-extract.entitlements
 if ! codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \

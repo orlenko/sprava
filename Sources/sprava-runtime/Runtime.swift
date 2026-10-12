@@ -1,4 +1,5 @@
 import BinderStore
+import Brains
 import Clerk
 import Darwin
 import Foundation
@@ -35,6 +36,8 @@ final class Runtime: @unchecked Sendable {
     var signalSources: [DispatchSourceSignal] = []
     var breakersUnwritable = false
     var xpc: XPCService?
+    /// The MCP listener on `mcp/mcp.sock`, which brains reach through the sprava-mcp shim (architecture 7.2).
+    var mcp: MCPListener?
     var commands: Commands?
     /// Set when this Mac's device id cannot be read: nothing is written until it is repaired.
     var deviceIDError: String?
@@ -96,6 +99,17 @@ final class Runtime: @unchecked Sendable {
             let service = XPCService(commands: commands, watch: watch) { [weak self] line in self?.log(line) }
             service.start()
             xpc = service
+            // Brains share the command queue with the app: one writer.
+            let support = support
+            let listener = MCPListener(support: support, commands: commands, queue: service.queue, shelf: {
+                ShelfStore(supportDirectory: support).rows()
+            }, log: { [weak self] line in self?.log(line) })
+            do {
+                try listener.start()
+                mcp = listener
+            } catch {
+                log("mcp_listener error=\(error)")
+            }
         } catch {
             deviceIDError = "\(error)"
             log("device_id_unreadable writes=off")
