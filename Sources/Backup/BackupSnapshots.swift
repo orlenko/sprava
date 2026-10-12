@@ -7,20 +7,6 @@ import SpravaKit
 extension Backup {
     // MARK: - Snapshots
 
-    /// What a snapshot of Sprava's own state leaves out besides `excludes` (`backUpState`): the backup's own working
-    /// folders, and the runtime's and the MCP clients' logs with their rotations (§3.2), by their paths in the support
-    /// folder, never by extension: a capture's attachment may well end in `.log`. Anchored at the support folder as
-    /// restic sees it (symbolic links resolved by realpath(3), which keeps /private where Foundation drops it), with the
-    /// pattern characters in it taken literally.
-    func stateExcludes() -> [String] {
-        let resolved = realpath(support.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? Self.realPath(support)
-        let root = resolved.map { "*?[\\".contains($0) ? "\\\($0)" : String($0) }.joined()
-        return ["backup/cache", "backup/run", "backup/verify", "backup/peek"]
-            + ["jobs.log", "lease-refusals.log"].flatMap { ["\(root)/runtime/\($0)", "\(root)/runtime/\($0).[0-9]*"] }
-            // The MCP clients' audit logs and their rotations (architecture: never backed up); clients.json stays.
-            + ["\(root)/mcp/audit"]
-    }
-
     /// A mark for everything restic is to read. Comparing only the catalog and op log misses a document or intake
     /// file written while restic is traversing another directory, and could call that partial snapshot current.
     /// The binder folder's own metadata is part of it too (`keepRootMetadata`), so a change to it during the run
@@ -80,11 +66,13 @@ extension Backup {
         }
     }
 
-    /// Sprava's own state, minus the backup's cache and run files, and minus the runtime's logs (§3.2,
-    /// `stateExcludes`).
+    /// Sprava's own state, staged with consistent database copies and the exclusions of §3.2.
+    /// `withStateSnapshot` omits working folders and logs before restic reads the stable copy.
     func writeStateSnapshot() throws {
-        _ = try engine(settings().primary).backup(support, tags: ["sprava", "sprava-state"],
-                                                  excludes: Self.excludes + stateExcludes())
+        try withStateSnapshot { snapshot in
+            _ = try engine(settings().primary).backup(snapshot, tags: ["sprava", "sprava-state"],
+                                                       excludes: Self.excludes)
+        }
     }
 
     public func backUpState(now: Date = Date()) throws {

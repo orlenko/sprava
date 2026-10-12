@@ -57,6 +57,11 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
   records, integration settings (`~/Library/Application Support/Sprava`, minus logs and caches).
 - Never: the Keychain. Integration passwords and brain tokens are re-entered after a restore onto a new Mac.
 
+Before backing up Sprava's state, Sprava makes a private staging copy. Each state database is copied through
+SQLite's online backup API, including its committed WAL pages; the live WAL and shared-memory sidecars are
+not copied separately. Restic reads the stable staging tree, and Sprava removes it when the run ends. Captured
+attachments remain ordinary files, including attachments whose names end in `.sqlite` or `.log`.
+
 ### 3.3 When it runs
 
 - A few minutes after a binder stops changing (proposed: 10 minutes after its last op), and once a day.
