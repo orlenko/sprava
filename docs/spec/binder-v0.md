@@ -998,6 +998,13 @@ A lifeproj v1 binder passes its own checker with loose items, yet lifeproj's `pu
 
 ### 9.4 What adoption does, in order
 
+Sprava currently refuses adoption before any write when `catalog.json` exceeds 1 MiB, when the combined
+`open_items`, `documents` and `processing_log` count exceeds 100, or when catalog plus op-log bytes times
+that count (at least one) exceeds 4 MiB. Resuming an unfinished adoption has a 32 MiB work budget to allow for
+the import snapshot and fix ops it has already added to history. Existing proposal loading is limited to 100 directory entries and
+8 MiB aggregate bytes. These checks keep large adoptions disabled until the mechanical fixer can use a fixed
+number of passes; a refusal reports the limit and preserves the binder and its cards.
+
 1. Takes the lock, copies `catalog.json` and `DASHBOARD.md` (when present) byte for byte to `.sprava/adopted/`, and appends `import_snapshot` with the parsed catalog and the survey. Nothing else in the folder changes. The byte copy matters because the first rewrite changes the catalog's bytes (escaping and hand layout) without changing its content.
 2. Renders the dashboard. It writes `DASHBOARD.md` only when the file is absent or carries the marker line; otherwise it offers the switch card of section 7.1. For a v1 catalog it renders what it can (section 5.2) and marks the binder "needs migration".
 3. Applies mechanical, lossless changes without a proposal, each as an op with actor `import`, and shows them together on one card the user can undo:

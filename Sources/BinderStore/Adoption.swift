@@ -137,6 +137,7 @@ public enum Adoption {
     /// already saved is not saved twice.
     public static func adopt(_ folder: URL, inRegistry: Bool, deviceID: String, today: CalendarDate,
                              now: Date = Date(), client: String = "sprava/0.1") throws -> Result {
+        try requireBoundedWork(folder)
         let teka = Teka.read(folder)
         switch teka.state {
         case .notATeka, .corrupt, .unknownLevel:
