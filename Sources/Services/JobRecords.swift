@@ -52,11 +52,14 @@ public struct JobRecords: Codable, Sendable {
 
 /// The runtime's state files that cannot be read at its start.
 enum UnreadableStateFile {
-    /// Renames the file to `<name>.unreadable-<UTC time>` beside it (a link in its place is moved, not followed);
-    /// nil when it could not be moved.
+    /// Renames the file to `<name>.unreadable-<UTC time>` beside it, through a handle on its folder: a link in its
+    /// place is moved, not followed, and a folder that is itself a link (or not this user's) is left untouched.
+    /// Nil when it could not be moved.
     static func setAside(_ url: URL, now: Date) -> URL? {
         let stamp = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
-        let aside = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".unreadable-" + stamp)
-        return rename(url.path, aside.path) == 0 ? aside : nil
+        let name = url.lastPathComponent + ".unreadable-" + stamp
+        guard let folder = try? StateDirectory.open(url.deletingLastPathComponent()),
+              (try? folder.rename(url.lastPathComponent, to: name)) != nil else { return nil }
+        return url.deletingLastPathComponent().appendingPathComponent(name)
     }
 }

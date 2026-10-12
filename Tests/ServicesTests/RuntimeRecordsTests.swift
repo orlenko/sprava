@@ -79,6 +79,18 @@ import Testing
         #expect(try Data(contentsOf: elsewhere) == original)
     }
 
+    @Test func aLinkedRuntimeFolderIsNeverReachedThroughBySettingAside() throws {
+        let base = try folder()
+        let real = base.appendingPathComponent("elsewhere"), runtime = base.appendingPathComponent("runtime")
+        try AtomicFile.makePrivateFolder(real)
+        try Data("{\"jobs\": {".utf8).write(to: real.appendingPathComponent("breakers.json"))
+        try Data("{\"day\": 7".utf8).write(to: real.appendingPathComponent("state.json"))
+        try FileManager.default.createSymbolicLink(at: runtime, withDestinationURL: real)
+        #expect(JobRecords.loadAtStart(runtime.appendingPathComponent("breakers.json"), jobs: ["hub"], now: now).setAside == nil)
+        #expect(RuntimeState.loadAtStart(runtime, now: now).setAside == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: real.path).sorted() == ["breakers.json", "state.json"])
+    }
+
     @Test func twoWatchdogExitsOpenTheBreaker() throws {
         let url = try folder().appendingPathComponent("breakers.json")
         JobRecords.recordWatchdogExit(job: "hub", url: url, now: now)
@@ -107,9 +119,11 @@ import Testing
         #expect(try Data(contentsOf: kept) == garbage)
         let today = CalendarDate.today(now: now).description
         #expect(state.lastSummaryDate == today && state.startsToday == 0)
-        // The file is gone, so counting starts again.
+        // The recovered state was saved, so counting starts again and today's summary still counts as sent.
         #expect(RuntimeState.recordStart(dir))
-        #expect(try RuntimeState.read(dir).startsToday == 1)
+        // (recordStart counts on the real day; the marker is the test's day.)
+        let after = try RuntimeState.read(dir)
+        #expect(after.startsToday == 1 && after.lastSummaryDate == today)
         // A file from before a field existed still reads.
         try Data(#"{"day":"2026-10-06","startsToday":2}"#.utf8).write(to: url)
         #expect(try RuntimeState.read(dir, today: "2026-10-06").startsToday == 2)

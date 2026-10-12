@@ -36,7 +36,11 @@ public struct RuntimeState: Codable, Sendable, Equatable {
         var state = RuntimeState()
         state.day = today
         state.lastSummaryDate = today
-        return (state, UnreadableStateFile.setAside(url(dir), now: now))
+        // Saved once the unreadable file is out of the way, so the marker survives the next update; never written
+        // over a file that could not be moved.
+        let aside = UnreadableStateFile.setAside(url(dir), now: now)
+        if aside != nil, let data = try? JSONEncoder().encode(state) { try? StateFile.write(data, to: url(dir)) }
+        return (state, aside)
     }
 
     /// Reads, changes and saves. A file that cannot be read is left for the next start to set aside and the change
