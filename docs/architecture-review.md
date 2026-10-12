@@ -140,9 +140,10 @@ Verified on the stack:
   seam and it already exists.
 
 The fix for scheduling is one behavior-preserving extraction (section 3.1, landing with #17a): a pure `Scheduler` value in
-Services with `func due(now:records:deadlines:) -> [JobKey]` and `mutating func started(_:now:)`, and each job
+Services that is told about starts, wakes and clock changes (`due(now:sentinelRunning:)`, `started(_:now:)`,
+`woke(now:)`, `clockChanged(now:)`), and each job
 body as a function in `Services/Jobs/<Name>Job.swift` taking its dependencies as parameters (`Commands`,
-`ShelfRows`, `now`, a `Notifier` closure, a `ModelProbe` closure). `Runtime.swift` then shrinks to timers,
+`ShelfRows`, `now`, a `Notifier` closure, an `AlertsProbe` closure, a `ModelProbe` closure). `Runtime.swift` then shrinks to timers,
 lease, watchdog, power events and wiring, under 300 lines, and the job matrix of architecture §3.4 becomes a
 table-driven test.
 
@@ -310,7 +311,7 @@ Restructure before landing:
 - `sprava-runtime`: `Runtime.swift` is split as in 2.3. The job bodies move into
   `Services/Jobs/CaptureJob.swift`, `ClerkJob.swift`, `IntakeJob.swift`, `HubJob.swift`, `DashboardJob.swift`,
   `SentinelJob.swift`, `SummaryJob.swift`, `AlertsJob.swift`, `BackupJob.swift`, each a function from
-  explicit inputs to `JobOutcome`, with the notifier and model probe as closures. A `Scheduler` value holds
+  explicit inputs to `JobOutcome`, with the notifier, the alert-status probe and the model probe as closures. A `Scheduler` value holds
   `schedule()`'s decisions. The executable keeps `main.swift`, `XPCService.swift`, `OutsideWatcher.swift` and
   a `Runtime.swift` of timers, lease, watchdog, power notifications and wiring. The job specs table
   (`Runtime.specs`) moves next to the jobs.
@@ -424,7 +425,7 @@ Behavior-preserving first. Sizes are estimates of changed lines including tests.
 | R3 | `docs/code-structure.md`: the state-file ownership table; rule 3.5 restated as read facades + `RuntimeClient` writes; the `Commands` extension pattern; "job bodies live in Services"; the `--filter` runner | docs | 150 | preserving |
 | R4 | Split `TekaStore+Recovery.swift` (661) into recovery matrix vs replay; `Proposals.swift` (613) into the store vs the record; move-only | BinderStore | 700 moved | preserving |
 | R5 | Split `CaptureInbox+Sweep.swift` (613) and `Intake.swift` (512) by stage (scan, candidates, readings, replacement); move-only | Capture | 800 moved | preserving |
-| R6 | Capture tests by behavior: fold the 24 review-named files into `InboxSweepTests`, `InboxCarryTests`, `IntakeTests`, `PrivacyTests`, `CorrectionsTests`; suites keep their names so history is greppable. Two PRs of about 900 | CaptureTests | 2 × 900 | preserving |
+| R6 | Capture tests by behavior: fold the 24 review-named files into behavior-named files (sweep, carry, intake, privacy, corrections), split so each stays near 400 lines; suites keep their names so history is greppable. Two PRs of about 900 | CaptureTests | 2 × 900 | preserving |
 | R7 | Same for BinderStoreTests (13 review-named files) and HubTests (6) | BinderStoreTests, HubTests | 2 × 700 | preserving |
 | R8 | `Commands.isRecorded` public, so Brains stops using the `package` digest key | BinderStore | 40 | preserving |
 | R9 | Signing prerequisite: entitlement files, `SPRAVA_SIGN_IDENTITY` in `build-app.sh`, a Doctor finding naming the key store in use, `docs/manual-checks.md` checklist | Resources, scripts, Services (Doctor) | 200 | changes a Health line only |
@@ -443,11 +444,11 @@ Where tests cannot reach today, and the seam that fixes each:
 
 | Behavior | Today | Seam |
 |---|---|---|
-| Which jobs run at a tick, after a wake, after a clock change; backoff and half-open timing | `Runtime.schedule()`/`run()` on real timers and `Date()` | `Scheduler` value: `due(now:awake:records:deadlines:) -> [JobKey]`; the executable feeds it `Date()` |
+| Which jobs run at a tick, after a wake, after a clock change; backoff and half-open timing | `Runtime.schedule()`/`run()` on real timers and `Date()` | `Scheduler` value (landed with #17a): `due(now:sentinelRunning:)`, `started(_:now:)`, `woke(now:)`, `clockChanged(now:)`; the executable feeds it `Date()` and the wake events |
 | Watchdog decision (stall, wedged) | thread with `Thread.sleep(60)` | `Watchdog.verdict(tick:lastTick:awakeSince:wedged:) -> Exit?` pure; the thread calls it |
 | Notifications and "alerts off" | `UNUserNotificationCenter` inline | `Notifier` closure `(title, body, id) -> Bool` on the job inputs; `AlertsProbe` closure |
 | Model availability line | `SystemLanguageModel.default` inline | `ModelProbe` closure returning `Heartbeat.Model` |
-| Runtime state crash recovery (`breakers.json`, `state.json`, `requests.json`) | written in `finish()`; no crash images | the `atStep` pattern from Backup: a step closure at each save, tests image the folder and restart `Runtime`'s pure parts |
+| Runtime state crash recovery (`breakers.json`, `state.json`, and Backup's `backup/requests.json`) | written in `finish()`; no crash images | the `atStep` pattern from Backup: a step closure at each save, tests image the folder and restart `Runtime`'s pure parts |
 | One-writer rule | convention | the R11 assertion |
 | MCP listener over a real socket | untested | one `BrainsTests` integration test with a temporary support folder; no seam needed |
 | Keychain store | file override in tests, no executable runs the Keychain path | a `KeyStore` protocol with `FileKeyStore` and `KeychainKeyStore`, chosen in one place by the configured override (`SPRAVA_BACKUP_KEY_FILE` set or not), as `BackupKey.load` chooses today, so this is a refactor with no change of behavior; whether an ad-hoc build should fall back to a file is a separate decision for R9 |
@@ -457,8 +458,8 @@ Checks for the hooks (R2), each a few lines of shell in `pr-check.sh`, run by pr
 another branch):
 
 1. Lines changed (`git diff --shortstat`): warn above 500, refuse above 1,000 unless `SPRAVA_ALLOW_LARGE=1`.
-2. Domain targets touched: the set of `Sources/<t>` for `t` in layers 1 to 6 (not SpravaKit, not Services,
-   not tests, not executables); refuse when more than one unless allowed. (#225 touched Backup and SpravaKit,
+2. Domain targets touched: the set of `Sources/<t>` for `t` in layers 1 to 6, with `Tests/<t>Tests` and
+   `Tests/<t>TestSupport` counted as `t` (not SpravaKit, not Services, not executables); refuse when more than one unless allowed. (#225 touched Backup and SpravaKit,
    one domain target by this count; check 1 would have refused it for its 1,270 lines. SpravaKit is exempt
    because any feature may add a shared helper there.)
 3. Stale base: if `git merge-base origin/main <sha>` is more than 20 first-parent commits behind `origin/main`,

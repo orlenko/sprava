@@ -116,7 +116,7 @@ binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sp
 | `Capture` | `Captures/` (the capture root), `capture/` (`state.json`, `journal.ndjson`, `producers.json`, `producer-hlc.json` and its `.lock`, `intake.json`, `app-notices.ndjson`, `unfiled-digests.json`, `quarantine/`, `interpretations/`, `readings/`), `unfiled/` |
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
-| `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it |
+| `Backup` | `backup/` (`settings.json`, `state.json`, `requests.json` and its lock when the request queue lands, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it |
 | `Services` | `device-id` and `device-id.lock` (the id bound to this Mac's hardware id, so a copy that Migration Assistant or a restore brings from another Mac is set aside, not used; the Keychain item of architecture 2.3 replaces it once builds are signed, review R9), and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
 A new state file is added to this table in the PR that creates it.
