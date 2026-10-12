@@ -197,9 +197,14 @@ extension HubLane {
                                             key: key, now: Date(), alsoRedact: plan.keepRedacted, keepTitles: privacy.titles,
                                             confirmedTitles: plan.confirmedTitles, lastSeen: cursors.published,
                                             allowTags: plan.allowTags, strict: false) else { return false }
+        return showsMore(shown, than: allowed.slice, cursors: cursors)
+    }
+
+    /// One comparison for withdrawal and read-only privacy checks; closed rows expose only an already-seen id.
+    static func showsMore(_ shown: [JSONValue], than allowed: JSONValue, cursors: Cursors) -> Bool {
         var open: [String: JSONValue] = [:]
         var any: [String: JSONValue] = [:]
-        for it in allowed.slice["items"]?.arrayValue ?? [] {
+        for it in allowed["items"]?.arrayValue ?? [] {
             guard let id = it["id"]?.stringValue else { continue }
             if any[id] == nil { any[id] = it }
             if it["status"] != .str("done"), open[id] == nil { open[id] = it }
