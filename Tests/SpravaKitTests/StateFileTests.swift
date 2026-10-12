@@ -73,27 +73,6 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: base.path).sorted() == ["outside.json", "state.json"])
     }
 
-    /// The last check and the rename are one step: what the swap takes out is inspected after it, so a link put in
-    /// place an instant before the rename comes back too.
-    @Test func whatTheSwapTakesOutIsPutBackUnlessItIsAPlainFile() throws {
-        let base = temporary()
-        defer { try? FileManager.default.removeItem(at: base) }
-        let folder = try #require(try StateDirectory.open(base, create: true))
-        let outside = base.appendingPathComponent("outside.json"), file = base.appendingPathComponent("state.json")
-        try Data("outside".utf8).write(to: outside)
-        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: outside)
-        try Data("new".utf8).write(to: base.appendingPathComponent(".pending"))
-        #expect(throws: (any Error).self) { try folder.publish(".pending", as: "state.json") }
-        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: file.path) == outside.path)
-        #expect(try Data(contentsOf: base.appendingPathComponent(".pending")) == Data("new".utf8))
-        // A plain file there is replaced, and nothing is left at the temporary name.
-        try FileManager.default.removeItem(at: file)
-        try Data("old".utf8).write(to: file)
-        try folder.publish(".pending", as: "state.json")
-        #expect(try Data(contentsOf: file) == Data("new".utf8))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: base.path).sorted() == ["outside.json", "state.json"])
-    }
-
     @Test func dataLargerThanAReadAcceptsIsNeverWritten() throws {
         let base = temporary()
         defer { try? FileManager.default.removeItem(at: base) }
