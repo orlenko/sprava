@@ -53,7 +53,8 @@ Read this first; then `docs/code-structure.md` for which target owns what.
 - `threads.sh list|reply|file`: reads a PR's review threads; answers and resolves one; or records a finding that
   does not block in a new issue, answers with its link and resolves it.
 - `../merge-pr.sh <number>`: the last step of the gate.
-- `prune-worktrees.sh [--apply]`: removes worktrees under `.claude/worktrees` that hold nothing unmerged.
+- `prune-worktrees.sh [--apply]`: removes worktrees under `.claude/worktrees` that hold nothing unmerged and no file
+  but build products; `test-prune.sh` tests it.
 
 ## Review guidelines
 
