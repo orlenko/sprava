@@ -167,8 +167,9 @@ public final class StateDirectory: @unchecked Sendable {
         } else if let root { try Self.flushParent(root, flush: flush) }
     }
 
-    /// What is at `name` may be replaced only when it is a plain file or nothing: a link or a folder in its place is
-    /// refused, never replaced, so a state file a read refused is left as it is.
+    /// What is at `name` may be replaced only when it is nothing or a file a read would accept: a link, a folder,
+    /// another user's file or one this user may not read is refused, never replaced, so a state file a read refused
+    /// is left as it is.
     private func refuseOtherThanPlainFile(_ name: String) throws {
         var info = stat()
         if fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
@@ -176,6 +177,9 @@ public final class StateDirectory: @unchecked Sendable {
             return
         }
         guard info.st_mode & S_IFMT == S_IFREG else { throw AtomicFile.Failure(step: "state file is not a plain file", code: EEXIST) }
+        guard info.st_uid == getuid(), info.st_mode & S_IRUSR != 0 else {
+            throw AtomicFile.Failure(step: "state file is not readable by this user", code: EACCES)
+        }
     }
 
     func write(_ data: Data, to name: String, beforeOpen: () throws -> Void,

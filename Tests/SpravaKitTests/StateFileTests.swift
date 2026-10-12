@@ -58,6 +58,18 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: file.path, isDirectory: &isFolder) && isFolder.boolValue)
     }
 
+    @Test func aFileNoReadAcceptsIsNotReplaced() throws {
+        let base = temporary()
+        defer { chmod(base.appendingPathComponent("state.json").path, 0o600); try? FileManager.default.removeItem(at: base) }
+        let file = base.appendingPathComponent("state.json")
+        try StateFile.write(try JSONEncoder().encode(Invented(note: "kept")), to: file)
+        #expect(chmod(file.path, 0o000) == 0)
+        #expect(throws: StateFile.Unreadable.self) { try StateFile.read(Invented.self, from: file) }
+        #expect(throws: (any Error).self) { try StateFile.write(Data("{}".utf8), to: file) }
+        #expect(chmod(file.path, 0o600) == 0)
+        #expect(try StateFile.read(Invented.self, from: file) == Invented(note: "kept"))
+    }
+
     @Test func aLinkPutInPlaceDuringAWriteIsNotReplaced() throws {
         let base = temporary()
         defer { try? FileManager.default.removeItem(at: base) }
