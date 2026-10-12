@@ -8,9 +8,10 @@
 # those against its first parent (for a merge, what it brings to that line), or every file for a root commit;
 # renames count as a removal and an addition, so both paths are seen.
 # A suite passes only when its runner exits with status zero; the summary line is only reported. A pass is then
-# recorded as "<suite> <tree hash>" in <common git dir>/sprava-hooks/passed-trees, and a suite already recorded
-# for a commit's tree is not run again: the suites read nothing but the tree. The cache is shared by every
-# worktree of the repository; delete the file to forget it.
+# recorded in <common git dir>/sprava-hooks/passed-trees as "<suite> <key>", and a suite already recorded for a
+# commit's key is not run again. The companion and hook suites are keyed by the commit's tree; the Swift suites by
+# what the package builds from (swift_key), so a docs-only change under them keeps their passes. The cache is
+# shared by every worktree of the repository; delete the file to forget it.
 # A commit is always tested in a detached worktree kept in this checkout's git directory (sprava-hooks/push-tree),
 # reset to exactly that commit each time and keeping its .build, so its builds stay incremental from one run to
 # the next. Never in the person's checkout, which may move on (a commit, a checkout, an edit) while a run lasts.
@@ -56,9 +57,9 @@ swift_scope() {  # <folder> <sha>
 }
 
 drop_cached() {  # clears need_swift, need_companion and need_hooks for suites already recorded as passed for $tree_sha
-    if [ "$need_swift" -eq 1 ] && passed_before swift "$tree_sha"; then
+    if [ "$need_swift" -eq 1 ] && passed_before swift "$swift_sha"; then
         need_swift=0; suites_cached=$((suites_cached + 1))
-        echo "$who: $short ($label): Swift tests already passed for this tree" >&2
+        echo "$who: $short ($label): Swift tests already passed for these sources" >&2
     fi
     if [ "$need_companion" -eq 1 ] && passed_before companion "$tree_sha"; then
         need_companion=0; suites_cached=$((suites_cached + 1))
@@ -71,6 +72,13 @@ drop_cached() {  # clears need_swift, need_companion and need_hooks for suites a
 }
 
 passed_before() { [ -f "$cache" ] && grep -qx "$1 $2" "$cache"; }    # <suite> <tree>
+# The Swift suites read only what the package builds from, so their passes are keyed by those paths alone: a
+# commit that changes only docs or scripts (a rebase onto such a main, a merge of it) keeps its Swift passes.
+swift_key() {    # <sha>
+    for path in Sources Tests Resources Package.swift Package.resolved scripts/test.sh; do
+        git rev-parse -q --verify "$1:$path" || echo "no $path"
+    done | git hash-object --stdin
+}
 record_pass() {                                                       # <suite> <tree>
     mkdir -p "$cache_dir" && echo "$1 $2" >> "$cache" || echo "note: could not record the pass in $cache" >&2
 }
@@ -80,6 +88,7 @@ test_commit() {
     sha=$1; label=$2; who=$3
     short=$(git rev-parse --short "$sha")
     tree_sha=$(git rev-parse "$sha^{tree}") || fail "$who: could not read the tree of $short ($label)"
+    swift_sha=$(swift_key "$sha") || fail "$who: could not read the Swift sources of $short ($label)"
     if git rev-parse -q --verify "$sha^1" >/dev/null; then
         git diff -z --name-only --no-renames --no-relative --no-ext-diff "$sha^1" "$sha" > "$work/changed.z" \
             || fail "$who: could not list the changes of $short ($label)"
@@ -116,11 +125,11 @@ $who: could not check out $short ($label) to test it"
             if [ "$scope" = ALL ]; then suite=swift; set -- ; else suite="swift:$scope"; set -- --filter "$scope"; fi
             if [ "$scope" = NONE ]; then
                 echo "$who: $short ($label): no test target is affected" >&2
-            elif [ "$suite" != swift ] && passed_before "$suite" "$tree_sha"; then
+            elif [ "$suite" != swift ] && passed_before "$suite" "$swift_sha"; then
                 suites_cached=$((suites_cached + 1))
-                echo "$who: $short ($label): $scope already passed for this tree" >&2
+                echo "$who: $short ($label): $scope already passed for these sources" >&2
             elif suites_run=$((suites_run + 1)) && run_suite "$dir" ./scripts/test.sh "$work/out" "$@"; then
-                record_pass "$suite" "$tree_sha"
+                record_pass "$suite" "$swift_sha"
                 summary=$(grep "^All test runs passed" "$work/out" | tail -1 || true)
                 [ "$scope" = ALL ] || summary="${summary:-Swift tests passed} ($scope)"
                 echo "$who: $short ($label): ${summary:-Swift tests passed}" >&2
@@ -177,14 +186,14 @@ $who: hook tests failed for $short ($label): exit status $status"
 test_full() {    # <sha> <prefix for messages>
     sha=$1; who=$2
     short=$(git rev-parse --short "$sha")
-    tree_sha=$(git rev-parse "$sha^{tree}") || fail "$who: could not read the tree of $short"
-    if passed_before swift "$tree_sha"; then echo "$who: $short: the whole suite already passed for this tree" >&2; return 0; fi
+    swift_sha=$(swift_key "$sha") || fail "$who: could not read the Swift sources of $short"
+    if passed_before swift "$swift_sha"; then echo "$who: $short: the whole suite already passed for these sources" >&2; return 0; fi
     mkdir -p "$hooks" || fail "$who: could not create $hooks"
     hold_lock "$hooks/push-tree.lock" "$who" || fail "$who: could not lock $hooks/push-tree.lock"
     checkout_tree "$sha" > "$work/git.log" 2>&1 || fail "$(tail -5 "$work/git.log")
 $who: could not check out $short to test it"
     if run_suite "$tree" ./scripts/test.sh "$work/out"; then
-        record_pass swift "$tree_sha"
+        record_pass swift "$swift_sha"
         echo "$who: $short: $(grep "^All test runs passed" "$work/out" | tail -1 || echo 'the whole suite passed')" >&2
     else
         status=$?

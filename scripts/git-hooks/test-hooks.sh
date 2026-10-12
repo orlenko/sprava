@@ -25,6 +25,13 @@ export PATH="$root/bin:$PATH"
 export STUB_LOG="$root/stub.log"
 
 passed=0; failed=0
+
+# The key the hooks record a Swift pass under (suites.sh swift_key): the package's inputs at <commit>.
+skey() {
+    for path in Sources Tests Resources Package.swift Package.resolved scripts/test.sh; do
+        git -C "$repo" rev-parse -q --verify "$1:$path" || echo "no $path"
+    done | git -C "$repo" hash-object --stdin
+}
 ok()  { passed=$((passed + 1)); echo "ok   - $1"; }
 bad() { failed=$((failed + 1)); echo "FAIL - $1"; [ -f "$root/err" ] && sed 's/^/       /' "$root/err"; }
 
@@ -261,7 +268,7 @@ printf 'let greeting = "SUMMARY_THEN_EXIT_1"\n' > "$repo/Sources/Demo/Demo.swift
 git -C "$repo" add Sources && commit "Runner exits 1 after its summary"
 if push; then bad "exit status: a failing runner with a success summary passed the push"
 elif grep -q "exit status 1" "$root/err" \
-    && ! grep -qs "$(git -C "$repo" rev-parse 'HEAD^{tree}')" "$repo/.git/sprava-hooks/passed-trees"; then
+    && ! grep -qs "$(skey HEAD)" "$repo/.git/sprava-hooks/passed-trees"; then
     ok "exit status: a failing runner with a success summary rejects the push and is not recorded as passed"
 else bad "exit status: the push was rejected for another reason"; fi
 
@@ -305,7 +312,7 @@ cache="$repo/.git/sprava-hooks/passed-trees"
 printf 'let greeting = "cached"\n' > "$repo/Sources/Demo/Demo.swift"
 git -C "$repo" add Sources && commit "Cached greeting"
 if (cd "$repo" && "$hooks_dir/test-tree.sh" HEAD) > "$root/out" 2> "$root/err" \
-    && grep -qx "swift $(git -C "$repo" rev-parse 'HEAD^{tree}')" "$cache"; then
+    && grep -qx "swift $(skey HEAD)" "$cache"; then
     ok "cache: test-tree.sh records the passed tree"
 else bad "cache: test-tree.sh did not record the passed tree"; fi
 git -C "$repo" commit -q --amend -m "Cached greeting, reworded" > /dev/null 2>&1
@@ -315,10 +322,25 @@ if push && grep -q "1 new commit(s): 0 suite run(s), 1 already passed for the sa
     ok "cache: a tree that passed is skipped on the next push, under a reworded commit"
 else bad "cache: a tree that passed was tested again"; fi
 
+# 6b. A Swift pass is keyed by the package's inputs, not the whole tree: the same commit replayed on top of a
+#     change to docs only (a rebase onto such a main) is not tested again.
+printf 'let greeting = "replayed"\n' > "$repo/Sources/Demo/Demo.swift"
+git -C "$repo" add Sources && commit "Replayed greeting"
+replayed=$(git -C "$repo" rev-parse HEAD)
+(cd "$repo" && "$hooks_dir/test-tree.sh" HEAD) > "$root/out" 2> "$root/err" || true
+git -C "$repo" reset -q --hard HEAD~1
+echo "notes" > "$repo/NOTES.md"; git -C "$repo" add NOTES.md && commit "Docs only"
+git -C "$repo" cherry-pick "$replayed" > /dev/null 2>&1
+runs_before=$(wc -l < "$STUB_LOG")
+if [ "$(git -C "$repo" rev-parse 'HEAD^{tree}')" != "$(git -C "$repo" rev-parse "$replayed^{tree}")" ] && push \
+    && grep -q "0 suite run(s), 1 already passed" "$root/err" && [ "$(wc -l < "$STUB_LOG")" -eq "$runs_before" ]; then
+    ok "cache: a commit replayed over a docs-only change keeps its Swift pass"
+else bad "cache: a replayed commit with the same Swift sources was tested again"; fi
+
 # 7. A tree that fails is never recorded, so the push tests it again and rejects it.
 printf 'let greeting = "FAIL again"\n' > "$repo/Sources/Demo/Demo.swift"
 git -C "$repo" add Sources && commit "Break the tests again"
-failing_tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+failing_tree=$(skey HEAD)
 if (cd "$repo" && "$hooks_dir/test-tree.sh" HEAD) > "$root/out" 2> "$root/err"; then
     bad "cache: test-tree.sh passed a failing tree"
 elif grep -q "$failing_tree" "$cache"; then bad "cache: a failing tree was recorded"
@@ -336,10 +358,10 @@ swift_package
 cache="$repo/.git/sprava-hooks/passed-trees"
 printf 'let greeting = "SLOW, then FAIL"\n' > "$repo/Sources/Demo/Demo.swift"
 git -C "$repo" add Sources && commit "Slow and failing"
-commit_a=$(git -C "$repo" rev-parse HEAD); tree_a=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+commit_a=$(git -C "$repo" rev-parse HEAD); tree_a=$(skey HEAD)
 printf 'let greeting = "fine"\n' > "$repo/Sources/Demo/Demo.swift"
 git -C "$repo" add Sources && commit "Fine"
-commit_b=$(git -C "$repo" rev-parse HEAD); tree_b=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+commit_b=$(git -C "$repo" rev-parse HEAD); tree_b=$(skey HEAD)
 echo "docs" > "$repo/README.md"; git -C "$repo" add README.md && commit "Docs on top"
 (cd "$repo" && "$hooks_dir/test-tree.sh" "$commit_a") > "$root/out-a" 2> "$root/err-a" &
 run_a=$!
@@ -362,10 +384,10 @@ push || true
 cache="$repo/.git/sprava-hooks/passed-trees"
 printf 'let greeting = "SLOW but fine"\n' > "$repo/Sources/Demo/Demo.swift"
 git -C "$repo" add Sources && commit "Slow and fine"
-tree_a=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+tree_a=$(skey HEAD)
 printf 'let greeting = "FAIL"\n' > "$repo/Sources/Demo/Demo.swift"
 git -C "$repo" add Sources && commit "Failing"
-tree_b=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+tree_b=$(skey HEAD)
 (git -C "$repo" push -q origin HEAD:main > "$root/out-push" 2> "$root/err-push") &
 run_push=$!
 sleep 0.7

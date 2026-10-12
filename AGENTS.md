@@ -32,8 +32,10 @@ Read this first; then `docs/code-structure.md` for which target owns what.
    changes `Package.swift`, `Package.resolved`, `scripts/test.sh` or shared test support; the companion suite
    for `companion/`; the hook suite for the hooks. Each commit is tested in a detached worktree kept at `<git dir>/sprava-hooks/push-tree`
    with its own `.build`, never in the checkout itself. A push of N such commits
-   runs the suite N times, except for trees that already passed: each pass is recorded by tree hash in
-   `<git common dir>/sprava-hooks/passed-trees` and not run again. To test a stack once before pushing it, run
+   runs the suite N times, except for what already passed: each pass is recorded in
+   `<git common dir>/sprava-hooks/passed-trees` and not run again, a Swift pass by the package's inputs
+   (`Sources/`, `Tests/`, `Resources/`, `Package.*`, `scripts/test.sh`), so a rebase onto a docs-only main
+   keeps it, and other suites by tree hash. To test a stack once before pushing it, run
    `./scripts/git-hooks/test-tree.sh $(git rev-list --reverse origin/main..HEAD)`. Never bypass the hooks with
    `--no-verify`; a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`, `test-gate.sh`).
 4. The gate before merge, with a review budget so a PR converges:
