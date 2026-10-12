@@ -21,6 +21,7 @@ extension Commands {
     /// Every command, by name.
     static let table: [String: Handler] = pingCommand
         .merging(binderCommands) { a, _ in a }
+        .merging(captureCommands) { a, _ in a }
         .merging(settingsCommands) { a, _ in a }
 
     /// Handles one request: `{"command": ..., ...}`. Returns `{"ok": true, ...}` or `{"ok": false, "error": ...}`.
