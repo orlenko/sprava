@@ -26,7 +26,7 @@ the compiler refuses an undeclared import, so the boundaries are enforced rather
 
 | Layer | Target | Owns | Depends on (direct) |
 |---|---|---|---|
-| 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateFile` (section 4), `SafeFile`, dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
+| 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateStore` and `StateFile` (section 4), `SafeFile`, dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
 | 1 | `BinderFormat` | reading a binder: `Teka`, items, buckets, rules, catalog levels, the dashboard text, document path rules, the hub's naming rules | SpravaKit |
 | 2 | `BinderStore` | writing a binder: op log, transaction guard, op applier, proposals and their store, the record of trusted cards, ids, the privacy ratchet, undo, owner record, adoption, templates, the dashboard keeper | BinderFormat |
 | 3 | `Shelf` | which binders exist here: the shelf, lifeproj's registry, recent order, the filing list and binder settings | BinderStore |
@@ -92,7 +92,15 @@ Moves that broke the earlier cycles:
 
 ## 4. Shared conventions every target uses
 
-- `StateFile`, in `SpravaKit`: read a JSON state file where a missing file means empty, and an existing
+- `StateStore`, in `SpravaKit` (decisions.md A13): Sprava's own state in SQLite, one database per owning target
+  in its folder of the support folder (for example `runtime/services.sqlite`). Every read-change-write is one
+  `write { }` transaction (`BEGIN IMMEDIATE`), so writers in several processes are serialized and a crash leaves
+  the last committed state; no lock files, no set-aside copies. Tables for queried state; a Codable value kept
+  whole under a key (`document`, `setDocument`) for state that was one JSON file. The database is opened inside
+  a validated `StateDirectory`, never through a link, and created private. A database that cannot be opened,
+  read or decoded throws and is left as it is; a schema version other than the caller's throws (no migrations
+  before the MVP, A14). New state goes here; a JSON state file moves here when its code is next changed.
+- `StateFile`, in `SpravaKit` (the files not yet moved to `StateStore`): read a JSON state file where a missing file means empty, and an existing
   file that cannot be read or decoded throws. Writes are atomic. The caller fails closed on a throw:
   no overwrite, and an error the job reports. This one helper replaces the fifteen hand-written variants
   Bugbot found. It reads and writes through a `StateDirectory` handle on the file's folder, so a link in
@@ -119,7 +127,7 @@ binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sp
 | `Backup` | `backup/` (`settings.json`, `state.json`, `requests.json` and its lock when the request queue lands, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it, with its `.pending` companion |
 | `Services` | `device-id` and `device-id.lock` (the id bound to this Mac's hardware id, so a copy that Migration Assistant or a restore brings from another Mac is set aside, not used; the Keychain item of architecture 2.3 replaces it once builds are signed, review R9), and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
-A new state file is added to this table in the PR that creates it.
+A new state file or database is added to this table in the PR that creates it.
 
 ## 5. Migration, one behavior-neutral PR at a time
 
