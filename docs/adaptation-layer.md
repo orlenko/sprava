@@ -244,10 +244,12 @@ Built in increment 7 (2026-10-08), on top of the contract reader, the clerk and 
 - Apple's on-device guardrail refuses the word "syndicate" in any case, which is the legal name of a
   Québec co-ownership. The classification call is retried once with such words neutralised (dates and items
   still come from the original text), and if the model still refuses, code classifies from its signal words.
-- Escalation (4.4): the reasons are decided by code; the Inbox lists the waiting readings, and over MCP a
-  brain sees them with `list_readings` (within scope and disclosure), reads the text with `read_document`
-  only when the person allowed that client to read documents and the binder's disclosure is `full`, and
-  answers with `propose_ops` plus `reading_id`, or `finish_reading`.
+- Escalation (4.4): the reasons are decided by code; the Inbox lists the waiting readings. Over MCP a brain
+  would see them with `list_readings` (within scope and disclosure), read the text with `read_document` only
+  when the person allowed that client to read documents and the binder's disclosure is `full`, and answer
+  with `propose_ops` plus `reading_id`, or `finish_reading`. Until the person can mark an intake document as
+  not private (issue #283), no brain gets any intake document, so the queue stays with the person
+  (architecture 7.3).
 - `obtained` is recorded on the card and copied into every document filed from it; the person answers
   "How did it reach you?" on approval when the source could not tell.
 
