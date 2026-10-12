@@ -21,22 +21,55 @@ Read this first; then `docs/code-structure.md` for which target owns what.
 1. One feature or fix per PR, preferably under 1,000 changed lines. Moving files counts as a rename.
 2. The change lives in one target (see `docs/code-structure.md` section 3). If it spreads across several
    domain targets, stop and add an interface instead.
-3. Tests: `./scripts/test.sh` (Swift Testing; invented fixtures only). Every fix gets a regression test.
+3. Tests: `./scripts/test.sh` (Swift Testing; invented fixtures only), or `./scripts/test.sh --filter
+   <Target>Tests` for one target. Every fix gets a regression test.
    There is no hosted CI; git hooks are the gate (install once per clone with `./scripts/install-hooks.sh`):
    pre-commit scans the staged files for private tokens and builds the staged snapshot (a copy of the index
    under the git directory, never the working tree), and rejects the commit if anything is staged while it
-   runs; commit-msg scans the message; pre-push runs the suite on every pushed commit that is new to the remote and changes Swift code,
-   `Resources/`, `Package.swift`, `Package.resolved` or `companion/`, oldest first, so a broken commit is caught even when a
-   later one reverts it. Each commit is tested in a detached worktree kept at `<git dir>/sprava-hooks/push-tree`
+   runs; commit-msg scans the message; pre-push tests every pushed commit that is new to the remote, oldest
+   first, so a broken commit is caught even when a later one reverts it: the test targets of the targets it
+   changes and of every target that depends on them (`scripts/affected-tests.sh`), or the whole suite when it
+   changes `Package.swift`, `Package.resolved`, `scripts/test.sh` or shared test support; the companion suite
+   for `companion/`; the hook suite for the hooks. Each commit is tested in a detached worktree kept at `<git dir>/sprava-hooks/push-tree`
    with its own `.build`, never in the checkout itself. A push of N such commits
    runs the suite N times, except for trees that already passed: each pass is recorded by tree hash in
    `<git common dir>/sprava-hooks/passed-trees` and not run again. To test a stack once before pushing it, run
    `./scripts/git-hooks/test-tree.sh $(git rev-list --reverse origin/main..HEAD)`. Never bypass the hooks with
-   `--no-verify`; a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`).
-4. The gate before merge: the suite passes; Codex Bugbot's comments on the PR are answered (fixed, or
-   dismissed with a reason) and their threads resolved; a local Codex review on the `gpt-6-astra` model
-   passes. If Bugbot's quota is exhausted, the local review is the gate.
+   `--no-verify`; a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`, `test-gate.sh`).
+4. The gate before merge, with a review budget so a PR converges:
+   - a local Codex review on the `gpt-6-astra` model passes (no MUST-FIX finding);
+   - the cloud review gets one round. Findings in the classes of "Review guidelines" below are fixed; every
+     other finding is answered with a link to an issue that records it, and its thread resolved. A further
+     round only when a fix changed behavior;
+   - `./scripts/merge-pr.sh <number>` runs the whole suite once on the PR's tip, refuses a tip that does not
+     contain the current main (so the tree tested is the tree merged), then merges.
 5. Commit messages say what changed and why, in plain words.
+
+## Review guidelines
+
+For every reviewer, human or model. Sprava has no users yet; it is built for the MVP (`docs/mvp.md`).
+Report a finding only when it can cause, in ordinary use or from an untrusted input (files in a binder's
+`intake/`, capture events, the hub's outbox, MCP requests, anything from the companion relay):
+
+- loss or corruption of a binder, its documents or its backups;
+- a privacy leak: more than a binder's disclosure reaching the hub, anything outside a brain's scope
+  reaching a brain, titles or content in logs, notifications or the heartbeat, anything the relay can read;
+- a security hole reachable from an untrusted input: a path escape, reading credential files, a sandbox
+  bypass, code execution;
+- a crash or hang from an untrusted input or ordinary use;
+- a silent failure that loses something the person wrote or approved;
+- a dependency on a higher layer (`docs/code-structure.md`).
+
+Do not report:
+
+- races that need another program running as the same user (a link swapped in, a rename or a write between
+  Sprava's check and its use, a file grown or replaced under it). The threat model (`docs/architecture.md`
+  section 1) does not defend against them; they are collected in issue #227;
+- missing migrations or backward compatibility for Sprava's own state in the support folder: there is no
+  installed base (decisions.md A14). Binders do keep compatibility (binder-v0, lifeproj);
+- wording in a doc that differs from the code, unless the code breaks a rule the doc states;
+- style, naming, refactoring, or more tests for behavior already tested;
+- a point already answered in a resolved thread of the same PR.
 
 ## Build facts
 
