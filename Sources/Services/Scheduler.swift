@@ -29,6 +29,12 @@ public struct Scheduler: Sendable, Equatable {
     /// The jobs the scheduler starts, in the order a tick starts them. The heartbeat has its own timer.
     public static let order = ["sentinel", "alerts", "summary", "hub", "capture", "clerk", "dashboard", "backup", "intake"]
 
+    /// Checked when each due job starts, since an earlier job in the same tick may have started meanwhile. The
+    /// summary waits for the sentinel's report instead of launching a second scan inside its five-second budget.
+    public static func mayStart(_ key: String, running: Set<String>) -> Bool {
+        !running.contains(key) && (key != "summary" || !running.contains("sentinel"))
+    }
+
     public private(set) var deadlines: [String: Date]
     public private(set) var nextSummary: Date
     /// The day today's summary was sent and the day the sentinel last ran, as `runtime/state.json` keeps them.
