@@ -6,13 +6,14 @@ public final class WatchBox: @unchecked Sendable {
     private let lock = NSLock()
     private var tick: UInt64 = 0
     private var running: [String: Duration] = [:]
-    private let budgets: [String: Duration]
+    /// nil for a job with no wall-clock limit (`JobSpec.budget`); a key not listed gets one second.
+    private let budgets: [String: Duration?]
     /// Awake time since an arbitrary origin (tests pass their own).
     private let awake: @Sendable () -> Duration
 
     public static let origin = SuspendingClock.now
 
-    public init(budgets: [String: Duration], awake: @escaping @Sendable () -> Duration = { WatchBox.origin.duration(to: SuspendingClock.now) }) {
+    public init(budgets: [String: Duration?], awake: @escaping @Sendable () -> Duration = { WatchBox.origin.duration(to: SuspendingClock.now) }) {
         self.budgets = budgets
         self.awake = awake
     }
@@ -29,13 +30,14 @@ public final class WatchBox: @unchecked Sendable {
         return running[key].map { now - $0 }
     }
 
-    /// The tick, and a job running longer than twice its budget plus 10 minutes of awake time.
+    /// The tick, and a job running longer than twice its budget plus 10 minutes of awake time. A job with no budget
+    /// is never wedged by its time: it stops itself when it makes no progress.
     public func read() -> (UInt64, String?) {
         let now = awake()
         lock.lock()
         defer { lock.unlock() }
         for (key, start) in running {
-            let budget = max(budgets[key] ?? .seconds(1), .seconds(1))
+            guard let budget = budgets[key, default: .seconds(1)].map({ max($0, .seconds(1)) }) else { continue }
             if now - start > budget * 2 + .seconds(600) { return (tick, key) }
         }
         return (tick, nil)

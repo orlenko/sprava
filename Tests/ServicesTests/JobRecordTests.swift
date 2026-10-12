@@ -86,6 +86,18 @@ import Testing
         #expect(!early && later)
     }
 
+    @Test func aRunningJobMayNotStartAgain() {
+        var r = JobRecord()
+        r.start(at: t0)
+        do { let ok = r.mayRun(now: t0.addingTimeInterval(30)); #expect(!ok) }
+        // An open breaker past its backoff stays open while a run is still going: no trial is spent on it.
+        r.breaker = "open"
+        r.breakerOpenedAt = t0
+        do { let ok = r.mayRun(now: t0.addingTimeInterval(3600)); #expect(!ok && r.breaker == "open") }
+        r.finish(.ok, at: t0.addingTimeInterval(3600), durationMS: 5, threshold: 3)
+        do { let ok = r.mayRun(now: t0.addingTimeInterval(3601)); #expect(ok) }
+    }
+
     @Test func idleRunsKeepAJobGreenAndSkippedRunsDoNot() {
         let spec = JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3)
         var idle = JobRecord(), skipped = JobRecord()
@@ -130,5 +142,24 @@ import Testing
         #expect(box.runningFor("backup") == .seconds(6 * 3600 + 601))
         box.finished("backup")
         #expect(box.read().1 == nil && box.runningFor("backup") == nil)
+    }
+
+    @Test func aBackupThatKeepsGoingIsNeverWedgedByItsTime() {
+        final class Clock: @unchecked Sendable { let lock = NSLock(); var awake: Duration = .zero }
+        let clock = Clock()
+        let budgets = Scheduler.specs.mapValues(\.budget).merging(RequestQueues.budgets) { job, _ in job }
+        let box = WatchBox(budgets: budgets, awake: { clock.lock.lock(); defer { clock.lock.unlock() }; return clock.awake })
+        #expect(Scheduler.specs["backup"]?.budget == nil)
+        box.started("backup")
+        clock.lock.lock(); clock.awake = .seconds(2 * 86_400); clock.lock.unlock()
+        #expect(box.read().1 == nil)
+        // A job with a budget still wedges, and so does one the box was never told about.
+        box.started("intake")
+        clock.lock.lock(); clock.awake += .seconds(2 * 600 + 601); clock.lock.unlock()
+        #expect(box.read().1 == "intake")
+        box.finished("intake")
+        box.started("unlisted")
+        clock.lock.lock(); clock.awake += .seconds(603); clock.lock.unlock()
+        #expect(box.read().1 == "unlisted")
     }
 }
