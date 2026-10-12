@@ -46,6 +46,40 @@ import Testing
         try JSONEncoder().encode(Invented(note: "outside")).write(to: outside)
         try FileManager.default.createSymbolicLink(at: file, withDestinationURL: outside)
         #expect(throws: StateFile.Unreadable.self) { try StateFile.read(Invented.self, from: file) }
+        // Nor is it replaced by a write: the link and what it points at stay as they were.
+        #expect(throws: (any Error).self) { try StateFile.write(Data("{}".utf8), to: file) }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: file.path) == outside.path)
+        #expect(try JSONDecoder().decode(Invented.self, from: Data(contentsOf: outside)) == Invented(note: "outside"))
+        // A folder in the file's place is not replaced either.
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        #expect(throws: (any Error).self) { try StateFile.write(Data("{}".utf8), to: file) }
+        var isFolder: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: file.path, isDirectory: &isFolder) && isFolder.boolValue)
+    }
+
+    @Test func aLinkPutInPlaceDuringAWriteIsNotReplaced() throws {
+        let base = temporary()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = try #require(try StateDirectory.open(base, create: true))
+        let outside = base.appendingPathComponent("outside.json"), file = base.appendingPathComponent("state.json")
+        try Data("outside".utf8).write(to: outside)
+        #expect(throws: (any Error).self) {
+            try folder.write(Data("{}".utf8), to: "state.json", beforeOpen: {}, beforePublish: { _ in
+                try FileManager.default.createSymbolicLink(at: file, withDestinationURL: outside)
+            })
+        }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: file.path) == outside.path)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: base.path).sorted() == ["outside.json", "state.json"])
+    }
+
+    @Test func dataLargerThanAReadAcceptsIsNeverWritten() throws {
+        let base = temporary()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let file = base.appendingPathComponent("state.json")
+        try StateFile.write(try JSONEncoder().encode(Invented(note: "kept")), to: file)
+        #expect(throws: (any Error).self) { try StateFile.write(Data(count: StateFile.limit + 1), to: file) }
+        #expect(try StateFile.read(Invented.self, from: file) == Invented(note: "kept"))
     }
 
     @Test(arguments: [false, true]) func aLinkedOrSharedFolderIsRefused(shared: Bool) throws {

@@ -167,10 +167,22 @@ public final class StateDirectory: @unchecked Sendable {
         } else if let root { try Self.flushParent(root, flush: flush) }
     }
 
+    /// What is at `name` may be replaced only when it is a plain file or nothing: a link or a folder in its place is
+    /// refused, never replaced, so a state file a read refused is left as it is.
+    private func refuseOtherThanPlainFile(_ name: String) throws {
+        var info = stat()
+        if fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else { throw AtomicFile.Failure(step: "inspect state file", code: errno) }
+            return
+        }
+        guard info.st_mode & S_IFMT == S_IFREG else { throw AtomicFile.Failure(step: "state file is not a plain file", code: EEXIST) }
+    }
+
     func write(_ data: Data, to name: String, beforeOpen: () throws -> Void,
                beforePublish: (String) throws -> Void = { _ in }) throws {
         try Self.component(name)
         try validate()
+        try refuseOtherThanPlainFile(name)
         try flushAnchors()
         try beforeOpen()
         let temporary = ".\(UUID().uuidString).tmp"
@@ -193,6 +205,7 @@ public final class StateDirectory: @unchecked Sendable {
         try AtomicFile.flushToDisk(file, step: "flush state file")
         try beforePublish(temporary)
         try validate()
+        try refuseOtherThanPlainFile(name)
         guard renameat(fd, temporary, fd, name) == 0 else { throw AtomicFile.Failure(step: "rename state file", code: errno) }
         renamed = true
         try flush.directory(fd)

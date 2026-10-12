@@ -40,12 +40,15 @@ public enum StateFile {
     }
 
     /// Replaces the file whole through a handle on its folder, creating the folder (and missing parents) when
-    /// needed. Throws when the folder is a link, is not this user's, or is writable by others.
+    /// needed. Throws when the folder is a link, is not this user's, or is writable by others; when a link or a
+    /// folder stands in the file's place; and when the data is larger than a read accepts, so a runaway encoder
+    /// never replaces a readable file with one no read can take.
     package static func write(_ data: Data, to url: URL) throws {
         try write(data, to: url, beforeOpen: {})
     }
 
     static func write(_ data: Data, to url: URL, beforeOpen: () throws -> Void) throws {
+        guard data.count <= limit else { throw AtomicFile.Failure(step: "state file too large", code: EFBIG) }
         guard let folder = try StateDirectory.open(url.deletingLastPathComponent(), create: true) else {
             throw AtomicFile.Failure(step: "open state directory", code: ENOENT)
         }
