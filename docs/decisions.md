@@ -251,6 +251,17 @@
 - **A10 open.** The MCP server's implementation: a hand-rolled dual-era JSON-RPC server in Swift
   (the official Swift SDK is Tier 3 and covers 2025-11-25 only) is recommended over bundling a
   Python or Node sidecar.
+- **A13 decided (2026-10-12, by the author).** Sprava's own state lives in SQLite (the system
+  `libsqlite3`, no new dependency), not in hand-written JSON files: one database per owning target in
+  the support folder, opened without following links, in WAL mode, every read-change-write in one
+  `BEGIN IMMEDIATE` transaction (cross-process locking, atomic, durable, crash-safe by construction).
+  `SpravaKit.StateStore` is the one door. Binders stay plain files (binder-v0; lifeproj reads them);
+  append-only logs (`jobs.log`, the capture journal) stay files. There is no installed base before
+  the MVP, so nothing is migrated: a state file moves to the store when its code is next changed, and
+  the developer deletes old test state. Where `docs/architecture.md` names a JSON state file in the
+  support folder, this entry governs its storage.
+- **A14 decided (2026-10-12, by the author).** No backward compatibility for Sprava's own state before
+  the MVP ships: no readers for older formats, no migrations. Binders keep theirs (binder-v0, lifeproj).
 
 ## MVP (`docs/mvp.md`)
 
