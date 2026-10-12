@@ -47,6 +47,23 @@ import Testing
         #expect(try store.read { try $0.rows("SELECT * FROM v") } == [row])
     }
 
+    /// Text is bound by its byte count, so a NUL inside it neither ends the text nor makes two keys one.
+    @Test func textWithANulInsideKeepsEveryCharacter() throws {
+        let base = temporary()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = try StateStore.open(base.appendingPathComponent("s.sqlite"), schema: Self.schema)
+        try store.write { t in
+            try t.execute("INSERT INTO counters VALUES (?, 1)", .text("first\u{0}second"))
+            try t.setDocument(Invented(note: "plain", count: 1), key: "note")
+            try t.setDocument(Invented(note: "with nul", count: 2), key: "note\u{0}other")
+            try t.execute("INSERT INTO counters VALUES (?, 2)", .text(""))
+        }
+        #expect(try store.read { try $0.rows("SELECT name FROM counters ORDER BY value") }
+                == [[.text("first\u{0}second")], [.text("")]])
+        #expect(try store.read { try $0.document(Invented.self, key: "note") } == Invented(note: "plain", count: 1))
+        #expect(try store.read { try $0.document(Invented.self, key: "note\u{0}other") } == Invented(note: "with nul", count: 2))
+    }
+
     @Test func aThrowRollsTheWholeTransactionBack() throws {
         let base = temporary()
         defer { try? FileManager.default.removeItem(at: base) }

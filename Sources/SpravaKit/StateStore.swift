@@ -158,7 +158,16 @@ public final class StateStore: @unchecked Sendable {
             case .null: bound = sqlite3_bind_null(statement, position)
             case .integer(let v): bound = sqlite3_bind_int64(statement, position, v)
             case .real(let v): bound = sqlite3_bind_double(statement, position, v)
-            case .text(let v): bound = sqlite3_bind_text(statement, position, v, -1, Self.transient)
+            case .text(let v):
+                // The byte count, not -1: a NUL inside the text would otherwise end it.
+                let bytes = Array(v.utf8)
+                bound = bytes.isEmpty ? sqlite3_bind_text(statement, position, "", 0, Self.transient)
+                    : bytes.withUnsafeBufferPointer { buffer in
+                        buffer.withMemoryRebound(to: CChar.self) {
+                            sqlite3_bind_text64(statement, position, $0.baseAddress, UInt64($0.count), Self.transient,
+                                                UInt8(SQLITE_UTF8))
+                        }
+                    }
             case .blob(let v):
                 bound = v.isEmpty ? sqlite3_bind_zeroblob(statement, position, 0) : v.withUnsafeBytes {
                     sqlite3_bind_blob(statement, position, $0.baseAddress, Int32($0.count), Self.transient)
