@@ -52,6 +52,30 @@ import Testing
         #expect(r.durationsMS.max() == 25)
     }
 
+    @Test func aWedgeCountsAsAFailureAndCarriesNoEarlierCulprit() {
+        var r = JobRecord()
+        r.finish(.error(code: "boom", culprit: "an invented subprocess"), at: t0, durationMS: 1, threshold: 2)
+        r.recordWatchdogExit(at: t0.addingTimeInterval(60), threshold: 2)
+        // One failure and one wedge reach a threshold of two.
+        #expect(r.breaker == "open" && r.consecutiveFailures == 2)
+        #expect(r.lastErrorCode == "wedged" && r.lastErrorCulprit == nil)
+    }
+
+    @Test func theCulpritIsCutAsTheSchemaCountsCharacters() {
+        var r = JobRecord()
+        r.finish(.error(code: "boom", culprit: String(repeating: "e\u{301}", count: 150)), at: t0, durationMS: 1, threshold: 3)
+        #expect(r.lastErrorCulprit?.unicodeScalars.count == 200)
+    }
+
+    @Test func aJobThatNeverSucceededIsDueFromTheRuntimesStartNotItsLastTry() {
+        let spec = JobSpec(key: "hub", budget: .seconds(30), expectedCadence: 300, breakerThreshold: 3)
+        var r = JobRecord()
+        r.start(at: t0.addingTimeInterval(900))
+        r.finish(.error(code: "boom", culprit: nil), at: t0.addingTimeInterval(900), durationMS: 1, threshold: 3)
+        let job = r.heartbeatJob(spec: spec, now: t0.addingTimeInterval(1000), wedged: false, anchor: t0)
+        #expect(job.due_since == ISOTime.string(t0.addingTimeInterval(300)))
+    }
+
     @Test func aStepOutOfRangeWaitsTheNearestBackoffInsteadOfCrashing() {
         var record = JobRecord()
         record.breaker = "open"

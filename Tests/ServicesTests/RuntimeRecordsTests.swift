@@ -71,7 +71,7 @@ import Testing
         let original = try Data(contentsOf: elsewhere)
         try FileManager.default.createSymbolicLink(at: url, withDestinationURL: elsewhere)
         #expect(throws: StateFile.Unreadable.self) { try JobRecords.read(url) }
-        JobRecords.recordWatchdogExit(job: "hub", url: url, now: now)
+        JobRecords.recordWatchdogExit(job: "hub", threshold: 3, url: url, now: now)
         #expect(try Data(contentsOf: elsewhere) == original)
         let (_, aside) = JobRecords.loadAtStart(url, jobs: ["hub"], now: now)
         let kept = try #require(aside)
@@ -91,11 +91,19 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: real.path).sorted() == ["breakers.json", "state.json"])
     }
 
+    @Test func aCountNoDayCanReachIsSetAsideNotTrappedOn() throws {
+        let dir = try folder()
+        try Data(#"{"day":"\#(CalendarDate.today().description)","startsToday":\#(Int.max)}"#.utf8).write(to: RuntimeState.url(dir))
+        #expect(throws: StateFile.Unreadable.self) { try RuntimeState.read(dir) }
+        #expect(!RuntimeState.recordStart(dir))
+        #expect(RuntimeState.loadAtStart(dir, now: now).setAside != nil)
+    }
+
     @Test func twoWatchdogExitsOpenTheBreaker() throws {
         let url = try folder().appendingPathComponent("breakers.json")
-        JobRecords.recordWatchdogExit(job: "hub", url: url, now: now)
+        JobRecords.recordWatchdogExit(job: "hub", threshold: 3, url: url, now: now)
         #expect(JobRecords.load(url).jobs["hub"]?.breaker == "closed")
-        JobRecords.recordWatchdogExit(job: "hub", url: url, now: now)
+        JobRecords.recordWatchdogExit(job: "hub", threshold: 3, url: url, now: now)
         var record = try #require(JobRecords.load(url).jobs["hub"])
         #expect(record.breaker == "open")
         let mayRun = record.mayRun(now: now.addingTimeInterval(30))

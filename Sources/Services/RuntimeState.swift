@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SpravaKit
 
@@ -43,10 +44,16 @@ public struct RuntimeState: Codable, Sendable, Equatable {
         return (state, aside)
     }
 
-    /// Reads, changes and saves. A file that cannot be read is left for the next start to set aside and the change
-    /// is dropped; returns whether it was saved.
+    /// Reads, changes and saves under `state.lock` beside the file, since a runtime refused the lease records its
+    /// refusal from a second process. A file that cannot be read is left for the next start to set aside and the
+    /// change is dropped; returns whether it was saved.
     @discardableResult
     public static func update(_ dir: URL, _ change: (inout RuntimeState) -> Void) -> Bool {
+        let fd = open(dir.appendingPathComponent("state.lock").path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 { guard errno == EINTR else { return false } }
+        defer { flock(fd, LOCK_UN) }
         guard var state = try? read(dir) else { return false }
         change(&state)
         guard let data = try? JSONEncoder().encode(state), (try? StateFile.write(data, to: url(dir))) != nil else { return false }
@@ -66,5 +73,9 @@ extension RuntimeState {
         refusalsToday = try c.decodeIfPresent(Int.self, forKey: .refusalsToday) ?? 0
         lastSummaryDate = try c.decodeIfPresent(String.self, forKey: .lastSummaryDate)
         lastSentinelDate = try c.decodeIfPresent(String.self, forKey: .lastSentinelDate)
+        // A count no day can reach is unreadable, so the start sets the file aside rather than trapping on `+= 1`.
+        guard (0...1_000_000).contains(startsToday), (0...1_000_000).contains(refusalsToday) else {
+            throw DecodingError.dataCorruptedError(forKey: .startsToday, in: c, debugDescription: "count out of range")
+        }
     }
 }

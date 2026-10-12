@@ -8,7 +8,9 @@ public struct JobRecords: Codable, Sendable {
 
     public init() {}
 
-    public static func load(_ url: URL) -> JobRecords {
+    /// For display and tests only: an unreadable file reads as no records. The runtime starts through `loadAtStart`,
+    /// which never treats an unreadable file as closed breakers.
+    static func load(_ url: URL) -> JobRecords {
         (try? read(url)) ?? JobRecords()
     }
 
@@ -35,10 +37,11 @@ public struct JobRecords: Codable, Sendable {
     }
 
     /// Records a watchdog exit straight to disk, without the runtime's state queue, which may be the thing that hung.
-    public static func recordWatchdogExit(job: String, url: URL, now: Date = Date()) {
+    /// It takes no lock: the watchdog must never wait on anything the hung state queue may hold.
+    public static func recordWatchdogExit(job: String, threshold: Int, url: URL, now: Date = Date()) {
         // An unreadable file is left for the next start to set aside, never saved over.
         guard var records = try? read(url) else { return }
-        records.jobs[job, default: JobRecord()].recordWatchdogExit(at: now)
+        records.jobs[job, default: JobRecord()].recordWatchdogExit(at: now, threshold: threshold)
         try? records.save(url)
     }
 
