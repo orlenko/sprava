@@ -72,6 +72,55 @@ import Testing
         }
     }
 
+    @Test func nullWhereTheSchemaAllowsOnlyAValueIsUnreadable() throws {
+        let url = try folder().appendingPathComponent(Heartbeat.fileName)
+        let encoded = try JSONSerialization.jsonObject(with: try beat().encoded()) as! [String: Any]
+        var cases: [[String: Any]] = Heartbeat.neverNull.top.map { key in var o = encoded; o[key] = NSNull(); return o }
+        for key in Heartbeat.neverNull.job {
+            var o = encoded, jobs = o["jobs"] as! [String: Any], job = jobs["backup:b2"] as! [String: Any]
+            job[key] = NSNull(); jobs["backup:b2"] = job; o["jobs"] = jobs
+            cases.append(o)
+        }
+        for key in Heartbeat.neverNull.model {
+            var o = encoded, model: [String: Any] = ["availability": "available"]
+            model[key] = NSNull(); o["model"] = model
+            cases.append(o)
+        }
+        for object in cases {
+            try JSONSerialization.data(withJSONObject: object).write(to: url)
+            #expect(Heartbeat.read(url) == .failure(.invalid), "\(object)")
+        }
+        // Null is fine where the schema allows it.
+        var o = encoded
+        o["last_wake_at"] = NSNull(); o["model"] = ["availability": "available", "last_success": NSNull()]
+        try JSONSerialization.data(withJSONObject: o).write(to: url)
+        #expect((try? Heartbeat.read(url).get()) != nil)
+    }
+
+    @Test func aLinkedRuntimeFolderIsUnreadable() throws {
+        let dir = try folder()
+        let real = dir.appendingPathComponent("elsewhere"), runtime = dir.appendingPathComponent("runtime")
+        try AtomicFile.makePrivateFolder(real)
+        try AtomicFile.write(try beat().encoded(), to: real.appendingPathComponent(Heartbeat.fileName))
+        try FileManager.default.createSymbolicLink(at: runtime, withDestinationURL: real)
+        #expect(Heartbeat.read(runtime.appendingPathComponent(Heartbeat.fileName)) == .failure(.invalid))
+        #expect(Heartbeat.read(dir.appendingPathComponent("missing/\(Heartbeat.fileName)")) == .failure(.missing))
+    }
+
+    @Test func backupIsGradedByItsOwnThresholds() {
+        let job = Heartbeat.Job(last_success: ISOTime.string(now.addingTimeInterval(-5 * 86_400)), last_outcome: "ok",
+                                expected_cadence_s: 86_400)
+        let started = now.addingTimeInterval(-30 * 86_400)
+        // Five days late: red for a daily job, amber for a binder's backup, which turns red after seven.
+        #expect(HealthGrade.job(job, key: "summary", startedAt: started, lastWake: nil, now: now) == .red)
+        #expect(HealthGrade.job(job, key: "backup:b2", startedAt: started, lastWake: nil, now: now) == .amber)
+        #expect(HealthGrade.job(job, key: "backup:b2", startedAt: started, lastWake: nil,
+                                now: now.addingTimeInterval(2 * 86_400 + 1)) == .red)
+        let fresh = Heartbeat.Job(last_success: ISOTime.string(now.addingTimeInterval(-47 * 3600)), last_outcome: "ok",
+                                  expected_cadence_s: 86_400)
+        #expect(HealthGrade.job(fresh, key: "backup:b2", startedAt: started, lastWake: nil, now: now) == .green)
+    }
+
     @Test func aJobWithoutAKeyTheSchemaRequiresIsUnreadable() throws {
         let url = try folder().appendingPathComponent(Heartbeat.fileName)
         let encoded = try JSONSerialization.jsonObject(with: try beat().encoded()) as! [String: Any]

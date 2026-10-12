@@ -156,18 +156,24 @@ public struct Heartbeat: Codable, Sendable, Equatable {
         return try encoder.encode(self)
     }
 
-    /// Reads and validates the file. A file that is missing fields, has wrong types or impossible values is
-    /// "health data unreadable", never green (architecture 3.3); so is a link, a file of another user's, or one
-    /// that cannot be read just now. Only an absent file is missing.
+    /// Reads and validates the file. A file that is missing fields, has wrong types, holds null where the schema
+    /// allows only a value, or impossible values is "health data unreadable", never green (architecture 3.3); so is
+    /// a link in place of the file or of the runtime folder, a file of another user's, or one that cannot be read
+    /// just now. Only an absent file (or runtime folder) is missing.
     public static func read(_ url: URL) -> Result<Heartbeat, ReadError> {
+        let outcome: SafeFile.Outcome
+        do {
+            guard let folder = try StateDirectory.open(url.deletingLastPathComponent()) else { return .failure(.missing) }
+            outcome = try folder.read(url.lastPathComponent, limit: 1024 * 1024)
+        } catch { return .failure(.invalid) }
         let data: Data
-        switch SafeFile.read(url, limit: 1024 * 1024) {
+        switch outcome {
         case .ok(let read): data = read
         case .missing: return .failure(.missing)
         case .refused, .unreadable: return .failure(.invalid)
         }
-        guard let beat = try? JSONDecoder().decode(Heartbeat.self, from: data) else { return .failure(.invalid) }
-        guard beat.isValid else { return .failure(.invalid) }
+        guard let beat = try? JSONDecoder().decode(Heartbeat.self, from: data), Self.hasNoMisplacedNull(data),
+              beat.isValid else { return .failure(.invalid) }
         return .success(beat)
     }
 

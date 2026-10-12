@@ -20,6 +20,24 @@ extension Heartbeat {
 
     /// A date-time when present.
     static func time(_ text: String?) -> Bool { text.map { ISOTime.date($0) != nil } ?? true }
+
+    /// Members the schema lets a file leave out but never set to null; decoding alone reads both as absent.
+    static let neverNull = (top: ["restarts_today", "alerts", "runtime_key", "stage_crashes", "model", "outbound_today"],
+                            model: ["context_size", "variant", "errors_24h"],
+                            job: ["watchdog_exits", "median_ms", "slowest_of_twenty_ms"])
+
+    static func hasNoMisplacedNull(_ data: Data) -> Bool {
+        guard case .object(let top)? = try? JSONParser.parse(data).value else { return false }
+        func clean(_ object: JSONObject, _ keys: [String]) -> Bool { keys.allSatisfy { object[$0] != .null } }
+        guard clean(top, neverNull.top) else { return false }
+        if case .object(let model)? = top["model"], !clean(model, neverNull.model) { return false }
+        guard case .object(let jobs)? = top["jobs"] else { return true }
+        return jobs.entries.allSatisfy { entry in
+            guard case .object(let job) = entry.value else { return true }
+            if case .object(let error)? = job["last_error"], error["culprit"] == .null { return false }
+            return clean(job, neverNull.job)
+        }
+    }
 }
 
 extension Heartbeat.Model {

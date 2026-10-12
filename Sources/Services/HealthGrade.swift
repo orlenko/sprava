@@ -20,18 +20,26 @@ public enum HealthGrade: Int, Sendable, Comparable {
         return .red
     }
 
-    /// A job is red when its breaker is open or it is wedged, amber after a failure or when overdue by twice
-    /// its cadence, red at four times. The clock starts at the latest of its last success, its last run with
-    /// nothing set up to do, the last wake and the runtime's start, so a week with the lid closed, or a Mac with no
-    /// hub, does not paint a job red.
-    public static func job(_ job: Heartbeat.Job, startedAt: Date, lastWake: Date?, now: Date) -> HealthGrade {
+    /// A job is red when its breaker is open or it is wedged, amber after a failure or when overdue: past twice its
+    /// cadence amber and four times red, or the job's own thresholds (`overdue(key:cadence:)`). The clock starts at
+    /// the latest of its last success, its last run with nothing set up to do, the last wake and the runtime's
+    /// start, so a week with the lid closed, or a Mac with no hub, does not paint a job red.
+    public static func job(_ job: Heartbeat.Job, key: String = "", startedAt: Date, lastWake: Date?, now: Date) -> HealthGrade {
         if job.breaker == "open" || job.wedged { return .red }
         var grade: HealthGrade = job.consecutive_failures > 0 ? .amber : .green
         if let cadence = job.expected_cadence_s {
             let base = [ISOTime.date(job.last_success), ISOTime.date(job.last_idle), lastWake, startedAt].compactMap { $0 }.max()!
             let age = now.timeIntervalSince(base)
-            if age > 4 * Double(cadence) { grade = .red } else if age > 2 * Double(cadence) { grade = max(grade, .amber) }
+            let (amber, red) = overdue(key: key, cadence: TimeInterval(cadence))
+            if age > red { grade = .red } else if age > amber { grade = max(grade, .amber) }
         }
         return grade
+    }
+
+    /// When a job is amber and when red for being overdue. Backup, per binder (`backup:<id>`), carries its own:
+    /// amber after 48 hours, red after 7 days (architecture 3.4, 9.3).
+    public static func overdue(key: String, cadence: TimeInterval) -> (amber: TimeInterval, red: TimeInterval) {
+        if key == "backup" || key.hasPrefix("backup:") { return (48 * 3600, 7 * 86_400) }
+        return (2 * cadence, 4 * cadence)
     }
 }
