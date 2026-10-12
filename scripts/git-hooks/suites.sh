@@ -1,10 +1,10 @@
 # Shared by pre-push and test-tree.sh (sourced, not run): which suites a commit needs, where it is tested, and the
 # cache of trees that passed.
-# A commit needs the Swift suite (./scripts/test.sh) when its own changes touch what the package builds from or
+# A commit needs Swift tests (./scripts/test.sh, for the targets scripts/affected-tests.sh names) when its own changes touch what the package builds from or
 # how it is tested: Sources/, Tests/, Resources/ (the manifest links a plist from there), Package.swift, the
 # dependency lockfile Package.resolved, scripts/test.sh, or any .swift file; the companion suite (companion/test.sh)
-# when they touch companion/; and the hook suite (scripts/git-hooks/test-hooks.sh and test-pr-check.sh, in throwaway
-# repositories) when they touch the hooks, scripts/install-hooks.sh or scripts/pr-check.sh. Its own changes are
+# when they touch companion/; and the hook suite (scripts/git-hooks/test-hooks.sh, test-pr-check.sh and test-gate.sh, in throwaway
+# repositories) when they touch the hooks or the scripts beside them that the gate runs. Its own changes are
 # those against its first parent (for a merge, what it brings to that line), or every file for a root commit;
 # renames count as a removal and an addition, so both paths are seen.
 # A suite passes only when its runner exits with status zero; the summary line is only reported. A pass is then
@@ -41,8 +41,18 @@ checkout_tree() {
     fi
 }
 
-run_suite() {    # <folder> <runner> <log>
-    (cd "$1" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && "$2") > "$3" 2>&1 </dev/null 9>&-
+run_suite() {    # <folder> <runner> <log> [<runner argument>...]
+    folder=$1; runner=$2; log=$3; shift 3
+    (cd "$folder" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && "$runner" "$@") > "$log" 2>&1 </dev/null 9>&-
+}
+
+# Which Swift tests a commit needs: ALL, NONE or a --filter pattern (scripts/affected-tests.sh in the commit's own
+# tree, against its first parent). SPRAVA_FULL_SUITE=1, a root commit, or a tree without the script means ALL.
+swift_scope() {  # <folder> <sha>
+    if [ "${SPRAVA_FULL_SUITE:-0}" = 1 ] || ! git rev-parse -q --verify "$2^1" >/dev/null || [ ! -x "$1/scripts/affected-tests.sh" ]; then
+        echo ALL; return
+    fi
+    (cd "$1" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && ./scripts/affected-tests.sh "$2^1" "$2" 2>/dev/null) </dev/null 9>&- || echo ALL
 }
 
 drop_cached() {  # clears need_swift, need_companion and need_hooks for suites already recorded as passed for $tree_sha
@@ -80,7 +90,7 @@ test_commit() {
     need_swift=0; need_companion=0; need_hooks=0
     grep -qE '^(Sources|Tests|Resources)/|^Package\.(swift|resolved)$|^scripts/test\.sh$|\.swift$' "$work/changed" && need_swift=1    # as in pre-commit
     grep -q '^companion/' "$work/changed" && need_companion=1
-    grep -qE '^scripts/(git-hooks/|install-hooks\.sh$|pr-check\.sh$)' "$work/changed" && need_hooks=1
+    grep -qE '^scripts/(git-hooks/|install-hooks\.sh$|pr-check\.sh$|affected-tests\.sh$|merge-pr\.sh$)' "$work/changed" && need_hooks=1
     if [ $((need_swift + need_companion + need_hooks)) -eq 0 ]; then commits_skipped=$((commits_skipped + 1)); return 0; fi
     drop_cached
     [ $((need_swift + need_companion + need_hooks)) -eq 0 ] && return 0
@@ -101,10 +111,18 @@ $who: could not check out $short ($label) to test it"
 
     if [ "$need_swift" -eq 1 ]; then
         if [ -f "$dir/Package.swift" ] && [ -x "$dir/scripts/test.sh" ]; then
-            suites_run=$((suites_run + 1))
-            if run_suite "$dir" ./scripts/test.sh "$work/out"; then
-                record_pass swift "$tree_sha"
+            scope=$(swift_scope "$dir" "$sha")
+            # The whole suite is recorded as "swift <tree>"; part of it as "swift:<pattern> <tree>".
+            if [ "$scope" = ALL ]; then suite=swift; set -- ; else suite="swift:$scope"; set -- --filter "$scope"; fi
+            if [ "$scope" = NONE ]; then
+                echo "$who: $short ($label): no test target is affected" >&2
+            elif [ "$suite" != swift ] && passed_before "$suite" "$tree_sha"; then
+                suites_cached=$((suites_cached + 1))
+                echo "$who: $short ($label): $scope already passed for this tree" >&2
+            elif suites_run=$((suites_run + 1)) && run_suite "$dir" ./scripts/test.sh "$work/out" "$@"; then
+                record_pass "$suite" "$tree_sha"
                 summary=$(grep "^All test runs passed" "$work/out" | tail -1 || true)
+                [ "$scope" = ALL ] || summary="${summary:-Swift tests passed} ($scope)"
                 echo "$who: $short ($label): ${summary:-Swift tests passed}" >&2
             else
                 status=$?
@@ -136,7 +154,8 @@ $who: companion tests failed for $short ($label): companion/test.sh exit status 
         if [ -x "$dir/scripts/git-hooks/test-hooks.sh" ]; then
             suites_run=$((suites_run + 1))
             if run_suite "$dir" scripts/git-hooks/test-hooks.sh "$work/out" \
-                && { [ ! -x "$dir/scripts/git-hooks/test-pr-check.sh" ] || run_suite "$dir" scripts/git-hooks/test-pr-check.sh "$work/out"; }; then
+                && { [ ! -x "$dir/scripts/git-hooks/test-pr-check.sh" ] || run_suite "$dir" scripts/git-hooks/test-pr-check.sh "$work/out"; } \
+                && { [ ! -x "$dir/scripts/git-hooks/test-gate.sh" ] || run_suite "$dir" scripts/git-hooks/test-gate.sh "$work/out"; }; then
                 record_pass hooks "$tree_sha"
                 echo "$who: $short ($label): hook tests passed" >&2
             else
@@ -149,6 +168,30 @@ $who: hook tests failed for $short ($label): exit status $status"
         elif [ -e "$dir/scripts/git-hooks" ]; then
             fail "$who: $short ($label) changes the hooks but has no executable scripts/git-hooks/test-hooks.sh"
         fi
+    fi
+    release_lock
+}
+
+# The whole Swift suite on one commit, for scripts/merge-pr.sh: run in the kept worktree under the same lock and
+# recorded as "swift <tree>", or skipped when that tree already passed. The caller sources lock.sh too.
+test_full() {    # <sha> <prefix for messages>
+    sha=$1; who=$2
+    short=$(git rev-parse --short "$sha")
+    tree_sha=$(git rev-parse "$sha^{tree}") || fail "$who: could not read the tree of $short"
+    if passed_before swift "$tree_sha"; then echo "$who: $short: the whole suite already passed for this tree" >&2; return 0; fi
+    mkdir -p "$hooks" || fail "$who: could not create $hooks"
+    hold_lock "$hooks/push-tree.lock" "$who" || fail "$who: could not lock $hooks/push-tree.lock"
+    checkout_tree "$sha" > "$work/git.log" 2>&1 || fail "$(tail -5 "$work/git.log")
+$who: could not check out $short to test it"
+    if run_suite "$tree" ./scripts/test.sh "$work/out"; then
+        record_pass swift "$tree_sha"
+        echo "$who: $short: $(grep "^All test runs passed" "$work/out" | tail -1 || echo 'the whole suite passed')" >&2
+    else
+        status=$?
+        details=$(grep -E "✘|error:|^Tests failed" "$work/out" | head -20 || true)
+        [ -n "$details" ] || details=$(tail -30 "$work/out")
+        fail "$details
+$who: the whole suite failed for $short: scripts/test.sh exit status $status"
     fi
     release_lock
 }
