@@ -52,14 +52,15 @@ let package = Package(
         .testTarget(name: "BrainsTests", dependencies: ["Brains", "SpravaKit"]),
 
         // Runtime services arrive separately from commands and scheduling.
-        .target(name: "Services", dependencies: ["Backup", "Hub", "Capture", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .target(name: "Services", dependencies: ["Backup", "Hub", "Capture", "Clerk", "Extract", "Shelf", "BinderStore", "BinderFormat",
+                                                 "SpravaKit"]),
         .testTarget(name: "ServicesTests", dependencies: ["Services", "CaptureTestSupport", "Capture", "ClerkTestSupport", "Clerk",
                                                           "Extract", "Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport",
                                                           "SpravaKit"]),
 
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
-        .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Shelf", "BinderStore", "SpravaKit"]),
+        .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Clerk", "Capture", "Shelf", "BinderStore", "SpravaKit"]),
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
                                                          "-Xlinker", "Resources/sprava-extract-Info.plist"])]),
