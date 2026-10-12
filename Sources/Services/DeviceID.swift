@@ -31,6 +31,14 @@ public enum DeviceID {
         return stored.id
     }
 
+    /// The id, read only: nil when there is none yet or the file names another Mac (a copy, so no binder is this
+    /// Mac's yet). Never makes, binds or sets aside an id; for readers such as the app's Health page.
+    public static func existing(support: URL, machine: String? = nil) throws -> String? {
+        guard let stored = try read(support.appendingPathComponent("device-id")) else { return nil }
+        if let bound = stored.machine, try bound != (machine ?? thisMac()) { return nil }
+        return stored.id
+    }
+
     static func settle(_ folder: StateDirectory, path: String, machine: String, now: Date) throws {
         if let stored = try read(folder, path: path) {
             switch stored.machine {

@@ -7,6 +7,7 @@ import SpravaKit
 extension Commands {
     static let settingsCommands: [String: Handler] = [
         "binder_settings": { c, _, r, now, today in try c.binderSettings(r, now: now, today: today) },
+        "doctor": { c, _, r, now, today in try c.doctor(r, now: now, today: today) },
     ]
 
     /// The longest description the filing list keeps (`FilingList.set`).
@@ -32,5 +33,13 @@ extension Commands {
             try list.set(f, entry)
         }
         return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
+    }
+
+    func doctor(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
+        // The same read the app's Health page makes in its own process while the runtime is stopped.
+        let findings = try HealthSnapshot.doctorFindings(support: support, deviceID: deviceID)
+        return JSONObject([(key: "findings", value: .array(findings.map {
+            .obj([("level", .string($0.level.rawValue)), ("binder", $0.binder.map(JSONValue.string) ?? .null), ("text", .string($0.text))])
+        }))])
     }
 }
