@@ -194,8 +194,15 @@ extension JobRecord {
         // A record this code could never have written is unreadable, so the start sets the file aside and every job
         // gets a half-open trial (`JobRecords.loadAtStart`): an out-of-range step would crash every launch, and an
         // open breaker with no opening time would pause its job for good.
+        // So is anything the heartbeat would refuse (an unknown outcome, an error code it cannot carry) and any count
+        // the next increment could overflow.
+        let counts = 0...1_000_000
         guard ["closed", "open", "half_open"].contains(breaker), Self.backoff.indices.contains(backoffStep),
-              consecutiveFailures >= 0, watchdogExits >= 0, breaker != "open" || breakerOpenedAt != nil else {
+              counts.contains(consecutiveFailures), counts.contains(watchdogExits), breaker != "open" || breakerOpenedAt != nil,
+              ["none", "ok", "error", "timeout", "skipped"].contains(lastOutcome),
+              lastErrorCode.map({ $0.wholeMatch(of: /[a-z_]+/) != nil }) ?? true,
+              (lastErrorCulprit?.unicodeScalars.count ?? 0) <= 200,
+              durationsMS.count <= 20, durationsMS.allSatisfy({ (0...86_400_000).contains($0) }) else {
             throw DecodingError.dataCorruptedError(forKey: .breaker, in: c, debugDescription: "breaker state out of range")
         }
     }

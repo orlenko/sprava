@@ -62,6 +62,29 @@ import Testing
         }
     }
 
+    @Test func recordsTheHeartbeatWouldRefuseOrThatCouldOverflowAreSetAside() throws {
+        let url = try folder().appendingPathComponent("breakers.json")
+        for bad in [#""lastOutcome":"bogus""#, #""consecutiveFailures":\#(Int.max)"#, #""watchdogExits":2000000"#,
+                    #""lastErrorCode":"Not A Code""#, #""durationsMS":[-5]"#] {
+            try Data(#"{"jobs":{"hub":{\#(bad)}}}"#.utf8).write(to: url)
+            #expect(throws: StateFile.Unreadable.self, "\(bad)") { try JobRecords.read(url) }
+        }
+    }
+
+    @Test func aFileTheStartCouldNotSetAsideIsNeverSavedOver() throws {
+        let dir = try folder()
+        let url = dir.appendingPathComponent("breakers.json")
+        let bad = Data("{\"jobs\": {".utf8)
+        try bad.write(to: url)
+        // The set-aside name is taken, so the rename fails and the file stays where it is.
+        let stamp = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
+        try Data("taken".utf8).write(to: dir.appendingPathComponent("breakers.json.unreadable-" + stamp))
+        let (records, aside) = JobRecords.loadAtStart(url, jobs: ["hub"], now: now)
+        #expect(aside == nil)
+        #expect(throws: (any Error).self) { try records.save(url) }
+        #expect(try Data(contentsOf: url) == bad)
+    }
+
     @Test func aLinkInPlaceOfTheBreakersIsMovedAsideNotFollowed() throws {
         let dir = try folder()
         let url = dir.appendingPathComponent("breakers.json"), elsewhere = dir.appendingPathComponent("elsewhere.json")

@@ -45,7 +45,9 @@ public struct JobRecords: Codable, Sendable {
         try? records.save(url)
     }
 
+    /// Refuses to replace a file that cannot be read: one the start could not set aside is never saved over.
     public func save(_ url: URL) throws {
+        _ = try Self.read(url)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
