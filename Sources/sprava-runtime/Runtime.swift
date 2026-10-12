@@ -1,4 +1,5 @@
 import BinderStore
+import Clerk
 import Darwin
 import Foundation
 import IOKit.pwr_mgt
@@ -41,6 +42,15 @@ final class Runtime: @unchecked Sendable {
     let watch = WatchBox(budgets: Scheduler.specs.mapValues(\.budget).merging(RequestQueues.budgets) { job, _ in job })
     /// Jobs run concurrently; the opaque binder id file is read, changed and written by one at a time.
     let idsLock = NSLock()
+    /// Cards Sprava wrote whose digests could not be recorded yet.
+    let trustBacklog: TrustBacklog
+    /// File events on the capture root start a sweep at once; one that comes during a sweep runs it again.
+    var captureSources: [String: DispatchSourceFileSystemObject] = [:]
+    var captureAgain = false
+    /// IOKit power notifications (`Runtime+Health.swift`).
+    var powerPort: IONotificationPortRef?
+    var rootPort: io_connect_t = 0
+    var notifier: io_object_t = 0
 
     var breakersURL: URL { runtimeDir.appendingPathComponent("breakers.json") }
 
@@ -48,6 +58,7 @@ final class Runtime: @unchecked Sendable {
         self.support = support
         runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
         self.lease = lease
+        trustBacklog = TrustBacklog(support: support)
         let (loaded, setAside) = JobRecords.loadAtStart(runtimeDir.appendingPathComponent("breakers.json"),
                                                         jobs: Array(Scheduler.specs.keys))
         records = loaded
@@ -113,13 +124,64 @@ final class Runtime: @unchecked Sendable {
         }
     }
 
-    /// The jobs this runtime runs so far; the others join with their areas.
+    /// The jobs this runtime runs so far; backup joins with its area.
     func body(for key: String) -> (@Sendable () -> JobOutcome)? {
         switch key {
         case "sentinel": { [unowned self] in sentinel() }
         case "summary": { [unowned self] in summary() }
         case "alerts": { [unowned self] in checkAlerts() }
+        case "capture": { [unowned self] in capture() }
+        case "intake": { [unowned self] in IntakeJob.run(jobContext()) }
+        case "clerk": { [unowned self] in clerk() }
+        case "dashboard": { [unowned self] in DashboardJob.run(jobContext()) { notify(title: $0, body: $1, id: $2) } }
+        case "hub": { [unowned self] in HubJob.run(jobContext()) }
         default: nil
+        }
+    }
+
+    /// What the area jobs need from the runtime, read on the state queue.
+    func jobContext() -> JobContext {
+        let support = support
+        let (commands, deviceIDError) = queue.sync { (self.commands, self.deviceIDError) }
+        return JobContext(support: support, commands: commands, deviceIDError: deviceIDError,
+                          rows: { try ShelfStore(supportDirectory: support).rowsForJobs() }, commandQueue: xpc?.queue,
+                          log: { [weak self] in self?.log($0) }, idsLock: idsLock, trustBacklog: trustBacklog)
+    }
+
+    func capture() -> JobOutcome {
+        let context = jobContext()
+        let outcome = CaptureJob.run(context)
+        if let root = context.commands?.inbox.root { queue.async { [self] in watchCaptureFolders(root) } }
+        return outcome
+    }
+
+    func clerk() -> JobOutcome {
+        let (outcome, read) = ClerkJob.run(jobContext(), model: AppleClerkModel.load().map { $0 as any ClerkModel }.mapError { $0 as Error })
+        if read > 0 { queue.async { [self] in model?.last_success = ISOTime.string(Date()) } }
+        return outcome
+    }
+
+    /// File events on the capture root and each device folder start a sweep at once; the 15-second sweep is the
+    /// guarantee when an event is missed.
+    func watchCaptureFolders(_ root: URL) {
+        var folders = [root]
+        folders += ((try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
+            .filter { SafeFile.isTrustedFolder($0) }
+        for folder in folders where captureSources[folder.path] == nil {
+            let fd = open(folder.path, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: queue)
+            source.setEventHandler { [weak self] in
+                guard let self else { return }
+                if source.data.contains(.delete) || source.data.contains(.rename) {
+                    source.cancel()
+                    captureSources[folder.path] = nil
+                }
+                run("capture") { [unowned self] in capture() }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            captureSources[folder.path] = source
         }
     }
 
@@ -131,6 +193,7 @@ final class Runtime: @unchecked Sendable {
         guard Scheduler.mayStart(key, running: running) else { return }
         let now = Date()
         var record = records.jobs[key] ?? JobRecord()
+        if record.running, key == "capture" { captureAgain = true }   // an event during a sweep: sweep once more
         guard !record.running, record.mayRun(now: now) else { return }
         record.start(at: now)
         records.jobs[key] = record
@@ -157,12 +220,18 @@ final class Runtime: @unchecked Sendable {
 
     func finish(_ key: String, _ outcome: JobOutcome, started: DispatchTime) {
         watch.finished(key)
+        defer {
+            if key == "capture", captureAgain {
+                captureAgain = false
+                run("capture") { [unowned self] in capture() }
+            }
+        }
         let ms = Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000)
         let final = timeouts.removeValue(forKey: key) != nil ? JobOutcome.timeout : outcome
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms,
                                                        threshold: Scheduler.specs[key]?.breakerThreshold ?? 3)
-        if key != "heartbeat" || final != .ok {
+        if !["heartbeat", "capture", "intake", "clerk", "dashboard"].contains(key) || final != .ok {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)
@@ -227,114 +296,5 @@ final class Runtime: @unchecked Sendable {
         let ok = Notifier.post(title: title, body: body, id: id)
         if !ok { log("notification_failed id=\(id.prefix(32))") }
         return ok
-    }
-
-    // MARK: - Heartbeat, watchdog, sleep and wake (architecture 3.3)
-
-    func beat() {
-        let now = Date()
-        tick &+= 1
-        watch.beat(tick)
-        records.jobs["heartbeat", default: JobRecord()].start(at: now)
-        let started = DispatchTime.now()
-        var outcome = JobOutcome.ok
-        do {
-            try StateFile.write(try heartbeat(now: now).encoded(), to: runtimeDir.appendingPathComponent(Heartbeat.fileName))
-        } catch {
-            outcome = .error(code: "write_failed", culprit: "\(error)")
-        }
-        finish("heartbeat", outcome, started: started)
-    }
-
-    func heartbeat(now: Date) -> Heartbeat {
-        var jobs: [String: Heartbeat.Job] = [:]
-        for (key, spec) in Scheduler.specs {
-            var record = records.jobs[key] ?? JobRecord()
-            if key == "heartbeat" { record.running = false }   // this beat is the one being written
-            // Awake time, as the watchdog counts it: a job the Mac slept through is not wedged.
-            // A job with no budget (backup) is never wedged by time; its own cutoff stops it when it makes no progress.
-            let wedged = record.running && spec.budget.map { budget in
-                watch.runningFor(key).map { $0 > max(budget, .seconds(1)) * 2 } ?? false
-            } ?? false
-            // Due times count from this start when a job has never run, so a fresh runtime is not overdue at once.
-            jobs[key] = record.heartbeatJob(spec: spec, now: now, wedged: wedged, anchor: startedAt)
-        }
-        return Heartbeat(pid: getpid(), started_at: ISOTime.string(startedAt), beat_at: ISOTime.string(now),
-                         last_wake_at: lastWake.map { ISOTime.string($0) }, build: Self.build, xpc_protocol: Self.xpcProtocol,
-                         lease: .init(inode: lease.inode, duplicates_refused_today: refusalsToday),
-                         restarts_today: max(0, restartsToday - 1), alerts: alerts, runtime_key: nil, stage_crashes: [:],
-                         model: model, outbound_today: [:], jobs: jobs)
-    }
-
-    /// A thread of its own reads the tick on a clock that stops while the Mac sleeps; `Watchdog.verdict` decides.
-    func startWatchdog() {
-        let thread = Thread { [weak self] in
-            let clock = SuspendingClock()
-            var lastTick: UInt64 = 0
-            var lastChange = clock.now
-            while let self {
-                Thread.sleep(forTimeInterval: 60)
-                // Read through the lock-protected box, never the state queue, which may be what hung.
-                let (tick, wedged) = watch.read()
-                if tick != lastTick { lastTick = tick; lastChange = clock.now }
-                switch Watchdog.verdict(sinceTickMoved: lastChange.duration(to: clock.now), wedged: wedged) {
-                case .fine: continue
-                case .stalled:
-                    log("watchdog stalled exit=\(Watchdog.exitStatus)")
-                case .wedged(let job):
-                    JobRecords.recordWatchdogExit(job: job, threshold: Scheduler.specs[job]?.breakerThreshold ?? 3,
-                                                  url: breakersURL)
-                    log("watchdog wedged job=\(job) exit=\(Watchdog.exitStatus)")
-                }
-                exit(Watchdog.exitStatus)
-            }
-        }
-        thread.name = "sprava.watchdog"
-        thread.start()
-    }
-
-    var powerPort: IONotificationPortRef?
-    var rootPort: io_connect_t = 0
-    var notifier: io_object_t = 0
-
-    /// IOKit power notifications (spike i): sleep is allowed at once; a wake beats and catches up.
-    func startPowerNotifications() {
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        rootPort = IORegisterForSystemPower(refcon, &powerPort, { refcon, _, messageType, argument in
-            guard let refcon else { return }
-            let runtime = Unmanaged<Runtime>.fromOpaque(refcon).takeUnretainedValue()
-            switch messageType {
-            case 0xE000_0270, 0xE000_0280:   // kIOMessageCanSystemSleep, kIOMessageSystemWillSleep
-                IOAllowPowerChange(runtime.rootPort, Int(bitPattern: argument))
-            case 0xE000_0300:   // kIOMessageSystemHasPoweredOn
-                runtime.queue.async { runtime.woke() }
-            default:
-                break
-            }
-        }, &notifier)
-        if let powerPort { IONotificationPortSetDispatchQueue(powerPort, queue) } else { log("power_notifications unavailable") }
-    }
-
-    func woke() {
-        lastWake = Date()
-        log("wake")
-        beat()
-        scheduler.woke(now: Date())
-    }
-
-    func installSignalHandlers() {
-        for sig in [SIGTERM, SIGINT] {
-            signal(sig, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: sig, queue: queue)
-            source.setEventHandler { [weak self] in
-                if let self {
-                    log("exit reason=signal_\(sig)")
-                    try? records.save(breakersURL)
-                }
-                exit(0)
-            }
-            source.resume()
-            signalSources.append(source)
-        }
     }
 }
