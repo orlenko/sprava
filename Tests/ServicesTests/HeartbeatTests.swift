@@ -51,6 +51,18 @@ import Testing
             { $0.jobs["hub"] = Heartbeat.Job(last_error: .init(at: "2026-10-06T07:12:41+02:00", code: "x",
                                                                 culprit: String(repeating: "a", count: 201))) },
             { $0.jobs["hub"] = Heartbeat.Job(expected_cadence_s: 0) },
+            { $0.last_wake_at = "this morning" }, { $0.restarts_today = -1 },
+            { $0.alerts = .init(authorized: true, checked_at: "soon") }, { $0.stage_crashes = ["Extract": 0] },
+            { $0.stage_crashes = ["extract": -1] }, { $0.model = .init(availability: "broken") },
+            { $0.model = .init(availability: "available", context_size: 0) },
+            { $0.model = .init(availability: "available", last_success: "never") },
+            { $0.model = .init(availability: "available", errors_24h: ["rateLimited": -1]) },
+            { $0.outbound_today = ["backup_bytes": -1] },
+            { $0.jobs["hub"] = Heartbeat.Job(last_success: "yesterday") },
+            { $0.jobs["hub"] = Heartbeat.Job(last_start: "2026-13-40") },
+            { $0.jobs["hub"] = Heartbeat.Job(due_since: "late") },
+            { $0.jobs["hub"] = Heartbeat.Job(last_error: .init(at: "then", code: "x")) },
+            { $0.jobs["hub"] = Heartbeat.Job(watchdog_exits: -1) },
         ]
         for (index, change) in changes.enumerated() {
             var beat = beat()
@@ -58,6 +70,22 @@ import Testing
             try AtomicFile.write(try beat.encoded(), to: url)
             #expect(Heartbeat.read(url) == .failure(.invalid), "change \(index)")
         }
+    }
+
+    @Test func aJobWithoutAKeyTheSchemaRequiresIsUnreadable() throws {
+        let url = try folder().appendingPathComponent(Heartbeat.fileName)
+        let encoded = try JSONSerialization.jsonObject(with: try beat().encoded()) as! [String: Any]
+        for key in Heartbeat.Job.requiredKeys.map(\.stringValue) {
+            var object = encoded, jobs = object["jobs"] as! [String: Any], job = jobs["backup:b2"] as! [String: Any]
+            job[key] = nil
+            jobs["backup:b2"] = job
+            object["jobs"] = jobs
+            try JSONSerialization.data(withJSONObject: object).write(to: url)
+            #expect(Heartbeat.read(url) == .failure(.invalid), "without \(key)")
+        }
+        // Present as null is what the schema asks for, and reads.
+        try JSONSerialization.data(withJSONObject: encoded).write(to: url)
+        #expect(try Heartbeat.read(url).get() == beat())
     }
 
     @Test func aLinkOrAnotherKindOfFileIsUnreadableNotMissing() throws {

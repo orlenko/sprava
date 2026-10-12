@@ -172,25 +172,4 @@ public struct Heartbeat: Codable, Sendable, Equatable {
     }
 
     public enum ReadError: Error, Equatable { case missing, invalid }
-
-    /// The checks the schema makes beyond what decoding enforces.
-    public var isValid: Bool {
-        let outcomes: Set<String> = ["ok", "error", "timeout", "skipped", "running", "none"]
-        let breakers: Set<String> = ["closed", "open", "half_open"]
-        let keyPattern = /^[a-z_]+(:[a-z0-9]+)?$/
-        let codePattern = /^[a-z_]+$/
-        guard format_version == "0", pid >= 1, xpc_protocol >= 1, !build.isEmpty, lease.inode >= 1,
-              lease.duplicates_refused_today >= 0,
-              ISOTime.date(started_at) != nil, ISOTime.date(beat_at) != nil else { return false }
-        if let key = runtime_key, !["readable", "locked", "missing"].contains(key) { return false }
-        for (key, job) in jobs {
-            guard key.wholeMatch(of: keyPattern) != nil, outcomes.contains(job.last_outcome),
-                  breakers.contains(job.breaker), job.consecutive_failures >= 0 else { return false }
-            if let e = job.last_error, e.code.wholeMatch(of: codePattern) == nil || (e.culprit?.count ?? 0) > 200 {
-                return false
-            }
-            if let c = job.expected_cadence_s, c < 1 { return false }
-        }
-        return true
-    }
 }
