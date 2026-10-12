@@ -62,6 +62,7 @@ printf '#!/bin/sh\nexit 0\n' > "$repo/scripts/git-hooks/test-hooks.sh" && chmod 
 cat > "$repo/scripts/test.sh" <<'EOF'
 #!/bin/sh
 echo "test.sh $*" >> "${TEST_LOG:?}"
+[ -z "${ON_TEST:-}" ] || sh -c "$ON_TEST"
 echo "All test runs passed: 1 tests in 1 test target(s)."
 EOF
 chmod +x "$repo/scripts/test.sh"
@@ -117,6 +118,18 @@ if merge && grep -qx 'test.sh ' "$TEST_LOG" && grep -q -- "--match-head-commit $
         ok "merge: the whole suite runs once on the tip, the merge names that tip, and a tree that passed is not run again"
     else bad "merge: the passed tree was tested again"; fi
 else bad "merge: the whole suite did not run, or the merge did not name the tip"; fi
+
+# Another PR merges while the suite runs: the merge is refused, since the merged tree would not be the tested one.
+git clone -q -b main "$root/remote.git" "$root/other"
+git -C "$root/other" config user.name "Test Person"; git -C "$root/other" config user.email "test@example.invalid"
+change Sources/C/C.swift eight
+head=$(git -C "$repo" rev-parse HEAD) && git -C "$repo" push -q -f origin work 2>/dev/null
+echo "OPEN main $head" > "$GH_STATE/view"; rm -f "$GH_STATE/merged"
+export ON_TEST="cd '$root/other' && echo nine >> notes.md && git add -A && git commit -q -m Other && git push -q origin main"
+if ! merge && grep -q 'main moved while the suite ran' "$root/out" && [ ! -f "$GH_STATE/merged" ]; then
+    ok "merge: main moving during the run refuses the merge"
+else bad "merge: merged although main moved during the run"; fi
+unset ON_TEST
 
 echo "$passed passed, $failed failed"
 [ "$failed" -eq 0 ]
