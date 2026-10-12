@@ -55,7 +55,8 @@ Moves that broke the earlier cycles:
 
 ## 3. Rules for feature work
 
-1. A feature lives in one domain target (layer 3 or 4), plus its handler file in `Services`, its screen
+1. A feature lives in one domain target (layers 1 to 6: `BinderFormat`, `BinderStore`, `Shelf`, `Extract`,
+   `Clerk`, `Capture`, `Hub`, `Backup`, `Brains`; the set rule 9 counts), plus its handler file in `Services`, its screen
    folder in `SpravaApp`, and its tests. If a feature seems to need edits in three domain targets, the
    design is wrong: add an interface in the lower target, or a new target.
 2. A domain target exposes a small public API. Everything else is `internal`. A test target may use
@@ -115,7 +116,7 @@ binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sp
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
 | `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it |
-| `Services` | `device-id`, and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
+| `Services` | `device-id` and `device-id.lock` (the id bound to this Mac's hardware id, so a copy that Migration Assistant or a restore brings from another Mac is set aside, not used; the Keychain item of architecture 2.3 replaces it once builds are signed, review R9), and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
 A new state file is added to this table in the PR that creates it.
 
@@ -128,7 +129,8 @@ unchanged. Git records moved files as renames, so the reviewable diff stays smal
 2. `BinderFormat` and `BinderStore`.
 3. `Extract` and `Clerk`, with `ClerkInput`.
 4. `Shelf`, `Capture`, `Hub`, `Backup`, `Brains`.
-5. `Services`: the command table and handler files; the runtime keeps only scheduling.
+5. `Services`: the command table and handler files, the job bodies and the `Scheduler` that decides which job
+   is due; the runtime keeps only timers and system wiring (rule 8).
 6. The app's screen folders; test targets split to match.
 
 New features wait until step 5, so that they land in the new shape. The binder conversation then arrives as

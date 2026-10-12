@@ -60,8 +60,9 @@ Consequence: the plan should budget for about fifteen PRs of 300 to 800 lines, n
 Verified on main:
 
 - `Package.swift` declares the layers; `swift build` enforces them. Imports per target
-  (`grep -rh '^import' Sources/<t>`) match the declared graph: Backup imports only SpravaKit, BinderFormat,
-  BinderStore and Apple frameworks; Brains imports only SpravaKit; Capture imports Clerk, Extract, Shelf,
+  (`grep -rh '^import' Sources/<t>`) match the declared graph: Backup imports SpravaKit, BinderFormat,
+  BinderStore, Shelf and Hub (it removes a binder's hub slice and its Shelf row when offloading) and Apple
+  frameworks; Brains imports only SpravaKit; Capture imports Clerk, Extract, Shelf,
   BinderStore, BinderFormat, SpravaKit. No upward import exists.
 - Public surface is sizeable but not reckless: Backup 154 `public` declarations, BinderStore 176, Capture 146
   (plus 46 `package`), Hub 21, Shelf 50, Services 5. `package` access is used where tests or the command layer
@@ -372,7 +373,8 @@ before restore so restore can clear the exclusion.
 The app on the stack is 2,101 lines in ten files, none over 360, already by screen folder, already tested
 through `StandInRuntime`. Split by folder:
 
-1. `RuntimeClient.swift` + `SpravaApp.swift` + `Shelf/` (433 lines) + `AppModelTests` + `Resources/App-Info.plist`
+1. `RuntimeClient.swift` + `SpravaApp.swift` + `Shelf/` (433 lines, reading through a new `ShelfSnapshot`
+   facade in Services instead of constructing `ShelfStore`, so the slice obeys rule 5) + `AppModelTests` + `Resources/App-Info.plist`
    + `scripts/build-app.sh` and the LaunchAgents plists. The script bundles the products that exist so far;
    `sprava-mcp` joins it with Brains PR 2.
 2. `Binder/` (596: NowView, Review, BinderActions).
@@ -381,7 +383,7 @@ through `StandInRuntime`. Split by folder:
 5. `Backup/` (280), rewritten against main's `Backup.status`, `offload(... nameCollides:)` and the request
    queue of 3.3.
 6. `Brains/` (147).
-7. `HealthSnapshot` (91, in Services) can go with 4; a `ShelfSnapshot` read facade is a later refinement.
+7. `HealthSnapshot` (91, in Services) can go with 4; `ShelfSnapshot` goes with 1.
 
 Before 1, amend code-structure §3.5 as in 2.2 (4), so the reviewer does not flag `ShelfStore` in the Shelf
 model as a rule violation.
