@@ -8,9 +8,10 @@ public enum HealthGrade: Int, Sendable, Comparable {
     public static func < (lhs: HealthGrade, rhs: HealthGrade) -> Bool { lhs.rawValue < rhs.rawValue }
 
     /// The beat's age is counted from the later of the last beat and the last wake. Under 2 minutes is green,
-    /// from 2 minutes amber, from 5 minutes red; within 60 seconds of a wake it is "waking up".
+    /// from 2 minutes amber, from 5 minutes red; for the first 60 seconds after a wake it is "waking up", never red,
+    /// whether or not the first beat after the wake has come (architecture 3.3).
     public static func beat(_ beatAt: Date, lastWake: Date?, now: Date, pidAlive: Bool) -> HealthGrade {
-        if let wake = lastWake, now.timeIntervalSince(wake) < 60, wake > beatAt { return .waking }
+        if let wake = lastWake, now >= wake, now.timeIntervalSince(wake) < 60 { return .waking }
         guard pidAlive else { return .red }
         let since = max(beatAt, lastWake ?? .distantPast)
         let age = now.timeIntervalSince(since)

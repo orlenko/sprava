@@ -107,6 +107,9 @@ import Testing
         // A night of sleep: the beat is 8 hours old but the Mac woke 20 seconds ago.
         #expect(HealthGrade.beat(now.addingTimeInterval(-28_800), lastWake: now.addingTimeInterval(-20), now: now,
                                  pidAlive: true) == .waking)
+        // The runtime beat at once on the wake: still "waking up" for the first minute, as specified.
+        #expect(HealthGrade.beat(now.addingTimeInterval(-5), lastWake: now.addingTimeInterval(-20), now: now,
+                                 pidAlive: true) == .waking)
         // Woke 3 minutes ago and still no beat: amber.
         #expect(HealthGrade.beat(now.addingTimeInterval(-28_800), lastWake: now.addingTimeInterval(-180), now: now,
                                  pidAlive: true) == .amber)
