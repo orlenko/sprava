@@ -59,6 +59,7 @@ let package = Package(
 
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
+        .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Shelf", "BinderStore", "SpravaKit"]),
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
                                                          "-Xlinker", "Resources/sprava-extract-Info.plist"])]),
