@@ -1,6 +1,6 @@
 #!/bin/sh
 # The shape of a branch, measured against where it really leaves main (docs/code-structure.md, rule 8):
-# lines changed, domain targets touched, how far its base is behind main, changed Swift files over 400 lines, and
+# lines changed, domain targets touched (their tests included), how far its base is behind main, changed Swift files over 400 lines, and
 # new test files named after a review round. Run by pre-push for every pushed branch, and on demand:
 #   ./scripts/pr-check.sh [<commit>]            (default HEAD)
 # The first line is the summary a PR description quotes. Exits 1, after the report, when the branch changes more
@@ -29,7 +29,9 @@ lines=$((added + removed))
 names() { git diff -z --name-only --no-ext-diff "$base" "$head" "$@" | tr '\0' '\n'; }
 # Every path a change touches, the old and the new name of a rename both.
 paths=$(names --no-renames)
-targets=$(printf '%s\n' "$paths" | sed -n -E "s#^Sources/($domain)/.*#\\1#p" | sort -u | tr '\n' ' ' | sed 's/ $//')
+# A domain target's tests and test support count as that target.
+targets=$(printf '%s\n' "$paths" | sed -n -E -e "s#^Sources/($domain)/.*#\\1#p" -e "s#^Tests/($domain)Test(s|Support)/.*#\\1#p" \
+    | sort -u | tr '\n' ' ' | sed 's/ $//')
 target_count=$(printf '%s' "$targets" | wc -w | tr -d ' ')
 behind=$(git rev-list --count --first-parent "$base..$main")
 new_files=$(names -M --diff-filter=AR)

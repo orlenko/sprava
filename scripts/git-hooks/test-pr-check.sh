@@ -73,6 +73,17 @@ if run && grep -q '1 domain target(s)' "$root/out"; then
 else bad "targets: one domain target with SpravaKit and Services was refused"; fi
 
 # Non-ASCII names, which git quotes unless asked not to, still count toward targets and long files.
+# A domain target's tests count as that target: Shelf's code with Hub's tests touches two.
+new_repo testtargets
+add Sources/Shelf/Rows.swift 10
+add Tests/ShelfTests/RowsTests.swift 10
+if run && grep -q '+20/-0 in Shelf, 1 domain target(s)' "$root/out"; then
+    add Tests/HubTests/LaneTests.swift 10
+    if ! run && grep -q 'touches 2 domain targets (Hub Shelf)' "$root/out"; then
+        ok "test targets: a target's tests count as it; another target's tests count as a second"
+    else bad "test targets: Hub's tests were not counted"; fi
+else bad "test targets: Shelf's code and tests counted as more than Shelf"; fi
+
 new_repo unicode
 add "Sources/Shelf/Résumé.swift" 450
 add Sources/Hub/Lane.swift 10
