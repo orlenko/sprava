@@ -122,6 +122,13 @@ public final class StateDirectory: @unchecked Sendable {
     }
 
     /// The retained inode must still occupy its original trusted directory entry.
+    /// The folder's real path, read from its open handle (no link in it), for a library that opens by path.
+    func realPath() throws -> String {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(fd, F_GETPATH, &buffer) == 0 else { throw AtomicFile.Failure(step: "read state directory path", code: errno) }
+        return String(cString: buffer)
+    }
+
     private func validate() throws {
         var info = stat()
         let result: Int32
