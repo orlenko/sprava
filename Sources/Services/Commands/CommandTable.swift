@@ -46,9 +46,11 @@ extension Commands {
 
     /// The device the owner record names, read only from a regular file: a link or a FIFO at `.sprava/owner.json`
     /// counts as a damaged record, so the read neither follows it out of the binder nor blocks on it.
-    func ownerDevice(_ f: URL) -> String? {
+    func ownerDevice(_ f: URL) -> String? { Self.ownerDevice(of: f) }
+
+    static func ownerDevice(of f: URL) -> String? {
         // SafeFile opens without following a link or blocking on a FIFO, checks a regular file, and bounds the read.
-        guard case .ok(let data) = SafeFile.read(f.appendingPathComponent(".sprava/owner.json"), limit: Self.ownerRecordLimit),
+        guard case .ok(let data) = SafeFile.read(f.appendingPathComponent(".sprava/owner.json"), limit: ownerRecordLimit),
               let value = try? JSONParser.parse(data).value else { return nil }
         return value["device"]?.stringValue
     }
