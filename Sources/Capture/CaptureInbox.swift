@@ -138,11 +138,8 @@ public struct CaptureInbox: Sendable {
     }
 
     /// Counts for the Health page: unfiled cards, quarantined files, and the age of the oldest unfiled card.
-    public func health(now: Date = Date()) -> (unfiled: Int, quarantined: Int, oldestUnfiledSeconds: Int?) {
-        let cards = unfiled()
-        let oldest = cards.compactMap { Timestamp.parse($0.raw["created_at"]?.stringValue ?? "") }.min()
-        let quarantined = (FileManager.default.enumerator(atPath: quarantineDir.path)?.allObjects as? [String] ?? [])
-            .filter { $0.hasSuffix(".why") }.count
-        return (cards.count, quarantined, oldest.map { Int(now.timeIntervalSince($0)) })
+    public func health(now: Date = Date()) -> Health {
+        do { return try boundedHealth(now: now) }
+        catch { return Health(error: "capture records cannot be checked safely within the monitoring work budget") }
     }
 }
