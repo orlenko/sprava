@@ -237,7 +237,9 @@ struct ShelfView: View {
             }
         } detail: {
             if let row = model.selectedRow {
-                BinderSummaryView(row: row, today: model.today, counts: model.counts[row.folder] ?? ShelfCounts())
+                NowView(row: row, today: model.today,
+                        page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
+                        reload: { model.refresh() })
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
@@ -278,35 +280,6 @@ struct ShelfRowView: View {
             .font(.caption)
         }
         .padding(.vertical, 2)
-    }
-}
-
-/// One binder at a glance until its Now page arrives with the Binder screen: its level and state, and how many
-/// items fall in each bucket today. Read from disk; nothing here writes.
-struct BinderSummaryView: View {
-    let row: ShelfRow
-    let today: CalendarDate
-    let counts: ShelfCounts
-
-    var body: some View {
-        let teka = row.teka
-        List {
-            Section {
-                Text(teka.name).font(.title2.bold())
-                Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
-                    .foregroundStyle(.secondary)
-                ForEach(teka.reasons, id: \.self) { Text("• \($0)").foregroundStyle(.orange) }
-            }
-            Section("Today") {
-                ForEach(Bucket.allCases.filter { $0 != .recentlyClosed && counts.count($0) > 0 }, id: \.self) { bucket in
-                    HStack {
-                        Text(bucket.title)
-                        Spacer()
-                        Text("\(counts.count(bucket))").foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
     }
 }
 

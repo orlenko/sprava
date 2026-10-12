@@ -74,7 +74,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
 
 @MainActor
 @Suite struct ShelfModelTests {
-    @Test func bucketSummariesArePreparedOffMainAndReusedByTheViews() async throws {
+    @Test func nowPagesArePreparedOffMainAndReusedByTheViews() async throws {
         let support = try temporaryFolder()
         let binder = try makeTeka(fixture: "sprava-v0", folderName: "garden-shed")
         try ShelfStore(supportDirectory: support).add(binder)
@@ -96,9 +96,12 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         let counts = try #require(model.counts[row.folder])
         let expected = row.teka.nowPage(today: model.today)
         for bucket in Bucket.allCases { #expect(counts.count(bucket) == expected.count(bucket)) }
+        // The Binder screen shows the same prepared page; rendering it buckets and sorts nothing again.
+        let page = try #require(counts.page)
+        #expect(Bucket.allCases.contains { page.count($0) > 0 })
         for _ in 0..<20 {
             _ = ShelfRowView(row: row, counts: counts).body
-            _ = BinderSummaryView(row: row, today: model.today, counts: counts).body
+            _ = NowView(row: row, today: model.today, page: page, reload: {}).body
         }
         #expect(summary.calls == 1)
     }
