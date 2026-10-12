@@ -106,7 +106,11 @@ public final class StateStore: @unchecked Sendable {
         guard mode.first?.first?.text?.lowercased() == "wal" else {
             throw Failure(path: url.path, step: "set WAL mode", code: SQLITE_ERROR)
         }
+        // synchronous=FULL alone uses fsync, which on macOS leaves a commit in the drive's cache; fullfsync makes
+        // SQLite use F_FULLFSYNC, so a write that returned survives power loss.
         try exec("PRAGMA synchronous=FULL", step: "set synchronous")
+        try exec("PRAGMA fullfsync=ON", step: "enable full fsync")
+        try exec("PRAGMA checkpoint_fullfsync=ON", step: "enable full fsync for checkpoints")
         try exec("PRAGMA foreign_keys=ON", step: "enable foreign keys")
         try exec("PRAGMA trusted_schema=OFF", step: "distrust the schema")
     }

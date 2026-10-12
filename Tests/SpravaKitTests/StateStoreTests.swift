@@ -102,13 +102,17 @@ import Testing
         #expect(try stores[1].read { try $0.rows("SELECT value FROM counters") } == [[.integer(200)]])
     }
 
-    @Test func theFileIsPrivateAndInWALMode() throws {
+    @Test func theFileIsPrivateDurableAndInWALMode() throws {
         let base = temporary()
         defer { try? FileManager.default.removeItem(at: base) }
         let file = base.appendingPathComponent("s.sqlite")
         let store = try StateStore.open(file, schema: Self.schema)
         try store.write { try $0.execute("INSERT INTO counters VALUES ('n', 1)") }
         #expect(try store.read { try $0.rows("PRAGMA journal_mode") } == [[.text("wal")]])
+        // Durable on macOS: synchronous FULL (2) with F_FULLFSYNC for commits and checkpoints.
+        #expect(try store.read { try $0.rows("PRAGMA synchronous") } == [[.integer(2)]])
+        #expect(try store.read { try $0.rows("PRAGMA fullfsync") } == [[.integer(1)]])
+        #expect(try store.read { try $0.rows("PRAGMA checkpoint_fullfsync") } == [[.integer(1)]])
         for name in ["s.sqlite", "s.sqlite-wal"] {
             var info = stat()
             #expect(lstat(base.appendingPathComponent(name).path, &info) == 0 && info.st_mode & 0o777 == 0o600)
