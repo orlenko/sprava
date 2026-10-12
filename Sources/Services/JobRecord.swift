@@ -4,12 +4,14 @@ import SpravaKit
 /// A job's static description: name, budget, cadence and breaker threshold (architecture 3.4).
 public struct JobSpec: Sendable {
     public let key: String
-    public let budget: Duration
+    /// The longest one run may take; nil for a job never stopped for taking long, only by its own cutoff after a
+    /// stretch with no progress (backup, docs/backup.md §3.3), so neither its deadline nor the watchdog times it.
+    public let budget: Duration?
     /// nil for jobs that run on events or on demand; those are graded by their errors only.
     public let expectedCadence: Int?
     public let breakerThreshold: Int
 
-    public init(key: String, budget: Duration, expectedCadence: Int?, breakerThreshold: Int) {
+    public init(key: String, budget: Duration?, expectedCadence: Int?, breakerThreshold: Int) {
         self.key = key
         self.budget = budget
         self.expectedCadence = expectedCadence
@@ -52,8 +54,10 @@ public struct JobRecord: Codable, Sendable, Equatable {
     /// Backoff after the breaker opens: 1, 5, 15, then 60 minutes (architecture 3.5).
     public static let backoff: [TimeInterval] = [60, 300, 900, 3600]
 
-    /// Whether the job may run now. An open breaker past its backoff becomes half-open for one trial.
+    /// Whether the job may run now: never while a run is still going, so a job is never started twice at once. An
+    /// open breaker past its backoff becomes half-open for one trial.
     public mutating func mayRun(now: Date) -> Bool {
+        guard !running else { return false }
         switch breaker {
         case "open":
             // Bounded on both sides: a step that did not come from this code never indexes outside the table.
