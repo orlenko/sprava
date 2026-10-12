@@ -1,4 +1,5 @@
 import Foundation
+import SpravaKit
 
 /// A read-only reading of lifeproj's binder registry, which is cmirror's `config.toml`
 /// (lifeproj `registry.py`): live binders under `[projects.<name>]`, archived ones under `[archived.<name>]`,
@@ -20,8 +21,22 @@ public struct LifeprojRegistry: Sendable, Equatable {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/cmirror/config.toml")
     }
 
+    public struct Unreadable: Error, CustomStringConvertible {
+        public let reason: String
+        public var description: String { "lifeproj's registry cannot be read (\(reason)); it was left as it is" }
+    }
+
+    /// The external registry is read only as a plain, bounded file: no links, devices or waiting on FIFOs.
     public static func load(from url: URL) throws -> LifeprojRegistry {
-        try parse(String(contentsOf: url, encoding: .utf8))
+        switch SafeFile.read(url, limit: 1 << 20) {
+        case .ok(let data):
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw Unreadable(reason: "not UTF-8")
+            }
+            return parse(text)
+        case .missing: throw CocoaError(.fileReadNoSuchFile)
+        case .refused(let why), .unreadable(let why): throw Unreadable(reason: why)
+        }
     }
 
     /// A minimal TOML reader for the subset lifeproj writes: table headers, `key = "string"` pairs and comments.

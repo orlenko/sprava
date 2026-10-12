@@ -4,6 +4,43 @@ import SpravaTestSupport
 import Testing
 
 @Suite struct RegistryTests {
+    @Test func loadsOnlyBoundedPlainUTF8Registries() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-registry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("config.toml")
+        #expect(throws: CocoaError.self) { try LifeprojRegistry.load(from: file) }
+        let text = "[projects.invented]\nworking_dir = '/tmp/invented-binder'\n"
+        try Data(text.utf8).write(to: file)
+        #expect(try LifeprojRegistry.load(from: file) == LifeprojRegistry.parse(text))
+        try Data([0xff]).write(to: file)
+        #expect(throws: LifeprojRegistry.Unreadable.self) { try LifeprojRegistry.load(from: file) }
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: 1 << 30)
+        try handle.close()
+        #expect(throws: LifeprojRegistry.Unreadable.self) { try LifeprojRegistry.load(from: file) }
+        #expect(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize == 1 << 30)
+    }
+
+    @Test func refusesLinksDevicesAndFIFOsWithoutWaiting() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-registry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fifo = folder.appendingPathComponent("pipe")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+        let link = folder.appendingPathComponent("config.toml")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fifo)
+        // A blocking implementation must fail the test without hanging its thread.
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            for url in [fifo, link, URL(fileURLWithPath: "/dev/null")] {
+                #expect(throws: LifeprojRegistry.Unreadable.self) { try LifeprojRegistry.load(from: url) }
+            }
+            done.signal()
+        }
+        #expect(done.wait(timeout: .now() + 10) == .success)
+    }
+
     @Test func readsProjectsAndArchived() {
         let toml = """
         # cmirror configuration
