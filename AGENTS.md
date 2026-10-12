@@ -45,6 +45,16 @@ Read this first; then `docs/code-structure.md` for which target owns what.
      contain the current main (so the tree tested is the tree merged), then merges.
 5. Commit messages say what changed and why, in plain words.
 
+## Tools (`scripts/dev/`, for Claude, Codex and the author alike)
+
+- `status.sh`: every open PR, its base, the cloud review's state, unresolved threads, whether it holds main.
+- `open-pr.sh [<branch> [<base>]]`: opens a PR from its commits, with the shape line of `scripts/pr-check.sh`.
+- `review.sh [<base>] [--claude]`: the local review of step 4, against "Review guidelines" below.
+- `threads.sh list|reply|file`: reads a PR's review threads; answers and resolves one; or records a finding that
+  does not block in a new issue, answers with its link and resolves it.
+- `../merge-pr.sh <number>`: the last step of the gate.
+- `prune-worktrees.sh [--apply]`: removes worktrees under `.claude/worktrees` that hold nothing unmerged.
+
 ## Review guidelines
 
 For every reviewer, human or model. Sprava has no users yet; it is built for the MVP (`docs/mvp.md`).
