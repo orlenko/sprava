@@ -420,7 +420,7 @@ Behavior-preserving first. Sizes are estimates of changed lines including tests.
 
 | # | Goal | Targets | Size | Behavior |
 |---|---|---|---|---|
-| R1 | `StateFile.read`/`write` go through `StateDirectory`; the 8 callers unchanged; tests for a link swapped under a read | SpravaKit (+ its tests) | 200-300 | preserving |
+| R1 | `StateFile.read` and a new `StateFile.write` go through `StateDirectory`; the 8 readers unchanged; tests for a link in place of the file or folder and for a folder swapped during a read or a write. The callers' writes (now `AtomicFile.write` by path) move to `StateFile.write` in one follow-up per target | SpravaKit (+ its tests) | 200-300 | preserving |
 | R2 | Hook checks: `scripts/pr-check.sh` (size, targets touched against the real merge base, files over 400 lines, review-named test files, stale base), wired into pre-push as a report and a refusal above thresholds; `test-hooks.sh` cases | scripts | 300-400 | preserving (tooling) |
 | R3 | `docs/code-structure.md`: the state-file ownership table; rule 3.5 restated as read facades + `RuntimeClient` writes; the `Commands` extension pattern; "job bodies live in Services"; the `--filter` runner | docs | 150 | preserving |
 | R4 | Split `TekaStore+Recovery.swift` (661) into recovery matrix vs replay; `Proposals.swift` (613) into the store vs the record; move-only | BinderStore | 700 moved | preserving |
@@ -428,9 +428,9 @@ Behavior-preserving first. Sizes are estimates of changed lines including tests.
 | R6 | Capture tests by behavior: fold the 24 review-named files into behavior-named files (sweep, carry, intake, privacy, corrections), split so each stays near 400 lines; suites keep their names so history is greppable. Two PRs of about 900 | CaptureTests | 2 × 900 | preserving |
 | R7 | Same for BinderStoreTests (13 review-named files) and HubTests (6) | BinderStoreTests, HubTests | 2 × 700 | preserving |
 | R8 | `Commands.isRecorded` public, so Brains stops using the `package` digest key | BinderStore | 40 | preserving |
-| R9 | Signing prerequisite: entitlement files, `SPRAVA_SIGN_IDENTITY` in `build-app.sh`, a Doctor finding naming the key store in use, `docs/manual-checks.md` checklist | Resources, scripts, Services (Doctor) | 200 | changes a Health line only |
+| R9 | Signing prerequisite: entitlement files, `SPRAVA_SIGN_IDENTITY` in `build-app.sh`, a Doctor finding naming the key store in use, `docs/manual-checks.md` checklist, and the device id moved from the hardware-bound file to the this-device-only Keychain item of architecture 2.3 (with its tests) | Resources, scripts, Services (Doctor) | 200 | changes a Health line only |
 | R10 | `Adoption.swift` (439): split the synced-location checks and the stamp out; move-only | BinderStore | 450 moved | preserving |
-| R11 | Debug assertion that binder writes run on the command queue, injected as a closure on `TransactionGuard` | BinderStore, Services | 80 | preserving in release |
+| R11 | Debug assertion that binder writes run on the command queue, injected as a closure at every facade that writes inside a binder: `TransactionGuard`, `ProposalStore.save`, `HubLane`'s cursor and slice-key writes, `BinderSprava.write` | BinderStore, Services | 80 | preserving in release |
 | R12 | Issue #230: Shelf exclusion list for offloaded folders | Shelf | 150 | behavior |
 
 R1 to R3 before any pending PR. R4, R5, R10 whenever those files are next touched, not before. R6 and R7
