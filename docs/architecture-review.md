@@ -282,7 +282,7 @@ Verified:
   against a branch that no longer resembles main (section 2.1).
 
 What to add (section 5 has the exact checks): a `scripts/pr-check.sh` run by pre-push on the pushed ref's
-range from `merge-base origin/main HEAD`, reporting lines changed, targets touched, files over 400 lines, and
+range from `merge-base origin/main <pushed commit>`, reporting lines changed, targets touched, files over 400 lines, and
 test files with review-round names; refusing over 1,000 lines or more than one domain target unless
 `SPRAVA_ALLOW_LARGE=1`; and warning when the merge base is more than N commits behind `origin/main`.
 
@@ -405,7 +405,8 @@ The order minimizes forward references and puts the testable groundwork first:
    author has a working read-only app with approvals over XPC.
 7. #17e capture, clerk, intake, dashboard, hub job functions (the runtime now files captures).
 8. #16 Brains in three PRs, then #18 (6) Brains screen.
-9. #15 re-cut: requests + commands + backup job; R12 (#230, the Shelf exclusion that restore clears); restore;
+9. R9 (the signed build and the runtime's Keychain entitlement, once the build script is on main from step 6), then
+   #15 re-cut: requests + commands + backup job; R12 (#230, the Shelf exclusion that restore clears); restore;
    peek; then #18 (5) Backup screen.
 10. #15 forget and maintenance; the Backup issues (#221 to #236) as they fit.
 
@@ -449,7 +450,7 @@ Where tests cannot reach today, and the seam that fixes each:
 | Runtime state crash recovery (`breakers.json`, `state.json`, `requests.json`) | written in `finish()`; no crash images | the `atStep` pattern from Backup: a step closure at each save, tests image the folder and restart `Runtime`'s pure parts |
 | One-writer rule | convention | the R11 assertion |
 | MCP listener over a real socket | untested | one `BrainsTests` integration test with a temporary support folder; no seam needed |
-| Keychain store | file override in tests, no executable runs the Keychain path | a `KeyStore` protocol with `FileKeyStore` and `KeychainKeyStore`, chosen in one place by the signature (team present or not), so the ad-hoc app runs the file store deliberately, and the signed build is the only one that touches the Keychain |
+| Keychain store | file override in tests, no executable runs the Keychain path | a `KeyStore` protocol with `FileKeyStore` and `KeychainKeyStore`, chosen in one place by the configured override (`SPRAVA_BACKUP_KEY_FILE` set or not), as `BackupKey.load` chooses today, so this is a refactor with no change of behavior; whether an ad-hoc build should fall back to a file is a separate decision for R9 |
 
 Checks for the hooks (R2), each a few lines of shell in `pr-check.sh`, run by pre-push on
 `$(git merge-base origin/main <sha>)..<sha>` for the commit each pushed ref names (never `HEAD`, which may be
@@ -460,7 +461,7 @@ another branch):
    not tests, not executables); refuse when more than one unless allowed. (#225 touched Backup and SpravaKit,
    one domain target by this count; check 1 would have refused it for its 1,270 lines. SpravaKit is exempt
    because any feature may add a shared helper there.)
-3. Stale base: if `git merge-base origin/main HEAD` is more than 20 first-parent commits behind `origin/main`,
+3. Stale base: if `git merge-base origin/main <sha>` is more than 20 first-parent commits behind `origin/main`,
    warn and print the real diff size against the merge base, so a PR description never carries an inherited
    total.
 4. Files over 400 lines among the changed files: warn (not refuse; move-only splits are their own PR).

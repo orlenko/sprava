@@ -107,12 +107,13 @@ Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`)
 environment variable can put anywhere: the capture root (`SPRAVA_CAPTURE_ROOT`, for development) and the
 backup key file (`SPRAVA_BACKUP_KEY_FILE`), which keep their owners. Inside a binder the format is the
 binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sprava/`, `catalog.json`,
-`DASHBOARD.md`), except `.sprava/cursors.json` and `.sprava/slice-key`, which `Hub` reads and writes.
+`DASHBOARD.md`), except `.sprava/cursors.json` and `.sprava/slice-key`, which `Hub` reads and writes, and
+`.sprava/backup-id` and `.sprava/folder-metadata.json`, which `Backup` reads and writes.
 
 | Owner | Files |
 |---|---|
 | `Shelf` | `shelf.json`, `shelf.lock`, `recent.json`, `binders.json` (the filing list), `label-key` |
-| `Capture` | `Captures/` (the capture root), `capture/` (`state.json`, `journal.ndjson`, `producers.json`, `producer-hlc.json`, `intake.json`, `app-notices.ndjson`, `unfiled-digests.json`, `quarantine/`, `interpretations/`, `readings/`), `unfiled/` |
+| `Capture` | `Captures/` (the capture root), `capture/` (`state.json`, `journal.ndjson`, `producers.json`, `producer-hlc.json` and its `.lock`, `intake.json`, `app-notices.ndjson`, `unfiled-digests.json`, `quarantine/`, `interpretations/`, `readings/`), `unfiled/` |
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
 | `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it |
