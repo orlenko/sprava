@@ -204,19 +204,26 @@ final class ShelfModel: ObservableObject {
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
 
     /// The sidebar's pages above the Shelf.
-    let pages: Set<URL> = [inboxSelection]
+    let pages: Set<URL> = [healthSelection, inboxSelection]
 }
 
+let healthSelection = URL(string: "sprava:health")!
 let inboxSelection = URL(string: "sprava:inbox")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var inbox = InboxModel()
+    @StateObject private var health = HealthModel()
 
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selection) {
                 Section {
+                    HStack {
+                        Circle().fill(health.beatGrade.color).frame(width: 9, height: 9)
+                        Text("Health").font(.headline)
+                    }
+                    .tag(healthSelection)
                     HStack {
                         Label("Inbox", systemImage: "tray")
                         Spacer()
@@ -250,7 +257,9 @@ struct ShelfView: View {
                 .padding(8)
             }
         } detail: {
-            if model.selection == inboxSelection {
+            if model.selection == healthSelection {
+                HealthView(model: health)
+            } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
@@ -270,6 +279,13 @@ struct ShelfView: View {
             while !Task.isCancelled {
                 await inbox.load()
                 try? await Task.sleep(for: .seconds(30))
+            }
+        }
+        // Health is read here, not on its page, so the sidebar's dot stays current whichever page is open.
+        .task {
+            while !Task.isCancelled {
+                health.refresh()
+                try? await Task.sleep(for: .seconds(10))
             }
         }
         .toolbar {
