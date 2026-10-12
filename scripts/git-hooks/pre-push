@@ -52,5 +52,5 @@ while read -r sha ref; do
     test_commit "$sha" "$ref" pre-push
 done < "$work/commits"
 total=$(wc -l < "$work/commits" | tr -d ' ')
-[ "$total" -eq 0 ] || echo "pre-push: $total new commit(s): $suites_run suite run(s), $suites_cached already passed for the same tree, $commits_skipped commit(s) skipped (no Swift or companion changes)" >&2
+[ "$total" -eq 0 ] || echo "pre-push: $total new commit(s): $suites_run suite run(s), $suites_cached already passed for the same tree, $commits_skipped commit(s) skipped (no Swift, hook, or companion changes)" >&2
 exit 0

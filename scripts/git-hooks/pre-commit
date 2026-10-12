@@ -157,6 +157,11 @@ mkdir -p "$snap" || reject "could not create the snapshot folder $snap"
 hold_lock "$hooks/staged.lock" pre-commit || reject "could not lock $hooks/staged.lock"
 if [ ! -f "$hooks/staged.index" ]; then
     find "$snap" -mindepth 1 -maxdepth 1 ! -name .build -exec rm -rf {} + || reject "could not clear $snap"
+else
+    # A previous build may have left generated files outside .build. They are not in the old index and must be
+    # removed before checkout, including one whose path the new tree is about to start tracking.
+    GIT_INDEX_FILE="$hooks/staged.index" git -c core.hooksPath=/dev/null --work-tree="$snap" \
+        clean -ffdxq -e /.build || reject "could not clean generated files from $snap"
 fi
 GIT_INDEX_FILE="$hooks/staged.index" git -c core.hooksPath=/dev/null --work-tree="$snap" \
     read-tree --reset -u "$staged_tree" || reject "could not check out the staged snapshot into $snap"

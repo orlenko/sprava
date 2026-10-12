@@ -149,5 +149,20 @@ elif grep -q 'pre-push: work: pr-check: touches 2 domain targets' "$root/out" &&
     else bad "pre-push: the commit id push was refused for another reason"; fi
 else bad "pre-push: refused for another reason, or something was pushed"; fi
 
+# A commit that changes the hooks runs the hook suite (here a stub that fails on BROKEN) and is refused when it fails.
+git -C "$repo" fetch -q origin && git -C "$repo" reset -q --hard origin/work
+mkdir -p "$repo/scripts/git-hooks"
+printf '#!/bin/sh\n! grep -qs BROKEN scripts/git-hooks/notes.txt\n' > "$repo/scripts/git-hooks/test-hooks.sh"
+chmod +x "$repo/scripts/git-hooks/test-hooks.sh"
+echo "fine" > "$repo/scripts/git-hooks/notes.txt"
+git -C "$repo" add -A && git -C "$repo" commit -q -m "Hook notes"
+if git -C "$repo" push -q origin work > "$root/out" 2>&1 && grep -q 'hook tests passed' "$root/out"; then
+    echo "BROKEN" > "$repo/scripts/git-hooks/notes.txt"
+    git -C "$repo" commit -q -am "Break the hooks"
+    if git -C "$repo" push -q origin work > "$root/out" 2>&1; then bad "hook suite: a commit failing the hook tests was pushed"
+    elif grep -q 'hook tests failed for' "$root/out"; then ok "hook suite: a hook change runs the hook tests, and a failing one is not pushed"
+    else bad "hook suite: refused for another reason"; fi
+else bad "hook suite: the hook change was not pushed, or its tests did not run"; fi
+
 echo "$passed passed, $failed failed"
 [ "$failed" -eq 0 ]
