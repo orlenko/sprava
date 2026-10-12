@@ -5,8 +5,8 @@ import Foundation
 import SpravaKit
 
 /// The command table: every command the app and the CLI send, by name. Each area keeps its handlers in its own file
-/// (`BinderCommands`, `SettingsCommands`; `CaptureCommands`, `BackupCommands` and `BrainCommands` come with their
-/// areas); adding a command adds a line to one of them.
+/// (`BinderCommands`, `CaptureCommands`, `BrainCommands`, `SettingsCommands`, `ShelfCommands`; `BackupCommands`
+/// comes with its area); adding a command adds a line to one of them.
 extension Commands {
     /// How information reached the person (docs/adaptation-layer.md §3.3).
     public static let channels: Set<String> = ["email", "paper", "download", "message", "note", "other"]
@@ -22,6 +22,7 @@ extension Commands {
     static let table: [String: Handler] = pingCommand
         .merging(binderCommands) { a, _ in a }
         .merging(captureCommands) { a, _ in a }
+        .merging(brainCommands) { a, _ in a }
         .merging(settingsCommands) { a, _ in a }
         .merging(shelfCommands) { a, _ in a }
 

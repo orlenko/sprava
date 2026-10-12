@@ -328,7 +328,7 @@ struct InboxView: View {
                 }
                 if !model.readings.isEmpty {
                     Text("Worth a careful reading (\(model.readingCount))").font(.headline)
-                    Text("Documents from intake that the on-device clerk could not read well enough alone. A connected brain sees them with list_readings; its answer arrives as a card on the binder's page.")
+                    Text("Documents from intake that the on-device clerk could not read well enough alone. Connected brains do not see intake documents yet: these stay with you until a document can be marked as not private.")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(model.readings) { r in
                         GroupBox {
