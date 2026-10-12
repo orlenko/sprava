@@ -71,8 +71,10 @@ Moves that broke the earlier cycles:
 5. The app has one folder per screen (`Shelf/`, `Binder/`, `Inbox/`, `Backup/`, `Brains/`, `Health/`). A
    screen reads through read-only facades (`HealthSnapshot`, and a `ShelfSnapshot` when the Shelf needs one)
    or the binder readers of `BinderFormat`, because it must show everything while the runtime is down
-   (architecture 2.1). It writes only through `RuntimeClient`. The two exceptions, both because the runtime
-   may be down: the app writes `runtime/background-off` and its own capture events.
+   (architecture 2.1). It writes only through `RuntimeClient`. Three exceptions: `runtime/background-off` and the
+   app's own capture events, because the runtime may be down; and the Shelf's recent order (`recent.json`,
+   through Shelf's `RecentBinders`), state of the window that changes nothing a binder or the runtime reads.
+   Adding or removing a Shelf folder is a command: `shelf.json` is the runtime's to write (architecture 2.3).
 6. Files stay under about 400 lines; a file that grows past that is split by responsibility, not by length.
 7. Tests mirror targets: one test target per library target. A change runs its own target's suite in
    seconds with `./scripts/test.sh --filter <Target>Tests` (the arguments go to `swift test`); the pre-push
@@ -125,7 +127,7 @@ binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sp
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
 | `Backup` | `backup/` (`settings.json`, `state.json`, `requests.json` and its lock when the request queue lands, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it, with its `.pending` companion |
-| `Services` | `binder-ids.json` (opaque ids used by the sentinel and measures), `device-id` and `device-id.lock` (the id bound to this Mac's hardware id, so a copy that Migration Assistant or a restore brings from another Mac is set aside, not used; the Keychain item of architecture 2.3 replaces it once builds are signed, review R9), and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json` and `state.lock`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
+| `Services` | `binder-ids.json` (opaque ids used by the sentinel and measures), `developer.json` (development switches, read only), `device-id` and `device-id.lock` (the id bound to this Mac's hardware id, so a copy that Migration Assistant or a restore brings from another Mac is set aside, not used; the Keychain item of architecture 2.3 replaces it once builds are signed, review R9), and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json` and `state.lock`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
 A new state file or database is added to this table in the PR that creates it.
 
