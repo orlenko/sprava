@@ -26,7 +26,8 @@ public enum HealthGrade: Int, Sendable, Comparable {
     /// start, so a week with the lid closed, or a Mac with no hub, does not paint a job red.
     public static func job(_ job: Heartbeat.Job, key: String = "", startedAt: Date, lastWake: Date?, now: Date) -> HealthGrade {
         if job.breaker == "open" || job.wedged { return .red }
-        var grade: HealthGrade = job.consecutive_failures > 0 ? .amber : .green
+        let failed = job.consecutive_failures > 0 || ["error", "timeout"].contains(job.last_outcome)
+        var grade: HealthGrade = failed ? .amber : .green
         if let cadence = job.expected_cadence_s {
             let base = [ISOTime.date(job.last_success), ISOTime.date(job.last_idle), lastWake, startedAt].compactMap { $0 }.max()!
             let age = now.timeIntervalSince(base)

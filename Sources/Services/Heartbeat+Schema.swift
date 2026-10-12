@@ -26,8 +26,10 @@ extension Heartbeat {
                             model: ["context_size", "variant", "errors_24h"],
                             job: ["watchdog_exits", "median_ms", "slowest_of_twenty_ms"])
 
+    /// Also false for a file that repeats a member name, which one reader may take one way and another the other.
     static func hasNoMisplacedNull(_ data: Data) -> Bool {
-        guard case .object(let top)? = try? JSONParser.parse(data).value else { return false }
+        guard let parsed = try? JSONParser.parse(data), parsed.safety.duplicateKeys.isEmpty,
+              case .object(let top) = parsed.value else { return false }
         func clean(_ object: JSONObject, _ keys: [String]) -> Bool { keys.allSatisfy { object[$0] != .null } }
         guard clean(top, neverNull.top) else { return false }
         if case .object(let model)? = top["model"], !clean(model, neverNull.model) { return false }
@@ -57,7 +59,7 @@ extension Heartbeat.Job {
               (expected_cadence_s ?? 1) >= 1, (watchdog_exits ?? 0) >= 0, (median_ms ?? 0) >= 0,
               (slowest_of_twenty_ms ?? 0) >= 0 else { return false }
         guard [last_start, last_success, last_idle, breaker_opened_at, due_since].allSatisfy(Heartbeat.time) else { return false }
-        if let e = last_error, e.code.wholeMatch(of: /^[a-z_]+$/) == nil || (e.culprit?.count ?? 0) > 200
+        if let e = last_error, e.code.wholeMatch(of: /^[a-z_]+$/) == nil || (e.culprit?.unicodeScalars.count ?? 0) > 200
             || ISOTime.date(e.at) == nil { return false }
         return true
     }

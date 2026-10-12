@@ -63,6 +63,9 @@ import Testing
             { $0.jobs["hub"] = Heartbeat.Job(due_since: "late") },
             { $0.jobs["hub"] = Heartbeat.Job(last_error: .init(at: "then", code: "x")) },
             { $0.jobs["hub"] = Heartbeat.Job(watchdog_exits: -1) },
+            // 200 characters as the schema counts them (Unicode scalars), though Swift sees one.
+            { $0.jobs["hub"] = Heartbeat.Job(last_error: .init(at: "2026-10-06T07:12:41+02:00", code: "x",
+                                                                culprit: "e" + String(repeating: "\u{301}", count: 200))) },
         ]
         for (index, change) in changes.enumerated() {
             var beat = beat()
@@ -95,6 +98,14 @@ import Testing
         o["last_wake_at"] = NSNull(); o["model"] = ["availability": "available", "last_success": NSNull()]
         try JSONSerialization.data(withJSONObject: o).write(to: url)
         #expect((try? Heartbeat.read(url).get()) != nil)
+    }
+
+    @Test func aRepeatedMemberNameIsUnreadable() throws {
+        let url = try folder().appendingPathComponent(Heartbeat.fileName)
+        let text = String(decoding: try beat().encoded(), as: UTF8.self).replacingOccurrences(of: "\"pid\" : 42", with: "\"pid\" : 42, \"pid\" : 0")
+        #expect(text.contains("\"pid\" : 0"))
+        try Data(text.utf8).write(to: url)
+        #expect(Heartbeat.read(url) == .failure(.invalid))
     }
 
     @Test func aLinkedRuntimeFolderIsUnreadable() throws {
@@ -180,6 +191,11 @@ import Testing
         #expect(HealthGrade.job(job, startedAt: started, lastWake: nil, now: now) == .green)
         job.consecutive_failures = 1
         #expect(HealthGrade.job(job, startedAt: started, lastWake: nil, now: now) == .amber)
+        // A failed last run is amber even when the counter says otherwise.
+        job.consecutive_failures = 0
+        job.last_outcome = "timeout"
+        #expect(HealthGrade.job(job, startedAt: started, lastWake: nil, now: now) == .amber)
+        job.consecutive_failures = 1
         job.wedged = true
         #expect(HealthGrade.job(job, startedAt: started, lastWake: nil, now: now) == .red)
         job.wedged = false
