@@ -178,6 +178,28 @@ public final class StateDirectory: @unchecked Sendable {
         guard info.st_mode & S_IFMT == S_IFREG else { throw AtomicFile.Failure(step: "state file is not a plain file", code: EEXIST) }
     }
 
+    /// Puts the temporary file in place without ever destroying anything at `name` but a plain file: with nothing
+    /// there it is renamed exclusively; otherwise the two entries are swapped atomically and what came out is
+    /// inspected. A plain file is removed; a link or a folder, even one put there an instant before, is swapped back
+    /// and the write fails.
+    func publish(_ temporary: String, as name: String) throws {
+        while renameatx_np(fd, temporary, fd, name, UInt32(RENAME_EXCL)) != 0 {
+            guard errno == EEXIST else { throw AtomicFile.Failure(step: "rename state file", code: errno) }
+            if renameatx_np(fd, temporary, fd, name, UInt32(RENAME_SWAP)) != 0 {
+                if errno == ENOENT { continue }   // what was there went away: publish exclusively again
+                throw AtomicFile.Failure(step: "swap state file", code: errno)
+            }
+            var info = stat()
+            let plain = fstatat(fd, temporary, &info, AT_SYMLINK_NOFOLLOW) == 0 && info.st_mode & S_IFMT == S_IFREG
+            guard plain else {
+                let code = renameatx_np(fd, temporary, fd, name, UInt32(RENAME_SWAP)) == 0 ? EEXIST : errno
+                throw AtomicFile.Failure(step: "state file is not a plain file", code: code)
+            }
+            unlinkat(fd, temporary, 0)
+            return
+        }
+    }
+
     func write(_ data: Data, to name: String, beforeOpen: () throws -> Void,
                beforePublish: (String) throws -> Void = { _ in }) throws {
         try Self.component(name)
@@ -205,8 +227,7 @@ public final class StateDirectory: @unchecked Sendable {
         try AtomicFile.flushToDisk(file, step: "flush state file")
         try beforePublish(temporary)
         try validate()
-        try refuseOtherThanPlainFile(name)
-        guard renameat(fd, temporary, fd, name) == 0 else { throw AtomicFile.Failure(step: "rename state file", code: errno) }
+        try publish(temporary, as: name)
         renamed = true
         try flush.directory(fd)
         try validate()
