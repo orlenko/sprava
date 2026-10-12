@@ -75,9 +75,8 @@ passed_before() { [ -f "$cache" ] && grep -qx "$1 $2" "$cache"; }    # <suite> <
 # The Swift suites read only what the package builds from, so their passes are keyed by those paths alone: a
 # commit that changes only docs or scripts (a rebase onto such a main, a merge of it) keeps its Swift passes.
 swift_key() {    # <sha>
-    for path in Sources Tests Resources Package.swift Package.resolved scripts/test.sh; do
-        git rev-parse -q --verify "$1:$path" || echo "no $path"
-    done | git hash-object --stdin
+    # ls-tree lists each input's mode with its hash, so a runner that loses its executable bit is a new key.
+    git ls-tree "$1" -- Sources Tests Resources Package.swift Package.resolved scripts/test.sh | git hash-object --stdin
 }
 record_pass() {                                                       # <suite> <tree>
     mkdir -p "$cache_dir" && echo "$1 $2" >> "$cache" || echo "note: could not record the pass in $cache" >&2

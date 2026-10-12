@@ -46,9 +46,8 @@ passed=0; failed=0
 
 # The key the hooks record a Swift pass under (suites.sh swift_key): the package's inputs at <commit>.
 skey() {
-    for path in Sources Tests Resources Package.swift Package.resolved scripts/test.sh; do
-        git -C "$repo" rev-parse -q --verify "$1:$path" || echo "no $path"
-    done | git -C "$repo" hash-object --stdin
+    git -C "$repo" ls-tree "$1" -- Sources Tests Resources Package.swift Package.resolved scripts/test.sh |
+        git -C "$repo" hash-object --stdin
 }
 ok()  { passed=$((passed + 1)); echo "ok   - $1"; }
 bad() { failed=$((failed + 1)); echo "FAIL - $1"; [ -f "$root/out" ] && sed 's/^/       /' "$root/out"; }
