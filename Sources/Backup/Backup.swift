@@ -13,7 +13,7 @@ public struct Backup: Sendable {
     public let key: String?
     public let resticBinary: URL?
     /// Whether iCloud has uploaded a repository (`uploadStatus(of:)`; tests pass their own).
-    public let uploadCheck: @Sendable (URL) -> Upload
+    public private(set) var uploadCheck: @Sendable (URL) -> Upload
     /// Whether a second repository is on an independent destination: an external volume or a supported non-iCloud
     /// file-provider root. Tests substitute this because their repositories deliberately live on one temporary disk.
     let secondLocationCheck: @Sendable (URL) -> Bool
@@ -55,5 +55,12 @@ public struct Backup: Sendable {
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
         public var description: String { message }
+    }
+
+    /// A caller's upload gate, retaining this operation's key, destinations and recovery hooks.
+    public func withUploadCheck(_ check: @escaping @Sendable (URL) -> Upload) -> Backup {
+        var copy = self
+        copy.uploadCheck = check
+        return copy
     }
 }

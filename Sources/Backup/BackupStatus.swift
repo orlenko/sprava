@@ -2,6 +2,8 @@ import Foundation
 
 extension Backup {
     public enum Upload: Equatable, Sendable {
+        /// No completed scan is available; it proves neither location nor upload.
+        case notChecked
         case notInICloud
         case uploaded
         case waiting(Int)

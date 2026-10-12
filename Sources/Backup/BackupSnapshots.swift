@@ -19,9 +19,12 @@ extension Backup {
         guard !teka.writesBlocked else {
             throw Failure(message: "this binder cannot be backed up until it is repaired: " + teka.reasons.joined(separator: "; "))
         }
+        let s = try settings()
+        for path in [s.primary, s.second].compactMap({ $0 }) {
+            try Self.refuseRepositoryOverlap(URL(fileURLWithPath: path), binders: [folder])
+        }
         var st = try state()
         let id = try claim(folder, &st)
-        let s = try settings()
         // The claim and repository are saved before restic writes anything under the id: a snapshot never exists
         // without an owner, nor without a durable record of every repository that may hold it.
         st.rememberRepositories([s.primary], for: id)

@@ -15,6 +15,8 @@ extension Backup {
     /// Open items stand in the way of an offload until the person confirms (decided 2026-10-08).
     public struct NeedsConfirmation: Error, CustomStringConvertible {
         public let openItems: [String]
+        public let digest: String
+        init(items: [Item]) { openItems = items.map(\.title); digest = Backup.confirmationDigest(items) }
         public var description: String { "\(openItems.count) open item(s) would stop showing anywhere" }
     }
 
@@ -27,11 +29,14 @@ extension Backup {
     /// Offloads a finished binder. Runs every step it can now; when iCloud has not uploaded yet, it stops, and the
     /// queued request runs it again later. `nameCollides` answers, when the binder leaves, whether another binder
     /// here shares its name (`HubLane.collidingFolders`): its hub slice is then withdrawn only by Sprava's record.
-    public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, nameCollides: (URL) -> Bool,
+    public func offload(_ folder: URL, deviceID: String, confirmOpenItems: Bool, reviewedDigest: String? = nil, nameCollides: (URL) -> Bool,
                         now: Date = Date()) throws -> OffloadProgress {
         let s = try settings()
         guard s.primary != nil else { throw Failure(message: "set up backup first") }
         guard s.second != nil else { throw Failure(message: "offloading needs a second backup; choose one in Backup settings") }
+        for path in [s.primary, s.second].compactMap({ $0 }) {
+            try Self.refuseRepositoryOverlap(URL(fileURLWithPath: path), binders: [folder])
+        }
         // An offload that stopped after its folder went to the Trash only has its records left to finish.
         if let leaving = try state().offloads.first(where: {
             $0.value.stage == "leaving" && Self.sameFolder(URL(fileURLWithPath: $0.value.path, isDirectory: true), folder)
@@ -57,7 +62,9 @@ extension Backup {
         let teka = Teka.read(folder)
         guard teka.isAdopted, Owner.device(of: folder) == deviceID else { throw Failure(message: "this binder is not managed by this Mac") }
         let open = try Self.refuseNotReady(folder, teka)
-        if !open.isEmpty, !confirmOpenItems { throw NeedsConfirmation(openItems: open.map(\.title)) }
+        if (!open.isEmpty && !confirmOpenItems) || (reviewedDigest != nil && reviewedDigest != Self.confirmationDigest(open)) {
+            throw NeedsConfirmation(items: open)
+        }
 
         var st = try state()
         let id = try claim(folder, &st)
@@ -283,6 +290,7 @@ extension Backup {
                 switch uploadCheck(URL(fileURLWithPath: second, isDirectory: true)) {
                 case .uploaded: break
                 case .waiting(let n): return .waitingForICloud(n)
+                case .notChecked: return .waitingForICloud(0)
                 case .notInICloud:
                     // Only iCloud reports an upload state Sprava can read; another service's folder cannot be
                     // confirmed yet (issue #224), so its copy does not count, and nothing leaves on it.
@@ -300,10 +308,11 @@ extension Backup {
         // confirmed) keeps the binder here.
         try refuseIfChanged(id, folder: folder, job, &st)
         let teka = Teka.read(folder)
-        let unconfirmed = try Self.unconfirmed(Self.refuseNotReady(folder, teka), job)
+        let currentOpen = try Self.refuseNotReady(folder, teka)
+        let unconfirmed = Self.unconfirmed(currentOpen, job)
         if !unconfirmed.isEmpty {
             try abandonOffload(id, job, &st)
-            throw NeedsConfirmation(openItems: unconfirmed.map(\.title))
+            throw NeedsConfirmation(items: currentOpen)
         }
         let record = Offloaded(
             backupID: id, name: teka.name, originalPath: Self.realPath(folder), snapshot: snap, repository: job.repository,

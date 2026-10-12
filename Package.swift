@@ -55,9 +55,9 @@ let package = Package(
         // Runtime services arrive separately from commands and scheduling.
         .target(name: "Services", dependencies: ["Brains", "Backup", "Hub", "Capture", "Clerk", "Extract", "Shelf", "BinderStore",
                                                  "BinderFormat", "SpravaKit"]),
-        .testTarget(name: "ServicesTests", dependencies: ["Services", "Brains", "CaptureTestSupport", "Capture", "ClerkTestSupport", "Clerk",
-                                                          "Extract", "Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport",
-                                                          "SpravaKit"]),
+        .testTarget(name: "ServicesTests", dependencies: ["Services", "Backup", "Brains", "CaptureTestSupport", "Capture",
+                                                          "ClerkTestSupport", "Clerk", "Extract", "Hub", "Shelf", "BinderStore",
+                                                          "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
@@ -65,7 +65,7 @@ let package = Package(
                                                          "BinderStore", "BinderFormat", "SpravaKit"]),
         .executableTarget(name: "SpravaApp", dependencies: ["Services", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "SpravaAppTests", dependencies: ["SpravaApp", "Services", "Shelf", "SpravaTestSupport", "SpravaKit"]),
-        .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Brains", "Clerk", "Capture", "Shelf", "BinderStore", "SpravaKit"]),
+        .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Backup", "Brains", "Clerk", "Capture", "Shelf", "BinderStore", "SpravaKit"]),
         .executableTarget(name: "sprava-mcp", dependencies: ["Brains", "SpravaKit"]),
         .executableTarget(name: "sprava-extract", dependencies: ["Extract", "SpravaKit"],
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",

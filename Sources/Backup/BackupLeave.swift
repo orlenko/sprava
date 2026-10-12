@@ -91,9 +91,10 @@ extension Backup {
         try TekaStore(folder: folder).withLock {
             try refuseIfChanged(id, folder: folder, job, &st)
             // Under the lock, the last word on work waiting: a card or file that arrived keeps the binder here.
-            let unconfirmed = try Self.unconfirmed(Self.refuseNotReady(folder, Teka.read(folder)), job)
+            let currentOpen = try Self.refuseNotReady(folder, Teka.read(folder))
+            let unconfirmed = Self.unconfirmed(currentOpen, job)
             guard unconfirmed.isEmpty else {
-                stays = NeedsConfirmation(openItems: unconfirmed.map(\.title))
+                stays = NeedsConfirmation(items: currentOpen)
                 return
             }
             // The hub stops showing it, as for a binder at disclosure none, without a write into the binder. A slice

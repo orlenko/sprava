@@ -16,6 +16,23 @@ extension Backup {
         return rest.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.path
     }
 
+    /// Repositories must never be part of their own input or removed along with a binder.
+    public static func refuseRepositoryOverlap(_ repository: URL, binders: [URL]) throws {
+        func contains(_ ancestor: URL, _ candidate: URL) -> Bool {
+            var path = URL(fileURLWithPath: realPath(candidate))
+            while true {
+                if sameFolder(ancestor, path) { return true }
+                if path.path == "/" { return false }
+                path.deleteLastPathComponent()
+            }
+        }
+        for binder in binders {
+            guard !contains(repository, binder), !contains(binder, repository) else {
+                throw Failure(message: "a backup repository cannot contain a binder or be inside one; choose a separate folder")
+            }
+        }
+    }
+
     /// A supported independent destination: a non-iCloud File Provider root or a non-internal volume that is a real
     /// disk. A mounted disk image is refused: its backing file may sit in the mirror's iCloud folder, or on the
     /// internal disk, and go with it.

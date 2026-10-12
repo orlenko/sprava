@@ -42,9 +42,12 @@ extension Backup {
         } else {
             _ = try r.snapshots()   // throws when the key does not open it
         }
-        guard uploadCheck(r.repository) != .notInICloud else {
+        let upload = uploadCheck(r.repository)
+        if upload == .notInICloud || upload == .notChecked {
             if !wasThere { try? FileManager.default.removeItem(at: r.repository) }
-            throw Failure(message: "the backup mirror must be in iCloud Drive; nothing was changed")
+            throw Failure(message: upload == .notChecked
+                ? "the backup mirror's iCloud location could not be checked; nothing was changed. Try setup again"
+                : "the backup mirror must be in iCloud Drive; nothing was changed")
         }
         guard changing || fresh else { return try save(s) }
         let previous = try state()

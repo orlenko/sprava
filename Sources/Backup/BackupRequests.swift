@@ -25,19 +25,21 @@ public struct BackupRequests: Sendable {
         public var binder: String?           // the binder folder's path
         public var repository: String?       // a drill's repository, primary or second (nil is primary)
         public var confirmOpenItems = false
+        public var confirmationDigest: String?
         public var state = "queued"          // queued, running, waiting_for_icloud, done, failed, needs_confirmation
         public var message: String?
         /// The offloaded binder's backup id, once it left.
         public var backupID: String?
         public var at: String
 
-        public init(id: String, kind: String, binder: String? = nil, repository: String? = nil, confirmOpenItems: Bool = false,
+        public init(id: String, kind: String, binder: String? = nil, repository: String? = nil, confirmOpenItems: Bool = false, confirmationDigest: String? = nil,
                     state: String = "queued", message: String? = nil, backupID: String? = nil, at: String) {
             self.id = id
             self.kind = kind
             self.binder = binder
             self.repository = repository
             self.confirmOpenItems = confirmOpenItems
+            self.confirmationDigest = confirmationDigest
             self.state = state
             self.message = message
             self.backupID = backupID
@@ -137,10 +139,13 @@ public struct BackupRequests: Sendable {
             let folder = URL(fileURLWithPath: path, isDirectory: true)
             switch r.kind {
             case "offload":
-                switch try backup.offload(folder, deviceID: deviceID, confirmOpenItems: r.confirmOpenItems,
+                switch try backup.offload(folder, deviceID: deviceID, confirmOpenItems: r.confirmOpenItems && r.confirmationDigest != nil,
+                                          reviewedDigest: r.confirmOpenItems ? r.confirmationDigest : nil,
                                           nameCollides: nameCollides, now: now) {
                 case .waitingForICloud(let n):
-                    outcome = { $0.state = "waiting_for_icloud"; $0.message = "waiting for iCloud to upload \(n) file(s)" }
+                    outcome = { $0.state = "waiting_for_icloud"; $0.message = n == 0
+                        ? "waiting for iCloud to answer the upload check"
+                        : "waiting for iCloud to upload \(n) file(s)" }
                 case .done(let record):
                     outcome = { $0.state = "done"; $0.message = "offloaded \(record.name)"; $0.backupID = record.backupID }
                 }
@@ -157,7 +162,7 @@ public struct BackupRequests: Sendable {
                 throw Backup.Failure(message: "unknown backup request")
             }
         } catch let e as Backup.NeedsConfirmation {
-            outcome = { $0.state = "needs_confirmation"; $0.message = e.openItems.prefix(20).joined(separator: "\n") }
+            outcome = { $0.state = "needs_confirmation"; $0.message = e.openItems.joined(separator: "\n"); $0.confirmationDigest = e.digest }
         } catch {
             outcome = { $0.state = "failed"; $0.message = "\(error)" }
         }
