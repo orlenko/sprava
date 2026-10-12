@@ -51,7 +51,8 @@ Read this first; then `docs/code-structure.md` for which target owns what.
 
 - `status.sh`: every open PR, its base, the cloud review's state, unresolved threads, whether it holds main.
 - `open-pr.sh [<branch> [<base>]]`: opens a PR from its commits, with the shape line of `scripts/pr-check.sh`.
-- `review.sh [<base>] [--claude]`: the local review of step 4, against "Review guidelines" below.
+- `review.sh [<base>] [--claude]`: the local review of step 4, against "Review guidelines" below as they stand on
+  the base, so a PR cannot rewrite its own rubric.
 - `threads.sh list|reply|file`: reads a PR's review threads; answers and resolves one; or records a finding that
   does not block in a new issue, answers with its link and resolves it.
 - `../merge-pr.sh <number>`: the last step of the gate.
