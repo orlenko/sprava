@@ -52,8 +52,10 @@ let package = Package(
         .testTarget(name: "BrainsTests", dependencies: ["Brains", "SpravaKit"]),
 
         // Runtime services arrive separately from commands and scheduling.
-        .target(name: "Services", dependencies: ["SpravaKit"]),
-        .testTarget(name: "ServicesTests", dependencies: ["Services"]),
+        .target(name: "Services", dependencies: ["Capture", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "ServicesTests", dependencies: ["Services", "CaptureTestSupport", "Capture", "ClerkTestSupport", "Clerk",
+                                                          "Extract", "Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport",
+                                                          "SpravaKit"]),
 
         // Layer 6: executables.
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.

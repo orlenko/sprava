@@ -152,7 +152,7 @@ public struct Teka: Sendable {
 
     /// Whether `.sprava/expunge-pending` exists (binder-v0 §6.11), looked up through a real `.sprava` folder without
     /// following a link; a marker of any type counts.
-    static func expungePending(in folder: URL) -> Bool {
+    public static func expungePending(in folder: URL) -> Bool {
         let sprava = open(folder.appendingPathComponent(".sprava").path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard sprava >= 0 else { return false }
         defer { close(sprava) }
