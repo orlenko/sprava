@@ -168,7 +168,8 @@ public final class StateDirectory: @unchecked Sendable {
     public func openLock(_ name: String) throws -> Int32 {
         try Self.component(name)
         try validate()
-        let lock = openat(fd, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        var lock = openat(fd, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if lock < 0, errno == EEXIST { lock = openat(fd, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC) }
         guard lock >= 0 else { throw AtomicFile.Failure(step: "open state lock", code: errno) }
         do { try validate() } catch { close(lock); throw error }
         return lock

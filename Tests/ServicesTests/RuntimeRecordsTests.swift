@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 @testable import Services
 import SpravaKit
@@ -12,6 +13,31 @@ import Testing
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-runtime-\(UUID().uuidString)")
         try AtomicFile.makePrivateFolder(dir)
         return dir
+    }
+
+    @Test func concurrentStartsCanCreateAndReopenTheSameStateLock() throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let folder = try #require(try StateDirectory.open(dir))
+        final class Results: @unchecked Sendable {
+            let lock = NSLock()
+            var failures: [String] = []
+        }
+        let results = Results()
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in
+            do {
+                let fd = try folder.openLock("state.lock")
+                close(fd)
+            } catch {
+                results.lock.lock()
+                results.failures.append("\(error)")
+                results.lock.unlock()
+            }
+        }
+        #expect(results.failures.isEmpty)
+        // Reopening after every creator has returned must work too.
+        let fd = try folder.openLock("state.lock")
+        close(fd)
     }
 
     @Test func breakersSurviveARoundTripAndNothingIsRunningAfterARestart() throws {
