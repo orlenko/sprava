@@ -99,17 +99,19 @@ public final class TekaStore {
         return (catalog, try Canonical.hash(value), data)
     }
 
+    /// The largest op log read into memory; a larger one is refused, like one that cannot be read.
+    public static let opLogLimit = 64 << 20
+
     /// The op log's complete lines. A torn last line, and a trailing batch shorter than its `batch_size`, never
     /// took effect and are left out (binder-v0 §6.9). Only a missing log is empty; one that exists but cannot be
-    /// read throws, so nothing mistakes the binder for one never adopted.
+    /// read throws, so nothing mistakes the binder for one never adopted. It is read through SafeFile: a link is
+    /// not followed, a FIFO is not waited on, and a log over `opLogLimit` is not loaded.
     public func readOpLog() throws -> (ops: [JSONObject], torn: Bool) {
         let data: Data
-        do {
-            data = try Data(contentsOf: opLogURL)
-        } catch {
-            var st = stat()
-            if lstat(opLogURL.path, &st) != 0, errno == ENOENT { return ([], false) }
-            throw Refused(reason: ".sprava/ops.ndjson cannot be read; it was left as it is")
+        switch SafeFile.read(opLogURL, limit: Self.opLogLimit) {
+        case .ok(let d): data = d
+        case .missing: return ([], false)
+        case .refused, .unreadable: throw Refused(reason: ".sprava/ops.ndjson cannot be read; it was left as it is")
         }
         var text = String(decoding: data, as: UTF8.self)
         var torn = false
