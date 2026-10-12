@@ -2,7 +2,9 @@
 # cache of trees that passed.
 # A commit needs the Swift suite (./scripts/test.sh) when its own changes touch what the package builds from or
 # how it is tested: Sources/, Tests/, Resources/ (the manifest links a plist from there), Package.swift, the
-# dependency lockfile Package.resolved, scripts/test.sh, or any .swift file; and the companion suite (companion/test.sh) when they touch companion/. Its own changes are
+# dependency lockfile Package.resolved, scripts/test.sh, or any .swift file; the companion suite (companion/test.sh)
+# when they touch companion/; and the hook suite (scripts/git-hooks/test-hooks.sh and test-pr-check.sh, in throwaway
+# repositories) when they touch the hooks, scripts/install-hooks.sh or scripts/pr-check.sh. Its own changes are
 # those against its first parent (for a merge, what it brings to that line), or every file for a root commit;
 # renames count as a removal and an addition, so both paths are seen.
 # A suite passes only when its runner exits with status zero; the summary line is only reported. A pass is then
@@ -43,7 +45,7 @@ run_suite() {    # <folder> <runner> <log>
     (cd "$1" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX && "$2") > "$3" 2>&1 </dev/null 9>&-
 }
 
-drop_cached() {  # clears need_swift and need_companion for suites already recorded as passed for $tree_sha
+drop_cached() {  # clears need_swift, need_companion and need_hooks for suites already recorded as passed for $tree_sha
     if [ "$need_swift" -eq 1 ] && passed_before swift "$tree_sha"; then
         need_swift=0; suites_cached=$((suites_cached + 1))
         echo "$who: $short ($label): Swift tests already passed for this tree" >&2
@@ -51,6 +53,10 @@ drop_cached() {  # clears need_swift and need_companion for suites already recor
     if [ "$need_companion" -eq 1 ] && passed_before companion "$tree_sha"; then
         need_companion=0; suites_cached=$((suites_cached + 1))
         echo "$who: $short ($label): companion tests already passed for this tree" >&2
+    fi
+    if [ "$need_hooks" -eq 1 ] && passed_before hooks "$tree_sha"; then
+        need_hooks=0; suites_cached=$((suites_cached + 1))
+        echo "$who: $short ($label): hook tests already passed for this tree" >&2
     fi
 }
 
@@ -71,19 +77,20 @@ test_commit() {
         git ls-tree -r -z --name-only "$sha" > "$work/changed.z" || fail "$who: could not list the files of $short ($label)"
     fi
     tr '\0' '\n' < "$work/changed.z" > "$work/changed"
-    need_swift=0; need_companion=0
+    need_swift=0; need_companion=0; need_hooks=0
     grep -qE '^(Sources|Tests|Resources)/|^Package\.(swift|resolved)$|^scripts/test\.sh$|\.swift$' "$work/changed" && need_swift=1    # as in pre-commit
     grep -q '^companion/' "$work/changed" && need_companion=1
-    if [ "$need_swift" -eq 0 ] && [ "$need_companion" -eq 0 ]; then commits_skipped=$((commits_skipped + 1)); return 0; fi
+    grep -qE '^scripts/(git-hooks/|install-hooks\.sh$|pr-check\.sh$)' "$work/changed" && need_hooks=1
+    if [ $((need_swift + need_companion + need_hooks)) -eq 0 ]; then commits_skipped=$((commits_skipped + 1)); return 0; fi
     drop_cached
-    [ "$need_swift" -eq 0 ] && [ "$need_companion" -eq 0 ] && return 0
+    [ $((need_swift + need_companion + need_hooks)) -eq 0 ] && return 0
 
     # One run at a time per git directory, from checkout through recording the pass: otherwise another run could
     # check out its own commit into the kept worktree while this one's suite is reading it.
     mkdir -p "$hooks" || fail "$who: could not create $hooks"
     hold_lock "$hooks/push-tree.lock" "$who" || fail "$who: could not lock $hooks/push-tree.lock"
     drop_cached                                     # another run may have passed this tree while this one waited
-    if [ "$need_swift" -eq 0 ] && [ "$need_companion" -eq 0 ]; then release_lock; return 0; fi
+    if [ $((need_swift + need_companion + need_hooks)) -eq 0 ]; then release_lock; return 0; fi
 
     checkout_tree "$sha" > "$work/git.log" 2>&1 \
         || fail "$(tail -5 "$work/git.log")
@@ -123,6 +130,24 @@ $who: companion tests failed for $short ($label): companion/test.sh exit status 
             fi
         elif [ -e "$dir/companion" ]; then
             fail "$who: $short ($label) changes companion/ but has no executable companion/test.sh"
+        fi
+    fi
+    if [ "$need_hooks" -eq 1 ]; then
+        if [ -x "$dir/scripts/git-hooks/test-hooks.sh" ]; then
+            suites_run=$((suites_run + 1))
+            if run_suite "$dir" scripts/git-hooks/test-hooks.sh "$work/out" \
+                && { [ ! -x "$dir/scripts/git-hooks/test-pr-check.sh" ] || run_suite "$dir" scripts/git-hooks/test-pr-check.sh "$work/out"; }; then
+                record_pass hooks "$tree_sha"
+                echo "$who: $short ($label): hook tests passed" >&2
+            else
+                status=$?
+                details=$(grep -E -A3 '^FAIL' "$work/out" | head -20 || true)
+                [ -n "$details" ] || details=$(tail -30 "$work/out")
+                fail "$details
+$who: hook tests failed for $short ($label): exit status $status"
+            fi
+        elif [ -e "$dir/scripts/git-hooks" ]; then
+            fail "$who: $short ($label) changes the hooks but has no executable scripts/git-hooks/test-hooks.sh"
         fi
     fi
     release_lock

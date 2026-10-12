@@ -20,4 +20,4 @@ for arg in "$@"; do
     sha=$(git rev-parse -q --verify "$arg^{commit}") || fail "test-tree: $arg is not a commit"
     test_commit "$sha" "$arg" test-tree
 done
-echo "test-tree: $# commit(s): $suites_run suite run(s), $suites_cached already passed for the same tree, $commits_skipped commit(s) skipped (no Swift or companion changes)" >&2
+echo "test-tree: $# commit(s): $suites_run suite run(s), $suites_cached already passed for the same tree, $commits_skipped commit(s) skipped (no Swift, hook, or companion changes)" >&2

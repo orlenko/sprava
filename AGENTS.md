@@ -32,7 +32,7 @@ Read this first; then `docs/code-structure.md` for which target owns what.
    runs the suite N times, except for trees that already passed: each pass is recorded by tree hash in
    `<git common dir>/sprava-hooks/passed-trees` and not run again. To test a stack once before pushing it, run
    `./scripts/git-hooks/test-tree.sh $(git rev-list --reverse origin/main..HEAD)`. Never bypass the hooks with
-   `--no-verify`; after changing them, run `./scripts/git-hooks/test-hooks.sh`.
+   `--no-verify`; a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`).
 4. The gate before merge: the suite passes; Codex Bugbot's comments on the PR are answered (fixed, or
    dismissed with a reason) and their threads resolved; a local Codex review on the `gpt-6-astra` model
    passes. If Bugbot's quota is exhausted, the local review is the gate.
