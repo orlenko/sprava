@@ -43,6 +43,12 @@ export PATH="$root/bin:$PATH" GH_STATE="$root/gh"
 mkdir "$GH_STATE"
 
 passed=0; failed=0
+
+# The key the hooks record a Swift pass under (suites.sh swift_key): the package's inputs at <commit>.
+skey() {
+    git -C "$repo" ls-tree "$1" -- Sources Tests Resources Package.swift Package.resolved scripts/test.sh |
+        git -C "$repo" hash-object --stdin
+}
 ok()  { passed=$((passed + 1)); echo "ok   - $1"; }
 bad() { failed=$((failed + 1)); echo "FAIL - $1"; [ -f "$root/out" ] && sed 's/^/       /' "$root/out"; }
 
@@ -89,7 +95,7 @@ git -C "$repo" push -q origin main 2>/dev/null; git -C "$repo" fetch -q origin
 : > "$TEST_LOG"
 change Sources/B/B.swift five
 if git -C "$repo" push -q origin main > "$root/out" 2>&1 && grep -qx 'test.sh --filter BTests' "$TEST_LOG" \
-    && grep -q "swift:BTests $(git -C "$repo" rev-parse 'HEAD^{tree}')" "$repo/.git/sprava-hooks/passed-trees"; then
+    && grep -q "swift:BTests $(skey HEAD)" "$repo/.git/sprava-hooks/passed-trees"; then
     ok "pre-push: a push changing B runs BTests only and records that part"
 else bad "pre-push: the targeted run did not happen"; fi
 
@@ -114,7 +120,7 @@ echo "OPEN main $head" > "$GH_STATE/view"
 : > "$TEST_LOG"
 if merge && grep -qx 'test.sh ' "$TEST_LOG" && grep -q -- "--match-head-commit $head" "$GH_STATE/merged"; then
     rm "$GH_STATE/merged"; : > "$TEST_LOG"
-    if merge && [ ! -s "$TEST_LOG" ] && grep -q 'already passed for this tree' "$root/out"; then
+    if merge && [ ! -s "$TEST_LOG" ] && grep -q 'already passed for these sources' "$root/out"; then
         ok "merge: the whole suite runs once on the tip, the merge names that tip, and a tree that passed is not run again"
     else bad "merge: the passed tree was tested again"; fi
 else bad "merge: the whole suite did not run, or the merge did not name the tip"; fi
