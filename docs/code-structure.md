@@ -102,10 +102,11 @@ Moves that broke the earlier cycles:
 
 ### 4.1 State files by owner
 
-Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`), except the capture root,
-which `SPRAVA_CAPTURE_ROOT` can put anywhere (for development). Files inside a binder
-(`.sprava/`, `catalog.json`, `DASHBOARD.md`) belong to `BinderStore`, except `.sprava/cursors.json` and
-`.sprava/slice-key`, which belong to `Hub`.
+Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`), except two that an
+environment variable can put anywhere: the capture root (`SPRAVA_CAPTURE_ROOT`, for development) and the
+backup key file (`SPRAVA_BACKUP_KEY_FILE`), which keep their owners. Inside a binder the format is the
+binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sprava/`, `catalog.json`,
+`DASHBOARD.md`), except `.sprava/cursors.json` and `.sprava/slice-key`, which `Hub` reads and writes.
 
 | Owner | Files |
 |---|---|
@@ -113,7 +114,7 @@ which `SPRAVA_CAPTURE_ROOT` can put anywhere (for development). Files inside a b
 | `Capture` | `Captures/` (the capture root), `capture/` (`state.json`, `journal.ndjson`, `producers.json`, `producer-hlc.json`, `intake.json`, `app-notices.ndjson`, `unfiled-digests.json`, `quarantine/`, `interpretations/`, `readings/`), `unfiled/` |
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
-| `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`; the key file when `SPRAVA_BACKUP_KEY_FILE` names one there) |
+| `Backup` | `backup/` (`settings.json`, `state.json`, `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it |
 | `Services` | `device-id`, and the rest of `runtime/` (`sprava-runtime` and the app write them only through `Services`' types): `lease`, `heartbeat.json`, `breakers.json`, `state.json`, `watch.json`, `sentinel.json`, `trust-backlog.json`, `jobs.log` and its rotations, `lease-refusals.log`, `background-off` |
 
 A new state file is added to this table in the PR that creates it.

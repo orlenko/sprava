@@ -138,7 +138,7 @@ Verified on the stack:
   drives them against a `StandInRuntime` that answers XPC requests in-process (line 13). This is the right
   seam and it already exists.
 
-The fix for scheduling is one behavior-preserving extraction (section 4, R1): a pure `Scheduler` value in
+The fix for scheduling is one behavior-preserving extraction (section 3.1, landing with #17a): a pure `Scheduler` value in
 Services with `func due(now:records:deadlines:) -> [JobKey]` and `mutating func started(_:now:)`, and each job
 body as a function in `Services/Jobs/<Name>Job.swift` taking its dependencies as parameters (`Commands`,
 `ShelfRows`, `now`, a `Notifier` closure, a `ModelProbe` closure). `Runtime.swift` then shrinks to timers,
@@ -244,15 +244,18 @@ calls) has no executable in the repository that can run it. Tests run the file p
 in the code; it is a missing prerequisite that must be written down and gated:
 
 - A Developer ID identity and an entitlement file for the runtime only (`Resources/sprava-runtime.entitlements`,
-  with `keychain-access-groups` = `$(TeamIdentifierPrefix)ca.orlenko.sprava`; the app gets no access group,
-  since no app code path touches the key, next bullet) that `build-app.sh` applies when `SPRAVA_SIGN_IDENTITY` is set,
+  with `keychain-access-groups` = `<team id>.ca.orlenko.sprava`; the app gets no access group, since no app
+  code path touches the key, next bullet) that `build-app.sh` applies when `SPRAVA_SIGN_IDENTITY` is set. The
+  script writes the team id into the plist itself (`$(TeamIdentifierPrefix)` is an Xcode setting `codesign`
+  does not expand), so the group matches `BackupKey.accessGroup(team:)`,
   and refuses to combine with ad-hoc signing silently (print which key store the build will use).
 - Only the runtime loads the key (verified: `BackupKey.load` is called only as the default argument of
   `Backup.init`, `Backup/Backup.swift:26`; `HealthSnapshot.checks` passes `key: nil`; `sprava` and
   `sprava-mcp` do not import Backup). Keep it that way and state it in `docs/backup.md` §4: the app never
   needs the access group for reading, only for the setup commands it sends over XPC, which run in the runtime.
 - The XPC pin must be re-derived at the same time (the comment at `XPC.swift:27` already says: Developer ID
-  replaces the cdhash pin with `anchor apple generic` and the team). Put both in one "signed build" checklist
+  replaces the cdhash pin with `anchor apple generic`, the team, and the app's identifier `ca.orlenko.sprava`,
+  which architecture §2.1 requires: a team alone admits every program the developer signs). Put both in one "signed build" checklist
   in `docs/manual-checks.md`, and add a `Doctor` finding that names the key store actually selected (the file
   when `SPRAVA_BACKUP_KEY_FILE` is set; otherwise the Keychain, which an ad-hoc build reaches with no access
   group) so the Health page says it. (Corrected after review: `BackupKey.load` picks the file only when the
@@ -370,8 +373,8 @@ The app on the stack is 2,101 lines in ten files, none over 360, already by scre
 through `StandInRuntime`. Split by folder:
 
 1. `RuntimeClient.swift` + `SpravaApp.swift` + `Shelf/` (433 lines) + `AppModelTests` + `Resources/App-Info.plist`
-   + `scripts/build-app.sh` (the script needs every product, so it comes with the first app PR and the
-   LaunchAgents plists).
+   + `scripts/build-app.sh` and the LaunchAgents plists. The script bundles the products that exist so far;
+   `sprava-mcp` joins it with Brains PR 2.
 2. `Binder/` (596: NowView, Review, BinderActions).
 3. `Inbox/` (286).
 4. `Health/` (359), including `SMAppService` registration and the restart path.
@@ -400,7 +403,8 @@ The order minimizes forward references and puts the testable groundwork first:
    author has a working read-only app with approvals over XPC.
 7. #17e capture, clerk, intake, dashboard, hub job functions (the runtime now files captures).
 8. #16 Brains in three PRs, then #18 (6) Brains screen.
-9. #15 re-cut: requests + commands + backup job; restore; peek; then #18 (5) Backup screen.
+9. #15 re-cut: requests + commands + backup job; R12 (#230, the Shelf exclusion that restore clears); restore;
+   peek; then #18 (5) Backup screen.
 10. #15 forget and maintenance; the Backup issues (#221 to #236) as they fit.
 
 Steps 6 to 9 can interleave with 1 to 5 when a PR is independent, but the app shell should not wait on
