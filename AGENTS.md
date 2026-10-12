@@ -39,7 +39,12 @@ Read this first; then `docs/code-structure.md` for which target owns what.
    `./scripts/git-hooks/test-tree.sh $(git rev-list --reverse origin/main..HEAD)`. Never bypass the hooks with
    `--no-verify`; a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`, `test-gate.sh`).
 4. The gate before merge, with a review budget so a PR converges:
-   - a local Codex review on the `gpt-6-astra` model passes (no MUST-FIX finding);
+   - a local Codex review on the `gpt-6-astra` model passes (no MUST-FIX finding). It converges too: from its
+     third round on a PR, a MUST-FIX is fixed when ordinary use or one untrusted input reaches it; one that needs
+     a failure inside a particular window, or a combination of earlier states, is filed as an issue and named in
+     the PR. When rounds keep finding new cases of one kind, change the design so the kind cannot occur (one
+     safe reader for a file every caller uses; a feature off until it can be made safe) instead of patching
+     each caller;
    - the cloud review gets one round. Findings in the classes of "Review guidelines" below are fixed; every
      other finding is answered with a link to an issue that records it, and its thread resolved. A further
      round only when a fix changed behavior;
