@@ -48,6 +48,24 @@ import Testing
 
     let here = String(repeating: "a", count: 64), there = String(repeating: "b", count: 64)
 
+    @Test func aLinkedSupportFolderIsRefusedBeforeReadingOrMakingAnID() throws {
+        let parent = try folder()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let destination = parent.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let support = parent.appendingPathComponent("Support", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: support, withDestinationURL: destination)
+        #expect(throws: (any Error).self) { _ = try DeviceID.load(support: support, machine: here) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
+        let id = try DeviceID.load(support: destination, machine: here)
+        let original = try Data(contentsOf: destination.appendingPathComponent("device-id"))
+        #expect(throws: (any Error).self) { _ = try DeviceID.load(support: support, machine: here) }
+        #expect(throws: (any Error).self) { _ = try DeviceID.load(support: support, machine: there) }
+        #expect(try DeviceID.load(support: destination, machine: here) == id)
+        #expect(try Data(contentsOf: destination.appendingPathComponent("device-id")) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).sorted() == ["device-id", "device-id.lock"])
+    }
+
     @Test func aCopyFromAnotherMacIsSetAsideAndANewIDMade() throws {
         let support = try folder()
         let copied = try DeviceID.load(support: support, machine: there)
@@ -93,8 +111,13 @@ import Testing
         final class Box: @unchecked Sendable { let lock = NSLock(); var ids: [String] = [] }
         let box = Box()
         DispatchQueue.concurrentPerform(iterations: 8) { _ in
-            let id = try? DeviceID.load(support: support)
-            box.lock.lock(); box.ids.append(id ?? "failed"); box.lock.unlock()
+            do {
+                let id = try DeviceID.load(support: support)
+                box.lock.lock(); box.ids.append(id); box.lock.unlock()
+            } catch {
+                Issue.record("concurrent device-id load failed: \(error)")
+                box.lock.lock(); box.ids.append("failed"); box.lock.unlock()
+            }
         }
         #expect(Set(box.ids).count == 1)
         let stored = try String(contentsOf: support.appendingPathComponent("device-id"), encoding: .utf8)
