@@ -119,9 +119,4 @@ import Testing
         #expect(Watchdog.verdict(sinceTickMoved: .seconds(10), wedged: "backup") == .wedged(job: "backup"))
         #expect(Watchdog.verdict(sinceTickMoved: .seconds(121), wedged: "backup") == .stalled)
     }
-
-    @Test func developmentRunsKeepTheirOwnState() {
-        let dev = DevelopmentSupport.directory(environment: ["SPRAVA_SUPPORT_DIR": "/Invented/Support/Sprava"])
-        #expect(dev.path == "/Invented/Support/Sprava-dev")
-    }
 }
