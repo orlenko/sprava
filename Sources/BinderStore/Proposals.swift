@@ -359,6 +359,11 @@ public enum CardEdits {
 }
 
 public enum ProposalStore {
+    public struct Unreadable: Error, CustomStringConvertible {
+        public let id: String
+        public var description: String { "proposal \(id) cannot be read safely; its previous trust was left unchanged" }
+    }
+
     public struct Tampered: Error, CustomStringConvertible {
         public let id: String
         public var description: String { "proposal \(id) was changed by another program" }
@@ -393,6 +398,7 @@ public enum ProposalStore {
                 }
                 continue
             }
+            if errno == ENOENT, !create { throw CocoaError(.fileReadNoSuchFile) }
             guard errno == ENOENT, create else { throw TekaStore.Refused(reason: "the proposals folder cannot be read") }
             guard mkdir(url.path, 0o700) == 0 || errno == EEXIST else { throw TekaStore.Refused(reason: "the proposals folder cannot be made") }
             // Whatever is there now must be a real folder: a link made in a race is refused.
@@ -461,8 +467,7 @@ public enum ProposalStore {
         switch SafeFile.read(try checkedDir(folder, create: false).appendingPathComponent("\(id).json")) {
         case .ok(let d): data = d
         case .missing: throw CocoaError(.fileReadNoSuchFile)
-        case .refused: throw Tampered(id: id)
-        case .unreadable: throw CocoaError(.fileReadUnknown)
+        case .refused, .unreadable: throw Unreadable(id: id)
         }
         if let expectedDigest, digest(data) != expectedDigest { throw Tampered(id: id) }
         guard case .object(let o) = try JSONParser.parse(data).value, o["id"]?.stringValue == id else { throw Tampered(id: id) }
