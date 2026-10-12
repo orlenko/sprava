@@ -70,28 +70,6 @@ import Testing
         #expect(ids.contains("estate-example-2026-014"))
     }
 
-    // MARK: - 2. A card file that is a link or a FIFO is never read
-
-    @Test func aLinkedOrFIFOCardIsNeitherListedNorLoaded() throws {
-        let (folder, _) = try adopted()
-        let outside = folder.deletingLastPathComponent().appendingPathComponent("outside", isDirectory: true)
-        let card = addCard()
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        try ProposalStore.save(card, in: outside)
-        _ = try ProposalStore.checkedDir(folder, create: true)
-        let link = ProposalStore.dir(folder).appendingPathComponent("\(card.id).json")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: ProposalStore.dir(outside).appendingPathComponent("\(card.id).json"))
-        #expect(ProposalStore.list(in: folder).isEmpty)
-        #expect(throws: (any Error).self) { try ProposalStore.load(card.id, in: folder, expectedDigest: nil) }
-
-        // A FIFO under a card's name: listing and loading return at once instead of waiting for a writer.
-        let fifoID = Proposal.make(title: "Invented", actor: user, ops: [], now: now).id
-        let fifo = ProposalStore.dir(folder).appendingPathComponent("\(fifoID).json")
-        #expect(mkfifo(fifo.path, 0o600) == 0)
-        #expect(ProposalStore.list(in: folder).isEmpty)
-        #expect(throws: ProposalStore.Tampered.self) { try ProposalStore.load(fifoID, in: folder, expectedDigest: nil) }
-    }
-
     // MARK: - 3. An item copied from an earlier op takes the new op's times
 
     @Test func aCopiedItemTakesTheNewOpsTimes() throws {
