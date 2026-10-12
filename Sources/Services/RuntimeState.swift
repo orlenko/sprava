@@ -37,11 +37,26 @@ public struct RuntimeState: Codable, Sendable, Equatable {
         var state = RuntimeState()
         state.day = today
         state.lastSummaryDate = today
-        // Saved once the unreadable file is out of the way, so the marker survives the next update; never written
-        // over a file that could not be moved.
-        let aside = UnreadableStateFile.setAside(url(dir), now: now)
-        if aside != nil, let data = try? JSONEncoder().encode(state) { try? StateFile.write(data, to: url(dir)) }
+        // Under the lock, so a refusal recorded meanwhile by a second process is not written over. Saved once the
+        // unreadable file is out of the way, so the marker survives the next update; never written over a file
+        // that could not be moved.
+        var aside: URL?
+        _ = locked(dir) {
+            aside = UnreadableStateFile.setAside(url(dir), now: now)
+            if aside != nil, let data = try? JSONEncoder().encode(state) { try? StateFile.write(data, to: url(dir)) }
+            return true
+        }
         return (state, aside)
+    }
+
+    /// Runs `body` holding `state.lock`, opened through a handle on the runtime folder (a linked folder is never
+    /// written into); false when the lock cannot be taken.
+    static func locked(_ dir: URL, _ body: () -> Bool) -> Bool {
+        guard let folder = try? StateDirectory.open(dir), let fd = try? folder.openLock("state.lock") else { return false }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 { guard errno == EINTR else { return false } }
+        defer { flock(fd, LOCK_UN) }
+        return body()
     }
 
     /// Reads, changes and saves under `state.lock` beside the file, since a runtime refused the lease records its
@@ -49,19 +64,19 @@ public struct RuntimeState: Codable, Sendable, Equatable {
     /// change is dropped; returns whether it was saved.
     @discardableResult
     public static func update(_ dir: URL, _ change: (inout RuntimeState) -> Void) -> Bool {
-        let fd = open(dir.appendingPathComponent("state.lock").path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        while flock(fd, LOCK_EX) != 0 { guard errno == EINTR else { return false } }
-        defer { flock(fd, LOCK_UN) }
-        guard var state = try? read(dir) else { return false }
-        change(&state)
-        guard let data = try? JSONEncoder().encode(state), (try? StateFile.write(data, to: url(dir))) != nil else { return false }
-        return true
+        locked(dir) {
+            guard var state = try? read(dir) else { return false }
+            change(&state)
+            guard let data = try? JSONEncoder().encode(state), (try? StateFile.write(data, to: url(dir))) != nil else { return false }
+            return true
+        }
     }
 
-    @discardableResult public static func recordStart(_ dir: URL) -> Bool { update(dir) { $0.startsToday += 1 } }
-    @discardableResult public static func recordRefusal(_ dir: URL) -> Bool { update(dir) { $0.refusalsToday += 1 } }
+    /// The most a day's count holds; the counts stop there, so the file always reads back.
+    static let maxCount = 1_000_000
+
+    @discardableResult public static func recordStart(_ dir: URL) -> Bool { update(dir) { $0.startsToday = min($0.startsToday + 1, maxCount) } }
+    @discardableResult public static func recordRefusal(_ dir: URL) -> Bool { update(dir) { $0.refusalsToday = min($0.refusalsToday + 1, maxCount) } }
 }
 
 // Missing keys take their defaults, so a field added later never makes the file unreadable.
@@ -74,7 +89,7 @@ extension RuntimeState {
         lastSummaryDate = try c.decodeIfPresent(String.self, forKey: .lastSummaryDate)
         lastSentinelDate = try c.decodeIfPresent(String.self, forKey: .lastSentinelDate)
         // A count no day can reach is unreadable, so the start sets the file aside rather than trapping on `+= 1`.
-        guard (0...1_000_000).contains(startsToday), (0...1_000_000).contains(refusalsToday) else {
+        guard (0...Self.maxCount).contains(startsToday), (0...Self.maxCount).contains(refusalsToday) else {
             throw DecodingError.dataCorruptedError(forKey: .startsToday, in: c, debugDescription: "count out of range")
         }
     }

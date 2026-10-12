@@ -113,7 +113,9 @@ public struct JobRecord: Codable, Sendable, Equatable {
         lastErrorCode = "wedged"
         lastErrorCulprit = nil   // an earlier failure's culprit is not this one's
         consecutiveFailures += 1
-        if breaker == "half_open" {
+        // A wedge on an open breaker (a run that timed out and kept running) is a new failed trial: its backoff
+        // starts again, longer, so the restart that follows does not let the same job straight back in.
+        if breaker == "half_open" || breaker == "open" {
             breaker = "open"
             breakerOpenedAt = now
             backoffStep = min(backoffStep + 1, Self.backoff.count - 1)

@@ -38,7 +38,8 @@ import Testing
         let kept = try #require(aside)
         #expect(kept.lastPathComponent.hasPrefix("breakers.json.unreadable-"))
         #expect(try Data(contentsOf: kept) == bad)
-        #expect(!FileManager.default.fileExists(atPath: url.path))
+        // The recovered half-open records take its place.
+        #expect(JobRecords.load(url).jobs["hub"]?.breaker == "half_open")
         #expect(records.jobs["hub"]?.breaker == "half_open" && records.jobs["sentinel"]?.breaker == "half_open")
 
         // An older file without newer fields keeps its values.
@@ -120,6 +121,42 @@ import Testing
         #expect(throws: StateFile.Unreadable.self) { try RuntimeState.read(dir) }
         #expect(!RuntimeState.recordStart(dir))
         #expect(RuntimeState.loadAtStart(dir, now: now).setAside != nil)
+    }
+
+    @Test func theRecoveredBreakersAreSavedSoAnEarlyWedgeFindsThemHalfOpen() throws {
+        let url = try folder().appendingPathComponent("breakers.json")
+        try Data("{\"jobs\": {".utf8).write(to: url)
+        _ = JobRecords.loadAtStart(url, jobs: ["hub"], now: now)
+        JobRecords.recordWatchdogExit(job: "hub", threshold: 3, url: url, now: now)
+        #expect(JobRecords.load(url).jobs["hub"]?.breaker == "open")
+    }
+
+    @Test func aWedgeOnAnOpenBreakerStartsItsBackoffAgain() {
+        var r = JobRecord()
+        r.finish(.timeout, at: now, durationMS: 1, threshold: 1)
+        #expect(r.breaker == "open" && r.backoffStep == 0)
+        let later = now.addingTimeInterval(900)
+        r.recordWatchdogExit(at: later, threshold: 1)
+        #expect(r.breaker == "open" && r.breakerOpenedAt == later && r.backoffStep == 1)
+        let early = r.mayRun(now: later.addingTimeInterval(60))
+        #expect(!early)
+    }
+
+    @Test func countsStopAtTheLimitSoTheFileAlwaysReadsBack() throws {
+        let dir = try folder()
+        let today = CalendarDate.today().description
+        try Data(#"{"day":"\#(today)","startsToday":\#(RuntimeState.maxCount)}"#.utf8).write(to: RuntimeState.url(dir))
+        #expect(RuntimeState.recordStart(dir))
+        #expect(try RuntimeState.read(dir).startsToday == RuntimeState.maxCount)
+    }
+
+    @Test func theStateLockIsNeverOpenedThroughALinkedFolder() throws {
+        let base = try folder()
+        let real = base.appendingPathComponent("elsewhere"), runtime = base.appendingPathComponent("runtime")
+        try AtomicFile.makePrivateFolder(real)
+        try FileManager.default.createSymbolicLink(at: runtime, withDestinationURL: real)
+        #expect(!RuntimeState.recordRefusal(runtime))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: real.path).isEmpty)
     }
 
     @Test func twoWatchdogExitsOpenTheBreaker() throws {

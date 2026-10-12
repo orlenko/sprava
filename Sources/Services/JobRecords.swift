@@ -33,7 +33,11 @@ public struct JobRecords: Codable, Sendable {
         if let records = try? read(url) { return (records, nil) }
         var records = JobRecords()
         for key in jobs { records.jobs[key, default: JobRecord()].breaker = "half_open" }
-        return (records, UnreadableStateFile.setAside(url, now: now))
+        // Saved once the unreadable file is out of the way, so a watchdog exit before the first ordinary save still
+        // finds the half-open breakers.
+        let aside = UnreadableStateFile.setAside(url, now: now)
+        if aside != nil { try? records.save(url) }
+        return (records, aside)
     }
 
     /// Records a watchdog exit straight to disk, without the runtime's state queue, which may be the thing that hung.

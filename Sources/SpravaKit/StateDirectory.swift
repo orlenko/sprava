@@ -163,6 +163,17 @@ public final class StateDirectory: @unchecked Sendable {
         return outcome
     }
 
+    /// Opens (creating when absent) a lock file in this directory through its handle, never through a link; the
+    /// caller closes the descriptor.
+    public func openLock(_ name: String) throws -> Int32 {
+        try Self.component(name)
+        try validate()
+        let lock = openat(fd, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw AtomicFile.Failure(step: "open state lock", code: errno) }
+        do { try validate() } catch { close(lock); throw error }
+        return lock
+    }
+
     /// Renames an entry within this directory through its handle, never replacing one at `newName`.
     public func rename(_ name: String, to newName: String) throws {
         try Self.component(name)
