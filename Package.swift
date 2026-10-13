@@ -48,8 +48,9 @@ let package = Package(
         .testTarget(name: "BackupTests", dependencies: ["Backup", "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Registered brain clients, before the MCP transport and tools are added.
-        .target(name: "Brains", dependencies: ["SpravaKit"]),
-        .testTarget(name: "BrainsTests", dependencies: ["Brains", "SpravaKit"]),
+        .target(name: "Brains", dependencies: ["Capture", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .testTarget(name: "BrainsTests", dependencies: ["Brains", "CaptureTestSupport", "Capture", "Extract", "Shelf", "BinderStore", "BinderFormat",
+                                                        "SpravaTestSupport", "SpravaKit"]),
 
         // Runtime services arrive separately from commands and scheduling.
         .target(name: "Services", dependencies: ["Backup", "Hub", "Capture", "Clerk", "Extract", "Shelf", "BinderStore", "BinderFormat",
