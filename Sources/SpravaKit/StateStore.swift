@@ -102,7 +102,7 @@ public final class StateStore: @unchecked Sendable {
     }
 
     private func configure() throws {
-        let mode = try transactionless("PRAGMA journal_mode=WAL", step: "set WAL mode")
+        let mode = try configureWAL()
         guard mode.first?.first?.text?.lowercased() == "wal" else {
             throw Failure(path: url.path, step: "set WAL mode", code: SQLITE_ERROR)
         }
@@ -113,6 +113,23 @@ public final class StateStore: @unchecked Sendable {
         try exec("PRAGMA checkpoint_fullfsync=ON", step: "enable full fsync for checkpoints")
         try exec("PRAGMA foreign_keys=ON", step: "enable foreign keys")
         try exec("PRAGMA trusted_schema=OFF", step: "distrust the schema")
+    }
+
+    /// Concurrent first opens promote read locks while changing the journal mode. SQLite can return BUSY
+    /// without calling its busy handler to avoid deadlock, so finalize that attempt and retry with one deadline.
+    private func configureWAL() throws -> [[StateValue]] {
+        let deadline = ProcessInfo.processInfo.systemUptime + Double(Self.busyTimeoutMilliseconds) / 1_000
+        // Use only this retry's deadline while configuring; an inner busy wait could exceed it on every attempt.
+        sqlite3_busy_timeout(db, 0)
+        defer { sqlite3_busy_timeout(db, Self.busyTimeoutMilliseconds) }
+        while true {
+            do { return try transactionless("PRAGMA journal_mode=WAL", step: "set WAL mode") }
+            catch let failure as Failure where failure.code & 0xff == SQLITE_BUSY {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { throw failure }
+                Thread.sleep(forTimeInterval: min(0.01, remaining))
+            }
+        }
     }
 
     private func prepareSchema(_ schema: Schema) throws {
