@@ -47,8 +47,17 @@ public enum BinderCreator {
         public let checklistCard: String?
     }
 
+    /// An empty folder can become a binder: nothing in it but Finder's `.DS_Store`.
+    public static func isEmptyFolder(_ url: URL) -> Bool {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else { return false }
+        return names.allSatisfy { $0 == ".DS_Store" }
+    }
+
+    /// `existing` is an empty folder in `parent` that becomes the binder, renamed to `name` when its name differs, since
+    /// `meta.name` equals the folder's name (binder-v0 §3.1). Without it, the binder's folder is made new.
     public static func create(parent: URL, name: String, template: BinderTemplate, deviceID: String, knownNames: [String],
-                              year: Int, today: CalendarDate, client: String = "sprava/0.1", now: Date = Date()) throws -> Created {
+                              year: Int, today: CalendarDate, client: String = "sprava/0.1", now: Date = Date(),
+                              existing: URL? = nil) throws -> Created {
         guard name.wholeMatch(of: /[a-z0-9][a-z0-9-]*/) != nil, name.count <= 64 else {
             throw TekaStore.Refused(reason: "a binder name uses lowercase letters, digits and hyphens, starting with a letter or a digit")
         }
@@ -59,8 +68,24 @@ public enum BinderCreator {
         guard SafeFile.isTrustedFolder(parent) else { throw TekaStore.Refused(reason: "that folder cannot hold a binder") }
         if Adoption.syncedLocation(parent) { throw TekaStore.Refused(reason: "that folder is uploaded by a sync service") }
         let folder = parent.appendingPathComponent(name, isDirectory: true)
-        guard mkdir(folder.path, 0o755) == 0 else {
-            throw TekaStore.Refused(reason: errno == EEXIST ? "a folder with that name already exists" : "the folder could not be created")
+        if let existing {
+            guard existing.deletingLastPathComponent().standardizedFileURL.path == parent.standardizedFileURL.path,
+                  SafeFile.isTrustedFolder(existing), isEmptyFolder(existing) else {
+                throw TekaStore.Refused(reason: "only an empty folder can become a new binder")
+            }
+            if existing.lastPathComponent != name {
+                // A change of case only, on a volume that ignores case, finds the folder itself under the new name.
+                var from = stat(), to = stat()
+                guard lstat(folder.path, &to) != 0
+                        || (lstat(existing.path, &from) == 0 && from.st_dev == to.st_dev && from.st_ino == to.st_ino) else {
+                    throw TekaStore.Refused(reason: "a folder with that name already exists")
+                }
+                guard rename(existing.path, folder.path) == 0 else { throw TekaStore.Refused(reason: "the folder could not be renamed") }
+            }
+        } else {
+            guard mkdir(folder.path, 0o755) == 0 else {
+                throw TekaStore.Refused(reason: errno == EEXIST ? "a folder with that name already exists" : "the folder could not be created")
+            }
         }
         for sub in template.folders + ["intake"] { _ = mkdir(folder.appendingPathComponent(sub).path, 0o755) }
 

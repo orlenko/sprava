@@ -75,4 +75,46 @@ import Testing
         try FileManager.default.createDirectory(at: other.appendingPathComponent("tax-2027"), withIntermediateDirectories: true)
         #expect(try call(c, [("command", .str("create_binder")), ("parent", .string(other.path)), ("name", .str("tax-2027"))])["ok"] == .bool(false))
     }
+
+    @Test func anEmptyFolderBecomesTheBinderRenamedToItsName() throws {
+        let (c, parent) = try setup()
+        let picked = parent.appendingPathComponent("Garden Shed")
+        try FileManager.default.createDirectory(at: picked, withIntermediateDirectories: true)
+        try Data().write(to: picked.appendingPathComponent(".DS_Store"))
+        let r = try call(c, [("command", .str("create_binder")), ("folder", .string(picked.path)), ("name", .str("garden-shed")),
+                             ("template", .str("blank"))])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let folder = URL(fileURLWithPath: try #require(r["binder"]?.stringValue))
+        #expect(folder.lastPathComponent == "garden-shed" && folder.deletingLastPathComponent().path == parent.path)
+        #expect(!FileManager.default.fileExists(atPath: picked.path))
+        #expect(Teka.read(folder).state == .ready)
+        #expect(ShelfStore(supportDirectory: c.support).pickedFolders().map(\.lastPathComponent) == ["garden-shed"])
+    }
+
+    @Test func anEmptyFolderWhoseNameDiffersOnlyInCaseIsRenamed() throws {
+        let (c, parent) = try setup()
+        let picked = parent.appendingPathComponent("Shed")
+        try FileManager.default.createDirectory(at: picked, withIntermediateDirectories: true)
+        let r = try call(c, [("command", .str("create_binder")), ("folder", .string(picked.path)), ("name", .str("shed")),
+                             ("template", .str("blank"))])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let names = try FileManager.default.contentsOfDirectory(atPath: parent.path)
+        #expect(names == ["shed"])
+        #expect(Teka.read(parent.appendingPathComponent("shed")).state == .ready)
+    }
+
+    @Test func aFolderThatIsNotEmptyOrWhoseNewNameIsTakenIsLeftAsItIs() throws {
+        let (c, parent) = try setup()
+        let full = parent.appendingPathComponent("notes")
+        try FileManager.default.createDirectory(at: full, withIntermediateDirectories: true)
+        try Data("invented".utf8).write(to: full.appendingPathComponent("a.txt"))
+        #expect(try call(c, [("command", .str("create_binder")), ("folder", .string(full.path)), ("name", .str("notes"))])["ok"] == .bool(false))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: full.path) == ["a.txt"])
+        let empty = parent.appendingPathComponent("Empty")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: parent.appendingPathComponent("taken"), withIntermediateDirectories: true)
+        #expect(try call(c, [("command", .str("create_binder")), ("folder", .string(empty.path)), ("name", .str("taken"))])["ok"] == .bool(false))
+        #expect(FileManager.default.fileExists(atPath: empty.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.appendingPathComponent("taken").path).isEmpty)
+    }
 }

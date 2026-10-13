@@ -245,8 +245,15 @@ extension Commands {
     }
 
     func createBinder(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
-        // A new binder from a template (mvp.md feature 6): ready, stamped v0, at disclosure none, on the shelf.
-        guard case .string(let parentPath)? = r["parent"], parentPath.hasPrefix("/"), case .string(let name)? = r["name"] else {
+        // A new binder from a template (mvp.md feature 6): ready, stamped v0, at disclosure none, on the shelf. With
+        // `folder`, an empty folder the person picked becomes the binder, in its own parent.
+        var existing: URL?
+        if case .string(let path)? = r["folder"] {
+            guard path.hasPrefix("/") else { throw Failure(message: "create_binder needs an absolute folder") }
+            existing = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        }
+        guard case .string(let parentPath)? = existing.map({ .string($0.deletingLastPathComponent().path) }) ?? r["parent"],
+              parentPath.hasPrefix("/"), case .string(let name)? = r["name"] else {
             throw Failure(message: "create_binder needs parent and name")
         }
         let template = BinderTemplate.all.first { $0.key == (r["template"]?.stringValue ?? "tax-year") } ?? .taxYear
@@ -260,7 +267,7 @@ extension Commands {
         let year = r["year"]?.numberValue?.safeInteger.map(Int.init) ?? calendar.component(.year, from: now)
         let created = try BinderCreator.create(parent: URL(fileURLWithPath: parentPath, isDirectory: true).standardizedFileURL, name: name,
                                                template: template, deviceID: deviceID, knownNames: names, year: year, today: today,
-                                               client: client, now: now)
+                                               client: client, now: now, existing: existing)
         if let card = created.checklistCard { try recordDigests([card], in: created.folder) }
         try store.add(created.folder)
         try FilingList(support: support).set(created.folder, .init(description: template.description(year), filing: false))
