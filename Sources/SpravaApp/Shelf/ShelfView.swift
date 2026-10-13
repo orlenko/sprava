@@ -40,6 +40,8 @@ final class ShelfModel: ObservableObject {
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
     private var refreshTask: Task<Void, Never>?
     let client: RuntimeClient
+    /// Asks for a new binder's template and name, for an empty folder the person picked or (nil) a folder still to choose.
+    var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> (template: String, name: String)? = ShelfModel.binderAlert
 
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
@@ -92,9 +94,14 @@ final class ShelfModel: ObservableObject {
         await refreshTask?.value
     }
 
-    private func isBinder(_ url: URL) async -> Bool? {
-        await disk.run(timeout: readTimeout) { Teka.read(url).state != .notATeka }
+    /// Whether the folder is a binder, an empty folder that could become one, or neither; nil when it cannot be read in time.
+    private func kind(of url: URL) async -> FolderKind? {
+        await disk.run(timeout: readTimeout) {
+            Teka.read(url).state != .notATeka ? .binder : BinderCreator.isEmptyFolder(url) ? .empty : .other
+        }
     }
+
+    private enum FolderKind: Sendable { case binder, empty, other }
 
     /// Re-reads every minute, so a new day or an edit made elsewhere shows without a click.
     func refreshLoop() async {
@@ -110,25 +117,27 @@ final class ShelfModel: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = true
         panel.prompt = "Add to Shelf"
-        panel.message = "Choose binder folders (each holds a catalog.json). Sprava only reads them."
+        panel.message = "Choose binder folders (each holds a catalog.json), or an empty folder to make a new binder in."
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
         Task { await add(urls) }
     }
 
-    /// Asks the runtime to add the chosen folders. What went wrong is said after the refresh, which would otherwise
-    /// clear it.
+    /// Asks the runtime to add the chosen folders; an empty one is offered as a new binder. What went wrong is said
+    /// after the refresh, which would otherwise clear it.
     func add(_ urls: [URL]) async {
         operationNote = nil
         var skipped: [String] = []
         var failed: [String] = []
+        var empty: [URL] = []
         for url in urls {
-            guard let valid = await isBinder(url) else {
+            guard let kind = await kind(of: url) else {
                 failed.append("Could not check \(url.lastPathComponent): its files are still waiting to be read.")
                 continue
             }
-            if !valid {
-                skipped.append(url.lastPathComponent)
+            if kind == .empty { empty.append(url) }
+            if kind != .binder {
+                if kind == .other { skipped.append(url.lastPathComponent) }
                 continue
             }
             do {
@@ -139,7 +148,17 @@ final class ShelfModel: ObservableObject {
             }
         }
         await refreshAndWait(afterChanges: true)
-        if !skipped.isEmpty { failed.append("Not added (no catalog.json): \(skipped.joined(separator: ", "))") }
+        let year = Calendar.current.component(.year, from: Date())
+        for url in empty {
+            guard let answer = askForBinder(url, year) else { continue }
+            if let failure = await create(parent: url.deletingLastPathComponent(), name: answer.name, template: answer.template,
+                                          year: year, existing: url) {
+                failed.append("\(url.lastPathComponent) did not become a binder: \(failure)")
+            }
+        }
+        if !skipped.isEmpty {
+            failed.append("Not added (no catalog.json; New Binder makes a binder): \(skipped.joined(separator: ", "))")
+        }
         if !failed.isEmpty { operationNote = failed.joined(separator: "\n") }
     }
 
@@ -161,21 +180,7 @@ final class ShelfModel: ObservableObject {
     /// A new binder from a template (mvp.md feature 6), created by the runtime.
     func newBinder() {
         let year = Calendar.current.component(.year, from: Date())
-        let alert = NSAlert()
-        alert.messageText = "New binder"
-        alert.informativeText = "Pick a starting point and a name: lowercase letters, digits and hyphens. A template's checklist arrives as one card to approve."
-        let templates = BinderTemplate.all
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: 260, height: 26))
-        picker.addItems(withTitles: templates.map(\.title))
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = templates[0].suggestedName(year)
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
-        box.addSubview(picker)
-        box.addSubview(field)
-        alert.accessoryView = box
-        alert.addButton(withTitle: "Choose Where…")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let answer = askForBinder(nil, year) else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -183,22 +188,57 @@ final class ShelfModel: ObservableObject {
         panel.prompt = "Create Here"
         panel.message = "Choose the folder that will hold the new binder."
         guard panel.runModal() == .OK, let parent = panel.url else { return }
-        let name = field.stringValue
-        let template = templates[max(0, picker.indexOfSelectedItem)].key
-        Task { await createBinder(parent: parent, name: name, template: template, year: year) }
+        Task { await createBinder(parent: parent, name: answer.name, template: answer.template, year: year) }
     }
 
     func createBinder(parent: URL, name: String, template: String, year: Int) async {
         operationNote = nil
+        if let failure = await create(parent: parent, name: name, template: template, year: year) {
+            operationNote = "The binder was not created: \(failure)"
+        }
+    }
+
+    /// Asks the runtime for the binder and selects it; returns what went wrong, if anything.
+    private func create(parent: URL, name: String, template: String, year: Int, existing: URL? = nil) async -> String? {
+        var fields: [(String, JSONValue)] = [("parent", .string(parent.path)), ("name", .string(name)),
+                                            ("template", .string(template)), ("year", .int(year))]
+        if let existing { fields.append(("folder", .string(existing.path))) }
         do {
-            let r = try await client.global("create_binder", [("parent", .string(parent.path)), ("name", .string(name)),
-                ("template", .string(template)), ("year", .int(year))])
+            let r = try await client.global("create_binder", fields)
             snapshotGeneration &+= 1
             await refreshAndWait(afterChanges: true)
             if let path = r["binder"]?.stringValue { selection = URL(fileURLWithPath: path).standardizedFileURL }
+            return nil
         } catch {
-            operationNote = "The binder was not created: \(error)"
+            return "\(error)"
         }
+    }
+
+    /// The template and name, asked in one alert. For an empty folder the name starts from the folder's own, in the
+    /// shape a new binder's name takes, and the folder is renamed to it when they differ.
+    static func binderAlert(empty: URL?, year: Int) -> (template: String, name: String)? {
+        let alert = NSAlert()
+        let rule = "a name: lowercase letters, digits and hyphens. A template's checklist arrives as one card to approve."
+        if let empty {
+            alert.messageText = "Make \u{201C}\(empty.lastPathComponent)\u{201D} a new binder?"
+            alert.informativeText = "The folder is empty. Pick a starting point and \(rule) If the name differs from the folder's, the folder is renamed to it."
+        } else {
+            alert.messageText = "New binder"
+            alert.informativeText = "Pick a starting point and \(rule)"
+        }
+        let templates = BinderTemplate.all
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: 260, height: 26))
+        picker.addItems(withTitles: templates.map(\.title))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = empty.map { IDMint.prefix(for: $0.lastPathComponent) } ?? templates[0].suggestedName(year)
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
+        box.addSubview(picker)
+        box.addSubview(field)
+        alert.accessoryView = box
+        alert.addButton(withTitle: empty == nil ? "Choose Where…" : "Make Binder")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return (templates[max(0, picker.indexOfSelectedItem)].key, field.stringValue)
     }
 
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
@@ -254,6 +294,8 @@ struct ShelfView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 280)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
+                    Button { model.newBinder() } label: { Label("New Binder…", systemImage: "plus") }
+                        .buttonStyle(.borderless)
                     if let note = model.note {
                         Text(note).font(.caption).foregroundStyle(.orange)
                     }
@@ -279,8 +321,10 @@ struct ShelfView: View {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
                 } description: {
-                    Text("Create one with New Binder, or add an existing folder with File › Add Folder….")
+                    Text("Start a new binder, or add a folder that already holds one.")
                 } actions: {
+                    Button("New Binder…") { model.newBinder() }
+                        .buttonStyle(.borderedProminent)
                     Button("Add Folder…") { model.addFolderWithPanel() }
                 }
             }

@@ -243,14 +243,36 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         let support = try temporaryFolder()
         let binder = try makeTeka(fixture: "sprava-v0", folderName: "kitchen-reno")
         let notABinder = try temporaryFolder()
+        try Data("invented".utf8).write(to: notABinder.appendingPathComponent("note.txt"))
         let runtime = StandInRuntime()   // answers nothing: the runtime is not running
         let model = ShelfModel(support: support, client: runtime.client)
         await model.add([binder, notABinder])
         #expect(model.note?.contains("Could not add kitchen-reno: ") == true)
-        #expect(model.note?.contains("Not added (no catalog.json): \(notABinder.lastPathComponent)") == true)
+        #expect(model.note?.contains("Not added (no catalog.json; New Binder makes a binder): \(notABinder.lastPathComponent)") == true)
         // A folder that is not a binder is never sent.
         #expect(runtime.sent.count == 1)
         #expect(model.rows.isEmpty)
+    }
+
+    @Test func anEmptyFolderIsOfferedAsANewBinderInPlace() async throws {
+        let support = try temporaryFolder()
+        let empty = try temporaryFolder()
+        let runtime = StandInRuntime()
+        runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
+        let model = ShelfModel(support: support, client: runtime.client)
+        var asked: [URL?] = []
+        model.askForBinder = { folder, _ in asked.append(folder); return ("blank", "garden-shed") }
+        await model.add([empty])
+        #expect(asked == [empty])
+        let sent = try #require(runtime.sent.first)
+        #expect(runtime.sent.count == 1 && sent["command"]?.stringValue == "create_binder")
+        #expect(sent["folder"]?.stringValue == empty.path && sent["name"]?.stringValue == "garden-shed")
+        #expect(sent["parent"]?.stringValue == empty.deletingLastPathComponent().path)
+        #expect(model.note == nil)
+        // Declining leaves the folder alone and sends nothing.
+        model.askForBinder = { _, _ in nil }
+        await model.add([empty])
+        #expect(runtime.sent.count == 1 && model.note == nil)
     }
 
     @Test func aFolderThatCannotBeRemovedSaysSoAfterTheRefresh() async throws {
