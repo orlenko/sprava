@@ -163,6 +163,10 @@ final class HealthModel: ObservableObject {
             message = problem
             return
         }
+        if let problem = BundleSignature.problem(at: Bundle.main.bundleURL) {
+            message = problem
+            return
+        }
         do {
             try? FileManager.default.removeItem(at: runtimeDir.appendingPathComponent("background-off"))
             try runtime.register()
@@ -170,7 +174,7 @@ final class HealthModel: ObservableObject {
             message = nil
             followStart()
         } catch {
-            message = "Could not turn on background work: \(error.localizedDescription)"
+            message = BundleSignature.registerFailure(error)
         }
         refresh()
         if runtime.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
