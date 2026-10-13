@@ -74,13 +74,22 @@ attachments remain ordinary files, including attachments whose names end in `.sq
 ### 3.4 Is it really in iCloud?
 
 For each file in the repository, macOS says whether iCloud has uploaded it
-(`URLResourceKey.ubiquitousItemIsUploadedKey`). Sprava reads that after every run:
+(`URLResourceKey.ubiquitousItemIsUploadedKey`). Sprava reads that after every run, and again when the last reading
+is ten minutes old. The walk stalls when iCloud does, so the backup job starts it on a thread of its own and never
+waits for it, never on the queue the app's commands share; one runs at a time, and one stalled for thirty minutes
+is abandoned, its late result dropped. The backup status shows the last reading and when it was taken, or "not
+checked yet":
 
 - "Backed up": the snapshot is written and every file it needs is uploaded.
 - "Waiting for iCloud": written, not yet uploaded. Shown amber after 24 hours, with the likely cause (iCloud
   Drive off, the account out of space, the Mac offline).
 - iCloud Drive's "Optimize Mac Storage" may evict older repository files to save space. That is fine: backups
   only add files, and a restore downloads what it needs (it may then take longer).
+
+Offload gates need a fresh upload result after their writes. Each waits at most two minutes for iCloud; a stalled
+check leaves the offload pending and releases the backup-state lock so later work can run. Its late result is not
+used to remove a binder, and another gate for that repository waits until the stalled scan ends before starting
+a fresh scan. Setup and second-backup changes use the same bounded gate.
 
 ### 3.5 Retention
 
@@ -234,3 +243,7 @@ too, or lifeproj will look for a folder that is gone.
 2. Open items in a binder being offloaded: a warning that lists them; the person may close them or confirm
    and offload anyway.
 3. The MVP builds backup and offload.
+
+Queued offload confirmation carries the `confirmation_digest` returned with `needs_confirmation`. It covers the exact open work shown for review; changed work requires a fresh confirmation before the binder can leave.
+
+Setup refuses an unfinished iCloud-location check. Repositories cannot contain a binder or sit inside one, including paths reached through aliases; backup and offload recheck this against the binder before doing work. A configured mirror whose key is unavailable fails the backup job rather than silently skipping it.

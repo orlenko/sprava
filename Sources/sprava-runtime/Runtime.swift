@@ -1,3 +1,4 @@
+import Backup
 import BinderStore
 import Brains
 import Clerk
@@ -96,6 +97,8 @@ final class Runtime: @unchecked Sendable {
         do {
             let commands = Commands(support: support, deviceID: try DeviceID.load(support: support))
             self.commands = commands
+            // No backup request runs yet, so one left "running" was cut off by the stop.
+            do { try BackupRequests(support: support).recoverInterrupted() } catch { log("backup requests_unreadable") }
             let service = XPCService(commands: commands, watch: watch) { [weak self] line in self?.log(line) }
             service.start()
             xpc = service
@@ -138,7 +141,7 @@ final class Runtime: @unchecked Sendable {
         }
     }
 
-    /// The jobs this runtime runs so far; backup joins with its area.
+    /// Every job the scheduler starts.
     func body(for key: String) -> (@Sendable () -> JobOutcome)? {
         switch key {
         case "sentinel": { [unowned self] in sentinel() }
@@ -149,6 +152,9 @@ final class Runtime: @unchecked Sendable {
         case "clerk": { [unowned self] in clerk() }
         case "dashboard": { [unowned self] in DashboardJob.run(jobContext()) { notify(title: $0, body: $1, id: $2) } }
         case "hub": { [unowned self] in HubJob.run(jobContext()) }
+        case "backup": { [unowned self] in
+            BackupJob.run(jobContext(), backup: Backup(support: support)) { notify(title: $0, body: $1, id: $2) }
+        }
         default: nil
         }
     }

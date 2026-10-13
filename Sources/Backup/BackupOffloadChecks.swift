@@ -70,6 +70,15 @@ extension Backup {
         }
     }
 
+    /// The exact open work shown for confirmation; changes to IDs or content require a new review.
+    public static func offloadConfirmationDigest(in folder: URL) throws -> String {
+        confirmationDigest(try refuseNotReady(folder, Teka.read(folder)))
+    }
+
+    static func confirmationDigest(_ items: [Item]) -> String {
+        digest(Dictionary(uniqueKeysWithValues: items.enumerated().map { (String($0.offset), JSONWriter.compact($0.element.raw)) }))
+    }
+
     /// Whether a second backup is in another cloud service's folder (`~/Library/CloudStorage`), whose upload must be
     /// seen before its copy counts as off this Mac; an external disk's copy counts once written.
     static func isCloudProviderLocation(_ url: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
@@ -105,6 +114,7 @@ extension Backup {
         switch uploadCheck(repository) {
         case .uploaded: return nil
         case .waiting(let n): return n
+        case .notChecked: return 0
         case .notInICloud:
             throw Failure(message: "the backup mirror is not in iCloud (is iCloud Drive on?), so it is not yet a copy off this Mac; nothing was removed")
         }
