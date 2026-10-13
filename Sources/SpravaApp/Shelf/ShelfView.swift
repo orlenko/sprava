@@ -204,11 +204,12 @@ final class ShelfModel: ObservableObject {
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
 
     /// The sidebar's pages above the Shelf.
-    let pages: Set<URL> = [healthSelection, inboxSelection, brainsSelection]
+    let pages: Set<URL> = [healthSelection, inboxSelection, backupSelection, brainsSelection]
 }
 
 let healthSelection = URL(string: "sprava:health")!
 let inboxSelection = URL(string: "sprava:inbox")!
+let backupSelection = URL(string: "sprava:backup")!
 let brainsSelection = URL(string: "sprava:brains")!
 
 struct ShelfView: View {
@@ -216,6 +217,7 @@ struct ShelfView: View {
     @StateObject private var inbox = InboxModel()
     @StateObject private var health = HealthModel()
     @StateObject private var brains = BrainsModel()
+    @StateObject private var backup = BackupModel()
 
     var body: some View {
         NavigationSplitView {
@@ -232,6 +234,7 @@ struct ShelfView: View {
                         if inbox.cardCount > 0 { Text("\(inbox.cardCount)").foregroundStyle(.secondary) }
                     }
                     .tag(inboxSelection)
+                    Label("Backup", systemImage: "externaldrive").tag(backupSelection)
                     Label("Brains", systemImage: "brain").tag(brainsSelection)
                 }
                 Section("Shelf") {
@@ -264,6 +267,8 @@ struct ShelfView: View {
                 HealthView(model: health)
             } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
+            } else if model.selection == backupSelection {
+                BackupView(model: backup)
             } else if model.selection == brainsSelection {
                 BrainsView(model: brains, rows: model.rows)
             } else if let row = model.selectedRow {
