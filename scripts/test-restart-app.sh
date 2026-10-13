@@ -57,7 +57,10 @@ if name == "launchctl":
     elif os.environ.get("TEST_RESTART_FAIL") == "1":
         sys.exit(1)
 elif name == "osascript":
-    sys.stdin.read()
+    script = sys.stdin.read()
+    assert script.index("display dialog") < script.index("to quit")
+    assert "Save any unfinished notes" in script
+    assert 'cancel button "Cancel"' in script
     Path(os.environ["TEST_LOG"] + ".quit").touch()
     sys.exit(int(os.environ.get("TEST_QUIT_FAIL", "0")))
 elif name == "pgrep":
@@ -116,7 +119,7 @@ elif name == "mv":
         self.assertNotIn("osascript", self.log.read_text())
         self.assertNotIn("kickstart", self.log.read_text())
 
-    def test_quit_failure_leaves_installed_bundle(self):
+    def test_cancelled_update_leaves_installed_bundle(self):
         self.installed()
         result = self.run_script(TEST_QUIT_FAIL="1")
         self.assertNotEqual(result.returncode, 0)

@@ -48,7 +48,9 @@ Health › Set Up Background Work and approve Sprava in Login Items, then create
 notes and documents. Each machine has its own app state and background-work approval.
 
 Run the same script after pulling changes; SwiftPM options pass through (`./scripts/restart-app.sh -c release`).
-The build finishes before Sprava quits. A failed build leaves the installed app running; a successful
+The build finishes before Sprava quits. If the app is open, a dialog lets you save unfinished notes and
+wait for saves to finish before choosing Quit and Update; Cancel leaves the installed app running.
+A failed build leaves the installed app running; a successful
 update restarts only background jobs already registered. Set `SPRAVA_INSTALL_DIR` to another writable
 Applications folder if needed (for example `SPRAVA_INSTALL_DIR="$HOME/Applications"`). Run without sudo.
 

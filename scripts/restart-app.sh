@@ -33,11 +33,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 SPRAVA_APP_BUNDLE="$stage/Sprava.app" "$repo/scripts/build-app.sh" "$@"
 
-# A normal Quit permits the app to finish its work; never force-kill the UI.
+# Older builds keep Inbox drafts only in memory. Let the person save them and
+# finish pending saves before requesting Quit; never force-kill the UI.
 if pgrep -x SpravaApp >/dev/null 2>&1; then
     echo "Quitting Sprava…"
     osascript <<'APPLESCRIPT'
 if application id "ca.orlenko.sprava" is running then
+    display dialog "Save any unfinished notes in Sprava and wait for saves to finish before continuing. Choose Cancel to leave Sprava running." with title "Update Sprava" buttons {"Cancel", "Quit and Update"} default button "Cancel" cancel button "Cancel"
     tell application id "ca.orlenko.sprava" to quit
 end if
 APPLESCRIPT
