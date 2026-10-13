@@ -7,7 +7,8 @@ binders only, for example copies of `Tests/SpravaCoreTests/Fixtures/*.json` in f
 
 ## Increment 2: the runtime
 
-Build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`, open it.
+Run `./scripts/restart-app.sh` to build, install in `/Applications` and open the app (also after updates).
+Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`, and open it.
 
 1. **Registration (spike c).** Health › Set Up Background Work. Expect "Waiting for your approval" and
    System Settings › Login Items opening; approve. Within 30 seconds Health shows "Runtime running".

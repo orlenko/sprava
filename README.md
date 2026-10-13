@@ -38,7 +38,19 @@ swift build
 $(swift build --show-bin-path)/sprava shelf
 $(swift build --show-bin-path)/sprava now ~/binders/kitchen-reno
 ./scripts/build-app.sh         # build/Sprava.app, ad-hoc signed, not launched
+./scripts/restart-app.sh       # build, install in /Applications, restart background work and open
 ```
+
+For a fresh machine, install Command Line Tools (`xcode-select --install`) and restic
+(`brew install restic`, or set `SPRAVA_RESTIC` to its executable), clone this repository, and run
+`./scripts/restart-app.sh`. The machine needs macOS 27 and Swift 6.4. In the app, use
+Health › Set Up Background Work and approve Sprava in Login Items, then create a binder with invented
+notes and documents. Each machine has its own app state and background-work approval.
+
+Run the same script after pulling changes; SwiftPM options pass through (`./scripts/restart-app.sh -c release`).
+The build finishes before Sprava quits. A failed build leaves the installed app running; a successful
+update restarts only background jobs already registered. Set `SPRAVA_INSTALL_DIR` to another writable
+Applications folder if needed (for example `SPRAVA_INSTALL_DIR="$HOME/Applications"`). Run without sudo.
 
 Developer commands (invented data only; `sprava dev` refuses any folder in lifeproj's registry):
 

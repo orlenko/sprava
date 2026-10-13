@@ -1,15 +1,16 @@
 #!/bin/sh
 # Build build/Sprava.app (ad-hoc signed with the hardened runtime, not launched). Pass SwiftPM options through, e.g. -c release.
+# SPRAVA_APP_BUNDLE selects a separate staging bundle for restart-app.sh.
 set -eu
 cd "$(dirname "$0")/.."
 
-bundle="$PWD/build/Sprava.app"
+bundle="${SPRAVA_APP_BUNDLE:-$PWD/build/Sprava.app}"
 if pgrep -f "$bundle/Contents/MacOS/SpravaApp" >/dev/null 2>&1; then
-    echo "Sprava is running from build/Sprava.app. Quit it first, then rebuild." >&2
+    echo "Sprava is running from $bundle. Quit it first, then rebuild." >&2
     exit 1
 fi
 if pgrep -f "$bundle/Contents/MacOS/sprava-runtime" >/dev/null 2>&1; then
-    echo "Sprava's runtime is running from build/Sprava.app. Turn background work off in the app first." >&2
+    echo "Sprava's runtime is running from $bundle. Turn background work off in the app first." >&2
     exit 1
 fi
 plutil -lint Resources/App-Info.plist
