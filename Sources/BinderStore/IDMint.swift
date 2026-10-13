@@ -171,6 +171,8 @@ extension TekaStore {
             line.set("approved_by", .str("user"))
             line.set("op", body["op"] ?? .null)
             line.set("args", body["args"] ?? .obj([]))
+            // Checked as the approval will write it.
+            if let note = body["note"] { line.set("note", note) }
             return line
         }
         _ = try TransactionGuard.check(lines, on: catalog, knownIDs: Set(IDMint.usedIDs(opLog: log)))
