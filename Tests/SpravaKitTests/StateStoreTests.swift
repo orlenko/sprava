@@ -17,6 +17,24 @@ import Testing
         FileManager.default.temporaryDirectory.appendingPathComponent("sprava-state-store-\(UUID().uuidString)")
     }
 
+    @Test(arguments: 0..<4) func concurrentFirstOpensPreserveEveryWrite(_ round: Int) async throws {
+        let base = temporary()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let file = base.appendingPathComponent("support/runtime/services.sqlite")
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<24 {
+                group.addTask {
+                    let store = try StateStore.open(file, schema: Self.schema)
+                    try store.write { try $0.execute("INSERT INTO counters VALUES (?, ?)",
+                                                    .text("invented-\(index)"), .integer(Int64(round))) }
+                }
+            }
+            try await group.waitForAll()
+        }
+        let store = try StateStore.open(file, schema: Self.schema)
+        #expect(try store.read { try $0.rows("SELECT count(*) FROM counters") } == [[.integer(24)]])
+    }
+
     @Test func documentsAndRowsRoundTripAndSurviveReopening() throws {
         let base = temporary()
         defer { try? FileManager.default.removeItem(at: base) }
