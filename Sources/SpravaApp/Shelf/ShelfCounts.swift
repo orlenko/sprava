@@ -4,17 +4,18 @@ import Services
 import Shelf
 import SpravaKit
 
-/// Prepared beside the disk snapshot; SwiftUI only reads these small values during rendering.
+/// Prepared beside the disk snapshot: each row's Now page, bucketed and sorted once per read off the main actor.
+/// SwiftUI only reads it: the row's counts and the Binder screen's sections.
 struct ShelfCounts: Sendable {
-    private var values: [Bucket: Int] = [:]
+    /// Nil until the disk worker has prepared this row.
+    let page: NowPage?
 
-    func count(_ bucket: Bucket) -> Int { values[bucket] ?? 0 }
+    init(page: NowPage? = nil) { self.page = page }
+
+    func count(_ bucket: Bucket) -> Int { page?.count(bucket) ?? 0 }
 
     static func read(_ row: ShelfRow, _ today: CalendarDate) -> ShelfCounts {
-        let page = row.teka.nowPage(today: today)
-        var result = ShelfCounts()
-        for bucket in Bucket.allCases { result.values[bucket] = page.count(bucket) }
-        return result
+        ShelfCounts(page: row.teka.nowPage(today: today))
     }
 }
 
