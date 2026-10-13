@@ -262,6 +262,10 @@
   support folder, this entry governs its storage.
 - **A14 decided (2026-10-12, by the author).** No backward compatibility for Sprava's own state before
   the MVP ships: no readers for older formats, no migrations. Binders keep theirs (binder-v0, lifeproj).
+- **A15 decided (2026-10-12, by the author).** Binders are ordinary local folders. A binder not in use is
+  offloaded (a finished tax year, say) and restored when needed (an audit), so while it is in use it is
+  fully local. Sprava does not defend against slow, stalled, network or removable volumes: a read that waits
+  on one is not a defect, and reviews do not report it.
 
 ## MVP (`docs/mvp.md`)
 
