@@ -76,6 +76,30 @@ import Testing
         #expect(added?.raw["provenance"]?["proposed_by"]?["kind"] == .str("clerk"))
     }
 
+    @Test func theAppsNoticeRegistersItsFolderSoTheBinderItChoseIsTrusted() throws {
+        // A fresh install: the runtime made this Mac's id, and nothing has registered a producer yet.
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-capture-\(UUID().uuidString)")
+        let commands = Commands(support: support, deviceID: device)
+        let folder = try makeTeka(fixture: "sprava-v0")
+        try adoptAsCommand(folder, commands: commands, now: now, today: today)
+        for (p, _) in ProposalStore.list(in: folder) { try TekaStore(folder: folder).reject(p, now: now) }
+        #expect(commands.inbox.producers().isEmpty)
+        // The app's way: the note is prepared, the runtime is told, then the note is published.
+        let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: device, support: support)
+        let note = try producer.prepareNote("Send the signed form", binderHint: Teka.read(folder).name, startedAt: now)
+        let noticed = try JSONParser.parse(commands.handle(JSONWriter.compact(.obj([
+            ("command", .str("capture_notice")), ("event", .string(note.id)), ("sha256", .string(note.digest))])),
+            now: now, today: today)).value
+        #expect(noticed["ok"] == .bool(true), "\(noticed)")
+        try producer.publish(note)
+        #expect(commands.inbox.producers() == [device: "sprava"])
+        let rows = [ShelfRow(folder: folder, source: .picked, archived: false, teka: Teka.read(folder))]
+        let r = commands.inbox.sweep(binders: rows, commands: commands, now: now)
+        #expect(r.filed == 1 && r.unfiled == 0)
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.state == "proposed" })
+        #expect(card.raw["provenance"]?["unverified_source"] != .bool(true))
+    }
+
     @Test func aHintIntoABinderAtDisclosureNoneStaysUnfiled() throws {
         let s = try setup()
         let ok = try JSONParser.parse(s.commands.handle(JSONWriter.compact(.obj([

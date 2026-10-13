@@ -19,6 +19,9 @@ extension Commands {
         guard case .string(let event)? = r["event"], case .string(let digest)? = r["sha256"] else {
             throw Failure(message: "capture_notice needs event and sha256")
         }
+        // The app writes into this Mac's device folder as `sprava`. Registering it here, before the notice, is what
+        // lets the sweep trust the event's source and the binder the person chose; nothing else registers it.
+        try inbox.registerProducer(folder: deviceID, app: "sprava")
         try inbox.recordNotice(event: event, digest: digest, now: now)
         return JSONObject()
     }
