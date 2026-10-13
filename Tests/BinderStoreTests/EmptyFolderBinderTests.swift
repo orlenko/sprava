@@ -36,6 +36,13 @@ import Testing
         try Data("invented".utf8).write(to: folder.appendingPathComponent(".hidden"))
         #expect(!BinderCreator.isEmptyFolder(folder))
         #expect(!BinderCreator.isEmptyFolder(folder.appendingPathComponent("missing")))
+        // A folder or a link named .DS_Store is not Finder's metadata, and backup would skip what it holds.
+        let disguised = try parent()
+        try FileManager.default.createDirectory(at: disguised.appendingPathComponent(".DS_Store"), withIntermediateDirectories: true)
+        #expect(!BinderCreator.isEmptyFolder(disguised))
+        let linked = try parent()
+        try FileManager.default.createSymbolicLink(at: linked.appendingPathComponent(".DS_Store"), withDestinationURL: linked.deletingLastPathComponent())
+        #expect(!BinderCreator.isEmptyFolder(linked))
         let many = try parent()
         for n in 0..<50 { try Data().write(to: many.appendingPathComponent("note-\(n).txt")) }
         #expect(!BinderCreator.isEmptyFolder(many))

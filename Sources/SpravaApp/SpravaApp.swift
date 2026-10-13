@@ -28,12 +28,13 @@ struct SpravaApp: App {
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button("New Binder…") { model.newBinder() }
-                    .keyboardShortcut("n")
-                Button("Add Folder…") { model.addFolderWithPanel() }
-                    .keyboardShortcut("o")
-                Button("Refresh") { model.refresh() }
-                    .keyboardShortcut("r")
+                // ⌘N stays with the WindowGroup's New Window; the table in MenuCommands.swift keeps them apart.
+                Button(MenuCommand.newBinder.title) { model.newBinder() }
+                    .menuShortcut(.newBinder)
+                Button(MenuCommand.addFolder.title) { model.addFolderWithPanel() }
+                    .menuShortcut(.addFolder)
+                Button(MenuCommand.refresh.title) { model.refresh() }
+                    .menuShortcut(.refresh)
             }
         }
     }
