@@ -283,6 +283,38 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         #expect(runtime.sent.count == 1 && model.note == nil)
     }
 
+    /// A name typed as a person would type it is sent as a valid binder name, never refused after the dialogs.
+    @Test(arguments: [("MapleStreet", "maplestreet"), ("Maple Street", "maple-street"), ("  --Tax 2026!! ", "tax-2026"),
+                      ("\u{65E5}\u{672C}", "new-binder")])
+    func newBinderSendsTheTypedNameAsAValidOne(typed: String, sent: String) async throws {
+        let runtime = StandInRuntime()
+        runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
+        let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
+        let parent = try temporaryFolder()
+        model.askForBinder = { _, _ in ("blank", typed) }
+        model.chooseParent = { parent }
+        await model.startNewBinder()
+        #expect(runtime.sent.first?["name"]?.stringValue == sent)
+        #expect(model.note == nil)
+    }
+
+    /// For an empty folder, a name with nothing left falls back to the folder's own, then to the template's suggestion.
+    @Test func anEmptyFolderFallsBackToItsOwnNameThenTheTemplates() async throws {
+        let runtime = StandInRuntime()
+        runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
+        let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
+        let base = try temporaryFolder()
+        let shed = base.appendingPathComponent("Garden Shed")
+        let other = base.appendingPathComponent("\u{65E5}\u{672C}")
+        for folder in [shed, other] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        model.askForBinder = { _, _ in ("tax-year", "!!") }
+        await model.add([shed])
+        await model.add([other])
+        let year = Calendar.current.component(.year, from: Date())
+        #expect(runtime.sent.map { $0["name"]?.stringValue } == ["garden-shed", "tax-\(year)"])
+        #expect(model.note == nil)
+    }
+
     @Test func aFolderThatCannotBeRemovedSaysSoAfterTheRefresh() async throws {
         let support = try temporaryFolder()
         let binder = try makeTeka(fixture: "sprava-v0", folderName: "garden-shed")

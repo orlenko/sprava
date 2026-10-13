@@ -47,6 +47,48 @@ public enum BinderCreator {
         public let checklistCard: String?
     }
 
+    /// What the person typed, as a binder name of the shape binder-v0 §3.1 asks of a binder Sprava creates: diacritics
+    /// stripped, lowercase, each run of other characters one hyphen, at most 64 characters with no hyphen at either end.
+    /// A name with nothing left, as one only in another script, takes `fallback` in the same shape, then `new-binder`.
+    public static func slug(_ typed: String, fallback: String) -> String {
+        for text in [typed, fallback] {
+            var out = String(IDMint.cleaned(text).prefix(64))
+            while out.hasSuffix("-") { out.removeLast() }
+            if !out.isEmpty { return out }
+        }
+        return "new-binder"
+    }
+
+    /// The name a new binder takes from what the person typed. One with nothing left falls back to the empty folder's
+    /// own name when there is one, then to the template's suggestion, so typing never ends in a refusal.
+    public static func name(for typed: String, template: BinderTemplate, year: Int, existing: URL? = nil) -> String {
+        let suggested = template.suggestedName(year)
+        return slug(typed, fallback: existing.map { slug($0.lastPathComponent, fallback: suggested) } ?? suggested)
+    }
+
+    /// `name`, or the first of `name-2`, `name-3`, … that no other binder has and no other entry in `parent` holds. The
+    /// empty folder that becomes the binder does not stand in the way of its own name, in any case.
+    public static func freeName(_ name: String, parent: URL, knownNames: [String], existing: URL? = nil) -> String {
+        let known = Set(knownNames.map { $0.precomposedStringWithCanonicalMapping.lowercased() })
+        func taken(_ candidate: String) -> Bool {
+            if known.contains(candidate.lowercased()) { return true }
+            var at = stat()
+            guard lstat(parent.appendingPathComponent(candidate).path, &at) == 0 else { return false }
+            var own = stat()
+            guard let existing, lstat(existing.path, &own) == 0 else { return true }
+            return own.st_dev != at.st_dev || own.st_ino != at.st_ino
+        }
+        guard taken(name) else { return name }
+        for n in 2...999 {
+            let suffix = "-\(n)"
+            var base = String(name.prefix(64 - suffix.count))
+            while base.hasSuffix("-") { base.removeLast() }
+            if !taken(base + suffix) { return base + suffix }
+        }
+        // Left to `create`, which says the name is taken.
+        return name
+    }
+
     /// An empty folder can become a binder: nothing in it but Finder's `.DS_Store`. Reads entries one at a time and
     /// stops at the first other one, so a large folder is not listed whole only to learn it is not empty.
     public static func isEmptyFolder(_ url: URL) -> Bool {

@@ -253,7 +253,7 @@ extension Commands {
             existing = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         }
         guard case .string(let parentPath)? = existing.map({ .string($0.deletingLastPathComponent().path) }) ?? r["parent"],
-              parentPath.hasPrefix("/"), case .string(let name)? = r["name"] else {
+              parentPath.hasPrefix("/"), case .string(let typed)? = r["name"] else {
             throw Failure(message: "create_binder needs parent and name")
         }
         let template = BinderTemplate.all.first { $0.key == (r["template"]?.stringValue ?? "tax-year") } ?? .taxYear
@@ -265,7 +265,12 @@ extension Commands {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
         let year = r["year"]?.numberValue?.safeInteger.map(Int.init) ?? calendar.component(.year, from: now)
-        let created = try BinderCreator.create(parent: URL(fileURLWithPath: parentPath, isDirectory: true).standardizedFileURL, name: name,
+        let parent = URL(fileURLWithPath: parentPath, isDirectory: true).standardizedFileURL
+        // Whatever the person typed becomes a valid name that is free, rather than a refusal after the dialogs; the
+        // response's `binder` path carries the name it took.
+        let free = BinderCreator.freeName(BinderCreator.name(for: typed, template: template, year: year, existing: existing),
+                                          parent: parent, knownNames: names, existing: existing)
+        let created = try BinderCreator.create(parent: parent, name: free,
                                                template: template, deviceID: deviceID, knownNames: names, year: year, today: today,
                                                client: client, now: now, existing: existing)
         if let card = created.checklistCard { try recordDigests([card], in: created.folder) }
