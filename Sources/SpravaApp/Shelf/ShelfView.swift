@@ -79,7 +79,7 @@ final class ShelfModel: ObservableObject {
             rows = prepared.snapshot.rows
             counts = prepared.counts
             snapshotNote = prepared.snapshot.note
-            if selection == nil || !rows.contains(where: { $0.folder == selection }) { selection = rows.first?.folder }
+            if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = rows.first?.folder }
             lastRefresh = Date()
         }
     }
@@ -202,14 +202,28 @@ final class ShelfModel: ObservableObject {
     }
 
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
+
+    /// The sidebar's pages above the Shelf.
+    let pages: Set<URL> = [inboxSelection]
 }
+
+let inboxSelection = URL(string: "sprava:inbox")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
+    @StateObject private var inbox = InboxModel()
 
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selection) {
+                Section {
+                    HStack {
+                        Label("Inbox", systemImage: "tray")
+                        Spacer()
+                        if inbox.cardCount > 0 { Text("\(inbox.cardCount)").foregroundStyle(.secondary) }
+                    }
+                    .tag(inboxSelection)
+                }
                 Section("Shelf") {
                     ForEach(model.rows, id: \.folder) { row in
                         ShelfRowView(row: row, counts: model.counts[row.folder] ?? ShelfCounts())
@@ -236,7 +250,9 @@ struct ShelfView: View {
                 .padding(8)
             }
         } detail: {
-            if let row = model.selectedRow {
+            if model.selection == inboxSelection {
+                InboxView(model: inbox, rows: model.rows)
+            } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
                         reload: { model.refresh() })
@@ -248,6 +264,12 @@ struct ShelfView: View {
                 } actions: {
                     Button("Add Folder…") { model.addFolderWithPanel() }
                 }
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                await inbox.load()
+                try? await Task.sleep(for: .seconds(30))
             }
         }
         .toolbar {
