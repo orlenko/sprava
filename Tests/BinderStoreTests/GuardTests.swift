@@ -41,6 +41,30 @@ import Testing
         #expect(log.last?["final"]?["due"] == .str("2026-10-12"))
     }
 
+    @Test func logEntriesAndNotesKeepTheirTypes() throws {
+        let c = try catalog()
+        // A well-typed entry passes, unknown fields included.
+        let good = op("add_log_entry", [("entry", .obj([("action", .str("called")), ("title", .str("Called the notary")),
+                                                        ("note", .str("left a message")), ("invented_extra", .obj([("a", .int(1))]))]))],
+                      extra: [("note", .str("from the clerk's card"))])
+        let (result, _) = try TransactionGuard.check([good], on: c)
+        #expect(result["processing_log"]?.arrayValue?.last?["action"] == .str("called"))
+
+        // Fields the log-entry schema types are refused with any other type, and nothing is written.
+        for (key, value) in [("note", JSONValue.obj([("invented", .bool(true))])), ("title", .int(3)), ("source", .bool(true)),
+                             ("item", .int(0)), ("document", .str("")), ("closed_at", .int(5)), ("kind", .str("invented-kind")),
+                             ("final", .str("not an object")), ("due", .str("next week")), ("action", .str(""))] {
+            var entry = JSONObject([(key: "action", value: .str("called"))])
+            entry.set(key, value)
+            let bad = op("add_log_entry", [("entry", .object(entry))])
+            #expect(throws: TransactionGuard.Rejection.self, "\(key)") { try TransactionGuard.check([bad], on: c) }
+        }
+
+        // The op line's own note is text too.
+        let noted = op("add_log_entry", [("entry", .obj([("action", .str("called"))]))], extra: [("note", .obj([("invented", .bool(true))]))])
+        #expect(throws: TransactionGuard.Rejection.self) { try TransactionGuard.check([noted], on: c) }
+    }
+
     @Test func rejectsAnItemThatBreaksTheRules() throws {
         let bad = newItem("estate-example-2026-021").objectValue!
         var dateless = bad

@@ -145,6 +145,8 @@ public enum TransactionGuard {
         if ["set_disclosure", "rename_teka", "expunge"].contains(type), kind != "user" {
             problems.append("\(type) is applied only by the user")
         }
+        // The op line's note is text (binder-v0 §6.2): it is written into the op log as it is.
+        if let note = op["note"], note.stringValue == nil { problems.append("\(type): note is text") }
         if ["complete", "drop", "reopen", "file_document", "add_log_entry"].contains(type),
            (actor?["client"]?.stringValue ?? "").isEmpty {
             problems.append("\(type): actor.client is required, it becomes the log entry's via")
@@ -215,6 +217,32 @@ public enum TransactionGuard {
         return problems
     }
 
+    /// Problems with a log entry this implementation is about to write: the types of binder-v0 §10.4 for the fields
+    /// an op can carry into it. Unknown fields are allowed and kept.
+    static func logEntryProblems(_ entry: JSONValue) -> [String] {
+        guard case .object(let e) = entry else { return ["a log entry is an object"] }
+        var problems: [String] = []
+        func isID(_ v: JSONValue) -> Bool {
+            if let s = v.stringValue { return !s.isEmpty }
+            return v.numberValue?.safeInteger.map { $0 != 0 } ?? false
+        }
+        if (e["action"]?.stringValue ?? "").isEmpty { problems.append("log entry: action is a non-empty string") }
+        for key in ["title", "note", "source"] where e[key] != nil && e[key]?.stringValue == nil {
+            problems.append("log entry: \(key) is text")
+        }
+        if let document = e["document"], (document.stringValue ?? "").isEmpty { problems.append("log entry: document is a non-empty string") }
+        for key in ["id", "item", "reopened_from"] where e[key] != nil && !isID(e[key]!) {
+            problems.append("log entry: \(key) is a non-empty string or a non-zero integer")
+        }
+        if let closedAt = e["closed_at"], closedAt != .null, closedAt.stringValue == nil { problems.append("log entry: closed_at is a time or null") }
+        if let kind = e["kind"], !(kind.stringValue.map(ItemRules.kinds.contains) ?? false) { problems.append("log entry: kind is one of the item kinds") }
+        if let final = e["final"], final.objectValue == nil { problems.append("log entry: final is an object") }
+        for key in ["due", "next_due"] where e[key] != nil && e[key]?.stringValue.flatMap(CalendarDate.strict) == nil {
+            problems.append("log entry: \(key) is a YYYY-MM-DD date")
+        }
+        return problems
+    }
+
     /// Applies `ops` in order to `catalog`. Returns the new catalog and each op's after-hash, or throws a
     /// rejection; a rejected batch changes nothing.
     public static func check(_ ops: [JSONObject], on catalog: JSONObject,
@@ -261,6 +289,11 @@ public enum TransactionGuard {
                 for v in after where v.array == array && v.recordKey == canonicalText(id) && before.contains(v) {
                     leftInPlace.append(v)
                 }
+            }
+            // Log entries a v0 implementation writes follow the v0 log-entry rules, whatever the catalog's level.
+            let logged = state["processing_log"]?.arrayValue?.count ?? 0
+            for entry in (next["processing_log"]?.arrayValue ?? []).dropFirst(logged) {
+                reasons += logEntryProblems(entry).map { "\(type ?? "?"): \($0)" }
             }
             // Records a v0 implementation creates follow the v0 record rules, whatever the catalog's level.
             if type == "add_item" || type == "reopen", let item = op["args"]?["item"] {
