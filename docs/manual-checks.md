@@ -74,10 +74,11 @@ Use an invented binder adopted in the installed app, with invented documents onl
    says why.
 5. **The channel answer.** Approve a card with "on paper, scanned" picked: the document in `catalog.json` has
    `provenance.obtained.channel: paper`.
-6. **A careful reading.** An invented by-law appears under Inbox › "Worth a careful reading". With a brain
-   connected to that binder, "May read documents" on and the binder's disclosure at full, ask it to look at
-   the documents waiting: it calls `list_readings` and `read_document`, and its proposal arrives as a card.
-   With "May read documents" off, `read_document` is refused.
+6. **A careful reading.** An invented by-law appears under Inbox › "Worth a careful reading". No brain gets
+   intake documents until the person can mark one as not private (issue #283): with a brain connected to that
+   binder, "May read documents" on and the binder's disclosure at full, ask it to look at the documents
+   waiting. `list_readings` lists none, and the by-law stays in the Inbox for the person. With "May read
+   documents" off, `read_document` is refused for that reason.
 7. **Logs.** `runtime/jobs.log` has `intake carded=… held=…` and `clerk document outcome=… class=…` lines
    with counts only: no names, titles or text.
 
