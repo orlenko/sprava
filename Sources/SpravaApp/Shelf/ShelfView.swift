@@ -42,6 +42,13 @@ final class ShelfModel: ObservableObject {
     let client: RuntimeClient
     /// Asks for a new binder's template and name, for an empty folder the person picked or (nil) a folder still to choose.
     var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> (template: String, name: String)? = ShelfModel.binderAlert
+    var chooseParent: @MainActor () -> URL? = ShelfModel.parentPanel
+    var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
+    /// Asked when an action finds the runtime not running: whether to turn background work on, and the turning on.
+    var offerBackgroundWork: @MainActor () -> Bool = BackgroundWork.offer
+    var turnOnBackgroundWork: @MainActor () -> BackgroundWork.TurnOn
+    /// How long a runtime just turned on has to answer before the action gives up; launchd usually needs a few seconds.
+    var startWait: Duration = .seconds(20)
 
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
@@ -51,6 +58,7 @@ final class ShelfModel: ObservableObject {
         self.readTimeout = readTimeout
         self.summarize = summarize
         self.client = client
+        turnOnBackgroundWork = { BackgroundWork.turnOn(with: HealthModel(support: support)) }
     }
 
     /// One background read at a time, including slow or unavailable picked volumes. Existing rows stay visible.
@@ -111,16 +119,14 @@ final class ShelfModel: ObservableObject {
         }
     }
 
-    func addFolderWithPanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Add to Shelf"
-        panel.message = "Choose binder folders (each holds a catalog.json), or an empty folder to make a new binder in."
-        guard panel.runModal() == .OK else { return }
-        let urls = panel.urls
-        Task { await add(urls) }
+    func addFolderWithPanel() { Task { await addFolder() } }
+
+    /// The folder panel opens only once the runtime, which adds them, is there.
+    func addFolder() async {
+        operationNote = nil
+        guard await runtimeReady() else { return }
+        let urls = chooseFolders()
+        if !urls.isEmpty { await add(urls) }
     }
 
     /// Asks the runtime to add the chosen folders; an empty one is offered as a new binder. What went wrong is said
@@ -130,16 +136,23 @@ final class ShelfModel: ObservableObject {
         var skipped: [String] = []
         var failed: [String] = []
         var empty: [URL] = []
+        var binders: [URL] = []
         for url in urls {
             guard let kind = await kind(of: url) else {
                 failed.append("Could not check \(url.lastPathComponent): its files are still waiting to be read.")
                 continue
             }
-            if kind == .empty { empty.append(url) }
-            if kind != .binder {
-                if kind == .other { skipped.append(url.lastPathComponent) }
-                continue
+            switch kind {
+            case .binder: binders.append(url)
+            case .empty: empty.append(url)
+            case .other: skipped.append(url.lastPathComponent)
             }
+        }
+        if !(binders.isEmpty && empty.isEmpty), await !runtimeReady() {
+            failed.insert(operationNote ?? "Nothing was added: Sprava's background part is not running.", at: 0)
+            (binders, empty) = ([], [])
+        }
+        for url in binders {
             do {
                 _ = try await client.command("shelf_add", binder: url)
                 snapshotGeneration &+= 1
@@ -177,18 +190,39 @@ final class ShelfModel: ObservableObject {
         if let failure { operationNote = failure }
     }
 
-    /// A new binder from a template (mvp.md feature 6), created by the runtime.
-    func newBinder() {
+    func newBinder() { Task { await startNewBinder() } }
+
+    /// A new binder from a template (mvp.md feature 6), created by the runtime. Nothing is asked until the runtime is
+    /// there, so the person never fills in dialogs that cannot succeed.
+    func startNewBinder() async {
+        operationNote = nil
+        guard await runtimeReady() else { return }
         let year = Calendar.current.component(.year, from: Date())
-        guard let answer = askForBinder(nil, year) else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Create Here"
-        panel.message = "Choose the folder that will hold the new binder."
-        guard panel.runModal() == .OK, let parent = panel.url else { return }
-        Task { await createBinder(parent: parent, name: answer.name, template: answer.template, year: year) }
+        guard let answer = askForBinder(nil, year), let parent = chooseParent() else { return }
+        await createBinder(parent: parent, name: answer.name, template: answer.template, year: year)
+    }
+
+    /// Whether the runtime is there for an action that needs it (`ping`, two seconds at most; one only slow to answer goes
+    /// ahead). When it is not running, the person is offered to turn background work on, and the action goes ahead once the
+    /// runtime answers within `startWait`; otherwise it stops before any dialog or request, and the note says why.
+    func runtimeReady() async -> Bool {
+        guard await client.presence() == .notRunning else { return true }
+        guard offerBackgroundWork() else { return false }
+        switch turnOnBackgroundWork() {
+        case .failed(let why):
+            operationNote = why
+        case .needsApproval:
+            operationNote = "Background work is waiting for your approval in System Settings › General › Login Items. Approve Sprava there, then try again."
+        case .registered:
+            operationNote = "Starting Sprava's background part…"
+            let deadline = ContinuousClock.now + startWait
+            repeat {
+                if await client.presence() == .answers { operationNote = nil; return true }
+                try? await Task.sleep(for: .milliseconds(500))
+            } while ContinuousClock.now < deadline
+            operationNote = "Background work is on, but Sprava's background part has not started yet. Try again in a minute; Health, at the top of the sidebar, shows when it is running."
+        }
+        return false
     }
 
     func createBinder(parent: URL, name: String, template: String, year: Int) async {
@@ -212,33 +246,6 @@ final class ShelfModel: ObservableObject {
         } catch {
             return "\(error)"
         }
-    }
-
-    /// The template and name, asked in one alert. For an empty folder the name starts from the folder's own, in the
-    /// shape a new binder's name takes, and the folder is renamed to it when they differ.
-    static func binderAlert(empty: URL?, year: Int) -> (template: String, name: String)? {
-        let alert = NSAlert()
-        let rule = "a name: lowercase letters, digits and hyphens. A template's checklist arrives as one card to approve."
-        if let empty {
-            alert.messageText = "Make \u{201C}\(empty.lastPathComponent)\u{201D} a new binder?"
-            alert.informativeText = "The folder is empty. Pick a starting point and \(rule) If the name differs from the folder's, the folder is renamed to it."
-        } else {
-            alert.messageText = "New binder"
-            alert.informativeText = "Pick a starting point and \(rule)"
-        }
-        let templates = BinderTemplate.all
-        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: 260, height: 26))
-        picker.addItems(withTitles: templates.map(\.title))
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = empty.map { IDMint.prefix(for: $0.lastPathComponent) } ?? templates[0].suggestedName(year)
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
-        box.addSubview(picker)
-        box.addSubview(field)
-        alert.accessoryView = box
-        alert.addButton(withTitle: empty == nil ? "Choose Where…" : "Make Binder")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return (templates[max(0, picker.indexOfSelectedItem)].key, field.stringValue)
     }
 
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }

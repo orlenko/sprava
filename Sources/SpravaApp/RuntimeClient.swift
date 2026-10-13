@@ -26,8 +26,38 @@ final class RuntimeClient {
     }
 
     struct Failure: Error, CustomStringConvertible {
+        enum Kind: Sendable { case refused, notRunning, timedOut }
         let message: String
+        var kind = Kind.refused
         var description: String { message }
+
+        /// The connection failed: nothing answers under the runtime's name. The system's own words ("Couldn't communicate
+        /// with a helper application") tell a person nothing they can act on, so only the error's code is kept, for diagnosis.
+        static func notRunning(_ error: Error) -> Failure {
+            Failure(message: "Sprava's background part is not running. Turn it on under Health, at the top of the sidebar. (error \((error as NSError).code))",
+                    kind: .notRunning)
+        }
+    }
+
+    /// Whether the runtime is there, asked with the `ping` command.
+    enum Presence: Sendable { case answers, notRunning, silent }
+
+    /// `notRunning` when the connection fails, which it does at once when nothing is registered under the runtime's
+    /// name; `silent` when no answer comes in time (launchd still starting it, or a long command ahead of the ping);
+    /// `answers` for any reply, a refusal included.
+    func presence(timeout: TimeInterval = 2) async -> Presence {
+        do {
+            _ = try await global("ping", timeout: timeout)
+            return .answers
+        } catch let failure as Failure {
+            switch failure.kind {
+            case .notRunning: return .notRunning
+            case .timedOut: return .silent
+            case .refused: return .answers
+            }
+        } catch {
+            return .answers
+        }
     }
 
     /// Sends one request and returns the reply object. Throws when the runtime does not answer in time or
@@ -44,12 +74,13 @@ final class RuntimeClient {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
             let proxy = self.proxy { error in
-                if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Sprava's background part is not running. Turn it on under Health, at the top of the sidebar. (\(error.localizedDescription))"))
-                }
+                if once.claim() { continuation.resume(throwing: Failure.notRunning(error)) }
             }
             guard let proxy else {
-                if once.claim() { continuation.resume(throwing: Failure(message: "Runtime not reachable")) }
+                if once.claim() {
+                    continuation.resume(throwing: Failure(message: "Sprava's background part is not running. Turn it on under Health, at the top of the sidebar.",
+                                                          kind: .notRunning))
+                }
                 return
             }
             proxy.handle(text) { answer in
@@ -57,7 +88,8 @@ final class RuntimeClient {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
                 if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Runtime not answering in time. The change may still be applied; reload to check before trying again."))
+                    continuation.resume(throwing: Failure(message: "Runtime not answering in time. The change may still be applied; reload to check before trying again.",
+                                                          kind: .timedOut))
                 }
             }
         }

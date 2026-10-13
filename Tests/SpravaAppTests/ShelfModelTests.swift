@@ -11,18 +11,26 @@ import Testing
 // temporary one with invented content.
 
 /// Answers requests by command name with a JSON text, or refuses the ones it has no answer for, and records them.
+/// `ping` is answered while it runs and counted apart; when it does not run, every request fails as a connection to
+/// no runtime does.
 @MainActor
 final class StandInRuntime {
     var answers: [String: @MainActor (JSONValue) async -> String] = [:]
     var sent: [JSONValue] = []
+    var pings = 0
+    var running = true
 
     // Holds the stand-in strongly: a test may keep only the client.
     lazy var client = RuntimeClient(answer: { [self] text in
         let request = try JSONParser.parse(text).value
-        sent.append(request)
-        guard let name = request["command"]?.stringValue, let answer = answers[name] else {
-            return #"{"ok":false,"error":"Sprava's background part is not running."}"#
+        let name = request["command"]?.stringValue
+        if name == "ping" { pings += 1 } else { sent.append(request) }
+        guard running else {
+            throw RuntimeClient.Failure.notRunning(NSError(domain: NSCocoaErrorDomain, code: 4099,
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't communicate with a helper application."]))
         }
+        if name == "ping" { return #"{"ok":true,"protocol":1}"# }
+        guard let name, let answer = answers[name] else { return #"{"ok":false,"error":"refused by the stand-in"}"# }
         return await answer(request)
     })
 }
@@ -244,7 +252,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         let binder = try makeTeka(fixture: "sprava-v0", folderName: "kitchen-reno")
         let notABinder = try temporaryFolder()
         try Data("invented".utf8).write(to: notABinder.appendingPathComponent("note.txt"))
-        let runtime = StandInRuntime()   // answers nothing: the runtime is not running
+        let runtime = StandInRuntime()   // refuses every change
         let model = ShelfModel(support: support, client: runtime.client)
         await model.add([binder, notABinder])
         #expect(model.note?.contains("Could not add kitchen-reno: ") == true)
