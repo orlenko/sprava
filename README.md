@@ -37,7 +37,8 @@ Requires macOS 27 and Swift 6.4 (Command Line Tools are enough).
 swift build
 $(swift build --show-bin-path)/sprava shelf
 $(swift build --show-bin-path)/sprava now ~/binders/kitchen-reno
-./scripts/build-app.sh         # build/Sprava.app, ad-hoc signed, not launched
+./scripts/build-app.sh         # build/Sprava.app, ad-hoc signed, not launched; replaced only when the build succeeds
+./scripts/test-build-app.sh    # tests build-app.sh with stand-in tools
 ./scripts/restart-app.sh       # build, install in /Applications, restart background work and open
 ```
 
