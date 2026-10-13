@@ -18,7 +18,9 @@ Read this first; then `docs/code-structure.md` for which target owns what.
 
 ## How a change is made
 
-1. One feature or fix per PR, preferably under 1,000 changed lines. Moving files counts as a rename.
+1. One feature or fix per PR, preferably under 1,000 changed lines. Moving files counts as a rename. A screen
+   with its model and tests may pass that with `SPRAVA_ALLOW_LARGE=1` when splitting it would leave no part
+   that works alone; the PR says why. Split at a natural seam when there is one.
 2. The change lives in one target (see `docs/code-structure.md` section 3). If it spreads across several
    domain targets, stop and add an interface instead.
 3. Tests: `./scripts/test.sh` (Swift Testing; invented fixtures only), or `./scripts/test.sh --filter
@@ -86,6 +88,8 @@ Do not report:
   section 1) does not defend against them; they are collected in issue #227;
 - missing migrations or backward compatibility for Sprava's own state in the support folder: there is no
   installed base (decisions.md A14). Binders do keep compatibility (binder-v0, lifeproj);
+- a hang or delay from a slow, stalled, network or removable volume: binders are ordinary local folders, offloaded
+  when not in use and restored when needed (decisions.md A15);
 - wording in a doc that differs from the code, unless the code breaks a rule the doc states;
 - style, naming, refactoring, or more tests for behavior already tested;
 - a point already answered in a resolved thread of the same PR.
