@@ -56,7 +56,13 @@ public enum BinderCreator {
         while let entry = readdir(dir) {
             let length = Int(entry.pointee.d_namlen)
             let name = withUnsafeBytes(of: entry.pointee.d_name) { String(decoding: $0.prefix(length), as: UTF8.self) }
-            if name != ".", name != "..", name != ".DS_Store" { return false }
+            if name == "." || name == ".." { errno = 0; continue }
+            // Finder's metadata is a plain file. A folder or link under that name holds what backup skips (it leaves out
+            // every `.DS_Store` path), so it does not count as empty.
+            var st = stat()
+            guard name == ".DS_Store", lstat(url.appendingPathComponent(name).path, &st) == 0, st.st_mode & S_IFMT == S_IFREG else {
+                return false
+            }
             errno = 0
         }
         return errno == 0
