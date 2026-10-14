@@ -66,6 +66,23 @@ private func owner(_ plan: HTTPPlan) throws -> (CompanionOwnerRelay, String) {
     return (try CompanionOwnerRelay(relay: identity, token: ownerToken, protocolClasses: [InventedRelayProtocol.self]), host)
 }
 
+@Test func ownerFetchesRevocationBytesOnTheBoundOriginWithAOneKiBLimitAndCountsErrors() async throws {
+    let body = Data(repeating: 17, count: 1024)
+    let (client, host) = try owner(HTTPPlan(chunks: [body], observe: { request in
+        #expect(request.httpMethod == "GET" && request.url?.path == "/v0/devices/" + wireID + "/revocation")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer " + ownerToken)
+    }))
+    let reply = try await client.fetchDeviceRevocation(deviceID: wireID, downloadLimit: 1024)
+    #expect(reply.status == 200 && reply.value == body && reply.receivedBytes == 1024)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchDeviceRevocation(deviceID: "../credentials", downloadLimit: 1024) }
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchDeviceRevocation(deviceID: wireID, downloadLimit: 1023) }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [body + Data([18])]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchDeviceRevocation(deviceID: wireID, downloadLimit: 8388608) }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(status: 404, chunks: [Data("absent".utf8)]))
+    let absent = try await client.fetchDeviceRevocation(deviceID: wireID, downloadLimit: 1024)
+    #expect(absent.status == 404 && absent.receivedBytes == 6)
+}
+
 @Test func ownerMailboxValidatesDevicePagesAndUsesOnlyCanonicalSameOriginCursors() async throws {
     let body = Data("{\"devices\":[{\"device_id\":\"\(wireID)\",\"state\":\"active\",\"paired_at\":\"2026-10-15T12:00:00Z\",\"last_seen\":null}],\"next\":\"\(wireID)\"}".utf8)
     let (client, host) = try owner(HTTPPlan(chunks: [body], observe: { request in

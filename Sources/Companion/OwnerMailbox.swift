@@ -81,6 +81,11 @@ extension CompanionOwnerRelay {
         guard CompanionWire.isID(deviceID) else { throw CompanionRelayError.invalid }
         return try await call("/v0/devices/" + deviceID, method: "DELETE", downloadLimit: downloadLimit)
     }
+    /// Fetch only: §7.4 caps the proof at 1 KiB. The caller checks §8.8 before changing local access.
+    public func fetchDeviceRevocation(deviceID: String, downloadLimit: Int) async throws -> CompanionRelayReply<Data> {
+        guard CompanionWire.isID(deviceID) else { throw CompanionRelayError.invalid }
+        return try await call("/v0/devices/" + deviceID + "/revocation", limit: 1024, downloadLimit: downloadLimit)
+    }
     private func mailboxJSON(_ bytes: Data?) throws -> JSONValue {
         guard let bytes else { throw CompanionRelayError.invalid }
         do {
