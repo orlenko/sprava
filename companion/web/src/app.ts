@@ -7,6 +7,8 @@ import { RelayClient } from './relay-client.ts';
 import { sendOne } from './sender.ts';
 import { mount, element } from './screens.ts';
 import { removePairing } from './pairing-removal.ts';
+import { encodeB64 } from './encoding.ts';
+import type { Draft, DraftProof } from './drafts.ts';
 
 const root = document.getElementById('app')!;
 // Refuse a frame before reading a pairing fragment, opening storage, or accessing keys.
@@ -22,6 +24,9 @@ async function start(): Promise<void> {
     const store = await BrowserStore.open();
     let selected: string | undefined, generation: string | undefined, draftGeneration: string | undefined;
     let pageAfter: IDBValidKey | undefined, lastReachedAt: number | undefined;
+    const freshEditor = () => encodeB64(crypto.getRandomValues(new Uint8Array(16)));
+    let editorId = freshEditor(), draftRevision = 0, proof: DraftProof | undefined, recovered: DraftProof | undefined;
+    let draftSave: Promise<void> = Promise.resolve();
     let pairing: AbortController | undefined, busy = false, queued = false, saving = false;
     let sendTimer: ReturnType<typeof setTimeout> | undefined;
     const retiring = new Set<string>();
@@ -38,11 +43,52 @@ async function start(): Promise<void> {
     const tell = (message: string) => { screen.banner.textContent = message; };
     const failed = () => tell('The operation could not finish. Your note stays in the editor; retry when ready.');
     screen.draft.addEventListener('input', () => {
-        if (screen.draft.value === '') draftGeneration = undefined;
-        else draftGeneration ??= generation;
+        if (screen.draft.value === '' && draftGeneration !== generation) {
+            draftGeneration = generation; editorId = freshEditor(); proof = recovered = undefined; draftRevision = 0;
+        }
+        draftGeneration ??= generation;
+        persistDraft(screen.draft.value);
     });
     if (invalidLink) tell('This pairing link is invalid. Ask your Mac for a new link.');
     if (!link) screen.pairButton.disabled = true;
+
+    function persistDraft(text: string): void {
+        const owner = draftGeneration, editor = editorId, revision = ++draftRevision, source = recovered;
+        if (!owner) return;
+        screen.draftStatus.textContent = 'Saving encrypted draft…';
+        draftSave = draftSave.catch(() => {}).then(async () => {
+            if (!await store.saveDraft(owner, editor, revision, text,
+                new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), source)) throw new Error('Draft pairing changed.');
+            if (editorId === editor) {
+                proof = { editorId: editor, revision };
+                if (recovered === source) recovered = undefined;
+                if (revision === draftRevision) screen.draftStatus.textContent = 'Encrypted draft saved on this device.';
+            }
+        });
+        void draftSave.catch(() => {
+            screen.draftStatus.textContent = 'Draft is not saved. Keep this window open and copy the note before leaving.';
+        });
+    }
+    async function recoverDrafts(after?: string): Promise<void> {
+        const page = await store.readDrafts(50, after), drafts = page.drafts.filter(d => d.text !== '');
+        const restore = (draft: Draft) => {
+            if (screen.draft.value) { tell('Keep a copy or clear the current note before recovering another draft.'); return; }
+            screen.draft.value = draft.text; draftGeneration = draft.generation;
+            editorId = freshEditor(); draftRevision = 0; proof = undefined;
+            recovered = { editorId: draft.editorId, revision: draft.revision };
+            persistDraft(draft.text); tell('Recovered an unsent note.'); screen.recovery.replaceChildren();
+        };
+        if (after === undefined && drafts.length === 1 && !page.next && !screen.draft.value) restore(drafts[0]!);
+        else for (const draft of drafts) {
+            const choice = element('button', `Recover note saved ${draft.updatedAt}`); choice.type = 'button';
+            choice.addEventListener('click', () => restore(draft)); screen.recovery.append(choice);
+        }
+        if (page.next) {
+            const more = element('button', 'More saved drafts'); more.type = 'button';
+            more.addEventListener('click', () => { more.remove(); void recoverDrafts(page.next).catch(failed); });
+            screen.recovery.append(more);
+        }
+    }
 
     async function draw(): Promise<void> {
         const cache = await readDisplayCache(store, selected);
@@ -72,9 +118,12 @@ async function start(): Promise<void> {
         saving = true; screen.saveButton.disabled = true; screen.draft.disabled = true;
         const text = screen.draft.value, expected = draftGeneration ?? generation;
         try {
-            const entry = await store.enqueue({ type: 'note', text }, new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), expected);
+            await draftSave;
+            const entry = await store.enqueue({ type: 'note', text }, new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                expected, proof ? [proof] : []);
             if (entry.state !== 'queued') { tell('The pairing changed. Your note has not been sent; keep your draft.'); return; }
-            screen.draft.value = ''; draftGeneration = undefined;
+            screen.draft.value = ''; draftGeneration = undefined; proof = recovered = undefined;
+            editorId = freshEditor(); draftRevision = 0; screen.draftStatus.textContent = '';
             tell('Note saved on this device. It will be sent when the relay is reachable.');
             channel?.postMessage('changed');
         } catch { failed(); }
@@ -151,7 +200,7 @@ async function start(): Promise<void> {
         if (screen.draft.value) { event.preventDefault(); event.returnValue = ''; }
     });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) void cycle(); });
-    await draw(); void cycle();
+    await draw(); await recoverDrafts(); void cycle();
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('./sw.js').catch(() => {
         tell('Offline app loading is unavailable in this browser.');
     });
