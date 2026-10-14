@@ -10,12 +10,15 @@ public struct CompanionAccountEpoch: Sendable {
 /// companion-v0 §§4.1, 9.1: account secrets in Keychain, committed epoch metadata in this target's SQLite.
 /// Explicit paths and backends only. This initial-state API performs no rotation, publishing or network calls.
 public final class CompanionProfile: Sendable {
-    private let store: StateStore
-    private let relay: CompanionRelayIdentity
-    private let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 1, statements: [
+    let store: StateStore
+    let relay: CompanionRelayIdentity
+    let secrets: any CompanionCredentialStorage
+    static let schema = StateStore.Schema(version: 2, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
-        "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991))"
+        "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991))",
+        "CREATE TABLE devices (device TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pairing','active','revoked','abandoned')), " +
+        "key_ready INTEGER NOT NULL CHECK (key_ready IN (0,1)), creation_attempted INTEGER NOT NULL CHECK (creation_attempted IN (0,1)), " +
+        "cleanup_pending INTEGER NOT NULL CHECK (cleanup_pending IN (0,1))) WITHOUT ROWID"
     ])
 
     public init(database: URL, relay: CompanionRelayIdentity, secrets: any CompanionCredentialStorage) throws {
@@ -53,7 +56,7 @@ public final class CompanionProfile: Sendable {
         }
     }
 
-    private func epoch(_ t: Transaction) throws -> Int64? {
+    func epoch(_ t: Transaction) throws -> Int64? {
         let rows = try t.rows("SELECT origin, instance, epoch FROM profile LIMIT 2")
         if rows.isEmpty { return nil }
         guard rows.count == 1, rows[0].count == 3,
