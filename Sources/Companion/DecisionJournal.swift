@@ -16,6 +16,10 @@ extension CompanionProfile {
     /// `today` is the Mac's calendar day, never the device's made_at. Replay/invalid plans are chosen here.
     public func beginDecision(_ request: CompanionAuthenticatedRequest, plan: CompanionDecisionPlan? = nil,
                               today: String, now: String) throws -> CompanionDecisionLookup {
+        try reserveDecision(request, plan: plan, today: today, now: now).lookup
+    }
+    func reserveDecision(_ request: CompanionAuthenticatedRequest, plan: CompanionDecisionPlan? = nil,
+                         today: String, now: String) throws -> DecisionReservation {
         guard CompanionWire.isID(request.deviceID), CompanionWire.isID(request.requestID), request.sequence >= 1,
               request.sequence <= JSONNumber.maxSafeInteger, CalendarDate.strict(today) != nil, CompanionOwnerRelay.time(now) else {
             throw CompanionDecisionError.invalid
@@ -23,7 +27,7 @@ extension CompanionProfile {
         return try store.write { t in
             let d = request.deviceID, r = request.requestID
             let existing = try decisionLookup(d, r, t)
-            switch existing { case .none: break; default: return existing }
+            switch existing { case .none: break; default: return DecisionReservation(lookup: existing, written: false) }
             if try decisionHead(d, t) != nil { throw CompanionDecisionError.busy }
             guard let device = try record(d, t), device.state == .active, let e = try epoch(t),
                   request.epoch >= 1, request.epoch <= e else { throw CompanionDecisionError.unavailable }
@@ -40,7 +44,7 @@ extension CompanionProfile {
             }
             let bytes = try decisionBytes(request, plan: intent, at: now)
             try t.execute("INSERT INTO request_decisions VALUES (?, ?, ?)", .text(d), .text(r), .blob(bytes))
-            return .deciding(try decodeDecision(bytes, device: d, request: r))
+            return DecisionReservation(lookup: .deciding(try decodeDecision(bytes, device: d, request: r)), written: true)
         }
     }
     /// companion-v0 §9.6: after recovery proof, atomically replace only the still-matching operation intent.
@@ -48,14 +52,18 @@ extension CompanionProfile {
     /// A stale callback returns the newer intent/tombstone without changing it. It must be classified anew.
     public func recoverDecision(_ previous: CompanionDecisionRecord, recovery: CompanionDecisionRecovery,
                                 now: String) throws -> CompanionDecisionLookup {
+        try replaceDecision(previous, recovery: recovery, now: now).lookup
+    }
+    func replaceDecision(_ previous: CompanionDecisionRecord, recovery: CompanionDecisionRecovery,
+                         now: String) throws -> DecisionReservation {
         guard CompanionOwnerRelay.time(now), case .operation(_, let oldID, _) = previous.plan.effect else {
             throw CompanionDecisionError.invalid
         }
         return try store.write { t in
             let d = previous.request.deviceID, r = previous.request.requestID
-            if let done = try decisionTombstone(d, r, t) { return .decided(done) }
+            if let done = try decisionTombstone(d, r, t) { return DecisionReservation(lookup: .decided(done), written: false) }
             guard let head = try decisionHead(d, t), head.request.requestID == r else { throw CompanionDecisionError.invalid }
-            if head.bytes != previous.bytes { return .deciding(head) }
+            if head.bytes != previous.bytes { return DecisionReservation(lookup: .deciding(head), written: false) }
             guard try record(d, t)?.state == .active else { throw CompanionDecisionError.unavailable }
             let plan: CompanionDecisionPlan
             switch recovery {
@@ -67,7 +75,7 @@ extension CompanionProfile {
             }
             let bytes = try decisionBytes(head.request, plan: plan, at: now)
             try t.execute("UPDATE request_decisions SET bytes = ? WHERE device = ?", .blob(bytes), .text(d))
-            return .deciding(try decodeDecision(bytes, device: d, request: r))
+            return DecisionReservation(lookup: .deciding(try decodeDecision(bytes, device: d, request: r)), written: true)
         }
     }
     /// Call only once the recorded effect is proven applied, or its idempotent capture/card creation finished.
@@ -92,6 +100,14 @@ extension CompanionProfile {
                           .text(d), .integer(marks.floor), .integer(marks.generation + 1))
             try t.execute("DELETE FROM request_decisions WHERE device = ?", .text(d))
             return CompanionOutcomeTombstone(deviceID: d, requestID: r, sequence: head.request.sequence, outcome: head.plan.outcome, decidedAt: decidedAt)
+        }
+    }
+    func decisionNeedsPlan(_ request: CompanionAuthenticatedRequest) throws -> Bool {
+        guard CompanionWire.isID(request.deviceID), CompanionWire.isID(request.requestID),
+              request.sequence >= 1, request.sequence <= JSONNumber.maxSafeInteger else { throw CompanionDecisionError.invalid }
+        return try store.read { t in
+            guard request.action != nil else { return false }
+            return request.sequence > (try decisionMarks(request.deviceID, t)).highest
         }
     }
     private func decisionLookup(_ d: String, _ r: String, _ t: Transaction) throws -> CompanionDecisionLookup {

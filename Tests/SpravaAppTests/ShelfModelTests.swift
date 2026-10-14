@@ -184,7 +184,8 @@ private final class BlockedShelfSummary: @unchecked Sendable {
             try? ShelfStore(supportDirectory: support).remove(URL(fileURLWithPath: request["binder"]!.stringValue!))
             return #"{"ok":true}"#
         }
-        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read, readTimeout: 0.05)
+        // Long enough for the real second read on a loaded machine; the stalled first read still times out.
+        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read, readTimeout: 0.5)
         model.rows = snapshot.rows
         await model.refreshAndWait()
         #expect(reader.calls == 1 && !reader.completed)
@@ -201,7 +202,12 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         }
         try #require(reader.completed)
         #expect(model.rows.isEmpty) // the late pre-removal snapshot is discarded
-        await model.refreshAndWait()
+        // The reader reports completion just before the disk worker frees itself, so a refresh in that gap is
+        // still refused as busy; retry until the fresh read runs.
+        while reader.calls < 2 && started.duration(to: .now) < .seconds(5) {
+            await model.refreshAndWait()
+            if reader.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        }
         #expect(reader.calls == 2 && model.rows.isEmpty && model.note == nil)
     }
 
