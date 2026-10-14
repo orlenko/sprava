@@ -21,6 +21,11 @@ The relay and browser share the strict JSON reader in `companion/shared/json.ts`
 the committed wire vectors. The first encryption vector was generated with Node's separate
 crypto API and is reproduced by WebCrypto tests.
 
+`src/pairing-keys.ts` implements the device's X25519 and HKDF-SHA256 agreement, produces
+non-extractable wrap/device keys and the six-digit confirmation code, and refuses low-order
+keys. Derived keys remain provisional: the pairing handshake and user confirmation must
+complete before a caller installs them. Shared derivation vectors are public invented inputs.
+
 The codec validates the envelope and JSON, not the payload's schema or its freshness. Its
 caller must validate section 8's payloads and commit the high-water marks and encrypted cache
 durably as section 10.2 requires before showing anything. Decrypted data stays in memory.
