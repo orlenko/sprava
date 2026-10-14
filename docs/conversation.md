@@ -94,7 +94,7 @@ history, not rebuildable, untrusted when read; §6.11 (expunge) covers it.
 
 | Surface | What it sees of the conversation |
 |---|---|
-| The front desk | The brief, the rules, the recent turns, and the passages it retrieved |
+| The front desk | The brief, the rules, the passages it retrieved, and recent turns: only lines the runtime itself wrote (their digests are in its state); any other line is shown, never fed to a model |
 | The back office | Recent turns as it is fed them, plus its own session history (11.1) |
 | The index (9.1) | The person's own lines, so "what did I say about the plumber?" works |
 | Hub slice, Today page, companion views, registered MCP clients | Nothing |
@@ -209,7 +209,8 @@ it is the person's direct command and the app holds the person's file permission
 Desktop) that the runtime, a LaunchAgent, may not have (spike S8). An exact path is imported as a drop. A
 description is matched by code in the named folder (default Downloads) by name, kind and date ("March" means a
 date in March or the word in the name); one match is imported at once, more than one is a question listing
-them with check boxes, none says what was searched. `~` and relative names are normalized, a trailing slash or
+them with check boxes, held only in the app's window: the transcript and every model see only the files
+chosen. None says what was searched. `~` and relative names are normalized, a trailing slash or
 quotes do not matter, and a folder is imported one level deep. Everything goes through the one opener above,
 and a description never matches a link. The original is never moved or changed.
 
@@ -254,7 +255,7 @@ by code in the runtime (decisions.md D3):
 |---|---|---|
 | A, applied with Undo | `add_item` from the person's words, or from a document only with code's evidence (5.1 step 3); `file_document` from this binder's `intake/`, or a new draft in `drafts/` (10); `add_log_entry` from the person's words; `update_document`, `move_document` and `unfile_document` on documents this conversation filed; `update_item`, `set_status` and `drop` on items it created in the last 24 hours (proposed) | At once, one batch per turn, reported with Undo |
 | B, one tap | `update_item`, `set_status`, `complete`, `drop`, `reopen` on other items; `update_document` on other documents; moving a document to another binder (`transfer_document`); more than 20 new items or documents in one turn (proposed) | A confirmation with the change and its source; nothing changes until Apply |
-| C, never from the conversation | `set_disclosure`, lowering `redact` or `sensitivity`, `rename_teka`, `expunge`, engine and backup settings, anything outward (sending mail, `outgoing/`, exporters, a court or tax filing), deleting a file, writing a manual, `.sprava/`, `scripts/` or a dot folder | Only the app's own controls (architecture 2.1) |
+| C, never from the conversation | `set_disclosure` and every widening the privacy ratchet names (architecture 4.5: clearing `redact`, changing or removing `slice_title`, adding a tag to a redacted item, lowering `sensitivity`), checked before any other class, `rename_teka`, `expunge`, engine and backup settings, anything outward (sending mail, `outgoing/`, exporters, a court or tax filing), deleting a file, writing a manual, `.sprava/`, `scripts/` or a dot folder | Only the app's own controls (architecture 2.1) |
 
 Three new ops (binder-v0, section 15 PR 1): `move_document {id, path}` moves a filed file within the binder
 without replacing anything; `unfile_document {id}` moves a file this implementation filed back into `intake/`
@@ -514,7 +515,8 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   `disableAllHooks`, in Terminal sessions too; a managed policy that overrides it fails); no memory file loaded
   (`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is set, and the session's start event lists none); the provider is
   Anthropic itself (`claude auth status` names a first-party method, not `third_party`) or OpenAI for Codex;
-  the tools are `Agent` and Sprava's alone. What Sprava cannot read counts as failing (open S1, S3 items).
+  the tools are `Agent` and Sprava's alone, with no managed skill or plugin in effect. What Sprava cannot read
+  counts as failing (open S1, S3 items).
 - **The manual.** Sprava passes Sprava's manual section, the brief (as data) and the filing rules in the
   appended system prompt, read through the safe reader; no project file is ever loaded.
 - **Tools**: reads (`search`, `read_document`, `get_now`, `list_items`, `list_documents`, this binder only,
@@ -731,17 +733,10 @@ the local model follows, then the back office.
 
 ## 16. Decided choices
 
-The author accepted the first draft's recommendations as a set on 2026-10-14 ("all this looks good, go ahead
-with the plan"), adjusted by the points of the second quote: the transcript in `.sprava/conversation/` (D6);
-arrivals filed at once (D2); one tap for changes to existing items (D3); Claude as a long-lived structured session per binder with fixed rules and no prompts, tasks in
-their own sessions (D4, D13); Codex second, over its app server (D4); Sprava's tools only, no shell and no web,
-narrowed after review from read-only file tools (D4); the engine switch as consent (D4); the front desk
-files first and the back office reviews (D10); llama.cpp as a bundled `llama-server` with a model chosen by
-memory (D5); the Inbox's note field kept (D9); on-device translation at filing (D8).
-
-Still a recommendation: where the brief lives (8.2, `BRIEF.md` recommended), and every number marked
-"proposed". Open, needing the author: access control within one binder (17.4), and a cross-binder manager
-that prioritizes and routes across binders, the old "Osavul" role (P21 in PR #347; 17.5).
+The author accepted the first draft's recommendations as a set on 2026-10-14 ("go ahead with the plan"), as
+adjusted by the second quote: decisions.md D2 to D10 and D13 record them. Still recommendations: where the
+brief lives (`BRIEF.md`), and every number marked "proposed". Open, needing the author: access control within
+one binder (17.4), and a cross-binder manager, the old "Osavul" role (P21 in PR #347; 17.5).
 
 ## 17. Rules from running the old binders, with acceptance fixtures
 
