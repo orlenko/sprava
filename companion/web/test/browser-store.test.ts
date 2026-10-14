@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { BrowserStore, StorageError } from '../src/browser-store.ts';
 import { PayloadError } from '../src/payload.ts';
 import { encodeB64 } from '../src/encoding.ts';
@@ -60,7 +60,7 @@ test('encrypted caches and non-extractable keys survive closing/reopening; plain
     store.close();
     const reopened = await BrowserStore.open('fixture', factory), state = await reopened.read();
     assert.deepEqual(Object.keys(state.index!.binders[0]!).sort(), ['id', 'key', 'viewVersion']);
-    assert.deepEqual(state.views[id]!.bytes, viewBytes());
+    assert.deepEqual((await reopened.readView(id))!.bytes, viewBytes());
     assert.equal(state.pairing!.accountKey.extractable, false);
     assert.equal(state.pairing!.deviceKey.extractable, false);
     assert.equal(state.index!.binders[0]!.key.extractable, false);
@@ -77,6 +77,7 @@ test('pairing floor, index rollback, exact view version and persistent view high
     assert.equal(await store.acceptView(id, 6, viewBytes(6)), false);
     assert.equal(await store.acceptView(id, 7, viewBytes()), true);
     assert.equal(await store.acceptIndex(6, 1, indexBytes(6, 8)), true);
+    assert.equal(await store.readView(id), undefined, 'outdated cache is hidden');
     assert.equal(await store.acceptView(id, 7, viewBytes()), false);
     assert.equal(await store.acceptView(id, 8, viewBytes(8)), true);
     assert.equal(await store.acceptIndex(5, 1, indexBytes(5)), false);
@@ -91,7 +92,7 @@ test('removing a binder deletes its cached view and key atomically, while retain
     await store.acceptIndex(5, 1, indexBytes(5)); await store.acceptView(id, 7, viewBytes());
     await store.acceptIndex(6, 1, indexBytes(6, 7, false));
     const state = await store.read();
-    assert.deepEqual(state.index!.binders, []); assert.equal(state.views[id], undefined);
+    assert.deepEqual(state.index!.binders, []); assert.equal(await store.readView(id), undefined);
     assert.equal(state.viewMarks[id], 7);
     assert.equal(await store.acceptView(id, 7, viewBytes()), false);
     store.close();
@@ -115,6 +116,7 @@ test('rotation commits key/epoch together, preserves the owner pin and refuses o
     assert.equal(await store.acceptKeys(2, bytes), true);
     const state = await store.read();
     assert.equal(state.pairing!.epoch, 2); assert.equal(state.index!.epoch, 1);
+    assert.equal(await store.readView(id), undefined, 'previous-epoch cache is hidden');
     assert.equal(state.pairing!.ownerKey.extractable, false);
     assert.equal(await store.acceptKeys(1, bytes), false);
     assert.equal(await store.acceptIndex(6, 1, indexBytes(6)), false);
@@ -164,6 +166,32 @@ test('a view validated against a superseded index cannot commit after another wi
         release.resolve();
         assert.equal(await accepting, false);
         const state = await first.read();
-        assert.equal(state.views[id], undefined); assert.equal(state.viewMarks[id], undefined);
+        assert.equal(await first.readView(id), undefined); assert.equal(state.viewMarks[id], undefined);
     } finally { release.resolve(); subtle.decrypt = decrypt; first.close(); second.close(); }
+});
+
+
+test('updating one large view writes only its record and metadata, without cloning another cached view', async () => {
+    const store = await paired();
+    const bytes = sealed('index/5', 'account', 1, { revision: 5, generated_at: '2026-10-08T07:06:05Z',
+        binders: [id, otherId].map(id => ({ id, name: 'Invented binder', view_version: 7, key: encodeB64(raw) })) });
+    await store.acceptIndex(5, 1, bytes);
+    const large = (binderId: string) => sealed(`views/${binderId}/7`, binderId, 1, {
+        version: 7, generated_at: '2026-10-08T07:06:05Z', today: null, notes_omitted: false,
+        binder: { name: 'Invented binder', description: 'x'.repeat(500000) }, items: [], closed: [], documents: [],
+        buckets: Object.fromEntries(bucketNames.map(b => [b, []])) });
+    await store.acceptView(id, 7, large(id)); const otherBytes = large(otherId);
+    await store.acceptView(otherId, 7, otherBytes);
+    const put = IDBObjectStore.prototype.put, writes: { store: string; key: unknown; size: number }[] = [];
+    IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        writes.push({ store: this.name, key, size: JSON.stringify(value).length });
+        return put.call(this, value, key);
+    };
+    try {
+        await store.acceptView(id, 7, viewBytes());
+        assert.deepEqual(writes.map(w => [w.store, w.key]), [['views', id], ['state', 'current']]);
+        assert.ok(writes.every(w => w.size < 20000), 'neither write contains any old large view');
+        assert.equal(Object.hasOwn(await store.read(), 'views'), false);
+        assert.deepEqual((await store.readView(otherId))!.bytes, otherBytes);
+    } finally { IDBObjectStore.prototype.put = put; store.close(); }
 });

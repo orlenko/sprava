@@ -22,13 +22,13 @@ export interface StoredIndex {
 export interface StoredView { version: number; epoch: number; bytes: Uint8Array }
 export interface BrowserState {
     version: 1; reservation?: Reservation; pairing?: Pairing; index?: StoredIndex;
-    viewMarks: Record<string, number>; views: Record<string, StoredView>;
+    viewMarks: Record<string, number>;
 }
 export interface Installation {
     deviceId: string; relayOrigin: string; instanceId: string; token: string; expiresAt: string;
     deviceKey: CryptoKey; wrapKey: CryptoKey; delivery: Uint8Array;
 }
-const empty = (): BrowserState => ({ version: 1, viewMarks: {}, views: {} });
+const empty = (): BrowserState => ({ version: 1, viewMarks: {} });
 const positive = (n: number) => Number.isSafeInteger(n) && n > 0;
 function origin(value: string): boolean {
     try {
@@ -56,6 +56,7 @@ export class BrowserStore {
                 if (event.oldVersion !== 0) { request.transaction!.abort(); return; }
                 request.result.createObjectStore('state');
                 request.result.createObjectStore('outbox');
+                request.result.createObjectStore('views');
             };
             request.onerror = fail;
             request.onblocked = fail;
@@ -69,11 +70,11 @@ export class BrowserStore {
     close(): void { this.db.close(); }
 
     // No promises or WebCrypto inside the callback: only IDB work keeps a transaction alive.
-    private transaction<T>(write: boolean, change: (state: BrowserState) => { value: T; save?: boolean }): Promise<T> {
+    private transaction<T>(write: boolean, change: (state: BrowserState, views: IDBObjectStore) => { value: T; save?: boolean }): Promise<T> {
         return new Promise((resolve, reject) => {
             let tx: IDBTransaction;
             try {
-                tx = this.db.transaction('state', write ? 'readwrite' : 'readonly',
+                tx = this.db.transaction(['state', 'views'], write ? 'readwrite' : 'readonly',
                     write ? { durability: 'strict' } : undefined);
                 if (write && tx.durability !== 'strict') { tx.abort(); throw new StorageError(); }
             } catch { reject(new StorageError()); return; }
@@ -86,7 +87,7 @@ export class BrowserStore {
                 try {
                     const state: BrowserState = request.result === undefined ? empty() : request.result;
                     if (state.version !== 1) throw new StorageError();
-                    const changed = change(state); result = changed.value;
+                    const changed = change(state, tx.objectStore('views')); result = changed.value;
                     if (changed.save) {
                         if (!write) throw new StorageError();
                         store.put(state, 'current');
@@ -96,6 +97,23 @@ export class BrowserStore {
         });
     }
     read(): Promise<BrowserState> { return this.transaction(false, state => ({ value: state })); }
+
+    /** §10.3: fetch only the requested cache, and only while it matches the current index and pairing epoch. */
+    readView(binderId: string): Promise<StoredView | undefined> {
+        return new Promise((resolve, reject) => {
+            let tx: IDBTransaction;
+            try { tx = this.db.transaction(['state', 'views'], 'readonly'); }
+            catch { reject(new StorageError()); return; }
+            const state = tx.objectStore('state').get('current'), view = tx.objectStore('views').get(binderId);
+            tx.onabort = () => reject(new StorageError()); tx.onerror = () => reject(new StorageError());
+            tx.oncomplete = () => {
+                const s = state.result as BrowserState | undefined, v = view.result as StoredView | undefined;
+                const p = s?.pairing, i = s?.index, b = i?.binders.find(b => b.id === binderId);
+                resolve(p && i && b && v && i.epoch === p.epoch && v.epoch === i.epoch &&
+                    v.version === b.viewVersion && v.version >= (s!.viewMarks[binderId] ?? 0) ? v : undefined);
+            };
+        });
+    }
 
     /** §5.2 step 2: a fresh reservation cancels earlier flows, but cannot replace an installed pairing. */
     async reserve(pairingId: string): Promise<Reservation | null> {
@@ -120,7 +138,7 @@ export class BrowserStore {
         } catch { throw new StorageError(); }
         const delivery = await openPairingDelivery(reservation.pairingId, installation.deviceId,
             installation.wrapKey, installation.delivery.slice());
-        return this.transaction(true, state => {
+        return this.transaction(true, (state, views) => {
             if (state.pairing || state.reservation?.generation !== reservation.generation ||
                 state.reservation.pairingId !== reservation.pairingId) return { value: false };
             state.pairing = { generation: reservation.generation, pairingId: reservation.pairingId,
@@ -128,7 +146,7 @@ export class BrowserStore {
                 instanceId: installation.instanceId, token: installation.token, expiresAt: installation.expiresAt,
                 acknowledgementPending: true, ...delivery, deviceKey: installation.deviceKey,
                 nextSeq: 1, outcomesRevision: 0 };
-            delete state.reservation; delete state.index; state.views = {}; state.viewMarks = {};
+            delete state.reservation; delete state.index; views.clear(); state.viewMarks = {};
             return { value: true, save: true };
         });
     }
@@ -150,15 +168,16 @@ export class BrowserStore {
             if (!p || !positive(revision) || epoch !== p.epoch || revision < p.minIndexRevision ||
                 revision < (before.index?.revision ?? 0)) return false;
             const index = await openIndex(revision, epoch, p.accountKey, p.ownerKey, bytes);
-            const committed = await this.transaction(true, state => {
+            const committed = await this.transaction(true, (state, views) => {
                 const current = state.pairing;
                 if (!current || current.generation !== p.generation || current.deviceId !== p.deviceId ||
                     current.epoch !== p.epoch || revision < current.minIndexRevision ||
                     revision < (state.index?.revision ?? 0)) return { value: false };
+                const previousIds = state.index?.binders.map(b => b.id) ?? [];
                 state.index = { revision, epoch, bytes,
                     binders: index.binders.map(({ id, viewVersion, key }) => ({ id, viewVersion, key })) };
                 const ids = new Set(index.binders.map(b => b.id));
-                for (const id of Object.keys(state.views)) if (!ids.has(id)) delete state.views[id];
+                for (const id of previousIds) if (!ids.has(id)) views.delete(id);
                 return { value: true, save: true };
             });
             if (committed) return true;
@@ -174,12 +193,12 @@ export class BrowserStore {
             if (!p || !index || index.epoch !== p.epoch || !binder || binder.viewVersion !== version ||
                 version < (before.viewMarks[binderId] ?? 0)) return false;
             await openView(binderId, version, index.epoch, binder.key, p.ownerKey, bytes);
-            const committed = await this.transaction(true, state => {
+            const committed = await this.transaction(true, (state, views) => {
                 const current = state.pairing, i = state.index, b = i?.binders.find(b => b.id === binderId);
                 if (!current || current.generation !== p.generation || current.deviceId !== p.deviceId ||
                     current.epoch !== p.epoch || i?.revision !== index.revision || i.epoch !== index.epoch ||
                     !b || b.viewVersion !== version || version < (state.viewMarks[binderId] ?? 0)) return { value: false };
-                state.views[binderId] = { version, epoch: index.epoch, bytes };
+                views.put({ version, epoch: index.epoch, bytes } satisfies StoredView, binderId);
                 state.viewMarks[binderId] = version;
                 return { value: true, save: true };
             });

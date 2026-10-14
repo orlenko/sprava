@@ -41,10 +41,11 @@ try {
     }
     const state = await store.read();
     check(state.pairing?.epoch === 1 && state.pairing.nextSeq === 1 && !state.pairing.acknowledgementPending);
-    check(state.index?.revision === 5 && state.viewMarks[f.id] === 7 && state.views[f.id].version === 7);
+    const cached = await store.readView(f.id);
+    check(state.index?.revision === 5 && state.viewMarks[f.id] === 7 && cached?.version === 7);
     const p = state.pairing, b = state.index.binders[0];
     check(!p.accountKey.extractable && !p.deviceKey.extractable && !p.ownerKey.extractable && !b.key.extractable);
-    const view = await openView(f.id, 7, 1, b.key, p.ownerKey, state.views[f.id].bytes);
+    const view = await openView(f.id, 7, 1, b.key, p.ownerKey, cached.bytes);
     check(view.binder.name === 'Invented binder');
     check(!JSON.stringify(state).includes('Invented binder'));
     store.close(); document.body.textContent = 'PASS';

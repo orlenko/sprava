@@ -37,7 +37,10 @@ Decoder results remain provisional. `src/browser-store.ts` provides pairing rese
 conditional installation and acknowledgement, and atomic admission of indexes, views and key
 rotations. Every state write uses strict IndexedDB durability and resolves only after completion.
 Validation runs outside transactions; commit rechecks the pairing, epoch and relevant index/version
-floors. The cache stores sealed bytes and non-extractable keys, never decrypted binder text.
+floors. The cache stores sealed bytes and non-extractable keys, never decrypted binder text. Views
+are separate records: accepting one rewrites only that view and its admission metadata,
+so a refresh does not clone and rewrite the entire cache. `readView` checks the current
+index, epoch and exact version in one read transaction before returning a cache.
 Removed binders lose their cached views and keys in the index transaction; their version floors
 remain. Outdated caches may remain stored, so a future screen must check the current index,
 epoch and exact view version before opening and showing them. Outcomes/outbox storage and
