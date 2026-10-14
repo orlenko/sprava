@@ -266,6 +266,11 @@
   offloaded (a finished tax year, say) and restored when needed (an audit), so while it is in use it is
   fully local. Sprava does not defend against slow, stalled, network or removable volumes: a read that waits
   on one is not a defect, and reviews do not report it.
+- **A19 decided (2026-10-14, by the author).** Background work is not optional. When the app starts, it checks
+  that the runtime is running and starts it without asking if it is not; an action that finds it not running
+  does the same and goes on. There is no Turn Off; the `runtime/background-off` marker of earlier builds is
+  removed when the app starts the runtime. Only the Login Items approval is left to the person, shown as one line
+  with a button, never opened by itself. Each start is bounded (architecture 3.1).
 
 ## MVP (`docs/mvp.md`)
 

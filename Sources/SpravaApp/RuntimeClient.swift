@@ -9,6 +9,8 @@ final class RuntimeClient {
     private var connection: NSXPCConnection?
     /// Answers in place of the runtime, for tests: no test reaches a runtime over XPC.
     private let answer: (@MainActor (String) async throws -> String)?
+    /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
+    static var whenNotRunning: (@MainActor () -> Void)?
 
     init(answer: (@MainActor (String) async throws -> String)? = nil) {
         self.answer = answer
@@ -34,7 +36,7 @@ final class RuntimeClient {
         /// The connection failed: nothing answers under the runtime's name. The system's own words ("Couldn't communicate
         /// with a helper application") tell a person nothing they can act on, so only the error's code is kept, for diagnosis.
         static func notRunning(_ error: Error) -> Failure {
-            Failure(message: "Sprava's background part is not running. Turn it on under Health, at the top of the sidebar. (error \((error as NSError).code))",
+            Failure(message: "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot. (error \((error as NSError).code))",
                     kind: .notRunning)
         }
     }
@@ -74,12 +76,16 @@ final class RuntimeClient {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
             let proxy = self.proxy { error in
-                if once.claim() { continuation.resume(throwing: Failure.notRunning(error)) }
+                if once.claim() {
+                    continuation.resume(throwing: Failure.notRunning(error))
+                    Task { @MainActor in RuntimeClient.whenNotRunning?() }
+                }
             }
             guard let proxy else {
                 if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Sprava's background part is not running. Turn it on under Health, at the top of the sidebar.",
+                    continuation.resume(throwing: Failure(message: "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot.",
                                                           kind: .notRunning))
+                    RuntimeClient.whenNotRunning?()
                 }
                 return
             }
