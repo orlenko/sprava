@@ -6,10 +6,13 @@ const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
     '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml' };
 const server = createServer(async (request, response) => {
     try {
+        if (!request.url?.startsWith('/') || request.url.startsWith('//')) throw Error();
         const path = new URL(request.url, 'http://localhost').pathname;
         if (request.method !== 'GET' || !/^\/[a-zA-Z0-9_./-]*$/.test(path) || path.includes('..')) throw Error();
         const file = path === '/' ? 'index.html' : path.slice(1);
-        const body = await readFile(new URL(file, root));
+        const target = new URL(file, root);
+        if (file.startsWith('/') || !target.href.startsWith(root.href)) throw Error();
+        const body = await readFile(target);
         response.setHeader('Content-Type', mime[file.slice(file.lastIndexOf('.'))] ?? 'application/octet-stream');
         response.setHeader('Cache-Control', 'no-cache'); response.end(body);
     } catch { response.writeHead(404); response.end(); }
