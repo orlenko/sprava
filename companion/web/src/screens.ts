@@ -14,14 +14,14 @@ function button(text: string, action: () => void): HTMLButtonElement {
 export interface Screens {
     banner: HTMLElement; code: HTMLElement; label: HTMLInputElement; pairButton: HTMLButtonElement;
     cancelButton: HTMLButtonElement; pairing: HTMLElement; paired: HTMLElement;
-    draft: HTMLTextAreaElement; saveButton: HTMLButtonElement; refreshButton: HTMLButtonElement;
+    draft: HTMLTextAreaElement; saveButton: HTMLButtonElement; refreshButton: HTMLButtonElement; removeButton: HTMLButtonElement;
     render(cache: DisplayCache, page: OutboxPage, lastReachedAt?: number): void;
 }
 
 /** Keep the editor mounted across refreshes, so incoming data never destroys an unsaved draft. */
 export function mount(root: HTMLElement, actions: {
     pair: (label: string) => void; cancel: () => void; select: (id: string) => void;
-    save: () => void; refresh: () => void; next: (key: IDBValidKey) => void; first: () => void;
+    save: () => void; refresh: () => void; remove: () => void; next: (key: IDBValidKey) => void; first: () => void;
 }): Screens {
     const banner = element('p'); banner.setAttribute('role', 'status'); banner.id = 'status';
     const heading = element('header'); heading.append(element('h1', 'Sprava'));
@@ -43,14 +43,24 @@ export function mount(root: HTMLElement, actions: {
     composer.append(element('h2', 'Send a note to Sprava'), draftLabel, draft, saveButton,
         element('p', 'Notes are saved on this device before sending. Your Mac applies them when it reconnects.'));
     const pending = element('section'); pending.id = 'pending';
-    paired.append(freshness, binders, view, composer, pending); root.append(heading, banner, pairing, paired);
-    return { banner, code, label, pairButton, cancelButton, pairing, paired, draft, saveButton, refreshButton,
+    const removeButton = button('Remove this device’s pairing', actions.remove);
+    paired.append(freshness, binders, view, composer, pending, removeButton); root.append(heading, banner, pairing, paired);
+    return { banner, code, label, pairButton, cancelButton, pairing, paired, draft, saveButton, refreshButton, removeButton,
         render(cache, page, lastReachedAt) {
             const connected = cache.generation !== undefined;
             pairing.hidden = connected; paired.hidden = !connected; refreshButton.disabled = !connected;
             freshness.replaceChildren(); binders.replaceChildren(element('h2', 'Binders'));
             view.replaceChildren(); pending.replaceChildren(element('h2', 'Pending actions'));
-            if (!connected) return;
+            const pendingEntries = () => {
+                for (const entry of page.entries) pending.append(element('p', `${entry.type} #${entry.seq}: ${entry.state} · ${entry.madeAt}`));
+                if (!page.entries.length) pending.append(element('p', 'No pending actions on this page.'));
+                pending.append(element('p', 'Sent means the relay received it. The action remains here until your Mac confirms the result.'));
+                pending.append(button('First page', actions.first));
+                if (page.next) pending.append(button('More actions', () => actions.next(page.next!)));
+            };
+            // Retired actions remain visible even without any pairing.
+            if (!connected) { paired.hidden = false; composer.hidden = draft.value === ''; removeButton.hidden = true; pendingEntries(); return; }
+            composer.hidden = false; removeButton.hidden = false;
             freshness.append(element('p', lastReachedAt === undefined ? 'Relay has not been reached in this session.' :
                 `Last reached relay: ${new Date(lastReachedAt).toLocaleString()}`));
             const age = (title: string, value: string) => {
@@ -94,10 +104,6 @@ export function mount(root: HTMLElement, actions: {
                 for (const document of v.documents) view.append(element('p', `${document.title}${document.date ? ` · ${document.date}` : ''}`));
             } else if (cache.binderId) view.append(element('p', 'Updating this binder. Its view must match the current index.'));
             else view.append(element('p', 'Choose a binder.'));
-            for (const entry of page.entries) pending.append(element('p', `${entry.type} #${entry.seq}: ${entry.state} · ${entry.madeAt}`));
-            if (!page.entries.length) pending.append(element('p', 'No pending actions on this page.'));
-            pending.append(element('p', 'Sent means the relay received it. The action remains here until your Mac confirms the result.'));
-            pending.append(button('First page', actions.first));
-            if (page.next) pending.append(button('More actions', () => actions.next(page.next!)));
+            pendingEntries();
         } };
 }
