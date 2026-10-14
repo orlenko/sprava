@@ -56,9 +56,9 @@ let package = Package(
                                                         "SpravaTestSupport", "SpravaKit"]),
 
         // Runtime services arrive separately from commands and scheduling.
-        .target(name: "Services", dependencies: ["Brains", "Backup", "Hub", "Capture", "Clerk", "Extract", "Shelf", "BinderStore",
+        .target(name: "Services", dependencies: ["Companion", "Brains", "Backup", "Hub", "Capture", "Clerk", "Extract", "Shelf", "BinderStore",
                                                  "BinderFormat", "SpravaKit"]),
-        .testTarget(name: "ServicesTests", dependencies: ["Services", "Backup", "Brains", "CaptureTestSupport", "Capture",
+        .testTarget(name: "ServicesTests", dependencies: ["Services", "Companion", "Backup", "Brains", "CaptureTestSupport", "Capture",
                                                           "ClerkTestSupport", "Clerk", "Extract", "Hub", "Shelf", "BinderStore",
                                                           "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
