@@ -198,8 +198,9 @@
   by one, and discarding the copy is safe only while the whole original is intact, which Sprava cannot keep
   checking. To start over, the person removes the imported binder and imports the original again.
   The copy is made in a hidden staging folder by a background job and renamed into place only when complete,
-  so a cancelled or crashed import leaves no partial binder. Only a change that needs the person's judgement
-  becomes a card: an item that breaks a rule because a value is missing (a due date or `no_deadline`, a party
+  so a cancelled or crashed import leaves no partial binder; an unfinished staging folder is deleted for good,
+  not moved to the Trash, and a binder that would not fit is refused before the copy starts. Only a change
+  that needs the person's judgement becomes a card: an item that breaks a rule because a value is missing (a due date or `no_deadline`, a party
   for a waiting item, a kind for a redacted item, an entity row's `status`, the v0 value of a `meta` field whose
   found value the v0 types reject), since an import cannot invent one; an open item whose id
   already closes a processing log entry, which may be a duplicate or an item reopened by hand; and a name the
@@ -236,7 +237,8 @@
   §9.2 step 12 treat as marks of a lifeproj binder and as a channel off the Mac; copy everything else. Until
   this is decided the format does not change. Decided now, because it is a privacy floor: every hidden file or folder at the
   binder's top level (`.claude/`, `.codex/`, `.mcp.json` and the like) is set aside under
-  `.sprava/adopted/top-level/` instead of copied into place (binder-v0 §9.4 step 2).
+  `.sprava/adopted/top-level/` instead of copied into place, and every agent manual of binder-v0 §4.3's list,
+  at any depth, under `.sprava/adopted/manuals/` (binder-v0 §9.4 step 2).
 
 ## Capture events (`docs/spec/capture-event-v0.md`)
 
