@@ -8,9 +8,10 @@ import SpravaKit
 /// runs, so one that hangs is named, and past twice its budget and ten minutes ends the process for launchd to restart.
 public final class RequestQueues: @unchecked Sendable {
     public static let repositoryCommands: Set<String> = ["peek", "backup_setup", "backup_second"]
-    /// The watchdog's keys and budgets: the app's longest timeout for each kind (15 seconds for a write; ten minutes
-    /// for a peek).
-    public static let budgets: [String: Duration] = ["app_request": .seconds(15), "app_backup_request": .seconds(600)]
+    /// The watchdog's keys and budgets: 15 seconds for a write, ten minutes for a peek, and 90 seconds for
+    /// one Phone claim attempt (at most three bounded 30-second relay calls).
+    public static let budgets: [String: Duration] = ["app_request": .seconds(15), "app_backup_request": .seconds(600),
+                                                     "app_companion_request": .seconds(90)]
 
     public let commands = DispatchQueue(label: "sprava.runtime.commands")
     public let repository = DispatchQueue(label: "sprava.runtime.backup-requests")
@@ -25,9 +26,12 @@ public final class RequestQueues: @unchecked Sendable {
 
     /// Runs `handle` on the request's queue and passes its answer to `reply`, with the command's name and how long it
     /// took in milliseconds.
+    @discardableResult
     public func submit(_ request: String, handle: @escaping @Sendable (String) -> String,
-                       reply: @escaping @Sendable (_ answer: String, _ command: String, _ ms: Int) -> Void) {
+                       companion: CompanionRequestQueue? = nil,
+                       reply: @escaping @Sendable (_ answer: String, _ command: String, _ ms: Int) -> Void) -> Task<Void, Never>? {
         let command = Self.command(of: request)
+        if let companion, companion.handles(command) { return companion.submit(request, reply: reply) }
         let repositoryWork = Self.repositoryCommands.contains(command)
         let key = repositoryWork ? "app_backup_request" : "app_request"
         let watch = self.watch
@@ -39,6 +43,7 @@ public final class RequestQueues: @unchecked Sendable {
             let elapsed = started.duration(to: ContinuousClock.now).components
             reply(answer, command, Int(elapsed.seconds) * 1000 + Int(elapsed.attoseconds / 1_000_000_000_000_000))
         }
+        return nil
     }
 }
 
