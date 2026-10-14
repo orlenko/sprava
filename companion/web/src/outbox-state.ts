@@ -114,11 +114,11 @@ async function pairing(db: IDBDatabase): Promise<Pairing | undefined> {
 }
 
 /** §§9.8 step 3, 10.2: authenticated outcomes and their high-water mark commit with matching entry transitions. */
-export async function acceptOutcomes(db: IDBDatabase, revision: number, input: Uint8Array): Promise<boolean> {
+export async function acceptOutcomes(db: IDBDatabase, revision: number, input: Uint8Array, generation?: string): Promise<boolean> {
     const bytes = input.slice();
     for (let retry = 0; retry <= 3; retry++) {
         const before = await pairing(db);
-        if (!before || revision < before.outcomesRevision) return false;
+        if (!before || (generation !== undefined && before.generation !== generation) || revision < before.outcomesRevision) return false;
         const opened = await openOutcomes(before.deviceId, revision, before.deviceKey, before.ownerKey, bytes);
         const committed = await write(db, (state, tx, done) => {
             const p = state?.pairing;

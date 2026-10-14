@@ -98,3 +98,12 @@ Cancellation retires only that flow's reservation. The original flow cannot ackn
 a replacement generation, and lost joins require a new link. The complete flow is
 bounded to ten minutes; each HTTP call also has its own deadline. Screens and the
 startup/refresh scheduler still need to call these helpers.
+
+`src/refresh.ts` searches keys before indexes, reconciles epoch-independent outcomes, and
+fetches only the selected binder's exact view. Each prefix has a five-candidate budget,
+including the index re-list after a missing view; the whole refresh has a 30-second network
+deadline. All admissions belong to the pairing generation that started the request.
+Invalid candidates and network failures leave admitted offline caches intact; storage
+failures remain visible to the caller. `src/display-cache.ts` opens admitted sealed data
+in memory and rechecks pairing/index prerequisites after decryption. It never persists
+decrypted names or content. The screen and refresh scheduler are still separate work.
