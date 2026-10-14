@@ -37,8 +37,8 @@ let package = Package(
         .target(name: "ClerkTestSupport", dependencies: ["Clerk", "SpravaKit"], path: "Tests/ClerkTestSupport"),
 
         // Layer 4: capture, the hub lane, backup, brains.
-        .target(name: "Capture", dependencies: ["Clerk", "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
-        .testTarget(name: "CaptureTests", dependencies: ["Capture", "CaptureTestSupport", "ClerkTestSupport", "Clerk", "Extract",
+        .target(name: "Capture", dependencies: ["Clerk", "Extract", "Shelf", "BinderStore", "BinderFormat", "Companion", "SpravaKit"]),
+        .testTarget(name: "CaptureTests", dependencies: ["Capture", "Companion", "CaptureTestSupport", "ClerkTestSupport", "Clerk", "Extract",
                                                          "Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
         .target(name: "CaptureTestSupport", dependencies: ["Capture", "BinderStore", "SpravaKit"],
                 path: "Tests/CaptureTestSupport"),

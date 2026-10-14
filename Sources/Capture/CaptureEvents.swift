@@ -176,8 +176,8 @@ public struct CaptureProducer: Sendable {
         try publish(data, as: url, flush: DiskFlush())
     }
 
-    static func publish(_ data: Data, as url: URL, flush: DiskFlush) throws {
-        let temp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".tmp")
+    static func publish(_ data: Data, as url: URL, flush: DiskFlush, temporary: URL? = nil) throws {
+        let temp = temporary ?? url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".tmp")
         // A temporary of this event left by a write that crashed is removed once it is over an hour old, never sooner:
         // another process may still be writing it (§5.2, CT-13).
         var st = stat()
