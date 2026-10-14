@@ -161,3 +161,31 @@ private func owner(_ plan: HTTPPlan) throws -> (CompanionOwnerRelay, String) {
     }
     #expect(began.duration(to: .now) < .seconds(5))
 }
+
+@Test func recordedOwnerObjectsUploadExactCiphertextAndRefuseUnsignedOrPlaintextExtensions() async throws {
+    let keys = SymmetricKey(size: .bits256), signer = Curve25519.Signing.PrivateKey()
+    let name = "devices/\(wireID)/keys/1"
+    let bytes = try CompanionSealedObject.seal(name: name, epoch: 1, key: keys, plaintext: Data("{}".utf8), signer: signer)
+    let (client, host) = try owner(HTTPPlan(status: 204, observe: { request in
+        #expect(request.url?.path == "/v0/objects/" + name && request.httpMethod == "PUT")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer " + ownerToken)
+        #expect(requestBody(request) == bytes)
+    }))
+    #expect(try await client.putObject(name: name, bytes: bytes) == 204)
+    InventedRelayProtocol.plans.set(host, HTTPPlan(hold: true))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.putObject(name: "../keys/1", bytes: bytes) }
+    let unsigned = try CompanionSealedObject.seal(name: "devices/\(wireID)/revocation", epoch: 0, key: keys, plaintext: Data("{}".utf8))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.putObject(name: "devices/\(wireID)/revocation", bytes: unsigned) }
+    var object = try #require(try CompanionWire.parse(bytes, limit: 4096).objectValue)
+    object.entries.append(("title", .string("Invented private title")))
+    let leaked = Data(JSONWriter.compact(.object(object)).utf8)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.putObject(name: name, bytes: leaked) }
+}
+
+@Test func activePairingStatusIgnoresUnusedTranscriptFieldsButStillUsesStrictJSON() async throws {
+    let (client, host) = try owner(HTTPPlan(chunks: [Data("{\"state\":\"acknowledged\",\"device_id\":null,\"device_public_key\":\"invalid\",\"hello\":17}".utf8)]))
+    #expect(try await client.pairingState(wireID).value == .acknowledged)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.pairing(wireID) }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data("{\"state\":\"joined\",\"state\":\"acknowledged\"}".utf8)]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.pairingState(wireID) }
+}
