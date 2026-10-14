@@ -2,12 +2,10 @@
 import type { DisplayCache } from './display-cache.ts';
 import type { OutboxPage } from './outbox.ts';
 import { bucketNames } from './view-payloads.ts';
-
-export function element<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string): HTMLElementTagNameMap[K] {
-    const node = document.createElement(tag);
-    if (text !== undefined) node.textContent = text;
-    return node;
-}
+import { allowedActions, itemAction } from './item-controls.ts';
+import type { RequestAction } from './device-payloads.ts';
+import { element } from './dom.ts';
+export { element } from './dom.ts';
 function button(text: string, action: () => void): HTMLButtonElement {
     const node = element('button', text); node.type = 'button'; node.addEventListener('click', action); return node;
 }
@@ -23,6 +21,7 @@ export interface Screens {
 export function mount(root: HTMLElement, actions: {
     pair: (label: string) => void; cancel: () => void; select: (id: string) => void;
     save: () => void; refresh: () => void; remove: () => void; next: (key: IDBValidKey) => void; first: () => void;
+    item: (generation: string, action: RequestAction, title: string) => void;
 }): Screens {
     const banner = element('p'); banner.setAttribute('role', 'status'); banner.id = 'status';
     const heading = element('header'); heading.append(element('h1', 'Sprava'));
@@ -94,6 +93,9 @@ export function mount(root: HTMLElement, actions: {
                         if (item.waitingOn) row.append(element('p', `Waiting on: ${item.waitingOn}`));
                         if (item.followUpAt) row.append(element('p', `Follow up: ${item.followUpAt}`));
                         if (item.notes !== null) row.append(element('p', item.notes));
+                        const labels = { done: 'Done', drop: 'Drop', arrived: 'Arrived', follow_up: 'Follow up…', postpone: 'Postpone…' };
+                        for (const type of allowedActions(item)) row.append(button(labels[type], () => actions.item(cache.generation!,
+                            itemAction(type, cache.binderId!, item, v.version), item.title)));
                         list.append(row);
                     }
                     if (!list.childElementCount) section.append(element('p', 'Nothing here.'));

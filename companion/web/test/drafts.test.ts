@@ -69,3 +69,17 @@ test('recovery moves a draft atomically to a fresh editor without erasing a chan
     assert.equal((await store.readDrafts()).drafts.length, 2);
     store.close();
 });
+test('date action drafts are authenticated as a separate kind, never restored as inbox notes', async () => {
+    const { store, factory, generation } = await paired();
+    await store.saveDraft(generation, id, 1, 'Invented date action state', time, undefined, 'item-action');
+    await store.saveDraft(generation, otherId, 1, 'Invented inbox note', time);
+    assert.deepEqual((await store.readDrafts()).drafts.map(d => d.kind), ['item-action', 'note']);
+    const request = factory.open('fixture', 1);
+    const db = await new Promise<IDBDatabase>(resolve => { request.onsuccess = () => resolve(request.result); });
+    await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('drafts', 'readwrite', { durability: 'strict' }), saved = tx.objectStore('drafts').get([generation, id]);
+        saved.onsuccess = () => { tx.objectStore('drafts').put({ ...saved.result, kind: 'note' }, [generation, id]); };
+        tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+    });
+    await assert.rejects(store.readDrafts(), DraftError); db.close(); store.close();
+});
