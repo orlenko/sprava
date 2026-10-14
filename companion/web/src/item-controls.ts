@@ -70,8 +70,8 @@ export class ItemControls {
         }
     }
     hasUnsavedChanges(): boolean {
-        return this.selection !== undefined && (this.revision > this.durableRevision ||
-            (!this.permitted(this.selection.generation) && this.date.value !== ''));
+        return this.pendingActions.size > 0 || (this.selection !== undefined && (this.submit.disabled ||
+            this.revision > this.durableRevision || (!this.permitted(this.selection.generation) && this.date.value !== '')));
     }
     restore(draft: Draft): void {
         if (this.selection || !this.permitted(draft.generation)) { this.message('Finish the current date action before recovering another.'); return; }
@@ -127,6 +127,7 @@ export class ItemControls {
         const key = JSON.stringify([generation, action.type, action.binder, action.item, action.seenVersion, action.date]);
         if (!this.permitted(generation)) { this.message('The pairing changed. This action was not queued; keep a copy of its date.'); return false; }
         const duplicate = this.pendingActions.get(key); if (duplicate) return duplicate;
+        this.message('Saving action on this device…');
         const work = (this.itemQueues.get(item) ?? Promise.resolve(true)).then(async () => {
             if (!this.permitted(generation)) { this.message('The pairing changed. This action was not queued; keep a copy of its date.'); return false; }
             try {

@@ -176,8 +176,18 @@ try {
         const row = Array.from(document.querySelectorAll('#binder-view li')).find(r => r.querySelector('strong').textContent === ${JSON.stringify(name)});
         const button = Array.from(row.querySelectorAll('button')).find(b => b.textContent === ${JSON.stringify(label)});
         button.click(); ${twice ? 'button.click();' : ''} }`);
+    await evaluate(`{
+        window.originalActionEncrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+        window.actionEncryption = new Promise(resolve => { window.resumeActionEncryption = resolve; });
+        crypto.subtle.encrypt = async (...args) => { await window.actionEncryption; return window.originalActionEncrypt(...args); };
+    }`);
     await clickItem('Invented numeric item', 'Done', true);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), true,
+        'a one-click approval whose encryption is pending receives unload protection');
+    await evaluate(`window.resumeActionEncryption(); crypto.subtle.encrypt = window.originalActionEncrypt`);
     await wait(`document.querySelector('#pending').textContent.includes('done #2: sent')`);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), false,
+        'a one-click approval is safe to unload after durable enqueue');
     await clickItem('Invented string item', 'Done');
     await wait(`document.querySelector('#pending').textContent.includes('done #3: sent')`);
     assert.equal(sentActions[1]!.item, 7); assert.equal(sentActions[2]!.item, '7');
