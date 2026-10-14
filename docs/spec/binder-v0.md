@@ -267,7 +267,7 @@ The path rules. A path written by a v0 implementation is in Unicode NFC and uses
 A path is also not reserved. Names are compared after NFC and Unicode case folding, because APFS volumes compare names without regard to case by default: `Intake/` is the same folder as `intake/`. The reserved names are:
 
 - the files `catalog.json`, `DASHBOARD.md`, `README.md`, `catalog_check.py` and `timeline.md` at the root;
-- an agent manual in any segment: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, and any other manual name the implementation knows, so a filed attachment can never become instructions that a terminal agent loads;
+- an agent manual in any segment: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`, `GEMINI.md`, and any other manual name the implementation knows, so a filed attachment can never become instructions that a terminal agent loads;
 - anything under `intake/`, `scripts/`, `ledger/`, `sources/`, `chapters/` or `entities/`.
 
 `update_document` moves nothing, so the path it records may lie under `chapters/` or `entities/`; the other rules apply. `file_document` never creates a file there (decisions.md F7; section 12 asks whether it should). Dot folders such as `.sprava/`, `.claude/` and `.git/` are excluded by the segment rule. After symlinks are resolved the path lies inside the binder (section 3.6), and the reserved-name test runs on that resolved path. The file must exist at that path when `file_document`, or an `update_document` that sets `path`, is applied. Later ops do not check it, and replay never does.
