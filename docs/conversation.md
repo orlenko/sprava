@@ -167,18 +167,26 @@ left open is noticed at the next Resume or at the latest when the task ends, and
 
 ## 5. Files in
 
+**One way in.** Every file Sprava takes in from outside the binder (a drop, a folder's entry, a path, a
+description's match) passes one safe opener in the app, and the runtime repeats its checks on the descriptor
+it receives. There is no second path to get wrong:
+
+- **Opening.** Every open uses `O_NOFOLLOW | O_NONBLOCK`, so neither a link nor a FIFO or device can redirect
+  or block it. A file is accepted only when `fstat` on the descriptor says it is a regular file, as `SafeFile`
+  does. A link inside a folder is skipped and listed. A link the person drops or names directly is resolved
+  once and shown in the report, and its real path then goes through the same opener and the key-file and
+  credential name rules (binder-v0 §3.4).
+- **Bounds before copying.** The opener first counts the whole drop or import: at most 200 files and 2 GB,
+  and the volume must keep free space for the copy plus a 5 GB reserve (all proposed). Over a bound, nothing
+  is copied and the person is asked first. A batch that fails part-way removes what it had copied into
+  `intake/` and says so.
+
 ### 5.1 Dropping
 
 1. The person drops files or folders (folders one level deep) on the conversation, with or without text in
-   the composer. The app opens each file with the person's permissions and hands the open file to the runtime
-   over XPC; the runtime copies it into the binder's `intake/` under a normalized name. The original stays where
-   it was, and the app still writes no binder (architecture 2.1). Links are never followed inside a folder:
-   each entry is opened with `O_NOFOLLOW | O_NONBLOCK`, so a FIFO or device cannot block the open, and is
-   accepted only when `fstat` on the descriptor says it is a regular file, as `SafeFile` does; a link with a harmless name
-   cannot bring in `~/.ssh` or another binder's file; links found are skipped and listed in the report. A
-   link the person drops or names directly is resolved once, its target shown in the report, and accepted only
-   as a regular file that passes the key-file and credential name rules on its real path (binder-v0 §3.4);
-   the runtime checks the descriptor it receives the same way.
+   the composer. The app opens each file through the opener above and hands the open file to the runtime over
+   XPC; the runtime copies it into the binder's `intake/` under a normalized name. The original stays where
+   it was, and the app still writes no binder (architecture 2.1).
 2. The intake pipeline runs as built (adaptation-layer 4, 7): the sandboxed helper extracts all text, OCR
    included; code finds dates, amounts, references and signals; the clerk classifies and reads. Added: the
    language is detected and the text translated when it is not the person's (9.4), and the person's words and
@@ -211,8 +219,8 @@ Desktop) that the runtime, a LaunchAgent, may not have (spike S8). An exact path
 description is matched by code in the named folder (default Downloads) by name, kind and date ("March" means a
 date in March or the word in the name); one match is imported at once, more than one is a question listing
 them with check boxes, none says what was searched. `~` and relative names are normalized, a trailing slash or
-quotes do not matter, and a folder is imported one level deep. The link rules of 5.1 apply, and a description
-never matches a link. The original is never moved or changed.
+quotes do not matter, and a folder is imported one level deep. Everything goes through the one opener above,
+and a description never matches a link. The original is never moved or changed.
 
 ### 5.3 Arrivals
 
@@ -330,23 +338,24 @@ is the person's, and it counts for whichever role it agrees with.
 
 ### 7.2 Agreement scores
 
-Sprava keeps an agreement rate per binder and per job kind: filing destination, document type, dates found,
-to-dos found, and the router's intent (proposed list). The cases, over the last 100 of each kind (proposed):
+Sprava keeps two numbers per binder and job kind (filing destination, document type, dates found, to-dos
+found, the router's intent; proposed list), over the last 100 cases of each kind (proposed). Silence is not
+agreement: only explicit signals count.
 
-| Case | Counts as | Weight (proposed) |
-|---|---|---|
-| A back-office verdict | agree or disagree | 1 |
-| The person keeps or moves on a disagreement card | agrees with whichever version the person chose | 3 |
-| The person's Undo or correction of a front-desk decision | disagree | 3 |
-| No back office, and no Undo or correction within 7 days | agree | 1 |
+| Signal | Counts toward |
+|---|---|
+| The person's Undo or fix of a front-desk decision | human-checked accuracy, as a miss |
+| The person's explicit confirmation (Keep or Move It on a card, a tap on "right") | human-checked accuracy, as a hit for the version chosen |
+| A back-office verdict | reviewer agreement, shown apart from human-checked accuracy |
+| Anything else, including an action nobody undid and a front desk and back office agreeing with no human look | unreviewed; never counted |
 
-A job kind graduates when it has at least 30 cases and 95% weighted agreement (decisions.md D10), and goes back
-on probation below 90% over its last 30 (proposed). What graduation changes: with a back office, a kind on
-probation has every case reviewed, and a graduated kind has 1 case in 10 sampled, forever; a report line of a
-kind on probation says "new at this" so the person looks. Graduation never widens the classes of 6.1. Without
-a back office the front desk works the same way and the person's Undos and corrections alone feed the score.
-The engine settings show each kind's rate, case count and state, and the person may put a kind back on
-probation. Scores are Sprava's state in the support folder (decisions.md A13), rebuilt from the transcript,
+A job kind graduates with at least 30 reviewed cases at 95% reviewer agreement and at least 10 human-checked
+cases at 95% (decisions.md D10), and goes back on probation below 90% over the last 30 of either. These numbers
+are proposed, to be set from measured fixtures. Graduation only reduces how much the back office reviews:
+every case of a kind on probation, 1 in 10 of a graduated kind, forever. It never widens the classes of 6.1.
+A report line of a kind on probation says "new at this". Without a back office nothing graduates, and the
+settings show human-checked accuracy alone. The engine settings show both numbers, the case counts and each
+kind's state, and the person may put a kind back on probation. Scores are Sprava's state in the support folder (decisions.md A13), rebuilt from the transcript,
 where every verdict and card answer is recorded.
 
 ## 8. What the front desk reads
@@ -357,7 +366,8 @@ Every back-office correction the person accepts and every Undo followed by the p
 rename) becomes a written filing rule in the binder's manual (decisions.md D11), for example: "Statements from
 the bank go to `finance/statements`, dated by period end." The front desk drafts the rule from the correction
 with a grammar (when: sender, document type or words; then: folder, title pattern, which date, kind, items to
-add or not), code renders it as one line with an id, and the new rule is shown in the report with Undo. An
+add or not), and code renders it as one line with an id. A drafted rule is not used until the person accepts it:
+the report shows it as "Use this rule from now on?" with Use, Edit and No. An
 Undo with no fix writes no rule, because it says what was wrong and not what is right.
 
 The rules live in a "Filing rules" part of Sprava's own section of `AGENTS.md`, between Sprava's markers (F14
@@ -398,6 +408,11 @@ How it stays current and correct:
   may delete any line.
 - Every model receives the brief as labelled data, never as instructions (6.2); only the filing rules (8.1),
   which come from the person's own corrections, are instructions.
+- **Freshness.** The brief is never state: the catalog and the op log are (section 17). Every line records its
+  source, the item or document id and the op that last changed it, and the brief is re-rendered from the
+  catalog after every applied batch. When a source has changed since a line was written, code updates that
+  line or marks it "may be out of date"; a line whose source is gone is removed. A model told "pending" by an
+  old brief is therefore always checked against the catalog before anything is done.
 
 ## 9. Questions
 
@@ -534,7 +549,10 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   `~/.claude/projects/<encoded>/<id>*` files and its temporary tasks folder when a task ends, when the person
   clears the conversation, turns the back office off, offloads or removes the binder, and in every case only
   after any turns made in Terminal are in the transcript (4.2). Everything Sprava itself drove is already in
-  the transcript, from the stream.
+  the transcript, from the stream. An expunge (binder-v0 §6.11) also retires every session of the binder: it
+  interrupts them, deletes their local history (and the Codex home's), and the next request starts a fresh
+  session from the rewritten transcript, so `--resume` cannot bring the forgotten text back. What the provider
+  already received cannot be recalled; the expunge screen says so.
 - **Offload and removal.** Before a binder is offloaded or removed, Sprava stops taking requests and tasks
   for it, stops every running session with the interrupt above, waits for in-flight batches to finish, and
   holds that barrier until the offload's snapshot is verified or the offload is cancelled (backup.md §6.1
@@ -635,8 +653,10 @@ weights take at most about half the memory.
 Qwen3.5-9B (5.7 GB) was the other model tested: routing 23 of 24, folder 4 of 5, 1.43 s per routing call,
 30 tokens a second. Neither model invented a quote or an answer. The fixtures were small (24 routing cases, 5
 filings, 12 questions, in English, French and Ukrainian): a first sort, not a measure. The download comes
-from the model's host into `~/Library/Application Support/Sprava/models/`, resumable, checked by SHA-256
-before first use, excluded from backup, removable in the engine settings.
+from the model's host into `~/Library/Application Support/Sprava/models/`, resumable, excluded from backup and
+removable in the engine settings. The pinned list holds each file's exact byte length beside its SHA-256. A
+download starts only when the volume has that length plus a 5 GB reserve free (proposed). It refuses a
+`Content-Length` that differs, stops at the pinned length, and the file is checked by SHA-256 before first use.
 
 ## 12. What leaves the Mac
 
@@ -729,7 +749,7 @@ the local model follows, then the back office.
     per-session lock, the start-up probe that no file tool answers, Stop by interrupt, limits, costs, cleanup of
     session files, the offload barrier.
 15. **Brains: the back-office tools.** `search`, `apply_ops`, `ask_person`, `review_verdict`,
-    `save_translation`, `write_brief`, `propose_rule`, and the reads; every back-office tool refused to
+    `save_translation`, `write_brief`, `propose_rule`, `intake_manifest`, the reads (17.5); every one refused to
     registered clients.
 16. **Services: review batches and agreement scores.** Batching, verdicts, disagreement cards, the score store,
     graduation and sampling.
@@ -743,26 +763,89 @@ the local model follows, then the back office.
 ## 16. Decided choices
 
 The author accepted the first draft's recommendations as a set on 2026-10-14 ("all this looks good, go ahead
-with the plan"), adjusted by the points of the second quote:
-
-1. The transcript lives in the binder's `.sprava/conversation/` (D6).
-2. Files arriving in `intake/` on their own are filed at once, with a "while you were away" report (D2).
-3. Every change to an existing item asked for in the conversation takes one tap (D3).
-4. Claude is driven as a long-lived structured session per binder, `claude -p` with stream-json input and
-   output, resumed by session id, with Sprava's fixed allow and deny rules and no prompts; tasks get their own sessions
-   (D4, D13).
-5. Codex is the second back office, after Claude, over its app server (D4).
-6. The back office's reach: Sprava's tools, no shell, no web (D4). The first draft also gave it read-only
-   file tools in the binder; review showed a path blocklist cannot match binder-v0 §3.4's allowlist, so it
-   reads only through Sprava's safe reader.
-7. Turning the back office on for a binder is the consent for its documents, private and intake ones included
-   (D4).
-8. Sprava's front desk files first, and the back office reviews its work afterwards (D10).
-9. The local runtime is llama.cpp in a sandboxed helper; after S5, the bundled `llama-server` on a Unix
-   socket (D5).
-10. The local model is chosen by memory from a pinned list and downloaded on first use with consent (D5).
-11. The Inbox keeps its note field for notes whose binder is unknown (D9).
-12. Translation at filing with Apple's on-device framework; the engine for the rest (D8).
+with the plan"), adjusted by the points of the second quote: the transcript in `.sprava/conversation/` (D6); arrivals filed at once (D2); one tap for changes to existing
+items (D3); Claude as a long-lived structured session per binder with fixed rules and no prompts, tasks in
+their own sessions (D4, D13); Codex second, over its app server (D4); Sprava's tools only, no shell and no web,
+narrowed after review from read-only file tools (D4); the engine switch as consent (D4); the front desk
+files first and the back office reviews (D10); llama.cpp as a bundled `llama-server` with a model chosen by
+memory (D5); the Inbox's note field kept (D9); on-device translation at filing (D8).
 
 Still a recommendation: where the brief lives (8.2, `BRIEF.md` recommended), and every number marked
-"proposed".
+"proposed". Open, needing the author: access control within one binder (17.4), and a cross-binder manager
+that prioritizes and routes across binders, the old "Osavul" role (P21 in PR #347; 17.5).
+
+## 17. Rules from running the old binders, with acceptance fixtures
+
+Agents that ran the author's old lifeproj binders reviewed this design (two of three reviews so far). Their
+points become rules (decisions.md D15 to D17). Each comes with a fixture, built on invented data, that the
+PRs of section 15 must pass.
+
+### 17.1 What happened is decided by the record
+
+The catalog and the op log, with receipts the runtime keeps for every request and task, decide whether
+something happened. A resumed session, a brief or a model's memory never does, and can never repeat or bring
+back an action. Every change from the back office or a task goes through the same typed op writer (the guard)
+as everything else. Each op is bound to a stable item or document id, to the revision it was based on (the
+`expect` fingerprints of architecture 4.6), and to its exact effect, and carries the runtime's request id. A
+retried request with the same id returns the earlier outcome instead of applying again. An approval survives
+a restart while its revision is unchanged; a changed revision makes it a conflict the person sees. Task
+sessions start fresh, with the binder's manual, the task's checkpoint and its approval receipt, never another
+session's history.
+
+*Fixture:* a recurring item is completed, the result is lost, Sprava restarts, and the turn is retried with an
+old brief. The occurrence advances exactly once, and the earlier outcome is recovered from the receipt.
+*Fixture:* the brief says "pending" but the item is now closed. The line is refreshed or shown out of date,
+and nothing is repeated (8.2).
+
+### 17.2 Correction after filing, at any time
+
+Filing moves the original and never rewrites it; its SHA-256 is recorded, and its document id stays the same
+across every rename, refile and correction. Each document has a classification and correction history (from
+the op log). Refiling and correcting are possible at any time, not only while Undo is offered: `move_document`
+and `update_document`, class A for the conversation's own filings and one tap for others (6.1). A correction
+refreshes the brief lines, index rows and views that depend on the document. "Recent filings" is a triage
+view, not the only way back to a document.
+
+*Fixture:* a document filed weeks ago is corrected (new folder, kind and date). Its bytes and id are
+unchanged, and items, brief lines and search results that name it follow the correction.
+
+### 17.3 Silence is not agreement
+
+As 7.2 says: only an Undo, a fix or an explicit confirmation is human-checked, a back-office verdict is
+reviewer agreement and is shown apart, and everything else is unreviewed.
+
+*Fixture:* the front desk and the back office agree on a filing that the fixture knows is wrong, and no person
+looks. It counts as unreviewed, and human-checked accuracy is unchanged.
+
+### 17.4 Information domains
+
+An old binder may hold material from several scopes that the old setup kept apart within one folder. Sprava
+does not flatten such a binder into one brief or one full-context back-office session. When the import (PR
+#347) detects mixed scopes, or the person declares them, the back office stays off for that binder until the
+person splits it into separate binders. Access control within one binder is out of this design and needs an
+author decision. Each surface keeps its own policy: the hub's projection, the phone's views (which show no
+conversation in v1) and the model readers. Encryption decides who can read bytes, not what a surface may
+disclose.
+
+*Fixture:* a private canary sentence in one scope never appears in another binder's context, the brief, hub
+or phone metadata, errors or notifications.
+
+### 17.5 The back office's tools cover the old workflows
+
+The back office has no shell and no web (11.1), so Sprava's tools must cover what the old setup did with them.
+A missing capability is named as missing, never covered by invented evidence.
+
+| Old workflow | Sprava tool | In this plan |
+|---|---|---|
+| Read a whole source, with where each part came from and how much was read | `read_document` (pages, provenance, coverage) | PR 15 |
+| OCR and conversion, with quality and failure signals | the extraction helper's result, with `text_from` and held reasons | built; exposed in PR 15 |
+| Intake, route and duplicate lists, without changing anything | `intake_manifest` (read-only) | PR 15 |
+| File and correct, keeping originals | `apply_ops` with `file_document`, `move_document`, `update_document` | PRs 2, 15 |
+| Typed item changes | `apply_ops`, classified by 6.1 | PRs 2, 15 |
+| Refresh what is stale | `get_now`, `list_items`, the brief's freshness marks | PRs 12, 15 |
+| Stage a draft | a new document in `drafts/` | PR 17 |
+| Exchange a scoped projection with another binder or the hub | not offered; a per-binder session never gets cross-binder access | open (16) |
+
+*Fixture (parity):* with the shell off, an invented scanned letter is OCRed with its provenance, filed through
+a validated `file_document`, and its payment item completed exactly once. A step a tool cannot do ends with
+that capability named as unsupported.

@@ -356,11 +356,13 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   types in its conversation.
 - **D10 decided.** Earned autonomy, measured. The front desk acts at once within D3; the back office reviews
   its work afterwards in batches, and a disagreement becomes one card ("Claude would have filed this under
-  X"). Sprava keeps an agreement rate per binder and job kind (filing destination, document type, dates found,
-  to-dos found); the person's Undos count as disagreements and weigh most. A kind graduates at 30 cases and
-  95% agreement (proposed), after which the back office samples 1 case in 10 forever (proposed). Without a
-  back office the person's Undos alone feed the score. The person sees the scores. Graduation never widens D3
-  (conversation.md §7).
+  X"). Per binder and job kind (filing destination, document type, dates found, to-dos found), only explicit
+  signals count: the person's Undo or fix is a miss, the person's explicit confirmation is human-checked, and
+  a back-office verdict is reviewer agreement, shown apart. Everything else is unreviewed and never counts.
+  Graduation needs both numbers (proposed: 30 reviewed cases at 95%, 10 human-checked at 95%; then 1 in 10
+  sampled forever), all to be set from measured fixtures. It only reduces how much the back office reviews,
+  and never widens D3. The person sees the scores (conversation.md §7). Revised 2026-10-14 after a review of
+  the author's old binders: silence is not agreement.
 - **D11 decided.** Every back-office correction the person accepts and every Undo followed by the person's fix
   becomes a written filing rule in a rules part of Sprava's section of the binder's `AGENTS.md` (F14 in PR
   #347), which the front desk reads on every job. Rules follow a fixed grammar and steer only filing within
@@ -378,3 +380,17 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   window does it, as the person's direct command with the person's file permissions, leaves the original, and
   asks only when more than one file matches. A per-binder email intake replacing the author's mail-fetching
   script is future work (conversation.md §5.2, §5.3).
+- **D15 recommended (2026-10-14, from a review of the author's old binders).** The record decides what
+  happened: the catalog, the op log and the runtime's request and task receipts, never a resumed session or
+  the brief. Every back-office or task change goes through the guard, bound to a stable id, the revision it
+  was based on and its exact effect; a retry returns the earlier outcome; a changed revision is a conflict.
+  Brief lines record their sources and are refreshed or marked stale. Originals are kept byte for byte under a
+  stable document id, and a document can be refiled or corrected at any time (conversation.md §17.1, §17.2).
+- **D16 recommended (same review).** A binder with mixed information scopes, detected at import or declared,
+  gets no back office until the person splits it. Surfaces keep their own policies, and encryption is not
+  disclosure. Open, for the author: access control within one binder, and a cross-binder manager (P21 in PR
+  #347); a per-binder session never gets cross-binder access (conversation.md §17.4).
+- **D17 recommended (same review).** The back office's Sprava tools cover the old workflows (full reads with
+  provenance, OCR with quality signals, read-only intake manifests, original-preserving filing and correction,
+  typed changes, refresh, drafts), with no shell or web; a missing capability is named, never invented
+  (conversation.md §17.5).
