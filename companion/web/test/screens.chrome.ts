@@ -139,7 +139,7 @@ try {
         await store.acknowledged(r.generation, r.pairingId);
         await store.acceptIndex(5, 1, new Uint8Array(${JSON.stringify([...index])}));
         await store.acceptView(${JSON.stringify(id)}, 7, new Uint8Array(${JSON.stringify([...view])}));
-        store.close(); const channel = new BroadcastChannel('sprava-companion-changes'); channel.postMessage('changed'); channel.close();
+        store.close(); const channel = new BroadcastChannel('sprava-companion'); channel.postMessage('changed'); channel.close();
     })()`);
     await wait(`document.querySelector('nav button') !== null`);
     await evaluate(`document.querySelector('nav button').click()`);
@@ -177,10 +177,29 @@ try {
     await evaluate(`document.querySelector('nav button').click()`);
     await wait(`document.querySelector('#binder-view').textContent.includes('Invented string item')`);
     await command('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    await evaluate(`document.querySelector('#note').value = 'Invented draft kept after removal';
+        document.querySelector('#note').dispatchEvent(new Event('input'))`);
+    await wait(`document.querySelector('#note').nextElementSibling.nextElementSibling.textContent.includes('draft saved')`);
+    const dialog = new Promise<void>(resolve => {
+        const listener = (event: MessageEvent) => {
+            if (JSON.parse(String(event.data)).method !== 'Page.javascriptDialogOpening') return;
+            socket!.removeEventListener('message', listener); resolve();
+        }; socket!.addEventListener('message', listener);
+    });
+    const clicked = evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Remove this device')).click()`);
+    await dialog; await command('Page.handleJavaScriptDialog', { accept: true }); await clicked;
+    await wait(`document.querySelector('#status').textContent.includes('Pairing removed')`);
+    assert.equal(await evaluate(`document.querySelector('#note').value`), 'Invented draft kept after removal');
+    assert.equal(await evaluate(`document.querySelector('#note').closest('section').hidden`), false);
+    assert.equal(await evaluate(`document.querySelector('#pending').textContent.includes('unresolved')`), true);
+    assert.equal(await evaluate(`document.querySelector('#status').textContent.includes('Also remove this phone on your Mac')`), true);
+    assert.equal(await evaluate(`(async () => { const { BrowserStore } = await import('/web/src/browser-store.js');
+        const store = await BrowserStore.open(); const state = await store.read(); store.close(); return state.pairing === undefined && state.index === undefined; })()`), true);
+    await evaluate(`document.querySelector('#note').value = ''; document.querySelector('#note').dispatchEvent(new Event('input'))`);
     await command('Page.navigate', { url: origin + '/frame.html' });
     await wait(`document.querySelector('iframe')?.contentDocument?.body?.textContent.includes('own window')`);
     assert.equal(serverError, undefined);
-    process.stdout.write('PASS: PWA text stays inert, typed ids stay distinct, drafts survive refresh/failure/browser termination, saved notes send, shell/cache reopen offline, frames are refused\n');
+    process.stdout.write('PASS: PWA drafts survive browser termination, removal retains unsaved text and unresolved actions, offline shell/cache load, inert text and frame refusal hold\n');
 } finally {
     socket?.close(); clearTimeout(timer); child?.kill('SIGTERM'); if (exited) await exited;
     await new Promise<void>(resolve => server.close(() => resolve())); await rm(profile, { recursive: true, force: true });

@@ -5,7 +5,7 @@ action status. IndexedDB holds encrypted caches, immutable queued requests and
 non-extractable keys. A service worker caches only this build's static shell, so admitted
 data can be opened offline. Every binder string is rendered as text.
 
-Mac companion integration, item-action controls, explicit pairing removal and release
+Mac companion integration, item-action controls and release
 publishing are still pending. This build does not yet provide phone-to-Mac use.
 
 ```sh
@@ -134,3 +134,11 @@ temporarily incomplete input, before the stricter outbound-note validation. Enqu
 delete matching draft revisions in the same strict transaction as numbering and ciphertext
 storage, so a restart cannot find a leftover draft from a completed enqueue. A stale screen
 generation cannot number an action for a replacement pairing.
+
+Pairing removal is an explicit screen action. It tries an encrypted, instance-bound relay
+revocation for at most 30 seconds, asks other windows to stop this generation's attempts,
+then takes the send lock and strictly deletes its keys and caches together with action
+transitions. Queued actions become "not sent"; attempted/sent actions remain "unresolved".
+The screen shows counts and asks for removal on the Mac too when revocation was not
+confirmed. A changed generation is untouched, and an unsent note remains in the editor
+for copying after removal.

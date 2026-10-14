@@ -6,6 +6,7 @@ import { readDisplayCache } from './display-cache.ts';
 import { RelayClient } from './relay-client.ts';
 import { sendOne } from './sender.ts';
 import { mount, element } from './screens.ts';
+import { removePairing } from './pairing-removal.ts';
 import { encodeB64 } from './encoding.ts';
 import type { Draft, DraftProof } from './drafts.ts';
 
@@ -28,11 +29,15 @@ async function start(): Promise<void> {
     let draftSave: Promise<void> = Promise.resolve();
     let pairing: AbortController | undefined, busy = false, queued = false, saving = false;
     let sendTimer: ReturnType<typeof setTimeout> | undefined;
-    const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sprava-companion-changes') : undefined;
+    let removalNotice: string | undefined;
+    const retiring = new Set<string>();
+    let activeSend: { generation: string; controller: AbortController } | undefined;
+    const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sprava-companion') : undefined;
     const screen = mount(root, {
         pair: label => { void connect(label).catch(failed); }, cancel: () => { pairing?.abort(); },
         select: id => { selected = id; void draw().then(cycle).catch(failed); },
         save: () => { void save().catch(failed); }, refresh: () => { void cycle(); },
+        remove: () => { void disconnect().catch(failed); },
         next: key => { pageAfter = key; void draw().catch(failed); },
         first: () => { pageAfter = undefined; void draw().catch(failed); },
     });
@@ -95,6 +100,7 @@ async function start(): Promise<void> {
         if (screen.draft.value && draftGeneration !== generation)
             tell('This draft belongs to an earlier pairing. Keep a copy, then clear it before writing for this pairing.');
         if (generation && link) tell('This browser is already paired. A new link cannot replace its pairing.');
+        if (!generation && removalNotice) tell(removalNotice);
     }
     async function connect(label: string): Promise<void> {
         if (!link || pairing) return;
@@ -110,7 +116,7 @@ async function start(): Promise<void> {
         finally { pairing = undefined; screen.label.disabled = false; screen.cancelButton.hidden = true; }
     }
     async function save(): Promise<void> {
-        if (saving || !generation || !screen.draft.value) return;
+        if (saving || !generation || retiring.has(generation) || !screen.draft.value) return;
         saving = true; screen.saveButton.disabled = true; screen.draft.disabled = true;
         const text = screen.draft.value, expected = draftGeneration ?? generation;
         try {
@@ -124,6 +130,33 @@ async function start(): Promise<void> {
             channel?.postMessage('changed');
         } catch { failed(); }
         finally { saving = false; screen.draft.disabled = false; await draw(); void cycle(); }
+    }
+    function stop(generation: string): void {
+        retiring.add(generation);
+        if (activeSend?.generation === generation) activeSend.controller.abort();
+    }
+    async function disconnect(): Promise<void> {
+        const original = generation;
+        if (!original || retiring.has(original) || !window.confirm(
+            'Remove this device’s pairing and its saved binder data? Unconfirmed actions remain visible. Keep a copy of any unsaved note first.')) return;
+        stop(original); screen.removeButton.disabled = true; screen.saveButton.disabled = true;
+        try {
+            const result = await removePairing(store, original, { notify: value => {
+                stop(value); channel?.postMessage({ type: 'remove', generation: value });
+            } });
+            if (result.removed) {
+                selected = undefined; pageAfter = undefined; lastReachedAt = undefined;
+                removalNotice = `Pairing removed. ${result.counts!.notSent} actions not sent; ${result.counts!.unresolved} unresolved (may have reached your Mac).` +
+                    (result.revokeConfirmed ? '' : ' Also remove this phone on your Mac; the relay did not confirm revocation.') +
+                    (screen.draft.value ? ' Your unsent note remains in the editor; keep a copy before pairing again.' : '');
+                tell(removalNotice);
+            } else tell('This pairing was already changed by another window.');
+            channel?.postMessage('changed'); await draw();
+        } catch {
+            retiring.delete(original); channel?.postMessage({ type: 'resume', generation: original });
+            tell('Browser storage could not remove this pairing. Its saved data remains; retry removal.');
+            await draw();
+        } finally { screen.removeButton.disabled = false; }
     }
     async function cycle(): Promise<void> {
         if (busy) { queued = true; return; }
@@ -139,8 +172,15 @@ async function start(): Promise<void> {
             await draw();
             if (result.status !== 'refused') {
                 for (let count = 0; count < 20; count++) {
-                    const sent = await sendOne(store, (attempt, signal) =>
-                        new RelayClient(attempt.relayOrigin, attempt.deviceId).send(attempt, signal));
+                    const p = (await store.read()).pairing;
+                    if (!p || retiring.has(p.generation)) break;
+                    const controller = new AbortController(); activeSend = { generation: p.generation, controller };
+                    const sent = await sendOne(store, (attempt, signal) => {
+                        activeSend = { generation: attempt.generation, controller };
+                        if (retiring.has(attempt.generation)) throw new Error('Pairing is being removed.');
+                        return new RelayClient(attempt.relayOrigin, attempt.deviceId).send(attempt, signal);
+                    }, navigator.locks, Date.now, controller.signal);
+                    activeSend = undefined;
                     if (sent !== 'recorded') break;
                     channel?.postMessage('changed');
                 }
@@ -153,7 +193,12 @@ async function start(): Promise<void> {
             sendTimer = setTimeout(() => { void cycle(); }, queued ? 0 : 10000); queued = false;
         }
     }
-    channel?.addEventListener('message', () => { void draw().then(cycle).catch(failed); });
+    channel?.addEventListener('message', event => {
+        const message = event.data;
+        if (message?.type === 'remove' && typeof message.generation === 'string') stop(message.generation);
+        if (message?.type === 'resume' && typeof message.generation === 'string') retiring.delete(message.generation);
+        void draw().then(cycle).catch(failed);
+    });
     window.addEventListener('online', () => { void cycle(); });
     window.addEventListener('beforeunload', event => {
         if (screen.draft.value) { event.preventDefault(); event.returnValue = ''; }

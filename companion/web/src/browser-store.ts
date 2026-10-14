@@ -8,6 +8,7 @@ import type { SendAttempt } from './outbox-state.ts';
 import { enqueue, readOutbox } from './outbox.ts';
 import type { OutboxEntry, OutboxPage } from './outbox.ts';
 import type { RequestAction } from './device-payloads.ts';
+import type { RemovalCounts } from './pairing-removal.ts';
 import { saveDraft, readDrafts } from './drafts.ts';
 import type { DraftProof, DraftPage } from './drafts.ts';
 import { openView } from './view-payloads.ts';
@@ -70,6 +71,39 @@ export class BrowserStore {
         });
     }
     close(): void { this.db.close(); }
+
+    /** Under the send lock: retire only G, retaining its visible action metadata (§9.8 step 4). */
+    removePairing(generation: string): Promise<RemovalCounts | null> {
+        return new Promise((resolve, reject) => {
+            let tx: IDBTransaction;
+            try {
+                tx = this.db.transaction(['state', 'views', 'outbox', 'drafts'], 'readwrite', { durability: 'strict' });
+                if (tx.durability !== 'strict') { tx.abort(); throw new StorageError(); }
+            } catch { reject(new StorageError()); return; }
+            let counts: RemovalCounts | null = null;
+            tx.oncomplete = () => resolve(counts);
+            tx.onabort = () => reject(new StorageError()); tx.onerror = () => reject(new StorageError());
+            const guard = (work: () => void) => () => { try { work(); } catch { tx.abort(); } };
+            const state = tx.objectStore('state'), request = state.get('current');
+            request.onsuccess = guard(() => {
+                const current = request.result as BrowserState | undefined;
+                if (current && current.version !== 1) throw new StorageError();
+                if (current?.pairing?.generation !== generation) return;
+                counts = { notSent: 0, unresolved: 0 };
+                state.put(empty(), 'current'); tx.objectStore('views').clear(); tx.objectStore('drafts').clear();
+                const cursor = tx.objectStore('outbox').openCursor(IDBKeyRange.bound([generation], [generation, []]));
+                cursor.onsuccess = guard(() => {
+                    const row = cursor.result; if (!row) return;
+                    const entry = row.value as OutboxEntry;
+                    if (entry.state === 'queued') entry.state = 'not sent';
+                    else if (entry.state === 'attempted' || entry.state === 'sent') entry.state = 'unresolved';
+                    if (entry.state === 'not sent') counts!.notSent++;
+                    if (entry.state === 'unresolved') counts!.unresolved++;
+                    delete entry.bytes; row.update(entry); row.continue();
+                });
+            });
+        });
+    }
     enqueue(action: RequestAction, madeAt: string, generation?: string, drafts?: DraftProof[]): Promise<OutboxEntry> {
         return enqueue(this.db, action, madeAt, generation, drafts);
     }
