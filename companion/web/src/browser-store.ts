@@ -2,6 +2,9 @@
 import { decodeB64, encodeB64, isId } from './encoding.ts';
 import { openDeviceKeys, openIndex, openPairingDelivery } from './owner-payloads.ts';
 import { isTime } from './payload.ts';
+import { enqueue, readOutbox } from './outbox.ts';
+import type { OutboxEntry, OutboxPage } from './outbox.ts';
+import type { RequestAction } from './device-payloads.ts';
 import { openView } from './view-payloads.ts';
 
 export class StorageError extends Error {
@@ -68,6 +71,8 @@ export class BrowserStore {
         });
     }
     close(): void { this.db.close(); }
+    enqueue(action: RequestAction, madeAt: string): Promise<OutboxEntry> { return enqueue(this.db, action, madeAt); }
+    readOutbox(limit = 50, after?: IDBValidKey): Promise<OutboxPage> { return readOutbox(this.db, limit, after); }
 
     // No promises or WebCrypto inside the callback: only IDB work keeps a transaction alive.
     private transaction<T>(write: boolean, change: (state: BrowserState, views: IDBObjectStore) => { value: T; save?: boolean }): Promise<T> {
