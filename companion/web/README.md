@@ -46,8 +46,8 @@ so a refresh does not clone and rewrite the entire cache. `readView` checks the 
 index, epoch and exact version in one read transaction before returning a cache.
 Removed binders lose their cached views and keys in the index transaction; their version floors
 remain. Outdated caches may remain stored, so a future screen must check the current index,
-epoch and exact view version before opening and showing them. Outcomes admission and send-attempt transitions use that same database. Network
-transport and pairing removal are not implemented here.
+epoch and exact view version before opening and showing them. Outcomes admission and send-attempt transitions use that same database. The HTTP client below supplies network transport; pairing removal is not implemented
+here.
 
 The Node suite uses fake-indexeddb for abort and concurrent-window scenarios. A separate real
 Chrome check writes invented fixtures to a disposable profile, restarts Chrome, and decrypts
@@ -81,5 +81,11 @@ retaining keys, and atomically admits signed outcomes with their revision and ma
 entry transitions. Late replies cannot overwrite resolved actions. Expiry runs in bounded
 pages and keeps unconfirmed actions visible. `src/sender.ts` holds the shared Web Lock
 for one attempt through result persistence, aborts after 30 seconds, and leaves all
-backoff waiting outside the lock. Its injectable transport must honor AbortSignal; the
-bounded HTTP transport and refresh/pairing/screen orchestration are still to come.
+backoff waiting outside the lock. Its injectable transport must honor AbortSignal; refresh/pairing/screen orchestration is still to come.
+
+`src/relay-client.ts` supplies device-only HTTP calls: canonical relay/device scoping,
+strict bounded JSON responses, streamed object limits, abortable 30-second calls, no
+redirects, cookies or referrers, and no remote error text in returned errors. The real
+Chrome check now sends encrypted bytes through this client to an isolated invented API,
+restarts, fetches an independently signed outcome, and atomically resolves the action.
+The test server is a fixture, not a deployed relay or a Mac companion implementation.
