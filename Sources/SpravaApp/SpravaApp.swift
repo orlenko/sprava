@@ -25,6 +25,13 @@ struct SpravaApp: App {
             ShelfView(model: model)
                 .frame(minWidth: 760, minHeight: 480)
                 .task { await model.refreshLoop() }
+                // Background work is not optional (decisions.md A16): at launch the app has the runtime running,
+                // without a prompt, and a request that finds it not running starts it the same way.
+                .task {
+                    let keeper = model.health.keeper
+                    RuntimeClient.whenNotRunning = { Task { _ = await keeper.ensureRunning() } }
+                    _ = await keeper.ensureRunning()
+                }
         }
         .commands {
             CommandGroup(after: .newItem) {

@@ -61,6 +61,6 @@ import Testing
         #expect(BundleSignature.registerFailure(refused).hasPrefix(BundleSignature.problemText))
         #expect(BundleSignature.registerFailure(refused).contains("-67056"))
         let other = NSError(domain: "SMAppServiceErrorDomain", code: 1, userInfo: [NSLocalizedDescriptionKey: "Operation not permitted"])
-        #expect(BundleSignature.registerFailure(other) == "Could not turn on background work: Operation not permitted")
+        #expect(BundleSignature.registerFailure(other) == "Could not start background work: Operation not permitted")
     }
 }

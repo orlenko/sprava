@@ -10,11 +10,12 @@ binders only, for example copies of `Tests/SpravaCoreTests/Fixtures/*.json` in f
 Run `./scripts/restart-app.sh` to build, install in `/Applications` and open the app (also after updates).
 Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`, and open it.
 
-1. **Registration (spike c).** Health › Set Up Background Work. Expect "Waiting for your approval" and
-   System Settings › Login Items opening; approve. Within 30 seconds Health shows "Runtime running".
+1. **Registration (spike c).** Open Sprava with neither job registered. It registers its background work
+   without a prompt (decisions.md A16); within a minute Health shows "Runtime running". If macOS wants approval
+   instead, Health and the binder page show one line with Open Login Items, and nothing opens by itself.
    Record whether one approval covers both the runtime and the outside watcher.
 2. **Disk image refusal (spike c).** Open Sprava from the build folder mounted as a disk image, or from a
-   quarantined copy in Downloads: Set Up must say "Move Sprava to Applications first".
+   quarantined copy in Downloads: Health must say "Move Sprava to Applications first", with a Restart button.
 3. **Duplicate start.** Run `/Applications/Sprava.app/Contents/MacOS/sprava-runtime` in Terminal. It must
    exit at once; Health shows "duplicate starts refused 1".
 4. **Freeze drill (M3 part 4).** `kill -STOP <pid>` (the pid is on the Health page). Within 5 minutes Health
@@ -31,10 +32,10 @@ Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `
    says only counts, such as "1 due today".
 10. **Outside watcher.** With background work on, quit the app, then stop the runtime's job by hand with
     `launchctl bootout gui/$(id -u)/ca.orlenko.sprava.runtime` while the watcher stays registered: within 15
-    minutes one notification says background work stopped. `runtime/watch.json` records each run. (With
-    background work turned off, the watcher stays silent; step 11 checks that.)
-11. **Turn Off.** Health › Turn Off shows "Background work is off (your choice)", never red, and the
-    outside watcher stays silent.
+    minutes one notification says background work stopped. `runtime/watch.json` records each run.
+11. **Start at launch.** Quit the app, stop the runtime's job by hand as in step 10, then open the app: without
+    a prompt, Health goes from "Starting background work…" to "Runtime running" within a minute. Health has no
+    Turn Off.
 
 ## Increment 5: the capture inbox and the intake cards
 
