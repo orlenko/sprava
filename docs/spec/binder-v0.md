@@ -972,7 +972,7 @@ A full implementation owns the binders it manages and shares none with another p
 
 An import begins with a read-only survey of the original whose results are recorded in the `import_snapshot` op. The results hold counts, kinds of problems and record ids, never personal values.
 
-1. Parse `catalog.json` and classify the binder's state (section 9.6). Corrupt: stop.
+1. Record the SHA-256 of `catalog.json`'s bytes (section 9.4 checks it before undoing an import), parse it and classify the binder's state (section 9.6). Corrupt: stop.
 2. Read the catalog level (section 9.6).
 3. Classify `catalog_check.py` by the SHA-256 of its bytes, without running it. This is the checker version:
 
@@ -1001,7 +1001,7 @@ A lifeproj v1 binder passes its own checker with loose items, yet lifeproj's `pu
 
 ### 9.4 What an import does, in order
 
-An import does its processing on its own (decisions.md F13). Each change is an op with actor `import`, and the implementation lists them in an import report. Some of these changes, such as `migrate` and `complete`, cannot be undone op by op (section 6.10), so an import is undone as a whole by discarding the copy: the implementation moves it to the Trash, and the original, which the import never wrote, is still there to import again. Changes made in the copy after the import go with it, and the implementation says so before it discards anything. Only the changes of step 6, which need the user's judgement, arrive as cards. Earlier drafts proposed most of these changes as cards to approve one by one; decisions.md F13 superseded that.
+An import does its processing on its own (decisions.md F13). Each change is an op with actor `import`, and the implementation lists them in an import report. Some of these changes, such as `migrate` and `complete`, cannot be undone op by op (section 6.10), so an import is undone as a whole by discarding the copy: the implementation moves it to the Trash, and the original, which the import never wrote, is still there to import again. Changes made in the copy after the import go with it, and the implementation says so before it discards anything. Undo is offered only while the original is still where it was and its `catalog.json` still has the SHA-256 the survey recorded; the implementation checks both just before it discards the copy. Once the user has moved the original to the Trash, or it is gone or changed, the copy is the only binder and the import can no longer be undone. Only the changes of step 6, which need the user's judgement, arrive as cards. Earlier drafts proposed most of these changes as cards to approve one by one; decisions.md F13 superseded that.
 
 Sprava currently refuses an import before any write when `catalog.json` exceeds 1 MiB, when the combined
 `open_items`, `documents` and `processing_log` count exceeds 100, or when catalog plus op-log bytes times

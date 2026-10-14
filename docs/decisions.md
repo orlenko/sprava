@@ -195,7 +195,8 @@
   adoption check and its cards did (the survey, lossless fixes, repairs, the dashboard switch, the stamp;
   binder-v0 §9.4) runs as part of the import: ops with actor `import`, listed in an import report, not cards the
   person works through. Some of these ops (`migrate`, `complete`) cannot be undone one by one, so an import is
-  undone as a whole by moving the copy to the Trash; the untouched original can then be imported again. Only a change that needs the person's judgement
+  undone as a whole by moving the copy to the Trash; the untouched original can then be imported again. Undo
+  is offered only while the original is still in place and unchanged, so it never discards the only copy. Only a change that needs the person's judgement
   becomes a card: an item that breaks a rule because a value is missing (a due date or `no_deadline`, a party
   for a waiting item, a kind for a redacted item, an entity row's `status`, the v0 value of a `meta` field whose
   found value the v0 types reject), since an import cannot invent one; an open item whose id
