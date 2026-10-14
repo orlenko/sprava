@@ -233,7 +233,9 @@
   hub can read its slices) or drops it; and what the import's copy leaves behind. Recommended for the second:
   leave out `catalog_check.py`, and `.claude/settings.json` when it declares hooks, which binder-v0 §8.1 and
   §9.2 step 12 treat as marks of a lifeproj binder and as a channel off the Mac; copy everything else. Until
-  this is decided the format does not change.
+  this is decided the format does not change. Decided now, because it is a privacy floor: a `.claude/settings.json`
+  that declares hooks is left out of the copy's `.claude/` and kept only as `.sprava/adopted/claude-settings.json`
+  (binder-v0 §9.4 step 2).
 
 ## Capture events (`docs/spec/capture-event-v0.md`)
 
