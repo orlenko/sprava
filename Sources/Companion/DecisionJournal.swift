@@ -88,7 +88,7 @@ extension CompanionProfile {
             try t.execute("UPDATE devices SET highest_seq = MAX(highest_seq, ?) WHERE device = ?", .integer(head.request.sequence), .text(d))
             try t.execute("INSERT INTO decision_daily VALUES (?, ?, ?) ON CONFLICT(device, day) DO UPDATE SET count = excluded.count",
                           .text(d), .text(today), .integer(count + 1))
-            try t.execute("INSERT INTO decision_state VALUES (?, ?, ?) ON CONFLICT(device) DO UPDATE SET outcomes_generation = excluded.outcomes_generation",
+            try t.execute("INSERT INTO decision_state (device, tombstone_floor, outcomes_generation) VALUES (?, ?, ?) ON CONFLICT(device) DO UPDATE SET outcomes_generation = excluded.outcomes_generation",
                           .text(d), .integer(marks.floor), .integer(marks.generation + 1))
             try t.execute("DELETE FROM request_decisions WHERE device = ?", .text(d))
             return CompanionOutcomeTombstone(deviceID: d, requestID: r, sequence: head.request.sequence, outcome: head.plan.outcome, decidedAt: decidedAt)

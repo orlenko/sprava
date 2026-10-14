@@ -13,7 +13,7 @@ public final class CompanionProfile: Sendable {
     let store: StateStore
     let relay: CompanionRelayIdentity
     let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 11, statements: [
+    static let schema = StateStore.Schema(version: 12, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
         "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991), " +
         "index_reserved INTEGER NOT NULL DEFAULT 0, index_published INTEGER NOT NULL DEFAULT 0, " +
@@ -41,7 +41,10 @@ public final class CompanionProfile: Sendable {
         "hash TEXT NOT NULL, changed_in INTEGER NOT NULL, PRIMARY KEY(binder, id)) WITHOUT ROWID",
         "CREATE TABLE publication_attempts (scope TEXT PRIMARY KEY, name TEXT NOT NULL, next TEXT NOT NULL, attempts INTEGER NOT NULL) WITHOUT ROWID",
         "CREATE TABLE decision_state (device TEXT PRIMARY KEY REFERENCES devices(device), tombstone_floor INTEGER NOT NULL DEFAULT 1, " +
-        "outcomes_generation INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
+        "outcomes_generation INTEGER NOT NULL DEFAULT 0, outcomes_built INTEGER NOT NULL DEFAULT 0, " +
+        "outcomes_reserved INTEGER NOT NULL DEFAULT 0, outcomes_published INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
+        "CREATE TABLE outcomes_upload (device TEXT PRIMARY KEY REFERENCES devices(device), revision INTEGER NOT NULL, changes INTEGER NOT NULL, " +
+        "state TEXT NOT NULL CHECK (state IN ('uploading','published','superseded')), bytes BLOB NOT NULL) WITHOUT ROWID",
         "CREATE TABLE request_decisions (device TEXT PRIMARY KEY REFERENCES devices(device), request TEXT NOT NULL, bytes BLOB NOT NULL) WITHOUT ROWID",
         "CREATE TABLE outcome_tombstones (device TEXT NOT NULL REFERENCES devices(device), request TEXT NOT NULL, seq INTEGER NOT NULL, " +
         "outcome TEXT NOT NULL, decided_at TEXT NOT NULL, PRIMARY KEY(device, request)) WITHOUT ROWID",
