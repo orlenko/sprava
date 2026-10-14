@@ -24,4 +24,12 @@ import Testing
         #expect(DocumentPaths.safeName(".hidden\u{202E}name.pdf") == "hidden_name.pdf")
         #expect(DocumentPaths.safeName("CLAUDE.md") == "_CLAUDE.md")
     }
+
+    /// Codex loads `AGENTS.override.md` ahead of `AGENTS.md`, so a filed document must never take that name.
+    @Test func agentsOverrideIsAManual() {
+        #expect(!DocumentPaths.isSafe("AGENTS.override.md"))
+        #expect(!DocumentPaths.isSafe("documents/agents.OVERRIDE.md"))
+        #expect(!DocumentPaths.isSafe("documents/AGENTS.override.md", forFiling: false))
+        #expect(DocumentPaths.safeName("AGENTS.override.md") == "_AGENTS.override.md")
+    }
 }
