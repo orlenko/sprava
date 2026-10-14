@@ -5,10 +5,12 @@ import { isTime } from './payload.ts';
 
 export class DraftError extends Error { constructor() { super('The draft could not be saved on this device.'); } }
 export interface DraftProof { editorId: string; revision: number }
-export interface Draft extends DraftProof { generation: string; updatedAt: string; text: string }
+export type DraftKind = 'note' | 'item-action';
+export interface Draft extends DraftProof { generation: string; updatedAt: string; text: string; kind: DraftKind }
 export interface DraftPage { drafts: Draft[]; next?: string }
-interface StoredDraft extends DraftProof { generation: string; updatedAt: string; nonce: Uint8Array; bytes: Uint8Array }
-const aad = (generation: string, editorId: string) => utf8(`sprava-companion/local-draft/v1|${generation}|${editorId}`);
+interface StoredDraft extends DraftProof { generation: string; updatedAt: string; nonce: Uint8Array; bytes: Uint8Array; kind?: DraftKind }
+const aad = (generation: string, editorId: string, kind: DraftKind) =>
+    utf8(`sprava-companion/local-draft/v1|${generation}|${editorId}${kind === 'note' ? '' : '|item-action'}`);
 async function pairing(db: IDBDatabase): Promise<Pairing | undefined> {
     return new Promise((resolve, reject) => {
         let tx: IDBTransaction;
@@ -20,9 +22,9 @@ async function pairing(db: IDBDatabase): Promise<Pairing | undefined> {
 }
 /** Every window owns a fresh editor id. Its increasing revisions prevent late encryption from overwriting newer text. */
 export async function saveDraft(db: IDBDatabase, generation: string, editorId: string, revision: number,
-    text: string, updatedAt: string, recovered?: DraftProof): Promise<boolean> {
+    text: string, updatedAt: string, recovered?: DraftProof, kind: DraftKind = 'note'): Promise<boolean> {
     if (!isId(generation) || !isId(editorId) || !Number.isSafeInteger(revision) || revision < 1 ||
-        text.length > 20000 || !isTime(updatedAt) || (recovered !== undefined && (!isId(recovered.editorId) ||
+        text.length > 20000 || !isTime(updatedAt) || !['note', 'item-action'].includes(kind) || (recovered !== undefined && (!isId(recovered.editorId) ||
         !Number.isSafeInteger(recovered.revision) || recovered.revision < 1 || recovered.editorId === editorId))) throw new DraftError();
     recovered = recovered ? { ...recovered } : undefined;
     const p = await pairing(db); if (!p || p.generation !== generation) return false;
@@ -32,7 +34,7 @@ export async function saveDraft(db: IDBDatabase, generation: string, editorId: s
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     let bytes: Uint8Array;
     try { bytes = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce,
-        additionalData: aad(generation, editorId) }, p.deviceKey, plain)); }
+        additionalData: aad(generation, editorId, kind) }, p.deviceKey, plain)); }
     catch { throw new DraftError(); } finally { plain.fill(0); }
     return new Promise((resolve, reject) => {
         let tx: IDBTransaction;
@@ -51,7 +53,7 @@ export async function saveDraft(db: IDBDatabase, generation: string, editorId: s
                 old.onsuccess = () => {
                     try {
                         if (old.result && old.result.revision >= revision) return;
-                        store.put({ generation, editorId, revision, updatedAt, nonce, bytes } satisfies StoredDraft, [generation, editorId]);
+                        store.put({ generation, editorId, revision, updatedAt, nonce, bytes, kind } satisfies StoredDraft, [generation, editorId]);
                         saved = true;
                         if (recovered) {
                             const source = store.get([generation, recovered.editorId]);
@@ -87,13 +89,15 @@ export async function readDrafts(db: IDBDatabase, limit = 50, after?: string): P
     const drafts: Draft[] = [];
     for (const row of page.rows) {
         try {
+            const kind = row.kind ?? 'note';
+            if (kind !== 'note' && kind !== 'item-action') throw new DraftError();
             if (row.nonce.length !== 12 || row.bytes.length > 40016) throw new DraftError();
             const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(row.nonce),
-                additionalData: aad(p.generation, row.editorId) }, p.deviceKey, new Uint8Array(row.bytes)));
+                additionalData: aad(p.generation, row.editorId, kind) }, p.deviceKey, new Uint8Array(row.bytes)));
             try {
                 if (plain.length % 2 !== 0 || plain.length > 40000) throw new DraftError();
                 let text = ''; for (let i = 0; i < plain.length; i += 2) text += String.fromCharCode(plain[i]! * 256 + plain[i + 1]!);
-                drafts.push({ generation: p.generation, editorId: row.editorId, revision: row.revision, updatedAt: row.updatedAt, text });
+                drafts.push({ generation: p.generation, editorId: row.editorId, revision: row.revision, updatedAt: row.updatedAt, text, kind });
             } finally { plain.fill(0); }
         } catch { throw new DraftError(); }
     }

@@ -18,13 +18,17 @@ const index = sealed('index/5', 'account', 1, { revision: 5, generated_at: times
     binders: [{ id, name: title, view_version: 7, key: encodeB64(raw) }] });
 const view = sealed(`views/${id}/7`, id, 1, { version: 7, generated_at: timestamp, today: null,
     binder: { name: title, description: 'Invented fixture' }, notes_omitted: false,
-    items: [7, '7'].map((id, i) => ({ id, title: `Invented ${i === 0 ? 'numeric' : 'string'} item`,
-        changed_in: 7, status: 'open', priority: null, due: null, waiting_on: null, follow_up_at: null,
+    items: [7, '7', 'wait', 'block'].map((id, i) => ({ id,
+        title: `Invented ${['numeric', 'string', 'waiting', 'blocked'][i]} item`,
+        changed_in: 2, status: ['open', 'open', 'waiting', 'blocked'][i], priority: null,
+        due: i === 0 ? '2026-10-21' : null, waiting_on: null, follow_up_at: null,
         notes: null, tags: [], contexts: [] })), closed: [], documents: [],
-    buckets: Object.fromEntries(bucketNames.map(b => [b, b === 'today' ? [7, '7'] : []])) });
+    buckets: Object.fromEntries(bucketNames.map(b => [b, b === 'today' ? [7, '7'] : b === 'waiting' ? ['wait', 'block'] : []])) });
 const delivery = sealed(`pairings/${id}/key`, 'wrap', 1, { device_id: id, epoch: 1,
     min_index_revision: 5, account_key: encodeB64(raw), owner_signing_key: encodeB64(publicBytes) }, false);
 let sentText: string | undefined;
+const sentActions: { seq: number; type: string; binder: string | null; item: string | number | null;
+    seen_version: number | null; date: string | null; text: string | null }[] = [];
 let serverError: unknown;
 const server = createServer((request, response) => {
     void respond(request, response).catch(error => { serverError = error; response.writeHead(500); response.end(); });
@@ -46,7 +50,8 @@ async function respond(request: IncomingMessage, response: ServerResponse): Prom
         const decipher = createDecipheriv('aes-256-gcm', raw, nonce);
         decipher.setAAD(utf8(`sprava-companion/v0|requests/${id}/${url.pathname.split('/').at(-1)}|device|1`));
         decipher.setAuthTag(ciphertext.subarray(-16));
-        sentText = JSON.parse(Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]).toString()).text;
+        const action = JSON.parse(Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]).toString());
+        sentActions.push(action); if (action.type === 'note') sentText = action.text;
         response.writeHead(201); response.end(); return;
     }
     if (url.pathname === '/frame.html') {
@@ -165,6 +170,76 @@ try {
         document.querySelector('#note').nextElementSibling.click()`);
     await wait(`document.querySelector('#pending').textContent.includes('note #1: sent')`);
     assert.equal(sentText, 'Invented saved note'); assert.equal(await evaluate(`document.querySelector('#note').value`), '');
+    await evaluate(`document.querySelector('nav button').click()`);
+    await wait(`document.querySelector('#binder-view').textContent.includes('Invented waiting item')`);
+    const clickItem = (name: string, label: string, twice = false) => evaluate(`{
+        const row = Array.from(document.querySelectorAll('#binder-view li')).find(r => r.querySelector('strong').textContent === ${JSON.stringify(name)});
+        const button = Array.from(row.querySelectorAll('button')).find(b => b.textContent === ${JSON.stringify(label)});
+        button.click(); ${twice ? 'button.click();' : ''} }`);
+    await evaluate(`{
+        window.originalActionEncrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+        window.actionEncryption = new Promise(resolve => { window.resumeActionEncryption = resolve; });
+        crypto.subtle.encrypt = async (...args) => { await window.actionEncryption; return window.originalActionEncrypt(...args); };
+    }`);
+    await clickItem('Invented numeric item', 'Done', true);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), true,
+        'a one-click approval whose encryption is pending receives unload protection');
+    await evaluate(`window.resumeActionEncryption(); crypto.subtle.encrypt = window.originalActionEncrypt`);
+    await wait(`document.querySelector('#pending').textContent.includes('done #2: sent')`);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), false,
+        'a one-click approval is safe to unload after durable enqueue');
+    await clickItem('Invented string item', 'Done');
+    await wait(`document.querySelector('#pending').textContent.includes('done #3: sent')`);
+    assert.equal(sentActions[1]!.item, 7); assert.equal(sentActions[2]!.item, '7');
+    assert.equal(sentActions[1]!.seen_version, 7); assert.equal(sentActions[1]!.binder, id);
+    await clickItem('Invented waiting item', 'Follow up…');
+    await evaluate(`document.querySelector('#item-action-date').value = '2026-10-24';
+        document.querySelector('#item-action-date').dispatchEvent(new Event('input'));
+        document.querySelector('#item-action button:last-of-type').click()`);
+    await wait(`document.querySelector('#item-action').hidden`);
+    assert.equal(sentActions.length, 3, 'cancelling a date action does not consume a sequence or send');
+    await clickItem('Invented numeric item', 'Postpone…');
+    await wait(`document.querySelector('#item-action [role=status]').textContent.includes('choose a date')`);
+    await evaluate(`{
+        window.originalEncrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+        window.pausedEncryption = new Promise(resolve => { window.resumeEncryption = resolve; });
+        crypto.subtle.encrypt = async (...args) => { await window.pausedEncryption; return window.originalEncrypt(...args); };
+    }`);
+    await evaluate(`document.querySelector('#item-action-date').value = '2026-10-25';
+        document.querySelector('#item-action-date').dispatchEvent(new Event('input')); document.querySelector('header button').click()`);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), true,
+        'an edited date whose encryption is still pending receives unload protection');
+    await evaluate(`window.resumeEncryption(); crypto.subtle.encrypt = window.originalEncrypt`);
+    await wait(`document.querySelector('#item-action [role=status]').textContent.includes('draft saved')`);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), false,
+        'a durable date draft can be recovered without an unload prompt');
+    assert.equal(await evaluate(`document.querySelector('#item-action-date').value`), '2026-10-25');
+    socket!.close(); clearTimeout(timer); child!.kill('SIGKILL'); await exited;
+    await openBrowser(); messaging(); await command('Page.enable');
+    await wait(`document.querySelector('#item-action-date')?.value === '2026-10-25'`);
+    await wait(`document.querySelector('#item-action [role=status]').textContent.includes('draft saved')`);
+    assert.equal(await evaluate(`document.querySelector('#note').value`), '');
+    await evaluate(`document.querySelector('#item-action button').click()`);
+    await wait(`document.querySelector('#pending').textContent.includes('postpone #4: sent')`);
+    assert.equal(sentActions[3]!.date, '2026-10-25'); assert.equal(sentActions[3]!.item, 7);
+    await evaluate(`document.querySelector('nav button').click()`);
+    await wait(`document.querySelector('#binder-view').textContent.includes('Invented waiting item')`);
+    await clickItem('Invented waiting item', 'Follow up…');
+    await evaluate(`document.querySelector('#item-action-date').value = '2026-10-26';
+        document.querySelector('#item-action-date').dispatchEvent(new Event('input')); document.querySelector('#item-action button').click()`);
+    await wait(`document.querySelector('#pending').textContent.includes('follow_up #5: sent')`);
+    assert.equal(sentActions[4]!.date, '2026-10-26'); assert.equal(sentActions[4]!.item, 'wait');
+    await evaluate(`{
+        const row = Array.from(document.querySelectorAll('#binder-view li')).find(r => r.querySelector('strong').textContent === 'Invented blocked item');
+        Array.from(row.querySelectorAll('button')).find(b => b.textContent === 'Arrived').click();
+        Array.from(row.querySelectorAll('button')).find(b => b.textContent === 'Done').click(); }`);
+    await wait(`document.querySelector('#pending').textContent.includes('done #7: sent')`);
+    await clickItem('Invented string item', 'Drop');
+    await wait(`document.querySelector('#pending').textContent.includes('drop #8: sent')`);
+    assert.deepEqual(sentActions.map(a => a.seq), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.deepEqual(sentActions.slice(1).map(a => a.type), ['done', 'done', 'postpone', 'follow_up', 'arrived', 'done', 'drop']);
+    assert.equal(sentActions[5]!.item, 'block'); assert.equal(sentActions[6]!.item, 'block');
+    assert.ok(sentActions.slice(1).every(a => a.seen_version === 7 && a.binder === id && a.text === null));
     await evaluate(`(async () => { await navigator.serviceWorker.ready; if (!navigator.serviceWorker.controller)
         await new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true })); })()`);
     assert.equal(await evaluate(`(async () => { const keys = await caches.keys(); for (const name of keys) {
@@ -199,7 +274,7 @@ try {
     await command('Page.navigate', { url: origin + '/frame.html' });
     await wait(`document.querySelector('iframe')?.contentDocument?.body?.textContent.includes('own window')`);
     assert.equal(serverError, undefined);
-    process.stdout.write('PASS: PWA drafts survive browser termination, removal retains unsaved text and unresolved actions, offline shell/cache load, inert text and frame refusal hold\n');
+    process.stdout.write('PASS: exact typed item actions and versions send in order; note/date drafts survive browser termination; removal, offline and frame checks pass\n');
 } finally {
     socket?.close(); clearTimeout(timer); child?.kill('SIGTERM'); if (exited) await exited;
     await new Promise<void>(resolve => server.close(() => resolve())); await rm(profile, { recursive: true, force: true });
