@@ -66,6 +66,78 @@ private func owner(_ plan: HTTPPlan) throws -> (CompanionOwnerRelay, String) {
     return (try CompanionOwnerRelay(relay: identity, token: ownerToken, protocolClasses: [InventedRelayProtocol.self]), host)
 }
 
+@Test func ownerMailboxValidatesDevicePagesAndUsesOnlyCanonicalSameOriginCursors() async throws {
+    let body = Data("{\"devices\":[{\"device_id\":\"\(wireID)\",\"state\":\"active\",\"paired_at\":\"2026-10-15T12:00:00Z\",\"last_seen\":null}],\"next\":\"\(wireID)\"}".utf8)
+    let (client, host) = try owner(HTTPPlan(chunks: [body], observe: { request in
+        #expect(request.url?.path == "/v0/devices" && request.url?.query == "limit=50")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer " + ownerToken)
+    }))
+    let reply = try await client.listDevices(downloadLimit: 8388608)
+    #expect(reply.receivedBytes == body.count && reply.value?.devices.first?.deviceID == wireID && reply.value?.next == wireID)
+    #expect(reply.value?.devices.first?.state == .active && reply.value?.devices.first?.lastSeen == nil)
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data("{\"devices\":[],\"next\":null}".utf8)], observe: { request in
+        #expect(request.url?.query == "limit=50&after=" + wireID)
+    }))
+    #expect(try await client.listDevices(after: wireID, downloadLimit: 16384).value?.devices.isEmpty == true)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.listDevices(after: "../credential", downloadLimit: 16384) }
+    for bad in ["{\"devices\":[],\"next\":\"\(wireID)\"}",
+                "{\"devices\":[{\"device_id\":\"\(wireID)\",\"state\":\"active\",\"paired_at\":null,\"last_seen\":null}],\"next\":null}"] {
+        InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(bad.utf8)]))
+        await #expect(throws: CompanionRelayError.invalid) { try await client.listDevices(after: wireID, downloadLimit: 16384) }
+    }
+}
+
+@Test func ownerRequestPagesKeepEqualOrdinalsAndBadIdsForTheDrainsDiscardCheckButRejectBackwardCursors() async throws {
+    let entry = "{\"request_id\":\"\(wireID)\",\"ordinal\":7,\"received_at\":\"2026-10-15T12:00:00Z\"}"
+    let badID = "{\"request_id\":\"../credentials\",\"ordinal\":7,\"received_at\":\"2026-10-15T12:00:00Z\"}"
+    // A page may exceed limit=25 to keep all equal ordinals together (§7.6).
+    let body = Data(("{\"requests\":[" + Array(repeating: entry, count: 25).joined(separator: ",") + "," + badID + "],\"next\":7}").utf8)
+    let (client, host) = try owner(HTTPPlan(chunks: [body], observe: { request in
+        #expect(request.url?.path == "/v0/requests/" + wireID && request.url?.query == "limit=25&after=6")
+    }))
+    let reply = try await client.listRequests(deviceID: wireID, after: 6, downloadLimit: 16384)
+    #expect(reply.receivedBytes == body.count && reply.value?.requests.count == 26 && reply.value?.next == 7)
+    #expect(reply.value?.requests.last?.requestID == "../credentials")
+    for bad in ["{\"requests\":[\(entry)],\"next\":6}", "{\"requests\":[],\"next\":7}",
+                "{\"requests\":[\(entry)],\"next\":9007199254740992}"] {
+        InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(bad.utf8)]))
+        await #expect(throws: CompanionRelayError.invalid) { try await client.listRequests(deviceID: wireID, after: 6, downloadLimit: 16384) }
+    }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data("{\"requests\":[\(entry)],\"next\":null}".utf8)]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.listRequests(deviceID: wireID, after: 7, downloadLimit: 16384) }
+}
+
+@Test func mailboxCallsCountErrorBytesAndEnforceTheRemainingBudgetWhileStreaming() async throws {
+    let bytes = Data("refused".utf8)
+    let (client, host) = try owner(HTTPPlan(status: 401, chunks: [bytes]))
+    let reply = try await client.listRequests(deviceID: wireID, downloadLimit: bytes.count)
+    #expect(reply.status == 401 && reply.value == nil && reply.receivedBytes == bytes.count)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.listRequests(deviceID: wireID, downloadLimit: bytes.count - 1) }
+    for budget in [0, -1, 8388609] {
+        await #expect(throws: CompanionRelayError.invalid) { try await client.listDevices(downloadLimit: budget) }
+    }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(repeating: 32, count: 16384), Data([32])]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.listRequests(deviceID: wireID, downloadLimit: 8388608) }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(repeating: 32, count: 8), Data(repeating: 32, count: 3)]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.listDevices(downloadLimit: 10) }
+}
+
+@Test func mailboxDeletesValidateIdsBeforeSendingAndReturnStatusAndDownloadCost() async throws {
+    let (client, host) = try owner(HTTPPlan(status: 204, observe: { request in
+        #expect(request.httpMethod == "DELETE" && request.url?.path == "/v0/requests/" + wireID + "/" + wireID)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer " + ownerToken)
+    }))
+    let deleted = try await client.deleteRequest(deviceID: wireID, requestID: wireID, downloadLimit: 4096)
+    #expect(deleted.status == 204 && deleted.receivedBytes == 0)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.deleteRequest(deviceID: wireID, requestID: "../credential", downloadLimit: 4096) }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(status: 503, chunks: [Data("failure".utf8)], observe: { request in
+        #expect(request.httpMethod == "DELETE" && request.url?.path == "/v0/devices/" + wireID)
+    }))
+    let failed = try await client.deleteDevice(deviceID: wireID, downloadLimit: 4096)
+    #expect(failed.status == 503 && failed.value == nil && failed.receivedBytes == 7)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.deleteDevice(deviceID: "https://other.example", downloadLimit: 4096) }
+}
+
 @Test func ownerHealthReadsOnlyStrictBoundedMetadataWithoutCredentials() async throws {
     let bytes = Data("{\"protocol\":0,\"claimed\":true,\"instance\":\"\(relayInstance)\"}".utf8)
     let (client, _) = try owner(HTTPPlan(chunks: [bytes.prefix(13), bytes.dropFirst(13)], observe: { request in

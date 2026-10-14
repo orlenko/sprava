@@ -24,8 +24,9 @@ public struct CompanionOwnerRelay: Sendable {
         guard token.utf8.count == 43, try CompanionWire.decode(token).count == 32 else { throw CompanionRelayError.invalid }
         self.relay = relay; self.token = token; self.protocolClasses = protocolClasses
     }
-    private func call(_ path: String, limit: Int = 4096, method: String = "GET", body: Data? = nil,
-                      authenticated: Bool = true, json: Bool = false) async throws -> CompanionRelayReply<Data> {
+    func call(_ path: String, limit: Int = 4096, method: String = "GET", body: Data? = nil,
+              authenticated: Bool = true, json: Bool = false, downloadLimit: Int? = nil) async throws -> CompanionRelayReply<Data> {
+        if let downloadLimit, !(1...8388608).contains(downloadLimit) { throw CompanionRelayError.invalid }
         guard let url = URL(string: relay.origin + path) else { throw CompanionRelayError.invalid }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.urlCredentialStorage = nil
@@ -37,7 +38,7 @@ public struct CompanionOwnerRelay: Sendable {
         if authenticated { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         if body != nil { request.setValue(json ? "application/json" : "application/octet-stream", forHTTPHeaderField: "Content-Type") }
-        return try await RelayStream(limit: limit).send(request, configuration: configuration)
+        return try await RelayStream(limit: limit, downloadLimit: downloadLimit).send(request, configuration: configuration)
     }
     private func json(_ bytes: Data?) throws -> JSONValue {
         guard let bytes else { throw CompanionRelayError.invalid }
@@ -51,12 +52,12 @@ public struct CompanionOwnerRelay: Sendable {
     }
     public func health() async throws -> CompanionRelayReply<CompanionRelayHealth> {
         let reply = try await call("/v0/health", authenticated: false)
-        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil) }
+        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil, receivedBytes: reply.receivedBytes) }
         let value = try json(reply.value)
         guard CompanionWire.unsigned(value["protocol"]) == 0, let claimed = value["claimed"]?.boolValue,
               let instance = value["instance"]?.stringValue,
               (try? CompanionRelayIdentity(origin: relay.origin, instance: instance)) != nil else { throw CompanionRelayError.invalid }
-        return CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: instance, claimed: claimed))
+        return CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: instance, claimed: claimed), receivedBytes: reply.receivedBytes)
     }
     /// companion-v0 §6: bytes come from a previously committed vault record; transport does not retry.
     public func claim(_ body: Data) async throws -> Int {
@@ -71,28 +72,28 @@ public struct CompanionOwnerRelay: Sendable {
         guard CompanionWire.isID(deviceID), publicKey.count == 32 else { throw CompanionRelayError.invalid }
         let body = write([("owner_public_key", .string(CompanionWire.base64(publicKey))), ("device_id", .string(deviceID))])
         let reply = try await call("/v0/pairings", method: "POST", body: body, json: true)
-        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil) }
+        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil, receivedBytes: reply.receivedBytes) }
         let value = try json(reply.value)
         guard let id = value["pairing_id"]?.stringValue, CompanionWire.isID(id),
               let secret = value["secret"]?.stringValue, CompanionWire.isID(secret),
               let expires = value["expires_at"]?.stringValue, Self.time(expires) else { throw CompanionRelayError.invalid }
-        return CompanionRelayReply(status: 200, value: CompanionCreatedPairing(id: id, secret: secret, expiresAt: expires))
+        return CompanionRelayReply(status: 200, value: CompanionCreatedPairing(id: id, secret: secret, expiresAt: expires), receivedBytes: reply.receivedBytes)
     }
     public func pairing(_ id: String) async throws -> CompanionRelayReply<CompanionRelayPairing> {
         guard CompanionWire.isID(id) else { throw CompanionRelayError.invalid }
         let reply = try await call("/v0/pairings/" + id, limit: 8192)
-        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil) }
+        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil, receivedBytes: reply.receivedBytes) }
         let value = try json(reply.value)
         guard let raw = value["state"]?.stringValue, let state = CompanionRelayPairing.State(rawValue: raw) else { throw CompanionRelayError.invalid }
         if state == .open {
             guard value["device_id"] == .null, value["device_public_key"] == .null, value["hello"] == .null else { throw CompanionRelayError.invalid }
-            return CompanionRelayReply(status: 200, value: CompanionRelayPairing(state: state, deviceID: nil, publicKey: nil, hello: nil))
+            return CompanionRelayReply(status: 200, value: CompanionRelayPairing(state: state, deviceID: nil, publicKey: nil, hello: nil), receivedBytes: reply.receivedBytes)
         }
         guard let device = value["device_id"]?.stringValue, CompanionWire.isID(device),
               let keyText = value["device_public_key"]?.stringValue, let helloText = value["hello"]?.stringValue,
               let key = try? CompanionWire.decode(keyText), key.count == 32,
               let hello = try? CompanionWire.decode(helloText), hello.count <= 2048 else { throw CompanionRelayError.invalid }
-        return CompanionRelayReply(status: 200, value: CompanionRelayPairing(state: state, deviceID: device, publicKey: key, hello: hello))
+        return CompanionRelayReply(status: 200, value: CompanionRelayPairing(state: state, deviceID: device, publicKey: key, hello: hello), receivedBytes: reply.receivedBytes)
     }
     public func deliverKey(pairingID: String, bytes: Data) async throws -> Int {
         guard CompanionWire.isID(pairingID), bytes.count <= 1024 else { throw CompanionRelayError.invalid }
@@ -106,10 +107,10 @@ public struct CompanionOwnerRelay: Sendable {
     public func pairingState(_ id: String) async throws -> CompanionRelayReply<CompanionRelayPairing.State> {
         guard CompanionWire.isID(id) else { throw CompanionRelayError.invalid }
         let reply = try await call("/v0/pairings/" + id, limit: 8192)
-        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil) }
+        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil, receivedBytes: reply.receivedBytes) }
         let value = try json(reply.value)
         guard let raw = value["state"]?.stringValue, let state = CompanionRelayPairing.State(rawValue: raw) else { throw CompanionRelayError.invalid }
-        return CompanionRelayReply(status: 200, value: state)
+        return CompanionRelayReply(status: 200, value: state, receivedBytes: reply.receivedBytes)
     }
     /// Transport for durably recorded owner objects (§9.7). No plaintext metadata may be attached to an envelope.
     public func putObject(name: String, bytes: Data) async throws -> Int {
