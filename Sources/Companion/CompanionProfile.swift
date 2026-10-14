@@ -13,7 +13,7 @@ public final class CompanionProfile: Sendable {
     let store: StateStore
     let relay: CompanionRelayIdentity
     let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 6, statements: [
+    static let schema = StateStore.Schema(version: 7, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
         "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991), " +
         "index_reserved INTEGER NOT NULL DEFAULT 0, index_published INTEGER NOT NULL DEFAULT 0, " +
@@ -29,7 +29,16 @@ public final class CompanionProfile: Sendable {
         "ephemeral_cleanup INTEGER NOT NULL DEFAULT 0, delivery_next TEXT, delivery_attempts INTEGER NOT NULL DEFAULT 0, " +
         "keys_uploaded INTEGER NOT NULL DEFAULT 0, wrapped_uploaded INTEGER NOT NULL DEFAULT 0, delivery_blocked INTEGER) WITHOUT ROWID",
         "CREATE TABLE recipients (epoch INTEGER NOT NULL, device TEXT NOT NULL REFERENCES devices(device), " +
-        "PRIMARY KEY(epoch, device)) WITHOUT ROWID"
+        "PRIMARY KEY(epoch, device)) WITHOUT ROWID",
+        "CREATE TABLE phone_binders (binder TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('shown','removed')), " +
+        "highest_reserved INTEGER NOT NULL DEFAULT 0, highest_indexed INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
+        "CREATE TABLE phone_views (binder TEXT NOT NULL REFERENCES phone_binders(binder), version INTEGER NOT NULL, " +
+        "epoch INTEGER NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('uploading','uploaded')), " +
+        "bytes BLOB NOT NULL, PRIMARY KEY(binder, version)) WITHOUT ROWID",
+        "CREATE TABLE index_upload (slot INTEGER PRIMARY KEY CHECK (slot = 1), revision INTEGER NOT NULL, " +
+        "epoch INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('uploading','published','superseded')), bytes BLOB NOT NULL)",
+        "CREATE TABLE index_upload_views (binder TEXT PRIMARY KEY REFERENCES phone_binders(binder), version INTEGER NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE index_published_views (binder TEXT PRIMARY KEY REFERENCES phone_binders(binder), version INTEGER NOT NULL) WITHOUT ROWID"
     ])
 
     public init(database: URL, relay: CompanionRelayIdentity, secrets: any CompanionCredentialStorage) throws {
