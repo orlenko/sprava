@@ -6,8 +6,14 @@ import Testing
 private final class SetupFixtureSecrets: CompanionCredentialStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: Data] = [:]
+    private var nextInsert: (@Sendable () throws -> Void)?
+    func beforeNextInsert(_ action: @escaping @Sendable () throws -> Void) {
+        lock.lock(); defer { lock.unlock() }; nextInsert = action
+    }
     func read(account: String) throws -> Data? { lock.lock(); defer { lock.unlock() }; return entries[account] }
     func insert(account: String, bytes: Data) throws -> Bool {
+        lock.lock(); let action = nextInsert; nextInsert = nil; lock.unlock()
+        try action?()
         lock.lock(); defer { lock.unlock() }
         guard entries[account] == nil else { return false }; entries[account] = bytes; return true
     }
@@ -148,4 +154,22 @@ private actor SetupDiscoveryPause {
             })
     }
     #expect(f.secrets.snapshot() == saved)
+}
+
+@Test func setupChecksTheWinningImmutableClaimBeforePreparingTheAccount() async throws {
+    let f = SetupFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
+    // Install the other caller's claim after both initial reads saw no credential, before this insertion.
+    f.secrets.beforeNextInsert {
+        _ = try CompanionOwnerVault(backend: f.secrets).prepare(f.identity, setupCode: f.code)
+    }
+    await #expect(throws: CompanionOwnerSetupError.reconfigurationRequired) {
+        try await CompanionOwnerSetup.prepare(database: f.database, origin: f.origin,
+            setupCode: Data(repeating: 13, count: 32).base64EncodedString(), secrets: f.secrets, discover: { _ in
+                CompanionRelayHealth(instance: f.instance, claimed: false)
+            })
+    }
+    let stored = try #require(try CompanionOwnerVault(backend: f.secrets).load(f.identity))
+    #expect(try CompanionWire.parse(stored.claimBody, limit: 4096)["setup_code"]?.stringValue == f.code)
+    #expect(try CompanionProfile.openConfigured(database: f.database, secrets: f.secrets) == nil)
+    #expect(f.secrets.snapshot().count == 1)
 }
