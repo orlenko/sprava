@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build build/Sprava.app (ad-hoc signed with the hardened runtime, not launched). Pass SwiftPM options through, e.g. -c release.
-# SPRAVA_APP_BUNDLE selects a separate staging bundle for restart-app.sh.
+# SPRAVA_APP_BUNDLE selects a separate staging bundle for restart-app.sh. Needs restic and, for scripts/build-llm.sh, cmake.
 # The bundle is assembled and signed beside its destination and moved into place only once its signature verifies:
 # a build that stops halfway leaves the previous bundle as it was, never a bundle whose resources are not sealed
 # (SMAppService refuses to load a LaunchAgent plist from such a bundle: "Codesigning failure loading plist ... -67056").
@@ -26,6 +26,10 @@ fi
 plutil -lint Resources/App-Info.plist
 plutil -lint Resources/LaunchAgents/*.plist
 plutil -lint Resources/sprava-extract.entitlements
+plutil -lint Resources/sprava-llm-Info.plist
+plutil -lint Resources/sprava-llm.entitlements
+# The local model helper (docs/conversation.md 11.2): a pinned llama.cpp built into build/llm, kept while its pin holds.
+./scripts/build-llm.sh
 swift build --product SpravaApp "$@"
 swift build --product sprava "$@"
 swift build --product sprava-runtime "$@"
@@ -48,6 +52,8 @@ cp "$bin_dir/sprava" "$work/Contents/MacOS/sprava"
 cp "$bin_dir/sprava-runtime" "$work/Contents/MacOS/sprava-runtime"
 cp "$bin_dir/sprava-mcp" "$work/Contents/MacOS/sprava-mcp"
 cp "$bin_dir/sprava-extract" "$work/Contents/MacOS/sprava-extract"
+cp build/llm/sprava-llm "$work/Contents/MacOS/sprava-llm"
+cp build/llm/LICENSES.txt "$work/Contents/Resources/llama.cpp-LICENSES.txt"
 cp "$(realpath "$restic_bin")" "$work/Contents/MacOS/restic"
 restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
 if [ -f "$restic_license" ]; then cp "$restic_license" "$work/Contents/Resources/restic-LICENSE.txt"; fi
@@ -55,15 +61,19 @@ if [ -f "$restic_license" ]; then cp "$restic_license" "$work/Contents/Resources
 codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.restic "$work/Contents/MacOS/restic"
 codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.mcp "$work/Contents/MacOS/sprava-mcp"
 # The runtime refuses a helper that does not run sandboxed, so a helper signed without its entitlement stops the build.
-if ! codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.extract --entitlements Resources/sprava-extract.entitlements \
-    "$work/Contents/MacOS/sprava-extract"; then
-    echo "build-app: signing the extraction helper failed" >&2
-    exit 1
-fi
-if ! codesign -d --entitlements - --xml "$work/Contents/MacOS/sprava-extract" 2>/dev/null | grep -q com.apple.security.app-sandbox; then
-    echo "build-app: the extraction helper carries no sandbox entitlement after signing" >&2
-    exit 1
-fi
+# The identifier names the helper's sandbox container, where the model helper's socket lives.
+sign_sandboxed() {
+    if ! codesign --force --sign - --options runtime --identifier "$2" --entitlements "$3" "$work/Contents/MacOS/$1"; then
+        echo "build-app: signing the helper $1 failed" >&2
+        exit 1
+    fi
+    if ! codesign -d --entitlements - --xml "$work/Contents/MacOS/$1" 2>/dev/null | grep -q com.apple.security.app-sandbox; then
+        echo "build-app: the helper $1 carries no sandbox entitlement after signing" >&2
+        exit 1
+    fi
+}
+sign_sandboxed sprava-extract ca.orlenko.sprava.extract Resources/sprava-extract.entitlements
+sign_sandboxed sprava-llm ca.orlenko.sprava.llm Resources/sprava-llm.entitlements
 codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.runtime "$work/Contents/MacOS/sprava-runtime"
 codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.cli "$work/Contents/MacOS/sprava"
 codesign --force --sign - --options runtime --identifier ca.orlenko.sprava "$work"
