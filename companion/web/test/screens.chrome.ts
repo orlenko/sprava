@@ -69,6 +69,7 @@ try {
     const address = server.address(); assert.ok(address && typeof address === 'object');
     const origin = `http://localhost:${address.port}`;
     const chrome = process.env.SPRAVA_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    async function openBrowser(): Promise<void> {
     child = spawn(chrome, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
         '--disable-extensions', '--disable-background-networking', `--user-data-dir=${profile}`,
         '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -82,16 +83,21 @@ try {
     const target = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/new?${origin}/#pair=invalid`,
         { method: 'PUT' }).then(r => r.json()) as { webSocketDebuggerUrl: string };
     socket = new WebSocket(target.webSocketDebuggerUrl); await once(socket, 'open');
+    }
+    await openBrowser();
     let sequence = 0;
     const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-    socket.addEventListener('message', event => {
+    function messaging(): void {
+    socket!.addEventListener('message', event => {
         const message = JSON.parse(String(event.data)), item = pending.get(message.id);
         if (!item) return; pending.delete(message.id);
         if (message.error || message.result.exceptionDetails) item.reject(new Error('Invented browser fixture failed: ' +
             JSON.stringify(message.error ?? message.result.exceptionDetails)));
         else item.resolve(message.result);
     });
-    socket.addEventListener('close', () => { for (const item of pending.values()) item.reject(new Error('Chrome disconnected')); });
+    socket!.addEventListener('close', () => { for (const item of pending.values()) item.reject(new Error('Chrome disconnected')); });
+    }
+    messaging();
     function command(method: string, params: object = {}): Promise<any> {
         return new Promise((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject });
             socket!.send(JSON.stringify({ id, method, params })); });
@@ -140,6 +146,12 @@ try {
         document.querySelector('header button').click();`);
     await wait(`!document.querySelector('header button').disabled`);
     assert.equal(await evaluate(`document.querySelector('#note').value`), 'Invented unsent draft');
+    await wait(`document.querySelector('#note').nextElementSibling.nextElementSibling.textContent.includes('draft saved')`);
+    // Terminate the disposable browser without unload handlers, then reopen the same owned profile.
+    socket!.close(); clearTimeout(timer); child!.kill('SIGKILL'); await exited;
+    await openBrowser(); messaging(); await command('Page.enable');
+    await wait(`document.querySelector('#note')?.value === 'Invented unsent draft'`);
+    await wait(`document.querySelector('#note').nextElementSibling.nextElementSibling.textContent.includes('draft saved')`);
     await evaluate(`document.querySelector('#note').value = '\\u0000'; document.querySelector('#note').dispatchEvent(new Event('input'));
         document.querySelector('#note').nextElementSibling.click()`);
     await wait(`document.querySelector('#status').textContent.includes('could not finish')`);
@@ -164,7 +176,7 @@ try {
     await command('Page.navigate', { url: origin + '/frame.html' });
     await wait(`document.querySelector('iframe')?.contentDocument?.body?.textContent.includes('own window')`);
     assert.equal(serverError, undefined);
-    process.stdout.write('PASS: PWA text stays inert, typed ids stay distinct, drafts survive refresh/failure, saved notes send, shell/cache reopen offline, frames are refused\n');
+    process.stdout.write('PASS: PWA text stays inert, typed ids stay distinct, drafts survive refresh/failure/browser termination, saved notes send, shell/cache reopen offline, frames are refused\n');
 } finally {
     socket?.close(); clearTimeout(timer); child?.kill('SIGTERM'); if (exited) await exited;
     await new Promise<void>(resolve => server.close(() => resolve())); await rm(profile, { recursive: true, force: true });

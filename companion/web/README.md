@@ -21,8 +21,10 @@ for a different port. The preview binds only to localhost. Serve the same static
 over HTTPS at an origin dedicated to this app for a device test; no deployment is performed
 by the build or preview scripts. The version and commit appear at the foot of the app.
 
-The note editor stays mounted through refreshes. It clears only after the request is
-durably queued for its original pairing, and retains drafts on validation/storage failure.
+The note editor stays mounted through refreshes and saves an encrypted draft on each input.
+Startup recovers a single unsent draft or offers a chooser for multiple saved drafts. A failed
+draft write says to keep the window open and copy the note. The editor clears only after the
+request and matching draft deletion commit together for its original pairing, and retains drafts on validation/storage failure.
 Pending pages contain metadata rather than ciphertext or note text. "Sent" means received
 by the relay; a signed outcome from the Mac resolves the entry.
 
@@ -75,7 +77,7 @@ npm run test:browser
 
 This check never opens an existing browser profile and removes its temporary profile afterward.
 It also exercises the actual screens: inert markup-like binder text, distinct numeric/string
-ids, draft retention, encrypted note sending, offline shell/cache reload and frame refusal.
+ids, draft retention through browser termination, encrypted note sending, offline shell/cache reload and frame refusal.
 
 `src/device-payloads.ts` validates actions before numbering: the request-type field table,
 typed item ids, positive seen versions, valid dates, note character/encoded-byte limits,
@@ -123,3 +125,12 @@ Invalid candidates and network failures leave admitted offline caches intact; st
 failures remain visible to the caller. `src/display-cache.ts` opens admitted sealed data
 in memory and rechecks pairing/index prerequisites after decryption. It never persists
 decrypted names or content. The app calls it at startup, on visibility/network changes and during scheduled refresh.
+
+`src/drafts.ts` saves editor drafts encrypted under the non-extractable device key with
+fresh nonces and a local, generation/editor-bound context. Each window has its own editor
+id and increasing revisions; a late encryption cannot overwrite newer text. Bounded
+recovery pages decrypt only in memory. Draft input preserves UTF-16 code units, including
+temporarily incomplete input, before the stricter outbound-note validation. Enqueue can
+delete matching draft revisions in the same strict transaction as numbering and ciphertext
+storage, so a restart cannot find a leftover draft from a completed enqueue. A stale screen
+generation cannot number an action for a replacement pairing.

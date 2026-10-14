@@ -1,6 +1,7 @@
 // Durable numbering/enqueue; network attempts are a separate component (companion-v0 §9.8 step 1).
 import type { BrowserState } from './browser-store.ts';
-import { encodeB64 } from './encoding.ts';
+import type { DraftProof } from './drafts.ts';
+import { encodeB64, isId } from './encoding.ts';
 import { sealRequest, validateAction } from './device-payloads.ts';
 import type { RequestAction, RequestType } from './device-payloads.ts';
 
@@ -25,8 +26,11 @@ function snapshot(db: IDBDatabase): Promise<BrowserState | undefined> {
 }
 
 /** §9.8 step 1: never seal a started action for a different generation; save sequence and ciphertext atomically. */
-export async function enqueue(db: IDBDatabase, action: RequestAction, madeAt: string, expectedGeneration?: string): Promise<OutboxEntry> {
+export async function enqueue(db: IDBDatabase, action: RequestAction, madeAt: string,
+    expectedGeneration?: string, drafts: DraftProof[] = []): Promise<OutboxEntry> {
     const valid = validateAction(action);
+    if (drafts.length > 2 || drafts.some(d => !isId(d.editorId) || !Number.isSafeInteger(d.revision) || d.revision < 1)) throw new OutboxError();
+    drafts = drafts.map(d => ({ ...d }));
     let initial = await snapshot(db), p = initial?.pairing;
     if (initial?.version !== 1 || !p || (expectedGeneration !== undefined && p.generation !== expectedGeneration)) throw new OutboxError();
     const generation = p.generation, deviceId = p.deviceId, relayOrigin = p.relayOrigin;
@@ -39,7 +43,7 @@ export async function enqueue(db: IDBDatabase, action: RequestAction, madeAt: st
         const result = await new Promise<{ entry?: OutboxEntry; state?: BrowserState }>((resolve, reject) => {
             let tx: IDBTransaction;
             try {
-                tx = db.transaction(['state', 'outbox'], 'readwrite', { durability: 'strict' });
+                tx = db.transaction(['state', 'outbox', 'drafts'], 'readwrite', { durability: 'strict' });
                 if (tx.durability !== 'strict') { tx.abort(); throw new OutboxError(); }
             } catch { reject(new OutboxError()); return; }
             let result: { entry?: OutboxEntry; state?: BrowserState };
@@ -57,6 +61,13 @@ export async function enqueue(db: IDBDatabase, action: RequestAction, madeAt: st
                     else {
                         current.nextSeq = seq + 1;
                         stateStore.put(state, 'current'); outbox.add(entry, [generation, seq, requestId]); result = { entry };
+                        for (const draft of drafts) {
+                            const saved = tx.objectStore('drafts').get([generation, draft.editorId]);
+                            saved.onsuccess = () => {
+                                try { if (saved.result?.revision === draft.revision) tx.objectStore('drafts').delete([generation, draft.editorId]); }
+                                catch { tx.abort(); }
+                            };
+                        }
                     }
                 } catch { tx.abort(); }
             };

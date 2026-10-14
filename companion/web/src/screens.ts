@@ -15,6 +15,7 @@ export interface Screens {
     banner: HTMLElement; code: HTMLElement; label: HTMLInputElement; pairButton: HTMLButtonElement;
     cancelButton: HTMLButtonElement; pairing: HTMLElement; paired: HTMLElement;
     draft: HTMLTextAreaElement; saveButton: HTMLButtonElement; refreshButton: HTMLButtonElement;
+    recovery: HTMLElement; draftStatus: HTMLElement;
     render(cache: DisplayCache, page: OutboxPage, lastReachedAt?: number): void;
 }
 
@@ -37,14 +38,15 @@ export function mount(root: HTMLElement, actions: {
         labelText, label, pairButton, cancelButton, code);
     const freshness = element('section'), binders = element('nav'), view = element('section');
     binders.setAttribute('aria-label', 'Binders'); view.id = 'binder-view';
-    const composer = element('section'), draft = element('textarea'); draft.id = 'note'; draft.rows = 5;
+    const composer = element('section'), draft = element('textarea'); draft.id = 'note'; draft.rows = 5; draft.maxLength = 20000;
+    const recovery = element('section'), draftStatus = element('p'); draftStatus.setAttribute('role', 'status');
     const draftLabel = element('label', 'Note'); draftLabel.htmlFor = draft.id;
     const saveButton = button('Send note', actions.save);
-    composer.append(element('h2', 'Send a note to Sprava'), draftLabel, draft, saveButton,
+    composer.append(element('h2', 'Send a note to Sprava'), recovery, draftLabel, draft, saveButton, draftStatus,
         element('p', 'Notes are saved on this device before sending. Your Mac applies them when it reconnects.'));
     const pending = element('section'); pending.id = 'pending';
     paired.append(freshness, binders, view, composer, pending); root.append(heading, banner, pairing, paired);
-    return { banner, code, label, pairButton, cancelButton, pairing, paired, draft, saveButton, refreshButton,
+    return { banner, code, label, pairButton, cancelButton, pairing, paired, draft, saveButton, refreshButton, recovery, draftStatus,
         render(cache, page, lastReachedAt) {
             const connected = cache.generation !== undefined;
             pairing.hidden = connected; paired.hidden = !connected; refreshButton.disabled = !connected;
