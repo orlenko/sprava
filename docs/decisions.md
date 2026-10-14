@@ -334,9 +334,11 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   turn authorizes by class (D3); registered clients keep A4 (conversation.md §4, §11.1).
 - **D5 decided.** The front desk's model is the most capable local model the Mac can run, not Apple's
   on-device model, which stays the clerk and is the "basic" front desk only on a Mac too small for a better
-  one: llama.cpp in a sandboxed helper (`sprava-llm`), a model chosen by memory from a pinned list of
-  Apache-2.0 models (Qwen3 8B, Qwen3 30B-A3B, Qwen3 32B, gpt-oss-120b as of 2026-10-14), downloaded once with
-  consent and checked by SHA-256, pending spike S5. MLX waits on spike S4. Supersedes the deferral of the
+  one. The runtime is a pinned llama.cpp build bundled as `llama-server`, run as the sandboxed helper
+  `sprava-llm` on a Unix socket, with schema-constrained `/completion` calls. The model is chosen by memory
+  from a pinned list of Apache-2.0 models (Gemma 4 E4B at 16 GB, tested; Gemma 4 12B or 26B-A4B, and
+  Qwen3.6-35B-A3B or 27B, above that, as of 2026-10-14), downloaded once with consent and checked by SHA-256.
+  MLX is out: the Command Line Tools have no `metal` compiler (spikes S4, S5). Supersedes the deferral of the
   open-model fallback (P3, M2) for the front desk; the clerk's seam is unchanged (conversation.md §11.2).
 - **D6 decided.** The transcript lives in the binder, `.sprava/conversation/<YYYY-MM>.ndjson`, append-only,
   written by the runtime, listed in binder-v0 §7.2 as history. Never on the hub, the Today page, the
@@ -365,8 +367,9 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   the binder (conversation.md §8.1).
 - **D12 decided; place recommended.** Sprava keeps a one-page brief per binder (parties, pending, key dates,
   key facts), read first by the front desk and the back office. Code writes the parts that come from the
-  catalog, the front desk adds cited facts as it files, the back office improves it when connected, and every
-  fact cites its document. Recommended place: a visible `BRIEF.md`, Sprava's own file (conversation.md §8.2).
+  catalog; the front desk adds key facts as it files, each a document's own sentence stored verbatim with its
+  citation and checked by code, never a model's words; the back office, when connected, may only choose,
+  order and group those lines. Models read the brief as data, never as instructions. Recommended place: a visible `BRIEF.md`, Sprava's own file (conversation.md §8.2).
 - **D13 decided.** Big requests become task cards with progress, Stop and a draft at the end, each in its own
   back-office session, so the conversation goes on meanwhile. Sprava never does an outward action (sending
   email, filing with a court or tax office, paying); results land as drafts in the binder's `drafts/` for the

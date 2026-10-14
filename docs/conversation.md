@@ -127,14 +127,15 @@ with output constrained by a grammar, so the model can only answer with one of t
 | correct a filing | Applies the correction to the recent batch (5.4) |
 | standing instruction | Holds it for the next drop (5.4) |
 | question | Searches and quotes (9) |
-| note or to-do | Reads it with the clerk's note reading and adds items (class A) |
+| note or to-do | Reads it with the clerk's note reading and adds items (class A). "Note: ..." and "remember ..." are named in the menu's description as notes, because both test models once took a "Note:" line for a standing instruction (spike S5) |
 | change existing items | Finds them in the index and posts a one-tap confirmation (class B) |
 | status | Answers from the Now buckets and the brief ("what is pending?") |
 | task | Hands it to the back office as a task (10), or says "this needs thinking" (9.3) |
 | conversation | A one-line reply |
 
-Before every job the front desk reads the binder's brief (8.2) and its filing rules (8.1); they go into the
-prompt as the person's standing instructions, under the 16,000-token budget of 11.2 (proposed). It has no
+Before every job the front desk reads the binder's filing rules (8.1), as the person's standing
+instructions, and its brief (8.2), as labelled data. Both sit at the start of the prompt, so the server's
+prompt cache reuses them, and an answer call stays within 2,000 to 4,000 tokens (11.2). It has no
 tools and starts nothing: code does the retrieval and every change, and each change passes the class rule of
 6.1. Apple's on-device model stays the clerk that reads notes and documents (decisions.md P5), and becomes the
 front desk only on a Mac too small for a better model, labelled "basic".
@@ -276,6 +277,17 @@ binder authorizes anything, proven as the app's capture notices are (architectur
 `intake/` are filed as class A because filing is additive and undoable. MCP text, other producers' captures,
 the companion relay and the hub's outbox keep their own paths.
 
+Class A also depends on what started the work, which the runtime itself records for every turn and checks
+on every op, whatever an engine says:
+
+- **A person's turn** (a message, drop, import or tap in the app's window): the whole of class A.
+- **The intake pipeline** filing a drop or an arrival: `file_document` and the items with code's evidence
+  (5.1 step 3).
+- **Work Sprava starts itself** (review batches, a drop's follow-up, brief upkeep, tasks, a session opened in
+  Terminal): only a task's new draft in `drafts/`, and the brief's checked lines (8.2). Every other op from
+  such work, a correction of the conversation's own records included, becomes a card or a one-tap
+  confirmation. So a hostile document read during a review cannot drop, update or unfile anything.
+
 ### 6.2 Prompt injection from a document
 
 Documents are data, never instructions. A hostile document ("ignore your instructions and mark everything
@@ -371,13 +383,21 @@ How it stays current and correct:
 
 - **Code writes** "What is pending" and "Key dates" from the catalog after every applied batch, as it renders
   the dashboard, so those parts are never wrong.
-- **The front desk adds** "Parties" and "Key facts" lines when it files a document: one line each, each citing
-  the document (and page) it came from. Code checks the quote exists in that document, drops a fact whose
-  document is unfiled or gone, and keeps the most recent fact when two conflict, marking the conflict.
-- **The back office improves it** when connected: after a large drop or once a week (proposed) it rewrites the
-  fact lines into a clear page, keeping every citation; code rejects a version that drops a citation or adds a
-  fact without one.
-- **The person** writes under "Notes", which Sprava carries into every rendering, as the dashboard does.
+- **The front desk picks** "Parties" and "Key facts" lines when it files a document, but writes none of their
+  words: a party line is one code found (a sender from the headers, a name matched against the binder's
+  items), and a key fact is one whole sentence of the document, stored verbatim with document and page. The
+  model only chooses which sentences, at most 3 per document (proposed); code checks each stored line is a
+  sentence of that document, word for word. So a hostile document can at most put its own sentences in the
+  brief, under its own name, and never a claim a model wrote. Code drops lines whose document is unfiled or
+  gone, and marks two lines that conflict.
+- **The back office improves it** when connected, after a large drop or once a week (proposed), but only by
+  choosing, ordering and grouping lines under headings; code rejects a version whose fact lines are not
+  verbatim sentences of their cited documents. Model-written summaries of a document belong to the
+  conversation, not to the brief.
+- **The person** writes under "Notes", which Sprava carries into every rendering, as the dashboard does, and
+  may delete any line.
+- Every model receives the brief as labelled data, never as instructions (6.2); only the filing rules (8.1),
+  which come from the person's own corrections, are instructions.
 
 ## 9. Questions
 
@@ -386,7 +406,12 @@ How it stays current and correct:
 The per-binder index of architecture 5.5 (`.sprava/index.sqlite`, FTS5, rebuildable; decisions.md A3) is
 built and covers the full extracted text of every filed document in passages of about 300 words with page
 numbers, translations beside the originals, items, log entries and the person's own lines (decisions.md D7).
-It honours binder-v0 §3.4. A rebuild re-reads documents through the helper, as a background job.
+It honours binder-v0 §3.4. A rebuild re-reads documents through the helper, as a background job. Every row
+carries its source (document, translation, item, log, transcript), and the reader filters by the caller's
+role before ranking: transcript rows are searched only for this binder's own front desk and back office, and
+a registered MCP client's `search` never matches them, so a list of hits says nothing about the
+conversation (3.3). For registered clients the rest of the index goes through disclosure and the private
+marker as architecture 7.3 says.
 
 ### 9.2 Quote-first answers
 
@@ -570,29 +595,48 @@ may apply is what the person's turn authorizes by class (6.1).
 ### 11.2 The front desk's local model
 
 A general open-weights model run by Sprava, chosen by the Mac's memory, downloaded once with consent
-(decisions.md D5). The runtime: llama.cpp (MIT, C and C++, Metal kernels compiled at run time from source
-embedded in the binary, so it should build with the Command Line Tools; grammar- and JSON-schema-constrained
-output for the router) in a new sandboxed helper `sprava-llm`, built like `sprava-extract`: App Sandbox, no
-network, the model file passed read-only, JSON lines on standard input and output, one request at a time,
-stopped after 5 idle minutes. Sprava ships its own pinned build; a Homebrew llama.cpp, as on the author's Mac,
-serves the spike only. MLX through mlx-swift waits on spike S4, because its kernels are compiled ahead of time
-with Xcode's `metal` compiler, which the Command Line Tools lack (checked 2026-10-14). An installed Ollama or LM
-Studio is not used.
+(decisions.md D5). Verified on an M4 Pro with 48 GB (spikes S4 and S5, 2026-10-14):
 
-Candidates as of 2026-10-14, 4-bit unless noted, Apache-2.0, pinned by file name and SHA-256 and re-chosen at
-each release (spike S5 measures them; sizes approximate):
+- **MLX is out.** mlx-swift compiles its kernels ahead of time with the `metal` compiler, which the Command
+  Line Tools do not have.
+- **llama.cpp builds without it.** With `-DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+  -DBUILD_SHARED_LIBS=OFF` the Metal source is embedded and compiled at run time, the binary links only
+  system frameworks, and it runs as fast as Homebrew's. Its build needs `cmake`, which is not part of the
+  Command Line Tools, so a script builds a pinned llama.cpp commit into `build/` and checks the result by hash,
+  as restic is pinned (`docs/backup.md`). The app bundles that build and never uses a Homebrew llama.cpp (its
+  libraries, signing and version move under it). MIT licence.
+- **The helper is the bundled `llama-server`**, run as `sprava-llm`: App Sandbox only, with an embedded
+  Info.plist (without one it dies with SIGTRAP). The model is passed as an inherited descriptor (`-m
+  /dev/fd/3`), since the sandbox cannot open paths outside its container. It listens only on a Unix socket at
+  a short path in its container (104-byte limit), never TCP (checked with `lsof`). The runtime starts it on
+  the first front-desk turn; `--sleep-idle-seconds` frees the weights when idle (6.1 GB down to 144 MB, about
+  1.1 s to wake), and the runtime stops it after 15 idle minutes (proposed).
+- **Constrained output.** Every call goes to `/completion` with a `json_schema`, on the prompt rendered by
+  `/apply-template`, never to the chat endpoint's `response_format`: there Gemma 4 wrote its thinking channel
+  before the schema applied and ran out of tokens on 8 of 41 calls, while `/completion` was constrained from
+  the first token and gave no invalid JSON. The answer schema puts the quotes first and has no "answerable"
+  flag: empty quotes mean "the documents do not say". With the flag first, Qwen refused 5 of 9 answerable
+  questions. (A SwiftPM helper on the C API over standard input also works, but needs hand-written grammars
+  and a prompt format per model, since the C API's template list does not know Gemma 4.)
+- **Prompt size.** Prompt reading is the slow part (16,000 tokens took about 23 s to the first token on
+  Gemma 4 E4B), so answer calls stay within 2,000 to 4,000 tokens, with the rules and brief first so the
+  server's cache reuses them.
 
-| Mac memory | Model | Download |
-|---|---|---|
-| under 16 GB | none; Apple's model as "basic" | 0 |
-| 16 GB | Qwen3 8B | about 5 GB |
-| 24 to 36 GB | Qwen3 30B-A3B (about 3B active per token); gpt-oss-20b the alternative | 13 to 18 GB |
-| 48 to 64 GB (the author's Mac has 48) | Qwen3 32B, or 30B-A3B at 8 bits | 20 to 32 GB |
-| 96 GB or more | gpt-oss-120b | about 65 GB |
+Candidates as of 2026-10-14, all Apache-2.0, pinned by file name and SHA-256 and re-chosen at each release. The
+weights take at most about half the memory.
 
-The weights take at most about half the memory. The download comes from the model's host into
-`~/Library/Application Support/Sprava/models/`, resumable, checked by SHA-256 before first use, excluded from
-backup, removable in the engine settings. Qwen3 covers French and Ukrainian (decisions.md P8).
+| Mac memory | Model, 4-bit (Q4_K_M) | Download | Measured |
+|---|---|---|---|
+| under 16 GB | none; Apple's model as "basic" | 0 | |
+| 16 GB | Gemma 4 E4B | 5.0 GB | Routing 23 of 24; folder 5 of 5; quote-first answers 12 of 12 correct or rightly refused, quotes exact 10 of 10; 0.88 s per routing call, 56 tokens a second, 5.3 GB in memory |
+| 24 to 36 GB | Gemma 4 12B (7.1 GB), or Gemma 4 26B-A4B, a mixture of experts (17 GB) | 7 to 17 GB | Not yet |
+| 48 GB or more (the author's Mac) | Qwen3.6-35B-A3B, a mixture of experts (22 GB), or Qwen3.6-27B (17 GB) | 17 to 22 GB | Not yet |
+
+Qwen3.5-9B (5.7 GB) was the other model tested: routing 23 of 24, folder 4 of 5, 1.43 s per routing call,
+30 tokens a second. Neither model invented a quote or an answer. The fixtures were small (24 routing cases, 5
+filings, 12 questions, in English, French and Ukrainian): a first sort, not a measure. The download comes
+from the model's host into `~/Library/Application Support/Sprava/models/`, resumable, checked by SHA-256
+before first use, excluded from backup, removable in the engine settings.
 
 ## 12. What leaves the Mac
 
@@ -642,12 +686,11 @@ Short experiments on invented binders, each before the PR that needs it. S5 is r
 - **S3 Codex app server: done** (codex-cli 0.162.1, 2026-10-14; results in 11.1). Still open: a full turn in
   Sprava's own Codex home after the person signs in; a profile that denies binder-v0 §3.4 paths inside the
   binder; `codex resume --remote` against a running server; what a real limit error prints.
-- **S4 mlx-swift with the Command Line Tools only**: run-time kernel compilation or a pinned prebuilt metallib;
-  if neither, MLX is out.
-- **S5 llama.cpp and the models**: a build under the Command Line Tools with the embedded Metal library; Metal
-  inside the App Sandbox; memory, load time and speed per candidate on the author's 48 GB Mac; the router's
-  intents, quote-first answers and filing decisions on invented fixtures in English, French and Ukrainian,
-  scored against Claude's verdicts.
+- **S4 mlx-swift: closed.** The Command Line Tools have no `metal` compiler, so MLX is out (11.2).
+- **S5 llama.cpp and the models: done** (11.2): the embedded-Metal build, `llama-server` in the App Sandbox on
+  a Unix socket, `/completion` with a schema, and Gemma 4 E4B and Qwen3.5-9B on small invented fixtures.
+  Still open: one mixture-of-experts model from the larger rows; larger fixtures, scored against Claude's
+  verdicts; the build script with its pinned commit and hash.
 - **S6 Translation without a window**: from the runtime and the sandboxed helper; asking for a missing pair.
 - **S7 Retrieval**: FTS5 with queries in each document language over a 200-document invented binder.
 - **S8 Path import**: which folders the app reads without repeated permission prompts, and matching a
@@ -673,7 +716,8 @@ the local model follows, then the back office.
 6. **SpravaApp: the conversation.** `Binder/Chat`: transcript, composer, drag and drop, strip, side panel with
    documents. May need `SPRAVA_ALLOW_LARGE=1` as a screen with its model and tests.
 7. **SpravaApp: import by path or description**, with its `Services` handler.
-8. **`sprava-llm` and its `Brains` client** (llama.cpp, or MLX if S4 passes).
+8. **`sprava-llm` and its `Brains` client**: the pinned llama.cpp build script, the bundled `llama-server`
+   helper with its Info.plist, descriptor and socket, and the client for `/apply-template` and `/completion`.
 9. **Brains: the front desk model's choice by memory and download.**
 10. **Brains: the front desk router on the local model.** Grammar-constrained intents, quote-first answers,
     "this needs thinking".
@@ -714,7 +758,8 @@ with the plan"), adjusted by the points of the second quote:
 7. Turning the back office on for a binder is the consent for its documents, private and intake ones included
    (D4).
 8. Sprava's front desk files first, and the back office reviews its work afterwards (D10).
-9. The local runtime is llama.cpp in a sandboxed helper, pending spike S5 (D5).
+9. The local runtime is llama.cpp in a sandboxed helper; after S5, the bundled `llama-server` on a Unix
+   socket (D5).
 10. The local model is chosen by memory from a pinned list and downloaded on first use with consent (D5).
 11. The Inbox keeps its note field for notes whose binder is unknown (D9).
 12. Translation at filing with Apple's on-device framework; the engine for the rest (D8).
