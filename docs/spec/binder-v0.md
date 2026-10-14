@@ -337,7 +337,7 @@ decisions.md F7 asks for `at` (or `closed_at`) and `action` on every entry. This
 
 ### 4.6 Module arrays
 
-- `entities[]`: each row has `id` and `status` (a lifecycle word; free text), plus any comparable attributes (decisions.md F7). lifeproj enforces only unique ids, so rows without `status` are likely. The v0 requirement applies once the catalog is stamped, and adoption proposes a `migrate` that adds `status` to each row that lacks one (section 9.4). v0 has no op that adds or changes an entity row. After adoption, rows change only through external edits, which are recorded as such (section 6.7). Section 12 asks whether entity ops belong in v0.
+- `entities[]`: each row has `id` and `status` (a lifecycle word; free text), plus any comparable attributes (decisions.md F7). lifeproj enforces only unique ids, so rows without `status` are likely. The v0 requirement applies once the catalog is stamped. An import asks the user, by card, for the `status` of each row that lacks one, and adds it with a `migrate` (section 9.4 step 6); it never invents one. v0 has no op that adds or changes an entity row. After adoption, rows change only through external edits, which are recorded as such (section 6.7). Section 12 asks whether entity ops belong in v0.
 - `ledger/`, `timeline.md`, `chapters/`: folder and Markdown conventions, not catalog arrays (section 3.3). v0 describes them and leaves them opaque. An implementation reads `meta.active_chapters` and nothing else about chapters.
 
 ### 4.7 The unknown-field preservation rule
@@ -1019,13 +1019,15 @@ number of passes; a refusal reports the limit and preserves the binder and its c
    - rewriting a `due` in another form that section 5.2 counts as valid (compact, or an ISO week date, a missing weekday read as Monday) as `YYYY-MM-DD`, with `"due"` added to `derived` and the old value in the op's note.
 4. Applies the changes that keep the catalog's meaning while changing its form:
    - one `complete` per item whose status is `done` (section 5.10);
-   - a `migrate` that adds `id`, `title` or `path` beside the legacy keys of each document record that lacks them, and `status` to each entity row that lacks it;
+   - a `migrate` that adds `id`, `title` or `path` beside the legacy keys of each document record that lacks them;
    - for a pre-lifeproj catalog (section 9.6), a `migrate` that adds `meta` with `schema_version: 1`, or adds `schema_version: 1` to an existing `meta`, keeping a found value below 1 under `legacy_schema_version` first; and for a core key that holds something other than an array, a `migrate` that copies the value to `legacy_<key>` and replaces the key with an array. For an object keyed by id, the array holds its values in order, each given its key as `id` when it has none;
-   - `set_meta` for `modules`, `id_scheme` and any `meta` field the v0 types reject, keeping the old value first as section 9.5 says.
+   - `set_meta` for `modules` (from the module folders found) and `id_scheme` (from the classification of section 9.2 step 5).
    When the user chose a new name at step 1, the name is changed by the user's own `rename_teka` (sections 3.1 and 6.3), applied right after the snapshot.
 5. Chooses the starting `disclosure`: `full` when the binder has published slices before, `none` when it has not. The user can change it later (section 6.3).
 6. Offers a card for each change that needs the user's judgement:
    - an item that fails the rules because a value is missing (a `due` date or `no_deadline`, a party, a kind for a redacted item), since an import cannot invent one;
+   - an entity row without `status`: the user gives its lifecycle word, which is free text and has no default (section 4.6);
+   - a `meta` field whose found value the v0 types reject: the user gives the v0 value, and the `set_meta` keeps the old value first as section 9.5 says;
    - an open item whose id already closes a processing log entry: the user says whether it is a duplicate, closed with a `closed-duplicate` entry (section 6.8), or an item that is still open.
 7. When the catalog, once stamped, would satisfy the whole v0 schema and the conformance checks, which may be at once or once the cards of step 6 are settled, applies a `migrate` that stamps `schema_version: 2` (replacing any value that is not the integer 2), `name`, `format: "teka"`, `format_version: "0"`, `disclosure`, and empty `documents`, `open_items` and `processing_log` arrays when they are missing. The binder is then a v0 binder. Until then it is imported and "needs migration": readable, with history recorded, and accepting ops that add no new violation (section 6.3).
 

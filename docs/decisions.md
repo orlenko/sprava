@@ -196,11 +196,12 @@
   binder-v0 §9.4) runs as part of the import: ops with actor `import`, in one batch the person can undo, listed
   in an import report, not cards the person works through. Only a change that needs the person's judgement
   becomes a card: an item that breaks a rule because a value is missing (a due date or `no_deadline`, a party
-  for a waiting item, a kind for a redacted item), since an import cannot invent one; an open item whose id
+  for a waiting item, a kind for a redacted item, an entity row's `status`, the v0 value of a `meta` field whose
+  found value the v0 types reject), since an import cannot invent one; an open item whose id
   already closes a processing log entry, which may be a duplicate or an item reopened by hand; and a name the
   binder cannot have in `~/Sprava` (not of the recommended shape, or taken by another binder), which the person
   picks before the copy is made. Closing items left at `status: done`, the `migrate`s that add v0 keys beside
-  legacy ones, `set_meta`, the starting disclosure (`full` when the binder published slices before, else
+  legacy ones, `set_meta` for `modules` and `id_scheme`, the starting disclosure (`full` when the binder published slices before, else
   `none`) and the stamp are automatic; the stamp waits until the cards are settled. The write list for a
   binder Sprava owns replaces F1's: `.sprava/`, `catalog.json` through ops, `DASHBOARD.md` and `AGENTS.md`
   with its one-line `CLAUDE.md` (F14), `.teka.lock`, `intake/_converted/`, and new files filed into document
