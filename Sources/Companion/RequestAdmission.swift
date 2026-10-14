@@ -59,7 +59,7 @@ extension CompanionProfile {
             return .authenticated(CompanionAuthenticatedRequest(deviceID: deviceID, requestID: requestID, epoch: e, sequence: seq, action: action))
         }
     }
-    private func requestedAction(_ payload: JSONValue, length: Int) -> CompanionRequestedAction? {
+    func requestedAction(_ payload: JSONValue, length: Int) -> CompanionRequestedAction? {
         guard length >= 1024, length % 1024 == 0, let pad = payload["pad"]?.stringValue, pad.utf8.allSatisfy({ $0 == 32 }),
               let rawKind = payload["type"]?.stringValue, let kind = CompanionRequestedAction.Kind(rawValue: rawKind),
               let made = payload["made_at"]?.stringValue, CompanionOwnerRelay.time(made) else { return nil }
