@@ -2,6 +2,8 @@
 
 Status: v0 draft of 2026-10-06, revised twice the same day after two design-skeptic reviews. Nothing here is final. The draft follows `docs/decisions.md` and cites its entries, for example "(decisions.md F3)". Where it adds a rule that no decision covers, it says so, and section 12 lists those additions for the author. Every example in this document is invented.
 
+Revised 2026-10-13 for decisions.md P20, F13 and F14: Sprava owns its binders and imports a lifeproj binder as a copy into `~/Sprava`, processing it on its own, instead of adopting it in place; `AGENTS.md`, `CLAUDE.md` and `DASHBOARD.md` are its own files in the binders it owns. Sections 3.2, 7.1, 9.1, 9.4 and 9.7 state the new rules; section 9.8 and the lifeproj-reachability rule of section 8.1 are kept for lifeproj readers while decisions.md F15 is open. Where other sections say "adopt", read "import".
+
 ## 1. Scope, status and versioning
 
 ### 1.1 What this document covers
@@ -14,12 +16,12 @@ A binder is one folder on disk that holds everything about one episode of a pers
 - the typed operations ("ops") through which every change is made, the log that records them, undo and forgetting (section 6);
 - the files that are derived from the catalog (section 7);
 - an optional federation profile for sharing a redacted summary of a binder with a cross-binder view (section 8);
-- how an existing binder made with lifeproj is adopted without loss, and what lifeproj must change to coexist (section 9);
+- how an existing binder made with lifeproj is imported without loss, and what lifeproj would need to change to share a binder (section 9);
 - JSON Schemas (section 10), conformance checks (section 11) and open questions (section 12).
 
 The format was extracted from lifeproj, the Python command-line tool the author has used for months (lifeproj v0.12.0; its 149 tests passed on Python 3.14.7 on 2026-10-06). lifeproj is public, so every lifeproj reference below names a file and a function or test in its repository. lifeproj enforces less than its prose says. Only the rules that lifeproj's code checks are treated as proven; the rest of this document adds rules and says so where it does.
 
-Two implementations are expected: Sprava, the Mac app, and lifeproj, which becomes the second implementation of this format rather than a dependency of Sprava (HANDOFF.md, "Constraints to plan around"). Today lifeproj writes no op log and knows none of the v0 additions. In the terms of section 1.6 it is a catalog writer, and section 9.8 lists what it must change before it can safely share a binder with a full implementation.
+Two implementations are expected: Sprava, the Mac app, and lifeproj, which becomes the second implementation of this format rather than a dependency of Sprava (HANDOFF.md, "Constraints to plan around"). Today lifeproj writes no op log and knows none of the v0 additions. In the terms of section 1.6 it is a catalog writer, and section 9.8 lists what it must change before it can safely share a binder with a full implementation. Since decisions.md P20, Sprava shares no binder with lifeproj: it imports a copy, and lifeproj keeps the original. Whether v0 keeps its promise to lifeproj readers is open (decisions.md F15).
 
 ### 1.2 Status
 
@@ -50,7 +52,7 @@ An implementation claims one of three nested classes, and may add the optional f
 
 - **Reader** `[R]`: parses catalogs at every catalog level, classifies the binder's state (section 9.6), computes buckets (section 5.2) and writes nothing inside the binder. A view of a binder is a reader.
 - **Catalog writer** `[W]`: a reader that also rewrites `catalog.json`. It follows the preservation rule (section 4.7), the JSON conventions (section 4.8) and the write protocol with its lock (section 4.9). It keeps no op log. When a full implementation manages the same binder, every write by a catalog writer is recorded there as an external edit (section 6.7). A catalog writer claims `[W]` for the catalog levels it supports. To claim it for v0, it must keep the v0 record rules whenever it edits a stamped v0 catalog; checks tagged `[W, v0]` apply only to that claim. Today's lifeproj is a catalog writer for lifeproj v1 and v2 catalogs only. It implements the pre-v0 federation behaviour that section 8 extends, and section 9.8 lists what it needs before it can share a v0 binder.
-- **Full implementation** `[F]`: a catalog writer that makes every change as an op, keeps the op log (section 6), absorbs external edits, handles proposals, renders `DASHBOARD.md` (section 7.1) and adopts lifeproj binders (section 9). Sprava is a full implementation.
+- **Full implementation** `[F]`: a catalog writer that makes every change as an op, keeps the op log (section 6), absorbs external edits, handles proposals, renders `DASHBOARD.md` (section 7.1) and imports lifeproj binders (section 9). Sprava is a full implementation.
 - **Federation profile** `[P]`: optional for a catalog writer or a full implementation. It publishes slices and drains outboxes as section 8 says.
 - **Slice reader** `[H]`: a program outside every binder that reads slices and writes completions, such as the hub or an app's cross-binder view. It never writes inside a binder. Section 8.4 states its rules.
 
@@ -81,7 +83,7 @@ Each term is defined once here and used with that meaning everywhere below.
 - **capture event**: one immutable record of something the user captured, such as a dictation, in the separate capture-event format (decisions.md C1).
 - **interpretation**: the clerk's typed reading of one capture event, from which code builds a proposal (decisions.md C3).
 - **digest**: a working session in which pending intake is filed and the catalog is brought up to date, by a person, a terminal agent or the clerk. The term comes from lifeproj's manuals.
-- **survey**: the read-only inspection of a binder that starts adoption. It records counts and kinds of problems, never personal values (section 9.2).
+- **survey**: the read-only inspection of a binder that starts an import (called adoption in earlier drafts). It records counts and kinds of problems, never personal values (section 9.2).
 - **registry** and **fleet commands**: lifeproj keeps a list of the binders it manages, its registry. Its fleet commands, such as `lifeproj drain --all`, act on every binder in that list.
 - **doctor**: a check an implementation runs on demand over its binders and reports on, without changing anything (decisions.md A9).
 - **derived file**: a file computed from the catalog: `DASHBOARD.md`, the index, the cursors.
@@ -110,20 +112,20 @@ The binder's name is `meta.name`, and it must equal the folder's basename (decis
 
 When the folder's basename and `meta.name` differ, for example after the folder was renamed in Finder, the binder needs attention (section 9.6). It stays readable and accepts ops, but it publishes and drains nothing until the user applies a `rename_teka` op, a direct action in the app (sections 6.3 and 6.5). Publishing and draining also require the name to be unique among the binders an implementation knows, after case folding and NFC. The comparison includes every unexpired former name of those binders (`meta.former_names`, section 8.3): a binder may not be created with, or renamed to, a name another binder still drains under. APFS volumes are case-insensitive by default, so `Tax-2026` and `tax-2026` would share one spool file.
 
-When an implementation creates or adopts a binder, it reports whether the folder lies in a place a sync service uploads (section 9.2 step 14).
+When an implementation creates or imports a binder, it reports whether the binder's folder lies in a place a sync service uploads (section 9.2 step 14).
 
 ### 3.2 Optional files and folders with a defined meaning
 
 | Path | Meaning | Who writes it |
 | ---- | ------- | ------------- |
 | `catalog.json` | The catalog (section 4). Required. | Writers, under the write protocol (section 4.9). |
-| `DASHBOARD.md` | Current truth rendered for reading (section 7.1). Its Notes section, from the line `## Notes` to the end, is kept as written. | A full implementation, once the user has approved the switch from a hand-kept dashboard. |
+| `DASHBOARD.md` | Current truth rendered for reading (section 7.1). Its Notes section, from the line `## Notes` to the end, is kept as written. | The full implementation that owns the binder, from creation or import (decisions.md F14). |
 | `.teka.lock` | The lock file of the write protocol (section 4.9). Empty. | Created by the first writer; never deleted. |
-| `.sprava/` | The op log, proposals, index, cursors and saved copies (section 7.2). | Owned by the full implementation that adopted the binder. Its files are untrusted when read (section 7.2). |
+| `.sprava/` | The op log, proposals, index, cursors and saved copies (section 7.2). | Owned by the full implementation that created or imported the binder. Its files are untrusted when read (section 7.2). |
 | `intake/` | A transient drop zone. A file in it means "not yet filed". Empty after a digest. The exception is the old email-intake layout of section 3.3: `.env` and `state.json` under `intake/mail/` are never filed. | People and capture tools put files in; filing moves them out. |
 | `intake/_converted/` | Text extracted from dropped scans and PDFs. Regenerable. | An implementation. May be cleared at any time. |
 | `README.md` | A human "start here" page. Informative. | A person. Never touched by an implementation. |
-| `CLAUDE.md`, `AGENTS.md` | Operating manuals for terminal agents. Informative, not format (decisions.md F9). | A person or a terminal agent. Never touched by an implementation. |
+| `CLAUDE.md`, `AGENTS.md` | Operating manuals for terminal agents. Informative, not format (decisions.md F9). | In a binder a full implementation owns: that implementation writes its own section of `AGENTS.md` between two marker lines and a one-line `CLAUDE.md` pointing at it; the rest of `AGENTS.md` belongs to the person or an agent (decisions.md F14). Otherwise a person or a terminal agent. |
 | Document folders | Any other folder that holds filed documents, for example `documents/`, `correspondence/`, `quotes/`. Names are free. | Filing creates new files in them. No implementation changes or removes a file already there. |
 
 Section 9.7 is the one statement of what an implementation may write.
@@ -148,7 +150,7 @@ The old email-intake layout. Binders made by lifeproj 0.1.0 (commit `b950006`) k
 
 The following may be present and must be tolerated, ignored and never executed by an implementation (decisions.md F9):
 
-- `CLAUDE.md` and `AGENTS.md` (manuals; informative);
+- `CLAUDE.md` and `AGENTS.md` (manuals; informative; in a binder it owns, a full implementation writes its own section, section 3.2, and never executes or obeys the rest);
 - `.claude/` and `.agents/` (terminal-agent configuration, skills and hooks);
 - `catalog_check.py` (lifeproj's copied-in validator; three checker versions exist, section 9.2);
 - `scripts/` (bespoke automation);
@@ -171,21 +173,22 @@ An implementation never deletes an original. Filing moves files out of `intake/`
 ### 3.5 An invented example tree
 
 ```
-~/binders/estate-example/
+~/Sprava/estate-example/
   catalog.json
   DASHBOARD.md
   README.md
-  CLAUDE.md                    manual for terminal agents (informative)
-  AGENTS.md                    bridge for another agent (informative)
-  catalog_check.py             lifeproj's validator (ignored, never run)
+  CLAUDE.md                    one line pointing at AGENTS.md
+  AGENTS.md                    manual for agents: Sprava's section, then free text
+  catalog_check.py             lifeproj's validator (ignored, never run; decisions.md F15)
   .teka.lock                   lock file of the write protocol (empty)
   .sprava/
     ops.ndjson                 the op log
     proposals/
       019a0f53-0a1b-7c2d-8e3f-4a5b6c7d8e9f.json
     adopted/
-      catalog.json             the catalog as found at adoption, byte for byte
-      DASHBOARD.md             the dashboard as found at adoption
+      catalog.json             the catalog as found at import, byte for byte
+      DASHBOARD.md             the dashboard as found at import
+      CLAUDE.md                the manual as found at import
     snapshot.json              catalog as of the last op (rebuildable)
     cursors.json               cursors (rebuildable)
     index.sqlite               search index (rebuildable)
@@ -667,11 +670,11 @@ A batch is applied as a whole: if the transaction guard rejects any op, none is 
 The complete list of changes applied without a proposal:
 
 - the user's own direct actions in the app (actor `user`), among them `set_disclosure`, `rename_teka` and `expunge`, which only the user can apply;
-- mechanical, lossless adoption steps (actor `import`, section 9.4 step 3), shown together on one card the user can undo;
+- the import's own changes (actor `import`, section 9.4 steps 3, 4, 5 and 7), listed in the import report and undone together (decisions.md F13);
 - `import_snapshot`, `external_edit` and `abort`, which record facts and decide nothing;
 - completions drained from the hub's outbox (actor `external`, section 8.3).
 
-Anything that closes an item at adoption, and the `migrate` that stamps the catalog (section 9.4 step 6), goes through a proposal.
+At import, only the changes of section 9.4 step 6, which need the user's judgement, go through a proposal.
 
 ### 6.6 Replay
 
@@ -718,7 +721,7 @@ lifeproj's closure rule is that any processing log entry with an `id` closes tha
 
 `at` is the op's `at`, and `via` is the actor's `client`, the program and version of the implementation that applied the op (section 6.2). A `migrate` that should leave a log entry includes the entry in its own patch, so its `after_hash` covers it. Only closure entries carry `id`. An op id is never written as `id`.
 
-The `closed-duplicate` row repairs a state that lifeproj's manual produces. The manual tells agents to log completed work in the processing log and to drop the item only "once it has shown as `done` once" (`templates.py`, `CLAUDE_HEADER`). An agent that logs a closure with the item's id before it removes the item leaves an open item whose id is already closed, which lifeproj's checker reports as reused. Without this row the item could never leave `open_items[]`: ids are never rewritten, the processing log is never rewritten, and a second entry with the same `id` would be a new duplicate. Adoption proposes a `complete` for each such item (section 9.4 step 4).
+The `closed-duplicate` row repairs a state that lifeproj's manual produces. The manual tells agents to log completed work in the processing log and to drop the item only "once it has shown as `done` once" (`templates.py`, `CLAUDE_HEADER`). An agent that logs a closure with the item's id before it removes the item leaves an open item whose id is already closed, which lifeproj's checker reports as reused. Without this row the item could never leave `open_items[]`: ids are never rewritten, the processing log is never rewritten, and a second entry with the same `id` would be a new duplicate. An import asks the user about each such item, because it may be a duplicate or an item reopened by hand (section 9.4 step 6).
 
 ### 6.9 `.sprava/ops.ndjson`
 
@@ -782,8 +785,8 @@ What stays. Expunge works on the binder's own files. It cannot reach the capture
 
 lifeproj seeds the dashboard once and has no renderer; people and agents keep it by hand (`scaffold.py` writes it from `templates.py`, `DASHBOARD_TMPL`, and no command rewrites it). lifeproj's module manuals tell agents to keep facts there that are in no catalog field: a ledger's running balance, a chapter's key facts, a comparison table of entities, and hard deadlines at the top (`modules.py`). A renderer that overwrote the file would erase them. So:
 
-- At adoption, the survey records the file's SHA-256 and copies its bytes to `.sprava/adopted/DASHBOARD.md` before anything else is written (section 9.2).
-- A full implementation never overwrites a `DASHBOARD.md` that it did not render until the user approves the switch on a review card. Until then the app shows the rendered dashboard in its own window. The approved switch moves the old text into the Notes section of the new file, below the `## Notes` line, with every heading in it demoted one level (`#` becomes `##`, and so on, `######` staying as it is), so the old dashboard's own sections stay inside Notes.
+- At import, the survey records the file's SHA-256 and copies its bytes to `.sprava/adopted/DASHBOARD.md` before anything else is written (section 9.2).
+- `DASHBOARD.md` is the full implementation's own file in a binder it owns (decisions.md F14). At creation it is rendered at once. At import, the switch happens with no card: the old text moves into the Notes section of the new file, below the `## Notes` line, with every heading in it demoted one level (`#` becomes `##`, and so on, `######` staying as it is), so the old dashboard's own sections stay inside Notes. (Earlier drafts waited for the user to approve the switch on a review card; decisions.md F14 superseded that.)
 - The Notes section is everything from the first line that is exactly `## Notes` to the end of the file. It is copied unchanged, byte for byte, into each new rendering. That is where hand-kept facts belong. Headings inside it do not end it.
 - A rendered file starts with a marker line, `<!-- teka-dashboard v0 sha256:<hex> -->`. The hash is SHA-256 over the UTF-8 bytes from the first byte after the marker line's line feed up to, and not including, the line `## Notes`, written as 64 lowercase hex digits. The file uses LF line endings only. Before it renders again, the renderer recomputes that hash. If it differs, someone edited the file outside the Notes section: the renderer first saves the edited file as `.sprava/adopted/DASHBOARD-<timestamp>.md` and tells the user. An edit inside Notes changes no hash and saves nothing.
 
@@ -846,13 +849,13 @@ Every string from the catalog is escaped before it is written. Newlines and tabs
 
 ### 7.2 `.sprava/`
 
-The folder belongs to the full implementation that adopted the binder (decisions.md F1). It is created with mode 0700 and its files with mode 0600, and the survey reports wider modes, because the op log holds history and `slice-key` ties aliases back to raw ids. Its contents:
+The folder belongs to the full implementation that created or imported the binder (decisions.md F1, P20). It is created with mode 0700 and its files with mode 0600, and the survey reports wider modes, because the op log holds history and `slice-key` ties aliases back to raw ids. Its contents:
 
 | File | What it holds | Rebuildable? |
 | ---- | ------------- | ------------ |
 | `ops.ndjson` | The op log (section 6.9). | No. It is history. Losing it loses history, never state, because the catalog is the truth of state and closure entries keep the closed items (section 5.10). |
 | `proposals/<id>.json` | Proposals and their states (section 6.5). | No. Losing them loses the provenance detail of proposals that were never applied; applied ops still carry their proposal id. |
-| `adopted/` | `catalog.json` and `DASHBOARD.md` as found at adoption, byte for byte, and any hand-edited dashboard saved before a new rendering (section 7.1). | No. |
+| `adopted/` | `catalog.json`, `DASHBOARD.md`, `CLAUDE.md` and `AGENTS.md` as found at import, byte for byte, and any hand-edited dashboard saved before a new rendering (section 7.1). The name stays from earlier drafts. | No. |
 | `torn/` | Op lines cut off by a crash, copied before they are truncated (section 6.9). | No, and nothing needs them. |
 | `slice-key` | The key for aliases (section 5.6). | No. Losing it changes the aliases. |
 | `snapshot.json` | The catalog as of the last catalog write that succeeded, used to tell a crash from a hand edit and to compute external-edit patches (section 6.7). | Yes, by replay (section 6.6). |
@@ -882,7 +885,7 @@ An implementation that publishes slices and drains completions follows this prof
 - Registration is the slice file appearing. There is no registry call.
 - A binder at disclosure level `none`, or one that never publishes, is invisible to the hub by design, never an error.
 - One publisher and one drainer per binder. A binder whose `meta.format` is `teka` is published and drained only by an implementation of this profile that reads `meta.disclosure`, `dismissed` and `recurrence` and takes the lock of section 4.9. Today's lifeproj does none of this. It projects every item at full disclosure, dismissed ones included, with real ids in place of aliases; it closes a recurring item for good, with a closure entry that has no `final`; and its fleet drain republishes every binder it drained (`osavul.py`, `project_slice`, `_drain_teka`, `drain_all`).
-- lifeproj can reach a binder without its registry. The manual lifeproj stamps into each binder tells terminal agents to run `lifeproj drain` first and `lifeproj publish` last in every digest (`templates.py`, `CLAUDE_HEADER` and `CLAUDE_OSAVUL`), and both commands work on the current folder whether or not it is registered (`osavul.py`, `publish` and `drain`). So a binder counts as reachable by lifeproj when it is in lifeproj's registry, holds lifeproj's `catalog_check.py`, or has a `CLAUDE.md` or `AGENTS.md` that mentions `lifeproj publish` or `lifeproj drain`. Until the change of section 9.8 ships and the user confirms that the lifeproj they use has it, an adopted binder that lifeproj can reach keeps disclosure level `full`: the app offers no other level, refuses `dismiss` and `recurrence` on it, and says why. The manual addendum of section 9.8 is a precondition for anything stricter, because an agent following the old manual would undo it.
+- lifeproj can reach a binder without its registry. The manual lifeproj stamps into each binder tells terminal agents to run `lifeproj drain` first and `lifeproj publish` last in every digest (`templates.py`, `CLAUDE_HEADER` and `CLAUDE_OSAVUL`), and both commands work on the current folder whether or not it is registered (`osavul.py`, `publish` and `drain`). So a binder counts as reachable by lifeproj when it is in lifeproj's registry, holds lifeproj's `catalog_check.py`, or has a `CLAUDE.md` or `AGENTS.md` that mentions `lifeproj publish` or `lifeproj drain`. Until the change of section 9.8 ships and the user confirms that the lifeproj they use has it, an adopted binder that lifeproj can reach keeps disclosure level `full`: the app offers no other level, refuses `dismiss` and `recurrence` on it, and says why. The manual addendum of section 9.8 is a precondition for anything stricter, because an agent following the old manual would undo it. This rule was written for binders adopted in place. An imported binder is a copy that is not in lifeproj's registry and whose manual is the implementation's own (decisions.md P20, F14); whether the copy keeps `catalog_check.py`, which this test reads as a mark of lifeproj, is open (decisions.md F15), as is the hub lane itself (decisions.md A17).
 - A publish by someone else is noticed. Before it publishes, and when it drains, an implementation compares the slice on the spool with the hash of the slice it last wrote (`.sprava/cursors.json`). When they differ, another program published the binder: the implementation republishes at once, or removes the slice at disclosure level `none`, and tells the user which binder was affected.
 
 ### 8.2 Agenda slice v1
@@ -959,15 +962,15 @@ The existing hub's behaviour on unknown keys has not been verified from its code
 
 The hub has a provisional lane for readable documents. It is a product feature, not part of this format (decisions.md F8). For orientation only: `briefs/<binder>/manifest.json` holds `{teka, generated, briefs[]}` where each brief has `id`, `file` (one path segment ending in `.md`), `title`, `summary`, `kind`, `event_date`, `doc_date`, `tags`, `bytes`, `updated`, `status` (`published` or `pending`) and `pin_current`; the documents live in `briefs/<binder>/docs/<file>.md`; current versus archive is recomputed on every read; the lane is read-only; containment rules apply (an allowlist, one path segment, no symlinks, a 404 for every refusal). In Sprava, documents readable in the app replace it.
 
-## 9. Adopting an existing binder
+## 9. Importing an existing binder
 
 ### 9.1 The rule
 
-A full implementation adopts a binder in place (decisions.md F1). It never copies a binder into a store and converts no file. It owns only `.sprava/`, `catalog.json` (through ops) and `DASHBOARD.md` (after the switch of section 7.1). Section 9.7 says exactly what it may write; everything else is left as found.
+A full implementation owns the binders it manages and shares none with another program (decisions.md P20). It imports a binder made elsewhere: it copies the folder into its own binder folder (`~/Sprava/<name>` for Sprava) and processes the copy on its own (section 9.4; decisions.md F13). The original is never written, moved or deleted by the import, and stays as a fallback. Importing happens once. Earlier drafts adopted a binder in place; decisions.md P20 superseded that. Section 9.7 says exactly what the implementation may write in a binder it owns.
 
 ### 9.2 The survey
 
-Adoption begins with a read-only survey whose results are recorded in the `import_snapshot` op. The results hold counts, kinds of problems and record ids, never personal values.
+An import begins with a read-only survey of the original whose results are recorded in the `import_snapshot` op. The results hold counts, kinds of problems and record ids, never personal values.
 
 1. Parse `catalog.json` and classify the binder's state (section 9.6). Corrupt: stop.
 2. Read the catalog level (section 9.6).
@@ -990,41 +993,45 @@ Adoption begins with a read-only survey whose results are recorded in the `impor
 11. `meta.name`: whether it is present, equals the basename (section 3.1), has the recommended shape, and is unique after case folding among the binders the implementation knows, their unexpired former names included. Also whether lifeproj can still reach the binder, by the test of section 8.1: listed in lifeproj's registry, holding `catalog_check.py`, or with a manual that runs `lifeproj publish` or `lifeproj drain`.
 12. Files that may send data off the Mac or hold secrets, without running them or reading their values: whether `.claude/settings.json` declares hooks (lifeproj stamps routing hooks that send prompt text to an outside service), reported as "may send data off this Mac"; `scripts/mail/.env` and other `.env` or key files (section 3.4), reported as "holds credentials"; and `intake/mail/.env` or `intake/mail/state.json`, reported as "old email-intake layout: credentials and sync state inside the intake", with a pointer to lifeproj's relocation of them to `scripts/mail/` (section 3.3).
 13. Symlinks in the binder that resolve outside it (section 3.6), and modes on `.sprava/` wider than 0700 for the folder and 0600 for its files (section 7.2).
-14. Whether the binder's resolved path lies in a place a sync service uploads: iCloud Drive (`~/Library/Mobile Documents/`), `~/Desktop` or `~/Documents` while iCloud's Desktop and Documents option is on, any File Provider folder under `~/Library/CloudStorage/`, or any path whose ubiquitous-item resource values say it is synced. It is reported as "this folder is uploaded by a sync service", because the catalog, the op log with its verbatim import snapshot, the proposals and `slice-key` would then leave the Mac (decisions.md A7). The app warns, and lists the binder in its inventory of what leaves the Mac.
+14. Whether the copy's resolved path, in the implementation's binder folder, lies in a place a sync service uploads: iCloud Drive (`~/Library/Mobile Documents/`), `~/Desktop` or `~/Documents` while iCloud's Desktop and Documents option is on, any File Provider folder under `~/Library/CloudStorage/`, or any path whose ubiquitous-item resource values say it is synced. It is reported as "this folder is uploaded by a sync service", because the catalog, the op log with its verbatim import snapshot, the proposals and `slice-key` would then leave the Mac (decisions.md A7). Sprava refuses to keep binders in such a place (architecture.md 2.3); another implementation that allows it warns, and lists the binder in its inventory of what leaves the Mac.
 
 ### 9.3 What the catalog levels mean
 
 A lifeproj v1 binder passes its own checker with loose items, yet lifeproj's `publish` refuses it, because `publish` validates strictly regardless of `schema_version` (`osavul.py`, `publish`). No lifeproj command migrates a catalog. An implementation of this format therefore validates every catalog against the rules of its catalog level and treats strict failures on a v1 catalog as "needs migration", never as corruption.
 
-### 9.4 What adoption does, in order
+### 9.4 What an import does, in order
 
-Sprava currently refuses adoption before any write when `catalog.json` exceeds 1 MiB, when the combined
+An import does its processing on its own (decisions.md F13). Each change is an op with actor `import`; the changes form one batch the user can undo as a whole, and the implementation lists them in an import report. Only the changes of step 6, which need the user's judgement, arrive as cards. Earlier drafts proposed most of these changes as cards to approve one by one; decisions.md F13 superseded that.
+
+Sprava currently refuses an import before any write when `catalog.json` exceeds 1 MiB, when the combined
 `open_items`, `documents` and `processing_log` count exceeds 100, or when catalog plus op-log bytes times
 that count (at least one) exceeds 4 MiB. Resuming an unfinished adoption has a 32 MiB work budget to allow for
 the import snapshot and fix ops it has already added to history. Existing proposal loading is limited to 100 directory entries and
 8 MiB aggregate bytes. These checks keep large adoptions disabled until the mechanical fixer can use a fixed
 number of passes; a refusal reports the limit and preserves the binder and its cards.
 
-1. Takes the lock, copies `catalog.json` and `DASHBOARD.md` (when present) byte for byte to `.sprava/adopted/`, and appends `import_snapshot` with the parsed catalog and the survey. Nothing else in the folder changes. The byte copy matters because the first rewrite changes the catalog's bytes (escaping and hand layout) without changing its content.
-2. Renders the dashboard. It writes `DASHBOARD.md` only when the file is absent or carries the marker line; otherwise it offers the switch card of section 7.1. For a v1 catalog it renders what it can (section 5.2) and marks the binder "needs migration".
-3. Applies mechanical, lossless changes without a proposal, each as an op with actor `import`, and shows them together on one card the user can undo:
+1. Surveys the original without writing to it (section 9.2) and picks the binder's name: `meta.name`, else the folder's basename. When that name lacks the recommended shape (section 3.1) or another binder the implementation knows already uses it, the user picks a name of that shape before anything is copied. This is the one question asked before the copy.
+2. Copies the folder into the implementation's binder folder under that name. The original is never written, moved or deleted; the implementation may offer to move it to the Trash once the user has checked the import. A symlink that resolves outside the original is not followed and is reported (section 3.6). Which lifeproj files the copy leaves out is open (decisions.md F15). Then, in the copy, it takes the lock, copies `catalog.json`, `DASHBOARD.md`, `CLAUDE.md` and `AGENTS.md` (when present) byte for byte to `.sprava/adopted/`, and appends `import_snapshot` with the parsed catalog and the survey. The byte copy matters because the first rewrite changes the catalog's bytes (escaping and hand layout) without changing its content.
+3. Writes its own files: `DASHBOARD.md`, with any hand-kept dashboard moved into its Notes section (section 7.1), and `AGENTS.md` and `CLAUDE.md` (section 3.2; decisions.md F14). For a v1 catalog it renders what it can (section 5.2) and marks the binder "needs migration". Then it applies the lossless changes:
    - deriving `follow_up_at` for waiting and blocked items (section 5.3), with `derived: ["follow_up_at"]`;
    - removing keys whose value is `null` (`due`, `waiting_on`, `link`), since null means absent;
    - removing an empty `due` from an item that has `no_deadline: true`;
    - rewriting a `due` in another form that section 5.2 counts as valid (compact, or an ISO week date, a missing weekday read as Monday) as `YYYY-MM-DD`, with `"due"` added to `derived` and the old value in the op's note.
-4. Proposes, for the user's approval, everything that changes meaning:
-   - one `complete` per item whose status is `done` (section 5.10), and one per open item whose id already closes a processing log entry, which writes a `closed-duplicate` entry (section 6.8);
-   - one card per item that fails the rules, asking for what is missing (a `due` date or `no_deadline`, a party, a kind for a redacted item), since a migration cannot invent a date;
+4. Applies the changes that keep the catalog's meaning while changing its form:
+   - one `complete` per item whose status is `done` (section 5.10);
    - a `migrate` that adds `id`, `title` or `path` beside the legacy keys of each document record that lacks them, and `status` to each entity row that lacks it;
    - for a pre-lifeproj catalog (section 9.6), a `migrate` that adds `meta` with `schema_version: 1`, or adds `schema_version: 1` to an existing `meta`, keeping a found value below 1 under `legacy_schema_version` first; and for a core key that holds something other than an array, a `migrate` that copies the value to `legacy_<key>` and replaces the key with an array. For an object keyed by id, the array holds its values in order, each given its key as `id` when it has none;
    - `set_meta` for `modules`, `id_scheme` and any `meta` field the v0 types reject, keeping the old value first as section 9.5 says.
-   It also offers the user a `rename_teka` when the name and the basename differ (section 3.1). That is a direct action, applied by the user, never part of a proposal (section 6.5).
-5. Asks the user for `disclosure`, proposing `full` when the binder has published slices before and `none` when it has not. While lifeproj can still reach the binder, only `full` is offered (section 8.1).
-6. When the catalog, once stamped, would satisfy the whole v0 schema and the conformance checks, proposes a `migrate` that stamps `schema_version: 2` (replacing any value that is not the integer 2), `name` (the folder basename, when absent), `format: "teka"`, `format_version: "0"`, `disclosure`, and empty `documents`, `open_items` and `processing_log` arrays when they are missing. Once the user approves it, the binder is a v0 binder. Until then it is adopted and "needs migration": readable, with history recorded, and accepting ops that add no new violation (section 6.3).
+   When the user chose a new name at step 1, the name is changed by the user's own `rename_teka` (sections 3.1 and 6.3), applied right after the snapshot.
+5. Chooses the starting `disclosure`: `full` when the binder has published slices before, `none` when it has not. The user can change it later (section 6.3).
+6. Offers a card for each change that needs the user's judgement:
+   - an item that fails the rules because a value is missing (a `due` date or `no_deadline`, a party, a kind for a redacted item), since an import cannot invent one;
+   - an open item whose id already closes a processing log entry: the user says whether it is a duplicate, closed with a `closed-duplicate` entry (section 6.8), or an item that is still open.
+7. When the catalog, once stamped, would satisfy the whole v0 schema and the conformance checks, which may be at once or once the cards of step 6 are settled, applies a `migrate` that stamps `schema_version: 2` (replacing any value that is not the integer 2), `name`, `format: "teka"`, `format_version: "0"`, `disclosure`, and empty `documents`, `open_items` and `processing_log` arrays when they are missing. The binder is then a v0 binder. Until then it is imported and "needs migration": readable, with history recorded, and accepting ops that add no new violation (section 6.3).
 
 Prefixed and bare ids are both kept as they are. A `status: done` item is never deleted; it becomes a closure with its title and fields preserved. Non-ASCII text is written unescaped on the first rewrite; the content is identical.
 
-Leaving. To hand a binder back to lifeproj alone, the user can restore `.sprava/adopted/catalog.json`, which loses the changes made since adoption (they stay in the op log), or remove `meta.format` and `meta.format_version` by hand. No op removes the stamp, because `migrate` never removes a key. A lifeproj with change 2 of section 9.8 publishes and drains the binder again once `meta.format` is gone. A full implementation that still watches the folder records the edit as an external edit. Section 12 asks whether v0 needs a release op.
+Leaving. The original stays where it was, untouched, for as long as the user keeps it; going back to lifeproj means going back to the original, which lacks the changes made since the import (they stay in the copy and its op log). No op removes the stamp, because `migrate` never removes a key. Whether v0 keeps a way to hand the copy itself back to lifeproj is open (decisions.md F15).
 
 ### 9.5 Legacy keys
 
@@ -1041,7 +1048,7 @@ Each state is defined here once; other sections cite it.
 - **Not a binder**: the folder has no `catalog.json`. It is skipped, never reported as an error, as lifeproj does.
 - **Corrupt**: `catalog.json` is not UTF-8, does not parse as JSON, or is not a JSON object. The implementation reads nothing further, writes nothing, and tells the user. When the op log or the snapshot holds a consistent state, it offers to restore the catalog from it (section 6.7 step 1); otherwise recovery is a hand fix or a restore from backup.
 - **Unknown level**: the level table below says so. The implementation may display the catalog and writes nothing (section 1.4).
-- **Needs migration**: a catalog at a known level that is not yet stamped v0, or whose records fail its level's rules (duplicate ids or non-object entries in `open_items[]`, `documents[]` or `processing_log[]` included). A pre-lifeproj catalog is in this state too: an object without a `meta` object, without `meta.schema_version`, with `schema_version` an integer below 1, or with a core key that holds something other than an array. It is adopted and readable, and accepts ops that add no new violation; adoption proposes the migration (section 9.4 step 4).
+- **Needs migration**: a catalog at a known level that is not yet stamped v0, or whose records fail its level's rules (duplicate ids or non-object entries in `open_items[]`, `documents[]` or `processing_log[]` included). A pre-lifeproj catalog is in this state too: an object without a `meta` object, without `meta.schema_version`, with `schema_version` an integer below 1, or with a core key that holds something other than an array. It is imported and readable, and accepts ops that add no new violation; the import applies the migration (section 9.4 step 4).
 - **Needs attention** (after adoption): an external edit left records that break their level's rules (section 6.7); a crash recovery could not roll forward (section 6.9); the basename differs from `meta.name` (section 3.1); `catalog.json`, `DASHBOARD.md`, `.teka.lock` or `.sprava/` is a symlink or not a regular file or folder (section 3.6); the catalog holds a duplicate key, a lone surrogate or an out-of-range number (section 4.8); or the level table says so for a stamped catalog. Ops that touch the broken records are refused and others proceed. Three problems block more: a symlink problem, unsafe JSON or a broken stamp block every write until the user approves a repair, and a name mismatch blocks publishing and draining.
 - **Ready**: a stamped v0 catalog in none of the states above.
 
@@ -1074,17 +1081,20 @@ This is the one statement of the write rule; sections 3.2, 3.3 and 9.1 point her
 May write:
 
 - `catalog.json`, under the write protocol (section 4.9), and for a full implementation only through ops;
-- `DASHBOARD.md`, regenerated, after the switch of section 7.1;
+- `DASHBOARD.md`, rendered and regenerated as section 7.1 says;
+- in a binder it owns, its own section of `AGENTS.md` between the marker lines, and a one-line `CLAUDE.md` that points at `AGENTS.md`, written at creation or import and whenever its section changes or is missing; the rest of `AGENTS.md` is left as the person or an agent wrote it (decisions.md F14);
 - everything under `.sprava/`;
 - `.teka.lock`, created once and never deleted;
 - `intake/_converted/`, which may also be cleared;
 - new files created by `file_document`: files moved out of `intake/` into any document folder, `correspondence/` included. A new file never replaces an existing one. `.env` and `state.json` under `intake/mail/` are never moved (section 3.3).
 
-Must never write, move or delete: `CLAUDE.md`, `AGENTS.md` and any other agent manual (section 4.3), `README.md`, `.claude/`, `.agents/`, `catalog_check.py`, `scripts/`, `.git/`, `ledger/`, `timeline.md` and `chapters/` (decisions.md F7), the `entities/` and `sources/` folders, any existing file in a document folder, and any file it does not recognise. Reading those folders, and recording a path under `chapters/` or `entities/` with `update_document`, is allowed. lifeproj's chapters and entities modules tell agents to keep each chapter's or entity's documents in its subfolder (`modules.py`), so section 12 asks whether filing new files there should be allowed. It never executes anything found in the binder (decisions.md F9, section 3.4). It never rewrites ids, legacy keys, escaped text's meaning, or foreign absolute paths.
+Must never write, move or delete: any agent manual beyond what the list above allows (section 4.3), `README.md`, `.claude/`, `.agents/`, `catalog_check.py`, `scripts/`, `.git/`, `ledger/`, `timeline.md` and `chapters/` (decisions.md F7), the `entities/` and `sources/` folders, any existing file in a document folder, and any file it does not recognise. Reading those folders, and recording a path under `chapters/` or `entities/` with `update_document`, is allowed. lifeproj's chapters and entities modules tell agents to keep each chapter's or entity's documents in its subfolder (`modules.py`), so section 12 asks whether filing new files there should be allowed. It never executes anything found in the binder (decisions.md F9, section 3.4). It never rewrites ids, legacy keys, escaped text's meaning, or foreign absolute paths.
 
-Three of these permissions go beyond decisions.md F1, which says everything outside `.sprava/`, `catalog.json` and `DASHBOARD.md` is left alone: filing moves files out of `intake/` into document folders, `intake/_converted/` is written, and `.teka.lock` is created. Section 12 proposes amending F1.
+This list is the write list of decisions.md F13, which replaced F1's. An import also creates the copy itself (section 9.4 step 2) and never writes the original.
 
 ### 9.8 What lifeproj must change to coexist
+
+Superseded for Sprava by decisions.md P20 (2026-10-13): Sprava shares no binder with lifeproj, and `AGENTS.md` is its own file (decisions.md F14), so it neither needs these changes nor offers the addendum below. The section is kept for another full implementation that would share a binder with lifeproj, while decisions.md F15 is open.
 
 lifeproj is a catalog writer (section 1.6). To share a binder safely with a full implementation it needs these changes. Until they ship, the restrictions of section 8.1 apply.
 
@@ -2756,7 +2766,7 @@ Federation profile
 
 Adoption
 
-46. `[F]` Adoption changes no file but `.sprava/`, `.teka.lock` and an absent or marker-bearing `DASHBOARD.md` until an op is approved or a mechanical step is applied. (new)
+46. `[F]` An import never writes, moves or deletes anything in the original folder, and in the copy it writes only what section 9.7 allows. (new; revised for decisions.md F13)
 47. `[R]` A v1 catalog is "needs migration", never corrupt; strict failures on it are reported, not rejected. A digit-string or `2.0` `schema_version` is read as v1. (`test_catalog_check_legacy_schema_skips_strict` pins lifeproj's leniency)
 48. `[F]` Foreign absolute paths and non-path links are reported and never rewritten or opened. (`test_data_json_is_not_rewritten`)
 49. `[F]` `catalog_check.py` is classified by hash and never run. (new)
@@ -2815,7 +2825,7 @@ Added after the second review
 4. Is the `kind` list right for your binders? The draft uses eight values with `other` as the escape hatch, and freezes the list within v0.
 5. Hub annotations: the hub also keeps an `importance` field whose type is unknown to this draft. Should `importance` become an item field (and with what values), stay hub-only, or be dropped?
 6. Where does a binder's default context live? Section 5.9 resolves an item's context as explicit tag, binder default, `@anywhere`, but `meta` has no field for the default yet. Proposed: `meta.default_context`.
-7. Mechanical steps at adoption (section 9.4 step 3) are applied without a proposal because they are lossless and marked: deriving `follow_up_at`, removing null values, removing an empty `due`, and rewriting compact dates. Do you want them to go through the review queue anyway?
+7. Answered (2026-10-13) by decisions.md F13: the import applies these and the other changes of section 9.4 on its own; only what needs the user's judgement becomes a card. The question was: Mechanical steps at adoption (section 9.4 step 3) are applied without a proposal because they are lossless and marked: deriving `follow_up_at`, removing null values, removing an empty `due`, and rewriting compact dates. Do you want them to go through the review queue anyway?
 8. Does the existing hub ignore unknown keys in a slice and unknown top-level fields (`format_version`, `disclosure`, `closed[]`)? Its code is private; section 8.4 states the rule as a requirement, and the first v1 publish against the live hub will tell.
 9. `closed[]` in the slice: this draft answers "ids, actions, dates and kind only". Closure entries already keep `redact` and `slice_title` inside `final` (section 5.10), so per-item redaction could be honoured if titles were ever published there. Should they ever be?
 10. Local git in binders (decisions.md F12): tolerated and ignored here. Should a `.git/` history count as provenance when `.sprava/ops.ndjson` is missing?
@@ -2824,7 +2834,7 @@ Added after the second review
 13. How long does a rejected proposal stay in `.sprava/proposals/`? The draft proposes 90 days unless the user keeps it. Forever would keep the provenance of what the clerk got wrong, and also any sensitive text the rejected proposal holds.
 14. Proposal: a binder's own staleness signal, "last activity", taken from the `at` of its latest op, beside the slice's `generated` stamp. Which threshold should raise the digest-overdue signal in the app?
 15. Should `expunge` (section 6.11) be part of v0? It is the only way to forget a dictated account number or health detail, and it is the one exception to the append-only op log.
-16. decisions.md F1 says everything outside `.sprava/`, `catalog.json` and `DASHBOARD.md` is left alone. Filing into document folders, `intake/_converted/` and `.teka.lock` go beyond that (section 9.7). Proposed: amend F1 to name these three exceptions. A related question on F7: lifeproj's chapters and entities modules keep each chapter's or entity's documents in its own subfolder, and decisions.md P9 recommends a rental property with tenancies as chapters as a first template. This draft keeps `chapters/` and `entities/` closed to filing, as F7's "left opaque" reads, and lets `update_document` only record paths there. Should filing be allowed to create new files under `chapters/<name>/` (not `_past/`) and `entities/<id>/`, never replacing one?
+16. The first part is answered (2026-10-13) by decisions.md F13, whose write list names these exceptions (section 9.7). It was: decisions.md F1 says everything outside `.sprava/`, `catalog.json` and `DASHBOARD.md` is left alone. Filing into document folders, `intake/_converted/` and `.teka.lock` go beyond that (section 9.7). Proposed: amend F1 to name these three exceptions. Still open, a related question on F7: lifeproj's chapters and entities modules keep each chapter's or entity's documents in its own subfolder, and decisions.md P9 recommends a rental property with tenancies as chapters as a first template. This draft keeps `chapters/` and `entities/` closed to filing, as F7's "left opaque" reads, and lets `update_document` only record paths there. Should filing be allowed to create new files under `chapters/<name>/` (not `_past/`) and `entities/<id>/`, never replacing one?
 17. decisions.md F7 asks for `at` (or `closed_at`) and `action` on every processing log entry. This draft requires them only on entries a v0 implementation writes, because legacy entries cannot be rewritten (section 4.5). Update F7?
 18. This draft adds items to the format that no decision covers. Should they become an F-entry in decisions.md? They are:
     - item fields `contexts`, `estimate_min`, `dismissed` and `derived`; log entry fields `final`, `op_id`, `item`, `document`, `reopened_from`, `next_due` and the action `closed-duplicate`; `meta.former_names`; outbox v1's optional `due` on a completion; the slice's `disclosure`;
@@ -2835,10 +2845,10 @@ Added after the second review
 19. Should a drain hold some completions for approval: more than a set number of closures at once, or any closure of a `legal-deadline` or `payment` item? That would protect against a misbehaving local process writing the outbox, but it departs from decisions.md F8, which keeps lifeproj's completion semantics exactly. This draft keeps F8 and only shows each drained batch as an undoable change.
 20. The slice gains a fifth additive field, `disclosure`, beyond the four in decisions.md F8. At `full`, a redacted item's `link` is published as null and a hand-made id as an alias, which departs from lifeproj's projection (section 5.5). At `title` and `kind`, which lifeproj does not have, every id that is not in the recommended form is aliased, redacted or not, and a redacted item's tags are emptied at `title`. Accept these departures?
 21. A sensitive binder's name is visible to the hub at every level except `none`. Should `meta` gain a `public_name` that the slice and the spool file use instead?
-22. When will lifeproj gain the changes of section 9.8? Until then, every adopted binder that lifeproj can reach keeps disclosure level `full` and cannot use `dismiss` or recurrence. Reachable includes every binder that holds `catalog_check.py` or a manual that runs `lifeproj publish`, which today is every binder lifeproj made.
+22. Superseded (2026-10-13) by decisions.md P20 for Sprava, which shares no binder with lifeproj; see decisions.md F15 and A17. It was: When will lifeproj gain the changes of section 9.8? Until then, every adopted binder that lifeproj can reach keeps disclosure level `full` and cannot use `dismiss` or recurrence. Reachable includes every binder that holds `catalog_check.py` or a manual that runs `lifeproj publish`, which today is every binder lifeproj made.
 23. The hub writes the outbox without a lock, so a drain can still lose a completion that lands between its last read and its rename (section 8.3). Should the hub take a lock on the outbox, or write one file per completion, which would make acknowledgement race-free?
 24. Recurring items move into the binder (section 5.4). Once an item carries `recurrence`, the hub must stop advancing or closing it on its own, and should add `due` to its completions so the drain can tell occurrences apart. How should the hub learn which items recur: a `recurrence` field in the slice, or the `kind`?
-25. Leaving Sprava is a hand edit today (section 9.4, "Leaving"). Should v0 have a release op that removes the stamp, as the one exception to "migrate never removes a key"?
+25. Now part of decisions.md F15: after an import the original stays as the way back (section 9.4, "Leaving"). It was: Leaving Sprava is a hand edit today. Should v0 have a release op that removes the stamp, as the one exception to "migrate never removes a key"?
 26. Changes `docs/architecture.md` and `docs/mvp.md` ask of this draft, not yet made here. Each needs the author's acceptance (architecture.md section 13, items 8, 10, 11, 31, 36 and 43; mvp.md section 8, questions 3 and 13):
     - a `withdrawn` proposal state, so that a brain's withdrawal is not recorded as a rejection, and a named `expect` field on proposals (section 6.5);
     - an optional `seal` field on op lines, which other implementations ignore, and the op types `takeover` and `rekey`, which section 1.3 makes a version change because op types are a closed list;
@@ -2846,7 +2856,7 @@ Added after the second review
     - `documents[].sensitivity` with the value `private`, honoured by every reader, whose removal or lowering is a privacy change. capture-event-v0 section 3.3 calls the same marker `redact: true` on the document record, which section 4.3 does not define, so one name must be chosen for both drafts;
     - `.sprava/owner.json`, the owner record, and `.sprava/proposals/<id>/`, the body of a document a brain proposes, in the table of section 7.2, which today requires every unlisted file there to be rebuildable;
     - in sections 6.5 and 9.7, two more writes and one rule: the visible `captures/` folder of filed captures (which mvp.md defers), a new file created in a document folder for an approved brain document, and the rule that nothing a proposal carries reaches the binder's visible folders before approval;
-    - in section 9.8, lifeproj's refusal keyed on adoption (a binder that has `.sprava/ops.ndjson`) as well as on `meta.format`, refusing with one line and exit status 0, and the outbox acknowledgement of section 8.3 asked of lifeproj too;
-    - in section 9.8, an addendum that forbids every hand edit of `catalog.json`, closing included, opens with a marker line, and says it overrides older instructions in the same manual;
-    - after an outside edit, mechanical repairs applied as one undoable `import` batch after a quiet period with no outside write, where section 6.5's complete list of changes without a proposal names mechanical steps only at adoption and section 6.7 step 7 offers every repair as a proposal;
+    - in section 9.8, lifeproj's refusal keyed on adoption (a binder that has `.sprava/ops.ndjson`) as well as on `meta.format`, refusing with one line and exit status 0, and the outbox acknowledgement of section 8.3 asked of lifeproj too (superseded for Sprava by decisions.md P20);
+    - in section 9.8, an addendum that forbids every hand edit of `catalog.json`, closing included, opens with a marker line, and says it overrides older instructions in the same manual (superseded by decisions.md F14: Sprava's own section of `AGENTS.md` says this);
+    - after an outside edit, mechanical repairs applied as one undoable `import` batch after a quiet period with no outside write, where section 6.5's complete list of changes without a proposal names the import's own changes only and section 6.7 step 7 offers every repair as a proposal;
     - rules for creating a binder beyond sections 3.1, 4.2 and 6.9: an empty stamped v0 catalog and the template's checklist offered as one proposal.
