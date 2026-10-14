@@ -100,7 +100,7 @@
   Sprava refuses synced locations, architecture 2.3). New Binder creates the binder there and no longer asks
   where. A binder made with lifeproj is imported: Sprava copies it into `~/Sprava/<name>` and processes the
   copy on its own (F13). Importing happens once. The original is left untouched as a fallback, and Sprava never
-  writes into it; once the person has checked the import, Sprava may offer to move the original to the Trash.
+  writes into it or offers to remove it.
   A binder stays an ordinary folder the person can open and browse, but its management goes through Sprava.
   Supersedes adoption in place (F1, M1, `docs/mvp.md` §2.1 and feature 1's "Adopt a folder", binder-v0 §9.1)
   and lifeproj coexistence for the binders Sprava owns: lifeproj as a second writer (mvp.md §6), the lifeproj
@@ -204,7 +204,8 @@
   found value the v0 types reject), since an import cannot invent one; an open item whose id
   already closes a processing log entry, which may be a duplicate or an item reopened by hand; and a name the
   binder cannot have in `~/Sprava` (not of the recommended shape, or taken by another binder), which the person
-  picks before the copy is made. Closing items left at `status: done`, the `migrate`s that add v0 keys beside
+  picks before the copy is made; and an item left at `status: done`, whose closing date lifeproj never
+  recorded, so the person gives it before the item is closed. The `migrate`s that add v0 keys beside
   legacy ones, `set_meta` for `modules` and `id_scheme`, the starting disclosure (`full` when the binder published slices before, else
   `none`) and the stamp are automatic; the stamp waits until the cards are settled. The write list for a
   binder Sprava owns replaces F1's: `.sprava/`, `catalog.json` through ops, `DASHBOARD.md` and `AGENTS.md`
@@ -233,9 +234,9 @@
   hub can read its slices) or drops it; and what the import's copy leaves behind. Recommended for the second:
   leave out `catalog_check.py`, and `.claude/settings.json` when it declares hooks, which binder-v0 §8.1 and
   §9.2 step 12 treat as marks of a lifeproj binder and as a channel off the Mac; copy everything else. Until
-  this is decided the format does not change. Decided now, because it is a privacy floor: a `.claude/settings.json`
-  that declares hooks is left out of the copy's `.claude/` and kept only as `.sprava/adopted/claude-settings.json`
-  (binder-v0 §9.4 step 2).
+  this is decided the format does not change. Decided now, because it is a privacy floor: every hidden file or folder at the
+  binder's top level (`.claude/`, `.codex/`, `.mcp.json` and the like) is set aside under
+  `.sprava/adopted/top-level/` instead of copied into place (binder-v0 §9.4 step 2).
 
 ## Capture events (`docs/spec/capture-event-v0.md`)
 
