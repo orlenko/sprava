@@ -96,6 +96,7 @@ enum WireFixtures {
     }
     #expect(throws: CompanionWireError.invalid) { try CompanionSealedObject.open(name: name, epoch: 2, key: key, bytes: first) }
     #expect(throws: CompanionWireError.invalid) { try CompanionSealedObject.open(name: "../credentials", epoch: 1, key: key, bytes: first) }
+    #expect(throws: CompanionWireError.invalid) { try CompanionSealedObject.open(name: String(repeating: "/", count: 100000), epoch: 1, key: key, bytes: first) }
     #expect(throws: CompanionWireError.invalid) { try CompanionSealedObject.seal(name: "index/1", epoch: 1, key: key, plaintext: plaintext) }
     #expect(throws: CompanionWireError.invalid) { try CompanionSealedObject.open(name: name, epoch: 1, key: key, bytes: Data(repeating: 0, count: 65537)) }
 }

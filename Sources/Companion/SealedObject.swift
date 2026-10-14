@@ -11,7 +11,7 @@ public struct CompanionOpenedObject {
 public enum CompanionSealedObject {
     struct Binding { let kid: String; let signed: Bool; let plaintext: Int; let wire: Int }
     static func binding(_ name: String, _ epoch: Int64) throws -> Binding {
-        guard epoch >= 0, epoch <= JSONNumber.maxSafeInteger else { throw CompanionWireError.invalid }
+        guard name.utf8.count <= 128, epoch >= 0, epoch <= JSONNumber.maxSafeInteger else { throw CompanionWireError.invalid }
         let parts = name.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         func revision(_ text: String) -> Bool {
             guard let n = Int64(text), n >= 1, n <= JSONNumber.maxSafeInteger else { return false }
