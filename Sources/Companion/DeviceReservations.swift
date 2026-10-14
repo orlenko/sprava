@@ -10,6 +10,7 @@ public struct CompanionDeviceRecord: Sendable {
     public enum State: String, Sendable { case pairing, active, revoked, abandoned }
     public let deviceID: String
     public let state: State
+    /// Whether the ephemeral pairing key is ready; this does not describe an active device's Kd.
     public let keyReady: Bool
     public let creationAttempted: Bool
     public let cleanupPending: Bool
@@ -21,7 +22,7 @@ extension CompanionProfile {
         let id = CompanionWire.base64(SymmetricKey(size: .bits128).withUnsafeBytes { Data($0) })
         try store.write { t in
             guard try epoch(t) != nil else { throw CompanionCredentialError.invalid }
-            try t.execute("INSERT INTO devices VALUES (?, 'pairing', 0, 0, 0)", .text(id))
+            try t.execute("INSERT INTO devices (device, state, key_ready, creation_attempted, cleanup_pending) VALUES (?, 'pairing', 0, 0, 0)", .text(id))
         }
         return try preparePairingReservation(deviceID: id)
     }
@@ -73,6 +74,8 @@ extension CompanionProfile {
             guard let r = try record(deviceID, t), r.state == .abandoned else { throw CompanionCredentialError.invalid }
             if !r.cleanupPending { return }
             try secrets.remove(account: pairingAccount(deviceID))
+            try secrets.remove(account: createdAccount(deviceID))
+            try secrets.remove(account: deviceAccount(deviceID))
             try t.execute("UPDATE devices SET cleanup_pending = 0, key_ready = 0 WHERE device = ?", .text(deviceID))
         }
     }
