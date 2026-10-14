@@ -312,15 +312,21 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   reopening anything else, moving a document to another binder, more than 20 additions in a turn) takes one tap
   in the conversation; class C (disclosure, privacy markers, names, expunge, engine and backup settings,
   anything outward, deleting files, manuals and dot folders) stays in the app's own controls. Code decides the
-  class from the op and its target, never a model. Document text is data, never instructions. Adds
-  `move_document` and `unfile_document` to binder-v0 (conversation.md §6).
+  class from the op and its target, never a model. Document text is data, never instructions: an item read
+  from a document is added at once only when code anchors its quote and found its date or amount, else it
+  is a one-tap suggestion, and no log entry is written from a document's text. Adds
+  `move_document`, `unfile_document` and `transfer_document` to binder-v0 (conversation.md §6).
 - **D4 decided.** Two roles in every binder. The front desk, a local model with code, is always present and
   makes the simple decisions (file, search and quote, add a to-do, route). The back office, Claude Code or,
   second, Codex, when the person connects one for the binder, is a long-lived per-binder session driven over
   the agent's structured protocol (Claude Code `-p` with stream-json input and output, resumed by session id,
-  permissions answered by Sprava's policy; Codex's app server, a spike), never a scripted terminal. Its reach:
-  Sprava's MCP tools and read-only file tools in the binder, no shell, no web. "Open in Terminal" resumes the
-  binder's own session in a real terminal (`claude --resume <id>`) while Sprava pauses its driving. Turning a
+  fixed allow and deny rules and no prompts; Codex's `app-server` JSON-RPC, in a Codex home and sign-in of
+  Sprava's own, since Codex would otherwise load the person's whole setup), never a scripted terminal. Its
+  reach: Sprava's MCP tools and read-only file tools in the binder, no shell, no web; Sprava passes the
+  binder's manual, brief and rules itself. One process per session, under a lock. "Open in Terminal" resumes
+  the binder's own session in a real terminal (`claude --resume <id>`) after Sprava ends its own process on it,
+  until the person presses Resume. The session history it keeps outside the binder is listed and cleaned up
+  (conversation.md §11.1, §12). Turning a
   back office on is a widening change made in the app's window and is the consent for the binder's documents,
   private and intake ones included. Revises A4 for the back-office client only: it may apply what the person's
   turn authorizes by class (D3); registered clients keep A4 (conversation.md §4, §11.1).
