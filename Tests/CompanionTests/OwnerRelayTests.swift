@@ -138,6 +138,47 @@ private func owner(_ plan: HTTPPlan) throws -> (CompanionOwnerRelay, String) {
     await #expect(throws: CompanionRelayError.invalid) { try await client.deleteDevice(deviceID: "https://other.example", downloadLimit: 4096) }
 }
 
+@Test func requestDownloadsReturnWholeBoundedBytesAndMissingRemainsOnlyALostCandidate() async throws {
+    let bytes = Data(repeating: 67, count: 65536)
+    let (client, host) = try owner(HTTPPlan(headers: ["Content-Length": "65536"], chunks: [bytes.prefix(32000), bytes.dropFirst(32000)], observe: { request in
+        #expect(request.httpMethod == "GET" && request.url?.path == "/v0/requests/" + wireID + "/" + wireID)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer " + ownerToken)
+    }))
+    let reply = try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 65536)
+    if case .body(let body) = reply.value { #expect(body == bytes && reply.receivedBytes == bytes.count) }
+    else { Issue.record("Expected a whole request body") }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(status: 404, chunks: [Data("missing".utf8)]))
+    let missing = try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 4096)
+    #expect(missing.status == 404 && missing.value == nil && missing.receivedBytes == 7)
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchRequest(deviceID: wireID, requestID: "../credential", downloadLimit: 65536) }
+}
+
+@Test func declaredAndStreamedOversizedRequestsAreDiscardableWithoutRetainingTheBodyOrLosingItsDownloadCost() async throws {
+    let (client, host) = try owner(HTTPPlan(headers: ["Content-Length": "65537"]))
+    let declared = try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 1)
+    if case .tooLarge = declared.value { #expect(declared.status == 200 && declared.receivedBytes == 0) }
+    else { Issue.record("An advertised oversized body needs no download") }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(repeating: 67, count: 65536), Data([67])]))
+    let streamed = try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 8388608)
+    if case .tooLarge = streamed.value { #expect(streamed.receivedBytes == 65537) }
+    else { Issue.record("Expected a discardable oversized body") }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(status: 503, chunks: [Data(repeating: 67, count: 4097)]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 8388608) }
+}
+
+@Test func partialRequestDownloadsAndBudgetOverrunsStopTheDrainRatherThanBecomingDiscardableRequests() async throws {
+    let (client, host) = try owner(HTTPPlan(headers: ["Content-Length": "10"], chunks: [Data(repeating: 67, count: 5)]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 65536) }
+    for plan in [HTTPPlan(chunks: [Data(repeating: 67, count: 11)]), HTTPPlan(headers: ["Content-Length": "11"]),
+                 HTTPPlan(status: 401, chunks: [Data(repeating: 67, count: 11)])] {
+        InventedRelayProtocol.plans.set(host, plan)
+        await #expect(throws: CompanionRelayError.invalid) { try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 10) }
+    }
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(repeating: 67, count: 65537)]))
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 65536) }
+    await #expect(throws: CompanionRelayError.invalid) { try await client.fetchRequest(deviceID: wireID, requestID: wireID, downloadLimit: 0) }
+}
+
 @Test func ownerHealthReadsOnlyStrictBoundedMetadataWithoutCredentials() async throws {
     let bytes = Data("{\"protocol\":0,\"claimed\":true,\"instance\":\"\(relayInstance)\"}".utf8)
     let (client, _) = try owner(HTTPPlan(chunks: [bytes.prefix(13), bytes.dropFirst(13)], observe: { request in

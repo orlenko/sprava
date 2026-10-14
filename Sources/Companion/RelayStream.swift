@@ -1,6 +1,9 @@
 import Foundation
 
-public enum CompanionRelayError: Error, Equatable { case invalid }
+public enum CompanionRelayError: Error, Equatable {
+    case invalid
+    case requestTooLarge(receivedBytes: Int)
+}
 public struct CompanionRelayReply<Value: Sendable>: Sendable {
     public let status: Int
     public let value: Value?
@@ -16,17 +19,22 @@ final class RelayStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let successLimit: Int
     private let errorLimit: Int
+    private let downloadLimit: Int
+    private let discardOversizedRequest: Bool
     private var maximum = 4096
     private var bytes = Data()
     private var status: Int?
+    private var expectedLength: Int64 = -1
     private var finished = false
     private var continuation: CheckedContinuation<CompanionRelayReply<Data>, any Error>?
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var timeout: Task<Void, Never>?
-    init(limit: Int, downloadLimit: Int? = nil) {
+    init(limit: Int, downloadLimit: Int? = nil, discardOversizedRequest: Bool = false) {
         successLimit = min(limit, downloadLimit ?? limit)
         errorLimit = min(4096, downloadLimit ?? 4096)
+        self.downloadLimit = downloadLimit ?? max(limit, 4096)
+        self.discardOversizedRequest = discardOversizedRequest
     }
 
     func send(_ request: URLRequest, configuration: URLSessionConfiguration,
@@ -73,25 +81,32 @@ final class RelayStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
             completionHandler(.cancel); finish(.failure(CompanionRelayError.invalid)); return
         }
         let bound = (200...299).contains(response.statusCode) ? successLimit : errorLimit
+        if discardOversizedRequest && response.statusCode == 200 && response.expectedContentLength > 65536 {
+            completionHandler(.cancel); finish(.failure(CompanionRelayError.requestTooLarge(receivedBytes: 0))); return
+        }
         guard response.expectedContentLength <= bound else {
             completionHandler(.cancel); finish(.failure(CompanionRelayError.invalid)); return
         }
-        lock.lock(); status = response.statusCode; maximum = bound; let stopped = finished; lock.unlock()
+        lock.lock(); status = response.statusCode; maximum = bound; expectedLength = response.expectedContentLength; let stopped = finished; lock.unlock()
         completionHandler(stopped ? .cancel : .allow)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lock.lock()
         guard !finished else { lock.unlock(); return }
         guard data.count <= maximum - bytes.count else {
-            lock.unlock(); finish(.failure(CompanionRelayError.invalid)); return
+            let count = bytes.count + data.count
+            let error: CompanionRelayError = discardOversizedRequest && status == 200 && count > 65536 && count <= downloadLimit ?
+                .requestTooLarge(receivedBytes: count) : .invalid
+            lock.unlock(); finish(.failure(error)); return
         }
         bytes.append(data); lock.unlock()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         lock.lock()
         let reply = status.map { CompanionRelayReply(status: $0, value: (200...299).contains($0) ? bytes : nil, receivedBytes: bytes.count) }
+        let whole = expectedLength < 0 || expectedLength == Int64(bytes.count)
         lock.unlock()
-        if error != nil || reply == nil { finish(.failure(CompanionRelayError.invalid)) }
+        if error != nil || reply == nil || !whole { finish(.failure(CompanionRelayError.invalid)) }
         else { finish(.success(reply!)) }
     }
 }

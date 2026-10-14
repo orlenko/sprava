@@ -116,7 +116,7 @@ public enum CompanionViewProjection {
         if let text = row["at"]?.stringValue, text.utf8.count <= 64, let date = Timestamp.parse(text) { return .string(date.ISO8601Format()) }
         return .null
     }
-    private static func safeRecord(_ root: JSONValue) -> Bool {
+    static func safeRecord(_ root: JSONValue) -> Bool {
         var pending = [root]
         while let value = pending.popLast() {
             switch value {
@@ -133,7 +133,7 @@ public enum CompanionViewProjection {
         }
         return true
     }
-    private static func budget(_ roots: [JSONValue]) throws {
+    static func budget(_ roots: [JSONValue]) throws {
         var pending = roots.map { ($0, 0) }, nodes = 0, textBytes = 0
         while let (value, depth) = pending.popLast() {
             nodes += 1
