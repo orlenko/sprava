@@ -13,7 +13,7 @@ public final class CompanionProfile: Sendable {
     let store: StateStore
     let relay: CompanionRelayIdentity
     let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 9, statements: [
+    static let schema = StateStore.Schema(version: 10, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
         "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991), " +
         "index_reserved INTEGER NOT NULL DEFAULT 0, index_published INTEGER NOT NULL DEFAULT 0, " +
@@ -39,6 +39,7 @@ public final class CompanionProfile: Sendable {
         "bytes BLOB NOT NULL, PRIMARY KEY(binder, version)) WITHOUT ROWID",
         "CREATE TABLE phone_item_snapshots (binder TEXT NOT NULL REFERENCES phone_binders(binder), id BLOB NOT NULL, " +
         "hash TEXT NOT NULL, changed_in INTEGER NOT NULL, PRIMARY KEY(binder, id)) WITHOUT ROWID",
+        "CREATE TABLE publication_attempts (scope TEXT PRIMARY KEY, name TEXT NOT NULL, next TEXT NOT NULL, attempts INTEGER NOT NULL) WITHOUT ROWID",
         "CREATE TABLE index_upload (slot INTEGER PRIMARY KEY CHECK (slot = 1), revision INTEGER NOT NULL, " +
         "epoch INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('uploading','published','superseded')), bytes BLOB NOT NULL)",
         "CREATE TABLE index_upload_views (binder TEXT PRIMARY KEY REFERENCES phone_binders(binder), version INTEGER NOT NULL) WITHOUT ROWID",
