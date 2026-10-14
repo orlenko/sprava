@@ -13,12 +13,20 @@ public final class CompanionProfile: Sendable {
     let store: StateStore
     let relay: CompanionRelayIdentity
     let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 2, statements: [
+    static let schema = StateStore.Schema(version: 3, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
-        "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991))",
+        "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991), " +
+        "index_reserved INTEGER NOT NULL DEFAULT 0, index_published INTEGER NOT NULL DEFAULT 0)",
         "CREATE TABLE devices (device TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pairing','active','revoked','abandoned')), " +
         "key_ready INTEGER NOT NULL CHECK (key_ready IN (0,1)), creation_attempted INTEGER NOT NULL CHECK (creation_attempted IN (0,1)), " +
-        "cleanup_pending INTEGER NOT NULL CHECK (cleanup_pending IN (0,1))) WITHOUT ROWID"
+        "cleanup_pending INTEGER NOT NULL CHECK (cleanup_pending IN (0,1)), " +
+        "highest_seq INTEGER NOT NULL DEFAULT 0 CHECK (highest_seq BETWEEN 0 AND 9007199254740991)) WITHOUT ROWID",
+        "CREATE TABLE pairings (device TEXT PRIMARY KEY REFERENCES devices(device), pairing TEXT NOT NULL UNIQUE, " +
+        "expires TEXT NOT NULL, public_b BLOB, hello BLOB, label TEXT, approval TEXT, wrapped_key BLOB, device_keys BLOB, " +
+        "key_epoch INTEGER, paired_at TEXT, acknowledged INTEGER NOT NULL DEFAULT 0, " +
+        "ephemeral_cleanup INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
+        "CREATE TABLE recipients (epoch INTEGER NOT NULL, device TEXT NOT NULL REFERENCES devices(device), " +
+        "PRIMARY KEY(epoch, device)) WITHOUT ROWID"
     ])
 
     public init(database: URL, relay: CompanionRelayIdentity, secrets: any CompanionCredentialStorage) throws {
@@ -68,7 +76,7 @@ public final class CompanionProfile: Sendable {
         return number
     }
     private func keyAccount(_ number: Int64) -> String { relay.account + ":account-key-v0:\(number)" }
-    private func key(_ number: Int64) throws -> SymmetricKey {
+    func key(_ number: Int64) throws -> SymmetricKey {
         guard let bytes = try secrets.read(account: keyAccount(number)) else { throw CompanionCredentialError.unavailable }
         guard bytes.count == 32 else { throw CompanionCredentialError.invalid }
         return SymmetricKey(data: bytes)
