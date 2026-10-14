@@ -75,6 +75,25 @@ public actor CompanionOwnerPublication {
         try profile.discardRemovedIndex()
         return try profile.completeIndex(index) ? .uploaded(name: index.name) : .superseded(name: index.name)
     }
+    /// companion-v0 §9.9: one PUT of recorded epoch-zero bytes; account rotation does not change the device key.
+    /// Preparation and completion each commit under SQLite's write lock; no transaction spans the network await.
+    public func uploadOutcomes(deviceID: String, generatedAt: String) async throws -> CompanionPublicationProgress {
+        guard !busy else { throw CompanionOwnerConnectionError.busy }
+        busy = true; defer { busy = false }
+        let state = try profile.ownerClaimState()
+        guard state == .claimed else { throw CompanionPairingFlowError.ownerUnavailable(state) }
+        guard let publication = try profile.prepareOutcomes(deviceID: deviceID, generatedAt: generatedAt) else { return .idle }
+        let attempt = try profile.reservePublicationAttempt(scope: "outcomes/" + deviceID, name: publication.name, now: now())
+        if !attempt.send { return .waiting(name: publication.name, retryAt: attempt.next) }
+        let status = try await transport.putObject(name: publication.name, bytes: publication.bytes)
+        try refusal(status)
+        if status == 409 || status == 410 {
+            try profile.supersedeOutcomes(publication)
+            return .superseded(name: publication.name)
+        }
+        guard status == 204 else { throw CompanionOwnerConnectionError.relayRejected(status) }
+        return try profile.completeOutcomes(publication) ? .uploaded(name: publication.name) : .superseded(name: publication.name)
+    }
     private func refusal(_ status: Int) throws {
         if status == 401 {
             try profile.recordClaimState(.checkingRefusal)
