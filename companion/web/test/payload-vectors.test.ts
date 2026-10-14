@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { openPairingDelivery, openDeviceKeys, openIndex } from '../src/owner-payloads.ts';
+import { openOutcomes } from '../src/outcomes-payloads.ts';
 import { openView } from '../src/view-payloads.ts';
 import { PayloadError } from '../src/payload.ts';
 import { id, key, owner, sealed } from './owner-fixture.ts';
@@ -15,6 +16,7 @@ async function read(entry: { kind: string; text: string }) {
         case 'device-keys': return openDeviceKeys(id, 1, secret, signing, sealed(`devices/${id}/keys/1`, 'device', 1, null, true, entry.text));
         case 'index': return openIndex(7, 1, secret, signing, sealed('index/7', 'account', 1, null, true, entry.text));
         case 'view': return openView(id, 7, 1, secret, signing, sealed(`views/${id}/7`, id, 1, null, true, entry.text));
+        case 'outcomes': return openOutcomes(id, 7, secret, signing, sealed(`devices/${id}/outcomes/7`, 'device', 0, null, true, entry.text));
         default: throw new Error('unimplemented vector kind');
     }
 }

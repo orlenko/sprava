@@ -1,7 +1,7 @@
 # Companion browser protocol
 
 This is the first browser-side component of the companion described in `docs/companion.md`.
-It is not yet an installable web app: the pairing/network flow, outcomes, screens,
+It is not yet an installable web app: the pairing/network flow, screens,
 offline requests and GitHub Pages publishing still need implementations.
 
 ```sh
@@ -31,7 +31,10 @@ key, revision, timestamp and binder-entry validation for pairing deliveries, dev
 rotations and indexes. It imports secret keys as non-extractable CryptoKeys and returns only
 defined fields. `src/view-payloads.ts` checks signed view schemas, including typed item ids,
 cross-array uniqueness, bucket membership, dates and per-item versions. The shared public
-payload-validation corpus covers these owner payloads. Outcomes are still separate work.
+payload-validation corpus covers these owner payloads. `src/outcomes-payloads.ts` authenticates
+device outcomes, validates their recipients/revisions/entries and checks ASCII-space padding
+against the original plaintext byte length. Outcomes remain provisional until their revision
+and matching outbox changes commit together.
 
 Decoder results remain provisional. `src/browser-store.ts` provides pairing reservations,
 conditional installation and acknowledgement, and atomic admission of indexes, views and key

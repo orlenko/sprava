@@ -72,8 +72,8 @@ export async function sealObject(name: string, epoch: number, key: CryptoKey, pl
 }
 
 /** §§4.2, 4.5: signed owner objects are authenticated BEFORE any attempt to decrypt. */
-export async function openObject(name: string, epoch: number, key: CryptoKey, bytes: Uint8Array,
-    owner: CryptoKey | null = null): Promise<JsonObject> {
+export async function openPayload(name: string, epoch: number, key: CryptoKey, bytes: Uint8Array,
+    owner: CryptoKey | null = null): Promise<{ value: JsonObject; plaintextLength: number }> {
     try {
         const b = binding(name, epoch);
         checkKey(key);
@@ -98,9 +98,15 @@ export async function openObject(name: string, epoch: number, key: CryptoKey, by
             additionalData: aad(name, b.kid, epoch), tagLength: 128 }, key, cipher));
         const value = parseStrict(plain, b.plaintextLimit);
         if (!isObject(value)) throw new SealedError();
-        return value;
+        return { value, plaintextLength: plain.length };
     } catch {
         // Never include decrypted content, tokens, keys or crypto-provider errors in a user-visible error.
         throw new SealedError();
     }
+}
+
+/** The ordinary codec API; padded schemas use openPayload to check the original plaintext byte length. */
+export async function openObject(name: string, epoch: number, key: CryptoKey, bytes: Uint8Array,
+    owner: CryptoKey | null = null): Promise<JsonObject> {
+    return (await openPayload(name, epoch, key, bytes, owner)).value;
 }
