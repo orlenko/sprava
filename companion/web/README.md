@@ -1,7 +1,7 @@
 # Companion browser protocol
 
 This is the first browser-side component of the companion described in `docs/companion.md`.
-It is not yet an installable web app: pairing, IndexedDB state, payload validation, screens,
+It is not yet an installable web app: the pairing/network flow, outcomes, screens,
 offline requests and GitHub Pages publishing still need implementations.
 
 ```sh
@@ -31,9 +31,25 @@ key, revision, timestamp and binder-entry validation for pairing deliveries, dev
 rotations and indexes. It imports secret keys as non-extractable CryptoKeys and returns only
 defined fields. `src/view-payloads.ts` checks signed view schemas, including typed item ids,
 cross-array uniqueness, bucket membership, dates and per-item versions. The shared public
-payload-validation corpus covers these owner payloads. Outcomes and freshness admission
-are still separate work.
+payload-validation corpus covers these owner payloads. Outcomes are still separate work.
 
-These results remain provisional. The caller must commit the high-water marks and encrypted
-cache durably as section 10.2 requires before showing anything, pin the signing key only when
-a pairing is installed, and preserve that pin during rotations. Decrypted data stays in memory.
+Decoder results remain provisional. `src/browser-store.ts` provides pairing reservations,
+conditional installation and acknowledgement, and atomic admission of indexes, views and key
+rotations. Every state write uses strict IndexedDB durability and resolves only after completion.
+Validation runs outside transactions; commit rechecks the pairing, epoch and relevant index/version
+floors. The cache stores sealed bytes and non-extractable keys, never decrypted binder text.
+Removed binders lose their cached views and keys in the index transaction; their version floors
+remain. Outdated caches may remain stored, so a future screen must check the current index,
+epoch and exact view version before opening and showing them. Outcomes/outbox storage and
+pairing removal will extend the same database; those flows are not implemented here.
+
+The Node suite uses fake-indexeddb for abort and concurrent-window scenarios. A separate real
+Chrome check writes invented fixtures to a disposable profile, restarts Chrome, and decrypts
+the persisted cache with its non-extractable keys:
+
+```sh
+npm run test:browser
+# On another platform, set SPRAVA_TEST_CHROME to the Chrome executable.
+```
+
+This check never opens an existing browser profile and removes its temporary profile afterward.

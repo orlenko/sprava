@@ -5,13 +5,17 @@
   "description": "Browser-side protocol primitives for Sprava's companion.",
   "license": "LGPL-2.1-only",
   "type": "module",
-  "engines": { "node": ">=26" },
+  "engines": {
+    "node": ">=26"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "tsc -p . && node --test --test-timeout=60000 --test-reporter=spec 'test/**/*.test.ts' && npm run build"
+    "test": "tsc -p . && node --test --test-timeout=60000 --test-reporter=spec 'test/**/*.test.ts' && npm run build",
+    "test:browser": "npm run build && node test/browser-store.chrome.ts"
   },
   "devDependencies": {
     "@types/node": "26.6.4",
+    "fake-indexeddb": "6.2.5",
     "typescript": "6.0.3"
   }
 }
