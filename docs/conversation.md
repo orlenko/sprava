@@ -85,7 +85,8 @@ D6). A line holds an id (UUIDv7), the time, the speaker (`person`, `front-desk`,
 the text, references (documents, ops, batches, questions and answers, tasks), and for the person's lines the
 device. Files are never copied into it; it names the documents they became. Nothing is ever cut: a message
 longer than 64 KiB (proposed) is stored whole as numbered parts on consecutive lines that share its id, and a
-reader joins them; a message whose parts are not all written is not acted on. It travels with the binder
+reader joins at most 64 parts (4 MiB, proposed), checked before joining; a longer message is refused when
+typed, and a message whose parts are incomplete or over the bound is quarantined, never acted on. It travels with the binder
 through backup, offload and restore, like the op log. binder-v0 changes (section 15, PR 1): §7.2 lists it as
 history, not rebuildable, untrusted when read; §6.11 (expunge) covers it.
 
@@ -354,8 +355,9 @@ are proposed, to be set from measured fixtures. Graduation only reduces how much
 every case of a kind on probation, 1 in 10 of a graduated kind, forever. It never widens the classes of 6.1.
 A report line of a kind on probation says "new at this". Without a back office nothing graduates, and the
 settings show human-checked accuracy alone. The engine settings show both numbers, the case counts and each
-kind's state, and the person may put a kind back on probation. Scores are Sprava's state in the support folder (decisions.md A13), rebuilt from the transcript,
-where every verdict and card answer is recorded.
+kind's state, and the person may put a kind back on probation. Scores are Sprava's state in the support
+folder (decisions.md A13), counted only from the runtime's own records of verdicts and of the person's taps
+and Undos; the transcript, which any program can write, is never a source for them.
 
 ## 8. What the front desk reads
 
@@ -372,7 +374,8 @@ Undo with no fix writes no rule, because it says what was wrong and not what is 
 The rules live in a "Filing rules" part of Sprava's own section of `AGENTS.md`, between Sprava's markers (F14
 in PR #347), so the person and any agent can read them; Sprava passes them to the back office in its prompt
 (11.1). Sprava parses only its own section. The manual is editable by anyone, so it is not the authority:
-each acceptance is recorded in the binder's op log with the rule's id and digest, and a manual line that
+each acceptance, edit and deletion is recorded in the binder's op log with the rule's id and digest, only the
+latest record for an id counts (so an old line put back stays dead), and a manual line that
 matches no recorded acceptance (written by hand, by an agent, or restored) is never used; the engine settings
 list it as "not accepted", with Use and Delete. A line that no longer parses is kept, skipped, and listed as
 "needs fixing", never dropped. The front desk reads every
