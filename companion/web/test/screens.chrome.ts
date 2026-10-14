@@ -116,10 +116,14 @@ try {
         try { return (await command('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result.value; }
         catch (error) { throw new Error(`Screen check: ${expression.slice(0, 180)}`, { cause: error }); }
     };
-    const wait = (condition: string) => evaluate(`new Promise((resolve, reject) => {
-        const until = Date.now() + 10000; const poll = () => { if (${condition}) resolve(true);
-        else if (Date.now() > until) reject(Error('timed out: ' + location.href + ' · ' + document.body.textContent.slice(0, 200)));
-        else setTimeout(poll, 20); }; poll(); })`);
+    const wait = async (condition: string) => {
+        const until = Date.now() + 10000;
+        while (Date.now() < until) {
+            try { if (await evaluate(condition)) return; } catch { /* A navigation replaces the evaluation context. */ }
+            await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        throw new Error(`Screen condition timed out: ${condition}`);
+    };
     await wait(`document.querySelector('#device-label') !== null`);
     const initialLoaded = loaded(); await command('Page.navigate', { url: origin + '/index.html#pair=invalid' }); await initialLoaded;
     await wait(`location.pathname === '/index.html' && document.querySelector('#device-label') !== null && location.hash === ''`);
