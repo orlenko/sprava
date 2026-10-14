@@ -13,7 +13,7 @@ The MVP (minimum viable product: the smallest release worth using) must prove on
 - New material reaches the right binder without the person opening a file. A note, however the person produced its text (typed, dictated with any tool, pasted), becomes a proposed change within a minute (decisions.md P12). A file put in a binder's `intake/` folder becomes a card to file it.
 - Nothing changes until the person approves it, and every change can be traced and undone. (Revised by
   decisions.md D2 and D3, 2026-10-14: in a binder's conversation, filing and additions apply at once with
-  Undo, and changes to existing items take one tap there; see `docs/conversation.md` §5.)
+  Undo, and changes to existing items take one tap there; see `docs/conversation.md` §6.)
 - Deadlines and follow-ups surface on their own, even when nobody opened the binder for weeks.
 - When the background work stops, the person finds out.
 - All of this runs on the Mac with no subscription, no account and no network. An outside AI tool can help, and is never needed (decisions.md P1).
@@ -152,13 +152,13 @@ From decisions.md M2:
 - Google Tasks export: the hub already mirrors to Google Tasks during the transition (decisions.md A7).
 - Email intake: it brings credentials, other people's text and injection risk into the first release.
 - Document OCR beyond short scans: in this draft, all reading of document text waits (below).
-- The open-model fallback: its quality is unknown until it passes the same fixtures (architecture 5.6). If Ukrainian matters for v1, it moves in (decisions.md P8). A local open model now comes in as the engine of a binder's conversation (decisions.md D5; `docs/conversation.md` §7.4); the clerk's own fallback stays deferred.
+- The open-model fallback: its quality is unknown until it passes the same fixtures (architecture 5.6). If Ukrainian matters for v1, it moves in (decisions.md P8). A local open model now comes in as a binder's front desk (decisions.md D5; `docs/conversation.md` §11.2); the clerk's own fallback stays deferred.
 - Private Cloud Compute: available only to App Store apps with an entitlement (decisions.md P1).
 
 Also deferred, as recommendations of this draft:
 
 - Meetings, documents, images and videos as captures. They arrive through the adaptation layer of decisions.md P12, which establishes the ingestion protocol for each type of input. Its design is open; the thesis needs only text.
-- Documents dragged into the app. (The extraction helper and OCR are now in scope for `intake/`, increment 7; dragging is a second source for the same adapters.) They bring a sandboxed helper (architecture 2.1) and reading other people's text. Files in a binder's `intake/` are filed in the MVP by the code-built intake cards of feature 4, which read no text. Revised by decisions.md D1 and D2: dropping files on a binder's conversation is the main way to add documents (`docs/conversation.md` §4).
+- Documents dragged into the app. (The extraction helper and OCR are now in scope for `intake/`, increment 7; dragging is a second source for the same adapters.) They bring a sandboxed helper (architecture 2.1) and reading other people's text. Files in a binder's `intake/` are filed in the MVP by the code-built intake cards of feature 4, which read no text. Revised by decisions.md D1 and D2: dropping files on a binder's conversation is the main way to add documents (`docs/conversation.md` §5).
 - The per-binder copy of each filed capture in the binder's visible `captures/` folder (architecture 8, step 5; 13, item 8; capture-event-v0 §9). It would add a file and a `documents[]` entry for every approved capture, dozens a month, to catalogs that lifeproj, terminal agents and the hub all read. The thesis does not need it: each op's provenance names the capture's event id, and the capture store is backed up with Sprava's own state (`docs/backup.md` §3.2). It can return when sync or sharing needs a binder to carry its own captures. Needs acceptance (question 9).
 - Ownership takeover after a move or a restore (architecture 13, item 45). The MVP keeps only the owner record of feature 1.
 - The cross-binder Today page: the hub's roll-up keeps working through the slices, and Today replaces it after the MVP (decisions.md A8).

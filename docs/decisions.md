@@ -20,7 +20,7 @@
   expressly permitted; the Python SDK needs full Xcode at install time). The local open-model fallback
   is a `LanguageModel` conformer (`CoreAILanguageModel` or `MLXLanguageModel`) behind the same
   `LanguageModelSession` code, so the seam costs nothing; shipping a fallback model is deferred.
-  **Revised by D5 (2026-10-14):** a local open model is the conversation's engine when no brain is connected.
+  **Revised by D5 (2026-10-14):** a local open model is the binder conversation's front desk.
 - **P4 recommended.** Distribution: a Developer ID notarized DMG first (hardened runtime, not
   sandboxed, the holos precedent). The Mac App Store later, only once the licence route is settled.
 - **P5 recommended.** Tier 1 scope: one capture or one short document at a time. Normalize, split
@@ -220,7 +220,7 @@
   approved over MCP; approval happens only in the app, with optional in-conversation confirmation
   through elicitation where a client renders it. Tool lists never vary per connection; per-binder
   `disclosure` and per-client scope decide what a call may return. Binder reads paginate.
-  **Revised by D4 (2026-10-14)** for the binder conversation's own client only.
+  **Revised by D4 (2026-10-14)** for the binder's back-office client only.
 - **A5 recommended.** The review queue: a proposal is an op batch with provenance, confidence and
   source spans; cards offer approve, edit, reject; applied ops carry `approved_by`; undo is a
   compensating op. Tier 1 and Tier 2 proposals look identical in the queue.
@@ -293,52 +293,77 @@
 
 ## The binder conversation (`docs/conversation.md`)
 
-- **D1 decided (2026-10-14, by the author).** A binder's main screen is a conversation with that binder: the
-  person talks in plain language, asks questions, drops documents and gives instructions there, privately to
-  that binder ("I want to come to the right specialist's office", conversation.md §1). The top-level Inbox
-  stays only for captures whose binder is unknown. Supersedes "the review queue is the main interaction,
-  ahead of any chat" (architecture 6; brainstorm of 2026-10-06) and the Inbox as the only place to type.
-- **D2 decided (2026-10-14, by the author).** Documents dropped on a binder's conversation are classified and
-  filed right away, reported in the conversation with Undo, with no approval card; the person may add
-  instructions before or after a drop, which steer or redo the filing. A question comes only when Sprava is
-  unsure, for reasons code finds (conversation.md §4). Revises A5, P13's card and mvp.md 1.1 for these
-  changes. Recommended with it: files that arrive in `intake/` on their own are filed the same way (open,
-  conversation.md §12 choice 2).
-- **D3 recommended.** The rule that replaces "nothing is applied until the person approves it" for a binder's
-  own conversation: class A (additions, filings from the binder's `intake/`, and corrections to what the
-  conversation itself created) is applied at once with Undo; class B (changing, completing, dropping or
-  reopening anything else, moving a document to another binder, more than 20 additions in one turn) waits for
-  one tap in the conversation; class C (disclosure, privacy markers, names, expunge, engine and backup
-  settings, anything that sends something out, deleting files, manuals and dot folders) stays in the app's own
-  controls. Code decides the class from the op and its target, never a model or a message. Document text is
-  data, never instructions. Needs `move_document` and `unfile_document` in binder-v0 (conversation.md §5).
-- **D4 decided (2026-10-14, by the author), mechanism recommended.** With a brain connected for a binder, the
-  conversation talks to the brain's mid-level model, which decides which subagents to start; Sprava drives
-  it instead of waiting for the person to open the brain's own app. Recommended: the runtime runs the person's
-  own Claude Code headless (`claude -p`, stream-json, the binder as working directory, `--restricted`, only
-  Sprava's MCP server, Sonnet orchestrating `reader` and `translator` subagents), with Codex (`codex exec`) as
-  the second engine. Revises A4 for one client kind: the conversation client, created by the runtime for one
-  binder and one process, may apply what the person's turn already authorizes by class (D3); registered
-  clients keep A4 unchanged. Turning a brain on for a binder is a widening change made only in the app's
-  window, and its row joins architecture 10 (conversation.md §7.2, §8).
-- **D5 decided (2026-10-14, by the author), runtime and models recommended.** With no brain connected, the
-  conversation talks to the most capable local model the Mac can run, not Apple's on-device model, which stays
-  the clerk for filing and serves only as the "basic" engine on a Mac too small for a better one. Recommended:
-  llama.cpp in a sandboxed helper (`sprava-llm`), a model chosen by memory from a pinned list of
+All entries below were decided by the author on 2026-10-14, the second draft's points included; the first
+draft's recommendations were accepted as a set ("all this looks good, go ahead with the plan"). Numbers marked
+"proposed" in `docs/conversation.md` stay design values.
+
+- **D1 decided.** A binder's main screen is a conversation with that binder, privately to it ("I want to come
+  to the right specialist's office", conversation.md §1), with a richer UI: smooth drag and drop, import by path
+  or description, questions, and tasks beside the chat. The top-level Inbox stays only for captures whose
+  binder is unknown. Supersedes "the review queue is the main interaction, ahead of any chat" (architecture 6;
+  brainstorm of 2026-10-06) and the Inbox as the only place to type.
+- **D2 decided.** Documents dropped, imported, or arriving in a binder's `intake/` on their own are read and
+  filed at once, reported in the conversation with Undo, with no approval card; instructions before or after
+  steer or redo the filing; a question comes only for reasons code finds (conversation.md §5). Revises A5,
+  P13's card and mvp.md 1.1 for these changes.
+- **D3 decided.** The rule that replaces "nothing is applied until the person approves it" in a binder's
+  conversation: class A (additions, filings from the binder's `intake/`, drafts in `drafts/`, corrections to
+  what the conversation created) applies at once with Undo; class B (changing, completing, dropping or
+  reopening anything else, moving a document to another binder, more than 20 additions in a turn) takes one tap
+  in the conversation; class C (disclosure, privacy markers, names, expunge, engine and backup settings,
+  anything outward, deleting files, manuals and dot folders) stays in the app's own controls. Code decides the
+  class from the op and its target, never a model. Document text is data, never instructions. Adds
+  `move_document` and `unfile_document` to binder-v0 (conversation.md §6).
+- **D4 decided.** Two roles in every binder. The front desk, a local model with code, is always present and
+  makes the simple decisions (file, search and quote, add a to-do, route). The back office, Claude Code or,
+  second, Codex, when the person connects one for the binder, is a long-lived per-binder session driven over
+  the agent's structured protocol (Claude Code `-p` with stream-json input and output, resumed by session id,
+  permissions answered by Sprava's policy; Codex's app server, a spike), never a scripted terminal. Its reach:
+  Sprava's MCP tools and read-only file tools in the binder, no shell, no web. "Open in Terminal" resumes the
+  binder's own session in a real terminal (`claude --resume <id>`) while Sprava pauses its driving. Turning a
+  back office on is a widening change made in the app's window and is the consent for the binder's documents,
+  private and intake ones included. Revises A4 for the back-office client only: it may apply what the person's
+  turn authorizes by class (D3); registered clients keep A4 (conversation.md §4, §11.1).
+- **D5 decided.** The front desk's model is the most capable local model the Mac can run, not Apple's
+  on-device model, which stays the clerk and is the "basic" front desk only on a Mac too small for a better
+  one: llama.cpp in a sandboxed helper (`sprava-llm`), a model chosen by memory from a pinned list of
   Apache-2.0 models (Qwen3 8B, Qwen3 30B-A3B, Qwen3 32B, gpt-oss-120b as of 2026-10-14), downloaded once with
-  consent and checked by SHA-256. MLX waits on a spike, because the Command Line Tools ship no `metal`
-  compiler. Supersedes the deferral of the open-model fallback (P3, M2, architecture 5.6) for the
-  conversation; the clerk's own seam is unchanged (conversation.md §7.4).
-- **D6 recommended.** The transcript is kept in the binder, `.sprava/conversation/<YYYY-MM>.ndjson`,
-  append-only and written by the runtime; it is history, not rebuildable, so binder-v0 §7.2 lists it with the
-  op log. It reaches only the binder's own engine and the binder's index; never the hub, the Today page, the
+  consent and checked by SHA-256, pending spike S5. MLX waits on spike S4. Supersedes the deferral of the
+  open-model fallback (P3, M2) for the front desk; the clerk's seam is unchanged (conversation.md §11.2).
+- **D6 decided.** The transcript lives in the binder, `.sprava/conversation/<YYYY-MM>.ndjson`, append-only,
+  written by the runtime, listed in binder-v0 §7.2 as history. Never on the hub, the Today page, the
   companion, registered MCP clients, logs or notifications (conversation.md §3).
-- **D7 recommended (revises A3's reach).** The per-binder index covers the full extracted text of every filed
-  document in passages with page numbers, translations, items, log entries and the person's own messages.
-  Answers cite document, page and quote, and code checks every quote against its passage (conversation.md §6).
-- **D8 recommended.** A document not in the person's language is translated at filing on the Mac with Apple's
-  Translation framework where the language pair is installed, else by the engine; the original stays the
-  document of record (conversation.md §6.3).
-- **D9 open (2026-10-14).** The choices listed in conversation.md §12, each with a recommendation, among them:
-  where the transcript lives, whether arrivals in `intake/` are filed at once, how changes to existing items are
-  confirmed, how much reach the brain gets, and the local runtime and model.
+- **D7 decided (revises A3's reach).** The per-binder index covers documents' full text in passages with page
+  numbers, translations, items, log entries and the person's own lines. A local answer is quoted passages with
+  document and page plus at most one sentence pointing at them; the router picks from a fixed menu of intents
+  with grammar-constrained output. A request beyond that gets "this needs thinking", with the back office
+  taking it when connected, else two ways on: connect an AI brain, or think it through with the passages the
+  front desk gathers (conversation.md §4.1, §9).
+- **D8 decided.** A document not in the person's language is translated at filing with Apple's on-device
+  Translation framework where the pair is installed, else by the engine; the original is the document of
+  record (conversation.md §9.4).
+- **D9 decided.** The Inbox keeps its note field for notes whose binder is unknown; in a binder the person
+  types in its conversation.
+- **D10 decided.** Earned autonomy, measured. The front desk acts at once within D3; the back office reviews
+  its work afterwards in batches, and a disagreement becomes one card ("Claude would have filed this under
+  X"). Sprava keeps an agreement rate per binder and job kind (filing destination, document type, dates found,
+  to-dos found); the person's Undos count as disagreements and weigh most. A kind graduates at 30 cases and
+  95% agreement (proposed), after which the back office samples 1 case in 10 forever (proposed). Without a
+  back office the person's Undos alone feed the score. The person sees the scores. Graduation never widens D3
+  (conversation.md §7).
+- **D11 decided.** Every back-office correction the person accepts and every Undo followed by the person's fix
+  becomes a written filing rule in a rules part of Sprava's section of the binder's `AGENTS.md` (F14 in PR
+  #347), which the front desk reads on every job. Rules follow a fixed grammar and steer only filing within
+  the binder (conversation.md §8.1).
+- **D12 decided; place recommended.** Sprava keeps a one-page brief per binder (parties, pending, key dates,
+  key facts), read first by the front desk and the back office. Code writes the parts that come from the
+  catalog, the front desk adds cited facts as it files, the back office improves it when connected, and every
+  fact cites its document. Recommended place: a visible `BRIEF.md`, Sprava's own file (conversation.md §8.2).
+- **D13 decided.** Big requests become task cards with progress, Stop and a draft at the end, each in its own
+  back-office session, so the conversation goes on meanwhile. Sprava never does an outward action (sending
+  email, filing with a court or tax office, paying); results land as drafts in the binder's `drafts/` for the
+  person to send (conversation.md §10).
+- **D14 decided.** Import by path or description ("include the March statement from Downloads"): the app
+  window does it, as the person's direct command with the person's file permissions, leaves the original, and
+  asks only when more than one file matches. A per-binder email intake replacing the author's mail-fetching
+  script is future work (conversation.md §5.2, §5.3).
