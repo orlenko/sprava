@@ -137,6 +137,13 @@ export class BrowserStore {
         });
     }
 
+    async cancelReservation(generation: string): Promise<boolean> {
+        return this.transaction(true, state => {
+            if (state.pairing || state.reservation?.generation !== generation) return { value: false };
+            delete state.reservation; return { value: true, save: true };
+        });
+    }
+
     /** §5.2 step 5: decrypt first, install only from the still-current reservation, then permit acknowledgement. */
     async install(reservation: Reservation, installation: Installation): Promise<boolean> {
         reservation = { ...reservation };
