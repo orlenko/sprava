@@ -122,7 +122,7 @@ extension CompanionProfile {
               let generation = row[1].integer, generation >= 0, generation <= JSONNumber.maxSafeInteger else { throw CompanionDecisionError.invalid }
         return (highest, floor, generation)
     }
-    private func decisionsToday(_ d: String, _ day: String, _ t: Transaction) throws -> Int64 {
+    func decisionsToday(_ d: String, _ day: String, _ t: Transaction) throws -> Int64 {
         let rows = try t.rows("SELECT count FROM decision_daily WHERE device = ? AND day = ?", .text(d), .text(day))
         guard let row = rows.first else { return 0 }
         guard let count = row.first?.integer, count >= 0, count <= 500 else { throw CompanionDecisionError.invalid }; return count
