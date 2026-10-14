@@ -80,6 +80,16 @@ public enum CompanionSealedObject {
     // The seam proves in tests that a rejected owner signature never reaches decryption.
     static func openChecked(name: String, epoch: Int64, key: SymmetricKey, bytes: Data, owner: Curve25519.Signing.PublicKey?,
                             decrypt: (AES.GCM.SealedBox, SymmetricKey, Data) throws -> Data) throws -> CompanionOpenedObject {
+        let plaintext = try openPlaintext(name: name, epoch: epoch, key: key, bytes: bytes, owner: owner, decrypt: decrypt)
+        let b = try binding(name, epoch), value = try CompanionWire.parse(plaintext, limit: b.plaintext)
+        guard value.objectValue != nil else { throw CompanionWireError.invalid }
+        return CompanionOpenedObject(value: value, plaintextLength: plaintext.count)
+    }
+    // Request admission needs the authentication boundary before strict payload/sequence validation (§9.3).
+    // Internal only: every caller must strictly parse these authenticated bytes before using their contents.
+    static func openPlaintext(name: String, epoch: Int64, key: SymmetricKey, bytes: Data,
+                              owner: Curve25519.Signing.PublicKey? = nil,
+                              decrypt: (AES.GCM.SealedBox, SymmetricKey, Data) throws -> Data = { try AES.GCM.open($0, using: $1, authenticating: $2) }) throws -> Data {
         do {
             let b = try binding(name, epoch), envelope = try CompanionWire.parse(bytes, limit: b.wire)
             guard key.bitCount == 256, envelope.objectValue != nil, CompanionWire.unsigned(envelope["v"]) == 0,
@@ -95,9 +105,9 @@ public enum CompanionSealedObject {
                 }
             } else if envelope.objectValue!.contains("s") { throw CompanionWireError.invalid }
             let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: n), ciphertext: c.dropLast(16), tag: c.suffix(16))
-            let plaintext = try decrypt(box, key, aad(name, b, epoch)), value = try CompanionWire.parse(plaintext, limit: b.plaintext)
-            guard value.objectValue != nil else { throw CompanionWireError.invalid }
-            return CompanionOpenedObject(value: value, plaintextLength: plaintext.count)
+            let plaintext = try decrypt(box, key, aad(name, b, epoch))
+            guard plaintext.count <= b.plaintext else { throw CompanionWireError.invalid }
+            return plaintext
         } catch { throw CompanionWireError.invalid }
     }
 }
