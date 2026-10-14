@@ -9,7 +9,7 @@ services:
       repo: <your account>/sprava
       branch: main
       deploy_on_push: false
-    source_dir: companion/relay
+    source_dir: companion
     dockerfile_path: companion/relay/Dockerfile
     http_port: 8080
     # Exactly one instance: rate limits and the creation lock live in its memory (spec section 7). App Platform
