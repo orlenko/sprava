@@ -67,5 +67,12 @@
     "string_hex": "225c2f08090a0c0d011fc3a9f09f9880",
     "written_hex": "225c225c5c2f5c625c745c6e5c665c725c75303030315c7530303166c3a9f09f988022",
     "encoded_size": 33
+  },
+  "seal-index": {
+    "case": 3,
+    "about": "Invented public test keys: AES key and Ed25519 seed are bytes 00 through 1f; nonce is 00 through 0b. Generated independently with Node crypto.",
+    "aad_hex": "7370726176612d636f6d70616e696f6e2f76307c696e6465782f317c6163636f756e747c31",
+    "plaintext": "{\"revision\":1,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[]}",
+    "envelope": "{\"v\":0,\"kid\":\"account\",\"e\":1,\"n\":\"AAECAwQFBgcICQoL\",\"c\":\"PCCkfrOMsXLiL7WxgMVaCua44kaRDzoYZwaRpydLMoIzJoPNn-wioCCUSNe4sRII2wNCoXi0yrRb8lhqOtmus40_rtXXAcXch25B4CWfxGfD\",\"s\":\"ZVmk-M7EI_cGEfcenlY4uPSs2x7V_LQIMyxNvlD0loq3CeufKesWBYBA1pDJeG9IPR9qsSsv3wqx4gIxPVE2AQ\"}"
   }
 }

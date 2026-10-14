@@ -4,7 +4,7 @@
 # that package's own `npm test`.
 set -eu
 cd "$(dirname "$0")"
-for package in relay; do
+for package in relay web; do
     echo "companion/test.sh: $package"
     (cd "$package" && npm ci --no-audit --no-fund --prefer-offline --loglevel=error && npm test)
 done

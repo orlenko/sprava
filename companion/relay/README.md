@@ -70,7 +70,8 @@ write-once object records its bytes' intent first (`src/store/store.ts`).
    openssl rand -hex 16       # SPRAVA_INSTANCE
    openssl rand -base64 32    # SPRAVA_SETUP_CODE
    ```
-3. Run the container built from `companion/relay/Dockerfile` with these variables:
+3. Build from the repository root with `docker build -f companion/relay/Dockerfile companion`,
+   then run that container with these variables:
 
    | Variable | Value |
    |---|---|
