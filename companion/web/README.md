@@ -1,11 +1,11 @@
 # Companion web app
 
-The local PWA build has pairing, shared binder browsing, an inbox-note editor and pending
+The local PWA build has pairing, shared binder browsing, item controls, an inbox-note editor and pending
 action status. IndexedDB holds encrypted caches, immutable queued requests and
 non-extractable keys. A service worker caches only this build's static shell, so admitted
 data can be opened offline. Every binder string is rendered as text.
 
-Mac companion integration, item-action controls and release
+Mac companion integration and release
 publishing are still pending. This build does not yet provide phone-to-Mac use.
 
 ```sh
@@ -27,6 +27,14 @@ draft write says to keep the window open and copy the note. The editor clears on
 request and matching draft deletion commit together for its original pairing, and retains drafts on validation/storage failure.
 Pending pages contain metadata rather than ciphertext or note text. "Sent" means received
 by the relay; a signed outcome from the Mac resolves the entry.
+
+Item controls follow the published status: Done/Drop for active items, Arrived/Follow up
+for waiting or blocked items, and Postpone for open items with a deadline. Requests capture
+the exact numeric/string item id, published view version and pairing generation; items
+remain in the view until the Mac publishes an update. The date editor stays mounted across
+refreshes and saves a separate encrypted draft, recovered as an item action rather than
+an inbox note. Save atomically queues the request and retires its draft; Cancel retires the
+draft without sending. A changed pairing cannot receive an old editor's action.
 
 The build emits browser ES modules under `dist/`, with no Node imports, third-party runtime
 dependencies or secrets. `src/sealed.ts` imports non-extractable AES-256-GCM keys, seals device

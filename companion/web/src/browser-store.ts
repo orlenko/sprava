@@ -10,7 +10,7 @@ import type { OutboxEntry, OutboxPage } from './outbox.ts';
 import type { RequestAction } from './device-payloads.ts';
 import type { RemovalCounts } from './pairing-removal.ts';
 import { saveDraft, readDrafts } from './drafts.ts';
-import type { DraftProof, DraftPage } from './drafts.ts';
+import type { DraftProof, DraftPage, DraftKind } from './drafts.ts';
 import { openView } from './view-payloads.ts';
 
 export class StorageError extends Error {
@@ -107,8 +107,8 @@ export class BrowserStore {
     enqueue(action: RequestAction, madeAt: string, generation?: string, drafts?: DraftProof[]): Promise<OutboxEntry> {
         return enqueue(this.db, action, madeAt, generation, drafts);
     }
-    saveDraft(generation: string, editorId: string, revision: number, text: string, updatedAt: string, recovered?: DraftProof): Promise<boolean> {
-        return saveDraft(this.db, generation, editorId, revision, text, updatedAt, recovered);
+    saveDraft(generation: string, editorId: string, revision: number, text: string, updatedAt: string, recovered?: DraftProof, kind?: DraftKind): Promise<boolean> {
+        return saveDraft(this.db, generation, editorId, revision, text, updatedAt, recovered, kind);
     }
     readDrafts(limit = 50, after?: string): Promise<DraftPage> { return readDrafts(this.db, limit, after); }
     readOutbox(limit = 50, after?: IDBValidKey): Promise<OutboxPage> { return readOutbox(this.db, limit, after); }

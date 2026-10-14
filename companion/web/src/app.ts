@@ -9,6 +9,7 @@ import { mount, element } from './screens.ts';
 import { removePairing } from './pairing-removal.ts';
 import { encodeB64 } from './encoding.ts';
 import type { Draft, DraftProof } from './drafts.ts';
+import { ItemControls } from './item-controls.ts';
 
 const root = document.getElementById('app')!;
 // Refuse a frame before reading a pairing fragment, opening storage, or accessing keys.
@@ -38,11 +39,14 @@ async function start(): Promise<void> {
         select: id => { selected = id; void draw().then(cycle).catch(failed); },
         save: () => { void save().catch(failed); }, refresh: () => { void cycle(); },
         remove: () => { void disconnect().catch(failed); },
+        item: (owner, action, title) => itemControls.open(owner, action, title),
         next: key => { pageAfter = key; void draw().catch(failed); },
         first: () => { pageAfter = undefined; void draw().catch(failed); },
     });
     const tell = (message: string) => { screen.banner.textContent = message; };
     const failed = () => tell('The operation could not finish. Your note stays in the editor; retry when ready.');
+    const itemControls = new ItemControls(root, store, owner => owner === generation && !retiring.has(owner),
+        () => { channel?.postMessage('changed'); void draw().then(cycle).catch(failed); }, tell);
     screen.draft.addEventListener('input', () => {
         if (screen.draft.value === '' && draftGeneration !== generation) {
             draftGeneration = generation; editorId = freshEditor(); proof = recovered = undefined; draftRevision = 0;
@@ -73,6 +77,7 @@ async function start(): Promise<void> {
     async function recoverDrafts(after?: string): Promise<void> {
         const page = await store.readDrafts(50, after), drafts = page.drafts.filter(d => d.text !== '');
         const restore = (draft: Draft) => {
+            if (draft.kind === 'item-action') { itemControls.restore(draft); return; }
             if (screen.draft.value) { tell('Keep a copy or clear the current note before recovering another draft.'); return; }
             screen.draft.value = draft.text; draftGeneration = draft.generation;
             editorId = freshEditor(); draftRevision = 0; proof = undefined;
@@ -81,7 +86,7 @@ async function start(): Promise<void> {
         };
         if (after === undefined && drafts.length === 1 && !page.next && !screen.draft.value) restore(drafts[0]!);
         else for (const draft of drafts) {
-            const choice = element('button', `Recover note saved ${draft.updatedAt}`); choice.type = 'button';
+            const choice = element('button', `Recover ${draft.kind === 'note' ? 'note' : 'date action'} saved ${draft.updatedAt}`); choice.type = 'button';
             choice.addEventListener('click', () => restore(draft)); screen.recovery.append(choice);
         }
         if (page.next) {
@@ -94,6 +99,7 @@ async function start(): Promise<void> {
     async function draw(): Promise<void> {
         const cache = await readDisplayCache(store, selected);
         generation = cache.generation;
+        itemControls.pairingChanged();
         if (selected && cache.index && !cache.index.binders.some(b => b.id === selected)) selected = undefined;
         screen.render(cache, await store.readOutbox(50, pageAfter), lastReachedAt);
         screen.saveButton.disabled = saving || !generation;
