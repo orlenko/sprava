@@ -406,8 +406,10 @@ How it stays current and correct:
   items), and a key fact is one whole sentence of the document, stored verbatim with document and page. The
   model only chooses which sentences, at most 3 per document (proposed); code checks each stored line is a
   sentence of that document, word for word. So a hostile document can at most put its own sentences in the
-  brief, under its own name, and never a claim a model wrote. Code drops lines whose document is unfiled or
-  gone, and marks two lines that conflict.
+  brief, under its own name, and never a claim a model wrote. The checked text is kept as it is in the index;
+  `BRIEF.md` writes it as inert text, every Markdown and HTML character escaped as the dashboard renderer does,
+  so a sentence can never become a link, an image or a remote load. Code drops lines whose document is
+  unfiled or gone, and marks two lines that conflict.
 - **The back office improves it** when connected, after a large drop or once a week (proposed), but only by
   choosing, ordering and grouping lines under headings; code rejects a version whose fact lines are not
   verbatim sentences of their cited documents. Model-written summaries of a document belong to the
@@ -507,17 +509,19 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   (`reader` for a long or governing document, `translator` on Haiku), which inherit the restriction.
 - **Confinement.** No file tools: `--tools Agent` leaves no Read, Glob, Grep, Bash, WebFetch or WebSearch,
   in subagents too. The binder is read only through Sprava's one safe reader, which serves exactly what
-  binder-v0 §3.4 lets a model see (6.2), so no blocklist can be incomplete. (S1 found `--restricted` confines
-  file tools to a folder but not away from its subfolders, and deny rules bind Grep only "best effort".) The
-  deny-all settings file is a second guard; a start-up probe that finds any file tool answering keeps the back
-  office off. `--strict-mcp-config` loads only Sprava's server. The permission mode must be explicit: left
-  alone, `-p` used `auto`, read outside its folder and ran Bash.
-- **Managed policy, for every back office.** An organization's policy outranks every flag Sprava passes:
-  Claude Code loads managed settings even under `--restricted`, and Codex's `requirements.toml` can pin hooks
-  on despite `--disable hooks`; managed hooks see prompts and tool results. So before every start of any back
-  office, Sprava reads that agent's managed policy and keeps it off, saying why, when the policy defines a
-  hook or anything else that could see the session, or when Sprava cannot read it (server-managed policy;
-  open S1 and S3 items).
+  binder-v0 §3.4 lets a model see (6.2), so no blocklist can be incomplete. (S1: `--restricted` confines file
+  tools to a folder but not its subfolders; deny rules bind Grep only "best effort".) The deny-all settings
+  file is a second guard. `--strict-mcp-config` loads only Sprava's server. The permission mode must be
+  explicit: left alone, `-p` used `auto`, read outside its folder and ran Bash.
+- **The start-up check, fail closed, for every back office.** An agent can load or send things on its own
+  side whatever Sprava's flags say: an organization's managed policy (Claude Code's managed settings even
+  under `--restricted`, Codex's `requirements.toml`, which can pin hooks on), the person's own memory files
+  (`~/.claude/CLAUDE.md`), or a third-party provider behind the sign-in. So before every start Sprava checks
+  the effective setup against an allowlist and keeps the back office off, saying why, unless all of it holds:
+  no managed hook or policy that could see the session; no memory file loaded
+  (`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is set, and the session's start event lists none); the provider is
+  Anthropic itself (`claude auth status` names a first-party method, not `third_party`) or OpenAI for Codex;
+  the tools are `Agent` and Sprava's alone. What Sprava cannot read counts as failing (open S1, S3 items).
 - **The manual.** Sprava passes Sprava's manual section, the brief (as data) and the filing rules in the
   appended system prompt, read through the safe reader; no project file is ever loaded.
 - **Tools**: reads (`search`, `read_document`, `get_now`, `list_items`, `list_documents`, this binder only,
@@ -528,7 +532,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   (`--mcp-config` expands `${VAR}`) and is revoked when the process ends. Calls are audited, sizes only.
 - **Auth.** The person's own sign-in (a subscription worked in a minimal launchd-like environment); Sprava
   never reads the credential. It calls the versioned binary under `~/.local/share/claude/versions/` by absolute
-  path, checks its signature names Anthropic, and checks `claude auth status`. A `CLAUDE_CONFIG_DIR` in the
+  path, checks its signature names Anthropic, and runs the start-up check above. A `CLAUDE_CONFIG_DIR` in the
   person's shell is not seen by a LaunchAgent, so the engine settings show and let the person pick the one used.
 - **Cost and limits.** `total_cost_usd` is cumulative and at list prices even on a subscription, shown as
   "list-price equivalent" per binder per day. `--max-budget-usd` (proposed: 2 dollars) ends the turn with
@@ -541,8 +545,8 @@ claude -p --input-format stream-json --output-format stream-json --verbose
 - **One driver per session.** Two processes on one session fork it and lose a message, so Sprava holds a lock
   per session id. Open in Terminal (4.2) releases Sprava's process first; Sprava drives again only after the
   person presses Resume and no `claude` process holds the session (`~/.claude/sessions/`).
-- **Environment.** `PATH`, `HOME`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
-  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (else one message can yield two results) and the token, nothing else.
+- **Environment**, in driven and Terminal sessions alike: `PATH`, `HOME`, `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` and the token.
 - **Session history.** Resume and Open in Terminal need persistence, which keeps the session, binder text
   included, under `~/.claude/projects/<encoded session folder>/`, outside the binder and its backup (section
   12). Task sessions persist only while the task runs; `--no-session-persistence` would still leave subagent
@@ -721,7 +725,7 @@ the local model follows, then the back office.
 12. **Retrieval: the brief keeper.** `BRIEF.md` rendering and code's parts, with the word-for-word checks run
     against the index's extracted and translated text (layer 4, on `Extract`), never on model-supplied text.
 13. **BinderStore: the filing rules**: grammar, the manual's rules part, acceptance; the reader takes them.
-14. **Brains: the Claude Code back office**: session and resume, lock, start-up and managed-settings probes,
+14. **Brains: the Claude Code back office**: session and resume, lock, the fail-closed start-up check,
     Stop, limits, costs, cleanup, the offload barrier.
 15. **Brains: the back-office tools.** `search`, `apply_ops`, `ask_person`, `review_verdict`,
     `save_translation`, `write_brief`, `propose_rule`, `intake_manifest`, the reads (17.5); every one refused to
