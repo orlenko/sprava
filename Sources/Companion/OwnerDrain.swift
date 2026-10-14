@@ -9,11 +9,14 @@ public struct CompanionDeviceDrainTurn: Sendable {
     public let checkedRequests: Int
     public let decisionsCommitted: Int
     public let needsRetry: Bool
+    /// A job failure stops every device, while retaining this turn's consumed costs and committed progress.
+    public let jobFailure: (any Error)?
     public init(downloadedBytes: Int = 0, fetches: Int = 0, checkedRequests: Int = 0,
-                decisionsCommitted: Int = 0, needsRetry: Bool = false) {
+                decisionsCommitted: Int = 0, needsRetry: Bool = false, jobFailure: (any Error)? = nil) {
         self.downloadedBytes = downloadedBytes; self.fetches = fetches
         self.checkedRequests = checkedRequests; self.decisionsCommitted = decisionsCommitted
         self.needsRetry = needsRetry
+        self.jobFailure = jobFailure
     }
 }
 public struct CompanionDrainReport: Sendable {
@@ -60,6 +63,7 @@ public actor CompanionOwnerDrain {
                 checked += result.checkedRequests; committed += result.decisionsCommitted
                 try schedule.recordTurn(deviceID: device, decisionsCommitted: result.decisionsCommitted,
                                         retryableFailure: result.needsRetry, now: now())
+                if let failure = result.jobFailure { throw failure }
             }
         } catch { failure = error }
         // Dirty outcomes may belong to a backed-off or unvisited device. One publishing failure never suppresses others.
