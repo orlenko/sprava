@@ -74,7 +74,9 @@ export class BrowserStore {
     recordAttempt(attempt: SendAttempt, status: number | null, now: number): Promise<boolean> {
         return recordAttempt(this.db, attempt, status, now);
     }
-    acceptOutcomes(revision: number, bytes: Uint8Array): Promise<boolean> { return acceptOutcomes(this.db, revision, bytes); }
+    acceptOutcomes(revision: number, bytes: Uint8Array, generation?: string): Promise<boolean> {
+        return acceptOutcomes(this.db, revision, bytes, generation);
+    }
 
     expireOutbox(now: number, limit = 100, after?: IDBValidKey): Promise<IDBValidKey | null> {
         return expireOutbox(this.db, now, limit, after);
@@ -179,11 +181,11 @@ export class BrowserStore {
     }
 
     /** §10.2: validate outside IDB, then atomically recheck prerequisites; at most three restarts. */
-    async acceptIndex(revision: number, epoch: number, input: Uint8Array): Promise<boolean> {
+    async acceptIndex(revision: number, epoch: number, input: Uint8Array, generation?: string): Promise<boolean> {
         const bytes = input.slice();
         for (let retry = 0; retry <= 3; retry++) {
             const before = await this.read(), p = before.pairing;
-            if (!p || !positive(revision) || epoch !== p.epoch || revision < p.minIndexRevision ||
+            if (!p || (generation !== undefined && p.generation !== generation) || !positive(revision) || epoch !== p.epoch || revision < p.minIndexRevision ||
                 revision < (before.index?.revision ?? 0)) return false;
             const index = await openIndex(revision, epoch, p.accountKey, p.ownerKey, bytes);
             const committed = await this.transaction(true, (state, views) => {
@@ -203,12 +205,12 @@ export class BrowserStore {
         return false;
     }
 
-    async acceptView(binderId: string, version: number, input: Uint8Array): Promise<boolean> {
+    async acceptView(binderId: string, version: number, input: Uint8Array, generation?: string): Promise<boolean> {
         const bytes = input.slice();
         for (let retry = 0; retry <= 3; retry++) {
             const before = await this.read(), p = before.pairing, index = before.index;
             const binder = index?.binders.find(b => b.id === binderId);
-            if (!p || !index || index.epoch !== p.epoch || !binder || binder.viewVersion !== version ||
+            if (!p || (generation !== undefined && p.generation !== generation) || !index || index.epoch !== p.epoch || !binder || binder.viewVersion !== version ||
                 version < (before.viewMarks[binderId] ?? 0)) return false;
             await openView(binderId, version, index.epoch, binder.key, p.ownerKey, bytes);
             const committed = await this.transaction(true, (state, views) => {
@@ -225,11 +227,11 @@ export class BrowserStore {
         return false;
     }
 
-    async acceptKeys(epoch: number, input: Uint8Array): Promise<boolean> {
+    async acceptKeys(epoch: number, input: Uint8Array, generation?: string): Promise<boolean> {
         const bytes = input.slice();
         for (let retry = 0; retry <= 3; retry++) {
             const before = await this.read(), p = before.pairing;
-            if (!p || !positive(epoch) || epoch <= p.epoch) return false;
+            if (!p || (generation !== undefined && p.generation !== generation) || !positive(epoch) || epoch <= p.epoch) return false;
             const keys = await openDeviceKeys(p.deviceId, epoch, p.deviceKey, p.ownerKey, bytes);
             const committed = await this.transaction(true, state => {
                 const current = state.pairing;
