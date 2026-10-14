@@ -208,12 +208,16 @@ try {
         document.querySelector('#item-action-date').dispatchEvent(new Event('input')); document.querySelector('#item-action button').click()`);
     await wait(`document.querySelector('#pending').textContent.includes('follow_up #5: sent')`);
     assert.equal(sentActions[4]!.date, '2026-10-26'); assert.equal(sentActions[4]!.item, 'wait');
-    await clickItem('Invented blocked item', 'Arrived');
-    await wait(`document.querySelector('#pending').textContent.includes('arrived #6: sent')`);
+    await evaluate(`{
+        const row = Array.from(document.querySelectorAll('#binder-view li')).find(r => r.querySelector('strong').textContent === 'Invented blocked item');
+        Array.from(row.querySelectorAll('button')).find(b => b.textContent === 'Arrived').click();
+        Array.from(row.querySelectorAll('button')).find(b => b.textContent === 'Done').click(); }`);
+    await wait(`document.querySelector('#pending').textContent.includes('done #7: sent')`);
     await clickItem('Invented string item', 'Drop');
-    await wait(`document.querySelector('#pending').textContent.includes('drop #7: sent')`);
-    assert.deepEqual(sentActions.map(a => a.seq), [1, 2, 3, 4, 5, 6, 7]);
-    assert.deepEqual(sentActions.slice(1).map(a => a.type), ['done', 'done', 'postpone', 'follow_up', 'arrived', 'drop']);
+    await wait(`document.querySelector('#pending').textContent.includes('drop #8: sent')`);
+    assert.deepEqual(sentActions.map(a => a.seq), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.deepEqual(sentActions.slice(1).map(a => a.type), ['done', 'done', 'postpone', 'follow_up', 'arrived', 'done', 'drop']);
+    assert.equal(sentActions[5]!.item, 'block'); assert.equal(sentActions[6]!.item, 'block');
     assert.ok(sentActions.slice(1).every(a => a.seen_version === 7 && a.binder === id && a.text === null));
     await evaluate(`(async () => { await navigator.serviceWorker.ready; if (!navigator.serviceWorker.controller)
         await new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true })); })()`);

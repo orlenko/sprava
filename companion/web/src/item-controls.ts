@@ -39,7 +39,8 @@ export class ItemControls {
     private revision = 0;
     private proof?: DraftProof;
     private pending: Promise<void> = Promise.resolve();
-    private readonly busy = new Set<string>();
+    private readonly pendingActions = new Map<string, Promise<boolean>>();
+    private readonly itemQueues = new Map<string, Promise<boolean>>();
 
     constructor(root: HTMLElement, store: BrowserStore, permitted: (generation: string) => boolean,
         changed: () => void, message: (text: string) => void) {
@@ -116,15 +117,23 @@ export class ItemControls {
         finally { this.submit.disabled = this.cancel.disabled = this.date.disabled = false; }
     }
     private async queue(generation: string, action: RequestAction, proof?: DraftProof): Promise<boolean> {
-        const key = JSON.stringify([generation, action.binder, action.item]);
+        const item = JSON.stringify([generation, action.binder, action.item]);
+        const key = JSON.stringify([generation, action.type, action.binder, action.item, action.seenVersion, action.date]);
         if (!this.permitted(generation)) { this.message('The pairing changed. This action was not queued; keep a copy of its date.'); return false; }
-        if (this.busy.has(key)) return false;
-        this.busy.add(key);
-        try {
-            const entry = await this.store.enqueue(action, now(), generation, proof ? [proof] : []);
-            if (entry.state !== 'queued') throw new Error();
-            this.message('Action saved on this device. Your Mac will confirm the result.'); this.changed(); return true;
-        } catch { this.message('The action could not be saved. Your date draft stays available; retry when ready.'); return false; }
-        finally { this.busy.delete(key); }
+        const duplicate = this.pendingActions.get(key); if (duplicate) return duplicate;
+        const work = (this.itemQueues.get(item) ?? Promise.resolve(true)).then(async () => {
+            if (!this.permitted(generation)) { this.message('The pairing changed. This action was not queued; keep a copy of its date.'); return false; }
+            try {
+                const entry = await this.store.enqueue(action, now(), generation, proof ? [proof] : []);
+                if (entry.state !== 'queued') throw new Error();
+                this.message('Action saved on this device. Your Mac will confirm the result.'); this.changed(); return true;
+            } catch { this.message('The action could not be saved. Your date draft stays available; retry when ready.'); return false; }
+        });
+        this.pendingActions.set(key, work); this.itemQueues.set(item, work);
+        try { return await work; }
+        finally {
+            if (this.pendingActions.get(key) === work) this.pendingActions.delete(key);
+            if (this.itemQueues.get(item) === work) this.itemQueues.delete(item);
+        }
     }
 }
