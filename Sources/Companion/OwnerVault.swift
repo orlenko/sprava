@@ -9,6 +9,11 @@ public protocol CompanionCredentialStorage: Sendable {
     func read(account: String) throws -> Data?
     /// Immutable insertion: false means another writer already installed this account.
     func insert(account: String, bytes: Data) throws -> Bool
+    /// Idempotent deletion; unavailable storage throws and must remain scheduled for cleanup.
+    func remove(account: String) throws
+}
+public extension CompanionCredentialStorage {
+    func remove(account: String) throws { throw CompanionCredentialError.unavailable }
 }
 
 public struct CompanionRelayIdentity: Sendable {
