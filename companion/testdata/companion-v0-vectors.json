@@ -67,5 +67,63 @@
     "string_hex": "225c2f08090a0c0d011fc3a9f09f9880",
     "written_hex": "225c225c5c2f5c625c745c6e5c665c725c75303030315c7530303166c3a9f09f988022",
     "encoded_size": 33
+  },
+  "seal-index": {
+    "case": 3,
+    "about": "Invented public test keys: AES key and Ed25519 seed are bytes 00 through 1f; nonce is 00 through 0b. Generated independently with Node crypto.",
+    "aad_hex": "7370726176612d636f6d70616e696f6e2f76307c696e6465782f317c6163636f756e747c31",
+    "plaintext": "{\"revision\":1,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[]}",
+    "envelope": "{\"v\":0,\"kid\":\"account\",\"e\":1,\"n\":\"AAECAwQFBgcICQoL\",\"c\":\"PCCkfrOMsXLiL7WxgMVaCua44kaRDzoYZwaRpydLMoIzJoPNn-wioCCUSNe4sRII2wNCoXi0yrRb8lhqOtmus40_rtXXAcXch25B4CWfxGfD\",\"s\":\"ZVmk-M7EI_cGEfcenlY4uPSs2x7V_LQIMyxNvlD0loq3CeufKesWBYBA1pDJeG9IPR9qsSsv3wqx4gIxPVE2AQ\"}"
+  },
+  "pairing-derivation": {
+    "case": 5,
+    "about": "Public invented X25519 private test inputs: owner 00 through 1f, device 20 through 3f. Expected values computed independently with Node crypto.",
+    "owner_private_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "device_private_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "owner_public_b64": "j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8",
+    "device_public_b64": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ",
+    "shared_hex": "9663aa1da97e848a914a436d04163dfbb89178f107f1b5b77ed3854203382854",
+    "pairing_id": "AwMDAwMDAwMDAwMDAwMDAw",
+    "devices": [
+      {
+        "device_id": "AAAAAAAAAAAAAAAAAAAAAA",
+        "wrap_hex": "6df7c75364d0b1c35ec3b7e8fc953ada91935f160c10dcdb188febb89538e656",
+        "device_hex": "36456411b024323c73acc5e5ce6179f598523686a0d77903f7d2ec6bf6829acb",
+        "code_hex": "0e332afb",
+        "confirmation": "234363"
+      },
+      {
+        "device_id": "AQEBAQEBAQEBAQEBAQEBAQ",
+        "wrap_hex": "71379f4a0571b6afbce0074757a799c8218570fe708900252e5c9bb004b95bd5",
+        "device_hex": "d4f20c3a16610647e2e9bc6ac1e6a03926c30d051be973c9cc83d688969eed80",
+        "code_hex": "a682d36f",
+        "confirmation": "591663"
+      }
+    ]
+  },
+  "confirmation-code": {
+    "case": 7,
+    "values": [
+      {
+        "hex": "00000000",
+        "code": "000000"
+      },
+      {
+        "hex": "0001e240",
+        "code": "123456"
+      },
+      {
+        "hex": "000f423f",
+        "code": "999999"
+      },
+      {
+        "hex": "000f4240",
+        "code": "000000"
+      },
+      {
+        "hex": "ffffffff",
+        "code": "967295"
+      }
+    ]
   }
 }
