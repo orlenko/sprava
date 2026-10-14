@@ -116,6 +116,14 @@ public actor CompanionOwnerPairingFlow {
         return .waiting(retryAt: slot.retryAt)
     }
 
+    /// companion-v0 §5.2 steps 3–4: restore the same code after restart without polling or activating the phone.
+    public func approval(deviceID: String) throws -> CompanionPairingApproval? {
+        guard !busy else { throw CompanionPairingFlowError.busy }
+        try admit()
+        _ = try profile.checkPairingLifetime(deviceID, now: now())
+        return try profile.recordedPairingApproval(deviceID: deviceID)
+    }
+
     /// Called only after the person compares both screens and approves this opaque confirmation context.
     public func confirm(_ approval: CompanionPairingApproval) throws -> CompanionPairingDelivery {
         guard !busy else { throw CompanionPairingFlowError.busy }
