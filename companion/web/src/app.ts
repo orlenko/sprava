@@ -29,6 +29,7 @@ async function start(): Promise<void> {
     let draftSave: Promise<void> = Promise.resolve();
     let pairing: AbortController | undefined, busy = false, queued = false, saving = false;
     let sendTimer: ReturnType<typeof setTimeout> | undefined;
+    let removalNotice: string | undefined;
     const retiring = new Set<string>();
     let activeSend: { generation: string; controller: AbortController } | undefined;
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sprava-companion') : undefined;
@@ -99,6 +100,7 @@ async function start(): Promise<void> {
         if (screen.draft.value && draftGeneration !== generation)
             tell('This draft belongs to an earlier pairing. Keep a copy, then clear it before writing for this pairing.');
         if (generation && link) tell('This browser is already paired. A new link cannot replace its pairing.');
+        if (!generation && removalNotice) tell(removalNotice);
     }
     async function connect(label: string): Promise<void> {
         if (!link || pairing) return;
@@ -144,8 +146,10 @@ async function start(): Promise<void> {
             } });
             if (result.removed) {
                 selected = undefined; pageAfter = undefined; lastReachedAt = undefined;
-                tell(`Pairing removed. ${result.counts!.notSent} actions not sent; ${result.counts!.unresolved} unresolved (may have reached your Mac).` +
-                    (result.revokeConfirmed ? '' : ' Also remove this phone on your Mac; the relay did not confirm revocation.'));
+                removalNotice = `Pairing removed. ${result.counts!.notSent} actions not sent; ${result.counts!.unresolved} unresolved (may have reached your Mac).` +
+                    (result.revokeConfirmed ? '' : ' Also remove this phone on your Mac; the relay did not confirm revocation.') +
+                    (screen.draft.value ? ' Your unsent note remains in the editor; keep a copy before pairing again.' : '');
+                tell(removalNotice);
             } else tell('This pairing was already changed by another window.');
             channel?.postMessage('changed'); await draw();
         } catch {
