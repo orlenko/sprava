@@ -18,6 +18,8 @@ public struct CompanionCollectedRequests: Sendable {
     public enum Stop: Sendable { case complete, budget, inactive, pendingDecision, dailyCap }
     public let requests: [CompanionAuthenticatedRequest]
     public let failures: [CompanionCollectionFailure]
+    /// Counts include malformed listing metadata; failures is only the last 100 entries.
+    public let discardedCounts: [CompanionRequestAdmission.Discard: Int]
     public let duplicates: Int
     public let lost: Int
     public let downloadedBytes: Int

@@ -78,6 +78,29 @@ private struct CollectionFixture {
     #expect(try p.store.read { try $0.rows("SELECT COUNT(*) FROM outcome_tombstones") } == [[.integer(0)]])
 }
 
+@Test func malformedListingPrefixesCannotConsumeDecisionSlotsAndTheirDiagnosticsStayBounded() async throws {
+    let f = CollectionFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; let p = try f.prepare()
+    let pages = (0..<5).map { page -> CompanionRequestPage in
+        let entries = (1...25).map { n in CompanionListedRequest(requestID: "malformed-\(page * 25 + n)", ordinal: Int64(page * 25 + n), receivedAt: "2026-10-15T12:00:00Z") }
+        return CompanionRequestPage(requests: entries, next: Int64((page + 1) * 25))
+    } + [CompanionRequestPage(requests: [collectionEntry(126)], next: nil)]
+    let transport = CollectionTransport(pages, bodies: [collectionID(126): [try f.body(126)]])
+    let result = try await f.collector(p, transport).collect(deviceID: f.device, today: "2026-10-15", allowance: CompanionCollectionAllowance())
+    #expect(result.requests.map(\.sequence) == [126] && result.checkedRequests == 1 && result.fetches == 1)
+    #expect(result.discardedCounts[.badID] == 125 && result.failures.count == 100 && result.failures.allSatisfy { $0.requestID == nil })
+    #expect(await transport.recorded().filter { $0.hasPrefix("get:") } == ["get:" + collectionID(126)])
+}
+
+@Test func equalAuthenticatedSequencesUseBytewiseRequestIdsRegardlessOfRelayListingOrder() async throws {
+    let f = CollectionFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; let p = try f.prepare()
+    let entries = [CompanionListedRequest(requestID: collectionID(2), ordinal: 1, receivedAt: "2026-10-15T12:00:00Z"),
+                   CompanionListedRequest(requestID: collectionID(1), ordinal: 2, receivedAt: "2026-10-15T12:00:00Z")]
+    let transport = CollectionTransport([CompanionRequestPage(requests: entries, next: nil)], bodies: [
+        collectionID(1): [try f.body(1, sequence: 10)], collectionID(2): [try f.body(2, sequence: 10)]])
+    let result = try await f.collector(p, transport).collect(deviceID: f.device, today: "2026-10-15", allowance: CompanionCollectionAllowance())
+    #expect(result.requests.map(\.requestID) == [collectionID(1), collectionID(2)])
+}
+
 @Test func aFailedConfirmedLostDeletionStopsBeforeLaterDecisionsAndTheNextDrainRetriesDeletionWithoutRefetching() async throws {
     let f = CollectionFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; let p = try f.prepare()
     let page = CompanionRequestPage(requests: [collectionEntry(1), collectionEntry(2)], next: nil)

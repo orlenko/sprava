@@ -29,6 +29,7 @@ public actor CompanionOwnerRequestCollection {
         var reservations = 0, position = 0
         var requests: [(Int, CompanionAuthenticatedRequest)] = []
         var failures: [CompanionCollectionFailure] = []
+        var discardedCounts: [CompanionRequestAdmission.Discard: Int] = [:]
         var missing: [Missing] = []
         var seen = Set<String>()
         var blocked = false
@@ -36,6 +37,11 @@ public actor CompanionOwnerRequestCollection {
         var remaining: Int { allowance.downloadBytes - bytes }
         var canFetch: Bool { fetches + reservations + 2 <= min(25, allowance.fetches) }
         var canCheck: Bool { checked + reservations < min(25, allowance.checkedRequests) }
+        func discard(_ reason: CompanionRequestAdmission.Discard, requestID: String?) {
+            discardedCounts[reason, default: 0] += 1
+            if failures.count == 100 { failures.removeFirst() }
+            failures.append(CompanionCollectionFailure(requestID: requestID, reason: reason))
+        }
     }
     public func collect(deviceID: String, today: String, allowance: CompanionCollectionAllowance) async throws -> CompanionCollectedRequests {
         guard !busy else { throw CompanionOwnerConnectionError.busy }
@@ -68,6 +74,10 @@ public actor CompanionOwnerRequestCollection {
                     for i in work.missing.indices where work.missing[i].entry.requestID != entry.requestID {
                         work.missing[i].hasLater = true
                     }
+                } else {
+                    // A malformed name cannot identify a device request. Charge its page/download and bounded
+                    // diagnostics, never a fetch/decision slot: a persistent malformed prefix must not starve actions.
+                    work.discard(.badID, requestID: nil); continue
                 }
                 if !work.seen.insert(entry.requestID).inserted { continue }
                 if let remembered = memory[deviceID]?[entry.requestID] {
@@ -79,9 +89,6 @@ public actor CompanionOwnerRequestCollection {
                 }
                 if work.blocked { continue }
                 guard work.canCheck else { work.blocked = true; continue }
-                guard CompanionWire.isID(entry.requestID) else {
-                    work.checked += 1; work.failures.append(CompanionCollectionFailure(requestID: nil, reason: .badID)); continue
-                }
                 if case .decided = try profile.decisionStatus(deviceID: deviceID, requestID: entry.requestID) {
                     work.checked += 1; work.duplicates += 1; try await delete(deviceID, entry.requestID, work); continue
                 }
@@ -129,7 +136,7 @@ public actor CompanionOwnerRequestCollection {
         switch admission {
         case .authenticated(let request): work.requests.append((position, request))
         case .discarded(let reason):
-            work.failures.append(CompanionCollectionFailure(requestID: entry.requestID, reason: reason))
+            work.discard(reason, requestID: entry.requestID)
             try await delete(deviceID, entry.requestID, work)
         }
     }
@@ -149,9 +156,10 @@ public actor CompanionOwnerRequestCollection {
     }
     private func result(_ work: Work, _ stop: CompanionCollectedRequests.Stop) -> CompanionCollectedRequests {
         let sorted = work.requests.sorted { a, b in
-            if a.1.sequence != b.1.sequence { return a.1.sequence < b.1.sequence }; return a.0 < b.0
+            if a.1.sequence != b.1.sequence { return a.1.sequence < b.1.sequence }
+            return a.1.requestID.utf8.lexicographicallyPrecedes(b.1.requestID.utf8)
         }.map { $0.1 }
-        return CompanionCollectedRequests(requests: sorted, failures: work.failures, duplicates: work.duplicates, lost: work.lost,
+        return CompanionCollectedRequests(requests: sorted, failures: work.failures, discardedCounts: work.discardedCounts, duplicates: work.duplicates, lost: work.lost,
             downloadedBytes: work.bytes, fetches: work.fetches, checkedRequests: work.checked, stop: stop)
     }
     private func remember(_ deviceID: String, _ entry: CompanionListedRequest) {
