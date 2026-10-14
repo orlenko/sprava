@@ -322,10 +322,12 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   the agent's structured protocol (Claude Code `-p` with stream-json input and output, resumed by session id,
   fixed allow and deny rules and no prompts; Codex's `app-server` JSON-RPC, in a Codex home and sign-in of
   Sprava's own, since Codex would otherwise load the person's whole setup), never a scripted terminal. Its
-  reach: Sprava's MCP tools and read-only file tools in the binder, no shell, no web; Sprava passes the
+  reach: Sprava's MCP tools only, reading through Sprava's one safe reader (no file tools, no shell, no web;
+  narrowed from read-only file tools after review, to keep binder-v0 §3.4's allowlist); Sprava passes the
   binder's manual, brief and rules itself. One process per session, under a lock. "Open in Terminal" resumes
   the binder's own session in a real terminal (`claude --resume <id>`) after Sprava ends its own process on it,
-  until the person presses Resume. The session history it keeps outside the binder is listed and cleaned up
+  until the person presses Resume; the terminal can only propose, and its turns are imported into the
+  transcript before any session file is deleted. The session history it keeps outside the binder is listed and cleaned up
   (conversation.md §11.1, §12). Turning a
   back office on is a widening change made in the app's window and is the consent for the binder's documents,
   private and intake ones included. Revises A4 for the back-office client only: it may apply what the person's

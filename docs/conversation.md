@@ -152,10 +152,17 @@ the agent, and resumes by that id.
 with `claude --resume <id>` in the binder folder (`codex resume <id>` for Codex), so the person can talk to it
 directly. Sprava first ends its own process on that session (a second process on one session forks it and
 loses a message; spikes S2 and S3), writes a small `.command` script in its support folder that runs the
-command with Sprava's MCP configuration and a fresh token, and opens it in Terminal. While attached, the
-header says "attached in Terminal", back-office jobs queue, and the front desk carries on. The person presses
-Resume in the header to hand the session back; Sprava checks that no terminal process still holds it, revokes
-the token and drives again (11.1).
+command with the same restrictions as Sprava's own process (11.1: no file tools, only Sprava's MCP server) and
+a fresh token, and opens it in Terminal. While attached, the header says "attached in Terminal", back-office
+jobs queue, and the front desk carries on.
+
+The terminal is not the app's window, so it cannot authorize changes (6.1): its token has the role of a
+registered client, and anything it asks to change arrives in the conversation as a proposal with Apply. The
+person presses Resume in the header to hand the session back; Sprava checks that no terminal process still
+holds it, revokes the token, and imports the turns made in the terminal from the session's own history file
+into the transcript as lines marked "in Terminal", before it drives again (11.1). Session files are deleted
+only after that import has succeeded; if it fails, they are kept and the engine settings say so. A terminal
+left open is noticed at the next Resume or at the latest when the task ends, and imported the same way.
 
 ## 5. Files in
 
@@ -165,7 +172,8 @@ the token and drives again (11.1).
    the composer. The app opens each file with the person's permissions and hands the open file to the runtime
    over XPC; the runtime copies it into the binder's `intake/` under a normalized name. The original stays where
    it was, and the app still writes no binder (architecture 2.1). Links are never followed inside a folder:
-   each entry is opened with `O_NOFOLLOW` and accepted only as a regular file, so a link with a harmless name
+   each entry is opened with `O_NOFOLLOW | O_NONBLOCK`, so a FIFO or device cannot block the open, and is
+   accepted only when `fstat` on the descriptor says it is a regular file, as `SafeFile` does; a link with a harmless name
    cannot bring in `~/.ssh` or another binder's file; links found are skipped and listed in the report. A
    link the person drops or names directly is resolved once, its target shown in the report, and accepted only
    as a regular file that passes the key-file and credential name rules on its real path (binder-v0 §3.4);
@@ -280,9 +288,11 @@ done", "send the binder to this address") is contained by:
    privacy markers, names or engine settings; touch another binder; write a manual, script or dot file (the
    path rules forbid filing one, binder-v0 §4.3); run anything; send anything; reach the network through
    Sprava; write a filing rule that does more than the rule grammar allows (8.1).
-3. The back office's reach is cut down (11.1): no shell, no web, only Sprava's MCP server, file tools confined
-   to the binder and denied on every path binder-v0 §3.4 keeps from models (`.sprava/`, `scripts/`, every
-   dot folder such as `.claude/` and `.git/`, mail credentials and key files; 11.1).
+3. The back office's reach is cut down (11.1): no shell, no web, no file tools at all, only Sprava's MCP
+   server. It reads the binder only through Sprava's one safe reader, which serves exactly what binder-v0 §3.4
+   allows a model to see (`catalog.json` through the projection, the documents `documents[]` names, `intake/`,
+   `DASHBOARD.md`, and Sprava's brief and manual section) and nothing else, with the containment rules of
+   architecture 7.3.
 4. Document text reaches every model only between begin and end markers, as labelled data (architecture 5.4,
    7.7); the guard's sanitizer runs on every string an engine sends (architecture 4.2 step 6).
 5. Every class A batch is one Undo, a turn over the caps shows first, and every report names what was added.
@@ -430,10 +440,10 @@ folder as working directory, no shell. Verified with Claude Code 2.1.299 (spikes
 claude -p --input-format stream-json --output-format stream-json --verbose
   --session-id <uuid> (first start) | --resume <uuid> (later)
   --model sonnet --agents <file: reader, translator>
-  --restricted --tools Read,Glob,Grep,Agent --allowedTools "Read Glob Grep Agent mcp__sprava"
+  --restricted --tools Agent --allowedTools "Agent mcp__sprava"
   --permission-mode dontAsk --permission-prompts none
   --strict-mcp-config --mcp-config <file: the sprava-mcp shim, its token as ${SPRAVA_CLIENT_TOKEN}>
-  --settings <file: Read deny rules for every path of binder-v0 §3.4 (below)>
+  --settings <file: deny Read, Glob, Grep, Edit and Write everywhere, a second guard>
   --append-system-prompt <Sprava's back-office rules, the binder's manual and its filing rules>
   --max-budget-usd <cap>
 ```
@@ -444,14 +454,13 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   for a long or governing document and `translator` (Haiku), each with its own model and tools, and they
   inherit the restriction. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` is set, or one message can yield two
   results.
-- **Confinement.** `--restricted` with `--tools` leaves no Bash, WebFetch or WebSearch, in subagents too, and
-  confines Read, Glob and Grep to the binder: reads outside it and through links are denied. It confines them
-  to the binder but not away from its subfolders, so the deny rules name every path binder-v0 §3.4 keeps from
-  any model: `.sprava/`, `scripts/`, `.claude/`, `.agents/`, `.codex/`, `.git/` and every other path segment
-  starting with a dot, `.env` and `state.json` under `intake/mail/`, and the key-file names. A Read deny rule
-  also binds Grep (the documentation calls it best effort), so Sprava's own tools, not the file tools, are how
-  the back office reads documents; a later Claude Code that breaks a deny rule fails Sprava's start-up probe
-  and the back office stays off. `--strict-mcp-config` loads only Sprava's server. The permission mode must be
+- **Confinement.** The back office has no file tools: `--tools Agent` leaves no Read, Glob, Grep, Bash,
+  WebFetch or WebSearch, in subagents too. It reads the binder only through Sprava's tools, which go through
+  one safe reader that serves exactly what binder-v0 §3.4 lets a model see (6.2), so a blocklist of paths
+  can never be incomplete. The spike confirmed what file tools would have needed: `--restricted` confines them
+  to the binder but not away from its subfolders, and a deny rule binds Grep only "best effort". The deny-all
+  settings file is a second guard, and a start-up probe that finds any file tool answering keeps the back
+  office off. `--strict-mcp-config` loads only Sprava's server. The permission mode must be
   explicit: with nonessential traffic off, `-p` defaulted to `auto`, read outside the binder and ran Bash.
   With `dontAsk` and no prompts, anything not allowed is refused, and nobody is ever asked about a tool.
 - **The manual.** Under `--restricted` Claude Code loads neither the binder's `CLAUDE.md` nor its
@@ -498,7 +507,9 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   Terminal. `--no-session-persistence` would not avoid the copy anyway: it still leaves per-subagent
   descriptions and a temporary tasks folder. Sprava deletes a session's
   `~/.claude/projects/<encoded>/<id>*` files and its temporary tasks folder when a task ends, when the person
-  clears the conversation, turns the back office off, offloads or removes the binder.
+  clears the conversation, turns the back office off, offloads or removes the binder, and in every case only
+  after any turns made in Terminal are in the transcript (4.2). Everything Sprava itself drove is already in
+  the transcript, from the stream.
 - **Offload and removal.** Before a binder is offloaded or removed, Sprava stops taking requests and tasks
   for it, stops every running session with the interrupt above, waits for in-flight batches to finish, and
   holds that barrier until the offload's snapshot is verified or the offload is cancelled (backup.md §6.1
@@ -520,15 +531,17 @@ server (`codex resume --remote`) is untried. In short:
   --disable plugins --disable apps --disable memories --disable multi_agent --disable browser_use
   --disable computer_use --disable image_generation --disable goals
   -c web_search="disabled" -c notify=[] -c skills.bundled.enabled=false -c skills.include_instructions=false
-  -c default_permissions="sprava" -c permissions.sprava.filesystem=<read the binder only; deny the rest>
+  -c default_permissions="sprava" -c permissions.sprava.filesystem=<no reads, no writes>
   -c mcp_servers.sprava.command=<sprava-mcp> -c mcp_servers.sprava.default_tools_approval_mode="approve"
   (environment: HOME and CODEX_HOME in Sprava's support folder)
 ```
 
-- Plain `read-only` sandboxing does not stop reads outside the binder; the custom permission profile does
-  (the binder readable, everything else and every write refused, no network), with the shell tools disabled.
-  The profile must also deny the paths of binder-v0 §3.4 inside the binder; until S3 shows it can, the Codex
-  back office is not offered. Any approval request that still arrives over the protocol is declined by Sprava's policy.
+- Plain `read-only` sandboxing does not stop reads outside the binder; a custom permission profile does (the
+  spike's profile read the binder and refused everything else, every write and the network). As for Claude,
+  Sprava's profile grants no file reads at all, not even in the binder, with the shell tools disabled, so
+  Codex reads only through Sprava's safe reader; that Codex works with no readable workspace is an open S3
+  item, and until it does the Codex back office is not offered. Any approval request that still arrives over
+  the protocol is declined.
 - **Codex runs in a home of its own.** With the person's `~/.codex`, Codex loads their whole setup: their MCP
   servers start unsandboxed even with an empty `mcp_servers`, their `AGENTS.md` and skills are injected, and
   its shell snapshots capture their login environment. So Sprava gives Codex a home under its support folder
@@ -624,8 +637,8 @@ Short experiments on invented binders, each before the PR that needs it. S5 is r
   auto-update is a risk; what a real usage-limit hit prints; first-token latency.
 - **S2 Stop and Open in Terminal: done** (11.1): the interrupt control message stops a turn and keeps the
   process; resume by id works from the binder folder, and a second process on one session forks it, hence
-  the lock. Still open: the interactive resume picker, and `claude --resume` in Terminal with Sprava's MCP
-  configuration.
+  the lock. Still open: the interactive resume picker, `claude --resume` in Terminal with Sprava's MCP
+  configuration and restrictions, and reading a session's history file to import the terminal's turns.
 - **S3 Codex app server: done** (codex-cli 0.162.1, 2026-10-14; results in 11.1). Still open: a full turn in
   Sprava's own Codex home after the person signs in; a profile that denies binder-v0 §3.4 paths inside the
   binder; `codex resume --remote` against a running server; what a real limit error prints.
@@ -669,7 +682,7 @@ the local model follows, then the back office.
 13. **BinderStore: the filing rules.** Rule grammar, the rules part of Sprava's manual section, parsing and
     editing; the reader's prompt takes them (a small `Clerk` change, or its own PR).
 14. **Brains: the Claude Code back office.** Long-lived session, stream-json, session id and resume, the
-    per-session lock, the start-up probe of the deny rules, Stop by interrupt, limits, costs, cleanup of
+    per-session lock, the start-up probe that no file tool answers, Stop by interrupt, limits, costs, cleanup of
     session files, the offload barrier.
 15. **Brains: the back-office tools.** `search`, `apply_ops`, `ask_person`, `review_verdict`,
     `save_translation`, `write_brief`, `propose_rule`, and the reads; every back-office tool refused to
@@ -695,7 +708,9 @@ with the plan"), adjusted by the points of the second quote:
    output, resumed by session id, with Sprava's fixed allow and deny rules and no prompts; tasks get their own sessions
    (D4, D13).
 5. Codex is the second back office, after Claude, over its app server (D4).
-6. The back office's reach: Sprava's tools and read-only file tools in the binder, no shell, no web (D4).
+6. The back office's reach: Sprava's tools, no shell, no web (D4). The first draft also gave it read-only
+   file tools in the binder; review showed a path blocklist cannot match binder-v0 §3.4's allowlist, so it
+   reads only through Sprava's safe reader.
 7. Turning the back office on for a binder is the consent for its documents, private and intake ones included
    (D4).
 8. Sprava's front desk files first, and the back office reviews its work afterwards (D10).
