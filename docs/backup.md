@@ -54,7 +54,9 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
   Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, temporary files (`.*.tmp`), and
   the Finder's `.DS_Store` view settings, which macOS rewrites on every visit.
 - Sprava's own state, as its own snapshot: the Shelf, settings, the capture store, unfiled cards, the clerk's
-  records, integration settings (`~/Library/Application Support/Sprava`, minus logs and caches).
+  records, integration settings (`~/Library/Application Support/Sprava`, minus logs, caches and `codex/home`,
+  the Codex back office's sign-in and session history, which a test keeps out of every snapshot;
+  `docs/conversation.md` §11.1).
 - Never: the Keychain. Integration passwords and brain tokens are re-entered after a restore onto a new Mac.
 
 Before backing up Sprava's state, Sprava makes a private staging copy. Each state database is copied through
@@ -145,7 +147,9 @@ person picks whatever they have: another cloud service's synced folder, or an ex
 1. **Ready?** The binder belongs to this Mac, no card is waiting, and nothing is in `intake/` or `outgoing/`.
    If open items remain, the card lists them with a warning: once offloaded, they no longer show on the
    Shelf, in the daily summary or on the hub. The person may close them first, or confirm and offload anyway
-   (decided 2026-10-08). The confirmation is recorded in the binder's history before the snapshot.
+   (decided 2026-10-08). The confirmation is recorded in the binder's history before the snapshot. Then the
+   binder stops taking requests and tasks, every back-office session is interrupted and in-flight batches
+   finish; that barrier holds until step 6 ends or the offload is cancelled (`docs/conversation.md` §11.1).
 2. **Snapshot** the binder into the mirror, tagged `offloaded`.
 3. **Verify** the snapshot: restore it into a temporary folder on this Mac (`restic restore --verify`) and
    compare every file's SHA-256 with the live binder. This reads the whole binder back once; for gigabytes it

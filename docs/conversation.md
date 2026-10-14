@@ -66,26 +66,17 @@ the fact; "Sprava's whole purpose is to maintain binders with their notes, knowl
 
 ### 3.1 What is on screen
 
-- **The conversation** fills the main area: the transcript and a composer (text, attach, Send; Stop while
-  something runs). The whole area takes drops of files and folders, with a highlight while dragging, and the
-  composer accepts a path typed or pasted ("include ~/Downloads/statement-2026-03.pdf"). A turn's steps show as
-  short activity lines ("Reading 'Bylaws 2024', 14 pages") that collapse when it ends.
-- **Sprava's messages**: an answer (quoted passages, 9.2); a report of what was done, with Undo for the whole
-  report and per line; a question with buttons when the front desk is unsure (5.5); a one-tap confirmation for
-  a change to something that exists (6.1); a disagreement card from the back office (7.1).
-- **Task cards** (10) sit in a column beside the conversation, or above it on a narrow window: title, the
-  engine, progress, Stop, Open in Terminal, and the draft when done.
-- **The strip** above the composer lists what waits for the person: questions, confirmations, disagreement
-  cards and a standing instruction for the next drop (5.4).
-- **The side panel**, collapsible: the brief (8.2), the Now buckets (decisions.md F4), the binder's documents
-  (title, date, kind, language, searchable; new), and recent changes with Undo. A document opens in Quick Look
-  at the cited page.
-- **The header** shows who is on duty: "Front desk: <model> on this Mac" and, when connected, "Back office:
-  Claude, your account" with its state (idle, working, attached in Terminal, unavailable). It opens the
-  binder's engine settings, which also show the front desk's scores (7.2) and the filing rules (8.1).
+- **The conversation**: the transcript and a composer (text, attach, Send, Stop). The whole area takes drops,
+  and the composer takes a typed or pasted path. A turn's steps show as short activity lines.
+- **Sprava's messages**: answers (9.2), reports with Undo, questions (5.5), one-tap confirmations (6.1) and
+  the back office's disagreement cards (7.1).
+- **Task cards** (10) beside the conversation: progress, Stop, Open in Terminal, the draft.
+- **The strip** above the composer: what waits for the person, and a standing instruction (5.4).
+- **The side panel**: the brief (8.2), the Now buckets, the binder's documents (new) and recent changes.
+- **The header**: who is on duty ("Front desk: <model> on this Mac"; "Back office: Claude, your account" and
+  its state), opening the engine settings with the scores (7.2) and rules (8.1).
 
-With the runtime stopped, the page shows the transcript and side panel read from disk, disables the composer,
-and shows the read-only banner of architecture 2.1.
+With the runtime stopped, the page is read from disk with the composer off (architecture 2.1).
 
 ### 3.2 The transcript
 
@@ -122,7 +113,7 @@ with output constrained by a grammar, so the model can only answer with one of t
 | correct a filing | Applies the correction to the recent batch (5.4) |
 | standing instruction | Holds it for the next drop (5.4) |
 | question | Searches and quotes (9) |
-| note or to-do | Reads it with the clerk's note reading and adds items (class A). "Note: ..." and "remember ..." are named in the menu's description as notes, because both test models once took a "Note:" line for a standing instruction (spike S5) |
+| note or to-do | Adds items through the clerk's note reading (class A); the menu names "Note: ..." and "remember ..." as notes (S5 saw one taken for an instruction) |
 | change existing items | Finds them in the index and posts a one-tap confirmation (class B) |
 | status | Answers from the Now buckets and the brief ("what is pending?") |
 | task | Hands it to the back office as a task (10), or says "this needs thinking" (9.3) |
@@ -380,8 +371,11 @@ Undo with no fix writes no rule, because it says what was wrong and not what is 
 
 The rules live in a "Filing rules" part of Sprava's own section of `AGENTS.md`, between Sprava's markers (F14
 in PR #347), so the person and any agent can read them; Sprava passes them to the back office in its prompt
-(11.1). Sprava parses only its own section; a rule line that no longer parses is kept as written, skipped by
-the front desk and listed in the engine settings as "needs fixing", never dropped. The front desk reads every
+(11.1). Sprava parses only its own section. The manual is editable by anyone, so it is not the authority:
+each acceptance is recorded in the binder's op log with the rule's id and digest, and a manual line that
+matches no recorded acceptance (written by hand, by an agent, or restored) is never used; the engine settings
+list it as "not accepted", with Use and Delete. A line that no longer parses is kept, skipped, and listed as
+"needs fixing", never dropped. The front desk reads every
 rule on every job while they fit 2,000 tokens (proposed); beyond that, code picks the rules whose "when"
 matches the job (sender, document type, words) and never drops one. The back office may suggest merging rules,
 but a merge is a card showing the old rules and the new one, and the old ones stay until the person accepts.
@@ -471,15 +465,11 @@ translation is labelled machine-made.
 ## 10. Tasks
 
 A big request ("draft the reply to the board", "prepare the tax return") becomes a task card (decisions.md
-D13). Each task runs in a back-office session of its own, so it does not fill the conversation's context, and
-the person keeps talking meanwhile. The card shows the request, progress lines from the stream, cost so far,
-Stop, Open in Terminal (4.2), and at the end the draft. Results land as drafts in the binder: a new document
-filed in `drafts/` (class A; Markdown, plain text or RTF, proposed) with the task's summary in the conversation,
-and any items it proposes go through the classes. At most 2 tasks run per binder at once (proposed); more
-wait in line.
-
-Sprava never does an outward action: it does not send email, file with a court or a tax office, pay, or submit
-a form. The draft is for the person to send. Without a back office a task is "this needs thinking" (9.3).
+D13), in a back-office session of its own, so the conversation goes on meanwhile. The card shows progress,
+cost, Stop, Open in Terminal (4.2) and the draft: a new private document in `drafts/` (Markdown, plain text or
+RTF, proposed); items it proposes go through the classes. At most 2 tasks per binder run at once (proposed).
+Sprava never does an outward action (send email, file with a court or tax office, pay, submit a form); the
+draft is for the person to send. Without a back office a task is "this needs thinking" (9.3).
 
 ## 11. The engines
 
@@ -499,7 +489,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   --restricted --tools Agent --allowedTools "Agent mcp__sprava"
   --permission-mode dontAsk --permission-prompts none
   --strict-mcp-config --mcp-config <file: the sprava-mcp shim, its token as ${SPRAVA_CLIENT_TOKEN}>
-  --settings <file: deny Read, Glob, Grep, Edit and Write everywhere, a second guard>
+  --settings <file: "disableAllHooks": true; deny Read, Glob, Grep, Edit and Write everywhere>
   --append-system-prompt <Sprava's back-office rules, the binder's manual and its filing rules>
   --max-budget-usd <cap>
 ```
@@ -518,7 +508,8 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   under `--restricted`, Codex's `requirements.toml`, which can pin hooks on), the person's own memory files
   (`~/.claude/CLAUDE.md`), or a third-party provider behind the sign-in. So before every start Sprava checks
   the effective setup against an allowlist and keeps the back office off, saying why, unless all of it holds:
-  no managed hook or policy that could see the session; no memory file loaded
+  no hook of any source in effect (the person's own `~/.claude/settings.json` hooks are switched off by
+  `disableAllHooks`, in Terminal sessions too; a managed policy that overrides it fails); no memory file loaded
   (`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is set, and the session's start event lists none); the provider is
   Anthropic itself (`claude auth status` names a first-party method, not `third_party`) or OpenAI for Codex;
   the tools are `Agent` and Sprava's alone. What Sprava cannot read counts as failing (open S1, S3 items).
@@ -557,7 +548,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   the provider already received cannot be recalled, and the expunge screen says so.
 - **Offload and removal.** Sprava first stops taking requests and tasks for the binder, interrupts every
   session, waits for in-flight batches, and holds that barrier until the offload's snapshot is verified or
-  the offload is cancelled (backup.md §6.1 gains this check).
+  the offload is cancelled (backup.md §6.1, step 1).
 
 **Codex** is the second back office (decisions.md D4), over `codex app-server`, verified with codex-cli
 0.162.1 (spike S3, 2026-10-14). It speaks newline JSON-RPC on standard input and output (marked
@@ -590,8 +581,8 @@ even after a kill. Codex allows one writer per thread, so Open in Terminal stops
   So Codex gets a home under Sprava's support folder (`codex/home`) with its own sign-in, which the app
   server drives with a device code shown in the engine settings; Sprava never copies `auth.json`. A full turn
   in that home is an open S3 item. Its transcripts hold binder text, and Sprava cleans them as for Claude.
-  The home holds `auth.json` and those transcripts, so Sprava's state backup excludes `codex/home` by name
-  (`docs/backup.md` §3 gains the exclusion), and a test checks that no sign-in or session file enters a snapshot.
+  The home holds `auth.json` and those transcripts, so Sprava's state backup excludes `codex/home` by name,
+  with a test (`docs/backup.md` §3.2).
   Claude Code can use the person's own `~/.claude` because `--restricted --strict-mcp-config` loads none of
   their skills, plugins or MCP servers; Codex cannot.
 - Sprava calls the native binary in the npm package's `vendor/` folder (a LaunchAgent cannot run the Node
@@ -627,16 +618,17 @@ A general open-weights model run by Sprava, chosen by the Mac's memory, download
   a short path in its container (104-byte limit), never TCP (checked with `lsof`). The runtime starts it on
   the first front-desk turn; `--sleep-idle-seconds` frees the weights when idle (6.1 GB down to 144 MB, about
   1.1 s to wake), and the runtime stops it after 15 idle minutes (proposed).
+- **Bounded output.** `n_predict` defaults to unlimited, so every call sets it (the schema's size, at most
+  1,000 tokens, proposed) and a 30-second deadline; an answer that is cut off or not complete JSON is
+  rejected, and a helper that does not stop when cancelled is killed and restarted.
 - **Constrained output.** Every call goes to `/completion` with a `json_schema`, on the prompt rendered by
   `/apply-template`, never to the chat endpoint's `response_format`: there Gemma 4 wrote its thinking channel
   before the schema applied and ran out of tokens on 8 of 41 calls, while `/completion` was constrained from
   the first token and gave no invalid JSON. The answer schema puts the quotes first and has no "answerable"
-  flag: empty quotes mean "no relevant passage was found" (9.2). With the flag first, Qwen refused 5 of 9 answerable
-  questions. (A SwiftPM helper on the C API over standard input also works, but needs hand-written grammars
-  and a prompt format per model, since the C API's template list does not know Gemma 4.)
-- **Prompt size.** Prompt reading is the slow part (16,000 tokens took about 23 s to the first token on
-  Gemma 4 E4B), so answer calls stay within 2,000 to 4,000 tokens, with the rules and brief first so the
-  server's cache reuses them.
+  flag: empty quotes mean "no relevant passage was found" (9.2); with the flag first, Qwen refused 5 of 9
+  answerable questions. (A helper on the C API also works but needs per-model grammars and prompt formats.)
+- **Prompt size.** 16,000 tokens took about 23 s to the first token on Gemma 4 E4B, so answer calls stay
+  within 2,000 to 4,000 tokens, with the rules and brief first for the server's cache.
 
 Candidates as of 2026-10-14, all Apache-2.0, pinned by file name and SHA-256 and re-chosen at each release. The
 weights take at most about half the memory.
@@ -648,9 +640,8 @@ weights take at most about half the memory.
 | 24 to 36 GB | Gemma 4 12B (7.1 GB), or Gemma 4 26B-A4B, a mixture of experts (17 GB) | 7 to 17 GB | Not yet |
 | 48 GB or more (the author's Mac) | Qwen3.6-35B-A3B, a mixture of experts (22 GB), or Qwen3.6-27B (17 GB) | 17 to 22 GB | Not yet |
 
-Qwen3.5-9B (5.7 GB) was the other model tested: routing 23 of 24, folder 4 of 5, 1.43 s per routing call,
-30 tokens a second. Neither model invented a quote or an answer. The fixtures were small (24 routing cases, 5
-filings, 12 questions, in English, French and Ukrainian): a first sort, not a measure. The download comes
+Qwen3.5-9B also tested (routing 23 of 24, folder 4 of 5, 1.43 s); neither model invented a quote. The
+fixtures were small (24, 5 and 12 cases in English, French and Ukrainian): a first sort. The download comes
 from the model's host into `~/Library/Application Support/Sprava/models/`, resumable, excluded from backup and
 removable in the engine settings. The pinned list holds each file's exact byte length beside its SHA-256. A
 download starts only when the volume has that length plus a 5 GB reserve free (proposed). It refuses a
@@ -666,12 +657,9 @@ Rows for architecture 10, each off until the person turns it on:
 | Local model download | Nothing from the binder; the host learns the Mac's address and the file | Once per model | Not downloaded |
 | Apple's Translation languages | Nothing from the binder; macOS fetches the pair | Once per pair | Not downloaded |
 
-The front desk, the clerk, the index and on-device translation send nothing.
-
-What stays on the Mac but outside the binder and its backup: the back office's session history, binder text
-included, in `~/.claude/projects/<encoded session folder>/` for Claude and in Sprava's Codex home
-(`~/Library/Application Support/Sprava/codex/home`) for Codex; the engine settings show both, and Sprava deletes
-a session's files as 11.1 says. The doctor reports leftovers.
+The front desk, the clerk, the index and on-device translation send nothing. Kept on the Mac outside the
+binder and its backup: the back office's session history (`~/.claude/projects/<encoded session folder>/`, and
+Sprava's `codex/home`), shown in the engine settings, deleted as 11.1 says; the doctor reports leftovers.
 
 ## 13. What this replaces or retires
 
@@ -807,8 +795,9 @@ looks. It counts as unreviewed, and human-checked accuracy is unchanged.
 
 An old binder may hold material from several scopes that the old setup kept apart within one folder. Sprava
 does not flatten such a binder into one brief or one full-context back-office session. When the import (PR
-#347) detects mixed scopes, or the person declares them, the back office stays off for that binder until the
-person splits it into separate binders. Access control within one binder is out of this design and needs an
+#347) detects mixed scopes, or the person declares them, every model stays off for that binder (the back
+office, the front desk's model, the brief's model-picked lines) and it runs on code alone, with search, until
+the person splits it into separate binders. Access control within one binder is out of this design and needs an
 author decision. Each surface keeps its own policy: the hub's projection, the phone's views (which show no
 conversation in v1) and the model readers. Encryption decides who can read bytes, not what a surface may
 disclose.

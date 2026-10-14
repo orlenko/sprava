@@ -389,7 +389,7 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   arrival is recorded on the existing document. Evidence that text exists is not an unconditional duty, and an
   empty search is "no relevant passage was found" (conversation.md §17.1, §17.2, §17.6, §17.7).
 - **D16 recommended (same review).** A binder with mixed information scopes, detected at import or declared,
-  gets no back office until the person splits it. Surfaces keep their own policies, and encryption is not
+  gets no model at all, back office or front desk, until the person splits it. Surfaces keep their own policies, and encryption is not
   disclosure. Open, for the author: access control within one binder, and a cross-binder manager (P21 in PR
   #347); a per-binder session never gets cross-binder access (conversation.md §17.4).
 - **D17 recommended (same review).** Sprava's tools and services offer named contracts for the old workflows
