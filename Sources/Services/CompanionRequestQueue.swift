@@ -54,6 +54,8 @@ public final class CompanionRequestQueue: @unchecked Sendable {
                 answer = JSONWriter.compact(.object(envelope))
             } catch is CancellationError {
                 answer = Self.failure("Phone action was cancelled. Check its state before retrying.")
+            } catch let error as CompanionPhoneActionError {
+                answer = Self.failure(error.message)
             } catch {
                 answer = Self.failure("Phone action could not finish. Check its state before retrying.")
             }
