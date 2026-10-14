@@ -47,7 +47,7 @@ public struct CompanionRelayIdentity: Sendable {
 }
 
 /// The immutable claim identity; later rotation and publication state have separate owners.
-public struct CompanionOwnerCredentials {
+public struct CompanionOwnerCredentials: Sendable {
     public let relay: CompanionRelayIdentity
     public let ownerToken: String
     public let signingKey: Curve25519.Signing.PrivateKey
