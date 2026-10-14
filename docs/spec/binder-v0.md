@@ -670,7 +670,7 @@ A batch is applied as a whole: if the transaction guard rejects any op, none is 
 The complete list of changes applied without a proposal:
 
 - the user's own direct actions in the app (actor `user`), among them `set_disclosure`, `rename_teka` and `expunge`, which only the user can apply;
-- the import's own changes (actor `import`, section 9.4 steps 3, 4, 5 and 7), listed in the import report and undone together (decisions.md F13);
+- the import's own changes (actor `import`, section 9.4 steps 3, 4, 5 and 7), listed in the import report; an import is undone by discarding the copy (section 9.4; decisions.md F13);
 - `import_snapshot`, `external_edit` and `abort`, which record facts and decide nothing;
 - completions drained from the hub's outbox (actor `external`, section 8.3).
 
@@ -1001,7 +1001,7 @@ A lifeproj v1 binder passes its own checker with loose items, yet lifeproj's `pu
 
 ### 9.4 What an import does, in order
 
-An import does its processing on its own (decisions.md F13). Each change is an op with actor `import`; the changes form one batch the user can undo as a whole, and the implementation lists them in an import report. Only the changes of step 6, which need the user's judgement, arrive as cards. Earlier drafts proposed most of these changes as cards to approve one by one; decisions.md F13 superseded that.
+An import does its processing on its own (decisions.md F13). Each change is an op with actor `import`, and the implementation lists them in an import report. Some of these changes, such as `migrate` and `complete`, cannot be undone op by op (section 6.10), so an import is undone as a whole by discarding the copy: the implementation moves it to the Trash, and the original, which the import never wrote, is still there to import again. Changes made in the copy after the import go with it, and the implementation says so before it discards anything. Only the changes of step 6, which need the user's judgement, arrive as cards. Earlier drafts proposed most of these changes as cards to approve one by one; decisions.md F13 superseded that.
 
 Sprava currently refuses an import before any write when `catalog.json` exceeds 1 MiB, when the combined
 `open_items`, `documents` and `processing_log` count exceeds 100, or when catalog plus op-log bytes times
