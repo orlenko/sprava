@@ -106,3 +106,20 @@ private actor DrainPause {
     await pause.resume()
     #expect(try await first.value.visitedDevices == [orchestrationDevices[0]])
 }
+
+@Test func committedProgressBeforeAJobFailureResetsBackoffAndStillPublishesEveryDevice() async throws {
+    let drain = CompanionOwnerDrain(), device = orchestrationDevices[0], visits = DrainVisits()
+    _ = try await drain.drain(activeDevices: [device], now: { orchestrationNow },
+        turn: { _, _ in CompanionDeviceDrainTurn(needsRetry: true) }, publishOutcomes: { _ in })
+    await #expect(throws: DrainFixtureError.transport) {
+        try await drain.drain(activeDevices: [device], now: { "2026-10-15T12:01:00Z" },
+            turn: { _, _ in CompanionDeviceDrainTurn(checkedRequests: 1, decisionsCommitted: 1,
+                jobFailure: DrainFixtureError.transport) }, publishOutcomes: { await visits.publish($0) })
+    }
+    #expect(await visits.published == [device])
+    _ = try await drain.drain(activeDevices: [device], now: { "2026-10-15T12:01:01Z" },
+        turn: { _, _ in CompanionDeviceDrainTurn(needsRetry: true) }, publishOutcomes: { _ in })
+    let reset = try await drain.drain(activeDevices: [device], now: { "2026-10-15T12:02:01Z" },
+        turn: { _, _ in CompanionDeviceDrainTurn() }, publishOutcomes: { _ in })
+    #expect(reset.visitedDevices == [device])
+}
