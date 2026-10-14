@@ -19,6 +19,34 @@ import Testing
     }
     func drop() -> TekaStore.OpBody { .init(op: "drop", args: JSONObject([("id", .string(item))]), actor: user) }
 
+    @Test func aRecurringPhoneCompletionRecordsItsClosureTimeAndReplaysOnlyOnce() throws {
+        let (folder, store) = try adopted(); defer { try? FileManager.default.removeItem(at: folder) }
+        let recurring = "estate-example-2026-010"
+        let next = JSONValue.string("2027-02-14")
+        let bytes = try store.withCompanionTransaction(now: now) { transaction in
+            try transaction.prepare(.init(op: "complete", args: JSONObject([
+                ("id", .string(recurring)), ("occurrence_due", .string("2026-11-14")),
+                ("next_due", next)]), actor: user), effectID: effect, tag: tag, now: now)
+        }
+        let op = try JSONParser.parse(bytes).value
+        #expect(op["args"]?["closed_at"] == op["at"])
+        #expect(op["args"]?["source"] == .string("user"))
+        #expect(op["args"]?["next_due"] == next)
+        try store.withCompanionTransaction(now: now) { transaction throws -> Void in
+            #expect(try transaction.applyRecorded(bytes))
+            let catalog = try transaction.currentState().catalog
+            let current = try #require(catalog["open_items"]?.arrayValue?.first { $0["id"] == .string(recurring) })
+            #expect(current["due"] == next && current["status"] == .string("open"))
+        }
+        let restarted = TekaStore(folder: folder); restarted.testHookFullSync = { _ in 0 }
+        try restarted.withCompanionTransaction(now: now) { transaction throws -> Void in
+            #expect(try transaction.applyRecorded(bytes) == false)
+        }
+        #expect(try restarted.readOpLog().ops.filter { $0["id"] == .string(effect) }.count == 1)
+        let log = try Data(contentsOf: folder.appendingPathComponent(".sprava/ops.ndjson"))
+        #expect(log.suffix(bytes.count + 1) == bytes + Data([10]))
+    }
+
     @Test func aReservationFailureLeavesNoEffectAndTheExactRecordedLineAppliesOnceAfterRestart() throws {
         let (folder, store) = try adopted(); defer { try? FileManager.default.removeItem(at: folder) }
         struct ReservationFailed: Error {}

@@ -24,7 +24,7 @@ public final class CompanionOperationTransaction {
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         var args = body.args
         if ["complete", "drop"].contains(body.op) {
-            if args["next_due"] == nil, args["closed_at"] == nil { args.set("closed_at", .string(at)) }
+            if args["closed_at"] == nil { args.set("closed_at", .string(at)) }
             if args["source"] == nil { args.set("source", .string("user")) }
             if args["next_due"] == nil, args["keep_title_as"] == nil, let id = args["id"],
                let item = state.catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
