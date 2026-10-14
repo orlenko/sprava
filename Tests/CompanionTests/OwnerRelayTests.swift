@@ -66,6 +66,53 @@ private func owner(_ plan: HTTPPlan) throws -> (CompanionOwnerRelay, String) {
     return (try CompanionOwnerRelay(relay: identity, token: ownerToken, protocolClasses: [InventedRelayProtocol.self]), host)
 }
 
+@Test func initialRelayDiscoveryNeedsOnlyAnOriginAndSendsNoCredentialsOrBody() async throws {
+    for claimed in [false, true] {
+        let host = UUID().uuidString.lowercased() + ".example", origin = "https://" + host
+        let bytes = Data("{\"protocol\":0,\"claimed\":\(claimed),\"instance\":\"\(relayInstance)\"}".utf8)
+        InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [bytes.prefix(11), bytes.dropFirst(11)], observe: { request in
+            #expect(request.url?.absoluteString == origin + "/v0/health" && request.httpMethod == "GET")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            #expect(request.value(forHTTPHeaderField: "Cookie") == nil && request.value(forHTTPHeaderField: "Referer") == nil)
+            #expect(requestBody(request) == nil && !request.httpShouldHandleCookies)
+        }))
+        let reply = try await CompanionOwnerRelay.health(origin: origin, protocolClasses: [InventedRelayProtocol.self])
+        #expect(reply.status == 200 && reply.receivedBytes == bytes.count)
+        #expect(reply.value?.instance == relayInstance && reply.value?.claimed == claimed)
+    }
+}
+
+@Test func initialRelayDiscoveryRejectsNonOriginsBeforeAnyTransportWork() async throws {
+    let host = UUID().uuidString.lowercased() + ".example", origin = "https://" + host
+    let bytes = Data("{\"protocol\":0,\"claimed\":false,\"instance\":\"\(relayInstance)\"}".utf8)
+    InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [bytes], observe: { _ in
+        Issue.record("Invalid discovery origin reached the transport")
+    }))
+    for invalid in [origin + "/", origin + "/credential", origin + "?key=example", origin + "#example",
+                    "https://user@" + host, "http://" + host] {
+        await #expect(throws: CompanionRelayError.invalid) {
+            try await CompanionOwnerRelay.health(origin: invalid, protocolClasses: [InventedRelayProtocol.self])
+        }
+    }
+}
+
+@Test func initialRelayDiscoveryValidatesInstanceMetadataAndKeepsRefusalBodiesOpaque() async throws {
+    let host = UUID().uuidString.lowercased() + ".example", origin = "https://" + host
+    for body in ["{\"protocol\":1,\"claimed\":false,\"instance\":\"\(relayInstance)\"}",
+                 "{\"protocol\":0,\"claimed\":\"false\",\"instance\":\"\(relayInstance)\"}",
+                 "{\"protocol\":0,\"claimed\":false,\"instance\":\"../credential\"}",
+                 "{\"protocol\":0,\"protocol\":0,\"claimed\":false,\"instance\":\"\(relayInstance)\"}"] {
+        InventedRelayProtocol.plans.set(host, HTTPPlan(chunks: [Data(body.utf8)]))
+        await #expect(throws: CompanionRelayError.invalid) {
+            try await CompanionOwnerRelay.health(origin: origin, protocolClasses: [InventedRelayProtocol.self])
+        }
+    }
+    let bytes = Data("Invented opaque refusal".utf8)
+    InventedRelayProtocol.plans.set(host, HTTPPlan(status: 503, chunks: [bytes]))
+    let reply = try await CompanionOwnerRelay.health(origin: origin, protocolClasses: [InventedRelayProtocol.self])
+    #expect(reply.status == 503 && reply.value == nil && reply.receivedBytes == bytes.count)
+}
+
 @Test func ownerFetchesRevocationBytesOnTheBoundOriginWithAOneKiBLimitAndCountsErrors() async throws {
     let body = Data(repeating: 17, count: 1024)
     let (client, host) = try owner(HTTPPlan(chunks: [body], observe: { request in

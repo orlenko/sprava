@@ -27,8 +27,15 @@ public struct CompanionOwnerRelay: Sendable {
     func call(_ path: String, limit: Int = 4096, method: String = "GET", body: Data? = nil,
               authenticated: Bool = true, json: Bool = false, downloadLimit: Int? = nil,
               discardOversizedRequest: Bool = false) async throws -> CompanionRelayReply<Data> {
+        try await Self.call(origin: relay.origin, path: path, token: authenticated ? token : nil,
+                            protocolClasses: protocolClasses, limit: limit, method: method, body: body,
+                            json: json, downloadLimit: downloadLimit, discardOversizedRequest: discardOversizedRequest)
+    }
+    private static func call(origin: String, path: String, token: String?, protocolClasses: [AnyClass]?,
+                             limit: Int = 4096, method: String = "GET", body: Data? = nil, json: Bool = false,
+                             downloadLimit: Int? = nil, discardOversizedRequest: Bool = false) async throws -> CompanionRelayReply<Data> {
         if let downloadLimit, !(1...8388608).contains(downloadLimit) { throw CompanionRelayError.invalid }
-        guard let url = URL(string: relay.origin + path) else { throw CompanionRelayError.invalid }
+        guard let url = URL(string: origin + path) else { throw CompanionRelayError.invalid }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.urlCredentialStorage = nil
         configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
@@ -36,12 +43,15 @@ public struct CompanionOwnerRelay: Sendable {
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = method; request.httpBody = body; request.httpShouldHandleCookies = false
-        if authenticated { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         if body != nil { request.setValue(json ? "application/json" : "application/octet-stream", forHTTPHeaderField: "Content-Type") }
         return try await RelayStream(limit: limit, downloadLimit: downloadLimit, discardOversizedRequest: discardOversizedRequest).send(request, configuration: configuration)
     }
     private func json(_ bytes: Data?) throws -> JSONValue {
+        try Self.parseJSON(bytes)
+    }
+    private static func parseJSON(_ bytes: Data?) throws -> JSONValue {
         guard let bytes else { throw CompanionRelayError.invalid }
         do {
             let value = try CompanionWire.parse(bytes, limit: 8192)
@@ -52,12 +62,21 @@ public struct CompanionOwnerRelay: Sendable {
         Data(JSONWriter.compact(.object(JSONObject(entries))).utf8)
     }
     public func health() async throws -> CompanionRelayReply<CompanionRelayHealth> {
-        let reply = try await call("/v0/health", authenticated: false)
+        try await Self.health(origin: relay.origin, protocolClasses: protocolClasses)
+    }
+    /// companion-v0 §6: discover the instance before preparing owner credentials or a profile.
+    /// One bounded public health request; no token, setup code, credentials or persisted state.
+    public static func health(origin: String) async throws -> CompanionRelayReply<CompanionRelayHealth> {
+        try await health(origin: origin, protocolClasses: nil)
+    }
+    static func health(origin: String, protocolClasses: [AnyClass]?) async throws -> CompanionRelayReply<CompanionRelayHealth> {
+        guard CompanionRelayIdentity.validOrigin(origin) else { throw CompanionRelayError.invalid }
+        let reply = try await call(origin: origin, path: "/v0/health", token: nil, protocolClasses: protocolClasses)
         guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil, receivedBytes: reply.receivedBytes) }
-        let value = try json(reply.value)
+        let value = try parseJSON(reply.value)
         guard CompanionWire.unsigned(value["protocol"]) == 0, let claimed = value["claimed"]?.boolValue,
               let instance = value["instance"]?.stringValue,
-              (try? CompanionRelayIdentity(origin: relay.origin, instance: instance)) != nil else { throw CompanionRelayError.invalid }
+              (try? CompanionRelayIdentity(origin: origin, instance: instance)) != nil else { throw CompanionRelayError.invalid }
         return CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: instance, claimed: claimed), receivedBytes: reply.receivedBytes)
     }
     /// companion-v0 §6: bytes come from a previously committed vault record; transport does not retry.
