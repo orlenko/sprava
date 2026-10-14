@@ -20,6 +20,14 @@ async function paired() {
             account_key: encodeB64(raw), owner_signing_key: encodeB64(publicBytes) }, false) });
     return { factory, store };
 }
+
+test('a screen from an earlier pairing cannot number or clear its draft for the installed pairing', async () => {
+    const { store } = await paired();
+    await assert.rejects(store.enqueue(note(), time, 'earlier-screen-generation'), OutboxError);
+    assert.equal((await store.read()).pairing!.nextSeq, 1);
+    assert.deepEqual((await store.readOutbox()).entries, []);
+    store.close();
+});
 async function database(factory: IDBFactory): Promise<IDBDatabase> {
     const request = factory.open('fixture', 1);
     return new Promise((resolve, reject) => {
