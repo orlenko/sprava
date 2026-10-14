@@ -15,8 +15,8 @@ export const key = () => importKey(raw);
 export const owner = () => crypto.subtle.importKey('raw', publicBytes, 'Ed25519', false, ['verify']);
 
 export function sealed(name: string, kid: string, epoch: number, value: unknown, signed = true,
-    plaintext?: string): Uint8Array {
-    const cipher = createCipheriv('aes-256-gcm', raw, nonce);
+    plaintext?: string, encryptionKey: Uint8Array = raw): Uint8Array {
+    const cipher = createCipheriv('aes-256-gcm', encryptionKey, nonce);
     cipher.setAAD(utf8(`sprava-companion/v0|${name}|${kid}|${epoch}`));
     const body = plaintext === undefined ? writeJson(value) : utf8(plaintext);
     const ciphertext = Buffer.concat([cipher.update(body), cipher.final(), cipher.getAuthTag()]);

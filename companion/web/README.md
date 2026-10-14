@@ -89,3 +89,12 @@ redirects, cookies or referrers, and no remote error text in returned errors. Th
 Chrome check now sends encrypted bytes through this client to an isolated invented API,
 restarts, fetches an independently signed outcome, and atomically resolves the action.
 The test server is a fixture, not a deployed relay or a Mac companion implementation.
+
+`src/pairing-flow.ts` reserves a generation, creates one fixed X25519 transcript, retries
+only explicit 503 joins with identical bytes, shows the confirmation code after a valid
+join, polls the wrapped delivery and conditionally installs the pairing. Its first ack
+runs after durable installation; startup/refresh can retry the persisted pending flag.
+Cancellation retires only that flow's reservation. The original flow cannot acknowledge
+a replacement generation, and lost joins require a new link. The complete flow is
+bounded to ten minutes; each HTTP call also has its own deadline. Screens and the
+startup/refresh scheduler still need to call these helpers.
