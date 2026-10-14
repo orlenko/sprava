@@ -59,3 +59,13 @@ test('enqueue and matching draft deletion commit together, while newer editor re
     await store.enqueue({ type: 'note', text: 'Invented newer editor' }, time, generation, [{ editorId: id, revision: 2 }]);
     assert.deepEqual((await store.readDrafts()).drafts, []); store.close();
 });
+test('recovery moves a draft atomically to a fresh editor without erasing a changed source', async () => {
+    const { store, generation } = await paired();
+    await store.saveDraft(generation, id, 1, 'Invented recovered draft', time);
+    await store.saveDraft(generation, otherId, 1, 'Invented recovered draft', time, { editorId: id, revision: 1 });
+    assert.deepEqual((await store.readDrafts()).drafts.map(d => d.editorId), [otherId]);
+    await store.saveDraft(generation, id, 2, 'Invented newer source', time);
+    await store.saveDraft(generation, otherId, 2, 'Invented edited recovery', time, { editorId: id, revision: 1 });
+    assert.equal((await store.readDrafts()).drafts.length, 2);
+    store.close();
+});

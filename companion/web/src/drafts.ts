@@ -20,9 +20,11 @@ async function pairing(db: IDBDatabase): Promise<Pairing | undefined> {
 }
 /** Every window owns a fresh editor id. Its increasing revisions prevent late encryption from overwriting newer text. */
 export async function saveDraft(db: IDBDatabase, generation: string, editorId: string, revision: number,
-    text: string, updatedAt: string): Promise<boolean> {
+    text: string, updatedAt: string, recovered?: DraftProof): Promise<boolean> {
     if (!isId(generation) || !isId(editorId) || !Number.isSafeInteger(revision) || revision < 1 ||
-        text.length > 20000 || !isTime(updatedAt)) throw new DraftError();
+        text.length > 20000 || !isTime(updatedAt) || (recovered !== undefined && (!isId(recovered.editorId) ||
+        !Number.isSafeInteger(recovered.revision) || recovered.revision < 1 || recovered.editorId === editorId))) throw new DraftError();
+    recovered = recovered ? { ...recovered } : undefined;
     const p = await pairing(db); if (!p || p.generation !== generation) return false;
     // Preserve every UTF-16 code unit, including temporarily incomplete input and invalid note controls.
     const plain = new Uint8Array(text.length * 2);
@@ -51,6 +53,13 @@ export async function saveDraft(db: IDBDatabase, generation: string, editorId: s
                         if (old.result && old.result.revision >= revision) return;
                         store.put({ generation, editorId, revision, updatedAt, nonce, bytes } satisfies StoredDraft, [generation, editorId]);
                         saved = true;
+                        if (recovered) {
+                            const source = store.get([generation, recovered.editorId]);
+                            source.onsuccess = () => {
+                                try { if (source.result?.revision === recovered!.revision) store.delete([generation, recovered!.editorId]); }
+                                catch { tx.abort(); }
+                            };
+                        }
                     } catch { tx.abort(); }
                 };
             } catch { tx.abort(); }

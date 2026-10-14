@@ -73,8 +73,8 @@ export class BrowserStore {
     enqueue(action: RequestAction, madeAt: string, generation?: string, drafts?: DraftProof[]): Promise<OutboxEntry> {
         return enqueue(this.db, action, madeAt, generation, drafts);
     }
-    saveDraft(generation: string, editorId: string, revision: number, text: string, updatedAt: string): Promise<boolean> {
-        return saveDraft(this.db, generation, editorId, revision, text, updatedAt);
+    saveDraft(generation: string, editorId: string, revision: number, text: string, updatedAt: string, recovered?: DraftProof): Promise<boolean> {
+        return saveDraft(this.db, generation, editorId, revision, text, updatedAt, recovered);
     }
     readDrafts(limit = 50, after?: string): Promise<DraftPage> { return readDrafts(this.db, limit, after); }
     readOutbox(limit = 50, after?: IDBValidKey): Promise<OutboxPage> { return readOutbox(this.db, limit, after); }
