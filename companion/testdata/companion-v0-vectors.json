@@ -125,5 +125,153 @@
         "code": "967295"
       }
     ]
+  },
+  "payload-validation": {
+    "case": 8,
+    "about": "Public invented partial corpus for browser key, device-keys, index and view schemas. Encrypt under key bytes 00 through 1f, epoch 1; device/pairing/binder id is 16 zero bytes, index revision/view version 7. Request and outcomes corpus follows with those implementations.",
+    "valid": [
+      {
+        "kind": "key",
+        "why": "a pairing key delivery",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":1,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"min_index_revision\":7,\"owner_signing_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\"}"
+      },
+      {
+        "kind": "device-keys",
+        "why": "a key rotation",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":1,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\"}"
+      },
+      {
+        "kind": "index",
+        "why": "one shown binder",
+        "text": "{\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":7,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}]}"
+      },
+      {
+        "kind": "view",
+        "why": "one open item",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      }
+    ],
+    "refuse": [
+      {
+        "kind": "key",
+        "why": "account key is not 32 canonical bytes",
+        "text": "{\"account_key\":\"AA\",\"epoch\":1,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"min_index_revision\":7,\"owner_signing_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\"}"
+      },
+      {
+        "kind": "key",
+        "why": "signing key is not 32 bytes",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":1,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"min_index_revision\":7,\"owner_signing_key\":\"AA\"}"
+      },
+      {
+        "kind": "key",
+        "why": "wrong device",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":1,\"device_id\":\"AQEBAQEBAQEBAQEBAQEBAQ\",\"min_index_revision\":7,\"owner_signing_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\"}"
+      },
+      {
+        "kind": "key",
+        "why": "payload epoch differs from envelope",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":2,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"min_index_revision\":7,\"owner_signing_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\"}"
+      },
+      {
+        "kind": "key",
+        "why": "negative index floor",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":1,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"min_index_revision\":-1,\"owner_signing_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\"}"
+      },
+      {
+        "kind": "device-keys",
+        "why": "wrong device",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":1,\"device_id\":\"AQEBAQEBAQEBAQEBAQEBAQ\"}"
+      },
+      {
+        "kind": "device-keys",
+        "why": "wrong epoch",
+        "text": "{\"account_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"epoch\":2,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\"}"
+      },
+      {
+        "kind": "device-keys",
+        "why": "malformed account key",
+        "text": "{\"account_key\":\"AA\",\"epoch\":1,\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\"}"
+      },
+      {
+        "kind": "index",
+        "why": "wrong revision",
+        "text": "{\"revision\":8,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":7,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}]}"
+      },
+      {
+        "kind": "index",
+        "why": "invalid timestamp",
+        "text": "{\"revision\":7,\"generated_at\":\"2026-02-30T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":7,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}]}"
+      },
+      {
+        "kind": "index",
+        "why": "duplicate binder id",
+        "text": "{\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":7,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"},{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":7,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}]}"
+      },
+      {
+        "kind": "index",
+        "why": "empty binder name",
+        "text": "{\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"\",\"view_version\":7,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}]}"
+      },
+      {
+        "kind": "index",
+        "why": "zero view version",
+        "text": "{\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":0,\"key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}]}"
+      },
+      {
+        "kind": "index",
+        "why": "bad binder key",
+        "text": "{\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"binders\":[{\"id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"name\":\"Invented binder\",\"view_version\":7,\"key\":\"AA\"}]}"
+      },
+      {
+        "kind": "view",
+        "why": "version differs from name",
+        "text": "{\"version\":8,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "item id shared by open and closed",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[{\"id\":\"item-1\",\"title\":\"Invented closure\",\"closed_at\":null,\"how\":\"done\"}],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "missing bucket member",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[\"absent\"],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "changed_in above the view",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":8,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "bad item status",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"done\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "invalid deadline",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":\"2026-02-30\",\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "tags must be strings",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[1],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "invalid closure action",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[{\"id\":\"closed\",\"title\":\"\",\"closed_at\":null,\"how\":\"open\"}],\"documents\":[]}"
+      },
+      {
+        "kind": "view",
+        "why": "document title must be text",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[{\"title\":null,\"date\":null}]}"
+      },
+      {
+        "kind": "view",
+        "why": "fractional numeric id syntax",
+        "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[7],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":7.0,\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      }
+    ]
   }
 }

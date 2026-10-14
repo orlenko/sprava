@@ -29,7 +29,10 @@ complete before a caller installs them. Shared derivation vectors are public inv
 The codec validates the envelope and JSON. `src/owner-payloads.ts` adds recipient/epoch,
 key, revision, timestamp and binder-entry validation for pairing deliveries, device-key
 rotations and indexes. It imports secret keys as non-extractable CryptoKeys and returns only
-defined fields. View/outcome schemas and freshness admission are still separate work.
+defined fields. `src/view-payloads.ts` checks signed view schemas, including typed item ids,
+cross-array uniqueness, bucket membership, dates and per-item versions. The shared public
+payload-validation corpus covers these owner payloads. Outcomes and freshness admission
+are still separate work.
 
 These results remain provisional. The caller must commit the high-water marks and encrypted
 cache durably as section 10.2 requires before showing anything, pin the signing key only when
