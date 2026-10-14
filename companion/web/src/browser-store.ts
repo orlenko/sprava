@@ -2,6 +2,8 @@
 import { decodeB64, encodeB64, isId } from './encoding.ts';
 import { openDeviceKeys, openIndex, openPairingDelivery } from './owner-payloads.ts';
 import { isTime } from './payload.ts';
+import { beginAttempt, recordAttempt, acceptOutcomes, expireOutbox } from './outbox-state.ts';
+import type { SendAttempt } from './outbox-state.ts';
 import { enqueue, readOutbox } from './outbox.ts';
 import type { OutboxEntry, OutboxPage } from './outbox.ts';
 import type { RequestAction } from './device-payloads.ts';
@@ -16,7 +18,7 @@ export interface Pairing {
     generation: string; pairingId: string; deviceId: string; relayOrigin: string; instanceId: string;
     token: string; expiresAt: string; acknowledgementPending: boolean;
     accountKey: CryptoKey; deviceKey: CryptoKey; ownerKey: CryptoKey;
-    epoch: number; minIndexRevision: number; nextSeq: number; outcomesRevision: number;
+    epoch: number; minIndexRevision: number; nextSeq: number; outcomesRevision: number; sendingSuspended?: boolean;
 }
 export interface StoredIndex {
     revision: number; epoch: number; bytes: Uint8Array;
@@ -58,7 +60,7 @@ export class BrowserStore {
             request.onupgradeneeded = event => {
                 if (event.oldVersion !== 0) { request.transaction!.abort(); return; }
                 request.result.createObjectStore('state');
-                request.result.createObjectStore('outbox');
+                request.result.createObjectStore('outbox').createIndex('by-generation-state-seq', ['generation', 'state', 'seq']);
                 request.result.createObjectStore('views');
             };
             request.onerror = fail;
@@ -73,6 +75,16 @@ export class BrowserStore {
     close(): void { this.db.close(); }
     enqueue(action: RequestAction, madeAt: string): Promise<OutboxEntry> { return enqueue(this.db, action, madeAt); }
     readOutbox(limit = 50, after?: IDBValidKey): Promise<OutboxPage> { return readOutbox(this.db, limit, after); }
+
+    beginAttempt(now: number): Promise<SendAttempt | null> { return beginAttempt(this.db, now); }
+    recordAttempt(attempt: SendAttempt, status: number | null, now: number): Promise<boolean> {
+        return recordAttempt(this.db, attempt, status, now);
+    }
+    acceptOutcomes(revision: number, bytes: Uint8Array): Promise<boolean> { return acceptOutcomes(this.db, revision, bytes); }
+
+    expireOutbox(now: number, limit = 100, after?: IDBValidKey): Promise<IDBValidKey | null> {
+        return expireOutbox(this.db, now, limit, after);
+    }
 
     // No promises or WebCrypto inside the callback: only IDB work keeps a transaction alive.
     private transaction<T>(write: boolean, change: (state: BrowserState, views: IDBObjectStore) => { value: T; save?: boolean }): Promise<T> {
