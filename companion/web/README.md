@@ -107,3 +107,12 @@ Invalid candidates and network failures leave admitted offline caches intact; st
 failures remain visible to the caller. `src/display-cache.ts` opens admitted sealed data
 in memory and rechecks pairing/index prerequisites after decryption. It never persists
 decrypted names or content. The screen and refresh scheduler are still separate work.
+
+`src/drafts.ts` saves editor drafts encrypted under the non-extractable device key with
+fresh nonces and a local, generation/editor-bound context. Each window has its own editor
+id and increasing revisions; a late encryption cannot overwrite newer text. Bounded
+recovery pages decrypt only in memory. Draft input preserves UTF-16 code units, including
+temporarily incomplete input, before the stricter outbound-note validation. Enqueue can
+delete matching draft revisions in the same strict transaction as numbering and ciphertext
+storage, so a restart cannot find a leftover draft from a completed enqueue. A stale screen
+generation cannot number an action for a replacement pairing.

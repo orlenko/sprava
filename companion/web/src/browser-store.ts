@@ -8,6 +8,8 @@ import type { SendAttempt } from './outbox-state.ts';
 import { enqueue, readOutbox } from './outbox.ts';
 import type { OutboxEntry, OutboxPage } from './outbox.ts';
 import type { RequestAction } from './device-payloads.ts';
+import { saveDraft, readDrafts } from './drafts.ts';
+import type { DraftProof, DraftPage } from './drafts.ts';
 import { openView } from './view-payloads.ts';
 
 export class StorageError extends Error {
@@ -56,6 +58,7 @@ export class BrowserStore {
                 request.result.createObjectStore('state');
                 request.result.createObjectStore('outbox').createIndex('by-generation-state-seq', ['generation', 'state', 'seq']);
                 request.result.createObjectStore('views');
+                request.result.createObjectStore('drafts');
             };
             request.onerror = fail;
             request.onblocked = fail;
@@ -67,7 +70,13 @@ export class BrowserStore {
         });
     }
     close(): void { this.db.close(); }
-    enqueue(action: RequestAction, madeAt: string): Promise<OutboxEntry> { return enqueue(this.db, action, madeAt); }
+    enqueue(action: RequestAction, madeAt: string, generation?: string, drafts?: DraftProof[]): Promise<OutboxEntry> {
+        return enqueue(this.db, action, madeAt, generation, drafts);
+    }
+    saveDraft(generation: string, editorId: string, revision: number, text: string, updatedAt: string): Promise<boolean> {
+        return saveDraft(this.db, generation, editorId, revision, text, updatedAt);
+    }
+    readDrafts(limit = 50, after?: string): Promise<DraftPage> { return readDrafts(this.db, limit, after); }
     readOutbox(limit = 50, after?: IDBValidKey): Promise<OutboxPage> { return readOutbox(this.db, limit, after); }
 
     beginAttempt(now: number): Promise<SendAttempt | null> { return beginAttempt(this.db, now); }
