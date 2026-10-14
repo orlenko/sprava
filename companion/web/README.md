@@ -59,3 +59,10 @@ npm run test:browser
 ```
 
 This check never opens an existing browser profile and removes its temporary profile afterward.
+
+`src/device-payloads.ts` validates actions before numbering: the request-type field table,
+typed item ids, positive seen versions, valid dates, note character/encoded-byte limits,
+allowed controls and Unicode scalar validity. It seals requests with the smallest whole-KiB
+padding, fixed-size private pairing hellos and instance-bound self-revocations. A caller
+must still durably enqueue the sealed request before sending and retain the editor draft
+when validation or storage fails; no network or outbox behavior is implemented here.
