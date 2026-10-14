@@ -44,6 +44,9 @@ public enum CompanionOwnerSetup {
         let credentials = try vault.load(identity)
         if existing != nil && credentials == nil { throw CompanionCredentialError.unavailable }
         if health.claimed && credentials == nil { throw CompanionOwnerSetupError.alreadyClaimed }
+        if let credentials, try CompanionWire.parse(credentials.claimBody, limit: 4096)["setup_code"]?.stringValue != setupCode {
+            throw CompanionOwnerSetupError.reconfigurationRequired
+        }
         if credentials == nil { _ = try vault.prepare(identity, setupCode: setupCode) }
         let profile = try existing ?? CompanionProfile(database: database, relay: identity, secrets: secrets)
         _ = try profile.prepareAccount(beforeCommit: {}, webOrigin: webOrigin)

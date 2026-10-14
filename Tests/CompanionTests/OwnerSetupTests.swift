@@ -136,3 +136,16 @@ private actor SetupDiscoveryPause {
     #expect(f.secrets.snapshot().isEmpty)
     #expect(try CompanionProfile.openConfigured(database: f.database, secrets: f.secrets) == nil)
 }
+
+@Test func editingTheSetupCodeCannotSilentlyReuseTheOldClaimAndReportSuccess() async throws {
+    let f = SetupFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
+    _ = try await f.prepare()
+    let saved = f.secrets.snapshot()
+    await #expect(throws: CompanionOwnerSetupError.reconfigurationRequired) {
+        try await CompanionOwnerSetup.prepare(database: f.database, origin: f.origin,
+            setupCode: Data(repeating: 13, count: 32).base64EncodedString(), secrets: f.secrets, discover: { _ in
+                CompanionRelayHealth(instance: f.instance, claimed: false)
+            })
+    }
+    #expect(f.secrets.snapshot() == saved)
+}
