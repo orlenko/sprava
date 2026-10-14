@@ -32,6 +32,9 @@ extension TekaStore {
             return nil
         }
         if H == b, S == b, let b {
+            if trailing.contains(where: { CompanionOperationTag.isValid($0["note"]?.stringValue) }) {
+                return try abortCompanionWrite(trailing, catalog: catalog, hash: b, now: now)
+            }
             // A write was logged but never renamed into place: roll it forward. Ops are pure, so the result
             // has the same hash. A logged move is finished when the file is still in intake/ and the destination
             // is free, or taken as done when the destination holds the recorded digest; otherwise the write is
