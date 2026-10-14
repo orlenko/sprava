@@ -4,22 +4,24 @@ import BinderStore
 /// The Shelf's dialogs. The model asks through closures that default to these, so tests show no UI.
 extension ShelfModel {
     /// The template and name, asked in one alert. For an empty folder the name starts from the folder's own, in the
-    /// shape a new binder's name takes, and the folder is renamed to it when they differ.
+    /// shape a new binder's name takes, and the folder is renamed to it when they differ. Any name is taken as typed;
+    /// the model turns it into a valid one (`binderName`).
     static func binderAlert(empty: URL?, year: Int) -> (template: String, name: String)? {
         let alert = NSAlert()
-        let rule = "a name: lowercase letters, digits and hyphens. A template's checklist arrives as one card to approve."
+        let shape = "The folder is named in lowercase with hyphens: Maple Street becomes maple-street. A template's checklist arrives as one card to approve."
         if let empty {
             alert.messageText = "Make \u{201C}\(empty.lastPathComponent)\u{201D} a new binder?"
-            alert.informativeText = "The folder is empty. Pick a starting point and \(rule) If the name differs from the folder's, the folder is renamed to it."
+            alert.informativeText = "The folder is empty. Pick a starting point and a name. \(shape)"
         } else {
             alert.messageText = "New binder"
-            alert.informativeText = "Pick a starting point and \(rule)"
+            alert.informativeText = "Pick a starting point and a name. \(shape)"
         }
         let templates = BinderTemplate.all
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 30, width: 260, height: 26))
         picker.addItems(withTitles: templates.map(\.title))
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = empty.map { IDMint.prefix(for: $0.lastPathComponent) } ?? templates[0].suggestedName(year)
+        field.stringValue = empty.map { BinderCreator.name(for: $0.lastPathComponent, template: templates[0], year: year) }
+            ?? templates[0].suggestedName(year)
         let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 58))
         box.addSubview(picker)
         box.addSubview(field)

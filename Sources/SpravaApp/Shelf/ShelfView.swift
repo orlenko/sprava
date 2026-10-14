@@ -164,7 +164,8 @@ final class ShelfModel: ObservableObject {
         let year = Calendar.current.component(.year, from: Date())
         for url in empty {
             guard let answer = askForBinder(url, year) else { continue }
-            if let failure = await create(parent: url.deletingLastPathComponent(), name: answer.name, template: answer.template,
+            if let failure = await create(parent: url.deletingLastPathComponent(), name: Self.binderName(answer, year: year, existing: url),
+                                          template: answer.template,
                                           year: year, existing: url) {
                 failed.append("\(url.lastPathComponent) did not become a binder: \(failure)")
             }
@@ -199,7 +200,14 @@ final class ShelfModel: ObservableObject {
         guard await runtimeReady() else { return }
         let year = Calendar.current.component(.year, from: Date())
         guard let answer = askForBinder(nil, year), let parent = chooseParent() else { return }
-        await createBinder(parent: parent, name: answer.name, template: answer.template, year: year)
+        await createBinder(parent: parent, name: Self.binderName(answer, year: year), template: answer.template, year: year)
+    }
+
+    /// The name typed in the alert, made a valid binder name: "Maple Street" becomes `maple-street`, never a refusal after the
+    /// dialogs. The runtime does the same and adds `-2` when the name is taken.
+    static func binderName(_ answer: (template: String, name: String), year: Int, existing: URL? = nil) -> String {
+        let template = BinderTemplate.all.first { $0.key == answer.template } ?? .taxYear
+        return BinderCreator.name(for: answer.name, template: template, year: year, existing: existing)
     }
 
     /// Whether the runtime is there for an action that needs it (`ping`, two seconds at most; one only slow to answer goes

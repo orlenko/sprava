@@ -7,6 +7,13 @@ import SpravaKit
 public enum IDMint {
     /// The mint prefix: `meta.name` when it has the recommended shape, otherwise a cleaned-up form of it.
     public static func prefix(for name: String) -> String {
+        let out = cleaned(name)
+        return out.isEmpty ? "item" : out
+    }
+
+    /// `name` in the recommended shape: diacritics stripped, lowercase, each run of other characters one hyphen,
+    /// no hyphen at either end. Empty when nothing of it is left, as of a name in another script.
+    static func cleaned(_ name: String) -> String {
         if name.wholeMatch(of: /^[a-z0-9][a-z0-9-]*$/) != nil { return name }
         let folded = name.applyingTransform(.stripDiacritics, reverse: false)?.lowercased() ?? name.lowercased()
         var out = ""
@@ -20,8 +27,7 @@ public enum IDMint {
                 lastDash = true
             }
         }
-        out = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        return out.isEmpty ? "item" : out
+        return out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 
     /// Every record id the op log has ever seen, so a minted id is never one of them (binder-v0 §5.6): the records
