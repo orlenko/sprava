@@ -5,7 +5,7 @@ import Foundation
 /// The path rules for documents (binder-v0 §4.3): where `file_document` may put a file, and which files it may move.
 public enum DocumentPaths {
     static let rootFiles: Set<String> = ["catalog.json", "dashboard.md", "readme.md", "catalog_check.py", "timeline.md"]
-    static let manuals: Set<String> = ["claude.md", "claude.local.md", "agents.md", "gemini.md"]
+    static let manuals: Set<String> = ["claude.md", "claude.local.md", "agents.md", "agents.override.md", "gemini.md"]
     static let reservedFolders: Set<String> = ["intake", "scripts", "ledger", "sources"]
     static let filingOnlyReserved: Set<String> = ["chapters", "entities"]
 
