@@ -384,13 +384,15 @@ draft's recommendations were accepted as a set ("all this looks good, go ahead w
   happened: the catalog, the op log and the runtime's request and task receipts, never a resumed session or
   the brief. Every back-office or task change goes through the guard, bound to a stable id, the revision it
   was based on and its exact effect; a retry returns the earlier outcome; a changed revision is a conflict.
-  Brief lines record their sources and are refreshed or marked stale. Originals are kept byte for byte under a
-  stable document id, and a document can be refiled or corrected at any time (conversation.md §17.1, §17.2).
+  Brief lines record their sources and are marked stale before any job reads them. Originals keep their bytes
+  and id and can be corrected at any time; a late Undo applies only to fields unchanged since; a repeated
+  arrival is recorded on the existing document. Evidence that text exists is not an unconditional duty, and an
+  empty search is "no relevant passage was found" (conversation.md §17.1, §17.2, §17.6, §17.7).
 - **D16 recommended (same review).** A binder with mixed information scopes, detected at import or declared,
   gets no back office until the person splits it. Surfaces keep their own policies, and encryption is not
   disclosure. Open, for the author: access control within one binder, and a cross-binder manager (P21 in PR
   #347); a per-binder session never gets cross-binder access (conversation.md §17.4).
-- **D17 recommended (same review).** The back office's Sprava tools cover the old workflows (full reads with
-  provenance, OCR with quality signals, read-only intake manifests, original-preserving filing and correction,
-  typed changes, refresh, drafts), with no shell or web; a missing capability is named, never invented
-  (conversation.md §17.5).
+- **D17 recommended (same review).** Sprava's tools and services offer named contracts for the old workflows
+  (attachments with their message, arrival provenance, page and legibility coverage, page images, original
+  beside translation, validation and replay, correction history, drafts, freshness), with no shell or web; a
+  missing capability is named, never invented (conversation.md §17.5).
