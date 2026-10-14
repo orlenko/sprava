@@ -46,8 +46,8 @@ so a refresh does not clone and rewrite the entire cache. `readView` checks the 
 index, epoch and exact version in one read transaction before returning a cache.
 Removed binders lose their cached views and keys in the index transaction; their version floors
 remain. Outdated caches may remain stored, so a future screen must check the current index,
-epoch and exact view version before opening and showing them. Outcomes/outbox storage and
-pairing removal will extend the same database; those flows are not implemented here.
+epoch and exact view version before opening and showing them. Outcomes admission, sending and pairing removal will extend the same database; those
+flows are not implemented here.
 
 The Node suite uses fake-indexeddb for abort and concurrent-window scenarios. A separate real
 Chrome check writes invented fixtures to a disposable profile, restarts Chrome, and decrypts
@@ -66,3 +66,10 @@ allowed controls and Unicode scalar validity. It seals requests with the smalles
 padding, fixed-size private pairing hellos and instance-bound self-revocations. A caller
 must still durably enqueue the sealed request before sending and retain the editor draft
 when validation or storage fails; no network or outbox behavior is implemented here.
+
+`src/outbox.ts` adds durable numbering/enqueue: validate first, seal outside IndexedDB,
+then atomically advance `next_seq` and store the immutable ciphertext. Concurrent windows
+retry with a new number and request id. A changed pairing produces an entry of the original
+generation marked "not sent", with no ciphertext; it never encrypts an old action for a new
+pairing. Pending-entry display reads bounded metadata pages rather than the whole ciphertext
+queue. Sender attempts, outcome resolution, expiry and removal remain separate work.
