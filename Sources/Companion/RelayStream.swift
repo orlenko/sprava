@@ -4,12 +4,18 @@ public enum CompanionRelayError: Error, Equatable { case invalid }
 public struct CompanionRelayReply<Value: Sendable>: Sendable {
     public let status: Int
     public let value: Value?
+    /// Bytes received, including an error body that is deliberately not exposed to callers.
+    public let receivedBytes: Int
+    init(status: Int, value: Value?, receivedBytes: Int = 0) {
+        self.status = status; self.value = value; self.receivedBytes = receivedBytes
+    }
 }
 
 /// companion-v0 §3.2: count while receiving, before holding a response whole. One private session per call.
 final class RelayStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let successLimit: Int
+    private let errorLimit: Int
     private var maximum = 4096
     private var bytes = Data()
     private var status: Int?
@@ -18,7 +24,10 @@ final class RelayStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var timeout: Task<Void, Never>?
-    init(limit: Int) { successLimit = limit }
+    init(limit: Int, downloadLimit: Int? = nil) {
+        successLimit = min(limit, downloadLimit ?? limit)
+        errorLimit = min(4096, downloadLimit ?? 4096)
+    }
 
     func send(_ request: URLRequest, configuration: URLSessionConfiguration,
               deadline: Duration = .seconds(30)) async throws -> CompanionRelayReply<Data> {
@@ -63,7 +72,7 @@ final class RelayStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
               !(300...399).contains(response.statusCode) else {
             completionHandler(.cancel); finish(.failure(CompanionRelayError.invalid)); return
         }
-        let bound = (200...299).contains(response.statusCode) ? successLimit : 4096
+        let bound = (200...299).contains(response.statusCode) ? successLimit : errorLimit
         guard response.expectedContentLength <= bound else {
             completionHandler(.cancel); finish(.failure(CompanionRelayError.invalid)); return
         }
@@ -80,7 +89,7 @@ final class RelayStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         lock.lock()
-        let reply = status.map { CompanionRelayReply(status: $0, value: (200...299).contains($0) ? bytes : nil) }
+        let reply = status.map { CompanionRelayReply(status: $0, value: (200...299).contains($0) ? bytes : nil, receivedBytes: bytes.count) }
         lock.unlock()
         if error != nil || reply == nil { finish(.failure(CompanionRelayError.invalid)) }
         else { finish(.success(reply!)) }
