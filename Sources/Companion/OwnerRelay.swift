@@ -25,7 +25,8 @@ public struct CompanionOwnerRelay: Sendable {
         self.relay = relay; self.token = token; self.protocolClasses = protocolClasses
     }
     func call(_ path: String, limit: Int = 4096, method: String = "GET", body: Data? = nil,
-              authenticated: Bool = true, json: Bool = false, downloadLimit: Int? = nil) async throws -> CompanionRelayReply<Data> {
+              authenticated: Bool = true, json: Bool = false, downloadLimit: Int? = nil,
+              discardOversizedRequest: Bool = false) async throws -> CompanionRelayReply<Data> {
         if let downloadLimit, !(1...8388608).contains(downloadLimit) { throw CompanionRelayError.invalid }
         guard let url = URL(string: relay.origin + path) else { throw CompanionRelayError.invalid }
         let configuration = URLSessionConfiguration.ephemeral
@@ -38,7 +39,7 @@ public struct CompanionOwnerRelay: Sendable {
         if authenticated { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         if body != nil { request.setValue(json ? "application/json" : "application/octet-stream", forHTTPHeaderField: "Content-Type") }
-        return try await RelayStream(limit: limit, downloadLimit: downloadLimit).send(request, configuration: configuration)
+        return try await RelayStream(limit: limit, downloadLimit: downloadLimit, discardOversizedRequest: discardOversizedRequest).send(request, configuration: configuration)
     }
     private func json(_ bytes: Data?) throws -> JSONValue {
         guard let bytes else { throw CompanionRelayError.invalid }
