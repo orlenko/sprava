@@ -86,7 +86,10 @@ the text, references (documents, ops, batches, questions and answers, tasks), an
 device. Files are never copied into it; it names the documents they became. Nothing is ever cut: a message
 longer than 64 KiB (proposed) is stored whole as numbered parts on consecutive lines that share its id, and a
 reader joins at most 64 parts (4 MiB, proposed), checked before joining; a longer message is refused when
-typed, and a message whose parts are incomplete or over the bound is quarantined, never acted on. It travels with the binder
+typed, and a message whose parts are incomplete or over the bound is quarantined, never acted on. A whole month's file
+is bounded too: it is read only while under 64 MiB and 200,000 lines (proposed), checked from its size and a
+counting read that stops at the bound, before anything is parsed; a larger file is moved to
+`.sprava/conversation/oversize/`, named on the binder page, and never scanned or indexed. It travels with the binder
 through backup, offload and restore, like the op log. binder-v0 changes (section 15, PR 1): §7.2 lists it as
 history, not rebuildable, untrusted when read; §6.11 (expunge) covers it.
 
