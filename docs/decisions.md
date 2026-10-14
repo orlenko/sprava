@@ -293,9 +293,8 @@
 
 ## The binder conversation (`docs/conversation.md`)
 
-All entries below were decided by the author on 2026-10-14, the second draft's points included; the first
-draft's recommendations were accepted as a set ("all this looks good, go ahead with the plan"). Numbers marked
-"proposed" in `docs/conversation.md` stay design values.
+D1 to D14 were decided by the author on 2026-10-14 ("go ahead with the plan"); numbers marked "proposed" in
+`docs/conversation.md` stay design values.
 
 - **D1 decided.** A binder's main screen is a conversation with that binder, privately to it ("I want to come
   to the right specialist's office", conversation.md §1), with a richer UI: smooth drag and drop, import by path

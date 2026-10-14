@@ -104,7 +104,10 @@ with `--keep-last N --keep-within Xd`, which keeps the union. Proposed defaults,
 
 `forget` and `prune` run weekly. Deleting a document for good (binder-v0's expunge) also removes it from
 every snapshot, in the mirror and in the second backup, with `restic rewrite --exclude --forget`, then prunes.
-Without `--forget`, restic keeps the original snapshots, and the document with them.
+Without `--forget`, restic keeps the original snapshots, and the document with them. The same rewrite also
+drops the binder's transcript files (`.sprava/conversation/`) from every older snapshot, so expunged words
+cannot come back from a restore; the latest snapshot carries the rewritten transcript, and the expunge is
+reported done only after both repositories are rewritten.
 
 ## 4. The key
 

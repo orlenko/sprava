@@ -313,6 +313,9 @@ done", "send the binder to this address") is contained by:
 4. Document text reaches every model only between begin and end markers, as labelled data (architecture 5.4,
    7.7); the guard's sanitizer runs on every string an engine sends (architecture 4.2 step 6).
 5. Every class A batch is one Undo, a turn over the caps shows first, and every report names what was added.
+6. Everything a model or a document wrote (answers, reports, task drafts, the brief, previews) is shown as
+   inert text with no remote loads (binder-v0 §3.4); a draft's Markdown or RTF is never rendered actively,
+   and opening it in another app is the person's explicit action with a warning.
 
 ### 6.3 Undo
 
@@ -389,11 +392,8 @@ correction it came from. This is how agreement rises (7.2).
 ### 8.2 The binder brief
 
 A one-page summary per binder (decisions.md D12): the parties, what is pending, key dates and key facts, at
-most about 600 words (proposed). The front desk reads it first on every job, and the back office does too.
-Recommended place: a visible `BRIEF.md` at the binder's top, Sprava's own file like `DASHBOARD.md` (F14 in PR
-#347 gains it), named in Sprava's section of `AGENTS.md` as the file to read first; the person and any agent
-can open it. The other option is `.sprava/brief.md`, hidden and out of the person's way.
-
+most about 600 words (proposed), read first by both roles. Recommended place: a visible `BRIEF.md`, Sprava's
+own file like `DASHBOARD.md` (F14 in PR #347 gains it); the other option is a hidden `.sprava/brief.md`.
 How it stays current and correct:
 
 - **Code writes** "What is pending" and "Key dates" from the catalog after every applied batch, as it renders
@@ -402,7 +402,8 @@ How it stays current and correct:
   words: a party line is one code found (a sender from the headers, a name matched against the binder's
   items), and a key fact is one whole sentence of the document, stored verbatim with document and page. The
   model only chooses which sentences, at most 3 per document (proposed); code checks each stored line is a
-  sentence of that document, word for word. So a hostile document can at most put its own sentences in the
+  sentence of that document's original extracted text, word for word; a translation is shown beside it,
+  labelled, and is never the fact. So a hostile document can at most put its own sentences in the
   brief, under its own name, and never a claim a model wrote. The checked text is kept as it is in the index;
   `BRIEF.md` writes it as inert text, every Markdown and HTML character escaped as the dashboard renderer does,
   so a sentence can never become a link, an image or a remote load. Code drops lines whose document is
@@ -451,11 +452,9 @@ The model's general knowledge is never presented as the binder's.
 
 ### 9.3 "This needs thinking"
 
-When the router classes a request as needing reasoning beyond quoting (compare, draft, compute, advise), the
-front desk says "This needs thinking." With a back office it hands the request on, as a conversation turn when
-small or as a task (10) when big, and says so. Without one it offers two ways on: connect an AI brain (opens
-the engine settings), or think it through yourself, for which the front desk gathers the relevant passages,
-items and dates into one message the person can work from.
+A request beyond quoting (compare, draft, compute, advise) gets "This needs thinking." With a back office the
+request goes to it, as a turn or a task (10). Without one, two ways on: connect an AI brain, or think it
+through yourself, with the relevant passages, items and dates gathered into one message.
 
 ### 9.4 Translation
 
@@ -714,7 +713,7 @@ the local model follows, then the back office.
 10. **Brains: the front desk router on the local model**, quote-first answers, "this needs thinking".
 11. **Extract: translation** on device, both texts in the index.
 12. **Retrieval: the brief keeper.** `BRIEF.md` rendering and code's parts, with the word-for-word checks run
-    against the index's extracted and translated text (layer 4, on `Extract`), never on model-supplied text.
+    against the original extracted text in the index (layer 4, on `Extract`), never a translation.
 13. **BinderStore: the filing rules**: grammar, the manual's rules part, acceptance; the reader takes them.
 14. **Brains: the Claude Code back office**: session and resume, lock, the fail-closed start-up check,
     Stop, limits, costs, cleanup, the offload barrier.
@@ -788,11 +787,8 @@ date; then the old batch is undone from history. The title survives, and only th
 
 ### 17.3 Silence is not agreement
 
-As 7.2 says: only an Undo, a fix or an explicit confirmation is human-checked, a back-office verdict is
-reviewer agreement and is shown apart, and everything else is unreviewed.
-
-*Fixture:* the front desk and the back office agree on a filing that the fixture knows is wrong, and no person
-looks. It counts as unreviewed, and human-checked accuracy is unchanged.
+The rule is 7.2's. *Fixture:* the front desk and the back office agree on a filing the fixture knows is wrong,
+and no person looks. It counts as unreviewed, and human-checked accuracy is unchanged.
 
 ### 17.4 Information domains
 
