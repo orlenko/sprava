@@ -1,6 +1,7 @@
 // Encrypted browser state and atomic admission (companion-v0 §§5.2, 10.2–10.3).
 import { decodeB64, encodeB64, isId } from './encoding.ts';
 import { openDeviceKeys, openIndex, openPairingDelivery } from './owner-payloads.ts';
+import { isRelayOrigin } from './pairing-link.ts';
 import { isTime } from './payload.ts';
 import { beginAttempt, recordAttempt, acceptOutcomes, expireOutbox } from './outbox-state.ts';
 import type { SendAttempt } from './outbox-state.ts';
@@ -35,13 +36,6 @@ export interface Installation {
 }
 const empty = (): BrowserState => ({ version: 1, viewMarks: {} });
 const positive = (n: number) => Number.isSafeInteger(n) && n > 0;
-function origin(value: string): boolean {
-    try {
-        const u = new URL(value);
-        return u.origin === value && !u.username && !u.password &&
-            (u.protocol === 'https:' || (u.protocol === 'http:' && u.hostname === 'localhost'));
-    } catch { return false; }
-}
 function deviceKey(key: CryptoKey): boolean {
     return !key.extractable && key.type === 'secret' && key.algorithm.name === 'AES-GCM' &&
         (key.algorithm as AesKeyAlgorithm).length === 256 && key.usages.includes('encrypt') && key.usages.includes('decrypt');
@@ -149,7 +143,7 @@ export class BrowserStore {
         installation = { ...installation, delivery: installation.delivery.slice() };
         try {
             if (!isId(reservation.generation) || !isId(reservation.pairingId) ||
-                !isId(installation.deviceId) || !/^[0-9a-f]{32}$/.test(installation.instanceId) || !origin(installation.relayOrigin) ||
+                !isId(installation.deviceId) || !/^[0-9a-f]{32}$/.test(installation.instanceId) || !isRelayOrigin(installation.relayOrigin) ||
                 decodeB64(installation.token)?.length !== 32 || !isTime(installation.expiresAt) ||
                 !deviceKey(installation.deviceKey)) throw new StorageError();
         } catch { throw new StorageError(); }

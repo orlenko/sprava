@@ -8,6 +8,14 @@ export interface PairingLink {
     relayOrigin: string; pairingId: string; secret: string; ownerPublicKey: Uint8Array; deviceId: string;
 }
 
+export function isRelayOrigin(value: string): boolean {
+    try {
+        const url = new URL(value);
+        return url.origin === value && !url.username && !url.password &&
+            (url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'localhost'));
+    } catch { return false; }
+}
+
 export function parsePairingLink(fragment: string): PairingLink {
     try {
         if (fragment.length > 4096 || !fragment.startsWith('#pair=v0.')) throw new PairingLinkError();
@@ -18,10 +26,7 @@ export function parsePairingLink(fragment: string): PairingLink {
         if (!originBytes || ownerPublicKey?.length !== 32 || !isId(pairingId) || !isId(secret) || !isId(deviceId))
             throw new PairingLinkError();
         const relayOrigin = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(originBytes);
-        const url = new URL(relayOrigin);
-        if (url.origin !== relayOrigin || url.username || url.password ||
-            !(url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === 'localhost')))
-            throw new PairingLinkError();
+        if (!isRelayOrigin(relayOrigin)) throw new PairingLinkError();
         return { relayOrigin, pairingId, secret, ownerPublicKey, deviceId };
     } catch { throw new PairingLinkError(); }
 }

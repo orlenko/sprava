@@ -1,13 +1,15 @@
 // Optional real-browser persistence check. Uses only a fresh, disposable profile and invented data.
 import assert from 'node:assert/strict';
+import { createDecipheriv } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { encodeB64 } from '../src/encoding.ts';
+import { decodeB64, encodeB64, utf8 } from '../src/encoding.ts';
 import { bucketNames } from '../src/view-payloads.ts';
+import { writeJson } from '../../shared/json.ts';
 import { id, publicBytes, raw, sealed } from './owner-fixture.ts';
 
 const fixtures = {
@@ -26,13 +28,19 @@ import { BrowserStore } from '/modules/web/src/browser-store.js';
 import { importKey } from '/modules/web/src/sealed.js';
 import { openView } from '/modules/web/src/view-payloads.js';
 import { sendOne } from '/modules/web/src/sender.js';
+import { RelayClient } from '/modules/web/src/relay-client.js';
 const f = ${JSON.stringify(fixtures)};
+let stage = 'init';
 const check = value => { if (!value) throw Error('check failed'); };
 try {
+    stage = 'health';
+    const client = new RelayClient(location.origin, f.id);
+    const health = await client.health(); check(health.value.instance === '0'.repeat(32));
+    stage = 'storage';
     const store = await BrowserStore.open('disposable-fixture');
     if (${write}) {
         const reservation = await store.reserve(f.id); check(reservation);
-        check(await store.install(reservation, { deviceId: f.id, relayOrigin: 'https://relay.example',
+        check(await store.install(reservation, { deviceId: f.id, relayOrigin: location.origin,
             instanceId: '0'.repeat(32), token: f.token, expiresAt: '2026-10-08T07:16:05Z',
             wrapKey: await importKey(new Uint8Array(f.raw)), deviceKey: await importKey(new Uint8Array(f.raw)),
             delivery: new Uint8Array(f.delivery) }));
@@ -41,12 +49,14 @@ try {
         check(await store.acknowledged(reservation.generation, f.id));
         const entry = await store.enqueue({ type: 'note', text: 'Invented queued note' }, '2026-10-08T07:06:05Z');
         check(entry.seq === 1 && entry.state === 'queued');
-        check(await sendOne(store, async attempt => {
+        stage = 'send';
+        check(await sendOne(store, async (attempt, signal) => {
             const pending = await store.readOutbox();
             check(pending.entries[0].state === 'attempted' && attempt.entry.bytes.length > 0);
-            return 201;
+            return client.send(attempt, signal);
         }) === 'recorded');
     }
+    stage = 'after-send';
     const state = await store.read();
     check(state.pairing?.epoch === 1 && state.pairing.nextSeq === 2 && !state.pairing.acknowledgementPending);
     const cached = await store.readView(f.id);
@@ -59,12 +69,53 @@ try {
     const view = await openView(f.id, 7, 1, b.key, p.ownerKey, cached.bytes);
     check(view.binder.name === 'Invented binder');
     check(!JSON.stringify(state).includes('Invented binder'));
+    if (!${write}) {
+        const published = await client.getObject('devices/' + f.id + '/outcomes/1', f.token);
+        check(published.status === 200 && await store.acceptOutcomes(1, published.value));
+        check((await store.readOutbox()).entries.length === 0 && (await store.read()).pairing.outcomesRevision === 1);
+    }
     store.close(); document.body.textContent = 'PASS';
-} catch { document.body.textContent = 'FAIL'; }
+} catch { document.body.textContent = 'FAIL:' + stage; }
 </script></body></html>`;
 }
+let sentId: string | undefined;
 const server = createServer(async (request, response) => {
     const pathname = new URL(request.url!, 'http://localhost').pathname;
+    if (pathname === '/v0/health') {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ protocol: 0, claimed: true, instance: '0'.repeat(32) })); return;
+    }
+    const requestId = /^\/v0\/requests\/([A-Za-z0-9_-]{22})$/.exec(pathname)?.[1];
+    if (requestId && request.method === 'POST') {
+        let stage = 'authorization';
+        try {
+            assert.equal(request.headers.authorization, `Bearer ${fixtures.token}`);
+            stage = 'media';
+            assert.equal(request.headers['content-type'], 'application/octet-stream');
+            const chunks: Buffer[] = []; let count = 0;
+            for await (const chunk of request) { count += chunk.length; assert.ok(count <= 65536); chunks.push(chunk); }
+            stage = 'envelope';
+            const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            const cipher = decodeB64(envelope.c)!;
+            stage = 'decrypt';
+            const decipher = createDecipheriv('aes-256-gcm', raw, decodeB64(envelope.n)!);
+            decipher.setAAD(utf8(`sprava-companion/v0|requests/${id}/${requestId}|device|1`));
+            decipher.setAuthTag(cipher.subarray(-16));
+            const plain = Buffer.concat([decipher.update(cipher.subarray(0, -16)), decipher.final()]);
+            const payload = JSON.parse(plain.toString('utf8'));
+            stage = 'payload';
+            assert.equal(payload.seq, 1); assert.equal(payload.text, 'Invented queued note');
+            sentId = requestId; response.writeHead(201); response.end();
+        } catch { process.stdout.write('Fixture rejected at ' + stage + '\n'); response.writeHead(400); response.end(); }
+        return;
+    }
+    if (pathname === `/v0/objects/devices/${id}/outcomes/1` && sentId) {
+        const payload = { device_id: id, revision: 1, generated_at: '2026-10-08T07:06:05Z',
+            outcomes: [{ request_id: sentId, seq: 1, outcome: 'applied', decided_at: '2026-10-08T07:06:05Z' }], pad: '' };
+        payload.pad = ' '.repeat(640 - writeJson(payload).length);
+        response.setHeader('Content-Type', 'application/octet-stream');
+        response.end(sealed(`devices/${id}/outcomes/1`, 'device', 0, payload)); return;
+    }
     if (pathname === '/write' || pathname === '/read') {
         response.setHeader('Content-Type', 'text/html'); response.end(page(pathname === '/write')); return;
     }
@@ -101,7 +152,7 @@ try {
                 child.once('exit', () => reject(new Error('Disposable Chrome exited before connecting')));
             });
             const port = new URL(endpoint).port;
-            const target = await fetch(`http://127.0.0.1:${port}/json/new?http://127.0.0.1:${address.port}/${phase}`,
+            const target = await fetch(`http://127.0.0.1:${port}/json/new?http://localhost:${address.port}/${phase}`,
                 { method: 'PUT' }).then(r => r.json()) as { webSocketDebuggerUrl: string };
             socket = new WebSocket(target.webSocketDebuggerUrl);
             await once(socket, 'open');
@@ -117,7 +168,7 @@ try {
             socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: {
                 expression: `new Promise(resolve => { const poll = () => {
                     const value = document.body?.textContent;
-                    if (value === 'PASS' || value === 'FAIL') resolve(value); else setTimeout(poll, 20);
+                    if (value === 'PASS' || value?.startsWith('FAIL:')) resolve(value); else setTimeout(poll, 20);
                 }; poll(); })`, awaitPromise: true, returnByValue: true,
             } }));
             assert.equal(await completed, 'PASS', `${phase}: isolated browser check failed`);
@@ -125,7 +176,7 @@ try {
             socket?.close(); clearTimeout(timer); child.kill('SIGTERM'); await exited;
         }
     }
-    process.stdout.write('PASS: encrypted caches, keys and a sent action survive a real Chrome restart using Web Locks\n');
+    process.stdout.write('PASS: Chrome sends encrypted HTTP requests under Web Locks, restarts, and reconciles signed outcomes\n');
 } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(profile, { recursive: true, force: true });
