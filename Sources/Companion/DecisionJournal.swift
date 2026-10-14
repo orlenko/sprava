@@ -43,6 +43,33 @@ extension CompanionProfile {
             return .deciding(try decodeDecision(bytes, device: d, request: r))
         }
     }
+    /// companion-v0 §9.6: after recovery proof, atomically replace only the still-matching operation intent.
+    /// Reauthorize a proven-not-applied op and mint a new effect id; an uncertain op becomes a conflict card.
+    /// A stale callback returns the newer intent/tombstone without changing it. It must be classified anew.
+    public func recoverDecision(_ previous: CompanionDecisionRecord, recovery: CompanionDecisionRecovery,
+                                now: String) throws -> CompanionDecisionLookup {
+        guard CompanionOwnerRelay.time(now), case .operation(_, let oldID, _) = previous.plan.effect else {
+            throw CompanionDecisionError.invalid
+        }
+        return try store.write { t in
+            let d = previous.request.deviceID, r = previous.request.requestID
+            if let done = try decisionTombstone(d, r, t) { return .decided(done) }
+            guard let head = try decisionHead(d, t), head.request.requestID == r else { throw CompanionDecisionError.invalid }
+            if head.bytes != previous.bytes { return .deciding(head) }
+            guard try record(d, t)?.state == .active else { throw CompanionDecisionError.unavailable }
+            let plan: CompanionDecisionPlan
+            switch recovery {
+            case .provenNotApplied(let authorized):
+                guard authorized.outcome != .unknown else { throw CompanionDecisionError.invalid }
+                if case .operation(_, let newID, _) = authorized.effect, newID == oldID { throw CompanionDecisionError.invalid }
+                plan = authorized
+            case .uncertain(let card): plan = CompanionDecisionPlan(outcome: .conflict, effect: .conflict(bytes: card))
+            }
+            let bytes = try decisionBytes(head.request, plan: plan, at: now)
+            try t.execute("UPDATE request_decisions SET bytes = ? WHERE device = ?", .blob(bytes), .text(d))
+            return .deciding(try decodeDecision(bytes, device: d, request: r))
+        }
+    }
     /// Call only once the recorded effect is proven applied, or its idempotent capture/card creation finished.
     /// Op recovery must use companion-v0 §9.6 proof; a logged op alone is never proof of application.
     /// Completion and replay knowledge commit together. Never delete the relay request before this returns.

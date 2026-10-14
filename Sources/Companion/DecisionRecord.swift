@@ -35,6 +35,11 @@ public enum CompanionDecisionLookup: Sendable {
     case none, deciding(CompanionDecisionRecord), decided(CompanionOutcomeTombstone)
 }
 public enum CompanionDecisionError: Error, Equatable { case invalid, busy, dailyCap, unavailable }
+/// Supplied only after the higher adapter classifies the recorded op under the binder write lock (§9.6).
+public enum CompanionDecisionRecovery: Sendable {
+    case provenNotApplied(CompanionDecisionPlan)
+    case uncertain(conflict: Data)
+}
 
 extension CompanionProfile {
     func decisionBytes(_ request: CompanionAuthenticatedRequest, plan: CompanionDecisionPlan, at: String) throws -> Data {

@@ -35,6 +35,12 @@ private func deciding(_ lookup: CompanionDecisionLookup) throws -> CompanionDeci
     guard case .deciding(let record) = lookup else { throw CompanionDecisionError.invalid }; return record
 }
 private let noChange = CompanionDecisionPlan(outcome: .applied, effect: .none)
+private func operationPlan(_ request: CompanionAuthenticatedRequest, _ id: String) -> CompanionDecisionPlan {
+    let bytes = Data(JSONWriter.compact(.object(JSONObject([("id", .string(id)), ("actor", .object(JSONObject([("kind", .string("user"))]))),
+        ("op", .string("complete")), ("args", .object(JSONObject([("id", .string("item"))]))),
+        ("note", .string("companion:\(request.deviceID)/\(request.requestID)"))]))).utf8)
+    return CompanionDecisionPlan(outcome: .applied, effect: .operation(binderID: request.action!.binderID!, id: id, bytes: bytes))
+}
 private func capturePlan(_ request: CompanionAuthenticatedRequest, id: String = "019a2000-0000-7000-8000-000000000001") -> CompanionDecisionPlan {
     let bytes = Data(JSONWriter.compact(.object(JSONObject([
         ("id", .string(id)), ("text", .string(request.action!.text!)),
@@ -132,4 +138,24 @@ private func capturePlan(_ request: CompanionAuthenticatedRequest, id: String = 
     let next = try deciding(p.beginDecision(journalRequest(64, seq: 2), plan: noChange, today: "2026-10-16", now: "2026-10-16T00:00:00Z"))
     _ = try p.finishDecision(next, today: "2026-10-16", decidedAt: "2026-10-16T00:00:00Z")
     #expect(throws: CompanionDecisionError.dailyCap) { try p.beginDecision(journalRequest(65, seq: 3), plan: noChange, today: journalDay, now: journalAt) }
+}
+
+@Test func provenRecoveryReplacesOnlyTheMatchingIntentAndUncertainOpsBecomeConflictCardsWithoutReapplication() throws {
+    let f = JournalFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; let p = try f.prepare()
+    let request = journalRequest(), oldID = "019a2000-0000-7000-8000-000000000001", newID = "019a2000-0000-7000-8000-000000000002"
+    let original = try deciding(p.beginDecision(request, plan: operationPlan(request, oldID), today: journalDay, now: journalAt))
+    #expect(throws: CompanionDecisionError.invalid) { try p.recoverDecision(original, recovery: .provenNotApplied(operationPlan(request, oldID)), now: journalAt) }
+    let revised = try deciding(p.recoverDecision(original, recovery: .provenNotApplied(operationPlan(request, newID)), now: journalAt))
+    #expect(revised.bytes != original.bytes && revised.request.sequence == original.request.sequence)
+    let stale = try deciding(p.recoverDecision(original, recovery: .uncertain(conflict: Data("{}".utf8)), now: journalAt))
+    #expect(stale.bytes == revised.bytes)
+    #expect(throws: CompanionDecisionError.invalid) { try p.finishDecision(original, today: journalDay, decidedAt: journalAt) }
+    let conflict = try deciding(f.profile().recoverDecision(revised, recovery: .uncertain(conflict: Data("{\"message\":\"Invented uncertain effect\"}".utf8)), now: journalAt))
+    #expect(conflict.plan.outcome == .conflict)
+    if case .conflict = conflict.plan.effect { } else { Issue.record("Unknown op recovery must create a card") }
+    #expect(try p.store.read { try $0.rows("SELECT highest_seq FROM devices") } == [[.integer(0)]])
+    #expect(try p.finishDecision(conflict, today: journalDay, decidedAt: journalAt).outcome == .conflict)
+    if case .decided(let done) = try p.recoverDecision(original, recovery: .provenNotApplied(operationPlan(request, newID)), now: journalAt) {
+        #expect(done.outcome == .conflict)
+    } else { Issue.record("A late recovery cannot replace a tombstone") }
 }
