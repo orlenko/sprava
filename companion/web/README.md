@@ -26,6 +26,11 @@ non-extractable wrap/device keys and the six-digit confirmation code, and refuse
 keys. Derived keys remain provisional: the pairing handshake and user confirmation must
 complete before a caller installs them. Shared derivation vectors are public invented inputs.
 
-The codec validates the envelope and JSON, not the payload's schema or its freshness. Its
-caller must validate section 8's payloads and commit the high-water marks and encrypted cache
-durably as section 10.2 requires before showing anything. Decrypted data stays in memory.
+The codec validates the envelope and JSON. `src/owner-payloads.ts` adds recipient/epoch,
+key, revision, timestamp and binder-entry validation for pairing deliveries, device-key
+rotations and indexes. It imports secret keys as non-extractable CryptoKeys and returns only
+defined fields. View/outcome schemas and freshness admission are still separate work.
+
+These results remain provisional. The caller must commit the high-water marks and encrypted
+cache durably as section 10.2 requires before showing anything, pin the signing key only when
+a pairing is installed, and preserve that pin during rotations. Decrypted data stays in memory.
