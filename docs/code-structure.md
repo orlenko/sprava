@@ -28,6 +28,7 @@ the compiler refuses an undeclared import, so the boundaries are enforced rather
 |---|---|---|---|
 | 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateStore` and `StateFile` (section 4), `SafeFile`, dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
 | 1 | `BinderFormat` | reading a binder: `Teka`, items, buckets, rules, catalog levels, the dashboard text, document path rules, the hub's naming rules | SpravaKit |
+| 1 | `Companion` | companion wire encodings, sealed objects and pairing cryptography; binder access through interfaces and higher-layer adapters | SpravaKit |
 | 2 | `BinderStore` | writing a binder: op log, transaction guard, op applier, proposals and their store, the record of trusted cards, ids, the privacy ratchet, undo, owner record, adoption, templates, the dashboard keeper | BinderFormat |
 | 3 | `Shelf` | which binders exist here: the shelf, lifeproj's registry, recent order, the filing list and binder settings | BinderStore |
 | 3 | `Extract` | type sniffing and text extraction, the sandboxed helper's protocol, `IntakeReading` | BinderFormat |
@@ -55,7 +56,7 @@ Moves that broke the earlier cycles:
 
 ## 3. Rules for feature work
 
-1. A feature lives in one domain target (layers 1 to 6: `BinderFormat`, `BinderStore`, `Shelf`, `Extract`,
+1. A feature lives in one domain target (layers 1 to 6: `BinderFormat`, `Companion`, `BinderStore`, `Shelf`, `Extract`,
    `Clerk`, `Capture`, `Hub`, `Backup`, `Brains`; the set rule 9 counts), plus its handler file in `Services`, its screen
    folder in `SpravaApp`, and its tests. If a feature seems to need edits in three domain targets, the
    design is wrong: add an interface in the lower target, or a new target.

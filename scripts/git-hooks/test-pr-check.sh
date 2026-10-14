@@ -40,6 +40,16 @@ if run && grep -qx '+40/-0 in Shelf, 1 domain target(s), base 0 behind origin/ma
     ok "small: one target, 40 lines, passes with its summary line"
 else bad "small: refused, or the summary line is wrong"; fi
 
+new_repo companion
+add Sources/Companion/Wire.swift 10
+add Tests/CompanionTests/WireTests.swift 7
+if run && grep -q '+17/-0 in Companion, 1 domain target(s)' "$root/out"; then
+    add Sources/BinderStore/Store.swift 5
+    if ! run && grep -q 'touches 2 domain targets (BinderStore Companion)' "$root/out"; then
+        ok "companion: code and tests count as one domain; a BinderStore dependency is a second"
+    else bad "companion: another domain target was not counted"; fi
+else bad "companion: new domain was not counted"; fi
+
 new_repo large
 add Sources/Shelf/Large.swift 1001
 if run; then bad "large: 1,001 lines passed"
