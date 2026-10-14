@@ -10,7 +10,7 @@ export class OutboxError extends Error {
 export interface OutboxEntry {
     generation: string; seq: number; requestId: string; type: RequestType;
     state: 'queued' | 'attempted' | 'sent' | 'not sent' | 'conflict' | 'rejected' | 'unresolved';
-    madeAt: string; firstAttemptedAt: string | null; backoff: number; nextAttemptAt: string | null;
+    madeAt: string; firstAttemptedAt: string | null; sentAt?: string; backoff: number; nextAttemptAt: string | null;
     bytes?: Uint8Array;
 }
 

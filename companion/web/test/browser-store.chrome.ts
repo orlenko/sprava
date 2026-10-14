@@ -25,6 +25,7 @@ function page(write: boolean): string {
 import { BrowserStore } from '/modules/web/src/browser-store.js';
 import { importKey } from '/modules/web/src/sealed.js';
 import { openView } from '/modules/web/src/view-payloads.js';
+import { sendOne } from '/modules/web/src/sender.js';
 const f = ${JSON.stringify(fixtures)};
 const check = value => { if (!value) throw Error('check failed'); };
 try {
@@ -40,13 +41,18 @@ try {
         check(await store.acknowledged(reservation.generation, f.id));
         const entry = await store.enqueue({ type: 'note', text: 'Invented queued note' }, '2026-10-08T07:06:05Z');
         check(entry.seq === 1 && entry.state === 'queued');
+        check(await sendOne(store, async attempt => {
+            const pending = await store.readOutbox();
+            check(pending.entries[0].state === 'attempted' && attempt.entry.bytes.length > 0);
+            return 201;
+        }) === 'recorded');
     }
     const state = await store.read();
     check(state.pairing?.epoch === 1 && state.pairing.nextSeq === 2 && !state.pairing.acknowledgementPending);
     const cached = await store.readView(f.id);
     check(state.index?.revision === 5 && state.viewMarks[f.id] === 7 && cached?.version === 7);
     const outbox = await store.readOutbox();
-    check(outbox.entries.length === 1 && outbox.entries[0].state === 'queued' && outbox.entries[0].seq === 1);
+    check(outbox.entries.length === 1 && outbox.entries[0].state === 'sent' && outbox.entries[0].seq === 1);
     check(outbox.entries[0].generation === state.pairing.generation && !JSON.stringify(outbox).includes('Invented queued note'));
     const p = state.pairing, b = state.index.binders[0];
     check(!p.accountKey.extractable && !p.deviceKey.extractable && !p.ownerKey.extractable && !b.key.extractable);
@@ -119,7 +125,7 @@ try {
             socket?.close(); clearTimeout(timer); child.kill('SIGTERM'); await exited;
         }
     }
-    process.stdout.write('PASS: encrypted caches, keys and a queued action survive a real Chrome restart\n');
+    process.stdout.write('PASS: encrypted caches, keys and a sent action survive a real Chrome restart using Web Locks\n');
 } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(profile, { recursive: true, force: true });

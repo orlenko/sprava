@@ -46,8 +46,8 @@ so a refresh does not clone and rewrite the entire cache. `readView` checks the 
 index, epoch and exact version in one read transaction before returning a cache.
 Removed binders lose their cached views and keys in the index transaction; their version floors
 remain. Outdated caches may remain stored, so a future screen must check the current index,
-epoch and exact view version before opening and showing them. Outcomes admission, sending and pairing removal will extend the same database; those
-flows are not implemented here.
+epoch and exact view version before opening and showing them. Outcomes admission and send-attempt transitions use that same database. Network
+transport and pairing removal are not implemented here.
 
 The Node suite uses fake-indexeddb for abort and concurrent-window scenarios. A separate real
 Chrome check writes invented fixtures to a disposable profile, restarts Chrome, and decrypts
@@ -72,4 +72,14 @@ then atomically advance `next_seq` and store the immutable ciphertext. Concurren
 retry with a new number and request id. A changed pairing produces an entry of the original
 generation marked "not sent", with no ciphertext; it never encrypts an old action for a new
 pairing. Pending-entry display reads bounded metadata pages rather than the whole ciphertext
-queue. Sender attempts, outcome resolution, expiry and removal remain separate work.
+queue. The attempt/outcomes component below handles sending state and expiry; pairing removal
+remains separate work.
+
+`src/outbox-state.ts` commits attempted before exposing send bytes, saves retry backoff
+and deadlines, conditionally records replies, suspends sending on auth refusal while
+retaining keys, and atomically admits signed outcomes with their revision and matching
+entry transitions. Late replies cannot overwrite resolved actions. Expiry runs in bounded
+pages and keeps unconfirmed actions visible. `src/sender.ts` holds the shared Web Lock
+for one attempt through result persistence, aborts after 30 seconds, and leaves all
+backoff waiting outside the lock. Its injectable transport must honor AbortSignal; the
+bounded HTTP transport and refresh/pairing/screen orchestration are still to come.
