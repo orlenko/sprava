@@ -9,7 +9,7 @@ final class RuntimeClient {
     private var connection: NSXPCConnection?
     /// Answers in place of the runtime, for tests: no test reaches a runtime over XPC.
     private let answer: (@MainActor (String) async throws -> String)?
-    /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A16).
+    /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
     static var whenNotRunning: (@MainActor () -> Void)?
 
     init(answer: (@MainActor (String) async throws -> String)? = nil) {

@@ -26,7 +26,7 @@ final class HealthModel: ObservableObject {
     @Published var backupSettingsError: String?
     var lastDoctor: Date?
     var lastWake: Date?
-    /// Starts the runtime without asking (decisions.md A16). While it starts, launchd can take several seconds, and
+    /// Starts the runtime without asking (decisions.md A19). While it starts, launchd can take several seconds, and
     /// that wait is shown as "starting", not as a failure.
     let keeper: RuntimeKeeper
 
@@ -261,7 +261,7 @@ struct HealthView: View {
     }
 
     @ViewBuilder func buttons(_ grade: HealthGrade) -> some View {
-        // Background work is not optional (decisions.md A16): there is no Turn Off, and the app starts it by itself.
+        // Background work is not optional (decisions.md A19): there is no Turn Off, and the app starts it by itself.
         switch model.runtimeStatus {
         case .requiresApproval:
             Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
@@ -309,7 +309,7 @@ struct HealthLabel: View {
     }
 }
 
-/// The binder page's line for runtime trouble the app cannot fix alone (decisions.md A16): the Login Items approval
+/// The binder page's line for runtime trouble the app cannot fix alone (decisions.md A19): the Login Items approval
 /// only the person can give, or why starting failed. Nothing is opened for the person; the button is theirs to press.
 struct RuntimeBanner: View {
     @ObservedObject var health: HealthModel

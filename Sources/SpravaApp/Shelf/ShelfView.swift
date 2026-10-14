@@ -46,7 +46,7 @@ final class ShelfModel: ObservableObject {
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
     let health: HealthModel
-    /// Starts the runtime without asking when an action finds it not running (decisions.md A16).
+    /// Starts the runtime without asking when an action finds it not running (decisions.md A19).
     var startRuntime: @MainActor () async -> RuntimeKeeper.Outcome
     /// How long a runtime just started has to answer before the action gives up; it usually answers at once.
     var startWait: Duration = .seconds(20)
@@ -214,7 +214,7 @@ final class ShelfModel: ObservableObject {
     }
 
     /// Whether the runtime is there for an action that needs it (`ping`, two seconds at most; one only slow to answer goes
-    /// ahead). When it is not running, Sprava starts it without asking (decisions.md A16), and the action goes ahead once the
+    /// ahead). When it is not running, Sprava starts it without asking (decisions.md A19), and the action goes ahead once the
     /// runtime answers within `startWait`; otherwise it stops before any dialog or request, and the note says why.
     func runtimeReady() async -> Bool {
         guard await client.presence() == .notRunning else { return true }

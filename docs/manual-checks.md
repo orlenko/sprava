@@ -11,7 +11,7 @@ Run `./scripts/restart-app.sh` to build, install in `/Applications` and open the
 Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`, and open it.
 
 1. **Registration (spike c).** Open Sprava with neither job registered. It registers its background work
-   without a prompt (decisions.md A16); within a minute Health shows "Runtime running". If macOS wants approval
+   without a prompt (decisions.md A19); within a minute Health shows "Runtime running". If macOS wants approval
    instead, Health and the binder page show one line with Open Login Items, and nothing opens by itself.
    Record whether one approval covers both the runtime and the outside watcher.
 2. **Disk image refusal (spike c).** Open Sprava from the build folder mounted as a disk image, or from a

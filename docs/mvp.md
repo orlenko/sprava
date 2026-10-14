@@ -79,7 +79,7 @@ One fact limits dogfooding today: the shapes of `documents[]` and `processing_lo
 
 ### 2.2 What day one looks like
 
-1. The author drags Sprava from the disk image into Applications and opens it. Sprava refuses to register its background work from the disk image or from a quarantined copy in Downloads (architecture 3.1). It registers its background work without asking (decisions.md A16), and the Health page turns green.
+1. The author drags Sprava from the disk image into Applications and opens it. Sprava refuses to register its background work from the disk image or from a quarantined copy in Downloads (architecture 3.1). It registers its background work without asking (decisions.md A19), and the Health page turns green.
 2. Captures land in Sprava's capture folder as small files, one per capture. The person types or dictates into Sprava's note field with whatever tool they like; Sprava receives text and makes no assumption about how it was produced (decisions.md P12). Any other program may write captures there through an adapter that speaks the capture-event format.
 3. The author has run the field survey over all live binders and installed the changed lifeproj (section 5, increment 3). Then the author adopts one binder, for example `~/binders/rental-elm-street`.
    - Sprava runs the adoption check without writing, keeps a byte copy of the catalog and the dashboard as found, and shows one undoable card of lossless fixes, such as a derived follow-up date on each waiting item.

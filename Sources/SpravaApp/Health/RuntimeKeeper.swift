@@ -3,7 +3,7 @@ import ServiceManagement
 import Services
 import SpravaKit
 
-/// What the app does to have its background part running without asking (decisions.md A16): at launch, and when an
+/// What the app does to have its background part running without asking (decisions.md A19): at launch, and when an
 /// action finds the runtime not running. A pure decision, so it is tested without launchd.
 enum RuntimeAutostart {
     /// The runtime agent's registration (`SMAppService.Status`); `notFound` counts as not registered.

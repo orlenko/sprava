@@ -72,7 +72,7 @@ Moves that broke the earlier cycles:
 5. The app has one folder per screen (`Shelf/`, `Binder/`, `Inbox/`, `Backup/`, `Brains/`, `Health/`). A
    screen reads through read-only facades (`HealthSnapshot`, and a `ShelfSnapshot` when the Shelf needs one)
    or the binder readers of `BinderFormat`, because it must show everything while the runtime is down
-   (architecture 2.1). It writes only through `RuntimeClient`. Three exceptions: removing `runtime/background-off` (decisions.md A16) and the
+   (architecture 2.1). It writes only through `RuntimeClient`. Three exceptions: removing `runtime/background-off` (decisions.md A19) and the
    app's own capture events, because the runtime may be down; and the Shelf's recent order (`recent.json`,
    through Shelf's `RecentBinders`), state of the window that changes nothing a binder or the runtime reads.
    Adding or removing a Shelf folder is a command: `shelf.json` is the runtime's to write (architecture 2.3).
