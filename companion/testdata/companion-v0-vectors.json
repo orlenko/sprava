@@ -128,7 +128,7 @@
   },
   "payload-validation": {
     "case": 8,
-    "about": "Public invented partial corpus for browser key, device-keys, index and view schemas. Encrypt under key bytes 00 through 1f, epoch 1; device/pairing/binder id is 16 zero bytes, index revision/view version 7. Request and outcomes corpus follows with those implementations.",
+    "about": "Public invented partial corpus for browser key, device-keys, index, view and outcomes schemas. Encrypt under key bytes 00 through 1f, epoch 1 (outcomes: 0); device/pairing/binder id is 16 zero bytes, index revision/view version/outcomes revision 7. Requests follow with their implementation.",
     "valid": [
       {
         "kind": "key",
@@ -149,6 +149,16 @@
         "kind": "view",
         "why": "one open item",
         "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[\"item-1\"],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":\"item-1\",\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "signed padded outcome for this device",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                         \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "empty outcomes use exactly 512 bytes",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                \"}"
       }
     ],
     "refuse": [
@@ -271,6 +281,56 @@
         "kind": "view",
         "why": "fractional numeric id syntax",
         "text": "{\"version\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"today\":\"2026-10-08\",\"binder\":{\"name\":\"Invented binder\",\"description\":null},\"notes_omitted\":false,\"buckets\":{\"overdue\":[],\"today\":[],\"next_7_days\":[],\"later\":[],\"no_deadline\":[7],\"nudge\":[],\"waiting\":[]},\"items\":[{\"id\":7.0,\"changed_in\":3,\"title\":\"Invented item\",\"status\":\"open\",\"priority\":null,\"due\":null,\"waiting_on\":null,\"follow_up_at\":null,\"notes\":null,\"tags\":[],\"contexts\":[]}],\"closed\":[],\"documents\":[]}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "outcomes for another device",
+        "text": "{\"device_id\":\"AQEBAQEBAQEBAQEBAQEBAQ\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                         \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "outcomes revision differs from requested name",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":8,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                         \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "invalid outcomes timestamp",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-02-30T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                         \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "zero outcomes sequence",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":0,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                         \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "unknown outcome state",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"sent\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                            \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "invalid outcome request id",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"invalid\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                                        \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "outcome decision lacks UTC time",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                                   \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "repeated outcome request id",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"},{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                                                 \"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "padding contains a newline",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                        \\n\"}"
+      },
+      {
+        "kind": "outcomes",
+        "why": "outcomes plaintext is one byte short",
+        "text": "{\"device_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"revision\":7,\"generated_at\":\"2026-10-08T07:06:05Z\",\"outcomes\":[{\"request_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":1,\"outcome\":\"applied\",\"decided_at\":\"2026-10-08T07:06:05Z\"}],\"pad\":\"                                                                                                                                                                                                                                                                                                                                                                                                                                        \"}"
       }
     ]
   }
