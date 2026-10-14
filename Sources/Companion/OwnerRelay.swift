@@ -102,6 +102,32 @@ public struct CompanionOwnerRelay: Sendable {
         guard CompanionWire.isID(id) else { throw CompanionRelayError.invalid }
         return try await call("/v0/pairings/" + id, method: "DELETE").status
     }
+    /// companion-v0 §5.2 step 3: once active, read only state; stale transcript fields cannot block acknowledgement.
+    public func pairingState(_ id: String) async throws -> CompanionRelayReply<CompanionRelayPairing.State> {
+        guard CompanionWire.isID(id) else { throw CompanionRelayError.invalid }
+        let reply = try await call("/v0/pairings/" + id, limit: 8192)
+        guard reply.status == 200 else { return CompanionRelayReply(status: reply.status, value: nil) }
+        let value = try json(reply.value)
+        guard let raw = value["state"]?.stringValue, let state = CompanionRelayPairing.State(rawValue: raw) else { throw CompanionRelayError.invalid }
+        return CompanionRelayReply(status: 200, value: state)
+    }
+    /// Transport for durably recorded owner objects (§9.7). No plaintext metadata may be attached to an envelope.
+    public func putObject(name: String, bytes: Data) async throws -> Int {
+        do {
+            let envelope = try CompanionWire.parse(bytes, limit: 1048576)
+            guard let epoch = CompanionWire.unsigned(envelope["e"]) else { throw CompanionRelayError.invalid }
+            let b = try CompanionSealedObject.binding(name, epoch)
+            guard b.signed, bytes.count <= b.wire, let object = envelope.objectValue, object.entries.count == 6,
+                  Set(object.keys) == Set(["v", "kid", "e", "n", "c", "s"]), CompanionWire.unsigned(envelope["v"]) == 0,
+                  let kid = envelope["kid"]?.stringValue, kid.utf8.elementsEqual(b.kid.utf8),
+                  let nonce = envelope["n"]?.stringValue, try CompanionWire.decode(nonce).count == 12,
+                  let cipher = envelope["c"]?.stringValue, let signature = envelope["s"]?.stringValue,
+                  try CompanionWire.decode(signature).count == 64 else { throw CompanionRelayError.invalid }
+            let c = try CompanionWire.decode(cipher)
+            guard c.count >= 16, c.count <= b.plaintext + 16 else { throw CompanionRelayError.invalid }
+        } catch { throw CompanionRelayError.invalid }
+        return try await call("/v0/objects/" + name, method: "PUT", body: bytes).status
+    }
     static func time(_ text: String) -> Bool {
         guard text.utf8.count == 20, text.wholeMatch(of: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/) != nil,
               text.utf8.allSatisfy({ $0 < 128 }), Timestamp.parse(text) != nil else { return false }
