@@ -73,7 +73,7 @@ enum WireFixtures {
         object.entries.removeAll { $0.key == "s" }; object.entries.append(("s", replacement))
         let bytes = Data(JSONWriter.compact(.object(object)).utf8)
         #expect(throws: CompanionWireError.invalid) {
-            try CompanionSealedObject.open(name: "index/1", epoch: 1, key: key, bytes: bytes, owner: owner,
+            try CompanionSealedObject.openChecked(name: "index/1", epoch: 1, key: key, bytes: bytes, owner: owner,
                 decrypt: { _, _, _ in decrypts += 1; return Data("{}".utf8) })
         }
     }
@@ -115,4 +115,12 @@ enum WireFixtures {
     #expect(throws: CompanionWireError.invalid) {
         try CompanionSealedObject.open(name: request, epoch: 1, key: key, bytes: Data(JSONWriter.compact(.object(unsigned)).utf8))
     }
+}
+@Test func openedPayloadRetainsOriginalAuthenticatedLengthForPaddingValidation() throws {
+    let key = SymmetricKey(data: WireFixtures.raw), name = "requests/\(WireFixtures.id)/\(WireFixtures.id)"
+    let plaintext = Data((" {\"seq\":1,\"pad\":\"\"}" + String(repeating: " ", count: 1005)).utf8)
+    let bytes = try CompanionSealedObject.seal(name: name, epoch: 1, key: key, plaintext: plaintext)
+    let opened = try CompanionSealedObject.openPayload(name: name, epoch: 1, key: key, bytes: bytes)
+    #expect(opened.plaintextLength == plaintext.count)
+    #expect(opened.plaintextLength != JSONWriter.compact(opened.value).utf8.count)
 }

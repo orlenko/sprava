@@ -2,6 +2,11 @@ import CryptoKit
 import Foundation
 import SpravaKit
 
+public struct CompanionOpenedObject {
+    public let value: JSONValue
+    /// Authenticated byte length, including original whitespace; payload padding must use this, never reserialization.
+    public let plaintextLength: Int
+}
 /// Envelope authentication only. Payload schemas, durable admission and request effects belong to their callers.
 public enum CompanionSealedObject {
     struct Binding { let kid: String; let signed: Bool; let plaintext: Int; let wire: Int }
@@ -65,12 +70,16 @@ public enum CompanionSealedObject {
     }
     public static func open(name: String, epoch: Int64, key: SymmetricKey, bytes: Data,
                             owner: Curve25519.Signing.PublicKey? = nil) throws -> JSONValue {
-        try open(name: name, epoch: epoch, key: key, bytes: bytes, owner: owner,
-                 decrypt: { try AES.GCM.open($0, using: $1, authenticating: $2) })
+        try openPayload(name: name, epoch: epoch, key: key, bytes: bytes, owner: owner).value
+    }
+    public static func openPayload(name: String, epoch: Int64, key: SymmetricKey, bytes: Data,
+                                  owner: Curve25519.Signing.PublicKey? = nil) throws -> CompanionOpenedObject {
+        try openChecked(name: name, epoch: epoch, key: key, bytes: bytes, owner: owner,
+                        decrypt: { try AES.GCM.open($0, using: $1, authenticating: $2) })
     }
     // The seam proves in tests that a rejected owner signature never reaches decryption.
-    static func open(name: String, epoch: Int64, key: SymmetricKey, bytes: Data, owner: Curve25519.Signing.PublicKey?,
-                     decrypt: (AES.GCM.SealedBox, SymmetricKey, Data) throws -> Data) throws -> JSONValue {
+    static func openChecked(name: String, epoch: Int64, key: SymmetricKey, bytes: Data, owner: Curve25519.Signing.PublicKey?,
+                            decrypt: (AES.GCM.SealedBox, SymmetricKey, Data) throws -> Data) throws -> CompanionOpenedObject {
         do {
             let b = try binding(name, epoch), envelope = try CompanionWire.parse(bytes, limit: b.wire)
             guard key.bitCount == 256, envelope.objectValue != nil, CompanionWire.unsigned(envelope["v"]) == 0,
@@ -87,7 +96,8 @@ public enum CompanionSealedObject {
             } else if envelope.objectValue!.contains("s") { throw CompanionWireError.invalid }
             let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: n), ciphertext: c.dropLast(16), tag: c.suffix(16))
             let plaintext = try decrypt(box, key, aad(name, b, epoch)), value = try CompanionWire.parse(plaintext, limit: b.plaintext)
-            guard value.objectValue != nil else { throw CompanionWireError.invalid }; return value
+            guard value.objectValue != nil else { throw CompanionWireError.invalid }
+            return CompanionOpenedObject(value: value, plaintextLength: plaintext.count)
         } catch { throw CompanionWireError.invalid }
     }
 }
