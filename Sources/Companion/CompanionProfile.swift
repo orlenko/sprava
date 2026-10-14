@@ -1,0 +1,73 @@
+import CryptoKit
+import Foundation
+import SpravaKit
+
+public struct CompanionAccountEpoch: Sendable {
+    public let number: Int64
+    public let key: SymmetricKey
+}
+
+/// companion-v0 §§4.1, 9.1: account secrets in Keychain, committed epoch metadata in this target's SQLite.
+/// Explicit paths and backends only. This initial-state API performs no rotation, publishing or network calls.
+public final class CompanionProfile: Sendable {
+    private let store: StateStore
+    private let relay: CompanionRelayIdentity
+    private let secrets: any CompanionCredentialStorage
+    static let schema = StateStore.Schema(version: 1, statements: [
+        "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
+        "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991))"
+    ])
+
+    public init(database: URL, relay: CompanionRelayIdentity, secrets: any CompanionCredentialStorage) throws {
+        self.relay = relay; self.secrets = secrets
+        store = try StateStore.open(database, schema: Self.schema)
+        // An existing profile for a different relay is never reset or used with another relay's credentials.
+        _ = try store.read { try epoch($0) }
+    }
+
+    public func currentAccount() throws -> CompanionAccountEpoch? {
+        try store.read { t in
+            guard let number = try epoch(t) else { return nil }
+            return CompanionAccountEpoch(number: number, key: try key(number))
+        }
+    }
+
+    public func prepareAccount() throws -> CompanionAccountEpoch {
+        try prepareAccount(beforeCommit: {})
+    }
+    // A thrown checkpoint proves that a key stored before a failed SQLite commit is reused on retry.
+    func prepareAccount(beforeCommit: () throws -> Void) throws -> CompanionAccountEpoch {
+        try store.write { t in
+            if let number = try epoch(t) { return CompanionAccountEpoch(number: number, key: try key(number)) }
+            let account = keyAccount(1)
+            if try secrets.read(account: account) == nil {
+                let random = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+                _ = try secrets.insert(account: account, bytes: random)
+            }
+            // Immutable, instance-scoped key slot: a failed earlier commit leaves a recoverable staged key.
+            let storedKey = try key(1)
+            try t.execute("INSERT INTO profile (slot, origin, instance, epoch) VALUES (1, ?, ?, 1)",
+                          .text(relay.origin), .text(relay.instance))
+            try beforeCommit()
+            return CompanionAccountEpoch(number: 1, key: storedKey)
+        }
+    }
+
+    private func epoch(_ t: Transaction) throws -> Int64? {
+        let rows = try t.rows("SELECT origin, instance, epoch FROM profile LIMIT 2")
+        if rows.isEmpty { return nil }
+        guard rows.count == 1, rows[0].count == 3,
+              let origin = rows[0][0].text, origin.utf8.elementsEqual(relay.origin.utf8),
+              let instance = rows[0][1].text, instance.utf8.elementsEqual(relay.instance.utf8),
+              let number = rows[0][2].integer, number >= 1, number <= JSONNumber.maxSafeInteger else {
+            throw CompanionCredentialError.invalid
+        }
+        return number
+    }
+    private func keyAccount(_ number: Int64) -> String { relay.account + ":account-key-v0:\(number)" }
+    private func key(_ number: Int64) throws -> SymmetricKey {
+        guard let bytes = try secrets.read(account: keyAccount(number)) else { throw CompanionCredentialError.unavailable }
+        guard bytes.count == 32 else { throw CompanionCredentialError.invalid }
+        return SymmetricKey(data: bytes)
+    }
+}
