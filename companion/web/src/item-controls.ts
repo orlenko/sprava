@@ -37,6 +37,7 @@ export class ItemControls {
     private selection?: Selection;
     private editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16)));
     private revision = 0;
+    private durableRevision = 0;
     private proof?: DraftProof;
     private pending: Promise<void> = Promise.resolve();
     private readonly pendingActions = new Map<string, Promise<boolean>>();
@@ -58,7 +59,7 @@ export class ItemControls {
         if (action.type !== 'follow_up' && action.type !== 'postpone') { void this.queue(generation, action); return; }
         if (this.selection) { this.message('Finish or cancel the current date action before choosing another.'); return; }
         this.selection = { generation, action: { ...action } }; this.editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16)));
-        this.revision = 0; this.proof = undefined; this.date.value = '';
+        this.revision = this.durableRevision = 0; this.proof = undefined; this.date.value = '';
         this.heading.textContent = `${action.type === 'follow_up' ? 'Follow up' : 'Postpone'}: ${title}`;
         this.panel.hidden = false; this.date.focus(); this.persist();
     }
@@ -68,6 +69,10 @@ export class ItemControls {
             this.status.textContent = 'Keep a copy of the date before closing. This action cannot be sent under another pairing.';
         }
     }
+    hasUnsavedChanges(): boolean {
+        return this.selection !== undefined && (this.revision > this.durableRevision ||
+            (!this.permitted(this.selection.generation) && this.date.value !== ''));
+    }
     restore(draft: Draft): void {
         if (this.selection || !this.permitted(draft.generation)) { this.message('Finish the current date action before recovering another.'); return; }
         try {
@@ -76,7 +81,7 @@ export class ItemControls {
             // Empty dates are valid editor state, never valid outbound actions. Restore only defined fields.
             const valid = validateAction({ ...action, date: action.date || '2000-01-01' });
             this.selection = { generation: draft.generation, action: { ...valid, date: action.date } };
-            this.editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16))); this.revision = 0; this.proof = undefined;
+            this.editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16))); this.revision = this.durableRevision = 0; this.proof = undefined;
             this.date.value = action.date; this.heading.textContent = valid.type === 'follow_up' ? 'Recovered follow-up' : 'Recovered postponement';
             this.panel.hidden = false; this.persist({ editorId: draft.editorId, revision: draft.revision });
         } catch { this.message('This saved date action could not be opened. Its encrypted draft remains on this device.'); }
@@ -89,6 +94,7 @@ export class ItemControls {
             if (!await this.store.saveDraft(selection.generation, editorId, revision, JSON.stringify(action), now(), recovered, 'item-action'))
                 throw new Error();
             this.proof = { editorId, revision };
+            this.durableRevision = revision;
             if (revision === this.revision) this.status.textContent = action.date === '' ?
                 'Action saved on this device; choose a date to finish.' : 'Encrypted date draft saved on this device.';
         });

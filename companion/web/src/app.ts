@@ -144,7 +144,7 @@ async function start(): Promise<void> {
     async function disconnect(): Promise<void> {
         const original = generation;
         if (!original || retiring.has(original) || !window.confirm(
-            'Remove this device’s pairing and its saved binder data? Unconfirmed actions remain visible. Keep a copy of any unsaved note first.')) return;
+            'Remove this device’s pairing and its saved binder data? Unconfirmed actions remain visible. Keep a copy of any unsent note or date action first.')) return;
         stop(original); screen.removeButton.disabled = true; screen.saveButton.disabled = true;
         try {
             const result = await removePairing(store, original, { notify: value => {
@@ -207,7 +207,7 @@ async function start(): Promise<void> {
     });
     window.addEventListener('online', () => { void cycle(); });
     window.addEventListener('beforeunload', event => {
-        if (screen.draft.value) { event.preventDefault(); event.returnValue = ''; }
+        if (screen.draft.value || itemControls.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; }
     });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) void cycle(); });
     await draw(); await recoverDrafts(); void cycle();

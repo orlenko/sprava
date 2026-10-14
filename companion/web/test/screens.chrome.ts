@@ -189,9 +189,20 @@ try {
     await wait(`document.querySelector('#item-action').hidden`);
     assert.equal(sentActions.length, 3, 'cancelling a date action does not consume a sequence or send');
     await clickItem('Invented numeric item', 'Postpone…');
+    await wait(`document.querySelector('#item-action [role=status]').textContent.includes('choose a date')`);
+    await evaluate(`{
+        window.originalEncrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+        window.pausedEncryption = new Promise(resolve => { window.resumeEncryption = resolve; });
+        crypto.subtle.encrypt = async (...args) => { await window.pausedEncryption; return window.originalEncrypt(...args); };
+    }`);
     await evaluate(`document.querySelector('#item-action-date').value = '2026-10-25';
         document.querySelector('#item-action-date').dispatchEvent(new Event('input')); document.querySelector('header button').click()`);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), true,
+        'an edited date whose encryption is still pending receives unload protection');
+    await evaluate(`window.resumeEncryption(); crypto.subtle.encrypt = window.originalEncrypt`);
     await wait(`document.querySelector('#item-action [role=status]').textContent.includes('draft saved')`);
+    assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), false,
+        'a durable date draft can be recovered without an unload prompt');
     assert.equal(await evaluate(`document.querySelector('#item-action-date').value`), '2026-10-25');
     socket!.close(); clearTimeout(timer); child!.kill('SIGKILL'); await exited;
     await openBrowser(); messaging(); await command('Page.enable');
