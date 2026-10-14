@@ -1,15 +1,30 @@
-# Companion browser protocol
+# Companion web app
 
-This is the first browser-side component of the companion described in `docs/companion.md`.
-It is not yet an installable web app: the pairing/network flow, screens,
-offline requests and GitHub Pages publishing still need implementations.
+The local PWA build has pairing, shared binder browsing, an inbox-note editor and pending
+action status. IndexedDB holds encrypted caches, immutable queued requests and
+non-extractable keys. A service worker caches only this build's static shell, so admitted
+data can be opened offline. Every binder string is rendered as text.
+
+Mac companion integration, item-action controls, explicit pairing removal and release
+publishing are still pending. This build does not yet provide phone-to-Mac use.
 
 ```sh
 cd companion/web
 npm ci
 npm test
 npm run build
+npm run dev
 ```
+
+`npm run dev` builds and serves `dist/` at `http://localhost:5173`; set `SPRAVA_WEB_PORT`
+for a different port. The preview binds only to localhost. Serve the same static output
+over HTTPS at an origin dedicated to this app for a device test; no deployment is performed
+by the build or preview scripts. The version and commit appear at the foot of the app.
+
+The note editor stays mounted through refreshes. It clears only after the request is
+durably queued for its original pairing, and retains drafts on validation/storage failure.
+Pending pages contain metadata rather than ciphertext or note text. "Sent" means received
+by the relay; a signed outcome from the Mac resolves the entry.
 
 The build emits browser ES modules under `dist/`, with no Node imports, third-party runtime
 dependencies or secrets. `src/sealed.ts` imports non-extractable AES-256-GCM keys, seals device
@@ -45,7 +60,7 @@ are separate records: accepting one rewrites only that view and its admission me
 so a refresh does not clone and rewrite the entire cache. `readView` checks the current
 index, epoch and exact version in one read transaction before returning a cache.
 Removed binders lose their cached views and keys in the index transaction; their version floors
-remain. Outdated caches may remain stored, so a future screen must check the current index,
+remain. Outdated caches may remain stored, and display reads check the current index,
 epoch and exact view version before opening and showing them. Outcomes admission and send-attempt transitions use that same database. The HTTP client below supplies network transport; pairing removal is not implemented
 here.
 
@@ -59,13 +74,15 @@ npm run test:browser
 ```
 
 This check never opens an existing browser profile and removes its temporary profile afterward.
+It also exercises the actual screens: inert markup-like binder text, distinct numeric/string
+ids, draft retention, encrypted note sending, offline shell/cache reload and frame refusal.
 
 `src/device-payloads.ts` validates actions before numbering: the request-type field table,
 typed item ids, positive seen versions, valid dates, note character/encoded-byte limits,
 allowed controls and Unicode scalar validity. It seals requests with the smallest whole-KiB
 padding, fixed-size private pairing hellos and instance-bound self-revocations. A caller
 must still durably enqueue the sealed request before sending and retain the editor draft
-when validation or storage fails; no network or outbox behavior is implemented here.
+when validation or storage fails; the outbox and HTTP components below implement those steps.
 
 `src/outbox.ts` adds durable numbering/enqueue: validate first, seal outside IndexedDB,
 then atomically advance `next_seq` and store the immutable ciphertext. Concurrent windows
@@ -81,7 +98,7 @@ retaining keys, and atomically admits signed outcomes with their revision and ma
 entry transitions. Late replies cannot overwrite resolved actions. Expiry runs in bounded
 pages and keeps unconfirmed actions visible. `src/sender.ts` holds the shared Web Lock
 for one attempt through result persistence, aborts after 30 seconds, and leaves all
-backoff waiting outside the lock. Its injectable transport must honor AbortSignal; refresh/pairing/screen orchestration is still to come.
+backoff waiting outside the lock. Its injectable transport must honor AbortSignal; the app orchestrates refresh, pairing and screen updates.
 
 `src/relay-client.ts` supplies device-only HTTP calls: canonical relay/device scoping,
 strict bounded JSON responses, streamed object limits, abortable 30-second calls, no
@@ -96,8 +113,7 @@ join, polls the wrapped delivery and conditionally installs the pairing. Its fir
 runs after durable installation; startup/refresh can retry the persisted pending flag.
 Cancellation retires only that flow's reservation. The original flow cannot acknowledge
 a replacement generation, and lost joins require a new link. The complete flow is
-bounded to ten minutes; each HTTP call also has its own deadline. Screens and the
-startup/refresh scheduler still need to call these helpers.
+bounded to ten minutes; each HTTP call also has its own deadline. The app calls these helpers during pairing and scheduled refresh.
 
 `src/refresh.ts` searches keys before indexes, reconciles epoch-independent outcomes, and
 fetches only the selected binder's exact view. Each prefix has a five-candidate budget,
@@ -106,4 +122,4 @@ deadline. All admissions belong to the pairing generation that started the reque
 Invalid candidates and network failures leave admitted offline caches intact; storage
 failures remain visible to the caller. `src/display-cache.ts` opens admitted sealed data
 in memory and rechecks pairing/index prerequisites after decryption. It never persists
-decrypted names or content. The screen and refresh scheduler are still separate work.
+decrypted names or content. The app calls it at startup, on visibility/network changes and during scheduled refresh.

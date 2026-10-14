@@ -67,7 +67,9 @@ export class BrowserStore {
         });
     }
     close(): void { this.db.close(); }
-    enqueue(action: RequestAction, madeAt: string): Promise<OutboxEntry> { return enqueue(this.db, action, madeAt); }
+    enqueue(action: RequestAction, madeAt: string, generation?: string): Promise<OutboxEntry> {
+        return enqueue(this.db, action, madeAt, generation);
+    }
     readOutbox(limit = 50, after?: IDBValidKey): Promise<OutboxPage> { return readOutbox(this.db, limit, after); }
 
     beginAttempt(now: number): Promise<SendAttempt | null> { return beginAttempt(this.db, now); }

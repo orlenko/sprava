@@ -25,10 +25,10 @@ function snapshot(db: IDBDatabase): Promise<BrowserState | undefined> {
 }
 
 /** §9.8 step 1: never seal a started action for a different generation; save sequence and ciphertext atomically. */
-export async function enqueue(db: IDBDatabase, action: RequestAction, madeAt: string): Promise<OutboxEntry> {
+export async function enqueue(db: IDBDatabase, action: RequestAction, madeAt: string, expectedGeneration?: string): Promise<OutboxEntry> {
     const valid = validateAction(action);
     let initial = await snapshot(db), p = initial?.pairing;
-    if (initial?.version !== 1 || !p) throw new OutboxError();
+    if (initial?.version !== 1 || !p || (expectedGeneration !== undefined && p.generation !== expectedGeneration)) throw new OutboxError();
     const generation = p.generation, deviceId = p.deviceId, relayOrigin = p.relayOrigin;
     for (;;) {
         if (!Number.isSafeInteger(p.nextSeq) || p.nextSeq < 1 || p.nextSeq >= Number.MAX_SAFE_INTEGER) throw new OutboxError();
