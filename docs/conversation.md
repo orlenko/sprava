@@ -59,10 +59,8 @@ the fact; "Sprava's whole purpose is to maintain binders with their notes, knowl
 3. Files dropped, named by path or description, or arriving in `intake/` are read (OCR, translation), filed at
    once and reported with Undo (5). Additions apply at once; changes to what exists take one tap; privacy,
    names and anything outward stay in the app's own controls (6).
-4. The front desk earns autonomy by measured agreement with the back office and the person (7), and learns
-   from written filing rules in the binder's manual (8.1). A one-page brief keeps each binder's essentials (8.2).
-5. Questions get quoted passages first (9). Big requests become tasks with their own sessions; results land
-   as drafts, never sent (10).
+4. The front desk earns autonomy by measured agreement (7) and learns from filing rules (8.1); a brief keeps
+   each binder's essentials (8.2). Questions get quotes first (9); big requests become tasks with drafts (10).
 
 ## 3. The binder page
 
@@ -402,7 +400,7 @@ can open it. The other option is `.sprava/brief.md`, hidden and out of the perso
 How it stays current and correct:
 
 - **Code writes** "What is pending" and "Key dates" from the catalog after every applied batch, as it renders
-  the dashboard, so those parts are never wrong.
+  the dashboard, so they render the catalog's current state faithfully; their meaning and freshness are 17.7's.
 - **The front desk picks** "Parties" and "Key facts" lines when it files a document, but writes none of their
   words: a party line is one code found (a sender from the headers, a name matched against the binder's
   items), and a key fact is one whole sentence of the document, stored verbatim with document and page. The
@@ -514,10 +512,12 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   deny-all settings file is a second guard; a start-up probe that finds any file tool answering keeps the back
   office off. `--strict-mcp-config` loads only Sprava's server. The permission mode must be explicit: left
   alone, `-p` used `auto`, read outside its folder and ran Bash.
-- **Managed settings.** `--restricted` still loads managed settings, and managed hooks see prompts and tool
-  results. Before every start Sprava reads the managed settings Claude Code would load and keeps the back
-  office off, saying why, when any hook is defined there or when it cannot tell (server-managed policy it
-  cannot read; open S1 item).
+- **Managed policy, for every back office.** An organization's policy outranks every flag Sprava passes:
+  Claude Code loads managed settings even under `--restricted`, and Codex's `requirements.toml` can pin hooks
+  on despite `--disable hooks`; managed hooks see prompts and tool results. So before every start of any back
+  office, Sprava reads that agent's managed policy and keeps it off, saying why, when the policy defines a
+  hook or anything else that could see the session, or when Sprava cannot read it (server-managed policy;
+  open S1 and S3 items).
 - **The manual.** Sprava passes Sprava's manual section, the brief (as data) and the filing rules in the
   appended system prompt, read through the safe reader; no project file is ever loaded.
 - **Tools**: reads (`search`, `read_document`, `get_now`, `list_items`, `list_documents`, this binder only,
@@ -586,6 +586,8 @@ even after a kill. Codex allows one writer per thread, so Open in Terminal stops
   So Codex gets a home under Sprava's support folder (`codex/home`) with its own sign-in, which the app
   server drives with a device code shown in the engine settings; Sprava never copies `auth.json`. A full turn
   in that home is an open S3 item. Its transcripts hold binder text, and Sprava cleans them as for Claude.
+  The home holds `auth.json` and those transcripts, so Sprava's state backup excludes `codex/home` by name
+  (`docs/backup.md` §3 gains the exclusion), and a test checks that no sign-in or session file enters a snapshot.
   Claude Code can use the person's own `~/.claude` because `--restricted --strict-mcp-config` loads none of
   their skills, plugins or MCP servers; Codex cannot.
 - Sprava calls the native binary in the npm package's `vendor/` folder (a LaunchAgent cannot run the Node
@@ -687,13 +689,11 @@ Short experiments on invented binders, each before the PR that needs it. S1 to S
   an auto-update); a real usage-limit hit; first-token latency; reading server-managed settings.
 - **S2 Stop and Terminal**: the resume picker; `claude --resume` with Sprava's configuration; importing a
   session's history file.
-- **S3 Codex**: a full turn in Sprava's Codex home; work with no readable workspace; `resume --remote`.
-- **S4 MLX**: closed, out.
+- **S3 Codex**: a full turn in Sprava's Codex home; no readable workspace; `resume --remote`; reading
+  `requirements.toml`. **S4 MLX**: closed, out.
 - **S5 llama.cpp**: one mixture-of-experts model; larger fixtures scored against Claude; the build script.
-- **S6 Translation without a window**: from the runtime and the sandboxed helper; asking for a missing pair.
-- **S7 Retrieval**: FTS5 with queries in each document language over a 200-document invented binder.
-- **S8 Path import**: which folders the app reads without repeated permission prompts, and matching a
-  description in a folder (names, dates, Spotlight metadata).
+- **S6 Translation** from the runtime and the helper, without a window. **S7 Retrieval**: FTS5 queries in each
+  document language over 200 invented documents. **S8 Path import**: folder permissions; matching descriptions.
 
 ## 15. Code PRs, in order
 
@@ -718,7 +718,8 @@ the local model follows, then the back office.
 9. **Brains: the front desk model's choice by memory and download.**
 10. **Brains: the front desk router on the local model**, quote-first answers, "this needs thinking".
 11. **Extract: translation** on device, both texts in the index.
-12. **BinderStore: the brief keeper.** `BRIEF.md` rendering, code's parts, cited facts and their checks.
+12. **Retrieval: the brief keeper.** `BRIEF.md` rendering and code's parts, with the word-for-word checks run
+    against the index's extracted and translated text (layer 4, on `Extract`), never on model-supplied text.
 13. **BinderStore: the filing rules**: grammar, the manual's rules part, acceptance; the reader takes them.
 14. **Brains: the Claude Code back office**: session and resume, lock, start-up and managed-settings probes,
     Stop, limits, costs, cleanup, the offload barrier.
