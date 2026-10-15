@@ -49,7 +49,7 @@ let package = Package(
                                                      "SpravaKit"]),
 
         // Layer 4: each binder's search index (docs/conversation.md §9.1).
-        .target(name: "Retrieval", dependencies: ["BinderFormat", "SQLiteDefensive", "SpravaKit"]),
+        .target(name: "Retrieval", dependencies: ["Extract", "BinderFormat", "SQLiteDefensive", "SpravaKit"]),
         .testTarget(name: "RetrievalTests", dependencies: ["Retrieval", "BinderFormat", "SpravaKit"]),
 
         // Backup capabilities arrive in small, independently tested increments.
