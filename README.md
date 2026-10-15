@@ -39,11 +39,13 @@ $(swift build --show-bin-path)/sprava shelf
 $(swift build --show-bin-path)/sprava now ~/binders/kitchen-reno
 ./scripts/build-app.sh         # build/Sprava.app, ad-hoc signed, not launched; replaced only when the build succeeds
 ./scripts/test-build-app.sh    # tests build-app.sh with stand-in tools
+./scripts/build-llm.sh         # build/llm/sprava-llm, the pinned llama-server build-app.sh bundles; kept once built
 ./scripts/restart-app.sh       # build, install in /Applications, restart background work and open
 ```
 
-For a fresh machine, install Command Line Tools (`xcode-select --install`) and restic
-(`brew install restic`, or set `SPRAVA_RESTIC` to its executable), clone this repository, and run
+For a fresh machine, install Command Line Tools (`xcode-select --install`), restic
+(`brew install restic`, or set `SPRAVA_RESTIC` to its executable) and cmake (`brew install cmake`, which
+`scripts/build-llm.sh` needs to build the pinned llama.cpp of the local model helper once), clone this repository, and run
 `./scripts/restart-app.sh`. The machine needs macOS 27 and Swift 6.4. In the app, use
 Health › Set Up Background Work and approve Sprava in Login Items, then create a binder with invented
 notes and documents. Each machine has its own app state and background-work approval.
