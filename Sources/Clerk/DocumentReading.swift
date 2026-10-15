@@ -103,7 +103,7 @@ extension Clerk {
     static func sameObligation(_ item: ClerkItem, next: String, dateText: String) -> Bool {
         let own = FilingBinder.significantWords(next).subtracting(FilingBinder.significantWords(dateText))
             .subtracting(taskVerbs).subtracting(plainWords)
-        if own.isEmpty || !own.isDisjoint(with: FilingBinder.significantWords(item.sentence.text + " " + item.title)) { return true }
+        if own.isEmpty || !own.isDisjoint(with: FilingBinder.significantWords(item.sentence.text + " " + item.identity)) { return true }
         func words(_ s: String) -> Set<String> { Set(s.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)) }
         return item.amount != nil && words(item.sentence.text).isDisjoint(with: taskVerbs) && words(next).isDisjoint(with: taskVerbs)
             && Amounts.scan(next) == nil
@@ -307,12 +307,12 @@ extension Clerk {
         // does not, or the first sentence must ask for nothing itself, so a different payment there stays.
         for item in interp.items where item.flags.contains("date taken from the next sentence") {
             guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
-            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.title)
+            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.identity)
             let asksNothing = Set(item.sentence.text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: Self.taskVerbs)
             interp.items.removeAll {
                 $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
-                    && (Self.similar($0.title, item.title) || $0.action == item.action
-                        && (asksNothing || FilingBinder.significantWords($0.title).subtracting(Self.taskVerbs).subtracting(Self.plainWords).isSubset(of: mine)))
+                    && (Self.similar($0.identity, item.identity) || $0.action == item.action
+                        && (asksNothing || FilingBinder.significantWords($0.identity).subtracting(Self.taskVerbs).subtracting(Self.plainWords).isSubset(of: mine)))
             }
         }
         // What still asks something by a date and no item covers, after the second reading, is kept and makes the

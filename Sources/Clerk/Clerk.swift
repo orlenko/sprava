@@ -19,6 +19,11 @@ public struct ClerkItem: Sendable, Equatable {
     public var flags: [String] = []
     /// The duplicate check's answer, after code's checks: `same`, `done`, `update` or `related`.
     public var match: Match?
+    /// What the model called the task. It tells two items of one sentence apart ("Pay rent", "Pay deposit") and is
+    /// never shown: the title is the source's own words (capture-event-v0 §6.4 check 1).
+    var called = ""
+    /// The words that tell this task from another: what the model called it, else its title.
+    var identity: String { called.isEmpty ? title : called }
 
     public struct Match: Sendable, Equatable {
         public var candidate: FilingBinder.Candidate
@@ -244,16 +249,10 @@ public struct Clerk: Sendable {
         return String(cut[..<(cut.lastIndex(of: " ") ?? cut.endIndex)])
     }
 
-    /// Whether `b` repeats `a`: the same sentence, action and time, and a similar title. The time counts because a
-    /// title holds no time words ("Call the plumber on Monday and call the plumber on Friday" are two calls).
+    /// Whether `b` repeats `a`: the same sentence and action, and the model named them alike. Never by title: two
+    /// tasks of one sentence can share the title code builds from it.
     static func repeats(_ a: ClerkItem, _ b: ClerkItem) -> Bool {
-        a.sentence == b.sentence && a.action == b.action && whenKey(a.whenResolved, a.whenText) == whenKey(b.whenResolved, b.whenText)
-            && similar(a.title, b.title)
-    }
-
-    /// The time an item names: its resolved date, else its time words as `DateGrammar` reads them.
-    static func whenKey(_ date: CalendarDate?, _ text: String?) -> String {
-        date?.description ?? text.flatMap { DateGrammar.stripped($0)?.rest } ?? ""
+        a.sentence == b.sentence && a.action == b.action && similar(a.identity, b.identity)
     }
 
     /// Whether two titles name the same task, read both ways: a title with a word the other lacks is another task

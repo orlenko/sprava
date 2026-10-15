@@ -763,7 +763,8 @@ first cleans each item, then validates each item on its own. In a meeting, turn 
    on, with the time words of check 2 (and a word such as "by" that only led into them) taken out,
    white space trimmed and the first letter capitalized. A note line "Bill Acme today" is titled
    "Bill Acme", never "Call Bill Acme". A document's title and its items follow the same rule against
-   the document's text.
+   the document's text. The model's own title is kept, never shown, to tell two items of one sentence
+   apart: two tasks can share the title code builds from their sentence.
 2. Time. `when_text` is kept only when it occurs in the item's sentence and matches a known time
    pattern for the locale (section 6.6). Values such as "none", "now" or "not to the tenant" are
    dropped.

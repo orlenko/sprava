@@ -9,9 +9,10 @@ extension Clerk {
     func check(_ value: JSONValue, text: String, sentences: [TextSpan], today: CalendarDate, locale: String, estimated: Bool = false,
                scope: [TextSpan]? = nil, taken: [ClerkItem] = []) -> ClerkItem? {
         guard let quote = value["quote"]?.stringValue else { return nil }
-        let proposed = value["title"]?.stringValue ?? ""
+        // What the model called the task tells items apart; the title shown is the source's words (`ownTitle`).
+        let called = Self.shorten((value["title"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines), to: 120)
+        guard !called.isEmpty else { return nil }
         let modelWhen = value["when_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-        func title(in s: TextSpan, when: String?) -> String { Self.ownTitle(proposed, quote: quote, sentence: s.text, whenText: when) }
         var action = value["action"]?.stringValue ?? "other"
         if !Self.actions.contains(action) { action = "other" }
         // Check 1. A quote that opens several sentences ("Your renewal for the plan ..." twice) is placed by the
@@ -24,16 +25,13 @@ extension Clerk {
                 let holding = found.filter { CaptureText.containsWords($0.text, words) }
                 if !holding.isEmpty { found = holding }
             }
-            let when = Self.whenKey(modelWhen.flatMap { DateGrammar.resolve($0, anchor: today, locale: locale)?.date }, modelWhen)
-            let free = found.filter { s in
-                !taken.contains { $0.sentence == s && $0.action == action && Self.whenKey($0.whenResolved, $0.whenText) == when
-                    && Self.similar($0.title, title(in: s, when: modelWhen)) }
-            }
+            let free = found.filter { s in !taken.contains { $0.sentence == s && $0.action == action && Self.similar($0.identity, called) } }
             if !free.isEmpty { found = free }
             ambiguous = found.count > 1
         }
         guard let sentence = found.first else { return nil }
         var item = ClerkItem(title: "", action: action, sentence: sentence, people: [])
+        item.called = called
         if ambiguous { item.flags.append("the quote opens more than one sentence") }
 
         // Check 4: people as whole words of the capture, never pronouns.
@@ -63,7 +61,7 @@ extension Clerk {
             // An estimated capture time resolves only full dates (capture-event-v0 §6.6).
             if estimated, !DateGrammar.isFullDate(when, locale: locale) { item.whenResolved = nil }
         }
-        item.title = title(in: sentence, when: item.whenText)
+        item.title = Self.ownTitle(called, quote: quote, sentence: sentence.text, whenText: item.whenText)
 
         // Check 3: the amount text occurs in the sentence and parses above 0.
         if let amountText = value["amount_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !amountText.isEmpty,

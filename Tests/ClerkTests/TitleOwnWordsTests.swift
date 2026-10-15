@@ -13,9 +13,9 @@ import Testing
     /// Noon UTC on 2026-10-08: the same calendar day in every time zone the tests run in.
     let now = Date(timeIntervalSince1970: 1_791_460_800)
 
-    func item(_ quote: String, _ title: String, _ action: String, when: String = "") -> JSONValue {
+    func item(_ quote: String, _ title: String, _ action: String, when: String = "", amount: String = "") -> JSONValue {
         .obj([("quote", .string(quote)), ("title", .string(title)), ("action", .string(action)), ("when_text", .string(when)),
-              ("people", .array([])), ("amount_text", .str(""))])
+              ("people", .array([])), ("amount_text", .string(amount))])
     }
 
     func read(_ text: String, _ items: [JSONValue], locale: String = "en") async -> (Interpretation, ClerkInput) {
@@ -53,12 +53,29 @@ import Testing
         ])
         #expect(interp.items.map(\.title) == ["Call the plumber", "Call the plumber"])
         #expect(interp.items.compactMap { $0.whenResolved?.description }.sorted() == ["2026-10-09", "2026-10-12"])
-        // The same task listed twice, with the same time in other words, is still one.
+        // The same task listed twice is still one.
         let (once, _) = await read("Call the plumber by Friday.", [
             item("Call the plumber by Friday", "Call the plumber", "call", when: "by Friday"),
-            item("Call the plumber by Friday", "Call the plumber by Friday", "call", when: "Friday"),
+            item("Call the plumber by Friday", "Call the Plumber", "call", when: "Friday"),
         ])
         #expect(once.items.count == 1)
+        // The same day in other words.
+        let (sameDay, _) = await read("Call the plumber today and call the plumber tonight.", [
+            item("Call the plumber today", "Call the plumber today", "call", when: "today"),
+            item("Call the plumber today", "Call the plumber tonight", "call", when: "tonight"),
+        ])
+        #expect(sameDay.items.count == 2)
+    }
+
+    /// Two tasks of one sentence can share the title code builds from it; they stay two, each with its amount.
+    @Test func tasksThatShareABuiltTitleBothStay() async {
+        let (interp, _) = await read("The rent is $800 and the deposit is $200, both due Friday.", [
+            item("The rent is $800 and the deposit is $200", "Pay rent", "pay", when: "Friday", amount: "$800"),
+            item("The rent is $800 and the deposit is $200", "Pay deposit", "pay", when: "Friday", amount: "$200"),
+        ])
+        #expect(interp.items.count == 2)
+        #expect(interp.items.compactMap { $0.amount?.value }.sorted() == [200, 800])
+        #expect(interp.items.allSatisfy { Clerk.hasOnlyWords(of: $0.sentence.text, $0.title) })
     }
 
     @Test func eachLineOfAListKeepsItsWords() async {
