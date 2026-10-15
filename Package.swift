@@ -51,7 +51,7 @@ let package = Package(
         .testTarget(name: "BackupTests", dependencies: ["Backup", "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Registered brain clients, before the MCP transport and tools are added.
-        .target(name: "Brains", dependencies: ["Capture", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .target(name: "Brains", dependencies: ["Capture", "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "BrainsTests", dependencies: ["Brains", "CaptureTestSupport", "Capture", "Extract", "Shelf", "BinderStore", "BinderFormat",
                                                         "SpravaTestSupport", "SpravaKit"]),
 
