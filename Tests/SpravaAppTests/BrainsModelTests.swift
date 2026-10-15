@@ -3,158 +3,216 @@ import SpravaKit
 @testable import SpravaApp
 import Testing
 
-/// The Brains page binds its displayed scope, direct command and manual configuration to one registration.
+/// A runtime stand-in that keeps a client registry the way the runtime does: registering an id again renews it.
 @MainActor
-@Suite struct BrainsModelTests {
-    @Test func editingTheClientIDWhileRegisteringKeepsTheTokenWithItsOriginalClient() async throws {
-        var started: CheckedContinuation<Void, Never>?
-        var response: CheckedContinuation<String, Error>?
-        var sentIDs: [String] = []
-        let client = RuntimeClient(answer: { text in
-            let request = try JSONParser.parse(text).value
-            if request["command"] == .str("register_client") {
-                sentIDs.append(request["client_id"]?.stringValue ?? "")
-                return try await withCheckedThrowingContinuation {
-                    response = $0
-                    started?.resume()
-                    started = nil
-                }
-            }
-            return #"{"ok":true,"clients":[]}"#
-        })
-        let model = BrainsModel(client: client, authenticate: {})
-        model.clientID = "invented-first-client"
-        model.chosen = [URL(fileURLWithPath: "/Invented/binder")]
-        model.claude = { nil }
-        let work = Task { await model.register() }
-        await withCheckedContinuation { started = $0 }
-        model.clientID = "invented-later-client"
-        // A second click during the same request cannot replace its one-time token.
-        await model.register()
-        // Running an older registration cannot clear the new token when its delayed reply arrives.
-        await model.runRegistration()
-        #expect(model.message == nil)
-        #expect(model.registration == nil)
-        response?.resume(returning: #"{"ok":true,"token":"invented-token"}"#)
-        await work.value
-        #expect(sentIDs == ["invented-first-client"])
-        #expect(model.registration?.arguments.last == "invented-first-client")
-        #expect(model.registration?.arguments.contains("SPRAVA_CLIENT_TOKEN=invented-token") == true)
-        #expect(model.registration?.binderPaths == ["/Invented/binder"])
-        #expect(!model.canEditRegistrationChoices)
-        #expect(!model.registering)
+final class InventedRuntime {
+    var clients: [(id: String, binders: [String])] = []
+    var commands: [JSONValue] = []
+    var refuseRegistration: String?
+
+    lazy var client = RuntimeClient(answer: { text in try self.answer(text) })
+
+    func answer(_ text: String) throws -> String {
+        let r = try JSONParser.parse(text).value
+        commands.append(r)
+        switch r["command"]?.stringValue {
+        case "register_client":
+            if let refuseRegistration { return JSONWriter.compact(.obj([("ok", .bool(false)), ("error", .str(refuseRegistration))])) }
+            let id = r["client_id"]?.stringValue ?? ""
+            clients.removeAll { $0.id == id }
+            clients.append((id, (r["binders"]?.objectValue?.entries ?? []).map(\.key)))
+            return #"{"ok":true,"token":"invented-token-\#(commands.count)"}"#
+        case "revoke_client":
+            clients.removeAll { $0.id == r["client_id"]?.stringValue }
+            return #"{"ok":true,"withdrawn":0}"#
+        case "list_clients":
+            return JSONWriter.compact(.obj([("ok", .bool(true)), ("clients", .array(clients.map { c in
+                .obj([("id", .str(c.id)), ("name", .str("Claude Code")),
+                      ("binders", .obj(c.binders.map { ($0, .str("propose")) })), ("documents", .bool(false))])
+            }))]))
+        default: return #"{"ok":true}"#
+        }
     }
 
-    @Test func refusedAuthenticationDoesNotIssueAClientToken() async {
+    var registrations: [JSONValue] { commands.filter { $0["command"] == .str("register_client") } }
+}
+
+/// The Brains page: one button connects Claude Code, picks its id itself, and connecting again renews it.
+@MainActor
+@Suite struct BrainsModelTests {
+    /// A model whose Claude Code is a recorder: it records each run and exits with `exit`.
+    func model(_ runtime: InventedRuntime, exit: Int32 = 0, runs: Recorder = Recorder()) -> BrainsModel {
+        let m = BrainsModel(client: runtime.client, authenticate: {})
+        m.claude = { URL(fileURLWithPath: "/Invented/bin/claude") }
+        m.run = { _, arguments, _ in
+            await runs.add(arguments)
+            return ChildRun.Outcome(ending: .exited(exit), stdout: Data(), stderr: Data("invented refusal".utf8))
+        }
+        return m
+    }
+
+    actor Recorder {
+        var runs: [[String]] = []
+        func add(_ arguments: [String]) { runs.append(arguments) }
+    }
+
+    @Test func connectingTwiceWithTheSameBindersSucceedsAndNeverSaysExists() async throws {
+        let runtime = InventedRuntime()
+        let runs = Recorder()
+        let m = model(runtime, runs: runs)
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        #expect(m.message == "Claude Code is connected. Start a new Claude Code session to use it.")
+        #expect(m.claudeCode?.binders.keys.sorted() == ["/Invented/acme"])
+        await m.connect()
+        #expect(m.message == "Claude Code is connected. Start a new Claude Code session to use it.")
+        #expect(runtime.registrations.count == 2)
+        #expect(runtime.registrations.allSatisfy { $0["client_id"] == .str(BrainsModel.claudeCodeID) })
+        #expect(m.clients.count == 1)
+        // Each connect removes an earlier entry first, then adds the new one with the new key.
+        let recorded = await runs.runs
+        #expect(recorded.count == 4)
+        #expect(recorded[2] == Array(BrainsModel.removeArguments.dropFirst()))
+        #expect(recorded[3].contains("SPRAVA_CLIENT_TOKEN=invented-token-3"))
+        #expect(recorded[3].suffix(2) == ["--client", BrainsModel.claudeCodeID])
+        #expect(m.registration == nil)
+    }
+
+    @Test func changingTheBindersUpdatesTheScopeAndTheTicksStartFromIt() async {
+        let runtime = InventedRuntime()
+        let m = model(runtime)
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        m.choose(URL(fileURLWithPath: "/Invented/acme"), false)
+        m.choose(URL(fileURLWithPath: "/Invented/household"), true)
+        await m.connect()
+        #expect(m.claudeCode?.binders.keys.sorted() == ["/Invented/household"])
+        #expect(runtime.registrations.last?["binders"] == .obj([("/Invented/household", .str("propose"))]))
+        // A page opened later ticks the binders Claude Code already sees.
+        let later = model(runtime)
+        await later.load()
+        #expect(later.chosen == ["/Invented/household"])
+    }
+
+    @Test func aRefusalFromTheRuntimeReachesThePageInPlainWords() async {
+        let runtime = InventedRuntime()
+        runtime.refuseRegistration = "client claude-code-1 exists"
+        let m = model(runtime)
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        let said = m.message ?? ""
+        #expect(!said.contains("exists") && !said.contains("client"))
+        #expect(said.first?.isUppercase == true)
+        #expect(m.registration == nil)
+        #expect(!m.busy)
+    }
+
+    @Test func refusedAuthenticationChangesNothing() async {
         enum Refusal: Error { case cancelled }
-        var requests = 0
-        let model = BrainsModel(client: RuntimeClient(answer: { _ in
-            requests += 1
-            return #"{"ok":true,"token":"invented-token"}"#
-        }), authenticate: { throw Refusal.cancelled })
-        model.chosen = [URL(fileURLWithPath: "/Invented/binder")]
-        await model.register()
-        #expect(requests == 0)
-        #expect(model.registration == nil)
-        #expect(model.message != nil)
-        #expect(!model.registering)
+        let runtime = InventedRuntime()
+        let m = BrainsModel(client: runtime.client, authenticate: { throw Refusal.cancelled })
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        #expect(runtime.commands.isEmpty)
+        #expect(m.message?.hasPrefix("Connecting needs your Touch ID") == true)
+        #expect(!m.busy)
     }
 
     @Test func authenticationPrecedesRegistrationAndKeepsTheApprovedScope() async throws {
-        var authenticated = false
-        var request: JSONValue?
-        var model: BrainsModel!
-        let client = RuntimeClient(answer: { text in
-            let parsed = try JSONParser.parse(text).value
-            if parsed["command"] == .str("register_client") {
-                #expect(authenticated)
-                request = parsed
-                return #"{"ok":true,"token":"invented-token"}"#
+        let runtime = InventedRuntime()
+        var m: BrainsModel!
+        m = BrainsModel(client: runtime.client, authenticate: {
+            #expect(runtime.commands.isEmpty)
+            m.chosen = ["/Invented/other-binder"]
+        })
+        m.claude = { nil }
+        m.chosen = ["/Invented/approved-binder"]
+        await m.connect()
+        let request = try #require(runtime.registrations.first)
+        #expect(request["binders"]?["/Invented/approved-binder"] == .str("propose"))
+        #expect(request["binders"]?["/Invented/other-binder"] == nil)
+    }
+
+    @Test func aSecondClickWhileConnectingIsIgnored() async {
+        let runtime = InventedRuntime()
+        var started: CheckedContinuation<Void, Never>?
+        var release: CheckedContinuation<Void, Never>?
+        let m = BrainsModel(client: runtime.client, authenticate: {
+            await withCheckedContinuation { c in
+                release = c
+                started?.resume()
             }
-            return #"{"ok":true,"clients":[]}"#
         })
-        model = BrainsModel(client: client, authenticate: {
-            authenticated = true
-            model.clientID = "invented-other-client"
-            model.chosen = [URL(fileURLWithPath: "/Invented/other-binder")]
-        })
-        model.clientID = "invented-approved-client"
-        model.chosen = [URL(fileURLWithPath: "/Invented/approved-binder")]
-        await model.register()
-        #expect(request?["client_id"] == .str("invented-approved-client"))
-        #expect(request?["binders"]?["/Invented/approved-binder"] == .str("propose"))
-        #expect(request?["binders"]?["/Invented/other-binder"] == nil)
+        m.claude = { nil }
+        m.chosen = ["/Invented/acme"]
+        let work = Task { await m.connect() }
+        await withCheckedContinuation { started = $0 }
+        #expect(!m.canConnect)
+        await m.connect()
+        m.choose(URL(fileURLWithPath: "/Invented/household"), true)
+        release?.resume()
+        await work.value
+        #expect(runtime.registrations.count == 1)
+        #expect(runtime.registrations.first?["binders"] == .obj([("/Invented/acme", .str("propose"))]))
+    }
+
+    @Test func missingClaudeLeavesTheSetupToAddByHand() async throws {
+        let runtime = InventedRuntime()
+        let m = model(runtime)
+        m.claude = { nil }
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        #expect(m.message?.contains("~/.claude.json") == true)
+        #expect(m.message?.contains("Terminal") == false)
+        let pending = try #require(m.registration)
+        #expect(pending.binderPaths == ["/Invented/acme"])
+        let config = try JSONParser.parse(pending.configuration).value
+        let server = try #require(config["mcpServers"]?["sprava"])
+        #expect(server["args"] == .array([.str("--client"), .str(BrainsModel.claudeCodeID)]))
+        #expect(server["env"]?["SPRAVA_CLIENT_TOKEN"] == .str("invented-token-1"))
+        #expect(server["command"] == .str(BrainsModel.shimPath))
+        // Claude Code still counts as connected: Sprava holds the scope, the setup finishes it.
+        #expect(m.claudeCode != nil)
+    }
+
+    @Test func aRefusedSetupShowsWhatClaudeCodeSaidAndCanBeTriedAgain() async {
+        let runtime = InventedRuntime()
+        let runs = Recorder()
+        let m = model(runtime, exit: 3, runs: runs)
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        #expect(m.message?.hasPrefix("Claude Code did not accept the setup (invented refusal).") == true)
+        #expect(m.registration != nil)
+        await m.tryAgain()
+        #expect(await runs.runs.count == 4)
+        #expect(runtime.registrations.count == 1)
+    }
+
+    @Test func disconnectingRevokesAndRemovesTheEntry() async throws {
+        let runtime = InventedRuntime()
+        let runs = Recorder()
+        let m = model(runtime, runs: runs)
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        let c = try #require(m.claudeCode)
+        await m.disconnect(c)
+        #expect(m.claudeCode == nil)
+        #expect(m.chosen.isEmpty)
+        #expect(runtime.commands.contains { $0["command"] == .str("revoke_client") && $0["client_id"] == .str(BrainsModel.claudeCodeID) })
+        #expect(await runs.runs.last == Array(BrainsModel.removeArguments.dropFirst()))
     }
 
     @Test func wideningDocumentAccessRequiresAuthenticationButTurningItOffDoesNot() async {
         enum Refusal: Error { case cancelled }
-        var commands: [String] = []
-        let model = BrainsModel(client: RuntimeClient(answer: { text in
-            let request = try JSONParser.parse(text).value
-            commands.append(request["command"]?.stringValue ?? "")
-            if request["command"] == .str("client_documents") {
-                #expect(request["documents"] == .bool(false))
-            }
-            return #"{"ok":true,"clients":[]}"#
-        }), authenticate: { throw Refusal.cancelled })
+        let runtime = InventedRuntime()
+        let m = BrainsModel(client: runtime.client, authenticate: { throw Refusal.cancelled })
         let c = BrainsModel.Client(id: "invented-client", name: "Invented", binders: [:], documents: false)
-        await model.setDocuments(c, true)
-        #expect(!commands.contains("client_documents"))
-        #expect(model.message != nil)
-        await model.setDocuments(c, false)
-        #expect(commands.filter { $0 == "client_documents" }.count == 1)
-    }
-
-    @Test func changingTheDraftNeverChangesThePendingRegistrationAndCancellingRevokesIt() async throws {
-        var issued = 0
-        var revoked: [String] = []
-        let client = RuntimeClient(answer: { text in
-            let r = try JSONParser.parse(text).value
-            switch r["command"] {
-            case .str("register_client"):
-                issued += 1
-                return #"{"ok":true,"token":"invented-token"}"#
-            case .str("revoke_client"):
-                revoked.append(r["client_id"]?.stringValue ?? "")
-                return #"{"ok":true}"#
-            default: return #"{"ok":true,"clients":[]}"#
-            }
-        })
-        let model = BrainsModel(client: client, authenticate: {})
-        model.clientID = "invented-approved-client"
-        model.chosen = [URL(fileURLWithPath: "/Invented/approved-binder")]
-        await model.register()
-        let pending = try #require(model.registration)
-        #expect(!model.canEditRegistrationChoices)
-        model.clientID = "invented-other-client"
-        model.chosen = [URL(fileURLWithPath: "/Invented/other-binder")]
-        await model.register()
-        #expect(issued == 1)
-        #expect(model.registration == pending)
-        #expect(pending.clientID == "invented-approved-client")
-        #expect(pending.binderPaths == ["/Invented/approved-binder"])
-        let config = try JSONParser.parse(pending.configuration).value
-        let server = try #require(config["mcpServers"]?["sprava"])
-        #expect(server["args"] == .array([.str("--client"), .str("invented-approved-client")]))
-        #expect(server["env"]?["SPRAVA_CLIENT_TOKEN"] == .str("invented-token"))
-        #expect(server["command"] == .str(BrainsModel.shimPath))
-        let tokenIndex = try #require(pending.arguments.firstIndex(of: "SPRAVA_CLIENT_TOKEN=invented-token"))
-        #expect(pending.arguments[tokenIndex + 1] == "--transport")
-        await model.cancelRegistration()
-        #expect(revoked == ["invented-approved-client"])
-        #expect(model.registration == nil)
-        #expect(model.canEditRegistrationChoices)
-    }
-
-    @Test func missingClaudeOffersConfigurationInsteadOfShellHistory() async {
-        let model = BrainsModel()
-        model.claude = { nil }
-        model.registration = BrainsModel.Registration(arguments: ["claude"], clientID: "invented-client",
-                                                      binderPaths: [], configuration: "{}")
-        await model.runRegistration()
-        #expect(model.message?.contains("~/.claude.json") == true)
-        #expect(model.message?.contains("Terminal") == false)
-        #expect(model.registration != nil)
+        await m.setDocuments(c, true)
+        #expect(!runtime.commands.contains { $0["command"] == .str("client_documents") })
+        #expect(m.message?.first?.isUppercase == true)
+        await m.setDocuments(c, false)
+        #expect(runtime.commands.filter { $0["command"] == .str("client_documents") }.count == 1)
+        #expect(runtime.commands.first { $0["command"] == .str("client_documents") }?["documents"] == .bool(false))
     }
 
     @Test func theShownCommandKeepsAPathWithSpacesInOneArgument() {
@@ -166,16 +224,18 @@ import Testing
     }
 }
 
-/// "Run It for Me" runs Claude Code off the main actor, reads its output while it runs, and stops it after a timeout,
-/// so a stalled or chatty child never leaves the app unresponsive (local review of the Brains page).
+/// Claude Code runs off the main actor with its output read while it runs, and is stopped after a timeout, so a
+/// stalled or chatty child never leaves the app unresponsive (local review of the Brains page).
 @MainActor
 @Suite struct RunRegistrationTests {
+    /// A model whose Claude Code is `program` with `args`, whatever Sprava asks of it.
     func model(_ program: String, _ args: [String], timeout: TimeInterval = 20) -> BrainsModel {
-        let m = BrainsModel()
+        let m = BrainsModel(client: InventedRuntime().client, authenticate: {})
         m.claude = { URL(fileURLWithPath: program) }
         m.timeout = timeout
-        m.registration = BrainsModel.Registration(arguments: ["claude"] + args, clientID: "invented-client",
-                                                  binderPaths: ["/Invented/binder"], configuration: "{}")
+        m.run = { program, _, timeout in try await ChildRun(executable: program, arguments: args, timeout: timeout).run() }
+        m.registration = BrainsModel.Registration(arguments: ["claude"], clientID: BrainsModel.claudeCodeID,
+                                                  binderPaths: ["/Invented/acme"], configuration: "{}")
         return m
     }
 
@@ -191,29 +251,22 @@ import Testing
         let m = model("/bin/sleep", ["60"], timeout: 1.5)
         let started = Date()
         var completed = false
-        let run = Task { await m.runRegistration(); completed = true }
+        let run = Task { await m.tryAgain(); completed = true }
         // Observe a main-actor turn while the child is running, without a scheduling-speed threshold.
-        while !m.running && !completed { await Task.yield() }
-        #expect(m.running)
+        while !m.busy && !completed { await Task.yield() }
+        #expect(m.busy)
         #expect(!completed)
         await run.value
         #expect(Date().timeIntervalSince(started) < 10)
         #expect(m.message?.contains("was stopped") == true)
         #expect(m.registration != nil)
-        #expect(!m.running)
+        #expect(!m.busy)
     }
 
     @Test func aChattyChildThatSucceedsConnects() async {
         let m = model("/bin/sh", ["-c", "yes | head -c 1000000; exit 0"])
-        await m.runRegistration()
+        await m.tryAgain()
         #expect(m.message?.hasPrefix("Claude Code is connected") == true)
         #expect(m.registration == nil)
-    }
-
-    @Test func aFailureShowsWhatTheChildSaid() async {
-        let m = model("/bin/sh", ["-c", "echo not today >&2; exit 3"])
-        await m.runRegistration()
-        #expect(m.message == "claude mcp add failed: not today\n")
-        #expect(m.registration != nil)
     }
 }

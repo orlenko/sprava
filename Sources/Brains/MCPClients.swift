@@ -121,13 +121,21 @@ public struct MCPClients: Codable, Sendable {
         return "sprava_ct_" + bytes.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Registers a client and returns its token, shown once.
+    /// Registers a client and returns its token, shown once. Registering an id that is already connected renews it
+    /// (architecture 7.5): its old token stops working and the new scope replaces the old one. Its permission to read
+    /// documents is kept only when no binder was added, so a permission given for some binders never reaches others.
+    /// The old record stays, revoked, so a later revoke still withdraws the cards it left.
     public mutating func register(id: String, name: String, binders: [String: String], documents: Bool = false, now: Date = Date()) throws -> String {
         guard id.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,40}$/) != nil else { throw Failure(message: "client id: lowercase letters, digits and hyphens") }
-        guard !clients.contains(where: { $0.id == id && !$0.revoked }) else { throw Failure(message: "client \(id) exists") }
+        var keepsDocuments = false
+        for i in clients.indices where clients[i].id == id && !clients[i].revoked {
+            keepsDocuments = keepsDocuments || (clients[i].readsDocuments && Set(binders.keys).isSubset(of: clients[i].binders.keys))
+            clients[i].revoked = true
+        }
         let token = Self.newToken()
         clients.append(MCPClientRecord(id: id, name: name, tokenSHA256: Self.hash(token), binders: binders,
-                                       createdAt: ISOTime.string(now), revoked: false, documents: documents ? true : nil))
+                                       createdAt: ISOTime.string(now), revoked: false,
+                                       documents: documents || keepsDocuments ? true : nil))
         return token
     }
 
