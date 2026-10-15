@@ -214,3 +214,15 @@ private struct SettingsWithoutKeys: CompanionCredentialStorage {
     #expect(throws: CompanionOwnerPairingError.invalid) { try f.profile.pairedDevices(now: "2026-10-15T11:56:00Z") }
     #expect(try f.profile.deviceRecords().first?.state == .active)
 }
+
+@Test func aPendingRotationCannotActivateAnotherPhoneIntoTheOldEpoch() throws {
+    let f = try SessionFixture(); defer { f.remove() }
+    let approval = try f.observe()
+    try f.profile.store.write { try $0.execute("INSERT INTO rotation_state VALUES (1, 1)") }
+    #expect(throws: CompanionCredentialError.unavailable) {
+        try f.profile.confirmPairing(approval, credentials: f.credentials, now: "2026-10-15T11:55:00Z")
+    }
+    #expect(try f.profile.deviceRecords().first?.state == .pairing)
+    #expect(try f.profile.pairingDelivery(deviceID: f.reservation.deviceID) == nil)
+    #expect(f.secrets.entries[f.profile.deviceAccount(f.reservation.deviceID)] == nil)
+}
