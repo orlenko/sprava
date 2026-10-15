@@ -13,6 +13,7 @@ final class ShelfModel: ObservableObject {
     @Published var rows: [ShelfRow] = []
     @Published var today = CalendarDate.today()
     @Published private(set) var counts: [URL: ShelfCounts] = [:]
+    @Published private(set) var todos = TodoBoard(today: CalendarDate.today())
     /// The binder opened is recorded at once (the Shelf's own UI state, `recent.json`); the Shelf reorders on its
     /// next refresh, so the row never jumps away under the pointer.
     @Published var selection: URL? {
@@ -91,6 +92,7 @@ final class ShelfModel: ObservableObject {
             today = prepared.today
             rows = prepared.snapshot.rows
             counts = prepared.counts
+            todos = prepared.todos
             snapshotNote = prepared.snapshot.note
             if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = rows.first?.folder }
             lastRefresh = Date()
@@ -261,10 +263,11 @@ final class ShelfModel: ObservableObject {
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
 
     /// The sidebar's pages above the Shelf.
-    let pages: Set<URL> = [healthSelection, inboxSelection, backupSelection, brainsSelection]
+    let pages: Set<URL> = [healthSelection, todosSelection, inboxSelection, backupSelection, brainsSelection]
 }
 
 let healthSelection = URL(string: "sprava:health")!
+let todosSelection = URL(string: "sprava:todos")!
 let inboxSelection = URL(string: "sprava:inbox")!
 let backupSelection = URL(string: "sprava:backup")!
 let brainsSelection = URL(string: "sprava:brains")!
@@ -272,6 +275,7 @@ let brainsSelection = URL(string: "sprava:brains")!
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var inbox = InboxModel()
+    @StateObject private var todo = TodoModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
 
@@ -280,6 +284,12 @@ struct ShelfView: View {
             List(selection: $model.selection) {
                 Section {
                     HealthLabel(health: model.health).tag(healthSelection)
+                    HStack {
+                        Label("To-dos", systemImage: "checklist")
+                        Spacer()
+                        if model.todos.count(.overdue) > 0 { Text("\(model.todos.count(.overdue))").foregroundStyle(.red) }
+                    }
+                    .tag(todosSelection)
                     HStack {
                         Label("Inbox", systemImage: "tray")
                         Spacer()
@@ -319,6 +329,9 @@ struct ShelfView: View {
         } detail: {
             if model.selection == healthSelection {
                 HealthView(model: model.health)
+            } else if model.selection == todosSelection {
+                TodosView(model: todo, board: model.todos, rows: model.rows, open: { model.selection = $0 },
+                          reload: { await model.refreshAndWait(afterChanges: true) })
             } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
             } else if model.selection == backupSelection {
