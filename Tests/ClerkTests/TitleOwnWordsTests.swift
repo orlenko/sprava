@@ -67,6 +67,25 @@ import Testing
         #expect(sameDay.items.count == 2)
     }
 
+    /// The duplicate check tells two tasks with one shown title apart: by what the model called each, and its date.
+    @Test func theDuplicateCheckTellsTasksWithOneTitleApart() async {
+        let model = ScriptedModel(extractions: [.obj([("items", .array([
+            item("Call the plumber on Monday", "Call the plumber on Monday", "call", when: "on Monday"),
+            item("Call the plumber on Monday", "Call the plumber on Friday", "call", when: "on Friday"),
+        ]))])])
+        let open = FilingBinder.Candidate(id: .str("home-example-2026-001"), title: "Call the plumber", due: "2026-10-12",
+                                          words: FilingBinder.significantWords("Call the plumber"))
+        let folder = URL(fileURLWithPath: "/tmp/sprava-invented/home-example", isDirectory: true)
+        let binder = FilingBinder(name: "home-example", description: "An invented home", folder: folder, openItems: [open])
+        model.duplicates = ["new item: call the plumber on monday, due 2026-10-12": ("home-example-2026-001", "same")]
+        let input = ClerkInput(id: "evt-title", text: "Call the plumber on Monday and call the plumber on Friday.", locale: "en",
+                               captureDay: today, estimated: false, isPrivate: false, sourceKind: nil, app: "test")
+        let interp = await Clerk(model: model).read(input, filing: [binder], hint: "home-example", now: now)
+        #expect(interp.items.map(\.title) == ["Call the plumber", "Call the plumber"])
+        #expect(interp.items.filter { $0.match?.relation == "same" }.map { $0.whenResolved?.description } == ["2026-10-12"])
+        #expect(interp.items.filter { $0.match == nil }.map { $0.whenResolved?.description } == ["2026-10-09"])
+    }
+
     /// Two tasks of one sentence can share the title code builds from it; they stay two, each with its amount.
     @Test func tasksThatShareABuiltTitleBothStay() async {
         let (interp, _) = await read("The rent is $800 and the deposit is $200, both due Friday.", [
