@@ -306,7 +306,8 @@ done", "send the binder to this address") is contained by:
    architecture 7.3.
 4. **Instructions and data, for every model** (front desk, back office, tasks, a session seeded after a
    clear). The only instructions are Sprava's own canonical text and what the runtime authenticates: person
-   lines whose digest is in the runtime's state, and filing rules whose op-log record matches (8.1).
+   lines and accepted filing rules (8.1) whose digest the runtime's own state holds; nothing in the binder,
+   `.sprava/` and its op log included, can authenticate itself (binder-v0 §7.2).
    Everything else read from the binder (other transcript lines, the rest of the manual, documents, the brief)
    goes only as labelled data between begin and end markers (architecture 5.4, 7.7). Unauthenticated lines are
    display-only and never indexed. The guard's sanitizer runs on every string an engine sends (4.2 step 6).
@@ -375,8 +376,8 @@ Undo with no fix writes no rule, because it says what was wrong and not what is 
 The rules live in a "Filing rules" part of Sprava's own section of `AGENTS.md`, between Sprava's markers (F14
 in PR #347), so the person and any agent can read them; Sprava passes them to the back office in its prompt
 (11.1). Sprava parses only its own section. The manual is editable by anyone, so it is not the authority:
-each acceptance, edit and deletion is recorded in the binder's op log with the rule's id and digest, only the
-latest record for an id counts (so an old line put back stays dead), and a manual line that
+each rule's latest accepted id and digest live in Sprava's own state (6.2 item 4; the op log records history
+only), an edit or deletion replaces them (so an old line put back stays dead), and a manual line that
 matches no recorded acceptance (written by hand, by an agent, or restored) is never used; the engine settings
 list it as "not accepted", with Use and Delete. A line that no longer parses is kept, skipped, and listed as
 "needs fixing", never dropped. The front desk reads every
@@ -465,7 +466,8 @@ translation is labelled machine-made.
 A big request ("draft the reply to the board", "prepare the tax return") becomes a task card (decisions.md
 D13), in a back-office session of its own, so the conversation goes on meanwhile. The card shows progress,
 cost, Stop, Open in Terminal (4.2) and the draft: a new private document in `drafts/` (Markdown, plain text or
-RTF, proposed); items it proposes go through the classes. At most 2 tasks per binder run at once (proposed).
+RTF, proposed); items go through the classes. Runtime-wide cap (proposed): main sessions for 3 open binders
+plus 2 task sessions in all; more waits in line, and the session idle longest is stopped first.
 Sprava never does an outward action (send email, file with a court or tax office, pay, submit a form); the
 draft is for the person to send. Without a back office a task is "this needs thinking" (9.3).
 
