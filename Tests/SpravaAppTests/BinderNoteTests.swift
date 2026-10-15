@@ -62,6 +62,19 @@ import Testing
         #expect(note.text == "Renew the acme permit")
     }
 
+    @Test func aDraftOutlivesTheBinderPage() {
+        let note = BinderNote(client: StandInRuntime().client, support: URL(fileURLWithPath: "/Invented/support"))
+        note.show(acme)
+        note.text = "Renew the acme permit"
+        // The page is built again after a visit to the Inbox or Health: it draws the model the window keeps.
+        let today = CalendarDate.today()
+        let page = NowView(row: row(acme), today: today, page: NowPage(items: [], log: [], today: today, timeZone: .current),
+                           reload: {}, note: note)
+        #expect(page.note === note)
+        note.show(acme)
+        #expect(page.note.text == "Renew the acme permit")
+    }
+
     @Test func aNoteThatCannotBeFiledHereSaysItWaitsInTheInbox() async throws {
         let support = try temporaryFolder()
         let deviceID = try DeviceID.load(support: support)

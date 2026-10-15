@@ -13,10 +13,12 @@ struct NowView: View {
     let reload: () -> Void
     /// The runtime's state, for the line that says when changes cannot be made.
     var health: HealthModel?
+    /// The note box's model, kept by the Shelf window: this page goes away while another page is open, and the
+    /// drafts typed into each binder's box must outlive it.
+    @ObservedObject var note: BinderNote
     /// Every binder on the Shelf, so the note box can tell when another adopted binder shares this one's name.
     var rows: [ShelfRow] = []
     @StateObject private var actions = BinderActions()
-    @StateObject private var note = BinderNote()
 
     var sharesName: Bool {
         rows.filter { $0.teka.isAdopted && InboxView.fold($0.name) == InboxView.fold(row.name) }.count > 1

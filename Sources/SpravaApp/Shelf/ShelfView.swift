@@ -274,6 +274,7 @@ struct ShelfView: View {
     @StateObject private var inbox = InboxModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
+    @StateObject private var binderNote = BinderNote()
 
     var body: some View {
         NavigationSplitView {
@@ -328,7 +329,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health, rows: model.rows)
+                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
