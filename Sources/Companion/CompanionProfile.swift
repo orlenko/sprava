@@ -78,6 +78,9 @@ public final class CompanionProfile: Sendable {
             if let number = try epoch(t) {
                 if let webOrigin {
                     try t.execute("UPDATE profile SET web_origin = ? WHERE slot = 1 AND web_origin IS NULL", .text(webOrigin))
+                    guard try t.rows("SELECT web_origin FROM profile WHERE slot = 1") == [[.text(webOrigin)]] else {
+                        throw CompanionOwnerSetupError.reconfigurationRequired
+                    }
                 }
                 try beforeCommit()
                 return CompanionAccountEpoch(number: number, key: try key(number))

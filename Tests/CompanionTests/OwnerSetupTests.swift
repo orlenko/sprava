@@ -173,3 +173,21 @@ private actor SetupDiscoveryPause {
     #expect(try CompanionProfile.openConfigured(database: f.database, secrets: f.secrets) == nil)
     #expect(f.secrets.snapshot().count == 1)
 }
+
+@Test func setupRejectsAWebOriginCommittedWhileDiscoveryWasInFlight() async throws {
+    let f = SetupFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
+    let pause = SetupDiscoveryPause()
+    let pending = Task {
+        try await CompanionOwnerSetup.prepare(database: f.database, origin: f.origin, setupCode: f.code,
+            webOrigin: "https://different.example", secrets: f.secrets, discover: { _ in
+                await pause.wait(); return CompanionRelayHealth(instance: f.instance, claimed: false)
+            })
+    }
+    await pause.waitForEntry()
+    let first = try await f.prepare(webOrigin: "https://phone.example")
+    let saved = f.secrets.snapshot()
+    await pause.open()
+    await #expect(throws: CompanionOwnerSetupError.reconfigurationRequired) { try await pending.value }
+    #expect(try first.webOrigin() == "https://phone.example")
+    #expect(f.secrets.snapshot() == saved)
+}
