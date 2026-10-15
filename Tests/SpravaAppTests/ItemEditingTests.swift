@@ -243,6 +243,18 @@ import Testing
         }
     }
 
+    @Test func anItemThatRepeatsIsShownReadOnly() {
+        let item = Item(raw: .obj([("id", .str("acme-3")), ("title", .str("Pay the Acme retainer")), ("due", .str("2026-12-14")),
+                                   ("recurrence", .obj([("freq", .str("monthly"))]))]), index: 0)
+        let folder = URL(fileURLWithPath: "/Invented/acme-books", isDirectory: true)
+        let editor = ItemEditor()
+        let row = ItemRow(item: item, bucket: .later, actions: BinderActions(client: StandInRuntime().client), editor: editor,
+                          folder: folder, editable: true, reload: {})
+        #expect(!row.changeable && !row.closable)
+        row.begin()
+        #expect(editor.row(in: folder) == nil)
+    }
+
     @Test func aChangeLeavesALenientDueDateAsWrittenWhenTheDayIsTheSame() {
         let item = Item(raw: .obj([("id", .int(7)), ("title", .str("Send the Acme invoice")), ("due", .str("20261220"))]), index: 0)
         #expect(ItemEditor.change(of: item, title: "Send the Acme invoice", due: CalendarDate(year: 2026, month: 12, day: 20)) == nil)

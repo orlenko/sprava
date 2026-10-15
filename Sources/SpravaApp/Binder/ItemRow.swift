@@ -31,11 +31,11 @@ struct ItemRow: View {
         return parts
     }
 
-    /// Whether the row can be changed at all: an op names the item by its id.
-    var changeable: Bool { editable && item.object?["id"] != nil }
-    /// A recurring item is advanced, not closed, and the hub does that for now. An open row is saved or cancelled
-    /// first, so a closing the runtime refuses never takes what was typed with it.
-    var closable: Bool { changeable && !item.hasRecurrence && !editor.isEditing(item, in: folder) }
+    /// Whether the row can be changed at all: an op names the item by its id, and an item that repeats is shown
+    /// read-only, since the hub manages it for now (mvp.md feature 2).
+    var changeable: Bool { editable && item.object?["id"] != nil && !item.hasRecurrence }
+    /// An open row is saved or cancelled first, so a closing the runtime refuses never takes what was typed with it.
+    var closable: Bool { changeable && !editor.isEditing(item, in: folder) }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
