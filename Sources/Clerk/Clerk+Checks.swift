@@ -24,7 +24,11 @@ extension Clerk {
                 let holding = found.filter { CaptureText.containsWords($0.text, words) }
                 if !holding.isEmpty { found = holding }
             }
-            let free = found.filter { s in !taken.contains { $0.sentence == s && $0.action == action && Self.similar($0.title, title(in: s, when: modelWhen)) } }
+            let when = Self.whenKey(modelWhen.flatMap { DateGrammar.resolve($0, anchor: today, locale: locale)?.date }, modelWhen)
+            let free = found.filter { s in
+                !taken.contains { $0.sentence == s && $0.action == action && Self.whenKey($0.whenResolved, $0.whenText) == when
+                    && Self.similar($0.title, title(in: s, when: modelWhen)) }
+            }
             if !free.isEmpty { found = free }
             ambiguous = found.count > 1
         }

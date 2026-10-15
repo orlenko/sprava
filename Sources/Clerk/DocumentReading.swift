@@ -250,7 +250,7 @@ extension Clerk {
             }
             // A record mostly tells what others did; only a dated thing becomes the person's item.
             if doc.documentClass == "information", item.whenResolved == nil { continue }
-            if interp.items.contains(where: { $0.sentence == item.sentence && $0.action == item.action && Self.similar($0.title, item.title) }) { continue }
+            if interp.items.contains(where: { Self.repeats($0, item) }) { continue }
             item.binder = binder?.name
             item.signals = ["document"]
             interp.items.append(item)

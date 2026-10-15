@@ -126,7 +126,7 @@ public struct Clerk: Sendable {
                 interp.dropped += 1
                 continue
             }
-            if interp.items.contains(where: { $0.sentence == item.sentence && $0.action == item.action && Self.similar($0.title, item.title) }) { continue }
+            if interp.items.contains(where: { Self.repeats($0, item) }) { continue }
             interp.items.append(item)
         }
         // Check 9: sentences that no item covers and that look actionable. They get one more reading by
@@ -150,7 +150,7 @@ public struct Clerk: Sendable {
                     guard let item = check(value, text: text, sentences: sentences, today: today, locale: locale, estimated: estimated,
                                            scope: missed, taken: interp.items),
                           missed.contains(item.sentence) else { continue }
-                    if interp.items.contains(where: { $0.sentence == item.sentence && $0.action == item.action && Self.similar($0.title, item.title) }) { continue }
+                    if interp.items.contains(where: { Self.repeats($0, item) }) { continue }
                     interp.items.append(item)
                 }
             }
@@ -242,6 +242,18 @@ public struct Clerk: Sendable {
         guard s.count > limit else { return s }
         let cut = s.prefix(limit)
         return String(cut[..<(cut.lastIndex(of: " ") ?? cut.endIndex)])
+    }
+
+    /// Whether `b` repeats `a`: the same sentence, action and time, and a similar title. The time counts because a
+    /// title holds no time words ("Call the plumber on Monday and call the plumber on Friday" are two calls).
+    static func repeats(_ a: ClerkItem, _ b: ClerkItem) -> Bool {
+        a.sentence == b.sentence && a.action == b.action && whenKey(a.whenResolved, a.whenText) == whenKey(b.whenResolved, b.whenText)
+            && similar(a.title, b.title)
+    }
+
+    /// The time an item names: its resolved date, else its time words as `DateGrammar` reads them.
+    static func whenKey(_ date: CalendarDate?, _ text: String?) -> String {
+        date?.description ?? text.flatMap { DateGrammar.stripped($0)?.rest } ?? ""
     }
 
     /// Whether two titles name the same task, read both ways: a title with a word the other lacks is another task

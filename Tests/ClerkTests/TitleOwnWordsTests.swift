@@ -46,6 +46,21 @@ import Testing
         #expect(interp.items.map(\.title) == ["Pay rent", "Send the lease to the landlord"])
     }
 
+    @Test func twoTasksThatDifferOnlyInTheirTimeBothStay() async {
+        let (interp, _) = await read("Call the plumber on Monday and call the plumber on Friday.", [
+            item("Call the plumber on Monday", "Call the plumber on Monday", "call", when: "on Monday"),
+            item("Call the plumber on Monday", "Call the plumber on Friday", "call", when: "on Friday"),
+        ])
+        #expect(interp.items.map(\.title) == ["Call the plumber", "Call the plumber"])
+        #expect(interp.items.compactMap { $0.whenResolved?.description }.sorted() == ["2026-10-09", "2026-10-12"])
+        // The same task listed twice, with the same time in other words, is still one.
+        let (once, _) = await read("Call the plumber by Friday.", [
+            item("Call the plumber by Friday", "Call the plumber", "call", when: "by Friday"),
+            item("Call the plumber by Friday", "Call the plumber by Friday", "call", when: "Friday"),
+        ])
+        #expect(once.items.count == 1)
+    }
+
     @Test func eachLineOfAListKeepsItsWords() async {
         let text = "To do:\n- Bill Acme today\n- order toner by Friday\n- Dentist on Monday"
         let (interp, _) = await read(text, [
