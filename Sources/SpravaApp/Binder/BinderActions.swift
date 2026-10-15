@@ -6,7 +6,7 @@ import SpravaKit
 
 /// One binder's review cards and actions, all through the runtime (mvp.md feature 3).
 @MainActor
-final class BinderActions: ObservableObject {
+final class BinderActions: ObservableObject, RuntimePage {
     struct Card: Identifiable {
         let id: String
         let title: String
@@ -59,7 +59,8 @@ final class BinderActions: ObservableObject {
         let undoable: Bool
         let undone: Bool
     }
-    @Published var message: String?
+    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    var readFoundNoRuntime = false
     @Published var busy = false
     @Published var description = ""
     @Published var filing = false
@@ -118,7 +119,7 @@ final class BinderActions: ObservableObject {
         self.readTimeout = readTimeout
         self.readKeeping = readKeeping
         self.renderPreview = renderPreview
-        client.clearsNotRunning(self, \.message)
+        client.clearsNotRunning(self)
     }
 
     /// Whether `folder` is still the binder shown.
@@ -152,7 +153,7 @@ final class BinderActions: ObservableObject {
             settingsLoaded = true
         } catch {
             guard serves(folder) else { return }
-            message = "This binder's settings could not be read: \(error)"
+            readFailed("This binder's settings could not be read: \(error)", error)
         }
         await loadReview(folder)
     }
@@ -232,7 +233,7 @@ final class BinderActions: ObservableObject {
             }
         } catch {
             guard serves(folder) else { return }
-            message = "\(error)"
+            readFailed("\(error)", error)
         }
     }
 

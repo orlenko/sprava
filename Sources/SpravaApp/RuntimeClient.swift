@@ -18,10 +18,16 @@ final class RuntimeClient {
     /// Run after every answer from the runtime, a refusal included.
     private var answered: [@MainActor () -> Void] = []
 
-    /// Commands that only read. One that fails to reach the runtime is sent once more on a new connection: the first
-    /// may have been made before the runtime was there, or kept from a runtime since restarted.
+    /// Commands that only read when sent with no fields (`binder_settings` with fields saves). A read that fails to
+    /// reach the runtime is sent once more on a new connection: the first may have been made before the runtime was
+    /// there, or kept from a runtime since restarted.
     static let reads: Set<String> = ["ping", "unfiled", "readings", "binder_settings", "proposals", "history",
                                      "list_clients", "backup_status"]
+
+    static func isRead(_ request: JSONObject) -> Bool {
+        guard let name = request["command"]?.stringValue, reads.contains(name) else { return false }
+        return request.keys.allSatisfy { $0 == "command" || $0 == "binder" }
+    }
 
     init(answer: (@MainActor (String) async throws -> String)? = nil) {
         self.answer = answer
@@ -35,6 +41,9 @@ final class RuntimeClient {
 
         /// What a page says when the runtime cannot be reached.
         static let notRunningLine = "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot."
+        /// What a page says when a change could not reach the runtime. The connection may have failed after the
+        /// runtime took the change, so it says "may".
+        static let changeNotRunningLine = "Sprava's background part was not running, so this may not have been saved. Sprava is starting it; reload to check, then try again."
 
         /// The connection failed: nothing answers under the runtime's name. The system's own words ("Couldn't communicate
         /// with a helper application") and its code tell a person nothing they can act on; the code goes to the log.
@@ -43,12 +52,13 @@ final class RuntimeClient {
         }
     }
 
-    /// Clears the model's message once the runtime answers, when the message says the runtime is not running: the
-    /// line was true when written, and a page must not keep saying it while the runtime runs.
-    func clearsNotRunning<Model: AnyObject>(_ model: Model, _ message: ReferenceWritableKeyPath<Model, String?>) {
-        answered.append { [weak model] in
-            guard let model, model[keyPath: message]?.contains(Failure.notRunningLine) == true else { return }
-            model[keyPath: message] = nil
+    /// Clears the page's message once the runtime answers, when a read left it because the runtime was not running
+    /// (`RuntimePage.readFailed`): the line was true when written, and the page must not keep saying it while the
+    /// runtime runs. A change's failure stays: the person must see that it was not saved.
+    func clearsNotRunning(_ page: some RuntimePage) {
+        answered.append { [weak page] in
+            guard let page, page.readFoundNoRuntime else { return }
+            page.message = nil
         }
     }
 
@@ -78,7 +88,7 @@ final class RuntimeClient {
     /// so nothing is applied twice.
     func send(_ request: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
         let text = JSONWriter.compact(.object(request))
-        let read = Self.reads.contains(request["command"]?.stringValue ?? "")
+        let read = Self.isRead(request)
         let reply: String
         do {
             do {
@@ -88,7 +98,8 @@ final class RuntimeClient {
             }
         } catch let failure as Failure where failure.kind == .notRunning {
             RuntimeClient.whenNotRunning?()
-            throw failure
+            // A change's line stays true once the runtime runs, so the page keeps it until the next action.
+            throw read ? failure : Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
         }
         for run in answered { run() }
         guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
@@ -167,6 +178,25 @@ final class RuntimeClient {
         var r = JSONObject([(key: "command", value: .string(name)), (key: "binder", value: .string(binder.standardizedFileURL.path))])
         for (k, v) in fields { r.set(k, v) }
         return try await send(r, timeout: timeout)
+    }
+}
+
+/// A page that reads from the runtime and shows one message. Its `message` resets `readFoundNoRuntime` whenever it is
+/// set (a `didSet`), so only the line a read left is ever cleared by `RuntimeClient.clearsNotRunning`.
+@MainActor
+protocol RuntimePage: AnyObject {
+    var message: String? { get set }
+    var readFoundNoRuntime: Bool { get set }
+}
+
+extension RuntimePage {
+    /// Shows a read's failure; one that found the runtime not running is marked, so the next answer clears it. It never
+    /// covers a change's failure for the same reason: that line says what may not have been saved, and stays.
+    func readFailed(_ text: String, _ error: Error) {
+        let noRuntime = (error as? RuntimeClient.Failure)?.kind == .notRunning
+        if noRuntime, !readFoundNoRuntime, message?.contains(RuntimeClient.Failure.changeNotRunningLine) == true { return }
+        message = text
+        readFoundNoRuntime = noRuntime
     }
 }
 
