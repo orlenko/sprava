@@ -41,60 +41,119 @@ func temporaryFolder() throws -> URL {
     return url
 }
 
+/// Disk-read bounds that expire only when the test says so: a read is late because the test made it late, never
+/// because the machine is busy. A bound never expired never ends its read early.
+final class ManualDeadlines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [@Sendable () -> Void] = []
+
+    var deadline: DiskDeadline { { [self] _, expire in lock.withLock { pending.append(expire) } } }
+
+    /// Expires every bound started so far; later ones wait for the next call.
+    func expire() {
+        let due = lock.withLock { () -> [@Sendable () -> Void] in
+            defer { pending = [] }
+            return pending
+        }
+        for expire in due { expire() }
+    }
+}
+
+/// Counts calls made on any thread and lets a test wait for the nth one without a clock.
+final class Arrivals: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var value: Int { lock.withLock { count } }
+
+    @discardableResult
+    func arrive() -> Int {
+        let (count, ready) = lock.withLock { () -> (Int, [CheckedContinuation<Void, Never>]) in
+            count += 1
+            let ready = waiters.filter { $0.count <= count }.map(\.continuation)
+            waiters.removeAll { $0.count <= count }
+            return (count, ready)
+        }
+        for waiter in ready { waiter.resume() }
+        return count
+    }
+
+    func wait(for target: Int) async {
+        await withCheckedContinuation { continuation in
+            let arrived = lock.withLock {
+                if count >= target { return true }
+                waiters.append((target, continuation))
+                return false
+            }
+            if arrived { continuation.resume() }
+        }
+    }
+}
+
+/// Retries `step` until `done`, for the moment between a blocked read reporting its end and its worker freeing
+/// itself, when a new read is still refused as busy. The bound matters only to a broken implementation.
+@MainActor
+func untilDone(_ done: () -> Bool, _ step: () async -> Void) async throws {
+    for _ in 0..<3000 where !done() {
+        await step()
+        if !done() { try await Task.sleep(for: .milliseconds(10)) }
+    }
+}
+
 private final class BlockedShelfRead: @unchecked Sendable {
     let release = DispatchSemaphore(value: 0)
     let snapshot: ShelfSnapshot.Snapshot
+    let calls = Arrivals()
+    let finishes = Arrivals()
     private let lock = NSLock()
-    private var count = 0
     private var offMain = true
-    private var finished = false
 
     init(snapshot: ShelfSnapshot.Snapshot) { self.snapshot = snapshot }
 
-    var calls: Int { lock.withLock { count } }
     var readOffMain: Bool { lock.withLock { offMain } }
-    var completed: Bool { lock.withLock { finished } }
+    var completed: Bool { finishes.value > 0 }
 
     func read(_ support: URL) -> ShelfSnapshot.Snapshot {
-        let call = lock.withLock { count += 1; offMain = offMain && !Thread.isMainThread; return count }
-        if call > 1 { return ShelfSnapshot.read(support: support) }
-        // A broken implementation fails the test after a bound instead of hanging the test process.
-        _ = release.wait(timeout: .now() + 5)
-        lock.withLock { finished = true }
+        lock.withLock { offMain = offMain && !Thread.isMainThread }
+        if calls.arrive() > 1 { return ShelfSnapshot.read(support: support) }
+        // A broken implementation that waits for this read on the main actor fails the test after a bound instead
+        // of hanging the test process; the bound is far beyond any test's own pace.
+        _ = release.wait(timeout: .now() + 30)
+        finishes.arrive()
         return snapshot
     }
 }
 
 private final class BlockedShelfSummary: @unchecked Sendable {
     let release = DispatchSemaphore(value: 0)
+    let calls = Arrivals()
     private let lock = NSLock()
-    private var count = 0
     private var offMain = true
-    var calls: Int { lock.withLock { count } }
     var ranOffMain: Bool { lock.withLock { offMain } }
 
     func summarize(_ row: ShelfRow, _ today: CalendarDate) -> ShelfCounts {
-        lock.withLock { count += 1; offMain = offMain && !Thread.isMainThread }
-        _ = release.wait(timeout: .now() + 5)
+        lock.withLock { offMain = offMain && !Thread.isMainThread }
+        calls.arrive()
+        _ = release.wait(timeout: .now() + 30)
         return ShelfCounts.read(row, today)
     }
 }
 
+/// The waits here are on the reads themselves, and no read times out unless the test expires it, so a loaded
+/// machine changes how long a test takes, never what it finds; the time limit catches a broken implementation.
 @MainActor
-@Suite struct ShelfModelTests {
+@Suite(.timeLimit(.minutes(1))) struct ShelfModelTests {
     @Test func nowPagesArePreparedOffMainAndReusedByTheViews() async throws {
         let support = try temporaryFolder()
         let binder = try makeTeka(fixture: "sprava-v0", folderName: "garden-shed")
         try ShelfStore(supportDirectory: support).add(binder)
         let summary = BlockedShelfSummary()
         defer { summary.release.signal() }
-        let model = ShelfModel(support: support, client: StandInRuntime().client, summarize: summary.summarize)
+        let model = ShelfModel(support: support, client: StandInRuntime().client, summarize: summary.summarize,
+                               deadline: ManualDeadlines().deadline)
         model.refresh()
-        let started = ContinuousClock.now
-        while summary.calls == 0 && started.duration(to: .now) < .seconds(2) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(summary.calls == 1)
+        await summary.calls.wait(for: 1)
         #expect(summary.ranOffMain && model.lastRefresh == nil)
         // MainActor can handle another refresh while the expensive summary is still running.
         model.refresh()
@@ -111,7 +170,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
             _ = ShelfRowView(row: row, counts: counts).body
             _ = NowView(row: row, today: model.today, page: page, reload: {}).body
         }
-        #expect(summary.calls == 1)
+        #expect(summary.calls.value == 1)
     }
 
     @Test func aBlockedRefreshLeavesTheMainActorResponsiveAndCoalescesReads() async throws {
@@ -120,24 +179,21 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         snapshot.note = "Invented completed refresh"
         let reader = BlockedShelfRead(snapshot: snapshot)
         defer { reader.release.signal() }
-        let model = ShelfModel(support: support, client: StandInRuntime().client, readSnapshot: reader.read)
-        let started = ContinuousClock.now
+        let model = ShelfModel(support: support, client: StandInRuntime().client, readSnapshot: reader.read,
+                               deadline: ManualDeadlines().deadline)
         model.refresh()
-        while reader.calls == 0 && started.duration(to: .now) < .seconds(2) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(reader.calls == 1)
-        #expect(reader.readOffMain)
-        #expect(started.duration(to: .now) < .seconds(2))
+        await reader.calls.wait(for: 1)
+        // The refresh returned and the main actor goes on while the read is still blocked.
+        #expect(reader.readOffMain && !reader.completed)
         #expect(model.lastRefresh == nil && model.note == nil)
         // This task still executes on MainActor while the reader is waiting for its volume.
         for _ in 0..<20 { model.refresh() }
         await Task.yield()
-        #expect(reader.calls == 1)
+        #expect(reader.calls.value == 1)
         reader.release.signal()
         await model.refreshAndWait()
         #expect(model.note == "Invented completed refresh" && model.lastRefresh != nil)
-        #expect(reader.calls == 1)
+        #expect(reader.calls.value == 1)
     }
 
     @Test func aRemovalWaitsForASnapshotThatIncludesItsWrite() async throws {
@@ -149,26 +205,24 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         let reader = BlockedShelfRead(snapshot: snapshot)
         defer { reader.release.signal() }
         let runtime = StandInRuntime()
+        let removals = Arrivals()
         runtime.answers["shelf_remove"] = { request in
             try? ShelfStore(supportDirectory: support).remove(URL(fileURLWithPath: request["binder"]!.stringValue!))
+            removals.arrive()
             return #"{"ok":true}"#
         }
-        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read)
+        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read,
+                               deadline: ManualDeadlines().deadline)
         model.refresh()
-        let started = ContinuousClock.now
-        while reader.calls == 0 && started.duration(to: .now) < .seconds(2) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(reader.calls == 1 && reader.readOffMain)
+        await reader.calls.wait(for: 1)
+        try #require(reader.readOffMain)
         let removal = Task { await model.removeFromShelf(row) }
-        while runtime.sent.isEmpty && started.duration(to: .now) < .seconds(2) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await removals.wait(for: 1)
         try #require(runtime.sent.count == 1)
         reader.release.signal()
         await removal.value
         #expect(model.rows.isEmpty && model.note == nil)
-        #expect(reader.calls == 2)
+        #expect(reader.calls.value == 2)
     }
 
     @Test func aStalledRefreshTimesOutAndDoesNotHoldACompletedRemoval() async throws {
@@ -184,50 +238,46 @@ private final class BlockedShelfSummary: @unchecked Sendable {
             try? ShelfStore(supportDirectory: support).remove(URL(fileURLWithPath: request["binder"]!.stringValue!))
             return #"{"ok":true}"#
         }
-        // Long enough for the real second read on a loaded machine; the stalled first read still times out.
-        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read, readTimeout: 0.5)
+        // Only the stalled first read times out, when the test expires it; the real second read never does.
+        let deadlines = ManualDeadlines()
+        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read,
+                               deadline: deadlines.deadline)
         model.rows = snapshot.rows
+        model.refresh()
+        await reader.calls.wait(for: 1)
+        deadlines.expire()
         await model.refreshAndWait()
-        #expect(reader.calls == 1 && !reader.completed)
+        #expect(reader.calls.value == 1 && !reader.completed)
         #expect(model.note?.contains("could not refresh") == true)
-        let started = ContinuousClock.now
         await model.removeFromShelf(row)
-        #expect(started.duration(to: .now) < .seconds(1))
+        // The removal is done while the stalled read still holds the worker.
+        #expect(!reader.completed)
         #expect(runtime.sent.count == 1 && model.rows.isEmpty)
         for _ in 0..<20 { await model.refreshAndWait() }
-        #expect(reader.calls == 1)
+        #expect(reader.calls.value == 1)
         reader.release.signal()
-        while !reader.completed && started.duration(to: .now) < .seconds(2) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(reader.completed)
+        await reader.finishes.wait(for: 1)
         #expect(model.rows.isEmpty) // the late pre-removal snapshot is discarded
         // The reader reports completion just before the disk worker frees itself, so a refresh in that gap is
         // still refused as busy; retry until the fresh read runs.
-        while reader.calls < 2 && started.duration(to: .now) < .seconds(5) {
-            await model.refreshAndWait()
-            if reader.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
-        }
-        #expect(reader.calls == 2 && model.rows.isEmpty && model.note == nil)
+        try await untilDone({ reader.calls.value >= 2 }) { await model.refreshAndWait() }
+        #expect(reader.calls.value == 2 && model.rows.isEmpty && model.note == nil)
     }
 
     @Test func creationErrorsSurviveTheCompletionOfAnOlderRefresh() async throws {
         let support = try temporaryFolder()
         let reader = BlockedShelfRead(snapshot: ShelfSnapshot.read(support: support))
         defer { reader.release.signal() }
-        let model = ShelfModel(support: support, client: StandInRuntime().client, readSnapshot: reader.read)
+        let model = ShelfModel(support: support, client: StandInRuntime().client, readSnapshot: reader.read,
+                               deadline: ManualDeadlines().deadline)
         model.refresh()
-        let started = ContinuousClock.now
-        while reader.calls == 0 && started.duration(to: .now) < .seconds(2) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(reader.calls == 1)
+        await reader.calls.wait(for: 1)
         await model.createBinder(parent: support, name: "invented", template: "generic", year: 2026)
         #expect(model.note?.hasPrefix("The binder was not created:") == true)
         reader.release.signal()
         await model.refreshAndWait()
         #expect(model.note?.hasPrefix("The binder was not created:") == true)
-        #expect(reader.calls == 1)
+        #expect(reader.calls.value == 1)
     }
 
     @Test func addingAndRemovingAreCommandsTheRuntimeCarriesOut() async throws {
