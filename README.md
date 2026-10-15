@@ -41,6 +41,7 @@ $(swift build --show-bin-path)/sprava now ~/binders/kitchen-reno
 ./scripts/test-build-app.sh    # tests build-app.sh with stand-in tools
 ./scripts/build-llm.sh         # build/llm/sprava-llm, the pinned llama-server build-app.sh bundles; kept once built
 ./scripts/restart-app.sh       # build, install in /Applications, restart background work and open
+./scripts/make-app-icon.sh     # Resources/AppIcon: AppIcon.icns, and with Xcode Assets.car, from the sketches; run when they change
 ```
 
 For a fresh machine, install Command Line Tools (`xcode-select --install`), restic
