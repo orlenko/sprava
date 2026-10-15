@@ -51,8 +51,8 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
 
 - Each binder folder, as one snapshot per binder, tagged with the binder's opaque id (never its name, so the
   tags say nothing even to someone who has the key and reads the snapshot list over the person's shoulder).
-  Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, temporary files (`.*.tmp`), and
-  the Finder's `.DS_Store` view settings, which macOS rewrites on every visit.
+  Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, `.*.tmp`, `.DS_Store`, and every
+  store rebuildable from the binder (the index and its sidecars, `snapshot.json`, `cursors.json`), rebuilt on restore.
 - Sprava's own state, as its own snapshot: the Shelf, settings, the capture store, unfiled cards, the clerk's
   records, integration settings (`~/Library/Application Support/Sprava`, minus logs, caches, `models/` (the
   front desk's downloaded models) and `brains/` (the back office's per-binder Claude and Codex homes, with
@@ -104,9 +104,9 @@ with `--keep-last N --keep-within Xd`, which keeps the union. Proposed defaults,
 
 `forget` and `prune` run weekly. Deleting a document for good (binder-v0's expunge) also removes it from
 every snapshot, in the mirror and in the second backup, with `restic rewrite --exclude --forget`, then prunes.
-Without `--forget`, restic keeps the original snapshots, and the document with them. The same rewrite also
-drops the binder's transcript files (`.sprava/conversation/`) from every older snapshot, so expunged words
-cannot come back from a restore; the latest snapshot carries the rewritten transcript, and the expunge is
+Without `--forget`, restic keeps the original snapshots, and the document with them. The rule: the rewrite
+also drops from older snapshots every backed-up file Sprava writes that can quote a document (the transcript,
+`BRIEF.md`); a restore takes them from the latest snapshot, which holds them rewritten, and the expunge is
 reported done only after both repositories are rewritten.
 
 ## 4. The key

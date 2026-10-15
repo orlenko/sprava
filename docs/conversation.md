@@ -50,15 +50,12 @@ the fact; "Sprava's whole purpose is to maintain binders with their notes, knowl
 
 ## 2. The change in one page
 
-1. A binder's page is a conversation with that binder, with tasks beside it (3). The Inbox keeps only
+1. A binder's page is a conversation with that binder, with tasks beside it (3); the Inbox keeps only
    captures whose binder is unknown.
-2. Two roles work there (4). The front desk, a local model with code, is always present and makes the simple
-   decisions at once: file, search and quote, add a to-do, route. The back office, Claude Code or Codex when
-   the person connects one, is a long-lived session per binder that Sprava drives over the agent's structured
-   protocol; it does the harder thinking and checks the front desk's work.
-3. Files dropped, named by path or description, or arriving in `intake/` are read (OCR, translation), filed at
-   once and reported with Undo (5). Additions apply at once; changes to what exists take one tap; privacy,
-   names and anything outward stay in the app's own controls (6).
+2. Two roles (4): the front desk, a local model with code, makes the simple decisions at once; the back
+   office, Claude Code or Codex when connected, is a long-lived session per binder that does the harder
+   thinking and checks the front desk's work.
+3. Files are filed at once with Undo (5); additions apply, changes take one tap, privacy stays in the app (6).
 4. The front desk earns autonomy by measured agreement (7) and learns from filing rules (8.1); a brief keeps
    each binder's essentials (8.2). Questions get quotes first (9); big requests become tasks with drafts (10).
 
