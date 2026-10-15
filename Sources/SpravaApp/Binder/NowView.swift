@@ -53,6 +53,7 @@ struct NowView: View {
                 .padding(.vertical, 4)
             }
             ReviewSection(actions: actions, folder: row.folder, reload: refresh)
+            StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
             ForEach(Bucket.allCases, id: \.self) { bucket in
                 if bucket == .recentlyClosed {
                     if !page.closed.isEmpty {

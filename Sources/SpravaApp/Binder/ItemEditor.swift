@@ -29,6 +29,14 @@ final class ItemEditor: ObservableObject {
     /// The open row of this binder.
     func row(in folder: URL) -> Row? { rows[folder.standardizedFileURL] }
 
+    /// This binder's open row when its item is no longer on the page: closed, hidden or changed elsewhere, for
+    /// example drained from the hub while the person typed. The page shows it apart, with Save and Cancel, so what
+    /// was typed stays in reach and the binder's other rows can open again once it is settled.
+    func stranded(in folder: URL, shown page: NowPage) -> Row? {
+        guard let row = row(in: folder) else { return nil }
+        return page.items.values.contains { $0.contains { $0.object?["id"] == row.id } } ? nil : row
+    }
+
     /// Whether this item's row is the one open, in this binder.
     func isEditing(_ item: Item, in folder: URL) -> Bool {
         guard let id = item.object?["id"] else { return false }

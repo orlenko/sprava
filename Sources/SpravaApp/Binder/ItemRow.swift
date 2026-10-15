@@ -91,6 +91,27 @@ struct ItemRow: View {
     }
 }
 
+/// The open row of an item no longer on the page, shown apart with what was typed, until saved or cancelled.
+struct StrandedItemEdit: View {
+    @ObservedObject var actions: BinderActions
+    @ObservedObject var editor: ItemEditor
+    let folder: URL
+    let page: NowPage
+    let reload: () -> Void
+
+    var body: some View {
+        if editor.stranded(in: folder, shown: page) != nil {
+            Section(header: Text("Being edited").font(.headline)) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("This item is no longer on the page: it was closed or changed elsewhere. Save what you typed, or cancel it.")
+                        .font(.caption).foregroundStyle(.orange)
+                    ItemEditFields(actions: actions, editor: editor, folder: folder, reload: reload)
+                }
+            }
+        }
+    }
+}
+
 /// The open row: the due date (or none) and the title. Return saves, Esc cancels.
 struct ItemEditFields: View {
     @ObservedObject var actions: BinderActions

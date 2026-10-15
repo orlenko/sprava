@@ -243,6 +243,32 @@ import Testing
         }
     }
 
+    @Test func anItemClosedElsewhereWhileEditedKeepsItsRowInReach() async throws {
+        let (actions, _, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let editor = ItemEditor()
+        let invoice = try await openItem("acme-1", in: folder)
+        editor.begin(invoice, in: folder, actions, reload: {})
+        editor.setTitle("Send the Acme invoice by post", in: folder)
+        #expect(editor.stranded(in: folder, shown: await page(folder)) == nil)
+
+        // Checked off elsewhere (another window, or the hub's outbox) while the person types.
+        try await #require(actions.close(invoice, as: "complete", folder, reload: {})).value
+        let stranded = try #require(editor.stranded(in: folder, shown: await page(folder)))
+        #expect(stranded.title == "Send the Acme invoice by post")
+        _ = StrandedItemEdit(actions: actions, editor: editor, folder: folder, page: await page(folder), reload: {}).body
+
+        // Opening another row saves the stranded one first; the runtime refuses, and the text stays in reach.
+        let call = try await openItem("acme-2", in: folder)
+        #expect(editor.begin(call, in: folder, actions, reload: {}))
+        while actions.busy { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(actions.message != nil && editor.row(in: folder)?.title == "Send the Acme invoice by post")
+        // Cancel settles it, and the other rows open again.
+        editor.cancel(in: folder)
+        #expect(editor.stranded(in: folder, shown: await page(folder)) == nil)
+        #expect(editor.begin(call, in: folder, actions, reload: {}) && editor.isEditing(call, in: folder))
+    }
+
     @Test func anItemThatRepeatsIsShownReadOnly() {
         let item = Item(raw: .obj([("id", .str("acme-3")), ("title", .str("Pay the Acme retainer")), ("due", .str("2026-12-14")),
                                    ("recurrence", .obj([("freq", .str("monthly"))]))]), index: 0)
