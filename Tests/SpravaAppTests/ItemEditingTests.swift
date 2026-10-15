@@ -287,7 +287,12 @@ import Testing
         #expect(ItemEditor.change(of: item, title: "Send the Acme reminder", due: CalendarDate(year: 2026, month: 12, day: 20))
             == JSONObject([(key: "id", value: .int(7)), (key: "set", value: .obj([("title", .str("Send the Acme reminder"))]))]))
         // A day survives the trip through the date picker in this time zone.
-        let day = CalendarDate(year: 2026, month: 3, day: 29)!
-        #expect(ItemEditor.day(ItemEditor.date(day)) == day)
+        for day in [CalendarDate(year: 2026, month: 3, day: 29)!, CalendarDate(year: 1500, month: 3, day: 1)!] {
+            #expect(ItemEditor.day(ItemEditor.date(day)) == day)
+        }
+        // A title with spaces at its ends, left as it opened, is not rewritten when only the date changes.
+        let spaced = Item(raw: .obj([("id", .int(8)), ("title", .str(" Send the Acme invoice ")), ("due", .str("2026-12-20"))]), index: 0)
+        #expect(ItemEditor.change(of: spaced, title: " Send the Acme invoice ", due: CalendarDate(year: 2026, month: 12, day: 21))
+            == JSONObject([(key: "id", value: .int(8)), (key: "set", value: .obj([("due", .str("2026-12-21"))]))]))
     }
 }

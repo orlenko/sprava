@@ -115,8 +115,11 @@ final class ItemEditor: ObservableObject {
         guard let object = item.object, let id = object["id"] else { return nil }
         var set = JSONObject()
         var unset: [JSONValue] = []
+        // A title left as the row opened is not rewritten, even one with spaces at its ends.
         let typed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !typed.isEmpty, object["title"] != .string(typed) { set.set("title", .string(typed)) }
+        if object["title"] != .string(title), !typed.isEmpty, object["title"] != .string(typed) {
+            set.set("title", .string(typed))
+        }
         if let due, due != item.due {
             set.set("due", .string(due.description))
             if object["no_deadline"] != nil { unset.append(.str("no_deadline")) }
@@ -131,13 +134,23 @@ final class ItemEditor: ObservableObject {
         return args
     }
 
-    /// A calendar day as the date picker holds it: noon of that day here, so no time zone moves it a day.
-    nonisolated static func date(_ day: CalendarDate) -> Date {
+    /// The one calendar both directions of the date picker go through, so a day comes back as it went in (before
+    /// 1582 too, where Foundation's Gregorian calendar switches to Julian dates).
+    nonisolated static var pickerCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        return calendar.date(from: DateComponents(year: day.year, month: day.month, day: day.day, hour: 12)) ?? Date()
+        return calendar
+    }
+
+    /// A calendar day as the date picker holds it: noon of that day here, so no time zone moves it a day.
+    nonisolated static func date(_ day: CalendarDate) -> Date {
+        pickerCalendar.date(from: DateComponents(year: day.year, month: day.month, day: day.day, hour: 12)) ?? Date()
     }
 
     /// The calendar day the picker shows, here.
-    nonisolated static func day(_ date: Date) -> CalendarDate { CalendarDate(date, in: .current) ?? CalendarDate.today() }
+    nonisolated static func day(_ date: Date) -> CalendarDate {
+        let c = pickerCalendar.dateComponents([.year, .month, .day], from: date)
+        return c.year.flatMap { y in c.month.flatMap { m in c.day.flatMap { CalendarDate(year: y, month: m, day: $0) } } }
+            ?? CalendarDate.today()
+    }
 }
