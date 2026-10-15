@@ -81,9 +81,11 @@ public struct DocumentText: Sendable {
     public var pages: [(number: Int?, page: Page)]
     /// Why nothing of the document was read.
     public var problem: String?
+    /// What else the reader left out, such as a message's attachments.
+    public var notes: [String]
 
-    public init(revision: String, language: String, pages: [(number: Int?, page: Page)], problem: String? = nil) {
-        self.revision = revision; self.language = language; self.pages = pages; self.problem = problem
+    public init(revision: String, language: String, pages: [(number: Int?, page: Page)], problem: String? = nil, notes: [String] = []) {
+        self.revision = revision; self.language = language; self.pages = pages; self.problem = problem; self.notes = notes
     }
 }
 
