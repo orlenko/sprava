@@ -9,14 +9,17 @@ import SpravaKit
 final class XPCService: NSObject, NSXPCListenerDelegate, SpravaRuntimeXPC, @unchecked Sendable {
     let commands: Commands
     let queues: RequestQueues
+    /// The same session is available to future companion jobs; never construct another owner per request.
+    let companion: CompanionRuntimeRequests?
     /// The command queue, which the MCP listener and the jobs that write cards share.
     var queue: DispatchQueue { queues.commands }
     let log: @Sendable (String) -> Void
     var listener: NSXPCListener?
 
-    init(commands: Commands, watch: WatchBox?, log: @escaping @Sendable (String) -> Void) {
+    init(commands: Commands, watch: WatchBox?, companion: CompanionRuntimeRequests?, log: @escaping @Sendable (String) -> Void) {
         self.commands = commands
         queues = RequestQueues(watch: watch)
+        self.companion = companion
         self.log = log
     }
 
@@ -53,7 +56,7 @@ final class XPCService: NSObject, NSXPCListenerDelegate, SpravaRuntimeXPC, @unch
         let commands = self.commands
         let log = self.log
         nonisolated(unsafe) let reply = reply
-        queues.submit(request, handle: { commands.handle($0) }) { answer, command, ms in
+        queues.submit(request, handle: { commands.handle($0) }, companion: companion?.requests) { answer, command, ms in
             // Names, counts and codes only (architecture 3.7).
             let ok = (try? JSONParser.parse(answer).value["ok"]) == .bool(true)
             log("job=app_request command=\(command) ok=\(ok) ms=\(ms)")
