@@ -55,8 +55,8 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
   the Finder's `.DS_Store` view settings, which macOS rewrites on every visit.
 - Sprava's own state, as its own snapshot: the Shelf, settings, the capture store, unfiled cards, the clerk's
   records, integration settings (`~/Library/Application Support/Sprava`, minus logs, caches, `models/` (the
-  front desk's downloaded models) and `codex/home` (the Codex back office's sign-in and session history); a
-  test keeps both out of every snapshot; `docs/conversation.md` §11).
+  front desk's downloaded models) and `brains/` (the back office's per-binder Claude and Codex homes, with
+  their sign-in and session history); a test keeps both out of every snapshot; `docs/conversation.md` §11).
 - Never: the Keychain. Integration passwords and brain tokens are re-entered after a restore onto a new Mac.
 
 Before backing up Sprava's state, Sprava makes a private staging copy. Each state database is copied through

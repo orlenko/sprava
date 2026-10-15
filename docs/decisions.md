@@ -319,8 +319,9 @@ D1 to D14 were decided by the author on 2026-10-14 ("go ahead with the plan"); n
   makes the simple decisions (file, search and quote, add a to-do, route). The back office, Claude Code or,
   second, Codex, when the person connects one for the binder, is a long-lived per-binder session driven over
   the agent's structured protocol (Claude Code `-p` with stream-json input and output, resumed by session id,
-  fixed allow and deny rules and no prompts; Codex's `app-server` JSON-RPC, in a Codex home and sign-in of
-  Sprava's own, since Codex would otherwise load the person's whole setup), never a scripted terminal. Its
+  fixed allow and deny rules and no prompts; Codex's `app-server` JSON-RPC), each in an agent home of Sprava's
+  own per binder, so the person's own setup is never loaded and clearing deletes the whole home; never a
+  scripted terminal. Its
   reach: Sprava's MCP tools only, reading through Sprava's one safe reader (no file tools, no shell, no web;
   narrowed from read-only file tools after review, to keep binder-v0 §3.4's allowlist); Sprava passes the
   binder's manual, brief and rules itself. One process per session, under a lock. "Open in Terminal" resumes

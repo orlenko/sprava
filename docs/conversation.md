@@ -140,7 +140,7 @@ scripting a terminal: no tmux, no screen scraping. The session keeps its id acro
 the agent, and resumes by that id.
 
 **Open in Terminal.** The binder's back-office session (or a running task's) can be opened in a real terminal
-with `claude --resume <id>` in its session folder (`codex resume <id>` for Codex; 11.1), so the person can talk to it
+with `claude --resume <id>` in the binder's agent home (`codex resume <id>` for Codex; 11.1), so the person can talk to it
 directly. Sprava first ends its own process on that session (a second process on one session forks it and
 loses a message; spikes S2 and S3), writes a small `.command` script in its support folder that runs the
 command with the same restrictions as Sprava's own process (11.1: no file tools, only Sprava's MCP server) and
@@ -481,12 +481,14 @@ draft is for the person to send. Without a back office a task is "this needs thi
 
 ### 11.1 The back office: Claude Code, then Codex
 
-The runtime starts the person's own Claude Code CLI in print mode with structured input and output, no shell.
-Verified with Claude Code 2.1.299 (spikes S1 and S2, 2026-10-14). The working directory is not the binder
-but an empty folder per binder in Sprava's support folder (`brains/sessions/<binder id>/`), for Claude and
-Codex alike: the back office reads nothing from files (below), so it needs no binder folder, and an empty one
-gives the agent no project files to discover (a binder's `CLAUDE.md`, `AGENTS.md` or `.claude/` settings)
-whatever its configuration does.
+The runtime starts Claude Code in print mode with structured input and output, no shell (2.1.299, spikes S1,
+S2). It runs in **a Claude home of Sprava's own per binder**, as Codex does: `CLAUDE_CONFIG_DIR`, `HOME` and
+`CLAUDE_CODE_TMPDIR` all point into `brains/<binder id>/claude/` in the support folder, which is also the
+working directory. The person's `~/.claude` (skills, plugins, agents, rules, settings, history) is never read,
+and every store Claude writes lands in that one folder. Checked on 2.1.299: `CLAUDE_CONFIG_DIR` moves the
+config, projects and `.claude.json` there; the binary reads `CLAUDE_CODE_TMPDIR` before `/tmp/claude`. To
+confirm in the PR 14 spike: that these catch every store, and `--safe-mode` (it also disables MCP servers;
+added if Sprava's `--mcp-config` server survives it).
 
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose
@@ -518,8 +520,9 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   `disableAllHooks`, in Terminal sessions too; a managed policy that overrides it fails); no memory file loaded
   (`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is set, and the session's start event lists none); the provider is
   Anthropic itself (`claude auth status` names a first-party method, not `third_party`) or OpenAI for Codex;
-  the tools are `Agent` and Sprava's alone, with no managed skill or plugin in effect. What Sprava cannot read
-  counts as failing (open S1, S3 items).
+  the tools are `Agent` and Sprava's alone, with no managed skill or plugin in effect; and the binder's agent
+  home holds no customization source Sprava did not write (skills, plugins, agents, rules, settings, hooks,
+  `CLAUDE.md`, `AGENTS.md`). What Sprava cannot read counts as failing (open S1, S3 items).
 - **The manual.** Sprava passes Sprava's manual section, the brief (as data) and the filing rules in the
   appended system prompt, read through the safe reader; no project file is ever loaded.
 - **Tools**: reads (`search`, `read_document`, `get_now`, `list_items`, `list_documents`, this binder only,
@@ -528,10 +531,11 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   registered client gets the same refusal. A real Sprava tool under `dontAsk` is an open S1 item.
 - **The client** exists for one session and one binder; its token reaches the shim through the environment
   (`--mcp-config` expands `${VAR}`) and is revoked when the process ends. Calls are audited, sizes only.
-- **Auth.** The person's own sign-in (a subscription worked in a minimal launchd-like environment); Sprava
-  never reads the credential. It calls the versioned binary under `~/.local/share/claude/versions/` by absolute
-  path, checks its signature names Anthropic, and runs the start-up check above. A `CLAUDE_CONFIG_DIR` in the
-  person's shell is not seen by a LaunchAgent, so the engine settings show and let the person pick the one used.
+- **Auth.** A fresh home is signed out (checked), so one sign-in serves every binder: the person runs
+  `claude setup-token` once from the engine settings (it needs a Claude subscription), and Sprava keeps the
+  long-lived token in its own Keychain item and passes it as `CLAUDE_CODE_OAUTH_TOKEN`; no login is stored in
+  any home (both exist in 2.1.299; the token in a fresh home is a PR 14 spike item, a sign-in per home the
+  fallback). Sprava calls the versioned binary by absolute path and checks its signature names Anthropic.
 - **Cost and limits.** `total_cost_usd` is cumulative and at list prices even on a subscription, shown as
   "list-price equivalent" per binder per day. `--max-budget-usd` (proposed: 2 dollars) ends the turn with
   `error_max_budget_usd` and fails later turns, so Sprava restarts with `--resume`. A `rejected`
@@ -542,24 +546,24 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   120 seconds, or 15 minutes for one request (proposed), is a Stop and a failure.
 - **One driver per session.** Two processes on one session fork it and lose a message, so Sprava holds a lock
   per session id. Open in Terminal (4.2) releases Sprava's process first; Sprava drives again only after the
-  person presses Resume and no `claude` process holds the session (`~/.claude/sessions/`).
-- **Environment**, in driven and Terminal sessions alike: `PATH`, `HOME`, `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` and the token.
-- **Session history.** Resume and Open in Terminal need persistence, which keeps the session, binder text
-  included, under `~/.claude/projects/<encoded session folder>/`, outside the binder and its backup (section
-  12). Task sessions persist only while the task runs; `--no-session-persistence` would still leave subagent
-  descriptions and a temporary tasks folder. Sprava deletes a session's files when a task ends, when the
-  person clears the conversation, turns the back office off, offloads or removes the binder, always after any
-  Terminal turns are in the transcript (4.2). An expunge (binder-v0 §6.11) retires every session of the
-  binder and deletes its local history (and the Codex home's), so `--resume` cannot bring the text back; what
-  the provider already received cannot be recalled, and the expunge screen says so.
+  person presses Resume and no `claude` process holds the session (the home's `sessions/`).
+- **Environment**, in driven and Terminal sessions alike: `PATH`, and `HOME`, `CLAUDE_CONFIG_DIR` and
+  `CLAUDE_CODE_TMPDIR` in the binder's home; `CLAUDE_CODE_OAUTH_TOKEN`; `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`; Sprava's MCP token.
+- **Clearing is deleting the home.** Resume and Open in Terminal need persistence, so the session, binder text
+  included, stays in the binder's home, outside the binder; the state backup excludes `brains/` (section 12).
+  Clearing the conversation, turning the back office off, offloading, removing the binder, and an expunge
+  (binder-v0 §6.11) each delete the binder's whole agent home and its temporary folder, after any Terminal
+  turns are in the transcript (4.2), and recreate it empty: no list of Claude's stores to keep up to date. The
+  next request starts a new session seeded from the transcript (after an expunge, the rewritten one). A task
+  runs in a home of its own, deleted when it ends. What the provider already received cannot be recalled.
 - **Offload and removal.** Sprava first stops taking requests and tasks for the binder, interrupts every
   session, waits for in-flight batches, and holds that barrier until the offload's snapshot is verified or
   the offload is cancelled (backup.md §6.1, step 1).
 
 **Codex** is the second back office (decisions.md D4), over `codex app-server`, verified with codex-cli
 0.162.1 (spike S3, 2026-10-14). It speaks newline JSON-RPC on standard input and output (marked
-experimental): `initialize`, `thread/start` (working directory the empty session folder, the approval
+experimental): `initialize`, `thread/start` (working directory the binder's Codex home, the approval
 policy, Sprava's instructions as for Claude, the model), then `turn/start` per message. Items stream
 (`agentMessage`, `mcpToolCall`) with token use and rate limits, and `turn/completed` ends a turn. Stop is
 `turn/interrupt`, which keeps the process; `thread/resume` (`excludeTurns: true`) resumes in a new process,
@@ -573,11 +577,11 @@ even after a kill. Codex allows one writer per thread, so Open in Terminal stops
   -c web_search="disabled" -c notify=[] -c skills.bundled.enabled=false -c skills.include_instructions=false
   -c project_doc_max_bytes=0 -c default_permissions="sprava" -c permissions.sprava.filesystem=<none>
   -c mcp_servers.sprava.command=<sprava-mcp> -c mcp_servers.sprava.default_tools_approval_mode="approve"
-  (environment: HOME and CODEX_HOME in Sprava's support folder; working directory the empty session folder)
+  (environment: HOME, CODEX_HOME and the working directory all in brains/<binder id>/codex/)
 ```
 
 - **No project instructions.** Codex injects every `AGENTS.md` from the project root down as instructions,
-  before any tool runs. The empty working directory has none, and `project_doc_max_bytes=0` turns discovery
+  before any tool runs. The home has none, and `project_doc_max_bytes=0` turns discovery
   off as well; the binder's manual reaches Codex only as Sprava's own section, through Sprava.
 - **No file access.** Plain `read-only` sandboxing did not stop reads outside the folder; a custom
   permission profile did. Sprava's profile grants no reads and no writes at all, with the shell tools off, so
@@ -585,13 +589,10 @@ even after a kill. Codex allows one writer per thread, so Open in Terminal stops
   item; until it does, the Codex back office is not offered. Approval requests are declined.
 - **A home of its own.** With the person's `~/.codex`, Codex loads their whole setup: their MCP servers start
   unsandboxed, their `AGENTS.md` and skills are injected, and shell snapshots capture their login environment.
-  So Codex gets a home under Sprava's support folder (`codex/home`) with its own sign-in, which the app
-  server drives with a device code shown in the engine settings; Sprava never copies `auth.json`. A full turn
-  in that home is an open S3 item. Its transcripts hold binder text, and Sprava cleans them as for Claude.
-  The home holds `auth.json` and those transcripts, so Sprava's state backup excludes `codex/home` by name,
-  with a test (`docs/backup.md` §3.2).
-  Claude Code can use the person's own `~/.claude` because `--restricted --strict-mcp-config` loads none of
-  their skills, plugins or MCP servers; Codex cannot.
+  So Codex, like Claude, runs in a home of Sprava's own per binder (`brains/<binder id>/codex/`), signed in
+  through the app server with a device code shown in the engine settings; Sprava never copies `auth.json`. A
+  full turn in that home, and one sign-in shared across binder homes, are open S3 items; the fallback is a
+  sign-in per binder. Clearing deletes the whole home, as for Claude, and the state backup excludes `brains/`.
 - Sprava calls the native binary in the npm package's `vendor/` folder (a LaunchAgent cannot run the Node
   wrapper), resolves it at start and checks `--version`. One app server per open binder; it stops when its
   standard input closes. `usageLimitExceeded` or `rateLimitExceeded` hands the request to the front desk.
@@ -660,13 +661,13 @@ Rows for architecture 10, each off until the person turns it on:
 
 | Path | What leaves | When | Default |
 |---|---|---|---|
-| The binder's back office, Claude or Codex | The person's lines it is fed, the brief, the manual with its rules, what it reads in this binder (documents included), review batches, task requests; to Anthropic under the person's own Claude account, or to OpenAI under the Codex sign-in Sprava's Codex home holds | Each request, review batch and task | Off |
+| The binder's back office, Claude or Codex | The person's lines it is fed, the brief, the manual with its rules, what it reads in this binder (documents included), review batches, task requests; to Anthropic under the person's Claude subscription (its long-lived token), or to OpenAI under the Codex sign-in | Each request, review batch and task | Off |
 | Local model download | Nothing from the binder; the host learns the Mac's address and the file | Once per model | Not downloaded |
 | Apple's Translation languages | Nothing from the binder; macOS fetches the pair | Once per pair | Not downloaded |
 
 The front desk, the clerk, the index and on-device translation send nothing. Kept on the Mac outside the
-binder and its backup: the back office's session history (`~/.claude/projects/<encoded session folder>/`, and
-Sprava's `codex/home`), shown in the engine settings, deleted as 11.1 says; the doctor reports leftovers.
+binder and its backup: the back office's homes (`brains/<binder id>/` in the support folder), holding its
+session history; shown in the engine settings, deleted whole as 11.1 says; the doctor reports leftovers.
 
 ## 13. What this replaces or retires
 
@@ -720,7 +721,8 @@ the local model follows, then the back office.
 12. **Retrieval: the brief keeper.** `BRIEF.md` rendering and code's parts, with the word-for-word checks run
     against the original extracted text in the index (layer 4, on `Extract`), never a translation.
 13. **BinderStore: the filing rules**: grammar, the manual's rules part, acceptance; the reader takes them.
-14. **Brains: the Claude Code back office**: session and resume, lock, the fail-closed start-up check,
+14. **Brains: the Claude Code back office** (its spike first: the home, `setup-token`, `--safe-mode`): the
+    per-binder home, session and resume, lock, the fail-closed start-up check,
     Stop, limits, costs, cleanup, the offload barrier.
 15. **Brains: the back-office tools.** `search`, `apply_ops`, `ask_person`, `review_verdict`,
     `save_translation`, `write_brief`, `propose_rule`, `intake_manifest`, the reads (17.5); every one refused to
@@ -730,7 +732,7 @@ the local model follows, then the back office.
 17. **Brains: task sessions**, and **SpravaApp: task cards**, two PRs.
 18. **SpravaApp: engine settings** in place of the Brains page: consent, sign-in, scores, rules, Open in
     Terminal (with its `Services` handler); the Inbox trimmed.
-19. **Brains: the Codex back office** over the app server, in Sprava's own Codex home with its device-code
+19. **Brains: the Codex back office** over the app server, in Sprava's per-binder Codex home with its device-code
     sign-in and permission profile (S3's open items first).
 20. **Docs.** Rewrite the superseded parts of architecture 5.7, 6, 7 and 10 and mvp.md 1.1 and feature 3.
 
