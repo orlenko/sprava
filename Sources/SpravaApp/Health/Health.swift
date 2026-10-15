@@ -9,16 +9,11 @@ import SwiftUI
 /// it can tell a dead runtime from a quiet one without talking to it.
 @MainActor
 final class HealthModel: ObservableObject {
-    static let runtimePlist = "ca.orlenko.sprava.runtime.plist"
-    static let watchPlist = "ca.orlenko.sprava.watch.plist"
-    static let runtimeLabel = "ca.orlenko.sprava.runtime"
-
     @Published var heartbeat: Result<Heartbeat, Heartbeat.ReadError> = .failure(.missing)
     @Published var runtimeStatus: SMAppService.Status = .notRegistered
     @Published var watchStatus: SMAppService.Status = .notRegistered
     @Published var watchRecord: String?
     @Published var refusals: [String] = []
-    @Published var message: String?
     @Published var now = Date()
     @Published var findings: [Doctor.Finding] = []
     /// Why the doctor could not tell which binders are this Mac's: the device id cannot be read.
@@ -29,31 +24,13 @@ final class HealthModel: ObservableObject {
     @Published var backupConfigured = false
     /// Why the backup settings cannot be read, if they cannot: not the same as backup not set up.
     @Published var backupSettingsError: String?
-    @Published var backgroundOffByChoice = false
     var lastDoctor: Date?
     var lastWake: Date?
-    /// When the person last turned background work on or restarted it: launchd can take several seconds to
-    /// start the runtime, and that wait is shown as "starting", not as a failure.
-    @Published var startRequested: Date?
+    /// Starts the runtime without asking (decisions.md A19). While it starts, launchd can take several seconds, and
+    /// that wait is shown as "starting", not as a failure.
+    let keeper: RuntimeKeeper
 
-    /// Within a minute of a start request and with no heartbeat newer than it.
-    var starting: Bool {
-        guard let asked = startRequested, now.timeIntervalSince(asked) < 60 else { return false }
-        if case .success(let beat) = heartbeat, let at = ISOTime.date(beat.beat_at), at > asked { return false }
-        return true
-    }
-
-    /// Re-reads every two seconds for half a minute after a start request, so the page follows the start.
-    func followStart() {
-        startRequested = Date()
-        Task {
-            for _ in 0..<15 {
-                try? await Task.sleep(for: .seconds(2))
-                refresh()
-                if !starting { break }
-            }
-        }
-    }
+    var starting: Bool { keeper.state == .starting }
 
     /// The two reads behind the page. Both run off the main actor: a damaged binder (a FIFO where a file should be)
     /// or a slow disk must not freeze the app, even while the page is closed. Tests stand in slow ones.
@@ -64,26 +41,31 @@ final class HealthModel: ObservableObject {
 
     let support: URL
     let reads: Reads
-    var runtimeDir: URL { HealthSnapshot.runtimeDirectory(support: support) }
     private var observers: [Any] = []
     /// The read in flight, if any: never more than one of each, so a read that hangs holds one thread, not one per tick.
     private var runtimeRead: Task<Void, Never>?
     private var checksRead: Task<Void, Never>?
     /// A refresh was asked for while the runtime read was in flight: that read's result is older than the request
-    /// (a turn-off may have written since), so it is dropped and the records are read again.
+    /// (a start may have happened since), so it is dropped and the records are read again.
     private var runtimeReadStale = false
 
-    init(support: URL = SpravaPaths.supportDirectory(), reads: Reads = Reads()) {
+    init(support: URL = SpravaPaths.supportDirectory(), reads: Reads = Reads(), keeper: RuntimeKeeper? = nil) {
         self.support = support
         self.reads = reads
+        self.keeper = keeper ?? RuntimeKeeper(system: RuntimeStart.system(support: support))
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.lastWake = Date() }
             })
+        // The page follows a start: each change of the keeper's state is shown and the records read again.
+        observers.append(self.keeper.$state.dropFirst().sink { [weak self] _ in
+            self?.objectWillChange.send()
+            self?.refresh()
+        })
     }
 
-    var runtime: SMAppService { .agent(plistName: Self.runtimePlist) }
-    var watcher: SMAppService { .agent(plistName: Self.watchPlist) }
+    var runtime: SMAppService { .agent(plistName: RuntimeStart.runtimePlist) }
+    var watcher: SMAppService { .agent(plistName: RuntimeStart.watchPlist) }
 
     /// Everything the page shows comes from Services' health snapshot, read here in the app's process so it works
     /// while the runtime is stopped; the page reads no support file or binder file itself. Returns at once: the reads
@@ -127,7 +109,6 @@ final class HealthModel: ObservableObject {
             watchRecord = records.watchRecord
             refusals = records.refusals
             startsToday = records.startsToday
-            backgroundOffByChoice = records.backgroundOff
         }
     }
 
@@ -147,70 +128,18 @@ final class HealthModel: ObservableObject {
         return HealthGrade.beat(beatAt, lastWake: wake, now: now, pidAlive: alive)
     }
 
-    /// Where the app runs from. Registering from a disk image or a translocated copy would point launchd at a
-    /// path that disappears (architecture 3.1).
-    var locationProblem: String? {
-        let path = Bundle.main.bundlePath
-        if Bundle.main.bundleURL.pathExtension != "app" { return "Sprava is not running from an app bundle." }
-        if path.contains("/AppTranslocation/") || path.hasPrefix("/Volumes/") {
-            return "Move Sprava to Applications first."
-        }
+    var locationProblem: String? { RuntimeStart.locationProblem }
+
+    /// Why the last start failed, when it did.
+    var startFailure: String? {
+        if case .failed(let why) = keeper.state { return why }
         return nil
     }
 
-    func turnOn() {
-        if let problem = locationProblem {
-            message = problem
-            return
-        }
-        if let problem = BundleSignature.problem(at: Bundle.main.bundleURL) {
-            message = problem
-            return
-        }
-        do {
-            try? FileManager.default.removeItem(at: runtimeDir.appendingPathComponent("background-off"))
-            try runtime.register()
-            try watcher.register()
-            message = nil
-            followStart()
-        } catch {
-            message = BundleSignature.registerFailure(error)
-        }
-        refresh()
-        if runtime.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
-    }
-
-    func turnOff() {
-        do {
-            try AtomicFile.makePrivateFolder(runtimeDir)
-            try Data().write(to: runtimeDir.appendingPathComponent("background-off"))
-            try runtime.unregister()
-            try watcher.unregister()
-        } catch {
-            message = "Could not turn off background work: \(error.localizedDescription)"
-        }
-        refresh()
-    }
-
-    /// Restart a stuck runtime. `launchctl kickstart -k` restarts the job in place; how `register()` behaves on
-    /// an enabled but stuck job is spike b (architecture 3.3), so kickstart is tried first.
+    /// Restart a stopped or stuck runtime, or register one that is not registered: `launchctl kickstart -k` first,
+    /// then registering again (architecture 3.3). Off the main actor; the page follows the keeper's state.
     func restart() {
-        followStart()
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(Self.runtimeLabel)"]
-        do {
-            try task.run()
-            task.waitUntilExit()
-            if task.terminationStatus != 0 {
-                try runtime.unregister()
-                try runtime.register()
-            }
-            message = "Restart requested."
-        } catch {
-            message = "Restart failed: \(error.localizedDescription)"
-        }
-        refresh()
+        Task { _ = await keeper.restart() }
     }
 }
 
@@ -245,7 +174,8 @@ struct HealthView: View {
                 if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(.red) }
                 else if !model.backupConfigured { Text("Backup is not set up. Open Backup in the sidebar.").foregroundStyle(.orange) }
                 else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
-                ForEach(Array(model.backups.enumerated()), id: \.offset) { _, b in
+                ForEach(HealthLine.rows("backup", model.backups)) { line in
+                    let b = line.value
                     let age = b.at.map { model.now.timeIntervalSince($0) } ?? .infinity
                     HStack {
                         // Amber after 48 hours without a backup, red after 7 days (architecture 3.4).
@@ -261,11 +191,12 @@ struct HealthView: View {
             Section("Doctor") {
                 if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(.red) }
                 else if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
-                ForEach(Array(model.findings.enumerated()), id: \.offset) { _, f in
+                ForEach(HealthLine.rows("doctor", model.findings)) { line in
+                    let f = line.value
                     HStack(alignment: .top) {
                         Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
                             .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
-                        Text([f.binder, f.text].compactMap { $0 }.joined(separator: ": "))
+                        Text(f.sentence)
                     }
                 }
             }
@@ -293,9 +224,9 @@ struct HealthView: View {
             Spacer()
             buttons(grade)
         }
-        if let message = model.message { Text(message).foregroundStyle(.orange) }
+        if let failure = model.startFailure, failure != model.locationProblem { Text(failure).foregroundStyle(.orange) }
         if let problem = model.locationProblem { Text(problem).foregroundStyle(.orange) }
-        ForEach(DisplayLine.rows(model.refusals)) { Text($0.text).font(.caption.monospaced()).foregroundStyle(.secondary) }
+        ForEach(HealthLine.rows("refusal", model.refusals)) { Text($0.value).font(.caption.monospaced()).foregroundStyle(.secondary) }
     }
 
     func statusText(_ grade: HealthGrade) -> String {
@@ -304,7 +235,7 @@ struct HealthView: View {
             if case .success = model.heartbeat, grade == .green {
                 return "A runtime is running that launchd did not start (a development run)"
             }
-            return model.backgroundOffByChoice ? "Background work is off (your choice)" : "Background work is not set up"
+            return model.starting ? "Starting background work…" : "Background work is not running"
         case .requiresApproval:
             return "Waiting for your approval in System Settings › General › Login Items"
         case .enabled:
@@ -332,14 +263,16 @@ struct HealthView: View {
     }
 
     @ViewBuilder func buttons(_ grade: HealthGrade) -> some View {
+        // Background work is not optional (decisions.md A19): there is no Turn Off, and the app starts it by itself.
         switch model.runtimeStatus {
-        case .enabled:
-            if (grade == .red || grade == .amber) && !model.starting { Button("Restart") { model.restart() } }
-            Button("Turn Off") { model.turnOff() }
         case .requiresApproval:
             Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+        case .enabled:
+            if (grade == .red || grade == .amber || model.startFailure != nil) && !model.starting {
+                Button("Restart") { model.restart() }
+            }
         default:
-            Button(model.backgroundOffByChoice ? "Turn On" : "Set Up Background Work") { model.turnOn() }
+            if !model.starting && grade != .green { Button("Restart") { model.restart() } }
         }
     }
 
@@ -362,6 +295,39 @@ struct HealthView: View {
             Text("Notifications allowed")
         } else {
             Text("Alerts are off: Sprava cannot warn you when it stops").foregroundStyle(.red)
+        }
+    }
+}
+
+/// The sidebar's Health row, its dot kept current whichever page is open.
+struct HealthLabel: View {
+    @ObservedObject var health: HealthModel
+
+    var body: some View {
+        HStack {
+            Circle().fill(health.beatGrade.color).frame(width: 9, height: 9)
+            Text("Health").font(.headline)
+        }
+    }
+}
+
+/// The binder page's line for runtime trouble the app cannot fix alone (decisions.md A19): the Login Items approval
+/// only the person can give, or why starting failed. Nothing is opened for the person; the button is theirs to press.
+struct RuntimeBanner: View {
+    @ObservedObject var health: HealthModel
+
+    var body: some View {
+        if health.runtimeStatus == .requiresApproval {
+            HStack {
+                Text("Sprava's background part is waiting for your approval in System Settings › General › Login Items; changes wait until then.")
+                    .foregroundStyle(.orange)
+                Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+            }
+        } else if let failure = health.startFailure {
+            HStack {
+                Text(failure).foregroundStyle(.orange)
+                Button("Restart") { health.restart() }.disabled(health.starting)
+            }
         }
     }
 }

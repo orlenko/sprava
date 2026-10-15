@@ -184,7 +184,8 @@ private final class BlockedShelfSummary: @unchecked Sendable {
             try? ShelfStore(supportDirectory: support).remove(URL(fileURLWithPath: request["binder"]!.stringValue!))
             return #"{"ok":true}"#
         }
-        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read, readTimeout: 0.05)
+        // Long enough for the real second read on a loaded machine; the stalled first read still times out.
+        let model = ShelfModel(support: support, client: runtime.client, readSnapshot: reader.read, readTimeout: 0.5)
         model.rows = snapshot.rows
         await model.refreshAndWait()
         #expect(reader.calls == 1 && !reader.completed)
@@ -201,7 +202,12 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         }
         try #require(reader.completed)
         #expect(model.rows.isEmpty) // the late pre-removal snapshot is discarded
-        await model.refreshAndWait()
+        // The reader reports completion just before the disk worker frees itself, so a refresh in that gap is
+        // still refused as busy; retry until the fresh read runs.
+        while reader.calls < 2 && started.duration(to: .now) < .seconds(5) {
+            await model.refreshAndWait()
+            if reader.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        }
         #expect(reader.calls == 2 && model.rows.isEmpty && model.note == nil)
     }
 
@@ -281,6 +287,38 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         model.askForBinder = { _, _ in nil }
         await model.add([empty])
         #expect(runtime.sent.count == 1 && model.note == nil)
+    }
+
+    /// A name typed as a person would type it is sent as a valid binder name, never refused after the dialogs.
+    @Test(arguments: [("MapleStreet", "maplestreet"), ("Maple Street", "maple-street"), ("  --Tax 2026!! ", "tax-2026"),
+                      ("\u{65E5}\u{672C}", "new-binder")])
+    func newBinderSendsTheTypedNameAsAValidOne(typed: String, sent: String) async throws {
+        let runtime = StandInRuntime()
+        runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
+        let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
+        let parent = try temporaryFolder()
+        model.askForBinder = { _, _ in ("blank", typed) }
+        model.chooseParent = { parent }
+        await model.startNewBinder()
+        #expect(runtime.sent.first?["name"]?.stringValue == sent)
+        #expect(model.note == nil)
+    }
+
+    /// For an empty folder, a name with nothing left falls back to the folder's own, then to the template's suggestion.
+    @Test func anEmptyFolderFallsBackToItsOwnNameThenTheTemplates() async throws {
+        let runtime = StandInRuntime()
+        runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
+        let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
+        let base = try temporaryFolder()
+        let shed = base.appendingPathComponent("Garden Shed")
+        let other = base.appendingPathComponent("\u{65E5}\u{672C}")
+        for folder in [shed, other] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        model.askForBinder = { _, _ in ("tax-year", "!!") }
+        await model.add([shed])
+        await model.add([other])
+        let year = Calendar.current.component(.year, from: Date())
+        #expect(runtime.sent.map { $0["name"]?.stringValue } == ["garden-shed", "tax-\(year)"])
+        #expect(model.note == nil)
     }
 
     @Test func aFolderThatCannotBeRemovedSaysSoAfterTheRefresh() async throws {

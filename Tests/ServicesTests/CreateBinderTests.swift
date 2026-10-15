@@ -62,18 +62,32 @@ import Testing
         #expect(ProposalStore.list(in: folder).isEmpty)
     }
 
-    @Test func badNamesDuplicatesAndExistingFoldersAreRefused() throws {
+    /// Any name the person types becomes a valid, free one; nothing is refused after the dialogs for its name.
+    @Test func typedNamesDuplicatesAndExistingFoldersBecomeValidFreeNames() throws {
         let (c, parent) = try setup()
-        for name in ["Tax 2026", "-tax", "tax/2026", "", "TAX-2026"] {
-            #expect(try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .string(name))])["ok"] == .bool(false))
+        func create(_ name: String, in folder: URL, year: Int = 2026) throws -> String? {
+            let r = try call(c, [("command", .str("create_binder")), ("parent", .string(folder.path)), ("name", .string(name)),
+                                 ("template", .str("tax-year")), ("year", .int(year))])
+            #expect(r["ok"] == .bool(true), "\(r)")
+            return r["binder"]?.stringValue.map { URL(fileURLWithPath: $0).lastPathComponent }
         }
-        #expect(try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .str("tax-2026"))])["ok"] == .bool(true))
-        // The same name again, even in another folder.
+        #expect(try create("MapleStreet", in: parent) == "maplestreet")
+        #expect(try create("Maple Street", in: parent) == "maple-street")
+        #expect(try create("Caf\u{E9} \u{DC}n\u{EF}code", in: parent) == "cafe-unicode")
+        #expect(try create("  --Tax 2026!! ", in: parent) == "tax-2026")
+        #expect(try create(String(repeating: "Maple elm ", count: 10), in: parent)?.count == 64)
+        // Nothing left: the template's suggestion, which is taken, so the next number.
+        #expect(try create("\u{65E5}\u{672C}", in: parent) == "tax-2026-2")
+        // The same name again, even in another folder, and a folder already holding the name.
         let other = parent.deletingLastPathComponent().appendingPathComponent("other")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
-        #expect(try call(c, [("command", .str("create_binder")), ("parent", .string(other.path)), ("name", .str("tax-2026"))])["ok"] == .bool(false))
+        #expect(try create("tax-2026", in: other) == "tax-2026-3")
         try FileManager.default.createDirectory(at: other.appendingPathComponent("tax-2027"), withIntermediateDirectories: true)
-        #expect(try call(c, [("command", .str("create_binder")), ("parent", .string(other.path)), ("name", .str("tax-2027"))])["ok"] == .bool(false))
+        #expect(try create("TAX-2027", in: other, year: 2027) == "tax-2027-2")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: other.appendingPathComponent("tax-2027").path).isEmpty)
+        for name in try FileManager.default.contentsOfDirectory(atPath: parent.path) {
+            #expect(Teka.read(parent.appendingPathComponent(name)).catalog?["meta"]?["name"] == .string(name))
+        }
     }
 
     @Test func anEmptyFolderBecomesTheBinderRenamedToItsName() throws {
@@ -103,7 +117,7 @@ import Testing
         #expect(Teka.read(parent.appendingPathComponent("shed")).state == .ready)
     }
 
-    @Test func aFolderThatIsNotEmptyOrWhoseNewNameIsTakenIsLeftAsItIs() throws {
+    @Test func aFolderThatIsNotEmptyIsLeftAsItIsAndATakenNewNameGetsANumber() throws {
         let (c, parent) = try setup()
         let full = parent.appendingPathComponent("notes")
         try FileManager.default.createDirectory(at: full, withIntermediateDirectories: true)
@@ -113,8 +127,10 @@ import Testing
         let empty = parent.appendingPathComponent("Empty")
         try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: parent.appendingPathComponent("taken"), withIntermediateDirectories: true)
-        #expect(try call(c, [("command", .str("create_binder")), ("folder", .string(empty.path)), ("name", .str("taken"))])["ok"] == .bool(false))
-        #expect(FileManager.default.fileExists(atPath: empty.path))
+        let r = try call(c, [("command", .str("create_binder")), ("folder", .string(empty.path)), ("name", .str("taken"))])
+        #expect(r["ok"] == .bool(true), "\(r)")
+        #expect(r["binder"]?.stringValue.map { URL(fileURLWithPath: $0).lastPathComponent } == "taken-2")
+        #expect(!FileManager.default.fileExists(atPath: empty.path))
         #expect(try FileManager.default.contentsOfDirectory(atPath: parent.appendingPathComponent("taken").path).isEmpty)
     }
 }

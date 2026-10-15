@@ -11,6 +11,8 @@ struct NowView: View {
     /// Prepared with the Shelf's snapshot by its disk worker; the main actor never buckets or sorts a catalog.
     let page: NowPage
     let reload: () -> Void
+    /// The runtime's state, for the line that says when changes cannot be made.
+    var health: HealthModel?
     @StateObject private var actions = BinderActions()
 
     func refresh() {
@@ -33,6 +35,7 @@ struct NowView: View {
                                 .disabled(actions.busy)
                         }
                     }
+                    if let health { RuntimeBanner(health: health) }
                     if let message = actions.message { Text(message).foregroundStyle(.orange) }
                     Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
                         .foregroundStyle(.secondary)

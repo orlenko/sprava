@@ -15,7 +15,7 @@ base=$(git merge-base "$main" "$head") || { echo "pr-check: $head shares no hist
 
 # The domain targets of layers 1 to 6. SpravaKit, Services and the executables are shared layers: a feature
 # touches its domain target plus those (rule 1), so they are not counted.
-domain='BinderFormat|BinderStore|Shelf|Extract|Clerk|Capture|Hub|Backup|Brains'
+domain='BinderFormat|Companion|BinderStore|Shelf|Extract|Clerk|Retrieval|Capture|Hub|Backup|Brains'
 warn_lines=500; max_lines=1000; max_targets=1; stale_after=20; max_file=400
 review_names='^Tests/(.*/)?[^/]*(AstraReview|Bugbot|CalibratedReview|LayerReview|ReviewRegression|CodexReview|StackReview)[^/]*\.swift$'
 

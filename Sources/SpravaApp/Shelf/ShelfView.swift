@@ -44,10 +44,11 @@ final class ShelfModel: ObservableObject {
     var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> (template: String, name: String)? = ShelfModel.binderAlert
     var chooseParent: @MainActor () -> URL? = ShelfModel.parentPanel
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
-    /// Asked when an action finds the runtime not running: whether to turn background work on, and the turning on.
-    var offerBackgroundWork: @MainActor () -> Bool = BackgroundWork.offer
-    var turnOnBackgroundWork: @MainActor () -> BackgroundWork.TurnOn
-    /// How long a runtime just turned on has to answer before the action gives up; launchd usually needs a few seconds.
+    /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
+    let health: HealthModel
+    /// Starts the runtime without asking when an action finds it not running (decisions.md A19).
+    var startRuntime: @MainActor () async -> RuntimeKeeper.Outcome
+    /// How long a runtime just started has to answer before the action gives up; it usually answers at once.
     var startWait: Duration = .seconds(20)
 
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
@@ -58,7 +59,9 @@ final class ShelfModel: ObservableObject {
         self.readTimeout = readTimeout
         self.summarize = summarize
         self.client = client
-        turnOnBackgroundWork = { BackgroundWork.turnOn(with: HealthModel(support: support)) }
+        let health = HealthModel(support: support)
+        self.health = health
+        startRuntime = { await health.keeper.ensureRunning() }
     }
 
     /// One background read at a time, including slow or unavailable picked volumes. Existing rows stay visible.
@@ -149,7 +152,7 @@ final class ShelfModel: ObservableObject {
             }
         }
         if !(binders.isEmpty && empty.isEmpty), await !runtimeReady() {
-            failed.insert(operationNote ?? "Nothing was added: Sprava's background part is not running.", at: 0)
+            failed.insert("Nothing was added: " + (operationNote ?? "Sprava's background part is not running."), at: 0)
             (binders, empty) = ([], [])
         }
         for url in binders {
@@ -164,7 +167,8 @@ final class ShelfModel: ObservableObject {
         let year = Calendar.current.component(.year, from: Date())
         for url in empty {
             guard let answer = askForBinder(url, year) else { continue }
-            if let failure = await create(parent: url.deletingLastPathComponent(), name: answer.name, template: answer.template,
+            if let failure = await create(parent: url.deletingLastPathComponent(), name: Self.binderName(answer, year: year, existing: url),
+                                          template: answer.template,
                                           year: year, existing: url) {
                 failed.append("\(url.lastPathComponent) did not become a binder: \(failure)")
             }
@@ -199,28 +203,34 @@ final class ShelfModel: ObservableObject {
         guard await runtimeReady() else { return }
         let year = Calendar.current.component(.year, from: Date())
         guard let answer = askForBinder(nil, year), let parent = chooseParent() else { return }
-        await createBinder(parent: parent, name: answer.name, template: answer.template, year: year)
+        await createBinder(parent: parent, name: Self.binderName(answer, year: year), template: answer.template, year: year)
+    }
+
+    /// The name typed in the alert, made a valid binder name: "Maple Street" becomes `maple-street`, never a refusal after the
+    /// dialogs. The runtime does the same and adds `-2` when the name is taken.
+    static func binderName(_ answer: (template: String, name: String), year: Int, existing: URL? = nil) -> String {
+        let template = BinderTemplate.all.first { $0.key == answer.template } ?? .taxYear
+        return BinderCreator.name(for: answer.name, template: template, year: year, existing: existing)
     }
 
     /// Whether the runtime is there for an action that needs it (`ping`, two seconds at most; one only slow to answer goes
-    /// ahead). When it is not running, the person is offered to turn background work on, and the action goes ahead once the
+    /// ahead). When it is not running, Sprava starts it without asking (decisions.md A19), and the action goes ahead once the
     /// runtime answers within `startWait`; otherwise it stops before any dialog or request, and the note says why.
     func runtimeReady() async -> Bool {
         guard await client.presence() == .notRunning else { return true }
-        guard offerBackgroundWork() else { return false }
-        switch turnOnBackgroundWork() {
+        operationNote = "Starting Sprava's background part…"
+        switch await startRuntime() {
         case .failed(let why):
-            operationNote = why
+            operationNote = why + " Health, at the top of the sidebar, can restart it."
         case .needsApproval:
-            operationNote = "Background work is waiting for your approval in System Settings › General › Login Items. Approve Sprava there, then try again."
-        case .registered:
-            operationNote = "Starting Sprava's background part…"
+            operationNote = "Sprava's background part is waiting for your approval in System Settings › General › Login Items. Approve Sprava there, then try again."
+        case .running:
             let deadline = ContinuousClock.now + startWait
             repeat {
                 if await client.presence() == .answers { operationNote = nil; return true }
                 try? await Task.sleep(for: .milliseconds(500))
             } while ContinuousClock.now < deadline
-            operationNote = "Background work is on, but Sprava's background part has not started yet. Try again in a minute; Health, at the top of the sidebar, shows when it is running."
+            operationNote = "Sprava's background part has not started yet. Try again in a minute; Health, at the top of the sidebar, shows when it is running."
         }
         return false
     }
@@ -262,7 +272,6 @@ let brainsSelection = URL(string: "sprava:brains")!
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var inbox = InboxModel()
-    @StateObject private var health = HealthModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
 
@@ -270,11 +279,7 @@ struct ShelfView: View {
         NavigationSplitView {
             List(selection: $model.selection) {
                 Section {
-                    HStack {
-                        Circle().fill(health.beatGrade.color).frame(width: 9, height: 9)
-                        Text("Health").font(.headline)
-                    }
-                    .tag(healthSelection)
+                    HealthLabel(health: model.health).tag(healthSelection)
                     HStack {
                         Label("Inbox", systemImage: "tray")
                         Spacer()
@@ -313,7 +318,7 @@ struct ShelfView: View {
             }
         } detail: {
             if model.selection == healthSelection {
-                HealthView(model: health)
+                HealthView(model: model.health)
             } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
             } else if model.selection == backupSelection {
@@ -323,7 +328,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() })
+                        reload: { model.refresh() }, health: model.health)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
@@ -345,7 +350,7 @@ struct ShelfView: View {
         // Health is read here, not on its page, so the sidebar's dot stays current whichever page is open.
         .task {
             while !Task.isCancelled {
-                health.refresh()
+                model.health.refresh()
                 try? await Task.sleep(for: .seconds(10))
             }
         }

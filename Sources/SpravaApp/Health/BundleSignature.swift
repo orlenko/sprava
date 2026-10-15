@@ -22,6 +22,6 @@ enum BundleSignature {
         if raw.localizedCaseInsensitiveContains("codesign") || raw.localizedCaseInsensitiveContains("code signature") {
             return problemText + " (\(raw))"
         }
-        return "Could not turn on background work: \(raw)"
+        return "Could not start background work: \(raw)"
     }
 }

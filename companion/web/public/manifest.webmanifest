@@ -1,0 +1,12 @@
+{
+  "id": "./",
+  "name": "Sprava companion",
+  "short_name": "Sprava",
+  "description": "Shared binders and notes for Sprava on your Mac.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f8f6f0",
+  "theme_color": "#243d36",
+  "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -22,17 +22,16 @@ import Testing
         let model = HealthModel(support: support)
         model.refresh()
         await model.settled()
-        #expect(model.heartbeat == .failure(.missing) && !model.backgroundOffByChoice)
+        #expect(model.heartbeat == .failure(.missing))
         // Not registered and no heartbeat: unknown, not red.
         #expect(model.beatGrade == .unknown)
-        try Data().write(to: runtime.appendingPathComponent("background-off"))
         var state = RuntimeState()
         state.day = CalendarDate.today().description
         state.startsToday = 2
         try JSONEncoder().encode(state).write(to: RuntimeState.url(runtime))
         model.refresh()
         await model.settled()
-        #expect(model.backgroundOffByChoice && model.startsToday == 2)
+        #expect(model.startsToday == 2)
     }
 
     @Test func aHeartbeatFromAProcessThatIsGoneIsRed() async throws {
@@ -45,9 +44,18 @@ import Testing
         model.refresh()
         await model.settled()
         #expect(model.beatGrade == .red)
-        // Right after a start request, with no newer beat, the page says "starting" instead.
-        model.startRequested = Date().addingTimeInterval(1)
-        #expect(model.starting && model.beatGrade == .unknown)
+        // While the keeper starts the runtime, with no newer beat, the page says "starting" instead.
+        let keeper = RuntimeKeeper(system: .init(registration: { .enabled }, live: { _ in false }, start: { _ in nil }))
+        keeper.beatWait = .milliseconds(300)
+        keeper.poll = .milliseconds(20)
+        let starting = HealthModel(support: support, keeper: keeper)
+        starting.refresh()
+        await starting.settled()
+        let run = Task { await keeper.ensureRunning() }
+        while keeper.state != .starting { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(starting.starting && starting.beatGrade == .unknown)
+        #expect(await run.value == .failed(RuntimeKeeper.noBeat))
+        #expect(!starting.starting && starting.startFailure == RuntimeKeeper.noBeat)
     }
 
     /// A read that waits until the test lets it go, standing in for a binder whose files block (a FIFO) or a slow disk.

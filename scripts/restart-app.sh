@@ -65,8 +65,8 @@ if ! mv "$stage/Sprava.app" "$app"; then
     exit 1
 fi
 
-# Only jobs already loaded before the update are restarted. Registration,
-# Login Items approval and the person's background-off choice stay intact.
+# Only jobs already loaded before the update are restarted. Registration and
+# Login Items approval stay intact; the app starts a job that is not running.
 restart_failed=0
 for label in $jobs; do
     if ! launchctl kickstart -k "$domain/$label"; then

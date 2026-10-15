@@ -26,6 +26,7 @@ extension Commands {
         .merging(backupCommands) { a, _ in a }
         .merging(settingsCommands) { a, _ in a }
         .merging(shelfCommands) { a, _ in a }
+        .merging(companionCommands) { a, _ in a }
 
     /// Handles one request: `{"command": ..., ...}`. Returns `{"ok": true, ...}` or `{"ok": false, "error": ...}`.
     public func handle(_ request: String, now: Date = Date(), today: CalendarDate? = nil) -> String {
