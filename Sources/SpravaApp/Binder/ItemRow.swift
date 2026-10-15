@@ -41,7 +41,7 @@ struct ItemRow: View {
         HStack(alignment: .firstTextBaseline) {
             circle
             if changeable, editor.isEditing(item, in: folder) {
-                ItemEditFields(actions: actions, editor: editor, reload: reload)
+                ItemEditFields(actions: actions, editor: editor, folder: folder, reload: reload)
             } else {
                 Text(dateText).monospacedDigit().foregroundStyle(.secondary).frame(width: 120, alignment: .leading)
                 VStack(alignment: .leading, spacing: 2) {
@@ -82,7 +82,7 @@ struct ItemRow: View {
 
     func begin() {
         guard changeable else { return }
-        editor.begin(item, in: folder)
+        editor.begin(item, in: folder, actions, reload: reload)
     }
 
     func close(_ op: String) {
@@ -95,34 +95,36 @@ struct ItemRow: View {
 struct ItemEditFields: View {
     @ObservedObject var actions: BinderActions
     @ObservedObject var editor: ItemEditor
+    let folder: URL
     let reload: () -> Void
     @FocusState private var titleFocused: Bool
 
     var body: some View {
-        // Locked while its change is on its way: the request already holds what was typed.
-        let locked = editor.saving != nil
+        let row = editor.row(in: folder)
         HStack(alignment: .firstTextBaseline) {
-            if let due = editor.due {
-                DatePicker("Due", selection: Binding(get: { ItemEditor.date(editor.due ?? due) },
-                                                     set: { editor.setDue(ItemEditor.day($0)) }),
+            if let due = row?.due {
+                DatePicker("Due", selection: Binding(get: { ItemEditor.date(editor.row(in: folder)?.due ?? due) },
+                                                     set: { editor.setDue(ItemEditor.day($0), in: folder) }),
                            displayedComponents: .date)
                     .labelsHidden()
                     .datePickerStyle(.field)
-                Button("No date") { editor.setDue(nil) }.font(.caption)
+                Button("No date") { editor.setDue(nil, in: folder) }.font(.caption)
             } else {
-                Button("Add date") { editor.setDue(CalendarDate.today()) }.font(.caption)
+                Button("Add date") { editor.setDue(CalendarDate.today(), in: folder) }.font(.caption)
             }
-            TextField("Title", text: Binding(get: { editor.title }, set: { editor.setTitle($0) }))
+            TextField("Title", text: Binding(get: { editor.row(in: folder)?.title ?? "" },
+                                             set: { editor.setTitle($0, in: folder) }))
                 .textFieldStyle(.roundedBorder)
                 .focused($titleFocused)
             Button("Save") { save() }.disabled(actions.busy)
-            Button("Cancel") { editor.cancel() }.keyboardShortcut(.cancelAction)
+            Button("Cancel") { editor.cancel(in: folder) }.keyboardShortcut(.cancelAction)
         }
-        .disabled(locked)
+        // Locked while its change is on its way: the request already holds what was typed.
+        .disabled(editor.saving.contains(folder.standardizedFileURL))
         .onSubmit { save() }
-        .onExitCommand { editor.cancel() }
+        .onExitCommand { editor.cancel(in: folder) }
         .onAppear { titleFocused = true }
     }
 
-    func save() { editor.save(actions, reload: reload) }
+    func save() { editor.save(in: folder, actions, reload: reload) }
 }

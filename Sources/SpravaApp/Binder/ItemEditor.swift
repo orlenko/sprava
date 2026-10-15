@@ -2,88 +2,82 @@ import BinderFormat
 import Foundation
 import SpravaKit
 
-/// The one item being edited in place on a binder's page. Each saved change is one `update_item` (binder-v0 §6.3),
+/// The item being edited in place on each binder's page. Each saved change is one `update_item` (binder-v0 §6.3),
 /// sent through the runtime like every binder write; the runtime's store stays the only writer.
+///
+/// Each binder has at most one open row, and nothing typed is ever kept anywhere but in it: opening another row
+/// saves the open one first, as an inline edit on the Mac does when the person clicks away, and Esc cancels. The
+/// window owns the editor, so the open row is still there when the person comes back from another page.
 @MainActor
 final class ItemEditor: ObservableObject {
-    /// Which row is open: the binder and the item's id as the catalog holds it.
-    struct Key: Hashable {
-        let folder: URL
-        let id: JSONValue
-    }
-
-    /// What was typed into one row, against the item as it was when the row opened.
-    struct Draft {
+    /// The open row of one binder: the item as it was when the row opened, and what was typed.
+    struct Row {
         let item: Item
+        let id: JSONValue
         var title: String
         var due: CalendarDate?
+        /// The change typed so far, as `update_item` args; nil when nothing changed.
+        var change: JSONObject? { ItemEditor.change(of: item, title: title, due: due) }
     }
 
-    @Published private(set) var open: Key?
-    @Published private(set) var title = ""
-    /// The due date being set; nil is "no date".
-    @Published private(set) var due: CalendarDate?
-    /// The row whose change the runtime is carrying out. The request already holds what was typed, so nothing on
-    /// the editor changes until the runtime answers: words typed meanwhile would vanish when the row closes.
-    @Published private(set) var saving: Key?
-    /// The item as it was when the open row opened, which the change is computed against.
-    private var item: Item?
-    /// Rows left with unsaved changes when another row was opened, by key; opening one again brings them back.
-    private var drafts: [Key: Draft] = [:]
+    /// The open row of each binder, by folder.
+    @Published private(set) var rows: [URL: Row] = [:]
+    /// The binders whose open row's change the runtime is carrying out. The request already holds what was typed,
+    /// so nothing on the row changes, and no other row opens, until the runtime answers.
+    @Published private(set) var saving: Set<URL> = []
+
+    /// The open row of this binder.
+    func row(in folder: URL) -> Row? { rows[folder.standardizedFileURL] }
 
     /// Whether this item's row is the one open, in this binder.
     func isEditing(_ item: Item, in folder: URL) -> Bool {
-        guard let open, let id = item.object?["id"] else { return false }
-        return open == Key(folder: folder.standardizedFileURL, id: id)
+        guard let id = item.object?["id"] else { return false }
+        return row(in: folder)?.id == id
     }
 
-    /// Opens a row for editing, setting aside what was typed into the row open before. False for an item without
-    /// an id, which no op can name, and while a change is on its way. The row already open keeps what was typed.
+    /// Opens an item's row. The row already open in this binder is saved first when something was typed into it,
+    /// and the new row opens once the runtime accepts that; when it refuses, the open row stays with its text and
+    /// the page says why. False for an item without an id, which no op can name, and while a change is on its way.
     @discardableResult
-    func begin(_ item: Item, in folder: URL) -> Bool {
-        guard saving == nil, let id = item.object?["id"] else { return false }
-        let key = Key(folder: folder.standardizedFileURL, id: id)
-        if open == key { return true }
-        if let open, let current = self.item, Self.change(of: current, title: title, due: due) != nil {
-            drafts[open] = Draft(item: current, title: title, due: due)
+    func begin(_ item: Item, in folder: URL, _ actions: BinderActions, reload: @escaping () -> Void) -> Bool {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder), let id = item.object?["id"] else { return false }
+        if rows[folder]?.id == id { return true }
+        if rows[folder]?.change != nil {
+            return save(in: folder, actions, reload: reload, then: { [weak self] in self?.open(item, id, in: folder) }) != nil
         }
-        let draft = drafts.removeValue(forKey: key)
-            ?? Draft(item: item, title: item.object?["title"]?.stringValue ?? "", due: item.due)
-        open = key
-        self.item = draft.item
-        title = draft.title
-        due = draft.due
+        open(item, id, in: folder)
         return true
     }
 
-    /// Closes the open row and drops what was typed into it; false while its change is on its way.
+    private func open(_ item: Item, _ id: JSONValue, in folder: URL) {
+        rows[folder] = Row(item: item, id: id, title: item.object?["title"]?.stringValue ?? "", due: item.due)
+    }
+
+    /// Closes this binder's open row and drops what was typed into it; false while its change is on its way.
     @discardableResult
-    func cancel() -> Bool {
-        guard saving == nil else { return false }
-        close()
+    func cancel(in folder: URL) -> Bool {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder) else { return false }
+        rows[folder] = nil
         return true
-    }
-
-    private func close() {
-        open = nil
-        item = nil
-        title = ""
-        due = nil
     }
 
     /// Changes the title being typed; false when no row is open or its change is on its way.
     @discardableResult
-    func setTitle(_ value: String) -> Bool {
-        guard saving == nil, open != nil else { return false }
-        title = value
+    func setTitle(_ value: String, in folder: URL) -> Bool {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder), rows[folder] != nil else { return false }
+        rows[folder]?.title = value
         return true
     }
 
     /// Changes the due date being set (nil: no date); false when no row is open or its change is on its way.
     @discardableResult
-    func setDue(_ value: CalendarDate?) -> Bool {
-        guard saving == nil, open != nil else { return false }
-        due = value
+    func setDue(_ value: CalendarDate?, in folder: URL) -> Bool {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder), rows[folder] != nil else { return false }
+        rows[folder]?.due = value
         return true
     }
 
@@ -91,19 +85,25 @@ final class ItemEditor: ObservableObject {
     /// once the runtime accepts it. A refused change keeps the row open with what was typed, and the page shows why.
     /// Nothing changed: the row just closes.
     @discardableResult
-    func save(_ actions: BinderActions, reload: @escaping () -> Void) -> Task<Void, Never>? {
-        guard saving == nil, !actions.busy, let open, let item, actions.serves(open.folder) else { return nil }
-        guard let args = Self.change(of: item, title: title, due: due) else { close(); return nil }
-        saving = open
-        return actions.run("apply", open.folder, [("op", .str("update_item")), ("args", .object(args))], then: reload,
-                           onSuccess: { [weak self] in if self?.open == open { self?.close() } },
-                           onEnd: { [weak self] in self?.saving = nil })
+    func save(in folder: URL, _ actions: BinderActions, reload: @escaping () -> Void,
+              then next: @escaping () -> Void = {}) -> Task<Void, Never>? {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder), !actions.busy, actions.serves(folder), let row = rows[folder] else { return nil }
+        guard let args = row.change else { rows[folder] = nil; next(); return nil }
+        saving.insert(folder)
+        return actions.run("apply", folder, [("op", .str("update_item")), ("args", .object(args))], then: reload,
+                           onSuccess: { [weak self] in self?.rows[folder] = nil },
+                           onEnd: { [weak self] in
+                               guard let self else { return }
+                               saving.remove(folder)
+                               if rows[folder] == nil { next() }
+                           })
     }
 
     /// The `update_item` args for a new title and due date, or nil when neither changed. An empty title leaves the
     /// title as it was (binder-v0 §6.3: `title` cannot be removed). A due date replaces `no_deadline`, and "no
     /// date" replaces the due date with `no_deadline: true`, so the item keeps exactly one (binder-v0 §4.4).
-    static func change(of item: Item, title: String, due: CalendarDate?) -> JSONObject? {
+    nonisolated static func change(of item: Item, title: String, due: CalendarDate?) -> JSONObject? {
         guard let object = item.object, let id = object["id"] else { return nil }
         var set = JSONObject()
         var unset: [JSONValue] = []
@@ -124,12 +124,12 @@ final class ItemEditor: ObservableObject {
     }
 
     /// A calendar day as the date picker holds it: noon of that day here, so no time zone moves it a day.
-    static func date(_ day: CalendarDate) -> Date {
+    nonisolated static func date(_ day: CalendarDate) -> Date {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
         return calendar.date(from: DateComponents(year: day.year, month: day.month, day: day.day, hour: 12)) ?? Date()
     }
 
     /// The calendar day the picker shows, here.
-    static func day(_ date: Date) -> CalendarDate { CalendarDate(date, in: .current) ?? CalendarDate.today() }
+    nonisolated static func day(_ date: Date) -> CalendarDate { CalendarDate(date, in: .current) ?? CalendarDate.today() }
 }
