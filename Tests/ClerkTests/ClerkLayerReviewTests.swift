@@ -50,7 +50,7 @@ import Testing
             item("The levy is due", "Pay the levy", "pay", when: "November 1"),
         ])
         #expect(doc.items.count == 1)
-        #expect(doc.items.first?.title == "Pay the special assessment")
+        #expect(doc.items.first?.title == "Your share is $1,240")
         #expect(doc.items.first?.whenResolved == CalendarDate(year: 2026, month: 11, day: 1))
         #expect(doc.items.first?.flags.contains("date taken from the next sentence") == true)
     }

@@ -155,7 +155,8 @@ import Testing
         #expect(doc.documentClass == "action")
         #expect(doc.date?.description == "2026-09-30")
         // The "note" item is left out; the reply the notice asks for is added by code.
-        #expect(doc.items.map(\.title) == ["Pay the special levy", "Reply about \u{201C}Notice of special levy\u{201D}"])
+        // The model's "Pay the special levy" is not the notice's words: the title is the notice's own.
+        #expect(doc.items.map(\.title) == ["The special levy of $450.00 is due", "Reply about \u{201C}Notice of special levy\u{201D}"])
         #expect(doc.items.last?.whenResolved?.description == "2026-10-20")
         #expect(doc.escalate.contains("a reply may be needed"))
         #expect(outcome.replaced && outcome.items == 2 && outcome.escalated)
@@ -171,7 +172,7 @@ import Testing
         #expect(card.cardNotes.contains { $0.hasPrefix("a careful reading is recommended") })
         let r = try approve(s, card, [("obtained", .obj([("channel", .str("download"))]))])
         #expect(r["ok"] == .bool(true), "\(r)")
-        #expect(Teka.read(s.folder).items.contains { $0.title == "Pay the special levy" })
+        #expect(Teka.read(s.folder).items.contains { $0.title == "The special levy of $450.00 is due" })
     }
 
 }
