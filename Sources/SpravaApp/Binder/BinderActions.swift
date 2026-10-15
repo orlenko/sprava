@@ -250,7 +250,8 @@ final class BinderActions: ObservableObject {
                    onSuccess: { [weak self] in self?.savedDescription = line })
     }
 
-    func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) {
+    @discardableResult
+    func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never> {
         run("undo", folder, [("op_id", .string(change.id))], then: reload)
     }
 
@@ -392,10 +393,12 @@ final class BinderActions: ObservableObject {
         settle(card, "reject", folder, [("proposal", .string(card.id)), ("digest", .string(card.digest))], reload: reload)
     }
 
-    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void) {
-        guard let id = item.object?["id"] else { return }
+    /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id.
+    @discardableResult
+    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
+        guard let id = item.object?["id"] else { return nil }
         let at = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)
-        run("apply", folder, [("op", .string(op)),
-                              ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))], then: reload)
+        return run("apply", folder, [("op", .string(op)),
+                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))], then: reload)
     }
 }
