@@ -13,9 +13,10 @@ struct NowView: View {
     let reload: () -> Void
     /// The runtime's state, for the line that says when changes cannot be made.
     var health: HealthModel?
+    /// The item being edited in place, if any, and the rows set aside with changes. Owned by the window, so
+    /// a visit to another page leaves what was typed for the person's return.
+    @ObservedObject var editor: ItemEditor
     @StateObject private var actions = BinderActions()
-    /// The item being edited in place, if any.
-    @StateObject private var editor = ItemEditor()
 
     func refresh() {
         reload()

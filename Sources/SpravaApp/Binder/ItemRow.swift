@@ -33,8 +33,9 @@ struct ItemRow: View {
 
     /// Whether the row can be changed at all: an op names the item by its id.
     var changeable: Bool { editable && item.object?["id"] != nil }
-    /// A recurring item is advanced, not closed, and the hub does that for now.
-    var closable: Bool { changeable && !item.hasRecurrence }
+    /// A recurring item is advanced, not closed, and the hub does that for now. An open row is saved or cancelled
+    /// first, so a closing the runtime refuses never takes what was typed with it.
+    var closable: Bool { changeable && !item.hasRecurrence && !editor.isEditing(item, in: folder) }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -85,7 +86,7 @@ struct ItemRow: View {
     }
 
     func close(_ op: String) {
-        if editor.isEditing(item, in: folder) { editor.cancel() }
+        guard closable else { return }
         actions.close(item, as: op, folder, reload: reload)
     }
 }

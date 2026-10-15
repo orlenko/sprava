@@ -274,6 +274,8 @@ struct ShelfView: View {
     @StateObject private var inbox = InboxModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
+    /// The binder page's item editor, kept here so what was typed outlives a visit to another page.
+    @StateObject private var itemEditor = ItemEditor()
 
     var body: some View {
         NavigationSplitView {
@@ -328,7 +330,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health)
+                        reload: { model.refresh() }, health: model.health, editor: itemEditor)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")

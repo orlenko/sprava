@@ -152,6 +152,24 @@ import Testing
         #expect(editor.title == "Send the Acme invoice" && editor.due == CalendarDate(year: 2026, month: 12, day: 20))
     }
 
+    @Test func anOpenRowIsSavedOrCancelledBeforeItCanBeClosed() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let editor = ItemEditor()
+        let invoice = try await openItem("acme-1", in: folder)
+        let row = ItemRow(item: invoice, bucket: .later, actions: actions, editor: editor, folder: folder, editable: true, reload: {})
+        #expect(row.closable)
+        editor.begin(invoice, in: folder)
+        editor.setTitle("Send the Acme invoice by post")
+        // A completion the runtime refused would otherwise have taken the typed title with it.
+        #expect(!row.closable)
+        row.close("complete")
+        #expect(!runtime.sent.contains { $0["command"] == .str("apply") })
+        #expect(editor.title == "Send the Acme invoice by post")
+        editor.cancel()
+        #expect(row.closable)
+    }
+
     @Test func aRowIsLockedWhileItsChangeIsOnItsWay() async throws {
         let (actions, runtime, folder) = try await binder()
         await actions.load(folder, adopted: true)
