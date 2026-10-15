@@ -71,8 +71,8 @@ import Testing
         #expect(editor.begin(try await openItem("acme-1", in: folder), in: folder))
         #expect(editor.title == "Send the Acme invoice" && editor.due == CalendarDate(year: 2026, month: 12, day: 20))
 
-        editor.title = "  Send the Acme invoice by email "
-        editor.due = CalendarDate(year: 2026, month: 12, day: 22)
+        editor.setTitle("  Send the Acme invoice by email ")
+        editor.setDue(CalendarDate(year: 2026, month: 12, day: 22))
         try await #require(editor.save(actions, reload: {})).value
         #expect(actions.message == nil && editor.open == nil)
         let op = try await lastOp(in: folder)
@@ -84,7 +84,7 @@ import Testing
 
         // "No date" replaces the due date with no_deadline, so the item keeps exactly one (binder-v0 §4.4).
         editor.begin(edited, in: folder)
-        editor.due = nil
+        editor.setDue(nil)
         try await #require(editor.save(actions, reload: {})).value
         #expect(try await lastOp(in: folder)["args"] == .obj([("id", .str("acme-1")), ("set", .obj([("no_deadline", .bool(true))])),
                                                         ("unset", .array([.str("due")]))]))
@@ -93,7 +93,7 @@ import Testing
         // A date on an item without one removes its no_deadline.
         editor.begin(try await openItem("acme-2", in: folder), in: folder)
         #expect(editor.due == nil)
-        editor.due = CalendarDate(year: 2026, month: 12, day: 1)
+        editor.setDue(CalendarDate(year: 2026, month: 12, day: 1))
         try await #require(editor.save(actions, reload: {})).value
         #expect(try await lastOp(in: folder)["args"] == .obj([("id", .str("acme-2")), ("set", .obj([("due", .str("2026-12-01"))])),
                                                         ("unset", .array([.str("no_deadline")]))]))
@@ -102,7 +102,7 @@ import Testing
         // Nothing changed, or only an emptied title: the row closes and no op is sent.
         let sent = runtime.sent.filter { $0["command"] == .str("apply") }.count
         editor.begin(try await openItem("acme-2", in: folder), in: folder)
-        editor.title = "   "
+        editor.setTitle("   ")
         #expect(editor.save(actions, reload: {}) == nil)
         #expect(editor.open == nil && runtime.sent.filter { $0["command"] == .str("apply") }.count == sent)
 
@@ -121,13 +121,66 @@ import Testing
         await actions.load(folder, adopted: true)
         let editor = ItemEditor()
         editor.begin(try await openItem("acme-1", in: folder), in: folder)
-        editor.title = "Send the Acme invoice twice"
+        editor.setTitle("Send the Acme invoice twice")
         runtime.answers["apply"] = { _ in #"{"ok":false,"error":"the binder needs a repair first"}"# }
         try await #require(editor.save(actions, reload: {})).value
         #expect(actions.message == "the binder needs a repair first")
         #expect(editor.title == "Send the Acme invoice twice")
         #expect(editor.isEditing(try await openItem("acme-1", in: folder), in: folder))
         #expect(try await openItem("acme-1", in: folder).title == "Send the Acme invoice")
+    }
+
+    @Test func openingAnotherRowKeepsWhatWasTypedIntoTheFirst() async throws {
+        let (_, _, folder) = try await binder()
+        let invoice = try await openItem("acme-1", in: folder)
+        let call = try await openItem("acme-2", in: folder)
+        let editor = ItemEditor()
+        editor.begin(invoice, in: folder)
+        editor.setTitle("Send the Acme invoice by post")
+        editor.setDue(nil)
+        // Edit chosen again on the open row changes nothing typed.
+        editor.begin(invoice, in: folder)
+        #expect(editor.title == "Send the Acme invoice by post" && editor.due == nil)
+
+        editor.begin(call, in: folder)
+        #expect(editor.isEditing(call, in: folder) && editor.title == "Call the Acme accountant")
+        editor.begin(invoice, in: folder)
+        #expect(editor.title == "Send the Acme invoice by post" && editor.due == nil)
+        // Cancel drops it for good.
+        editor.cancel()
+        editor.begin(invoice, in: folder)
+        #expect(editor.title == "Send the Acme invoice" && editor.due == CalendarDate(year: 2026, month: 12, day: 20))
+    }
+
+    @Test func aRowIsLockedWhileItsChangeIsOnItsWay() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let applied = try #require(runtime.answers["apply"])
+        // The runtime answers the change only when the test lets it.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        runtime.answers["apply"] = { request in
+            for await _ in gate { break }
+            return await applied(request)
+        }
+        let editor = ItemEditor()
+        let invoice = try await openItem("acme-1", in: folder)
+        editor.begin(invoice, in: folder)
+        editor.setTitle("Send the Acme invoice by email")
+        let save = try #require(editor.save(actions, reload: {}))
+        #expect(editor.saving != nil)
+        // Nothing typed now could reach the binder, so nothing can be typed, and the row cannot close or move.
+        #expect(!editor.setTitle("Send the Acme invoice by email today"))
+        #expect(!editor.setDue(nil))
+        #expect(!editor.cancel())
+        #expect(!editor.begin(try await openItem("acme-2", in: folder), in: folder))
+        #expect(editor.save(actions, reload: {}) == nil)
+        #expect(editor.title == "Send the Acme invoice by email")
+
+        open.yield()
+        await save.value
+        #expect(editor.saving == nil && editor.open == nil && actions.message == nil)
+        #expect(try await openItem("acme-1", in: folder).title == "Send the Acme invoice by email")
+        #expect(runtime.sent.filter { $0["command"] == .str("apply") }.count == 1)
     }
 
     @Test func completingAndDroppingCloseTheItemAndCanBeUndone() async throws {

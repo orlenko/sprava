@@ -98,23 +98,26 @@ struct ItemEditFields: View {
     @FocusState private var titleFocused: Bool
 
     var body: some View {
+        // Locked while its change is on its way: the request already holds what was typed.
+        let locked = editor.saving != nil
         HStack(alignment: .firstTextBaseline) {
             if let due = editor.due {
                 DatePicker("Due", selection: Binding(get: { ItemEditor.date(editor.due ?? due) },
-                                                     set: { editor.due = ItemEditor.day($0) }),
+                                                     set: { editor.setDue(ItemEditor.day($0)) }),
                            displayedComponents: .date)
                     .labelsHidden()
                     .datePickerStyle(.field)
-                Button("No date") { editor.due = nil }.font(.caption)
+                Button("No date") { editor.setDue(nil) }.font(.caption)
             } else {
-                Button("Add date") { editor.due = CalendarDate.today() }.font(.caption)
+                Button("Add date") { editor.setDue(CalendarDate.today()) }.font(.caption)
             }
-            TextField("Title", text: $editor.title)
+            TextField("Title", text: Binding(get: { editor.title }, set: { editor.setTitle($0) }))
                 .textFieldStyle(.roundedBorder)
                 .focused($titleFocused)
             Button("Save") { save() }.disabled(actions.busy)
             Button("Cancel") { editor.cancel() }.keyboardShortcut(.cancelAction)
         }
+        .disabled(locked)
         .onSubmit { save() }
         .onExitCommand { editor.cancel() }
         .onAppear { titleFocused = true }
