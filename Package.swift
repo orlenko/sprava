@@ -12,6 +12,8 @@ let package = Package(
         // Layer 0: JSON, atomic files, state files, dates, ids, paths.
         .target(name: "SpravaKit"),
         .testTarget(name: "SpravaKitTests", dependencies: ["SpravaKit", "SpravaTestSupport"]),
+        // Layer 0: the one SQLite setting Swift cannot reach (sqlite3_db_config is a variadic C call).
+        .target(name: "SQLiteDefensive", linkerSettings: [.linkedLibrary("sqlite3")]),
         // The invented fixtures and helpers several test targets share.
         .target(name: "SpravaTestSupport", dependencies: ["SpravaKit"],
                 path: "Tests/SpravaTestSupport", resources: [.copy("Fixtures")]),
@@ -45,6 +47,10 @@ let package = Package(
         .target(name: "Hub", dependencies: ["Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "HubTests", dependencies: ["Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaTestSupport",
                                                      "SpravaKit"]),
+
+        // Layer 4: each binder's search index (docs/conversation.md §9.1).
+        .target(name: "Retrieval", dependencies: ["Extract", "BinderFormat", "SQLiteDefensive", "SpravaKit"]),
+        .testTarget(name: "RetrievalTests", dependencies: ["Retrieval", "BinderFormat", "SpravaKit"]),
 
         // Backup capabilities arrive in small, independently tested increments.
         .target(name: "Backup", dependencies: ["Hub", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),

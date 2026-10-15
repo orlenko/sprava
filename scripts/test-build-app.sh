@@ -26,6 +26,12 @@ class BuildAppTests(unittest.TestCase):
         shutil.copy2(REPO / "scripts/build-app.sh", self.repo / "scripts/build-app.sh")
         shutil.copytree(REPO / "Resources", self.repo / "Resources")
         shutil.copy2(REPO / "LICENSE", self.repo / "LICENSE")
+        # The model helper's build (scripts/build-llm.sh) is a stand-in that leaves its two files where the real one does.
+        llm = self.repo / "scripts/build-llm.sh"
+        llm.write_text('#!/bin/sh\nset -eu\ncd "$(dirname "$0")/.."\necho "build-llm" >> "$TEST_LOG"\n'
+                       '[ "${TEST_LLM_FAIL:-0}" = 0 ] || exit 1\nmkdir -p build/llm\n'
+                       'echo sprava-llm > build/llm/sprava-llm\necho notices > build/llm/LICENSES.txt\n')
+        llm.chmod(0o755)
         self.products = self.root / "products"
         self.products.mkdir()
         for name in PRODUCTS:
@@ -104,14 +110,15 @@ sys.exit(0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.bundle / "version").exists())
         contents = self.bundle / "Contents"
-        for name in PRODUCTS + ["restic"]:
+        for name in PRODUCTS + ["restic", "sprava-llm"]:
             self.assertTrue((contents / "MacOS" / name).is_file(), name)
+        self.assertEqual((contents / "Resources/llama.cpp-LICENSES.txt").read_text(), "notices\n")
         seal = (contents / "_CodeSignature/CodeResources").read_text()
         for plist in (self.repo / "Resources/LaunchAgents").iterdir():
             self.assertTrue((contents / "Library/LaunchAgents" / plist.name).is_file())
             self.assertIn(f"<key>Library/LaunchAgents/{plist.name}</key>", seal)
         signed = self.signed()
-        self.assertEqual(len(signed), 6)
+        self.assertEqual(len(signed), 7)
         self.assertTrue(signed[-1].endswith(".building-Sprava.app"), signed)
         self.assertIn("swift build --product SpravaApp -c release", self.log.read_text())
 
@@ -122,6 +129,20 @@ sys.exit(0)
         self.assertIn("restic not found", result.stderr)
         self.assertNotIn("swift", self.log.read_text())
         self.assertEqual((self.bundle / "version").read_text(), "old\n")
+
+    def test_failed_model_helper_build_builds_nothing_else(self):
+        self.previous()
+        result = self.run_script(TEST_LLM_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("swift", self.log.read_text())
+        self.assertEqual((self.bundle / "version").read_text(), "old\n")
+
+    def test_model_helper_is_signed_with_its_sandbox(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        line = next(l for l in self.log.read_text().splitlines()
+                    if l.startswith("codesign --force") and l.endswith("MacOS/sprava-llm"))
+        self.assertIn("--identifier ca.orlenko.sprava.llm --entitlements Resources/sprava-llm.entitlements", line)
 
     def test_failed_bundle_signing_keeps_previous_bundle(self):
         self.previous()
