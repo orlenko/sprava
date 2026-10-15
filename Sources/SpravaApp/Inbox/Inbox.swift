@@ -58,6 +58,8 @@ final class InboxModel: ObservableObject {
     init(client: RuntimeClient = RuntimeClient(), support: URL = SpravaPaths.supportDirectory()) {
         self.client = client
         self.support = support
+        // The Inbox reads every 30 seconds: a launch before the runtime's must not leave its line up all day.
+        client.clearsNotRunning(self, \.message)
     }
 
     func load() async {

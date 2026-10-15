@@ -39,6 +39,7 @@ final class BackupModel: ObservableObject {
 
     init(client: RuntimeClient = RuntimeClient()) {
         self.client = client
+        client.clearsNotRunning(self, \.message)
     }
 
     func load() async {

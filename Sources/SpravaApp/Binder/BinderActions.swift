@@ -118,6 +118,7 @@ final class BinderActions: ObservableObject {
         self.readTimeout = readTimeout
         self.readKeeping = readKeeping
         self.renderPreview = renderPreview
+        client.clearsNotRunning(self, \.message)
     }
 
     /// Whether `folder` is still the binder shown.

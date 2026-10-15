@@ -32,6 +32,7 @@ final class BrainsModel: ObservableObject {
          authenticate: @escaping () async throws -> Void = { try await BrainsModel.authenticatePerson() }) {
         self.client = client
         self.authenticate = authenticate
+        client.clearsNotRunning(self, \.message)
     }
 
     /// Client registration and widening document access require the person, beyond UI automation (architecture 2.1).
