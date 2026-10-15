@@ -174,7 +174,8 @@ struct HealthView: View {
                 if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(.red) }
                 else if !model.backupConfigured { Text("Backup is not set up. Open Backup in the sidebar.").foregroundStyle(.orange) }
                 else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
-                ForEach(Array(model.backups.enumerated()), id: \.offset) { _, b in
+                ForEach(HealthLine.rows("backup", model.backups)) { line in
+                    let b = line.value
                     let age = b.at.map { model.now.timeIntervalSince($0) } ?? .infinity
                     HStack {
                         // Amber after 48 hours without a backup, red after 7 days (architecture 3.4).
@@ -190,11 +191,12 @@ struct HealthView: View {
             Section("Doctor") {
                 if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(.red) }
                 else if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
-                ForEach(Array(model.findings.enumerated()), id: \.offset) { _, f in
+                ForEach(HealthLine.rows("doctor", model.findings)) { line in
+                    let f = line.value
                     HStack(alignment: .top) {
                         Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
                             .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
-                        Text([f.binder, f.text].compactMap { $0 }.joined(separator: ": "))
+                        Text(f.sentence)
                     }
                 }
             }
@@ -224,7 +226,7 @@ struct HealthView: View {
         }
         if let failure = model.startFailure, failure != model.locationProblem { Text(failure).foregroundStyle(.orange) }
         if let problem = model.locationProblem { Text(problem).foregroundStyle(.orange) }
-        ForEach(DisplayLine.rows(model.refusals)) { Text($0.text).font(.caption.monospaced()).foregroundStyle(.secondary) }
+        ForEach(HealthLine.rows("refusal", model.refusals)) { Text($0.value).font(.caption.monospaced()).foregroundStyle(.secondary) }
     }
 
     func statusText(_ grade: HealthGrade) -> String {
