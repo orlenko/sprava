@@ -96,6 +96,22 @@ import Testing
         #expect(FilingList(support: c.support).binders(rows: rows(), deviceID: c.deviceID).isEmpty)
     }
 
+    @Test func twoBindersOfOneNameAreOfferedForNeither() throws {
+        let c = commands()
+        let first = try adopted(c, "acme")
+        let second = try adopted(c, "acme")
+        let other = try adopted(c, "globex")
+        let rows = Shelf.rows(registry: nil, picked: [first, second, other])
+        let list = FilingList(support: c.support)
+        #expect(list.binders(rows: rows, deviceID: c.deviceID).map(\.name) == ["globex"])
+        // A note naming that name is not offered either: the name cannot tell the two apart.
+        #expect(list.binders(rows: rows, deviceID: c.deviceID, hint: "acme").map(\.name) == ["globex"])
+        // Once one is taken off the list, the other is the only one the name means there.
+        _ = try settings(c, second, [("filing", .bool(false))])
+        #expect(list.binders(rows: rows, deviceID: c.deviceID).map(\.folder.standardizedFileURL.path).sorted()
+            == [first, other].map(\.standardizedFileURL.path).sorted())
+    }
+
     @Test func aPrivateBinderStaysOffTheListUntilThePersonWritesItsLine() throws {
         let c = commands()
         let folder = try adopted(c, "acme")

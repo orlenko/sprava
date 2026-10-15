@@ -14,18 +14,21 @@ extension FilingList {
     /// note even when it is off the list, so a note typed on a binder's page stays there.
     public func binders(rows: [ShelfRow], deviceID: String, hint: String? = nil) -> [FilingBinder] {
         let all = load()
-        var seen = Set<String>()
-        var list: [FilingBinder] = rows.compactMap { row in
+        let listed: [FilingBinder] = rows.compactMap { row in
             guard Self.mayFile(row, deviceID: deviceID) else { return nil }
             let entry = all[row.folder.standardizedFileURL.path] ?? Self.defaultEntry(folder: row.folder, teka: row.teka)
             guard entry.filing else { return nil }
             // A binder at disclosure none needs the neutral line the person wrote: its label alone means nothing.
             if entry.description.isEmpty, PrivacyRatchet.disclosure(row) == "none" { return nil }
             // A binder whose label cannot be made (the label key is unreadable) is left out, never named.
-            guard let name = try? self.name(of: row), name != "not-sure", seen.insert(name).inserted else { return nil }
+            guard let name = try? self.name(of: row), name != "not-sure" else { return nil }
             return Self.binder(row, name: name, description: entry.description)
         }
-        if let hint, hint != "not-sure", !seen.contains(hint) {
+        // A name two binders on the list share is offered for neither: the clerk's answer is a name, and keeping
+        // the first would file the other one's notes into it.
+        let counts = Dictionary(listed.map { ($0.name, 1) }, uniquingKeysWith: +)
+        var list = listed.filter { counts[$0.name] == 1 }
+        if let hint, hint != "not-sure", counts[hint] == nil {
             let named = rows.filter { $0.name == hint && Self.mayFile($0, deviceID: deviceID) && PrivacyRatchet.disclosure($0) != "none" }
             if named.count == 1, let row = named.first {
                 list.append(Self.binder(row, name: hint, description: all[row.folder.standardizedFileURL.path]?.description ?? ""))
