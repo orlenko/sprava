@@ -18,6 +18,8 @@ final class Runtime: @unchecked Sendable {
     static let xpcProtocol = 1
 
     let support: URL
+    /// Development never selects the production credential backend or registers Phone actions.
+    let development: Bool
     let runtimeDir: URL
     /// The state queue: records, the scheduler and everything below are read and changed only here.
     let queue = DispatchQueue(label: "sprava.runtime.state")
@@ -58,8 +60,9 @@ final class Runtime: @unchecked Sendable {
 
     var breakersURL: URL { runtimeDir.appendingPathComponent("breakers.json") }
 
-    init(support: URL, lease: Lease) {
+    init(support: URL, lease: Lease, development: Bool) {
         self.support = support
+        self.development = development
         runtimeDir = support.appendingPathComponent("runtime", isDirectory: true)
         self.lease = lease
         trustBacklog = TrustBacklog(support: support)
@@ -99,7 +102,10 @@ final class Runtime: @unchecked Sendable {
             self.commands = commands
             // No backup request runs yet, so one left "running" was cut off by the stop.
             do { try BackupRequests(support: support).recoverInterrupted() } catch { log("backup requests_unreadable") }
-            let service = XPCService(commands: commands, watch: watch) { [weak self] line in self?.log(line) }
+            let companion: CompanionRuntimeRequests?
+            if development { companion = nil }
+            else { companion = try .production(support: support, watch: watch) }
+            let service = XPCService(commands: commands, watch: watch, companion: companion) { [weak self] line in self?.log(line) }
             service.start()
             xpc = service
             // Brains share the command queue with the app: one writer.

@@ -60,7 +60,7 @@ case .held(let pid):
     RuntimeState.recordRefusal(runtimeDir)
     exit(0)
 case .acquired(let lease):
-    let runtime = Runtime(support: support, lease: lease)
+    let runtime = Runtime(support: support, lease: lease, development: dev)
     runtime.start()
     dispatchMain()
 }
