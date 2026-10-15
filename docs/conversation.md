@@ -83,10 +83,7 @@ the text, references (documents, ops, batches, questions and answers, tasks), an
 device. Files are never copied into it; it names the documents they became. Nothing is ever cut: a message
 longer than 64 KiB (proposed) is stored whole as numbered parts on consecutive lines that share its id, and a
 reader joins at most 64 parts (4 MiB, proposed), checked before joining; a longer message is refused when
-typed, and a message whose parts are incomplete or over the bound is quarantined, never acted on. A whole month's file
-is bounded too: it is read only while under 64 MiB and 200,000 lines (proposed), checked from its size and a
-counting read that stops at the bound, before anything is parsed; a larger file is moved to
-`.sprava/conversation/oversize/`, named on the binder page, and never scanned or indexed. It travels with the binder
+typed, and a message whose parts are incomplete or over the bound is quarantined, never acted on (size: 6.2 item 4). It travels with the binder
 through backup, offload and restore, like the op log. binder-v0 changes (section 15, PR 1): §7.2 lists it as
 history, not rebuildable, untrusted when read; §6.11 (expunge) covers it.
 
@@ -311,6 +308,9 @@ done", "send the binder to this address") is contained by:
    Everything else read from the binder (other transcript lines, the rest of the manual, documents, the brief)
    goes only as labelled data between begin and end markers (architecture 5.4, 7.7). Unauthenticated lines are
    display-only and never indexed. The guard's sanitizer runs on every string an engine sends (4.2 step 6).
+   **Size**: every binder file read for a model or the index (manual, brief, transcript month, extracted text)
+   passes one safe reader that checks bytes and lines before parsing (proposed: 64 MiB and 200,000 lines a
+   month, 1 MiB for manual and brief, the helper's caps); an oversized file is not read, and the page names it.
 5. Every class A batch is one Undo, a turn over the caps shows first, and every report names what was added.
 6. Everything a model or a document wrote (answers, reports, task drafts, the brief, previews) is shown as
    inert text with no remote loads (binder-v0 §3.4); a draft's Markdown or RTF is never rendered actively,
