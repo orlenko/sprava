@@ -206,16 +206,16 @@ report says why and offers "File as is" where that is safe.
 
 ### 5.2 Importing by path or description
 
-"Include `this-file.ext` from `/that/folder/over/there/`", "include the March statement from Downloads": the
-router reads the request into a path or a folder plus a description. The app window does the import, because
-it is the person's direct command and the app holds the person's file permissions (Downloads, Documents,
-Desktop) that the runtime, a LaunchAgent, may not have (spike S8). An exact path is imported as a drop. A
-description is matched by code in the named folder (default Downloads) by name, kind and date ("March" means a
-date in March or the word in the name); one match is imported at once, more than one is a question listing
-them with check boxes, held only in the app's window: the transcript and every model see only the files
-chosen. None says what was searched. `~` and relative names are normalized, a trailing slash or
-quotes do not matter, and a folder is imported one level deep. Everything goes through the one opener above,
-and a description never matches a link. The original is never moved or changed.
+"Include `this-file.ext` from `/that/folder/over/there/`", "include the March statement from Downloads". A
+model never supplies a location: code extracts the candidate paths and folder names from the person's own
+message (and the drop) mechanically, and the router may only pick among them by index; a model output naming
+a location absent from the message is discarded. The app window does the import, as the person's command
+with the person's file permissions, which the runtime, a LaunchAgent, may lack (spike S8). An exact path is
+imported as a drop. A description is matched by code in the named folder (default Downloads) by name, kind
+and date, and always shows a one-line card naming the file ("Import `statement-2026-03.pdf` from
+Downloads?") before anything is opened; several matches are check boxes, held only in the app's window, and
+the transcript and every model see only the files chosen. Names are normalized; a folder is imported one
+level deep, through the one opener above; a description never matches a link; the original is left as it is.
 
 ### 5.3 Arrivals
 
@@ -718,8 +718,8 @@ the local model follows, then the back office.
 9. **Brains: the front desk model's choice by memory and download.**
 10. **Brains: the front desk router on the local model**, quote-first answers, "this needs thinking".
 11. **Extract: translation** on device, both texts in the index.
-12. **Retrieval: the brief keeper.** `BRIEF.md` rendering and code's parts, with the word-for-word checks run
-    against the original extracted text in the index (layer 4, on `Extract`), never a translation.
+12. **The brief.** `Retrieval` checks facts against the original text; a narrow `BinderStore` interface, the
+    binder's sole writer (code-structure §4.1), renders and writes `BRIEF.md`, keeping its Notes.
 13. **BinderStore: the filing rules**: grammar, the manual's rules part, acceptance; the reader takes them.
 14. **Brains: the Claude Code back office** (its spike first: the home, `setup-token`, `--safe-mode`): the
     per-binder home, session and resume, lock, the fail-closed start-up check,
