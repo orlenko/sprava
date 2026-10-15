@@ -51,8 +51,10 @@ syncs low; JSON output (`--json`) so Sprava parses progress and results instead 
 
 - Each binder folder, as one snapshot per binder, tagged with the binder's opaque id (never its name, so the
   tags say nothing even to someone who has the key and reads the snapshot list over the person's shoulder).
-  Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, `.*.tmp`, `.DS_Store`, and every
-  store rebuildable from the binder (the index and its sidecars, `snapshot.json`, `cursors.json`), rebuilt on restore.
+  Included: everything, `.sprava/` and `intake/` too. Excluded: `.teka.lock`, `.*.tmp`, `.DS_Store`, and the
+  stores rebuildable from the binder, every one anchored to the binder's own `.sprava/` (`/.sprava/index.sqlite*`,
+  `/.sprava/snapshot.json`, `/.sprava/cursors.json`), rebuilt on restore. A filed document with one of those
+  names anywhere else is backed up; the code PR adds a regression test for it.
 - Sprava's own state, as its own snapshot: the Shelf, settings, the capture store, unfiled cards, the clerk's
   records, integration settings (`~/Library/Application Support/Sprava`, minus logs, caches, `models/` (the
   front desk's downloaded models) and `brains/` (the back office's per-binder Claude and Codex homes, with

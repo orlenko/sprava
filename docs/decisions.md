@@ -311,9 +311,9 @@ D1 to D14 were decided by the author on 2026-10-14 ("go ahead with the plan"); n
   reopening anything else, moving a document to another binder, more than 20 additions in a turn) takes one tap
   in the conversation; class C (disclosure, privacy markers, names, expunge, engine and backup settings,
   anything outward, deleting files, manuals and dot folders) stays in the app's own controls. Code decides the
-  class from the op and its target, never a model. Document text is data, never instructions: an item read
-  from a document is added at once only when code anchors its quote and found its date or amount, else it
-  is a one-tap suggestion, and no log entry is written from a document's text. Adds
+  class from the op and its target, never a model. Document text is data, never instructions: an obligation
+  read from a document is a one-tap suggestion unless the person's turn asked for it, and no log entry is
+  written from a document's text. Adds
   `move_document`, `unfile_document` and `transfer_document` to binder-v0 (conversation.md §6).
 - **D4 decided.** Two roles in every binder. The front desk, a local model with code, is always present and
   makes the simple decisions (file, search and quote, add a to-do, route). The back office, Claude Code or,

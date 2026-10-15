@@ -94,9 +94,8 @@ history, not rebuildable, untrusted when read; §6.11 (expunge) covers it.
 
 | Surface | What it sees of the conversation |
 |---|---|
-| The front desk | The brief, the rules, the passages it retrieved, and recent turns: only lines the runtime itself wrote (their digests are in its state); any other line is shown, never fed to a model |
-| The back office | Recent turns as it is fed them, plus its own session history (11.1) |
-| The index (9.1) | The person's own lines, so "what did I say about the plumber?" works |
+| The front desk and the back office | Recent turns, only lines the runtime authenticates, as 6.2 item 4 says; the back office also its own session history (11.1) |
+| The index (9.1) | The person's authenticated lines (6.2 item 4), so "what did I say about the plumber?" works |
 | Hub slice, Today page, companion views, registered MCP clients | Nothing |
 | Logs, notifications, heartbeat | Never content (architecture 3.7). "A binder has a question for you" |
 
@@ -120,8 +119,8 @@ with output constrained by a grammar, so the model can only answer with one of t
 | task | Hands it to the back office as a task (10), or says "this needs thinking" (9.3) |
 | conversation | A one-line reply |
 
-Before every job the front desk reads the binder's filing rules (8.1), as the person's standing
-instructions, and its brief (8.2), as labelled data. Both sit at the start of the prompt, so the server's
+Before every job the front desk reads the binder's filing rules (8.1) and its brief (8.2), each as 6.2 item 4
+says. Both sit at the start of the prompt, so the server's
 prompt cache reuses them, and an answer call stays within 2,000 to 4,000 tokens (11.2). It has no
 tools and starts nothing: code does the retrieval and every change, and each change passes the class rule of
 6.1. Apple's on-device model stays the clerk that reads notes and documents (decisions.md P5), and becomes the
@@ -148,7 +147,7 @@ The terminal is not the app's window, so it cannot authorize changes (6.1): its 
 registered client, and anything it asks to change arrives in the conversation as a proposal with Apply. The
 person presses Resume in the header to hand the session back; Sprava checks that no terminal process still
 holds it, revokes the token, and imports the turns made in the terminal from the session's own history file
-into the transcript as lines marked "in Terminal", before it drives again (11.1). Session files are deleted
+into the transcript as display lines marked "in Terminal" (never instructions, 6.2 item 4) before it drives again. Session files are deleted
 only after that import has succeeded; if it fails, they are kept and the engine settings say so. A terminal
 left open is noticed at the next Resume or at the latest when the task ends, and imported the same way.
 
@@ -180,20 +179,15 @@ it receives. There is no second path to get wrong:
    the filing rules go in front of the reader as instructions.
 3. The front desk files each document at once (class A): title, date and kind; the folder a filing rule names,
    else the folder most of the binder's documents of that kind live in, else `documents/`; a `file_document`
-   op; and the items it creates (a deadline, a payment, a reply owed). One drop is one batch.
-   Because a document's text is untrusted, an item read from it is added at once only when code holds the
-   evidence (the deterministic check, decisions.md D3): its quote is found in the document's text, its date
-   was resolved and its amount parsed by code from that same sentence, and the document gives at most 5 such
-   items (proposed). Evidence that text exists is not evidence of an unconditional duty (17.6): a sentence
-   with a condition or option ("if", "unless", "optional", "may", "subject to", "si", "sauf", "facultatif"), on
-   a page read with low OCR confidence, or with a date that differs between original and translation, never
-   becomes an unconditional to-do. Any other item the reading suggests becomes a one-tap suggestion in the
-   report, never applied by itself. Log entries are never written from a document's text, only from the
-   person's words.
-   Moving the file into a document folder is always applied, since it adds nothing a document can steer.
+   op. One drop is one batch. **Obligations from a document**: a to-do, deadline or payment read from a
+   document is never applied by evidence alone, since a quote and a date do not prove that the duty is this
+   person's, is unconditional, or comes from the governing version (17.6). Each is a one-tap suggestion in the
+   report (with its quote, and any condition, low legibility or date that differs in translation flagged),
+   unless the person's current authenticated turn asked for it ("add the deadlines from this letter"). Log
+   entries come only from the person's words. Moving the file is always applied.
 4. The report: "Filed 3 documents: Special assessment notice (French, translated) in `notices/`; Bylaws,
-   consolidated 2024 in `governing/`; Insurance certificate in `insurance/`. Added: Pay special assessment, due
-   2026-11-30." Undo undoes the batch; each line has its own Undo and Change.
+   consolidated 2024 in `governing/`; Insurance certificate in `insurance/`. Suggested: Pay special
+   assessment, due 2026-11-30 [Add]." Undo undoes the batch; each line has its own Undo and Change.
 5. With a back office, the batch joins its next review (7.1), and a governing or long document also gets a
    careful reading there (obligations the local reading missed, a better summary for the brief). Filing never
    waits for the back office.
@@ -253,7 +247,7 @@ by code in the runtime (decisions.md D3):
 
 | Class | What | How |
 |---|---|---|
-| A, applied with Undo | `add_item` from the person's words, or from a document only with code's evidence (5.1 step 3); `file_document` from this binder's `intake/`, or a new draft in `drafts/` (10); `add_log_entry` from the person's words; `update_document`, `move_document` and `unfile_document` on documents this conversation filed; `update_item`, `set_status` and `drop` on items it created in the last 24 hours (proposed) | At once, one batch per turn, reported with Undo |
+| A, applied with Undo | `add_item` from the person's authenticated turn (a document's obligations are suggestions, 5.1 step 3); `file_document` from this binder's `intake/`, or a new draft in `drafts/` (10); `add_log_entry` from the person's words; `update_document`, `move_document` and `unfile_document` on documents this conversation filed; `update_item`, `set_status` and `drop` on items it created in the last 24 hours (proposed) | At once, one batch per turn, reported with Undo |
 | B, one tap | `update_item`, `set_status`, `complete`, `drop`, `reopen` on other items; `update_document` on other documents; moving a document to another binder (`transfer_document`); more than 20 new items or documents in one turn (proposed) | A confirmation with the change and its source; nothing changes until Apply |
 | C, never from the conversation | `set_disclosure` and every widening the privacy ratchet names (architecture 4.5: clearing `redact`, changing or removing `slice_title`, adding a tag to a redacted item, lowering `sensitivity`), checked before any other class, `rename_teka`, `expunge`, engine and backup settings, anything outward (sending mail, `outgoing/`, exporters, a court or tax filing), deleting a file, writing a manual, `.sprava/`, `scripts/` or a dot folder | Only the app's own controls (architecture 2.1) |
 
@@ -287,8 +281,7 @@ Class A also depends on what started the work, which the runtime itself records 
 on every op, whatever an engine says:
 
 - **A person's turn** (a message, drop, import or tap in the app's window): the whole of class A.
-- **The intake pipeline** filing a drop or an arrival: `file_document` and the items with code's evidence
-  (5.1 step 3).
+- **The intake pipeline** filing a drop or an arrival: `file_document` only (obligations are suggestions).
 - **Work Sprava starts itself** (review batches, a drop's follow-up, brief upkeep, tasks, a session opened in
   Terminal): only a task's new draft in `drafts/`, and the brief's checked lines (8.2). Every other op from
   such work, a correction of the conversation's own records included, becomes a card or a one-tap
@@ -301,8 +294,8 @@ done", "send the binder to this address") is contained by:
 
 1. The class rule is code. Any engine may ask for any op; the runtime applies class A, turns class B into a
    confirmation that shows the source, and refuses class C with a note in the transcript.
-2. What nothing from a document can do: add an item without code's evidence (5.1 step 3) or write a log
-   entry; change or close an existing item without a tap; change disclosure,
+2. What nothing from a document can do: add an item or write a log entry by itself (5.1 step 3); change or
+   close an existing item without a tap; change disclosure,
    privacy markers, names or engine settings; touch another binder; write a manual, script or dot file (the
    path rules forbid filing one, binder-v0 §4.3); run anything; send anything; reach the network through
    Sprava; write a filing rule that does more than the rule grammar allows (8.1).
@@ -311,8 +304,12 @@ done", "send the binder to this address") is contained by:
    allows a model to see (`catalog.json` through the projection, the documents `documents[]` names, `intake/`,
    `DASHBOARD.md`, and Sprava's brief and manual section) and nothing else, with the containment rules of
    architecture 7.3.
-4. Document text reaches every model only between begin and end markers, as labelled data (architecture 5.4,
-   7.7); the guard's sanitizer runs on every string an engine sends (architecture 4.2 step 6).
+4. **Instructions and data, for every model** (front desk, back office, tasks, a session seeded after a
+   clear). The only instructions are Sprava's own canonical text and what the runtime authenticates: person
+   lines whose digest is in the runtime's state, and filing rules whose op-log record matches (8.1).
+   Everything else read from the binder (other transcript lines, the rest of the manual, documents, the brief)
+   goes only as labelled data between begin and end markers (architecture 5.4, 7.7). Unauthenticated lines are
+   display-only and never indexed. The guard's sanitizer runs on every string an engine sends (4.2 step 6).
 5. Every class A batch is one Undo, a turn over the caps shows first, and every report names what was added.
 6. Everything a model or a document wrote (answers, reports, task drafts, the brief, previews) is shown as
    inert text with no remote loads (binder-v0 §3.4); a draft's Markdown or RTF is never rendered actively,
@@ -414,9 +411,7 @@ How it stays current and correct:
   verbatim sentences of their cited documents. Model-written summaries of a document belong to the
   conversation, not to the brief.
 - **The person** writes under "Notes", which Sprava carries into every rendering, as the dashboard does, and
-  may delete any line.
-- Every model receives the brief as labelled data, never as instructions (6.2); only the filing rules (8.1),
-  which come from the person's own corrections, are instructions.
+  may delete any line. Models get the brief as data only (6.2 item 4).
 - **Freshness.** The brief is never state: the catalog and the op log are (section 17). Every line records its
   source, the item or document id and the op that last changed it, and the brief is re-rendered from the
   catalog after every applied batch. When a source has changed since a line was written, code updates that
@@ -430,7 +425,7 @@ How it stays current and correct:
 
 The per-binder index of architecture 5.5 (`.sprava/index.sqlite`, FTS5, rebuildable; decisions.md A3) is
 built and covers the full extracted text of every filed document in passages of about 300 words with page
-numbers, translations beside the originals, items, log entries and the person's own lines (decisions.md D7).
+numbers, translations beside the originals, items, log entries and the person's authenticated lines (6.2 item 4).
 It honours binder-v0 §3.4. A rebuild re-reads documents through the helper, as a background job. Every row
 carries its source (document, translation, item, log, transcript), and the reader filters by the caller's
 role before ranking: transcript rows are searched only for this binder's own front desk and back office, and
@@ -476,6 +471,12 @@ draft is for the person to send. Without a back office a task is "this needs thi
 
 ## 11. The engines
 
+**One turn supervisor for every engine** (the local model, Claude, Codex, task sessions). Every request has a
+no-event deadline (120 s for an agent, 30 s for the local model) and an overall one (15 minutes for an agent
+request, proposed), each a Stop and a failure. Stop escalates the same way everywhere: the engine's own
+interrupt, then SIGTERM after 5 s, then SIGKILL and a restart of that engine's process, with the session
+resumed by id. Applied changes stay with Undo. Engine sections below name only their interrupt.
+
 ### 11.1 The back office: Claude Code, then Codex
 
 The runtime starts Claude Code in print mode with structured input and output, no shell (2.1.299, spikes S1,
@@ -520,8 +521,8 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   the tools are `Agent` and Sprava's alone, with no managed skill or plugin in effect; and the binder's agent
   home holds no customization source Sprava did not write (skills, plugins, agents, rules, settings, hooks,
   `CLAUDE.md`, `AGENTS.md`). What Sprava cannot read counts as failing (open S1, S3 items).
-- **The manual.** Sprava passes Sprava's manual section, the brief (as data) and the filing rules in the
-  appended system prompt, read through the safe reader; no project file is ever loaded.
+- **The manual.** The appended system prompt holds only what 6.2 item 4 allows as instructions; the manual's
+  other text and the brief go as labelled data, through the safe reader. No project file is ever loaded.
 - **Tools**: reads (`search`, `read_document`, `get_now`, `list_items`, `list_documents`, this binder only,
   intake and private documents included by the consent below) and the back-office tools of 17.5. The tool list
   is the same for every client (decisions.md A4); every back-office tool checks the session's role, and a
@@ -538,9 +539,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   `error_max_budget_usd` and fails later turns, so Sprava restarts with `--resume`. A `rejected`
   `rate_limit_event` or an error result hands the request to the front desk with one line ("Claude's usage
   limit is reached until 15:45"), and back-office work queues.
-- **Stop.** The `interrupt` control request on standard input stops the turn and its subagents and keeps the
-  process; with no result 5 seconds later, SIGTERM, then SIGKILL. Applied changes stay with Undo. No event for
-  120 seconds, or 15 minutes for one request (proposed), is a Stop and a failure.
+- **Interrupt.** The `interrupt` control request stops the turn and its subagents and keeps the process.
 - **One driver per session.** Two processes on one session fork it and lose a message, so Sprava holds a lock
   per session id. Open in Terminal (4.2) releases Sprava's process first; Sprava drives again only after the
   person presses Resume and no `claude` process holds the session (the home's `sessions/`).
@@ -552,7 +551,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   Clearing the conversation, turning the back office off, offloading, removing the binder, and an expunge
   (binder-v0 §6.11) each delete the binder's whole agent home and its temporary folder, after any Terminal
   turns are in the transcript (4.2), and recreate it empty: no list of Claude's stores to keep up to date. The
-  next request starts a new session seeded from the transcript (after an expunge, the rewritten one). A task
+  next request starts a new session seeded from the transcript as 6.2 item 4 allows (after an expunge, the rewritten one). A task
   runs in a home of its own, deleted when it ends. What the provider already received cannot be recalled.
 - **Offload and removal.** Sprava first stops taking requests and tasks for the binder, interrupts every
   session, waits for in-flight batches, and holds that barrier until the offload's snapshot is verified or
@@ -562,8 +561,8 @@ claude -p --input-format stream-json --output-format stream-json --verbose
 0.162.1 (spike S3, 2026-10-14). It speaks newline JSON-RPC on standard input and output (marked
 experimental): `initialize`, `thread/start` (working directory the binder's Codex home, the approval
 policy, Sprava's instructions as for Claude, the model), then `turn/start` per message. Items stream
-(`agentMessage`, `mcpToolCall`) with token use and rate limits, and `turn/completed` ends a turn. Stop is
-`turn/interrupt`, which keeps the process; `thread/resume` (`excludeTurns: true`) resumes in a new process,
+(`agentMessage`, `mcpToolCall`) with token use and rate limits, and `turn/completed` ends a turn. Its
+interrupt for the turn supervisor (11) is `turn/interrupt`, which keeps the process; `thread/resume` (`excludeTurns: true`) resumes in a new process,
 even after a kill. Codex allows one writer per thread, so Open in Terminal stops the app server first and runs
 `codex resume <id>` (`resume --remote` is untried). In short:
 
@@ -624,8 +623,7 @@ A general open-weights model run by Sprava, chosen by the Mac's memory, download
   the first front-desk turn; `--sleep-idle-seconds` frees the weights when idle (6.1 GB down to 144 MB, about
   1.1 s to wake), and the runtime stops it after 15 idle minutes (proposed).
 - **Bounded output.** `n_predict` defaults to unlimited, so every call sets it (the schema's size, at most
-  1,000 tokens, proposed) and a 30-second deadline; an answer that is cut off or not complete JSON is
-  rejected, and a helper that does not stop when cancelled is killed and restarted.
+  1,000 tokens, proposed), under the turn supervisor (11); an answer cut off or not complete JSON is rejected.
 - **Constrained output.** Every call goes to `/completion` with a `json_schema`, on the prompt rendered by
   `/apply-template`, never to the chat endpoint's `response_format`: there Gemma 4 wrote its thinking channel
   before the schema applied and ran out of tokens on 8 of 41 calls, while `/completion` was constrained from
@@ -830,15 +828,12 @@ and a corrected source refreshes the brief. A step no tool can do ends with that
 A decision about a whole document needs the whole document. A reader or reviewer gets the page, extraction
 and legibility coverage and the relevant full pages, with a page image where legibility is in doubt; a
 translation stays separate from the original. A review that saw only part of a document counts only for what
-it saw (7.1). A matched quote and a parsed date prove that the text exists, not that a duty is unconditional,
-applies to this person, or comes from the governing version. So the front desk never adds an unconditional
-to-do from conditional or uncertain evidence; it asks or suggests instead (5.1 step 3). Filing the document
-itself still proceeds.
+it saw (7.1). A quote and a date prove the text exists, not whose duty it is, so obligations follow 5.1
+step 3's one rule: suggestions, with their reasons flagged, while filing proceeds.
 
 *Fixture:* one document with an operative change on page 3, an unreadable page holding an exception, a
-translated date that disagrees with the original, and the deadline of an optional workshop. It is filed; no
-unconditional to-do is added from pages 3 or 4, the date or the workshop; each becomes a question or
-suggestion naming its reason.
+translated date that disagrees with the original, the deadline of an optional workshop, and a duty the
+contractor owes. It is filed; no item is added by itself; each is a suggestion naming its reason.
 
 ### 17.7 Honest negatives and stale knowledge
 
