@@ -52,8 +52,8 @@ final class InboxModel: ObservableObject {
     /// Sprava's support folder, where the device id and the typed notes' capture folder live.
     let support: URL
 
-    /// The largest capture event the runtime reads (`SafeFile.read`'s limit, which `CaptureEvent.check` uses).
-    static let largestNote = 16 * 1024 * 1024
+    /// The largest capture event the runtime reads.
+    static let largestNote = NoteWriter.largestNote
 
     init(client: RuntimeClient = RuntimeClient(), support: URL = SpravaPaths.supportDirectory()) {
         self.client = client
@@ -127,27 +127,11 @@ final class InboxModel: ObservableObject {
         let submitted = draft
         let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
-        do {
-            // The runtime makes this Mac's id at its first start; the app only reads it, never makes one.
-            guard let deviceID = try DeviceID.existing(support: support) else {
-                message = "The note was not saved: Sprava's background part has not started on this Mac yet. Health, at the top of the sidebar, shows when it runs."
-                return false
-            }
-            let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
-            // The notice goes first, so the runtime trusts the binder the person chose (architecture 8).
-            let note = try producer.prepareNote(text, binderHint: binderName, startedAt: startedTyping ?? Date())
-            // The runtime reads no capture larger than this; one it would set aside must stay in the editor.
-            guard note.bytes.count <= Self.largestNote else {
-                message = "The note was not saved: it is too long for one note. Split it into smaller notes."
-                return false
-            }
-            var noticed = true
-            do {
-                _ = try await client.global("capture_notice", [("event", .string(note.id)), ("sha256", .string(note.digest))], timeout: 5)
-            } catch {
-                noticed = false
-            }
-            try producer.publish(note)
+        switch await NoteWriter.save(text, binderHint: binderName, startedAt: startedTyping ?? Date(), client: client, support: support) {
+        case .refused(let why):
+            message = why
+            return false
+        case .saved(let noticed):
             if draft == submitted {
                 draft = ""
                 startedTyping = nil
@@ -156,11 +140,6 @@ final class InboxModel: ObservableObject {
                 : explanation.map { "Saved. " + $0 }
                 ?? (binderName == nil ? "Saved. Its card will appear here in a moment." : "Saved. Its card will appear in the binder in a moment.")
             return true
-        } catch {
-            // Sprava's errors are sentences: an unreadable device id or note clock names its file and says it was
-            // left as it is.
-            message = "The note was not saved: \(error)"
-            return false
         }
     }
 

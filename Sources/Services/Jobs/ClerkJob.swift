@@ -27,7 +27,9 @@ public enum ClerkJob {
             catch { return (.error(code: "filing_list_unreadable", culprit: nil), read) }
             guard let rows = try? context.rows() else { return (SentinelJob.shelfUnreadable, read) }
             guard let work = context.onCommandQueue({ inbox.nextForClerk() }) else { break }
-            let filing = filingList.binders(rows: rows, deviceID: commands.deviceID)
+            // The binder the person named with the note is offered even off the list, so the clerk keeps the note
+            // where the code-built card filed it (capture-event-v0 §8.1).
+            let filing = filingList.binders(rows: rows, deviceID: commands.deviceID, hint: work.hint)
             let t0 = clock()
             let interp = waitFor { await Clerk(model: model).read(work.event, filing: filing, hint: work.hint) }
             let seconds = clock().timeIntervalSince(t0)

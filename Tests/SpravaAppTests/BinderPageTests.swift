@@ -77,7 +77,7 @@ import Testing
         await actions.load(kitchen, adopted: true)
         #expect(started.duration(to: .now) < .seconds(2))
         #expect(stalled.ranOffMain && actions.keeping == nil && actions.keepingNote != nil && actions.settingsLoaded)
-        _ = KeepingSection(actions: actions, folder: kitchen, today: CalendarDate.today(), reload: {}).body
+        _ = KeepingRows(actions: actions, folder: kitchen, today: CalendarDate.today(), reload: {}).body
         #expect(stalled.calls == 1)
 
         // Once the read ends, the next load shows what it found and the note goes away.
