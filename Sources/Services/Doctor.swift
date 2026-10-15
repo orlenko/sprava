@@ -21,7 +21,7 @@ public enum Doctor {
         var out: [Finding] = []
         if spool == nil {
             out.append(Finding(level: rows.contains { $0.teka.isAdopted } ? .fix : .note, binder: nil,
-                text: "the hub spool has not been configured here; its privacy checks are unavailable"))
+                text: "the shared hub folder is not set up on this Mac, so Sprava cannot check what each binder shares there"))
         }
         let registered = Set((registry?.entries ?? []).compactMap { $0.workingDir }.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path

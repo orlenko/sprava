@@ -92,7 +92,7 @@ import Testing
         let (folder, _) = try readyBinder(c)
         try ShelfStore(supportDirectory: c.support).add(folder)
         let findings = try HealthSnapshot.doctorFindings(support: c.support, deviceID: "dev", registryURL: c.support.appendingPathComponent("missing"))
-        #expect(findings.contains { $0.level == .fix && $0.text == "the hub spool has not been configured here; its privacy checks are unavailable" })
+        #expect(findings.contains { $0.level == .fix && $0.text == "the shared hub folder is not set up on this Mac, so Sprava cannot check what each binder shares there" })
     }
 
     @Test func anUnconfiguredRegistryDoesNotClaimACoexistenceCheck() throws {

@@ -13,11 +13,11 @@ public final class CompanionProfile: Sendable {
     let store: StateStore
     let relay: CompanionRelayIdentity
     let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 12, statements: [
+    static let schema = StateStore.Schema(version: 13, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
         "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991), " +
         "index_reserved INTEGER NOT NULL DEFAULT 0, index_published INTEGER NOT NULL DEFAULT 0, " +
-        "claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending','claimed','checking-refusal','needs-reset','instance-changed')))",
+        "claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending','claimed','checking-refusal','needs-reset','instance-changed')), web_origin TEXT)",
         "CREATE TABLE devices (device TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('pairing','active','revoked','abandoned')), " +
         "key_ready INTEGER NOT NULL CHECK (key_ready IN (0,1)), creation_attempted INTEGER NOT NULL CHECK (creation_attempted IN (0,1)), " +
         "cleanup_pending INTEGER NOT NULL CHECK (cleanup_pending IN (0,1)), " +
@@ -73,9 +73,18 @@ public final class CompanionProfile: Sendable {
         try prepareAccount(beforeCommit: {})
     }
     // A thrown checkpoint proves that a key stored before a failed SQLite commit is reused on retry.
-    func prepareAccount(beforeCommit: () throws -> Void) throws -> CompanionAccountEpoch {
+    func prepareAccount(beforeCommit: () throws -> Void, webOrigin: String? = nil) throws -> CompanionAccountEpoch {
         try store.write { t in
-            if let number = try epoch(t) { return CompanionAccountEpoch(number: number, key: try key(number)) }
+            if let number = try epoch(t) {
+                if let webOrigin {
+                    try t.execute("UPDATE profile SET web_origin = ? WHERE slot = 1 AND web_origin IS NULL", .text(webOrigin))
+                    guard try t.rows("SELECT web_origin FROM profile WHERE slot = 1") == [[.text(webOrigin)]] else {
+                        throw CompanionOwnerSetupError.reconfigurationRequired
+                    }
+                }
+                try beforeCommit()
+                return CompanionAccountEpoch(number: number, key: try key(number))
+            }
             let account = keyAccount(1)
             if try secrets.read(account: account) == nil {
                 let random = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
@@ -83,8 +92,8 @@ public final class CompanionProfile: Sendable {
             }
             // Immutable, instance-scoped key slot: a failed earlier commit leaves a recoverable staged key.
             let storedKey = try key(1)
-            try t.execute("INSERT INTO profile (slot, origin, instance, epoch) VALUES (1, ?, ?, 1)",
-                          .text(relay.origin), .text(relay.instance))
+            try t.execute("INSERT INTO profile (slot, origin, instance, epoch, web_origin) VALUES (1, ?, ?, 1, ?)",
+                          .text(relay.origin), .text(relay.instance), webOrigin.map { .text($0) } ?? .null)
             try beforeCommit()
             return CompanionAccountEpoch(number: 1, key: storedKey)
         }

@@ -27,12 +27,14 @@ the compiler refuses an undeclared import, so the boundaries are enforced rather
 | Layer | Target | Owns | Depends on (direct) |
 |---|---|---|---|
 | 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateStore` and `StateFile` (section 4), `SafeFile`, dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
+| 0 | `SQLiteDefensive` | the one SQLite setting Swift cannot reach, `SQLITE_DBCONFIG_DEFENSIVE` (a variadic C call), in C | nothing |
 | 1 | `BinderFormat` | reading a binder: `Teka`, items, buckets, rules, catalog levels, the dashboard text, document path rules, the hub's naming rules | SpravaKit |
 | 1 | `Companion` | companion wire encodings, sealed objects and pairing cryptography; binder access through interfaces and higher-layer adapters | SpravaKit |
 | 2 | `BinderStore` | writing a binder: op log, transaction guard, op applier, proposals and their store, the record of trusted cards, ids, the privacy ratchet, undo, owner record, adoption, templates, the dashboard keeper | BinderFormat |
 | 3 | `Shelf` | which binders exist here: the shelf, lifeproj's registry, recent order, the filing list and binder settings | BinderStore |
 | 3 | `Extract` | type sniffing and text extraction, the sandboxed helper's protocol, `IntakeReading` | BinderFormat |
 | 4 | `Clerk` | the model seam, date grammar, amounts, code facts, note and document readings, the proposals they become | Extract, Shelf |
+| 4 | `Retrieval` | each binder's search index (`.sprava/index.sqlite`, FTS5): passages with pages and spans, translations beside originals, items, log entries, the person's lines, revisions and coverage; rebuild, refresh, search (conversation.md 9.1). documents read through the sandboxed helper | Extract |
 | 5 | `Capture` | capture events, the inbox, the intake watcher, the readings store | Clerk |
 | 4 | `Hub` | slices, publish and drain, the outbox | Shelf |
 | 5 | `Backup` | restic, keys, snapshots, offload, restore, peek | Hub |
@@ -57,7 +59,7 @@ Moves that broke the earlier cycles:
 ## 3. Rules for feature work
 
 1. A feature lives in one domain target (layers 1 to 6: `BinderFormat`, `Companion`, `BinderStore`, `Shelf`, `Extract`,
-   `Clerk`, `Capture`, `Hub`, `Backup`, `Brains`; the set rule 9 counts), plus its handler file in `Services`, its screen
+   `Clerk`, `Retrieval`, `Capture`, `Hub`, `Backup`, `Brains`; the set rule 9 counts), plus its handler file in `Services`, its screen
    folder in `SpravaApp`, and its tests. If a feature seems to need edits in three domain targets, the
    design is wrong: add an interface in the lower target, or a new target.
 2. A domain target exposes a small public API. Everything else is `internal`. A test target may use
@@ -118,14 +120,16 @@ Paths are relative to Sprava's support folder (`SpravaPaths.supportDirectory()`)
 environment variable can put anywhere: the capture root (`SPRAVA_CAPTURE_ROOT`, for development) and the
 backup key file (`SPRAVA_BACKUP_KEY_FILE`), which keep their owners. Inside a binder the format is the
 binder's own: `BinderFormat` reads it and `BinderStore` is its only writer (`.sprava/`, `catalog.json`,
-`DASHBOARD.md`), except `.sprava/cursors.json` and `.sprava/slice-key`, which `Hub` reads and writes, and
-`.sprava/backup-id` and `.sprava/folder-metadata.json`, which `Backup` reads and writes.
+`DASHBOARD.md`), except `.sprava/cursors.json` and `.sprava/slice-key`, which `Hub` reads and writes,
+`.sprava/backup-id` and `.sprava/folder-metadata.json`, which `Backup` reads and writes, and `.sprava/index.sqlite`, which
+`Retrieval` reads and writes.
 
 | Owner | Files |
 |---|---|
 | `Shelf` | `shelf.json`, `shelf.lock`, `recent.json`, `binders.json` (the filing list), `label-key` |
 | `Capture` | `Captures/` (the capture root), `capture/` (`state.json`, `journal.ndjson`, `producers.json`, `producer-hlc.json` and its `.lock`, `intake.json`, `app-notices.ndjson`, `unfiled-digests.json`, `quarantine/`, `interpretations/`, `readings/`), `unfiled/` |
 | `BinderStore` | `runtime/proposal-digests.json` (the trusted-card record; it sits in `runtime/` for history and moves under a `BinderStore` folder when next changed) |
+| `Retrieval` | `retrieval/indexes.sqlite` (the index files this installation created, by device, inode and birth time, so a planted `.sprava/index.sqlite` is rebuilt, never opened; binder-v0 7.2) |
 | `Brains` | `mcp/` (`clients.json`, the client registry) |
 | `Companion` | `companion/state.sqlite` (relay binding, claim admission state, account epoch, pairing deadlines, transcripts/deliveries, epoch recipients, whole-item snapshot hashes, view/index/outcome publication records, decision intents, outcome tombstones and daily decision counters); the data-protection Keychain service `org.sprava.companion`: owner claim credentials, account keys, device/binder keys and temporary pairing material, keyed by relay-origin hash and instance; no synchronized items |
 | `Backup` | `backup/` (`settings.json`, `state.json`, `backup.sqlite` (the request queue), `verify/`, `cache/`, `run/`, `keychain.lock`), and the key file wherever `SPRAVA_BACKUP_KEY_FILE` names it, with its `.pending` companion |
