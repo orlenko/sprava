@@ -74,6 +74,7 @@ extension BinderIndex {
         coverage.revision = read.revision
         coverage.language = read.language
         coverage.notIndexed = read.problem
+        coverage.notes = read.notes
         var cuts: [Cut] = []
         for (number, page) in read.pages {
             if number == nil { coverage.pagesKnown = false }
@@ -110,6 +111,8 @@ extension BinderIndex {
     static func excluded(_ path: String) -> String? {
         let segments = path.split(separator: "/", omittingEmptySubsequences: false).map { DocumentPaths.fold(String($0)) }
         if path.hasPrefix("/") || segments.contains(where: { $0.isEmpty || $0 == ".." || $0.hasPrefix("~") }) { return "its path does not stay inside the binder" }
+        // A NUL would end the path where the system opens it, after the name these rules looked at.
+        if path.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) { return "its path holds a control character" }
         if segments.contains(where: { $0.hasPrefix(".") }) || segments[0] == "scripts"
             || (segments.count > 2 && segments[0] == "intake" && segments[1] == "mail" && segments.last == "state.json") {
             return "it is in a place Sprava never reads"

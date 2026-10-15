@@ -34,7 +34,7 @@ the compiler refuses an undeclared import, so the boundaries are enforced rather
 | 3 | `Shelf` | which binders exist here: the shelf, lifeproj's registry, recent order, the filing list and binder settings | BinderStore |
 | 3 | `Extract` | type sniffing and text extraction, the sandboxed helper's protocol, `IntakeReading` | BinderFormat |
 | 4 | `Clerk` | the model seam, date grammar, amounts, code facts, note and document readings, the proposals they become | Extract, Shelf |
-| 4 | `Retrieval` | each binder's search index (`.sprava/index.sqlite`, FTS5): passages with pages and spans, translations beside originals, items, log entries, the person's lines, revisions and coverage; rebuild, refresh, search (conversation.md 9.1). Layer 4 because the brief keeper (conversation.md 15, item 12) will read `Extract` | BinderFormat |
+| 4 | `Retrieval` | each binder's search index (`.sprava/index.sqlite`, FTS5): passages with pages and spans, translations beside originals, items, log entries, the person's lines, revisions and coverage; rebuild, refresh, search (conversation.md 9.1). documents read through the sandboxed helper | Extract |
 | 5 | `Capture` | capture events, the inbox, the intake watcher, the readings store | Clerk |
 | 4 | `Hub` | slices, publish and drain, the outbox | Shelf |
 | 5 | `Backup` | restic, keys, snapshots, offload, restore, peek | Hub |

@@ -23,8 +23,10 @@ public struct DocumentCoverage: Sendable, Equatable, Codable {
     public var notIndexed: String?
     /// Passages past the per-document cap or the index's size cap were left out.
     public var cut = false
+    /// What else the reader left out, such as a message's attachments.
+    public var notes: [String] = []
 
-    public var isComplete: Bool { notIndexed == nil && pagesFailed.isEmpty && pagesIllegible.isEmpty && !cut }
+    public var isComplete: Bool { notIndexed == nil && pagesFailed.isEmpty && pagesIllegible.isEmpty && !cut && notes.isEmpty }
 }
 
 /// What a search looked through: the honest negative of §9.2 says this, never "the documents do not say".
