@@ -106,14 +106,16 @@ final class BinderActions: ObservableObject {
     @Published private(set) var keepingNote: String?
     /// The dashboard as Sprava would write it today, once rendered for the preview sheet.
     @Published private(set) var preview: String?
-    private let disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.reads", qos: .utility))
+    private let disk: ShelfDiskWorker
     private let readTimeout: TimeInterval
     private let readKeeping: @Sendable (URL) -> Keeping
     private let renderPreview: @Sendable (URL, CalendarDate) -> String?
 
     init(client: RuntimeClient = RuntimeClient(), readTimeout: TimeInterval = 5,
          readKeeping: @escaping @Sendable (URL) -> Keeping = Keeping.read,
-         renderPreview: @escaping @Sendable (URL, CalendarDate) -> String? = { DashboardKeeper(folder: $0).preview(today: $1) }) {
+         renderPreview: @escaping @Sendable (URL, CalendarDate) -> String? = { DashboardKeeper(folder: $0).preview(today: $1) },
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
+        disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.reads", qos: .utility), deadline: deadline)
         self.client = client
         self.readTimeout = readTimeout
         self.readKeeping = readKeeping
