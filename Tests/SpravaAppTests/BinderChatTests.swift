@@ -163,6 +163,9 @@ import Testing
         chat.draft = "File everything"
         await chat.send()
         let long = String(repeating: "s", count: 10_000)
+        standIn.emit(.activity(String(repeating: "r", count: 5_000_000)))
+        await until { chat.entries.last?.activity != nil }
+        #expect((chat.entries.last?.activity?.utf8.count ?? .max) <= BinderChat.maximumChangeBytes)
         for n in 0..<(BinderChat.maximumChanges + 50) {
             standIn.emit(.binderChanged(ChatBinderChange(operationIDs: ["op-\(n)"], summary: long, undo: ChatUndoReference(batchID: "batch-\(n)"))))
         }

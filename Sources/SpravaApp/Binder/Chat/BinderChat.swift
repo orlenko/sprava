@@ -190,7 +190,7 @@ final class BinderChat: ObservableObject {
                     }
                 }
             case .activity(let doing):
-                update(reply, in: key) { $0.activity = doing }
+                update(reply, in: key) { $0.activity = Self.prefix(of: doing, bytes: Self.maximumChangeBytes) }
             case .binderChanged(let change):
                 update(reply, in: key) { entry in
                     guard entry.changes.count < Self.maximumChanges else { entry.changesCut = true; return }
