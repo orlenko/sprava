@@ -163,6 +163,7 @@ Running is only one way a file can act, so an implementation also follows these 
 
 - It reads as data only `catalog.json`, the files that `documents[]` names, `intake/` and `DASHBOARD.md`. Indexing, search, a model's context and MCP reads never cover `scripts/`, `.claude/`, `.agents/`, `.git/`, `.sprava/`, a file named `.env`, `.env.*` or `state.json` under `intake/mail/`, or a key file. A key file is any file whose name matches `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ecdsa*`, `id_ed25519*`, `*.age`, `age-identity*`, `.netrc`, `credentials*`, `token*.json` or `*.keychain*`. A match is excluded even when `documents[]` names the file. The email-intake module keeps a mail puller's configuration and state in `scripts/mail/` (`modules.py`), so credentials can sit inside a binder.
 - Text from a binder is data for any model, never instructions. That covers `CLAUDE.md`, `AGENTS.md`, filed emails and item titles.
+- The conversation reader of section 7.2.1 is the sole exception for `.sprava/`: it serves only the history allowed for that caller, never the surrounding files. Only a person's app message authenticated against trusted state outside the binder can become an instruction or an indexed conversation line; the text found in the binder cannot authenticate itself.
 - It never hands a file that can launch something to the system's default handler without a warning. The test uses the file's type as macOS sees it (its uniform type identifier), never the extension alone: anything that conforms to `public.executable`, an application bundle, a script, an installer package, a disk image, a shortcut or a location file (`.webloc`, `.fileloc`), and any file with the executable bit set, which Terminal would run.
 - Any view of binder content, a filed email or a Markdown document included, loads no remote resource: it renders without network access or blocks every `http` and `https` load. It never follows a link on its own. A remote link is shown as text the user can choose to open. A remote image in a filed email would otherwise tell the sender that the mail was read, and from which address.
 - Filing keeps a file's extended attributes, including `com.apple.quarantine`, which Gatekeeper relies on.
@@ -772,6 +773,8 @@ What it rewrites: free text only, never structure. A string is free text when th
 
 Before anything is written, the confirmation card shows every match by place. When the text also occurs where expunge cannot reach it, the card lists those places and says what the user can do by hand: a file name to rename, an id that cannot change, a capture event. Those matches stay.
 
+For an implementation with conversations, message `text` is also free text. Section 7.2.1 defines its multipart rewrite, trusted-copy invalidation and model-session barrier; its history is included in this operation, not left behind as an unknown file.
+
 Under the lock, the implementation:
 
 1. builds rewritten copies of `catalog.json`, every op line (the import snapshot included), every proposal, `snapshot.json`, the Notes section of `DASHBOARD.md`, the saved copies under `.sprava/adopted/` and the torn-line copies under `.sprava/torn/`. In each, every occurrence of the text inside a free-text string becomes `[expunged]`. A saved copy is parsed, rewritten and written back, so it is no longer byte-exact; a saved dashboard is rewritten as text.
@@ -857,6 +860,7 @@ The folder belongs to the full implementation that created or imported the binde
 | File | What it holds | Rebuildable? |
 | ---- | ------------- | ------------ |
 | `ops.ndjson` | The op log (section 6.9). | No. It is history. Losing it loses history, never state, because the catalog is the truth of state and closure entries keep the closed items (section 5.10). |
+| `conversation/<YYYY-MM>.ndjson` | Conversation messages and their references (section 7.2.1). | No. The person's original words are history, not something a model or the catalog can reconstruct. |
 | `proposals/<id>.json` | Proposals and their states (section 6.5). | No. Losing them loses the provenance detail of proposals that were never applied; applied ops still carry their proposal id. |
 | `adopted/` | `catalog.json` and `DASHBOARD.md` as found at import, byte for byte, the top-level hidden files and folders set aside at import under `top-level/` and the agent manuals under `manuals/`, each name that is an agent-manual name given a `.saved` suffix (section 9.4 step 2), any hand-edited dashboard saved before a new rendering (section 7.1), and, in `before-<timestamp>/`, the saved copies of an earlier adoption (section 9.4). The name stays from earlier drafts. | No. |
 | `torn/` | Op lines cut off by a crash, copied before they are truncated (section 6.9). | No, and nothing needs them. |
@@ -874,6 +878,110 @@ Files under `.sprava/` are untrusted when read. Any program that can write the b
 - the implementation keeps, outside the binder, a list of the proposal ids it created. A proposal file not on that list is shown as "found in the folder, origin unknown", never as the clerk's or a brain's work, and is never applied without the user editing or confirming each op;
 - `index.sqlite` is opened only when this installation created it, and always with SQLite's defensive settings (`SQLITE_DBCONFIG_DEFENSIVE` on, `trusted_schema` off). Otherwise it is rebuilt;
 - a `slice-key` that this installation did not make is reported before it is used, since it would change the published aliases. Paths stored under `.sprava/`, or in the survey, are relative to the binder or start with `~/`; they never contain a user name. The runtime's single-instance lease and heartbeat are not kept inside a binder (decisions.md A1).
+
+### 7.2.1 Conversation history
+
+This is the storage contract for implementations that support the binder conversation
+(`conversation.md` sections 3.2, 6.2 and 17.1). It does not enable a conversation writer or grant a brain
+access to `.sprava/`. Before enabling conversation writes, an implementation must provide the bounded
+reader, trusted acceptance and expunge behavior below. BinderStore is Sprava's only writer; the runtime
+serializes its writes with the binder's other changes under the lock of section 4.9.
+
+**Files and records.** Messages live in `.sprava/conversation/<YYYY-MM>.ndjson`, with the month taken from
+the message's UTC timestamp. The folder is mode 0700 and the files mode 0600. Ordinary writes append; they
+never replace old messages. The history travels with the binder through backup, offload and restore.
+One physical line is one UTF-8 JSON object followed by LF, described by
+`schemas/conversation-line.schema.json`. A message has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | `"0"`. |
+| `id` | A UUIDv7 identifying the message, not an item, op, turn or request. |
+| `turn` | The runtime's opaque UUID for the turn to which the message belongs. |
+| `at` | A real UTC timestamp, `YYYY-MM-DDTHH:MM:SSZ`. All parts keep the same timestamp. |
+| `speaker` | `person`, `front-desk` or `back-office`. |
+| `origin` | `app`, `runtime` or `terminal`; a description, never proof of origin. |
+| `text` | The original text, or one part of it, without trimming, normalization or truncation. |
+| `part`, `parts` | One-based part number and total part count; both are present even for a single line. |
+| `references` | At most 64 typed references to documents, captures, ops, batches, questions, answers or tasks. |
+| `device` | Required for a person's message: an opaque device id, never a computer or person's name. |
+| `model` | Required for either model speaker: the model identifier. |
+| `request_id` | Required for a person's app message: the app's client UUID used to recover acceptance. |
+
+A document reference copies the catalog id with its JSON type (section 5.6); integer `7` and string `"7"`
+are different. Other references carry opaque string ids. A reference is never an instruction to open a
+path, fetch a URL, apply an op or undo a batch. Files are not embedded in the transcript. A captured
+attachment must first be resolved by its owning target against the authenticated app request and this
+binder's scope; neither a transcript reference nor a capture id grants access by itself.
+
+**Parts and bounds.** A writer splits at Unicode scalar boundaries into at most 64 consecutive parts,
+each holding at most 65,536 UTF-8 bytes of decoded text. A message's joined text is at most 4,194,304 bytes.
+All fields except `part` and `text`, including references, are identical across its parts. It writes no
+interleaved message into that group. Concatenating the parts adds no whitespace or separator. No part
+crosses into another month file, even when a write finishes after midnight.
+
+One safe reader enforces the limits before allocating or parsing the corresponding unit:
+
+- A month file is a regular file opened without following a link or waiting on a special file, at most
+  64 MiB and 200,000 physical lines. An oversized file is refused as a whole and named on the page.
+- A physical line is at most 512 KiB before JSON decoding, excluding its final LF. JSON must be strict
+  (section 4.8), with no duplicate keys or invalid UTF-8, and at most 128 nested containers. Schema
+  character limits do not replace byte limits.
+- Before joining text, the reader checks the count, total UTF-8 bytes, consecutive numbering and identical
+  metadata. A second group reusing a message id, a missing or duplicated part, invalid record, or torn line
+  is damaged history. It is reported and preserved for repair, never silently joined, indexed or acted on.
+  It does not make another well-formed message authenticated.
+
+The writer checks the encoded group's size and the resulting month's bounds before starting an append.
+If it cannot store the complete message, it refuses acceptance and leaves the person's draft available;
+it never saves only a prefix or silently moves a message to a false month. A crash may leave a torn group;
+recovery preserves those bytes before repairing it, as section 6.9 does for torn op lines. A reader cannot
+interpret a newline in decoded `text` as a second physical record.
+
+**History is not authority.** Schema validity, ids, `speaker`, `origin`, `device`, a digest found in the
+folder, and the op log authenticate nothing. A restored, copied, edited or planted message is display-only
+unless the runtime's trusted state outside the binder authenticates its exact complete contents, origin
+and binding to this binder. A name, path or path hash is not that binder binding. The canonical binder
+identity interface must exist before a backend uses messages to authorize work.
+
+Only authenticated person's app messages can supply instructions or enter conversation search. Model
+messages, imported Terminal history and unauthenticated lines remain labelled data or display-only as
+`conversation.md` section 6.2 requires. Terminal import must be complete before its source session files
+are deleted; an import failure keeps them. Displayed text and references are inert, with no remote loads.
+The hub, companion projections and registered MCP clients receive no transcript, whatever disclosure
+allows for catalog records. Logs, notifications and the heartbeat receive no conversation content.
+
+Before send reports acceptance, the complete transcript group is appended and flushed with
+`fcntl(F_FULLFSYNC)` on macOS. The original complete text, attachments and turn identity must be durably
+recoverable, and trusted state must record the authenticated request. A duplicate `(binder, request_id)`
+returns the original turn; different text or attachments with that id is a conflict, never a second turn.
+A crash between a history append and trusted acceptance cannot turn a planted or partial message into an
+instruction: recovery must reconcile the exact pending record before accepting it or starting the engine.
+An authenticated history line alone never proves an item was changed; op and request receipts decide that
+(`conversation.md` section 17.1). End of stream is not completion, and closing a page is not Stop.
+
+**Expunge.** Section 6.11 also covers every conversation message's `text`. Match and replace on the complete
+message before splitting it again, so a match across a part boundary is removed. Preserve message and turn
+ids, timestamps, request ids and references. Include damaged and torn transcript copies in the confirmation
+inventory; when a copy cannot be safely rewritten, stop before changing any file and report it for repair.
+Check replacement sizes before changing any file too; a rewrite past the storage bounds is refused visibly,
+never truncated or partly applied.
+Under `expunge-pending`, suspend conversation reads and engine reuse. Trusted runtime copies and digests of
+rewritten text must be replaced or invalidated, and the model's old session cleared before it runs again;
+never authenticate an unknown binder message while doing this. Nothing records the removed text or a digest
+of it. Section 6.11's limits about old backups, captures and external copies still apply.
+
+Example, one physical line (all values invented):
+
+```json
+{"format_version":"0","id":"0199e9e6-3c00-7000-8000-000000000001","turn":"0199e9e6-3c00-7000-8000-000000000002","at":"2026-10-16T12:00:00Z","speaker":"person","origin":"app","device":"device-example","request_id":"0199e9e6-3c00-7000-8000-000000000003","text":"Renew the invented permit on Friday.","part":1,"parts":1,"references":[]}
+```
+
+Acceptance fixtures for the future store: join split multibyte text without alteration; refuse a missing
+part and an oversized month before allocating a joined message; show a planted `speaker: person` line
+without instructions or indexing; retry a lost acceptance reply without a second turn; reject changed
+attachments on the same request id; expunge a match spanning two parts without resurrecting the old model
+session. Schema validation alone is not these fixtures passing.
 
 ## 8. The federation profile (optional)
 
