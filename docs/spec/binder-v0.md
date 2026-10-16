@@ -114,6 +114,10 @@ When the folder's basename and `meta.name` differ, for example after the folder 
 
 When an implementation creates or imports a binder, it reports whether the binder's folder lies in a place a sync service uploads (section 9.2 step 14).
 
+A name and a folder path locate a binder; they are not its canonical identity. An implementation supporting
+identity-dependent sessions or effects uses the optional record and trusted admission of section 7.2.2.
+This leaves the existing name, item/document id and federation alias rules unchanged.
+
 ### 3.2 Optional files and folders with a defined meaning
 
 | Path | Meaning | Who writes it |
@@ -861,6 +865,7 @@ The folder belongs to the full implementation that created or imported the binde
 | ---- | ------------- | ------------ |
 | `ops.ndjson` | The op log (section 6.9). | No. It is history. Losing it loses history, never state, because the catalog is the truth of state and closure entries keep the closed items (section 5.10). |
 | `conversation/<YYYY-MM>.ndjson` | Conversation messages and their references (section 7.2.1). | No. The person's original words are history, not something a model or the catalog can reconstruct. |
+| `binder-identity.json` | The persistent logical binder id (section 7.2.2). Its contents are an identity claim, not authority. | No. Losing it never permits silently inventing an identity for existing sessions or receipts. |
 | `proposals/<id>.json` | Proposals and their states (section 6.5). | No. Losing them loses the provenance detail of proposals that were never applied; applied ops still carry their proposal id. |
 | `adopted/` | `catalog.json` and `DASHBOARD.md` as found at import, byte for byte, the top-level hidden files and folders set aside at import under `top-level/` and the agent manuals under `manuals/`, each name that is an agent-manual name given a `.saved` suffix (section 9.4 step 2), any hand-edited dashboard saved before a new rendering (section 7.1), and, in `before-<timestamp>/`, the saved copies of an earlier adoption (section 9.4). The name stays from earlier drafts. | No. |
 | `torn/` | Op lines cut off by a crash, copied before they are truncated (section 6.9). | No, and nothing needs them. |
@@ -982,6 +987,96 @@ part and an oversized month before allocating a joined message; show a planted `
 without instructions or indexing; retry a lost acceptance reply without a second turn; reject changed
 attachments on the same request id; expunge a match spanning two parts without resurrecting the old model
 session. Schema validation alone is not these fixtures passing.
+
+### 7.2.2 Canonical binder identity and local admission
+
+This contract is for identity-dependent features, including driven brain sessions, authenticated
+conversation history and real-binder Companion adapters. It introduces no running issuer or resolver.
+Those features stay off until BinderStore's owner interface implements admission and its recovery tests;
+an implementation without this interface must not substitute a name, path, path hash or a temporary UI id.
+Ordinary format reading does not allocate an identity or become invalid merely because the record is absent.
+
+**Persistent claim.** `.sprava/binder-identity.json` is a private format record (folder mode 0700, file 0600),
+not a rebuildable cache. Its schema is `schemas/binder-identity.schema.json`. A writer allocates a random
+UUIDv4, written in canonical lowercase form as `binder_id`, with `format_version: "0"`. It is not derived
+from a folder, device, title, catalog hash or existing item ids. A rename, verified move, backup, offload or
+restore retains it. It does not replace the catalog's name or mint prefix, item/document ids, or transport
+aliases. The id is not a secret, a bearer token, or permission to read any binder.
+
+```json
+{"format_version":"0","binder_id":"719b80a0-4c10-4f01-8000-000000000001"}
+```
+
+The owner's reader validates at most 16 KiB of strict UTF-8 JSON, at most 128 nested containers, through a
+safe opener anchored to the candidate binder. Neither a linked intermediate directory nor a special file
+may redirect or block it. Missing, unreadable, malformed and unsupported-version records are distinct
+outcomes. Only absence during a new allocation permits creation; no read error is treated as absence.
+No model, registered MCP client, capture, relay request or binder file can request minting or changing it.
+Generic catalog ops do not write this record. Only an owner allocation or an explicitly chosen independent
+clone may create a new id; neither a reader nor collision handling remints it silently.
+
+**Trusted binding.** The record is copied with the binder and is untrusted under section 7.2. A matching id
+does not prove that a folder is this runtime's admitted instance. BinderStore owns a separate trusted
+binding outside every binder, in its own `StateStore` (code-structure section 4). That store binds the
+logical id to one admitted folder instance, its ownership and its current admission generation. A stored
+path or operating-system file identity may help verify the folder instance; neither supplies the logical
+id. The store's path and schema are added to the ownership table when its implementation is introduced.
+
+Callers obtain an admitted binding through the owner interface; a pair of strings supplied by an engine
+(`binder_id`, folder) is not that result. Every effect and privileged read revalidates the current binding
+and generation at admission to the serialized writer or reader queue. A queued request cannot retain
+authority across revocation, removal, offload or replacement. Session tokens, receipts and transport keys
+are never selected solely from an id found in a folder.
+
+Allocation is a runtime-writer operation for an authenticated local management request or adoption, never
+a side effect of read-only lookup. Under the binder write lock, it first durably records an allocation
+intent for the verified owned folder in its trusted store, then creates the identity record exclusively
+and flushes it, then durably marks the binding admitted. No identity-dependent work starts before both
+stores are consistent. Recovery resumes only a matching trusted pending intent; a file found without a
+matching trusted pending or admitted allocation record is not proof that this installation allocated or
+admitted it. An existing damaged or missing record for an established binding pauses identity-dependent
+effects instead of allocating a replacement.
+
+**Transitions and collisions.** Only one effective binding may act for a logical id. Discovering a second
+folder with the same claim preserves both folders and the established binding, and denies the candidate
+attachment to existing sessions, receipt processing and transport identities. A duplicate claim alone must
+not stop an otherwise verified established binder. If the trusted established binding itself is ambiguous,
+effects for that identity pause until resolved. No history is merged, binding overwritten or id changed
+as a consequence of discovery.
+
+The person's explicit management choice distinguishes these cases:
+
+- A rename or move proven to retain the admitted folder instance keeps the logical id. Its trusted locator
+  is updated through the owner; an old locator is not a new scope. A move that cannot be proven this way
+  follows the replacement rule instead of guessing by path or name.
+- A restore or replacement retains the logical id but requires a controlled binding transition. Before
+  enabling effects, the owner fences the prior writer, revokes old capabilities, reconciles the restored
+  catalog/op history with trusted receipts and anti-replay state, and installs a fresh admission generation.
+  The old folder being unavailable or the other Mac being offline is not evidence of fencing. A local
+  database uniqueness constraint or process lock alone does not fence a returning writer on another Mac.
+- An independent clone is a new binder. Its explicit allocation gives it a new logical id, preserving the
+  original binder and its binding. Copied transcript and op history remain data; their presence does not
+  transfer authenticated instructions, old sessions, approvals, receipts, phone authority or keys.
+
+Admission generations fence capabilities, not durable request deduplication. An ordinary verified move or
+runtime restart must not make an already accepted `(binder_id, client request_id)` a new request. A receipt
+from a newer catalog than a restored backup is not permission to repeat its effect or claim the restored
+state contains it. Until recovery reconciles that disagreement, the owner reports a visible conflict and
+admits no identity-dependent effects. The restore/ownership-transfer protocol must supply and test that
+reconciliation and writer fencing before such a transition is enabled; identity matching alone is not it.
+
+**Compatibility and surfaces.** The record is optional for existing v0 binders. Unknown implementations
+preserve it as format history; an implementation that does not support admission can still read the
+catalog but cannot claim identity-dependent authority. Receiving a valid record from a foreign folder or
+backup does not create a local trusted binding. This section adds no raw binder id to a hub slice, public
+alias or Companion wire format, and no new file is made available to a model or registered client.
+
+Acceptance fixtures for the future interface: initialize an owned legacy binder once; restart after each
+allocation phase without a second id; distinguish an unreadable record from absence; retain identity on a
+verified rename/move; reject a copied id without stopping the established binder; reject a stale admission
+after a queued request; restore an older catalog without replaying a newer receipt; keep replacement closed
+without writer fencing; and give an explicitly independent clone a new id without inherited authority.
+These are implementation gates, not behavior already provided by this specification or its schema.
 
 ## 8. The federation profile (optional)
 
