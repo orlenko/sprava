@@ -31,14 +31,16 @@ final class BinderNote: ObservableObject {
     private var drafts: [URL: (text: String, started: Date?)] = [:]
     let client: RuntimeClient
     let support: URL
-    private let disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.note", qos: .userInitiated))
+    private let disk: ShelfDiskWorker
     private let readRoute: @Sendable (ShelfRow, URL) -> Route
 
     init(client: RuntimeClient = RuntimeClient(), support: URL = SpravaPaths.supportDirectory(),
-         readRoute: @escaping @Sendable (ShelfRow, URL) -> Route = BinderNote.route) {
+         readRoute: @escaping @Sendable (ShelfRow, URL) -> Route = BinderNote.route,
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
         self.client = client
         self.support = support
         self.readRoute = readRoute
+        self.disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.note", qos: .userInitiated), deadline: deadline)
     }
 
     var isSaving: Bool { folder.map { saving.contains($0) } ?? false }
@@ -80,18 +82,22 @@ final class BinderNote: ObservableObject {
         let started = startedTyping ?? Date()
         let read = readRoute
         let support = support
-        let route = sharesName ? nil : await disk.run(timeout: 5) { read(row, support) }
+        // A duplicate name changes the destination hint, never the note's privacy. If the read times out,
+        // keep the note private in the Inbox until the person can choose its destination.
+        let route = await disk.run(timeout: 5) { read(row, support) }
+        let isPrivate = route == .privateBinder || route == nil
         let elsewhere: String? = if sharesName {
             "Another binder is also called \(row.name), so this note waits in the Inbox. File it into this binder from there."
         } else {
             switch route {
             case .privateBinder?: "This binder is private, so Sprava files nothing into it on its own. The note waits in the Inbox; file it into this binder from there."
             case .otherMac?: "Another Mac keeps this binder, so the note waits in the Inbox."
-            case .here?, nil: nil
+            case nil: "Sprava could not check this binder, so the note waits privately in the Inbox. File it into this binder from there."
+            case .here?: nil
             }
         }
         let outcome = await NoteWriter.save(words, binderHint: elsewhere == nil ? row.name : nil, startedAt: started,
-                                            client: client, support: support)
+                                            client: client, support: support, isPrivate: isPrivate)
         let shown = self.folder == folder
         guard case .saved(let noticed) = outcome else {
             if shown, case .refused(let why) = outcome { message = why }

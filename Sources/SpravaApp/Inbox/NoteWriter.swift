@@ -17,14 +17,15 @@ enum NoteWriter {
     /// The largest capture event the runtime reads (`SafeFile.read`'s limit, which `CaptureEvent.check` uses).
     static let largestNote = 16 * 1024 * 1024
 
-    static func save(_ text: String, binderHint: String?, startedAt: Date, client: RuntimeClient, support: URL) async -> Outcome {
+    static func save(_ text: String, binderHint: String?, startedAt: Date, client: RuntimeClient, support: URL,
+                     isPrivate: Bool = false) async -> Outcome {
         do {
             // The runtime makes this Mac's id at its first start; the app only reads it, never makes one.
             guard let deviceID = try DeviceID.existing(support: support) else {
                 return .refused("The note was not saved: Sprava's background part has not started on this Mac yet. Health, at the top of the sidebar, shows when it runs.")
             }
             let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
-            let note = try producer.prepareNote(text, binderHint: binderHint, startedAt: startedAt)
+            let note = try producer.prepareNote(text, binderHint: binderHint, isPrivate: isPrivate, startedAt: startedAt)
             // The runtime reads no capture larger than this; one it would set aside must stay in the editor.
             guard note.bytes.count <= largestNote else {
                 return .refused("The note was not saved: it is too long for one note. Split it into smaller notes.")

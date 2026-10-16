@@ -40,6 +40,7 @@ import Testing
         let written = try events(support, deviceID)
         #expect(written.count == 1)
         #expect(written.first?["binder_hint"] == .str("acme"))
+        #expect(written.first?["sensitivity"] == .str("unmarked"))
         #expect(written.first?["text"] == .str("Renew the acme permit\nCall the acme landlord"))
         // The runtime is told first, so it trusts the binder named; nothing else is asked.
         #expect(runtime.sent.compactMap { $0["command"]?.stringValue } == ["capture_notice"])
@@ -73,6 +74,48 @@ import Testing
         #expect(page.note === note)
         note.show(acme)
         #expect(page.note.text == "Renew the acme permit")
+    }
+
+    @Test func privateBinderNotesKeepSensitivityThroughEveryInboxFallback() async throws {
+        for (sharesName, acknowledged) in [(false, true), (true, true), (false, false)] {
+            let support = try temporaryFolder()
+            let deviceID = try DeviceID.load(support: support)
+            let runtime = StandInRuntime()
+            runtime.running = acknowledged
+            runtime.answers["capture_notice"] = { _ in #"{"ok":true}"# }
+            let note = BinderNote(client: runtime.client, support: support, readRoute: { _, _ in .privateBinder })
+            note.show(acme)
+            note.text = "Keep the invented permit private"
+            #expect(await note.add(row(acme), sharesName: sharesName))
+            let written = try events(support, deviceID)
+            let event = try #require(written.first)
+            #expect(written.count == 1)
+            #expect(event["sensitivity"] == .str("private"))
+            #expect(event["binder_hint"] == nil)
+            #expect(event["text"] == .str("Keep the invented permit private"))
+        }
+    }
+
+    @Test func anUnavailablePrivacyReadKeepsTheNotePrivateWithoutAHint() async throws {
+        for sharesName in [false, true] {
+            let support = try temporaryFolder()
+            let deviceID = try DeviceID.load(support: support)
+            let runtime = StandInRuntime()
+            runtime.answers["capture_notice"] = { _ in #"{"ok":true}"# }
+            let note = BinderNote(client: runtime.client, support: support, readRoute: { _, _ in .here },
+                                  deadline: { _, expire in expire() })
+            note.show(acme)
+            note.text = "Keep the invented permit safe"
+            #expect(await note.add(row(acme), sharesName: sharesName))
+            let written = try events(support, deviceID)
+            let event = try #require(written.first)
+            #expect(written.count == 1)
+            #expect(event["sensitivity"] == .str("private"))
+            #expect(event["binder_hint"] == nil)
+            #expect(event["text"] == .str("Keep the invented permit safe"))
+            #expect(note.message?.contains("Inbox") == true)
+            #expect(note.text.isEmpty)
+        }
     }
 
     @Test func aNoteThatCannotBeFiledHereSaysItWaitsInTheInbox() async throws {
