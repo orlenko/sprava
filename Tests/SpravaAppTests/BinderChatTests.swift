@@ -165,6 +165,39 @@ import Testing
         #expect(standIn.stopped.isEmpty)   // leaving a page is not Stop
     }
 
+    @Test func aMovedBinderKeepsItsThreadAndAReplacementStartsFresh() async {
+        let standIn = StandIn()
+        var ids: [URL: String] = [Self.folder: "acme-binder"]
+        let chat = BinderChat(commands: standIn.commands, binderID: { ids[$0] }, readHistory: { _ in ([], nil) })
+        await chat.show(Self.folder)
+        chat.draft = "A draft typed before the move"
+        // The same binder under a new folder: its draft comes along.
+        let moved = URL(fileURLWithPath: "/invented/binders/acme-books-2026")
+        ids = [moved: "acme-binder"]
+        await chat.show(moved)
+        #expect(chat.draft == "A draft typed before the move")
+        // Another binder now at the first place: nothing of the first one's thread.
+        ids[Self.folder] = "another-binder"
+        await chat.show(Self.folder)
+        #expect(chat.draft.isEmpty && chat.entries.isEmpty)
+    }
+
+    @Test func oneHugePieceOfAReplyIsCutToTheLimit() async {
+        let standIn = StandIn(), chat = chat(standIn)
+        await chat.show(Self.folder)
+        chat.draft = "Read me everything"
+        await chat.send()
+        standIn.emit(.textDelta("é" + String(repeating: "x", count: BinderChat.maximumReplyBytes + 10)))
+        standIn.emit(.textDelta("more after the cut"))
+        standIn.emit(.finished(.replied), end: true)
+        await until { chat.entries.last?.state == .replied }
+        let text = chat.entries.last?.text ?? ""
+        #expect(text.hasSuffix("[The rest of this reply is not shown.]"))
+        #expect(!text.contains("more after the cut"))
+        #expect(text.utf8.count <= BinderChat.maximumReplyBytes + 64)
+        #expect(BinderChat.prefix(of: "aé", bytes: 2) == "a")
+    }
+
     @Test func blankLinesAndBindersWithoutAnIdentityAreNotSent() async {
         let standIn = StandIn(), chat = chat(standIn, ids: [:])
         await chat.show(Self.folder)

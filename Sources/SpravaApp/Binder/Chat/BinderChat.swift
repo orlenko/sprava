@@ -35,6 +35,8 @@ final class BinderChat: ObservableObject {
         var changes: [ChatBinderChange] = []
         /// A person's line: the request id a retry repeats.
         var requestID: UUID?
+        /// The reply reached its size limit; nothing more is added to it.
+        var cutShort = false
     }
 
     /// One binder's conversation as the page keeps it.
@@ -53,7 +55,9 @@ final class BinderChat: ObservableObject {
     /// The months of saved history shown when a binder opens, newest last.
     nonisolated static let historyMonths = 2
 
-    @Published private var threads: [URL: Thread] = [:]
+    /// Threads by the binder's opaque identity, so a renamed or moved binder keeps its thread and a binder that
+    /// replaced another at the same place does not inherit it.
+    @Published private var threads: [String: Thread] = [:]
     /// The binder shown; published, so moving to a binder already read redraws the page.
     @Published private(set) var folder: URL?
     private let commands: ChatCommands?
@@ -76,7 +80,9 @@ final class BinderChat: ObservableObject {
 
     // MARK: - What the page shows
 
-    private var shown: Thread { folder.flatMap { threads[$0] } ?? Thread() }
+    private func key(_ folder: URL) -> String { binderID(folder).map { "binder:" + $0 } ?? "folder:" + folder.path }
+    private var shownKey: String? { folder.map(key) }
+    private var shown: Thread { shownKey.flatMap { threads[$0] } ?? Thread() }
     var entries: [Entry] { shown.entries }
     var message: String? { shown.message }
     var historyNote: String? { shown.historyNote }
@@ -85,7 +91,7 @@ final class BinderChat: ObservableObject {
     var isAvailable: Bool { commands != nil && folder.flatMap(binderID) != nil }
     var draft: String {
         get { shown.draft }
-        set { if let folder { threads[folder, default: Thread()].draft = newValue } }
+        set { if let shownKey { threads[shownKey, default: Thread()].draft = newValue } }
     }
     var canSend: Bool {
         isAvailable && !isReplying && !shown.entries.contains { $0.state == .sending }
@@ -97,11 +103,12 @@ final class BinderChat: ObservableObject {
     func show(_ folder: URL) async {
         let folder = folder.standardizedFileURL
         self.folder = folder
-        guard threads[folder] == nil else { return }
-        threads[folder] = Thread()
+        let key = key(folder)
+        guard threads[key] == nil else { return }
+        threads[key] = Thread()
         let (earlier, note) = await readHistory(folder)
-        threads[folder]?.entries.insert(contentsOf: earlier, at: 0)
-        threads[folder]?.historyNote = note
+        threads[key]?.entries.insert(contentsOf: earlier, at: 0)
+        threads[key]?.historyNote = note
     }
 
     // MARK: - Sending
@@ -110,97 +117,119 @@ final class BinderChat: ObservableObject {
     /// accepted while the composer is still empty, so nothing the person typed is lost.
     func send() async {
         guard let folder, canSend, let commands, let binder = binderID(folder) else { return }
+        let key = key(folder)
         let line = draft
         let entry = Entry(id: UUID(), speaker: .person, text: line, state: .sending, requestID: UUID())
-        threads[folder]?.draft = ""
-        threads[folder]?.message = nil
-        threads[folder]?.entries.append(entry)
-        await deliver(entry, binder: binder, in: folder, through: commands)
+        threads[key]?.draft = ""
+        threads[key]?.message = nil
+        threads[key]?.entries.append(entry)
+        await deliver(entry, binder: binder, key: key, folder: folder, through: commands)
     }
 
     /// Sends a line that was not accepted again, with its first request id.
     func retry(_ entry: Entry) async {
         guard let folder, let commands, let binder = binderID(folder), shown.turn == nil,
               case .notSent = entry.state, entry.speaker == .person else { return }
-        update(entry.id, in: folder) { $0.state = .sending }
-        await deliver(entry, binder: binder, in: folder, through: commands)
+        let key = key(folder)
+        update(entry.id, in: key) { $0.state = .sending }
+        await deliver(entry, binder: binder, key: key, folder: folder, through: commands)
     }
 
-    private func deliver(_ entry: Entry, binder: String, in folder: URL, through commands: ChatCommands) async {
+    private func deliver(_ entry: Entry, binder: String, key: String, folder: URL, through commands: ChatCommands) async {
         guard let requestID = entry.requestID else { return }
         do {
             let turn = try await commands.send(ChatSendRequest(binderID: binder, requestID: requestID, text: entry.text))
-            update(entry.id, in: folder) { $0.state = .sent }
+            update(entry.id, in: key) { $0.state = .sent }
             let reply = Entry(id: UUID(), speaker: .binder, text: "", state: .replying)
-            threads[folder]?.entries.append(reply)
-            threads[folder]?.turn = turn.turnID
-            Task { await self.follow(turn, reply: reply.id, in: folder) }
+            threads[key]?.entries.append(reply)
+            threads[key]?.turn = turn.turnID
+            Task { await self.follow(turn, reply: reply.id, key: key, folder: folder) }
         } catch {
-            update(entry.id, in: folder) { $0.state = .notSent(Self.words(error)) }
-            if threads[folder]?.draft.isEmpty == true { threads[folder]?.draft = entry.text }
+            update(entry.id, in: key) { $0.state = .notSent(Self.words(error)) }
+            if threads[key]?.draft.isEmpty == true { threads[key]?.draft = entry.text }
         }
     }
 
     /// Reads a turn's events into its reply until the turn says it finished or failed.
-    private func follow(_ turn: ChatTurn, reply: UUID, in folder: URL) async {
+    private func follow(_ turn: ChatTurn, reply: UUID, key: String, folder: URL) async {
         var ended = false
         for await event in turn.events {
             switch event {
             case .textDelta(let piece):
-                update(reply, in: folder) { entry in
-                    guard entry.text.utf8.count < Self.maximumReplyBytes else { return }
-                    entry.text += piece
-                    if entry.text.utf8.count >= Self.maximumReplyBytes { entry.text += "\n[The rest of this reply is not shown.]" }
+                update(reply, in: key) { entry in
+                    guard !entry.cutShort else { return }
+                    let room = Self.maximumReplyBytes - entry.text.utf8.count
+                    if piece.utf8.count <= room {
+                        entry.text += piece
+                    } else {
+                        // Only what fits is copied, cut at a character's edge, so one huge piece cannot pass the limit.
+                        entry.text += Self.prefix(of: piece, bytes: room) + "\n[The rest of this reply is not shown.]"
+                        entry.cutShort = true
+                    }
                 }
             case .activity(let doing):
-                update(reply, in: folder) { $0.activity = doing }
+                update(reply, in: key) { $0.activity = doing }
             case .binderChanged(let change):
-                update(reply, in: folder) { $0.changes.append(change) }
+                update(reply, in: key) { $0.changes.append(change) }
                 changed(folder)
             case .finished(let how):
-                update(reply, in: folder) { $0.state = how == .replied ? .replied : .stopped }
+                update(reply, in: key) { $0.state = how == .replied ? .replied : .stopped }
                 ended = true
             case .failed(let failure):
-                update(reply, in: folder) { $0.state = .failed(Self.words(failure)) }
+                update(reply, in: key) { $0.state = .failed(Self.words(failure)) }
                 ended = true
             }
             if ended { break }
         }
-        if !ended { update(reply, in: folder) { $0.state = .incomplete } }
-        update(reply, in: folder) { $0.activity = nil }
-        if threads[folder]?.turn == turn.turnID {
-            threads[folder]?.turn = nil
-            threads[folder]?.stopping = false
+        if !ended { update(reply, in: key) { $0.state = .incomplete } }
+        update(reply, in: key) { $0.activity = nil }
+        if threads[key]?.turn == turn.turnID {
+            threads[key]?.turn = nil
+            threads[key]?.stopping = false
         }
     }
 
     /// Asks the binder to stop the turn running on the page shown. Changes already made keep their Undo.
     func stop() async {
         guard let folder, let commands, let binder = binderID(folder), let turn = shown.turn, !shown.stopping else { return }
-        threads[folder]?.stopping = true
+        let key = key(folder)
+        threads[key]?.stopping = true
         do {
             try await commands.interrupt(binderID: binder, turnID: turn)
         } catch {
-            threads[folder]?.stopping = false
-            threads[folder]?.message = "Could not stop the reply: \(Self.words(error))"
+            threads[key]?.stopping = false
+            threads[key]?.message = "Could not stop the reply: \(Self.words(error))"
         }
     }
 
     /// Undoes the changes one reply made, through the binder's owner.
     func undo(_ change: ChatBinderChange) async {
         guard let folder, let reference = change.undo, let undoChange, !isUndone(change) else { return }
+        let key = key(folder)
         do {
             try await undoChange(reference, folder)
-            threads[folder]?.undone.insert(reference.batchID)
+            threads[key]?.undone.insert(reference.batchID)
             changed(folder)
         } catch {
-            threads[folder]?.message = "\(error)"
+            threads[key]?.message = "\(error)"
         }
     }
 
-    private func update(_ id: UUID, in folder: URL, _ change: (inout Entry) -> Void) {
-        guard let index = threads[folder]?.entries.firstIndex(where: { $0.id == id }) else { return }
-        change(&threads[folder]!.entries[index])
+    private func update(_ id: UUID, in key: String, _ change: (inout Entry) -> Void) {
+        guard let index = threads[key]?.entries.firstIndex(where: { $0.id == id }) else { return }
+        change(&threads[key]!.entries[index])
+    }
+
+    /// The longest start of `text` within `bytes` UTF-8 bytes, cut between characters.
+    static func prefix(of text: String, bytes: Int) -> String {
+        var used = 0, end = text.startIndex
+        for character in text {
+            let size = character.utf8.count
+            guard used + size <= bytes else { break }
+            used += size
+            end = text.index(after: end)
+        }
+        return String(text[..<end])
     }
 
     static func words(_ error: Error) -> String {
