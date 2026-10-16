@@ -761,7 +761,10 @@ first cleans each item, then validates each item on its own. In a meeting, turn 
    the person's own words, never the model's paraphrase: code keeps the model's `title` only when every
    word of it occurs in the item's sentence. Otherwise code builds it from the sentence, from the quote
    on, with the time words of check 2 (and a word such as "by" that only led into them) taken out,
-   white space trimmed and the first letter capitalized. A note line "Bill Acme today" is titled
+   white space trimmed and the first letter capitalized. Repeated time words are removed only with a
+   unique date context in the source (such as "on Friday"); an ambiguous occurrence stays in the title,
+   and a model title that already omits the date keeps task-name words that also name that date.
+   A note line "Bill Acme today" is titled
    "Bill Acme", never "Call Bill Acme". A document's title and its items follow the same rule against
    the document's text. The model's own title is kept, never shown, to tell two items of one sentence
    apart: two tasks can share the title code builds from their sentence.

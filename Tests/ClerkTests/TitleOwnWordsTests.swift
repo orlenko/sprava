@@ -37,6 +37,24 @@ import Testing
         }
     }
 
+    @Test func aDeadlineLeavesRepeatedWordsInTheTaskName() async {
+        for (source, proposed, expected) in [
+            ("Review Friday Lanterns on Friday", "Review Friday Lanterns on Friday", "Review Friday Lanterns"),
+            ("Review Friday Lanterns on Friday", "Review Friday Lanterns", "Review Friday Lanterns"),
+            ("On Friday review Friday Lanterns", "On Friday review Friday Lanterns", "Review Friday Lanterns"),
+            ("Review Friday Lanterns by Friday", "Summarize Friday Lanterns", "Review Friday Lanterns"),
+            // Without one identifiable date context, keep the words instead of guessing which one to remove.
+            ("Review Friday Lanterns Friday", "Review Friday Lanterns Friday", "Review Friday Lanterns Friday"),
+            ("Review On Friday on Friday", "Review On Friday on Friday", "Review On Friday on Friday"),
+        ] {
+            let (interp, input) = await read(source, [item(source, proposed, "review", when: "Friday")])
+            #expect(interp.items.map(\.title) == [expected], "source: \(source), proposed: \(proposed)")
+            #expect(interp.items.first?.whenResolved == today.adding(days: 1))
+            let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
+            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == expected)
+        }
+    }
+
     @Test func aTitleOfTheNotesOwnWordsIsKept() async {
         let (interp, _) = await read("Pay rent and send the lease to the landlord by Friday.", [
             item("Pay rent and send the lease", "Pay rent", "pay"),

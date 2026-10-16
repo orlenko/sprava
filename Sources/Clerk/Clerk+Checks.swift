@@ -80,16 +80,16 @@ extension Clerk {
     /// An item's title is the words of its source, never a model's paraphrase (capture-event-v0 §6.4 check 1): the
     /// model's title is kept only when every word of it is in the item's sentence; otherwise code builds it from the
     /// sentence, so "Bill Acme today" is titled "Bill Acme", never "Call Bill Acme". Either way the time words are
-    /// taken out: the date is the item's own field.
+    /// taken out only when their source context identifies one occurrence: an ambiguous title keeps its words.
     static func ownTitle(_ proposed: String, quote: String, sentence: String, whenText: String?) -> String {
         if hasOnlyWords(of: sentence, proposed) {
-            let kept = cleaned(proposed, without: whenText)
+            let kept = cleaned(proposed, without: whenText, source: sentence)
             if hasOnlyWords(of: sentence, kept) { return kept }
         }
         var text = sentence
         let q = quote.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"“”«»")))
         if let r = phraseRange(q, in: text) { text = String(text[r.lowerBound...]) }
-        let built = cleaned(text, without: whenText)
+        let built = cleaned(text, without: whenText, source: sentence)
         if hasOnlyWords(of: sentence, built) { return built }
         // A sentence that is only its time words ("Tomorrow!") keeps them, rather than an empty title.
         let whole = cleaned(sentence, without: nil)
@@ -111,12 +111,13 @@ extension Clerk {
 
     /// `text` with its time words (and a word that only led into them) taken out, white space collapsed, list marks
     /// and end punctuation trimmed, the first letter capitalized, at most 120 characters.
-    static func cleaned(_ text: String, without whenText: String?) -> String {
+    static func cleaned(_ text: String, without whenText: String?, source: String? = nil) -> String {
         var text = text
-        if let when = whenText, let r = phraseRange(when, in: text) {
-            var before = text[..<r.lowerBound].split(whereSeparator: \.isWhitespace).map(String.init)
-            while let last = before.last, timeLeads.contains(last.lowercased().replacingOccurrences(of: "’", with: "'")) { before.removeLast() }
-            text = before.joined(separator: " ") + " " + text[r.upperBound...]
+        if let when = whenText, let phrase = timePhrase(when, in: source ?? text) {
+            let found = phraseRanges(phrase, in: text)
+            if found.count == 1, let r = found.first {
+                text = text[..<r.lowerBound] + " " + text[r.upperBound...]
+            }
         }
         let ends = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?-–—•*·"))
         let title = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -126,11 +127,37 @@ extension Clerk {
         return shorten((upper.count == 1 ? upper : String(first)) + title.dropFirst(), to: 120)
     }
 
+    /// Identify a date context in the source, not in a possibly shortened model title. When "Friday" also names
+    /// the task, only the unique "on Friday" / "by Friday" context is removable. Ambiguity preserves the words.
+    static func timePhrase(_ when: String, in source: String) -> String? {
+        let found = phraseRanges(when, in: source)
+        let startsWithLead = when.split(whereSeparator: \.isWhitespace).first.map {
+            timeLeads.contains($0.lowercased().replacingOccurrences(of: "’", with: "'"))
+        } ?? false
+        let contexts: [String] = found.compactMap { r in
+            if startsWithLead { return when }
+            guard let lead = source[..<r.lowerBound].split(whereSeparator: \.isWhitespace).last,
+                  timeLeads.contains(lead.lowercased().replacingOccurrences(of: "’", with: "'")) else { return nil }
+            return String(lead) + " " + when
+        }
+        if contexts.count == 1 { return contexts.first }
+        return contexts.isEmpty && found.count == 1 ? when : nil
+    }
+
     /// Where `phrase` occurs in `text` as whole words, case-insensitively, with any white space between its words.
     static func phraseRange(_ phrase: String, in text: String) -> Range<String.Index>? {
+        guard let pattern = phrasePattern(phrase) else { return nil }
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
+    }
+
+    static func phraseRanges(_ phrase: String, in text: String) -> [Range<String.Index>] {
+        guard let pattern = phrasePattern(phrase), let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range, in: text) }
+    }
+
+    static func phrasePattern(_ phrase: String) -> String? {
         let parts = phrase.split(whereSeparator: \.isWhitespace).map { NSRegularExpression.escapedPattern(for: String($0)) }
         guard !parts.isEmpty else { return nil }
-        let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
-        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
+        return "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
     }
 }
