@@ -9,7 +9,7 @@ import SwiftUI
 /// person ticks. Sprava picks the client id itself, and connecting again renews the connection with the binders now
 /// ticked, so there is nothing to name and nothing that can already exist. Disconnect is one click.
 @MainActor
-final class BrainsModel: ObservableObject {
+final class BrainsModel: ObservableObject, RuntimePage {
     struct Client: Identifiable { let id: String; let name: String; let binders: [String: String]; let documents: Bool }
 
     /// The one id Sprava gives Claude Code. Connecting again renews this client instead of adding another.
@@ -33,7 +33,8 @@ final class BrainsModel: ObservableObject {
     }
 
     @Published var registration: Registration?
-    @Published var message: String?
+    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    var readFoundNoRuntime = false
     @Published var busy = false
     let client: RuntimeClient
     let authenticate: () async throws -> Void
@@ -42,6 +43,7 @@ final class BrainsModel: ObservableObject {
          authenticate: @escaping () async throws -> Void = { try await BrainsModel.authenticatePerson() }) {
         self.client = client
         self.authenticate = authenticate
+        client.clearsNotRunning(self)
     }
 
     /// Connecting and widening document access require the person, beyond UI automation (architecture 2.1).
@@ -82,7 +84,7 @@ final class BrainsModel: ObservableObject {
             }
             // The ticks start as the binders Claude Code already sees, until the person changes them.
             if !choseByHand { chosen = Set(claudeCode?.binders.keys.map { $0 } ?? []) }
-        } catch { message = Self.plain(error, "The connections could not be loaded. Try again in a moment.") }
+        } catch { readFailed(Self.plain(error, "The connections could not be loaded. Try again in a moment."), error) }
     }
 
     /// The arguments for `claude mcp add`; `--scope user` so no `.mcp.json` lands in a folder (architecture 7.5).
