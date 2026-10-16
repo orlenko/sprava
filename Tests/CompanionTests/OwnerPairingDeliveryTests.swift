@@ -26,13 +26,16 @@ private final class DeliverySecrets: CompanionCredentialStorage, @unchecked Send
     }
 }
 private actor DeliveryClaimRelay: OwnerClaimTransport {
+    private var healthCalls = 0
+    func count() -> Int { healthCalls }
     func health() async throws -> CompanionRelayReply<CompanionRelayHealth> {
-        CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: "0123456789abcdef0123456789abcdef", claimed: true))
+        healthCalls += 1
+        return CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: "0123456789abcdef0123456789abcdef", claimed: true))
     }
     func claim(_ body: Data) async throws -> Int { Issue.record("No claim expected"); return 409 }
 }
 private actor DeliveryRelay: OwnerDeliveryTransport {
-    enum Step: Sendable { case keys(Int), wrap(Int), state(CompanionRelayPairing.State), lostKeys, lostWrap }
+    enum Step: Sendable { case keys(Int), wrap(Int), state(CompanionRelayPairing.State), stateStatus(Int), lostKeys, lostWrap }
     private var plans: [Step]
     private var calls: [String] = []
     private var keys: [Data] = []
@@ -60,8 +63,11 @@ private actor DeliveryRelay: OwnerDeliveryTransport {
     func pairingState(_ id: String) async throws -> CompanionRelayReply<CompanionRelayPairing.State> {
         calls.append("state")
         guard !plans.isEmpty else { throw CompanionRelayError.invalid }
-        guard case .state(let state) = plans.removeFirst() else { Issue.record("Unexpected state poll"); throw CompanionRelayError.invalid }
-        return CompanionRelayReply(status: 200, value: state)
+        switch plans.removeFirst() {
+        case .state(let state): return CompanionRelayReply(status: 200, value: state)
+        case .stateStatus(let code): return CompanionRelayReply(status: code, value: nil)
+        default: Issue.record("Unexpected state poll"); throw CompanionRelayError.invalid
+        }
     }
 }
 private struct DeliveryFixture {
@@ -92,10 +98,11 @@ private struct DeliveryFixture {
             deviceID: r.deviceID, publicKey: phone.publicKey.rawRepresentation, hello: hello)))
         delivery = try profile.confirmPairing(approval, credentials: owner, now: clock.now())
     }
-    func worker(_ relay: DeliveryRelay) throws -> CompanionOwnerPairingDelivery {
+    func worker(_ relay: DeliveryRelay, claim: DeliveryClaimRelay = DeliveryClaimRelay(),
+                recoverRefusals: Bool = true) throws -> CompanionOwnerPairingDelivery {
         let p = try CompanionProfile(database: folder.appendingPathComponent("state.sqlite"), relay: profile.relay, secrets: secrets)
-        let c = try CompanionOwnerConnection(profile: p, transport: DeliveryClaimRelay())
-        return CompanionOwnerPairingDelivery(profile: p, connection: c, transport: relay, now: { clock.now() })
+        let c = try CompanionOwnerConnection(profile: p, transport: claim)
+        return CompanionOwnerPairingDelivery(profile: p, connection: c, transport: relay, now: { clock.now() }, recoverRefusals: recoverRefusals)
     }
 }
 
@@ -152,4 +159,35 @@ private struct DeliveryFixture {
         #expect(try f.profile.deviceRecords().first?.state == .active)
         #expect(await relay.snapshot().0 == (expired ? [] : ["keys"]))
     }
+}
+
+
+@Test(arguments: [0, 1, 2])
+func deliveryCanDeferRefusalRecoveryWithoutLosingRecordedBytes(stage: Int) async throws {
+    let f = try DeliveryFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
+    let plans: [[DeliveryRelay.Step]] = [
+        [.keys(401)], [.keys(204), .wrap(401)], [.keys(204), .wrap(204), .stateStatus(401)],
+    ]
+    let relay = DeliveryRelay(plans[stage]), claim = DeliveryClaimRelay(), d = f.delivery.deviceID
+    let worker = try f.worker(relay, claim: claim, recoverRefusals: false)
+    await #expect(throws: CompanionPairingFlowError.relayRejected(401)) { try await worker.step(deviceID: d) }
+    #expect(await claim.count() == 0)
+    let reopened = try CompanionProfile(database: f.folder.appendingPathComponent("state.sqlite"),
+                                       relay: f.profile.relay, secrets: f.secrets)
+    #expect(try reopened.ownerClaimState() == .checkingRefusal)
+    let retained = try #require(try reopened.pairingDelivery(deviceID: d))
+    #expect(retained.deviceKeys == f.delivery.deviceKeys && retained.wrappedKey == f.delivery.wrappedKey)
+    #expect(!retained.acknowledged)
+    #expect(try reopened.deviceRecords().first?.state == .active)
+    #expect(f.secrets.values[f.profile.deviceAccount(d)] != nil)
+    f.clock.set("2026-10-15T11:50:10Z")
+    let restarted = try f.worker(relay, claim: claim, recoverRefusals: false)
+    await #expect(throws: CompanionPairingFlowError.ownerUnavailable(.checkingRefusal)) {
+        try await restarted.step(deviceID: d)
+    }
+    #expect(await claim.count() == 0)
+    let sent = await relay.snapshot()
+    #expect(sent.0 == Array(["keys", "wrap", "state"].prefix(stage + 1)))
+    #expect(sent.1 == [f.delivery.deviceKeys])
+    #expect(sent.2 == (stage == 0 ? [] : [f.delivery.wrappedKey]))
 }

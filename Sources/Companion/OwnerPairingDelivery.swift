@@ -20,16 +20,21 @@ public actor CompanionOwnerPairingDelivery {
     private let connection: CompanionOwnerConnection
     private let transport: any OwnerDeliveryTransport
     private let now: @Sendable () -> String
+    private let recoverRefusals: Bool
     private var busy = false
-    public init(profile: CompanionProfile) throws {
+    /// Phone actions defer refused-token recovery to a separate claim action after recording admission closed.
+    /// The default preserves automatic recovery for existing background callers (§6).
+    public init(profile: CompanionProfile, recoverRefusals: Bool = true) throws {
         guard let owner = try CompanionOwnerVault(backend: profile.secrets).load(profile.relay) else { throw CompanionCredentialError.unavailable }
+        self.recoverRefusals = recoverRefusals
         self.profile = profile; connection = try CompanionOwnerConnection(profile: profile)
         transport = try CompanionOwnerRelay(relay: profile.relay, token: owner.ownerToken)
         now = { Date().ISO8601Format() }
     }
     init(profile: CompanionProfile, connection: CompanionOwnerConnection, transport: any OwnerDeliveryTransport,
-         now: @escaping @Sendable () -> String) {
+         now: @escaping @Sendable () -> String, recoverRefusals: Bool = true) {
         self.profile = profile; self.connection = connection; self.transport = transport; self.now = now
+        self.recoverRefusals = recoverRefusals
     }
     private func admit() throws {
         let state = try profile.ownerClaimState()
@@ -39,7 +44,7 @@ public actor CompanionOwnerPairingDelivery {
         if status == 204 { return }
         if status == 401 {
             try profile.recordClaimState(.checkingRefusal)
-            _ = try await connection.ownerTokenRefused()
+            if recoverRefusals { _ = try await connection.ownerTokenRefused() }
         }
         if status == 409 || status == 410 {
             try profile.blockDelivery(deviceID, status: status)
@@ -83,6 +88,7 @@ public actor CompanionOwnerPairingDelivery {
         let reply = try await transport.pairingState(delivery.pairingID)
         if reply.status == 401 {
             try profile.recordClaimState(.checkingRefusal)
+            guard recoverRefusals else { throw CompanionPairingFlowError.relayRejected(401) }
             _ = try await connection.ownerTokenRefused()
         }
         if try expired(deviceID) { return .notConfirmed }
