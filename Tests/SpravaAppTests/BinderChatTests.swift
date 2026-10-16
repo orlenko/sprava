@@ -1,4 +1,5 @@
 import BinderFormat
+import Combine
 import Foundation
 import Services
 @testable import SpravaApp
@@ -155,7 +156,11 @@ import Testing
         await chat.show(Self.folder)
         await until { chat.entries.last?.state == .replied }
         #expect(chat.entries.last?.text == "Answer for the first binder")
+        var redraws = 0
+        let watching = chat.objectWillChange.sink { redraws += 1 }
         await chat.show(Self.other)
+        #expect(redraws > 0)   // moving to a binder already read redraws the page
+        watching.cancel()
         #expect(chat.draft == "A draft for the other binder" && chat.entries.isEmpty)
         #expect(standIn.stopped.isEmpty)   // leaving a page is not Stop
     }

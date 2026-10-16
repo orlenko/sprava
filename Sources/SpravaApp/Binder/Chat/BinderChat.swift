@@ -54,7 +54,8 @@ final class BinderChat: ObservableObject {
     nonisolated static let historyMonths = 2
 
     @Published private var threads: [URL: Thread] = [:]
-    private(set) var folder: URL?
+    /// The binder shown; published, so moving to a binder already read redraws the page.
+    @Published private(set) var folder: URL?
     private let commands: ChatCommands?
     private let binderID: (URL) -> String?
     private let undoChange: ((ChatUndoReference, URL) async throws -> Void)?
