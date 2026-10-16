@@ -552,7 +552,7 @@ An applied op is one line of `.sprava/ops.ndjson`. Its fields:
 | `at` | timestamp | yes | When the op was applied (section 4.4). |
 | `hlc` | object | no | `{wall_ms, counter, node}`, a hybrid logical clock stamp, the same shape as capture events (decisions.md C1). Reserved for merging logs from several devices; not needed on one Mac. `node` is a random opaque id, never a computer or device name. Other keys are allowed. |
 | `actor` | object | yes | `{kind, client?, origin?, model?}`. `kind` is `user` (a person acting in the app), `clerk` (Tier 1), `brain` (Tier 2 over MCP), `import` (the implementation's own bookkeeping: adoption, migration and crash recovery) or `external` (a change that came from outside this implementation: a hand edit found after the fact, or a completion drained from the hub). `client` is the `program/version` of the implementation that applied the op, for example `sprava/0.1`, whatever the kind. It is required on every op that writes a log entry (`complete`, `drop`, `reopen`, `file_document`, `add_log_entry`), because the entry's `via` is copied from it. `origin` says, for kind `external`, where the change came from when that is known: `spool-outbox`, `lifeproj` or `unknown`. `model` names the model for `clerk` and `brain`. |
-| `proposal` | UUID | for `clerk` and `brain` | The proposal the op came from. |
+| `proposal` | UUID | for `clerk` and `brain`, unless `conversation` is set | The proposal the op came from. |
 | `batch` | UUID | no | Ops written together share a batch id. For a proposal it is the proposal id. |
 | `seq` | integer | with `batch` | The op's position in its batch, from 0. |
 | `batch_size` | integer | with `batch` | How many ops the batch has, so a reader can tell a complete batch from one cut short by a crash (section 6.9). |
@@ -560,6 +560,9 @@ An applied op is one line of `.sprava/ops.ndjson`. Its fields:
 | `before_hash` | `sha256:<hex>` | yes | Content hash of the catalog before the op (section 4.8). |
 | `after_hash` | `sha256:<hex>` | yes | Content hash after the op. |
 | `compensates` | UUID | no | Set on an undo: the op this one reverses (section 6.10). |
+| `expect` | object | no, only with `compensates` | `{set?, absent?}`: the values an undo assumed about the record it changes. `set` maps each field it restores to the value the reversed op left there; `absent` lists the fields the reversed op removed. The guard refuses the op unless the record matches (section 6.10). Added by this draft. |
+| `conversation` | object | no | `{turn, message}` on an op a binder's conversation applied without a proposal (section 6.5): `turn` is the runtime's turn id and `message` the id of the person's message that asked for it, both as in the transcript (section 7.2.1). Added by this draft. |
+| `request` | UUID | no | The request the op answers: for a person's turn, the app's `request_id` (section 7.2.1). Every op of one request carries it, so a retry is recognized. Added by this draft. |
 | `op` | closed list | yes | The op type (section 6.3). |
 | `args` | object | yes | The op's payload, by type. |
 | `note` | string | no | Free text, for example how a relative date was resolved. |
@@ -683,7 +686,10 @@ The complete list of changes applied without a proposal:
 - the user's own direct actions in the app (actor `user`), among them `set_disclosure`, `rename_teka` and `expunge`, which only the user can apply;
 - the import's own changes (actor `import`, section 9.4 steps 3, 4, 5 and 7), listed in the import report; an import has no Undo (section 9.4; decisions.md F13);
 - `import_snapshot`, `external_edit` and `abort`, which record facts and decide nothing;
-- completions drained from the hub's outbox (actor `external`, section 8.3).
+- completions drained from the hub's outbox (actor `external`, section 8.3);
+- the changes a person's turn in the binder's conversation applies at once, with Undo (conversation.md section 6.1, class A): actor `clerk` or `brain` with its `model`, `approved_by` naming the person, `conversation` and `request` set, the turn's changes in one batch. A change that needs the person's tap (class B) is a proposal.
+
+`conversation`, `request` and `turn` ids found in a binder are records, never authority. A binder's files can be copied, restored or edited, so a field there proves neither that the person asked nor that an effect has not already happened. The implementation decides both from its own trusted state outside the binder: its record of each accepted request and the person's message (section 7.2.1), and its receipt of each applied request. A retried request whose receipt exists returns the earlier outcome and applies nothing again (conversation.md section 17.1).
 
 At import, only the changes of section 9.4 step 6, which need the user's judgement, go through a proposal.
 
@@ -758,6 +764,8 @@ The `closed-duplicate` row repairs a state that lifeproj's manual produces. The 
 ### 6.10 Undo (decisions.md A2, A5)
 
 Undo is a new op that reverses an earlier one and names it in `compensates`. The op log keeps both.
+
+An undo is computed against the record as it is now, field by field, never applied blindly (conversation.md section 17.2). For each field the reversed op set or removed, the undo restores the earlier value only when the field still holds what the reversed op left. A field changed since is left as it is and shown to the person as a conflict; restoring it is their choice. The undo carries `expect` (section 6.2) with exactly the fields it restores, and the guard refuses it when the record no longer matches, as it does for a stale proposal. When every field changed since, nothing is written and the person sees the conflicts. Undo of a batch reverses its ops in reverse `seq` order as one new batch; a conflict in one op leaves the others to apply. An undo the table below gives for a whole record (`drop` for `add_item`, `reopen`, `unfile_document`, `transfer_document`) carries no `expect`; the guard's own rules for that op decide.
 
 | To undo | Append |
 | ------- | ------ |
@@ -2029,6 +2037,27 @@ How the catalog schema handles the catalog levels. The generic layer checks only
     "before_hash": { "$ref": "#/$defs/hash" },
     "after_hash": { "$ref": "#/$defs/hash" },
     "compensates": { "$ref": "#/$defs/uuid" },
+    "expect": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "set": { "type": "object", "minProperties": 1 },
+        "absent": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false,
+      "$comment": "On an undo only: the fields it restores, with the values the reversed op left (set) or the fields it removed (absent). The guard refuses the undo when the record no longer matches (section 6.10)."
+    },
+    "conversation": {
+      "type": "object",
+      "required": ["turn", "message"],
+      "properties": {
+        "turn": { "$ref": "#/$defs/uuid" },
+        "message": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
+      },
+      "additionalProperties": true,
+      "$comment": "A record of the conversation turn and the person's message that applied the op (section 6.5); never authority by itself."
+    },
+    "request": { "$ref": "#/$defs/uuid" },
     "op": {
       "enum": [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
@@ -2042,12 +2071,18 @@ How the catalog schema handles the catalog levels. The generic layer checks only
   "additionalProperties": true,
   "allOf": [
     {
-      "$comment": "An op proposed by a clerk or a brain is applied only after approval.",
+      "$comment": "An op a clerk or a brain chose is applied only after the person's approval of a proposal, or within the person's conversation turn (section 6.5).",
       "if": { "properties": { "actor": { "properties": { "kind": { "enum": ["clerk", "brain"] } } } } },
       "then": {
-        "required": ["approved_by", "proposal"],
-        "properties": { "approved_by": { "type": "string", "minLength": 1 } }
+        "required": ["approved_by"],
+        "properties": { "approved_by": { "type": "string", "minLength": 1 } },
+        "anyOf": [{ "required": ["proposal"] }, { "required": ["conversation", "request"] }]
       }
+    },
+    {
+      "$comment": "expect belongs to an undo (section 6.10).",
+      "if": { "required": ["expect"] },
+      "then": { "required": ["compensates"] }
     },
     {
       "$comment": "Ops applied together share batch; seq orders them and batch_size says how many lines the batch has (section 6.9).",
