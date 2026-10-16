@@ -135,8 +135,8 @@ import Testing
         #expect(!chat.isReplying)
 
         standIn.refuse = nil
-        chat.draft = ""
         await chat.retry(chat.entries[0])
+        #expect(chat.draft.isEmpty)   // the line put back leaves the composer once it is accepted
         #expect(standIn.received.count == 2)
         #expect(standIn.received[0].requestID == standIn.received[1].requestID)
         #expect(standIn.received[1].text == "Renew the invented permit")

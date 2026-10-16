@@ -140,6 +140,8 @@ final class BinderChat: ObservableObject {
         do {
             let turn = try await commands.send(ChatSendRequest(binderID: binder, requestID: requestID, text: entry.text))
             update(entry.id, in: key) { $0.state = .sent }
+            // A line put back in the composer when it was not accepted leaves it once it is, unless edited since.
+            if threads[key]?.draft == entry.text { threads[key]?.draft = "" }
             let reply = Entry(id: UUID(), speaker: .binder, text: "", state: .replying)
             threads[key]?.entries.append(reply)
             threads[key]?.turn = turn.turnID
