@@ -71,10 +71,11 @@ func shelfRow(_ folder: URL) -> ShelfRow { ShelfRow(folder: folder, source: .pic
         #expect(s.inbox.unfiled().isEmpty)
     }
 
-    /// A new line is proposed once, beside the item of the line before it; a clerk's own title stays.
+    /// A new line is proposed once, beside the item of the line before it; a clerk's own title (some of the line's
+    /// words, never others) stays.
     @Test func aNewLineIsProposedOnce() async throws {
         let s = try pSetup()
-        let (a, b, _, adapter) = try await splitNote(s, titles: ("Phone the roofer", "Buy blinds"))
+        let (a, b, _, adapter) = try await splitNote(s, titles: ("Roofer", "Blinds"))
         _ = try pEvent(s, device: adapter, app: "adapter", ref: "S1", revision: "rev2",
                        text: "Call the roofer before noon\nOrder the blinds\nMeasure the windows")
         _ = s.inbox.sweep(binders: [shelfRow(a), shelfRow(b)], commands: s.commands, now: pNow)

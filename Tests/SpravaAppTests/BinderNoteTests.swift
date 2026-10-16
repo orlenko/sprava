@@ -69,7 +69,7 @@ import Testing
         // The page is built again after a visit to the Inbox or Health: it draws the model the window keeps.
         let today = CalendarDate.today()
         let page = NowView(row: row(acme), today: today, page: NowPage(items: [], log: [], today: today, timeZone: .current),
-                           reload: {}, note: note)
+                           reload: {}, note: note, editor: ItemEditor())
         #expect(page.note === note)
         note.show(acme)
         #expect(page.note.text == "Renew the acme permit")

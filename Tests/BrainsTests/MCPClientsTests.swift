@@ -79,13 +79,34 @@ import Testing
         #expect(throws: MCPClients.Unreadable.self) { try MCPClients.load(root) }
     }
 
-    @Test func invalidIDsAndDuplicateActiveClientsAreRefused() throws {
+    @Test func invalidIDsAreRefused() throws {
         var clients = MCPClients()
         for id in ["", "UPPERCASE", "../escape", String(repeating: "a", count: 42)] {
             #expect(throws: MCPClients.Failure.self) { try clients.register(id: id, name: "Invented", binders: [:]) }
         }
-        _ = try clients.register(id: "invented", name: "Invented", binders: [:])
-        #expect(throws: MCPClients.Failure.self) { try clients.register(id: "invented", name: "Invented", binders: [:]) }
+    }
+
+    /// Connecting again never fails with "exists": it renews the client with the binders now chosen.
+    @Test func registeringAConnectedClientAgainRenewsItsTokenAndScope() throws {
+        var clients = MCPClients()
+        let acme = "/Invented/acme", household = "/Invented/household"
+        let first = try clients.register(id: "invented", name: "Invented", binders: [acme: "propose"], now: now)
+        clients.clients[0].documents = true
+        let same = try clients.register(id: "invented", name: "Invented", binders: [acme: "propose"], now: now)
+        #expect(clients.authenticate(clientID: "invented", token: first) == nil)
+        let renewed = try #require(clients.authenticate(clientID: "invented", token: same))
+        #expect(renewed.binders == [acme: "propose"])
+        #expect(renewed.readsDocuments)
+        let changed = try clients.register(id: "invented", name: "Invented", binders: [household: "propose"], now: now)
+        #expect(clients.authenticate(clientID: "invented", token: same) == nil)
+        let active = try #require(clients.authenticate(clientID: "invented", token: changed))
+        #expect(active.binders == [household: "propose"])
+        #expect(active.level(for: URL(fileURLWithPath: acme)) == nil)
+        // A permission to read documents given for acme never reaches a binder added later.
+        #expect(!active.readsDocuments)
+        #expect(clients.clients.filter { $0.id == "invented" && !$0.revoked }.count == 1)
+        // The renewed records stay, revoked, so a revoke still reaches every binder the client had.
+        #expect(Set(clients.clients.filter { $0.id == "invented" }.flatMap(\.binders.keys)) == [acme, household])
     }
 
     @Test func anOversizedSaveKeepsTheReadableRegistry() throws {

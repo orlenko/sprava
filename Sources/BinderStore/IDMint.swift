@@ -183,4 +183,23 @@ extension TekaStore {
         }
         _ = try TransactionGuard.check(lines, on: catalog, knownIDs: Set(IDMint.usedIDs(opLog: log)))
     }
+
+    /// The person's own change whose new records carry placeholder ids (`"$new:1"`), such as an item typed on the
+    /// To-dos page: minted under the lock, against the catalog the change is applied to, as an approved card's are
+    /// (binder-v0 §5.6, §6.5). Returns the applied op lines.
+    @discardableResult
+    public func applyMinting(_ bodies: [OpBody], now: Date = Date()) throws -> [JSONObject] {
+        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        let year = Calendar(identifier: .gregorian).component(.year, from: now)
+        let plain = bodies.map { JSONObject([(key: "op", value: .string($0.op)), (key: "args", value: .object($0.args))]) }
+        if Proposal.hasDuplicatePlaceholders(plain) { throw Refused(reason: "two new records share one placeholder name") }
+        return try apply(building: { catalog, log in
+            let resolved = try Placeholders.resolve(plain, catalog: catalog, opLog: log, year: year, at: at)
+            return zip(bodies, resolved).map { body, op in
+                var body = body
+                body.args = op["args"]?.objectValue ?? body.args
+                return body
+            }
+        }, now: now)
+    }
 }

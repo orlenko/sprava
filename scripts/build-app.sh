@@ -47,6 +47,10 @@ mkdir -p "$work/Contents/MacOS" "$work/Contents/Resources" "$work/Contents/Libra
 cp Resources/LaunchAgents/*.plist "$work/Contents/Library/LaunchAgents/"
 cp Resources/App-Info.plist "$work/Contents/Info.plist"
 cp LICENSE "$work/Contents/Resources/LICENSE.txt"
+# The app icon: Assets.car (CFBundleIconName, with its dark and tinted looks) and AppIcon.icns (CFBundleIconFile),
+# both committed by scripts/make-app-icon.sh, so the build needs no Xcode.
+cp Resources/AppIcon/Assets.car "$work/Contents/Resources/Assets.car"
+cp Resources/AppIcon/AppIcon.icns "$work/Contents/Resources/AppIcon.icns"
 cp "$bin_dir/SpravaApp" "$work/Contents/MacOS/SpravaApp"
 cp "$bin_dir/sprava" "$work/Contents/MacOS/sprava"
 cp "$bin_dir/sprava-runtime" "$work/Contents/MacOS/sprava-runtime"

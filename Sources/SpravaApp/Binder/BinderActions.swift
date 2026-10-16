@@ -6,7 +6,7 @@ import SpravaKit
 
 /// One binder's review cards and actions, all through the runtime (mvp.md feature 3).
 @MainActor
-final class BinderActions: ObservableObject {
+final class BinderActions: ObservableObject, RuntimePage {
     struct Card: Identifiable {
         let id: String
         let title: String
@@ -59,7 +59,8 @@ final class BinderActions: ObservableObject {
         let undoable: Bool
         let undone: Bool
     }
-    @Published var message: String?
+    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    var readFoundNoRuntime = false
     @Published var busy = false
     @Published var description = ""
     @Published var filing = false
@@ -106,18 +107,21 @@ final class BinderActions: ObservableObject {
     @Published private(set) var keepingNote: String?
     /// The dashboard as Sprava would write it today, once rendered for the preview sheet.
     @Published private(set) var preview: String?
-    private let disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.reads", qos: .utility))
+    private let disk: ShelfDiskWorker
     private let readTimeout: TimeInterval
     private let readKeeping: @Sendable (URL) -> Keeping
     private let renderPreview: @Sendable (URL, CalendarDate) -> String?
 
     init(client: RuntimeClient = RuntimeClient(), readTimeout: TimeInterval = 5,
          readKeeping: @escaping @Sendable (URL) -> Keeping = Keeping.read,
-         renderPreview: @escaping @Sendable (URL, CalendarDate) -> String? = { DashboardKeeper(folder: $0).preview(today: $1) }) {
+         renderPreview: @escaping @Sendable (URL, CalendarDate) -> String? = { DashboardKeeper(folder: $0).preview(today: $1) },
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
+        disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.reads", qos: .utility), deadline: deadline)
         self.client = client
         self.readTimeout = readTimeout
         self.readKeeping = readKeeping
         self.renderPreview = renderPreview
+        client.clearsNotRunning(self)
     }
 
     /// Whether `folder` is still the binder shown.
@@ -151,7 +155,7 @@ final class BinderActions: ObservableObject {
             settingsLoaded = true
         } catch {
             guard serves(folder) else { return }
-            message = "This binder's settings could not be read: \(error)"
+            readFailed("This binder's settings could not be read: \(error)", error)
         }
         await loadReview(folder)
     }
@@ -231,7 +235,7 @@ final class BinderActions: ObservableObject {
             }
         } catch {
             guard serves(folder) else { return }
-            message = "\(error)"
+            readFailed("\(error)", error)
         }
     }
 
@@ -250,7 +254,8 @@ final class BinderActions: ObservableObject {
                    onSuccess: { [weak self] in self?.savedDescription = line })
     }
 
-    func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) {
+    @discardableResult
+    func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never> {
         run("undo", folder, [("op_id", .string(change.id))], then: reload)
     }
 
@@ -392,10 +397,12 @@ final class BinderActions: ObservableObject {
         settle(card, "reject", folder, [("proposal", .string(card.id)), ("digest", .string(card.digest))], reload: reload)
     }
 
-    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void) {
-        guard let id = item.object?["id"] else { return }
+    /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id.
+    @discardableResult
+    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
+        guard let id = item.object?["id"] else { return nil }
         let at = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)
-        run("apply", folder, [("op", .string(op)),
-                              ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))], then: reload)
+        return run("apply", folder, [("op", .string(op)),
+                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))], then: reload)
     }
 }

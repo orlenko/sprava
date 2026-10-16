@@ -107,7 +107,9 @@ import Testing
                             userInfo: [NSLocalizedDescriptionKey: "Couldn't communicate with a helper application."])
         let failure = RuntimeClient.Failure.notRunning(error)
         #expect(!failure.description.contains(error.localizedDescription))
-        #expect(failure.description.hasPrefix("Sprava's background part is not running.") && failure.description.contains("4099"))
+        // One plain line: the code goes to the log, not to the page.
+        #expect(failure.description == RuntimeClient.Failure.notRunningLine)
+        #expect(!failure.description.contains("4099") && !failure.description.contains("error"))
         #expect(failure.kind == .notRunning)
     }
 

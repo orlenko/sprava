@@ -6,6 +6,7 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 python3 - "$repo" <<'PY'
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -77,6 +78,7 @@ if name == "codesign":
         keys = ["<key>Library/LaunchAgents/%s</key>" % p.name
                 for p in sorted((target / "Contents/Library/LaunchAgents").iterdir())
                 if p.name != os.environ.get("TEST_UNSEALED")]
+        keys += ["<key>Resources/%s</key>" % p.name for p in sorted((target / "Contents/Resources").iterdir())]
         seal.write_text("\\n".join(keys) + "\\n")
 sys.exit(0)
 ''')
@@ -121,6 +123,37 @@ sys.exit(0)
         self.assertEqual(len(signed), 7)
         self.assertTrue(signed[-1].endswith(".building-Sprava.app"), signed)
         self.assertIn("swift build --product SpravaApp -c release", self.log.read_text())
+
+    def test_app_icon_is_bundled_and_named_by_info_plist(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resources = self.bundle / "Contents/Resources"
+        with open(self.bundle / "Contents/Info.plist", "rb") as f:
+            info = plistlib.load(f)
+        # The legacy icon file, and the asset catalog that holds the icon named by CFBundleIconName.
+        icns = resources / (info["CFBundleIconFile"].removesuffix(".icns") + ".icns")
+        self.assertEqual(icns.read_bytes(), (REPO / "Resources/AppIcon/AppIcon.icns").read_bytes())
+        self.assertEqual(icns.read_bytes()[:4], b"icns")
+        catalog = (resources / "Assets.car").read_bytes()
+        self.assertEqual(catalog, (REPO / "Resources/AppIcon/Assets.car").read_bytes())
+        self.assertIn(info["CFBundleIconName"].encode(), catalog)
+        # Both are in place before the bundle is signed, so its signature seals them.
+        seal = (self.bundle / "Contents/_CodeSignature/CodeResources").read_text()
+        for name in [icns.name, "Assets.car"]:
+            self.assertIn(f"<key>Resources/{name}</key>", seal)
+
+    def test_missing_app_icon_keeps_previous_bundle(self):
+        for name in ["AppIcon.icns", "Assets.car"]:
+            with self.subTest(name):
+                shutil.rmtree(self.bundle, ignore_errors=True)
+                self.previous()
+                icon = self.repo / "Resources/AppIcon" / name
+                saved = icon.read_bytes()
+                icon.unlink()
+                result = self.run_script()
+                icon.write_bytes(saved)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((self.bundle / "version").read_text(), "old\n")
 
     def test_missing_restic_builds_and_copies_nothing(self):
         self.previous()

@@ -23,4 +23,17 @@ struct ShelfPresentation: Sendable {
     let snapshot: ShelfSnapshot.Snapshot
     let today: CalendarDate
     let counts: [URL: ShelfCounts]
+    /// The To-dos page's board, merged from the rows' Now pages on the same worker.
+    let todos: TodoBoard
+
+    init(snapshot: ShelfSnapshot.Snapshot, today: CalendarDate, counts: [URL: ShelfCounts]) {
+        self.snapshot = snapshot
+        self.today = today
+        self.counts = counts
+        todos = TodoBoard(snapshot.rows.compactMap { row in
+            counts[row.folder]?.page.map {
+                TodoBoard.Source(name: row.name, folder: row.folder, writable: row.teka.isAdopted && !row.teka.writesBlocked, page: $0)
+            }
+        }, today: today)
+    }
 }

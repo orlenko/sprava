@@ -9,7 +9,7 @@ import Testing
 /// behind is dropped, a refused approval keeps the person's edits, a card is locked while its approval is on its
 /// way and, once approved, until it leaves the page, and drafts wait for their binder. Invented paths only.
 @MainActor
-@Suite struct BinderPageTests {
+@Suite(.timeLimit(.minutes(1))) struct BinderPageTests {
     let kitchen = URL(fileURLWithPath: "/Invented/kitchen-reno", isDirectory: true)
     let garden = URL(fileURLWithPath: "/Invented/garden-shed", isDirectory: true)
 
@@ -70,24 +70,27 @@ import Testing
         runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
         let stalled = StalledBinderRead()
         defer { stalled.release.signal() }
-        let actions = BinderActions(client: runtime.client, readTimeout: 0.05, readKeeping: stalled.keeping,
-                                    renderPreview: { _, _ in Thread.isMainThread ? "rendered on the main actor" : "Invented dashboard" })
+        // Only the stalled read times out, when the test expires it; the later reads and the preview never do.
+        let deadlines = ManualDeadlines()
+        let actions = BinderActions(client: runtime.client, readKeeping: stalled.keeping,
+                                    renderPreview: { _, _ in Thread.isMainThread ? "rendered on the main actor" : "Invented dashboard" },
+                                    deadline: deadlines.deadline)
         // The binder's volume stalls: the page loads, says the files are slow, and the settings still arrive.
-        let started = ContinuousClock.now
-        await actions.load(kitchen, adopted: true)
-        #expect(started.duration(to: .now) < .seconds(2))
+        let loading = Task { await actions.load(kitchen, adopted: true) }
+        await stalled.calls.wait(for: 1)
+        deadlines.expire()
+        await loading.value
+        // The page loaded while the read was still stalled.
+        #expect(!stalled.completed)
         #expect(stalled.ranOffMain && actions.keeping == nil && actions.keepingNote != nil && actions.settingsLoaded)
         _ = KeepingRows(actions: actions, folder: kitchen, today: CalendarDate.today(), reload: {}).body
-        #expect(stalled.calls == 1)
+        #expect(stalled.calls.value == 1)
 
         // Once the read ends, the next load shows what it found and the note goes away.
         stalled.release.signal()
-        let deadline = ContinuousClock.now + .seconds(2)
-        while actions.keeping == nil && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-            await actions.loadKeeping(kitchen)
-        }
-        #expect(stalled.calls >= 2)
+        await stalled.finishes.wait(for: 1)
+        try await untilDone({ actions.keeping != nil }) { await actions.loadKeeping(kitchen) }
+        #expect(stalled.calls.value >= 2)
         #expect(actions.keeping == BinderActions.Keeping(switched: true, addendum: false) && actions.keepingNote == nil)
 
         await actions.showDashboardPreview(kitchen, today: CalendarDate.today())
@@ -338,15 +341,20 @@ import Testing
 /// A binder read that waits for the test, standing in for a stalled volume or a file still being downloaded.
 private final class StalledBinderRead: @unchecked Sendable {
     let release = DispatchSemaphore(value: 0)
+    let calls = Arrivals()
+    let finishes = Arrivals()
     private let lock = NSLock()
-    private var count = 0
     private var offMain = true
-    var calls: Int { lock.withLock { count } }
     var ranOffMain: Bool { lock.withLock { offMain } }
+    var completed: Bool { finishes.value > 0 }
 
     func keeping(_ folder: URL) -> BinderActions.Keeping {
-        let call = lock.withLock { count += 1; offMain = offMain && !Thread.isMainThread; return count }
-        if call == 1 { _ = release.wait(timeout: .now() + 5) }
+        lock.withLock { offMain = offMain && !Thread.isMainThread }
+        if calls.arrive() == 1 {
+            // A bound far beyond the test's own pace, so a broken implementation fails instead of hanging.
+            _ = release.wait(timeout: .now() + 30)
+            finishes.arrive()
+        }
         return BinderActions.Keeping(switched: true, addendum: false)
     }
 }

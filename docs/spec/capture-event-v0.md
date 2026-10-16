@@ -689,11 +689,11 @@ What the clerk receives. Each capture is read in steps, each a small task in its
 1. Extraction. One call per window of the capture text (see "Windows"), with the window, `captured_at`
    and `locale`. No binder list, no retrieved facts and no binder content are in this call. It splits
    the window into items and copies their words.
-2. Binder. One call per item, with greedy sampling, the item's sentence, and the names of the binders
-   the capture may be filed into, each with a one-line description (architecture.md 5.3, the binder call:
-   about 330 tokens of binder list for 20 binders). A binder whose `disclosure` is `none` (decisions.md F6) is left
-   out unless the person added it to the filing list on purpose, as architecture.md 5.4 requires; an
-   opted-in one is offered with a description the person wrote, so its name never appears by accident.
+2. Binder. One call per item, with greedy sampling, the item's sentence, and the names of every binder,
+   each with its one-line description as an optional hint (architecture.md 5.3, the binder call: about 330
+   tokens of binder list for 20 binders). There is no filing list, and a binder whose `disclosure` is `none`
+   is offered like any other: the model runs on the device, so the name never leaves it (decisions.md A16;
+   architecture.md 5.4).
    When the capture has a `binder_hint` that names a binder the person has, code takes that binder,
    skips this call, and marks the guess `from_hint`. Splitting and picking a binder are two tasks:
    in one call they did poorly (section 10.5).

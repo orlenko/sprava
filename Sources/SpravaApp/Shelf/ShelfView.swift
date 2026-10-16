@@ -10,9 +10,12 @@ import SwiftUI
 // ObservableObject rather than @Observable/@State: the Command Line Tools ship no SwiftUI macro plugin.
 @MainActor
 final class ShelfModel: ObservableObject {
+    /// One editor and removal admission point shared by every window that shows this Shelf.
+    let itemEditor = ItemEditor()
     @Published var rows: [ShelfRow] = []
     @Published var today = CalendarDate.today()
     @Published private(set) var counts: [URL: ShelfCounts] = [:]
+    @Published private(set) var todos = TodoBoard(today: CalendarDate.today())
     /// The binder opened is recorded at once (the Shelf's own UI state, `recent.json`); the Shelf reorders on its
     /// next refresh, so the row never jumps away under the pointer.
     @Published var selection: URL? {
@@ -33,8 +36,9 @@ final class ShelfModel: ObservableObject {
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
-    private lazy var disk = ShelfDiskWorker(queue: workQueue)
+    private lazy var disk = ShelfDiskWorker(queue: workQueue, deadline: deadline)
     private let readTimeout: TimeInterval
+    private let deadline: DiskDeadline
     private var snapshotGeneration: UInt64 = 0
     private let readSnapshot: @Sendable (URL) -> ShelfSnapshot.Snapshot
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
@@ -53,10 +57,12 @@ final class ShelfModel: ObservableObject {
 
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
-         summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read) {
+         summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read,
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
         self.support = support
         self.readSnapshot = readSnapshot
         self.readTimeout = readTimeout
+        self.deadline = deadline
         self.summarize = summarize
         self.client = client
         let health = HealthModel(support: support)
@@ -91,6 +97,7 @@ final class ShelfModel: ObservableObject {
             today = prepared.today
             rows = prepared.snapshot.rows
             counts = prepared.counts
+            todos = prepared.todos
             snapshotNote = prepared.snapshot.note
             if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = rows.first?.folder }
             lastRefresh = Date()
@@ -180,6 +187,11 @@ final class ShelfModel: ObservableObject {
     }
 
     func removeFromShelf(_ row: ShelfRow) async {
+        guard itemEditor.beginRemoval(in: row.folder) else {
+            operationNote = "Save or cancel this binder's open edit before removing it from the Shelf."
+            return
+        }
+        defer { itemEditor.endRemoval(in: row.folder) }
         operationNote = nil
         var failure: String?
         do {
@@ -261,10 +273,11 @@ final class ShelfModel: ObservableObject {
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
 
     /// The sidebar's pages above the Shelf.
-    let pages: Set<URL> = [healthSelection, inboxSelection, backupSelection, brainsSelection]
+    let pages: Set<URL> = [healthSelection, todosSelection, inboxSelection, backupSelection, brainsSelection]
 }
 
 let healthSelection = URL(string: "sprava:health")!
+let todosSelection = URL(string: "sprava:todos")!
 let inboxSelection = URL(string: "sprava:inbox")!
 let backupSelection = URL(string: "sprava:backup")!
 let brainsSelection = URL(string: "sprava:brains")!
@@ -272,15 +285,24 @@ let brainsSelection = URL(string: "sprava:brains")!
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @StateObject private var inbox = InboxModel()
+    @StateObject private var todo = TodoModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
     @StateObject private var binderNote = BinderNote()
+    /// Every window uses the Shelf's editor, so none can remove another window's open draft.
+    var itemEditor: ItemEditor { model.itemEditor }
 
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selection) {
                 Section {
                     HealthLabel(health: model.health).tag(healthSelection)
+                    HStack {
+                        Label("To-dos", systemImage: "checklist")
+                        Spacer()
+                        if model.todos.count(.overdue) > 0 { Text("\(model.todos.count(.overdue))").foregroundStyle(.red) }
+                    }
+                    .tag(todosSelection)
                     HStack {
                         Label("Inbox", systemImage: "tray")
                         Spacer()
@@ -320,6 +342,9 @@ struct ShelfView: View {
         } detail: {
             if model.selection == healthSelection {
                 HealthView(model: model.health)
+            } else if model.selection == todosSelection {
+                TodosView(model: todo, board: model.todos, rows: model.rows, open: { model.selection = $0 },
+                          reload: { await model.refreshAndWait(afterChanges: true) })
             } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
             } else if model.selection == backupSelection {
@@ -329,7 +354,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows)
+                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
