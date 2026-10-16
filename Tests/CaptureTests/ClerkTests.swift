@@ -93,7 +93,7 @@ import Testing
 
     @Test func aLowBandGoesToNotSureWithTheGuessShown() async {
         let text = "Order new blinds."
-        let model = ScriptedModel(extractions: [.obj([("items", .array([item("Order new blinds", "Order blinds")]))])],
+        let model = ScriptedModel(extractions: [.obj([("items", .array([item("Order new blinds", "Order new blinds")]))])],
                                   binders: ["blinds": "rental-elm-street"])
         let interp = await Clerk(model: model).read(event(text), filing: filing, hint: nil, now: now)
         #expect(interp.items[0].binder == nil && interp.items[0].guess == "rental-elm-street" && interp.items[0].band == "low")
@@ -154,7 +154,7 @@ import Testing
                                    words: FilingBinder.significantWords("notary inventory deed estate"))]
         let model = ScriptedModel(extractions: [.obj([("items", .array([
             item("Send the inventory list", "Send the inventory list", "send", when: "by the 15th", people: ["the notary"]),
-            item("Order new blinds", "Order blinds"),
+            item("Order new blinds", "Order new blinds"),
         ]))])], binders: ["inventory": filing[0].name])
         let interp = await Clerk(model: model).read(work.event, filing: filing, hint: work.hint, now: now)
         let outcome = inbox.commitClerk(work, interp, filing: filing, rows: rows, commands: commands, seconds: 1, now: now)
@@ -165,7 +165,7 @@ import Testing
         #expect(cards[0].ops[0]["args"]?["item"]?["due"] == .str("2026-10-15"))
         #expect(cards[0].ops[0]["args"]?["item"]?["kind"] == .str("reply-owed"))
         let unfiled = inbox.unfiled()
-        #expect(unfiled.count == 1 && unfiled[0].title == "Add \u{201C}Order blinds\u{201D}")
+        #expect(unfiled.count == 1 && unfiled[0].title == "Add \u{201C}Order new blinds\u{201D}")
         #expect(inbox.nextForClerk() == nil)
         let approved = try TekaStore(folder: folder).approve(cards[0], now: now)
         #expect(approved.count == 1)

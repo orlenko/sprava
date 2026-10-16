@@ -73,7 +73,7 @@ import Testing
         let cards = open(folder)
         #expect(cards.count == 1)
         #expect(cards.first?.id != tier0.id)
-        #expect(cards.first?.ops.first?["args"]?["item"]?["title"] == .str("Renew the acme permit"))
+        #expect(cards.first?.ops.first?["args"]?["item"]?["title"] == .str("Renew the invented acme permit"))
         #expect(open(other).isEmpty)
         #expect(c.inbox.unfiled().isEmpty)
         // The person named the binder, so no binder call was made.

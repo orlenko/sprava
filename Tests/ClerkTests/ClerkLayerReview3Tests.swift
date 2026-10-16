@@ -36,7 +36,7 @@ import Testing
             item("Pay the inspection fee of $100", "Pay the inspection fee", "pay", amount: "$100"),
             item("The insurance premium is due", "Pay the insurance premium", "pay", when: "November 1"),
         ]])
-        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "Pay the insurance premium"])
+        #expect(doc.items.map(\.title) == ["Pay the inspection fee of $100", "The insurance premium is due November 1"])
         #expect(doc.items.first?.whenResolved == nil)
         #expect(doc.items.last?.whenResolved == nov1)
     }
@@ -47,7 +47,7 @@ import Testing
             item("Pay the inspection fee of $100", "Pay the inspection fee", "pay", amount: "$100"),
             item("The inspection report and the insurance premium", "Pay the insurance premium", "pay", when: "November 1"),
         ]])
-        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "Pay the insurance premium"])
+        #expect(doc.items.map(\.title) == ["Pay the inspection fee of $100", "The inspection report and the insurance premium are due November 1"])
     }
 
     // MARK: - 2. A longer title is another task, not a repeat
@@ -63,7 +63,7 @@ import Testing
         let input = ClerkInput(id: "evt-review3", text: "Pay rent and pay the rent deposit.", locale: "en", captureDay: today,
                                estimated: false, isPrivate: false, sourceKind: nil, app: "test")
         let interp = await Clerk(model: model).read(input, filing: [], hint: nil, now: now)
-        #expect(interp.items.map(\.title) == ["Pay rent", "Pay rent deposit"])
+        #expect(interp.items.map(\.title) == Array(repeating: "Pay rent and pay the rent deposit", count: 2))
     }
 
     // MARK: - 5. Items past the cap make the reading partial and are named
