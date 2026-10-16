@@ -58,3 +58,32 @@ private actor ChatFake {
     await #expect(throws: ChatCommandFailure.cancelled) { try await cancelled.send(request) }
     await #expect(throws: ChatCommandFailure.busy) { try await cancelled.interrupt(binderID: request.binderID, turnID: UUID()) }
 }
+
+@Test func anAttachmentOnlyTurnKeepsCapturedReferencesAndStreamsCommittedChangeMetadata() async throws {
+    let request = ChatSendRequest(binderID: "invented-binder", requestID: UUID(), text: "",
+                                  attachments: [ChatAttachmentReference(captureID: "invented-app-capture")])
+    let change = ChatBinderChange(operationIDs: ["invented-op"], summary: "Filed the invented form",
+                                  undo: ChatUndoReference(batchID: "invented-turn-batch"))
+    let commands = ChatCommands(send: { received in
+        #expect(received == request)
+        let events = AsyncStream<ChatReplyEvent> { c in
+            c.yield(.binderChanged(change)); c.yield(.finished(.replied)); c.finish()
+        }
+        return ChatTurn(binderID: received.binderID, requestID: received.requestID, turnID: UUID(), events: events)
+    }, interrupt: { _, _ in })
+    let turn = try await commands.send(request)
+    var events: [ChatReplyEvent] = []; for await event in turn.events { events.append(event) }
+    #expect(events == [.binderChanged(change), .finished(.replied)])
+}
+
+@Test func invalidDuplicateAndOversizedAttachmentReferencesNeverReachTheBackend() async throws {
+    let fake = ChatFake()
+    let commands = ChatCommands(send: { await fake.send($0) }, interrupt: { await fake.interrupt($0, $1) })
+    let duplicate = ChatAttachmentReference(captureID: "invented-capture")
+    for attachments in [[ChatAttachmentReference(captureID: "/invented/intake/file.pdf")], [duplicate, duplicate],
+                        (0...ChatCommands.maximumAttachments).map { ChatAttachmentReference(captureID: "invented-capture-\($0)") }] {
+        let request = ChatSendRequest(binderID: "invented-binder", requestID: UUID(), text: "A line", attachments: attachments)
+        await #expect(throws: ChatCommandFailure.invalidRequest) { try await commands.send(request) }
+    }
+    #expect(await fake.received.isEmpty)
+}
