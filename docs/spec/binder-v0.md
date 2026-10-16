@@ -267,7 +267,7 @@ lifeproj defines no fields for documents; only the generic unique-id rule applie
 | `kind` | string | no | Free text, for example `letter`, `invoice`, `statement`, `notice`, `contract`, `scan`, `email-thread`, `photo`, `note`. Not the closed item kind. |
 | `source` | string | no | Where it came from: `intake/`, `intake/mail`, a capture tool, a scan. |
 | `sha256` | string | on records from `file_document` | Lowercase hex digest of the file's bytes at filing time, so a moved or edited file can be noticed. |
-| `provenance` | object | no | Who proposed and approved the record, which capture events it came from (section 5.8). |
+| `provenance` | object | no | Who proposed and approved the record, which capture events it came from (section 5.8). `refiled_from`: the id of the record whose `unfile_document` an Undo reversed (section 6.10). `transfer`: `{id, from_binder, from_document}` on a record a transfer filed, naming the transfer, the source binder's `binder_id` (section 7.2.2) and the record's id there (section 6.9). |
 
 Anything else is preserved.
 
@@ -585,6 +585,9 @@ The transaction guard (decisions.md A2) runs before an op is written to the op l
 | `dismiss`, `undismiss` | `{id}` | Sets or clears `dismissed` (section 5.7). |
 | `file_document` | `{document, from?}` | Appends a document record with a minted id, a `path` that follows section 4.3, and the file's `sha256`. When `from` (a path under `intake/`) is given, applying the op first moves that file to `document.path`. The move never replaces an existing file; section 6.9 gives the order of the steps. |
 | `update_document` | `{id, set?, unset?}` | Field-level change to a document record; never `id`, and `unset` never removes `title` or `path`. A new `path` follows section 4.3, and the file must be there. Changing `path` moves nothing; it records that the file was moved outside. |
+| `move_document` | `{id, from, path, sha256}` | Moves a filed document within the binder. `from` is the record's `path`; the guard refuses the op when they differ, and when `from` itself breaks the path rules `file_document` follows (section 4.3), so a record found at adoption naming `catalog.json`, `.sprava/ops.ndjson` or a file under `scripts/` never moves it. `path` is the new path: it follows the path rules of section 4.3 as `file_document`'s does, the file it names does not exist, and it differs from `from` by more than letter case, because a volume that ignores case holds both names in one file. `sha256` is the digest of the file at `from` when the op was built. Sets the record's `path` to `path`, keeping its place; every other field, `sha256` included, stays. Applying the op moves the file (section 6.9); replay never does. Added by this draft. |
+| `unfile_document` | `{id, from, to, sha256, document}` | Returns a filed document to `intake/` and removes its record. The record carries `sha256`, and the file at `from`, the record's `path` and held to the same rules as `move_document`'s, still has those bytes; `sha256` repeats the digest. `to` is a path under `intake/` that does not exist, chosen by the implementation from the file's name, never by a model, and never an agent-manual name in any segment (section 4.3), so returning a file cannot plant instructions. `document` is the whole record as removed, equal to the catalog's, so the history and an Undo keep it. The id is never minted again (section 5.6). Applying the op holds the file before it moves (section 6.9). Added by this draft. |
+| `transfer_document` | `{id, from, sha256, document, to, transfer}` | Moves a filed document to another binder this implementation owns and removes its record here. `from` and `document` are as for `unfile_document`; `sha256` is the digest of the file at `from` when the op was built, whether or not the record carries one. `to` is the destination's `binder_id` (section 7.2.2), resolved only through the implementation's admitted binding, never from a name or a path. `transfer` is a UUID the implementation mints when it applies the op, never one a proposal supplies; the destination's filing shares it (section 6.9). Applied by the user in the app, or on the user's confirmation of a proposal. Added by this draft. |
 | `add_log_entry` | `{entry}` | Appends a free log entry and sets its `at`, `via` and `op_id`, replacing any values the entry carried. The entry must not carry `id`, because closures go through `complete` and `drop` (section 6.8). |
 | `set_meta` | `{set?, unset?}` | Changes `meta` fields such as `domain`, `lifecycle`, `active_chapters`, `modules`, `id_scheme`. Never `name`, `schema_version`, `format`, `format_version`, `disclosure` or `former_names`, in `set` or in `unset`. |
 | `set_disclosure` | `{disclosure}` | The only op that changes `meta.disclosure` after adoption. Applied by the user in the app, never proposed, so neither a clerk nor a brain can raise what the hub receives. Applying it republishes or removes the slice when the federation profile is on. |
@@ -743,9 +746,14 @@ The `closed-duplicate` row repairs a state that lifeproj's manual produces. The 
   5. Rename the temporary file over `catalog.json`, then `fsync` the binder folder.
   6. Update `.sprava/snapshot.json`.
 - A crash between steps 3 and 5 leaves ops in the op log that the catalog does not show yet. Section 6.7 step 3 rolls them forward on the next read and never mistakes them for an external edit. A crash between steps 5 and 6 leaves a stale snapshot, which section 6.7 step 2 rewrites. A logged `file_document` is rolled forward like this: if the source is still in `intake/` and the destination is free, move it, then write the catalog; if the source is gone and the destination holds a file with the recorded `sha256`, write the catalog only; in any other case, `abort` and needs attention.
+- `move_document` takes the same steps with `from` as the source, and is rolled forward the same way, by the op's `sha256`. The folders of `path` that do not exist are created inside the binder, each a real folder, never through a link (section 3.6).
+- `unfile_document` first records the intake hold (below), then takes the same steps with `to` as the destination. Rolling it forward records the hold again before anything moves. The hold of an op that ends in `abort` stays until the person decides.
+- `transfer_document` is refused before it is logged unless the destination is an admitted binder (section 7.2.2) that is present, not offloaded, and the destination's batch passes its guard. That batch is built first: a `file_document` whose `document` is the source's `document` with `sha256` set to the op's `sha256` (a record found at adoption may lack one), a newly minted id, a free path the destination chooses under its own rules, and `provenance.transfer`. Before the source op is logged, the implementation durably records the transfer as pending in its trusted state: the transfer id, both binders, the source op id and the destination batch. After step 3 the file is placed in the destination's `intake/`, under a name chosen as `unfile_document`'s `to` is: on one volume, a rename that fails when the name exists; otherwise a copy under a temporary name that starts with `.`, which no filing takes because no segment of a filed path starts with `.`, flushed with `F_FULLFSYNC`, checked against `sha256`, then renamed to its final name the same way, and the destination's `intake/` folder is flushed with `F_FULLFSYNC` so the final name survives a power loss. Only then is the source file removed and the source catalog written (step 5). The destination then applies its batch, whose id is the `transfer` id, with `from` naming the placed file, and only then is the pending transfer cleared. Until that batch is applied, the placed file is held as an unfiled one is. Rolling forward goes by the digest: a file still at `from` and none in the destination is placed again; a file in both places whose destination copy has `sha256` loses the source copy; a temporary copy, which never had its final name, is removed and made again. The source is removed only after a checked copy has its final name, so the file is never in neither place. Any other case is an `abort` that needs attention, with both copies kept. Recovery starts from the pending record, never from the folders. A pending transfer whose source op is not in the source op log never started: recovery clears the record and moves nothing. Otherwise, a pending transfer whose destination op log has no batch with its id gets that batch applied (a batch with that id whose `provenance.transfer` names another source op is a conflict that needs attention, never taken as this transfer's), as recorded, once the file is placed, whether the source catalog was written or not. If the destination's guard refuses it at that point, for example because a file now holds the chosen path, the batch is rebuilt with a new path; a refusal that remains leaves the file held in the destination's `intake/`, the transfer pending and the person shown it, never silently unfiled.
 - A torn last line (no trailing newline), and a trailing batch with fewer lines than its `batch_size`, never took effect: the catalog is written only after the whole change is in the op log. A reader ignores them, and the next append first truncates them, after copying them to `.sprava/torn/<timestamp>.ndjson`, where `<timestamp>` is the time of the copy written without colons (section 7.2).
 - The first line is an `import_snapshot`. For a binder created by an implementation, that snapshot is the freshly scaffolded catalog.
 - The op log is private to the binder and lives inside it, so a backup of the folder carries history too.
+
+**The intake hold.** A file that `unfile_document` returns, or that a transfer places, is held: automatic filing, review and filing rules leave it alone until the person chooses in the app to file it again (conversation.md section 5.3). The hold is the implementation's own trusted state outside the binder, bound to the admitted binder (section 7.2.2) and to the file: its `intake/` path, its digest and its identity on the volume (device, inode and birth time). It is flushed before the file can appear in `intake/`, so the file is never eligible for automatic filing in between. A file in `intake/` that matches a hold by any of the three stays held, so renaming it or editing it in place does not release it; a hold that matches no file any longer is shown to the person until they resolve it, never dropped silently. Nothing in the binder can set or clear it: not a binder file, an op line, a model's output, a restart or a rescan. An implementation that cannot read its hold state pauses automatic filing for that binder instead of treating a held file as new. An implementation without hold state does not apply `unfile_document` or receive a transfer.
 
 ### 6.10 Undo (decisions.md A2, A5)
 
@@ -759,7 +767,10 @@ Undo is a new op that reverses an earlier one and names it in `compensates`. The
 | `complete` or `drop` that closed an item | `reopen`: a new id, the title and kind from the closure entry and the other fields from its `final`. An entry without `final`, such as one lifeproj's drain wrote, takes the item's last state from the op log instead: the snapshot, or a replay up to the op that closed it. Only when the op log has no state for the item does the user fill in the fields. |
 | `complete` that advanced a recurring item | `update_item` that sets `due` back to `occurrence_due`; the occurrence entry stays |
 | `dismiss`, `undismiss` | the other one |
-| `file_document` | `update_document` to correct the record. The file stays where it is; no op moves a file back. |
+| `file_document` | `unfile_document`, which returns the file to `intake/` held, when the file still has the recorded `sha256` (section 6.9). Otherwise `update_document` to correct the record; no op moves a file back then. |
+| `move_document` | `move_document` back, `from` and `path` swapped, when the record's `path` is still the op's `path`. Otherwise the person decides. |
+| `unfile_document` | `file_document` of the held file at `to`, the removed `document` under a newly minted id with `provenance.refiled_from` set to the old id, applied only on the person's explicit choice in the app, which also releases the hold. |
+| `transfer_document` | `transfer_document` back, from the destination, of the record its transfer batch filed. |
 | `update_document`, `set_meta` | the same op, restoring the earlier values |
 | `set_disclosure` | `set_disclosure` back. What the hub already received is not recalled (section 5.5). |
 | `rename_teka` | No op undoes it. Rename the folder back and apply `rename_teka` again. |
@@ -1605,6 +1616,21 @@ How the catalog schema handles the catalog levels. The generic layer checks only
             "reopened_from": {
               "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
               "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            },
+            "refiled_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "The record whose unfile_document an Undo reversed (section 6.10). Copied with its JSON type."
+            },
+            "transfer": {
+              "type": "object",
+              "required": ["id", "from_binder", "from_document"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+                "from_binder": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+                "from_document": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "The record's id in the source binder, with its JSON type." }
+              },
+              "additionalProperties": true,
+              "$comment": "On a record a transfer filed: the transfer, the source binder's binder_id (section 7.2.2) and the record's id there (section 6.9)."
             }
           },
           "additionalProperties": true
@@ -1856,6 +1882,21 @@ How the catalog schema handles the catalog levels. The generic layer checks only
         "reopened_from": {
           "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
           "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+        },
+        "refiled_from": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+          "$comment": "The record whose unfile_document an Undo reversed (section 6.10). Copied with its JSON type."
+        },
+        "transfer": {
+          "type": "object",
+          "required": ["id", "from_binder", "from_document"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+            "from_binder": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+            "from_document": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "The record's id in the source binder, with its JSON type." }
+          },
+          "additionalProperties": true,
+          "$comment": "On a record a transfer filed: the transfer, the source binder's binder_id (section 7.2.2) and the record's id there (section 6.9)."
         }
       },
       "additionalProperties": true
@@ -1991,8 +2032,8 @@ How the catalog schema handles the catalog levels. The generic layer checks only
     "op": {
       "enum": [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
-        "file_document", "update_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
-        "external_edit", "import_snapshot", "migrate", "abort", "expunge"
+        "file_document", "update_document", "move_document", "unfile_document", "transfer_document",
+        "add_log_entry", "set_meta", "set_disclosure", "rename_teka", "external_edit", "import_snapshot", "migrate", "abort", "expunge"
       ]
     },
     "args": { "type": "object" },
@@ -2178,6 +2219,60 @@ How the catalog schema handles the catalog levels. The generic layer checks only
     {
       "if": { "properties": { "op": { "const": "update_document" } } },
       "then": { "properties": { "args": { "$ref": "#/$defs/document_change" } } }
+    },
+    {
+      "$comment": "Moves a filed file within the binder; from is the record's path (section 6.3).",
+      "if": { "properties": { "op": { "const": "move_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "from", "path", "sha256"],
+            "properties": {
+              "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
+              "from": { "$ref": "#/$defs/safe_path" },
+              "path": { "$ref": "#/$defs/safe_path" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Returns a filed file to intake/, held, and removes its record, which args.document keeps (sections 6.3, 6.9).",
+      "if": { "properties": { "op": { "const": "unfile_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "from", "to", "sha256", "document"],
+            "properties": {
+              "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
+              "from": { "$ref": "#/$defs/safe_path" },
+              "to": { "$ref": "#/$defs/intake_destination" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "document": { "allOf": [{ "$ref": "#/$defs/document_v0" }, { "required": ["sha256"] }] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Moves a filed file to another admitted binder's intake/ and removes its record here (sections 6.3, 6.9). to is the destination's binder_id, a claim resolved only through the admitted binding (section 7.2.2).",
+      "if": { "properties": { "op": { "const": "transfer_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "from", "sha256", "document", "to", "transfer"],
+            "properties": {
+              "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
+              "from": { "$ref": "#/$defs/safe_path" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "document": { "$ref": "#/$defs/document_v0" },
+              "to": { "$ref": "#/$defs/uuid" },
+              "transfer": { "$ref": "#/$defs/uuid" }
+            }
+          }
+        }
+      }
     },
     {
       "if": { "properties": { "op": { "const": "add_log_entry" } } },
@@ -2368,18 +2463,23 @@ How the catalog schema handles the catalog levels. The generic layer checks only
     },
     "safe_path": {
       "type": "string",
-      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss]|[Cc][Hh][Aa][Pp][Tt][Ee][Rr][Ss]|[Ee][Nn][Tt][Ii][Tt][Ii][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss]|[Cc][Hh][Aa][Pp][Tt][Ee][Rr][Ss]|[Ee][Nn][Tt][Ii][Tt][Ii][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
       "$comment": "Where file_document may put a file (section 4.3): relative, every segment non-empty, not starting with '.' or '~', no backslash and no Cc or Cf character; not a reserved file or folder, compared without regard to case; no agent manual name in any segment. NFC form, full Unicode case folding and containment after symlinks are conformance checks."
     },
     "record_path": {
       "type": "string",
-      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
       "$comment": "A path update_document may record (it moves nothing): the rules of safe_path, except that it may lie under chapters/ or entities/ (section 4.3)."
     },
     "intake_path": {
       "type": "string",
       "pattern": "^intake/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
       "$comment": "Filing moves a file only out of intake/."
+    },
+    "intake_destination": {
+      "type": "string",
+      "pattern": "^intake/(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "$comment": "Where unfile_document returns a file: under intake/, never an agent-manual name in any segment (section 4.3), chosen by the implementation."
     },
     "item_change": {
       "type": "object",
@@ -2584,6 +2684,21 @@ How the catalog schema handles the catalog levels. The generic layer checks only
             "reopened_from": {
               "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
               "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            },
+            "refiled_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "The record whose unfile_document an Undo reversed (section 6.10). Copied with its JSON type."
+            },
+            "transfer": {
+              "type": "object",
+              "required": ["id", "from_binder", "from_document"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+                "from_binder": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+                "from_document": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "The record's id in the source binder, with its JSON type." }
+              },
+              "additionalProperties": true,
+              "$comment": "On a record a transfer filed: the transfer, the source binder's binder_id (section 7.2.2) and the record's id there (section 6.9)."
             }
           },
           "additionalProperties": true
@@ -2678,7 +2793,8 @@ How the catalog schema handles the catalog levels. The generic layer checks only
           "op": {
             "enum": [
               "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
-              "file_document", "update_document", "add_log_entry", "set_meta", "migrate"
+              "file_document", "update_document", "move_document", "unfile_document", "transfer_document",
+              "add_log_entry", "set_meta", "migrate"
             ]
           },
           "args": { "type": "object" },
@@ -2919,7 +3035,7 @@ Folder and identity
 1. `[R]` A folder is a binder exactly when it contains `catalog.json`. The binder is corrupt when the file does not parse or is not a JSON object. An object without `meta` or without `meta.schema_version` is a pre-lifeproj catalog that needs migration, never corrupt. (`test_drain_all_skips_unmigrated`, `test_drain_all_errors_on_broken_catalog` for the existence part; the rest is new)
 2. `[R]` `meta.name` equals the folder basename after NFC, compared case-sensitively; a mismatch puts the binder in needs attention. `[F]` A binder a v0 implementation creates has a name matching `^[a-z0-9][a-z0-9-]*$`, unique among the known binders and their unexpired former names. (`test_new_rejects_path_like_names` for lifeproj's name rule; the rest is new)
 3. `[F]` Given a binder whose `catalog_check.py`, `scripts/` files, `.claude/` hooks and a filed `.command` file each write a marker file when run, no marker exists after adoption, a series of ops, a publish and a drain. (new)
-4. `[W]` Inside the binder, an implementation deletes no file, except that filing moves files out of `intake/` and `intake/_converted/` may be cleared. Filing never replaces an existing file. (new)
+4. `[W]` Inside the binder, an implementation deletes no file, except that filing moves files out of `intake/`, `move_document` and `unfile_document` move a filed file within the binder, `transfer_document` removes its source only after a checked copy has its final name in the destination's `intake/` (section 6.9), and `intake/_converted/` may be cleared. Filing and these moves never replace an existing file. (new)
 
 Catalog structure
 
