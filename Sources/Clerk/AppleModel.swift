@@ -33,7 +33,7 @@ public struct AppleClerkModel: ClerkModel {
             let item = DynamicGenerationSchema(name: "Item", description: "One thing to do, pay, send, wait for, meet about, decide or note.", properties: [
                 .init(name: "quote", description: "The first words of the sentence this item comes from, copied exactly, at most twelve words.",
                       schema: .init(type: String.self)),
-                .init(name: "title", description: "A short title for the item.", schema: .init(type: String.self)),
+                .init(name: "title", description: "The task in the note's own words, copied exactly.", schema: .init(type: String.self)),
                 .init(name: "action", description: "What has to happen.", schema: .init(name: "Action", anyOf: actions)),
                 .init(name: "when_text", description: "The time words exactly as written, or an empty string.", schema: .init(type: String.self)),
                 .init(name: "people", description: "People named for this item, exactly as written. Empty when none.",
@@ -58,7 +58,7 @@ public struct AppleClerkModel: ClerkModel {
             let root = DynamicGenerationSchema(name: "Document", description: "What one document is. Copy words; never work out a date.", properties: [
                 .init(name: "class", description: "governing, action, information or unsure.",
                       schema: .init(name: "Class", anyOf: ["governing", "action", "information", "unsure"])),
-                .init(name: "title", description: "A short title naming the document.", schema: .init(type: String.self)),
+                .init(name: "title", description: "The document's own heading or name, copied exactly.", schema: .init(type: String.self)),
                 .init(name: "date_text", description: "The document's own date exactly as written, or an empty string.", schema: .init(type: String.self)),
                 .init(name: "summary", description: "One plain sentence: what it is and what it asks of the person.", schema: .init(type: String.self)),
                 .init(name: "reply_needed", description: "True only when it asks the person to reply.", schema: .init(type: Bool.self)),
