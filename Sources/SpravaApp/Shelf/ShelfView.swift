@@ -34,8 +34,9 @@ final class ShelfModel: ObservableObject {
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
-    private lazy var disk = ShelfDiskWorker(queue: workQueue)
+    private lazy var disk = ShelfDiskWorker(queue: workQueue, deadline: deadline)
     private let readTimeout: TimeInterval
+    private let deadline: DiskDeadline
     private var snapshotGeneration: UInt64 = 0
     private let readSnapshot: @Sendable (URL) -> ShelfSnapshot.Snapshot
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
@@ -54,10 +55,12 @@ final class ShelfModel: ObservableObject {
 
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
-         summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read) {
+         summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read,
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
         self.support = support
         self.readSnapshot = readSnapshot
         self.readTimeout = readTimeout
+        self.deadline = deadline
         self.summarize = summarize
         self.client = client
         let health = HealthModel(support: support)
@@ -278,6 +281,8 @@ struct ShelfView: View {
     @StateObject private var todo = TodoModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
+    /// The binder page's item editor, kept here so what was typed outlives a visit to another page.
+    @StateObject private var itemEditor = ItemEditor()
 
     var body: some View {
         NavigationSplitView {
@@ -341,7 +346,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health)
+                        reload: { model.refresh() }, health: model.health, editor: itemEditor)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")

@@ -178,8 +178,10 @@ the daily summary's rule (counts and, on the person's choice, titles) and the Nu
 ## 10. The hub
 
 The companion replaces what osavul's hub does for the person: a cross-binder list on the phone. Until the
-person retires the hub, the hub lane keeps working unchanged for lifeproj's binders. Sprava does not extend
-the Google Tasks mirror, which belongs to the hub.
+person retires the hub, the hub keeps working unchanged for the binders lifeproj still manages. Binders
+imported into Sprava leave lifeproj (decisions.md P20), and whether Sprava publishes and drains them through
+the hub lane is open (decisions.md A17). Sprava does not extend the Google Tasks mirror, which belongs to the
+hub.
 
 ## 11. Order of work
 
