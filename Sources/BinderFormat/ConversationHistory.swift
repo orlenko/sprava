@@ -47,15 +47,35 @@ public enum ConversationHistory {
         case unreadable(String)
     }
 
-    /// The months with a history file, oldest first. A name that is not `YYYY-MM.ndjson` is not history.
-    public static func months(in binder: URL) -> [String] {
-        guard isRealFolder(binder.appendingPathComponent(".sprava")), isRealFolder(folder(of: binder)),
-              let names = try? FileManager.default.contentsOfDirectory(atPath: folder(of: binder).path) else { return [] }
-        return names.compactMap { name in
-            guard name.hasSuffix(".ndjson") else { return nil }
+    /// The months with a history file, oldest first, or why the folder may not be listed.
+    public enum Listing: Sendable, Equatable {
+        case months([String])
+        case refused(String)
+    }
+
+    /// At most this many folder entries are read, so a folder filled with junk cannot exhaust memory or stall a page.
+    static let maxEntries = 4096
+
+    /// Lists the history folder one entry at a time, opened without following a link. A name that is not
+    /// `YYYY-MM.ndjson` is not history; a folder with more than 4,096 entries is refused, not listed in part.
+    public static func months(in binder: URL) -> Listing {
+        guard isRealFolder(binder.appendingPathComponent(".sprava")) else { return .months([]) }
+        let fd = open(folder(of: binder).path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return errno == ENOENT ? .months([]) : .refused("the conversation folder cannot be opened") }
+        guard let dir = fdopendir(fd) else { close(fd); return .refused("the conversation folder cannot be opened") }
+        defer { closedir(dir) }
+        var months: [String] = [], seen = 0
+        while let entry = readdir(dir) {
+            seen += 1
+            guard seen <= maxEntries + 2 else { return .refused("the conversation folder holds more than 4,096 entries") }
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { raw in
+                String(decoding: raw.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
+            }
+            guard name.hasSuffix(".ndjson") else { continue }
             let month = String(name.dropLast(".ndjson".count))
-            return isMonth(month) ? month : nil
-        }.sorted()
+            if isMonth(month) { months.append(month) }
+        }
+        return .months(months.sorted())
     }
 
     /// Reads one month. A missing file is an empty month.

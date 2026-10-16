@@ -199,11 +199,24 @@ import Testing
         try Data().write(to: dir.appendingPathComponent("2026-09.ndjson"))
         try Data().write(to: dir.appendingPathComponent("notes.ndjson"))
         try Data().write(to: dir.appendingPathComponent("2026-13.ndjson"))
-        #expect(ConversationHistory.months(in: folder) == ["2026-09", "2026-10"])
+        #expect(ConversationHistory.months(in: folder) == .months(["2026-09", "2026-10"]))
         guard case .month(let read) = ConversationHistory.read(month: "2026-10", in: folder) else { Issue.record("not read"); return }
         #expect(read.messages == [try message()])
         #expect(ConversationHistory.read(month: "2025-01", in: folder) == .month(.init(month: "2025-01", messages: [], damage: [])))
         #expect(ConversationHistory.read(month: "../x", in: folder) == .refused("not a month"))
+    }
+
+    @Test func aFolderFullOfEntriesIsRefusedNotListed() throws {
+        let folder = try binder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let dir = folder.appendingPathComponent(".sprava/conversation")
+        #expect(ConversationHistory.months(in: folder) == .months([]))
+        for n in 0..<ConversationHistory.maxEntries { #expect(FileManager.default.createFile(atPath: dir.appendingPathComponent("junk-\(n)").path, contents: nil)) }
+        #expect(ConversationHistory.months(in: folder) == .months([]))
+        #expect(FileManager.default.createFile(atPath: dir.appendingPathComponent("2026-10.ndjson").path, contents: nil))
+        #expect(ConversationHistory.months(in: folder) == .refused("the conversation folder holds more than 4,096 entries"))
+        try FileManager.default.removeItem(at: dir)
+        #expect(ConversationHistory.months(in: folder) == .months([]))
     }
 
     @Test func anOversizedMonthFileIsRefusedWithoutReadingIt() throws {
@@ -232,6 +245,6 @@ import Testing
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("elsewhere"), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: dir, withDestinationURL: folder.appendingPathComponent("elsewhere"))
         guard case .refused = ConversationHistory.read(month: "2026-10", in: folder) else { Issue.record("followed a linked folder"); return }
-        #expect(ConversationHistory.months(in: folder) == [])
+        guard case .refused = ConversationHistory.months(in: folder) else { Issue.record("listed a linked folder"); return }
     }
 }
