@@ -37,6 +37,21 @@ import Testing
         }
     }
 
+    @Test func aFallbackTitleKeepsTheSentenceBeforeAnInteriorQuote() async {
+        for (source, quote) in [
+            ("If the estimate is approved, call Acme.", "call Acme"),
+            ("Only after the deposit arrives, call Acme.", "call Acme"),
+            ("Do not call Acme until the estimate is approved.", "call Acme"),
+            ("If Acme agrees, call Acme; otherwise wait.", "call Acme"),
+        ] {
+            let expected = String(source.dropLast())
+            let (interp, input) = await read(source, [item(quote, "Contact Acme", "call")])
+            #expect(interp.items.map(\.title) == [expected])
+            let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
+            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == expected)
+        }
+    }
+
     @Test func dateShapedNamesKeepTheirWholeWords() async {
         for name in ["Friday’s", "Friday's", "Friday-night", "Friday.txt", "Friday_report", "Friday/notes", "Friday\u{301}s"] {
             let source = "Meet at \(name)"
@@ -165,15 +180,15 @@ import Testing
         let proposed = ["Call Bill Acme", "Buy toner", "Call the bank", "Renew the parking permit", "", "  ", "—", "Toner order Friday ok"]
         for sentence in sentences {
             for title in proposed + [sentence] {
-                let kept = Clerk.ownTitle(title, quote: sentence, sentence: sentence)
+                let kept = Clerk.ownTitle(title, sentence: sentence)
                 #expect(Clerk.hasOnlyWords(of: sentence, kept), "\(title) -> \(kept)")
             }
         }
-        #expect(Clerk.ownTitle("Call Bill Acme", quote: "Bill", sentence: "Bill Acme today") == "Bill Acme today")
-        #expect(Clerk.ownTitle("Pay", quote: "Renew", sentence: "Renew the permit, $40, by the 15th.")
+        #expect(Clerk.ownTitle("Call Bill Acme", sentence: "Bill Acme today") == "Bill Acme today")
+        #expect(Clerk.ownTitle("Pay", sentence: "Renew the permit, $40, by the 15th.")
             == "Renew the permit, $40, by the 15th")
         // A sentence that is only its time words keeps them, rather than an empty title.
-        #expect(Clerk.ownTitle("Do it", quote: "Tomorrow", sentence: "Tomorrow!") == "Tomorrow")
+        #expect(Clerk.ownTitle("Do it", sentence: "Tomorrow!") == "Tomorrow")
     }
 
     @Test func aDocumentKeepsItsOwnWordsForItemsAndItsTitle() async {

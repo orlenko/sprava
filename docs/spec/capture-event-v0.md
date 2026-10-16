@@ -759,8 +759,9 @@ first cleans each item, then validates each item on its own. In a meeting, turn 
    This also removes items the model built from anything other than the capture. A quote or title
    longer than the strict schema allows is shortened at a word boundary, never dropped. The title is
    the person's own words, never the model's paraphrase: code keeps the model's `title` only when every
-   word of it occurs in the item's sentence. Otherwise code builds it from the sentence, from the quote
-   on, with white space trimmed and the first letter capitalized. Code never removes date-shaped words
+   word of it occurs in the item's sentence. Otherwise code builds it from the whole sentence, with
+   white space trimmed and the first letter capitalized. An interior quote cannot discard an earlier
+   condition or negation. Code never removes date-shaped words
    from a title: they may name a person, place, document or task, as in "Meet at Friday’s" or "Review
    Friday Lanterns". Thus "Bill Acme today" stays "Bill Acme today", never "Call Bill Acme"; the resolved
    date is also kept in its own field. A model may supply a shorter title using only source words, and

@@ -61,7 +61,7 @@ extension Clerk {
             // An estimated capture time resolves only full dates (capture-event-v0 §6.6).
             if estimated, !DateGrammar.isFullDate(when, locale: locale) { item.whenResolved = nil }
         }
-        item.title = Self.ownTitle(called, quote: quote, sentence: sentence.text)
+        item.title = Self.ownTitle(called, sentence: sentence.text)
 
         // Check 3: the amount text occurs in the sentence and parses above 0.
         if let amountText = value["amount_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !amountText.isEmpty,
@@ -81,17 +81,13 @@ extension Clerk {
     /// model's title is kept only when every word of it is in the item's sentence; otherwise code builds it from the
     /// sentence, so "Call Bill Acme" cannot replace "Bill Acme today". Date words are never stripped from titles:
     /// a date-shaped name is still the person's words, while the resolved date has its own field.
-    static func ownTitle(_ proposed: String, quote: String, sentence: String) -> String {
+    static func ownTitle(_ proposed: String, sentence: String) -> String {
         if hasOnlyWords(of: sentence, proposed) {
             let kept = cleaned(proposed)
             if hasOnlyWords(of: sentence, kept) { return kept }
         }
-        var text = sentence
-        let q = quote.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"“”«»")))
-        if let r = phraseRange(q, in: text) { text = String(text[r.lowerBound...]) }
-        let built = cleaned(text)
-        if hasOnlyWords(of: sentence, built) { return built }
-        // If the quoted suffix has no words left, retain the source sentence.
+        // An anchored quote may occur inside the sentence. Keep the whole sentence so a model's
+        // choice of quote cannot discard a condition or negation before it.
         let whole = cleaned(sentence)
         return whole.isEmpty ? shorten(sentence.trimmingCharacters(in: .whitespacesAndNewlines), to: 120) : whole
     }
@@ -117,11 +113,4 @@ extension Clerk {
         return shorten((upper.count == 1 ? upper : String(first)) + title.dropFirst(), to: 120)
     }
 
-    /// Where `phrase` occurs in `text` as whole words, case-insensitively, with any white space between its words.
-    static func phraseRange(_ phrase: String, in text: String) -> Range<String.Index>? {
-        let parts = phrase.split(whereSeparator: \.isWhitespace).map { NSRegularExpression.escapedPattern(for: String($0)) }
-        guard !parts.isEmpty else { return nil }
-        let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
-        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
-    }
 }
