@@ -13,12 +13,31 @@ public enum Undo {
         ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop"].contains(op["op"]?.stringValue ?? "")
     }
 
-    /// The compensating op body for `target`, given the catalog now and the op log. `stateBefore` is the catalog as
-    /// it was just before `target` (from replay), used to restore earlier values. `stateAfter`, the catalog just after
-    /// it, guards against undoing through a newer change: when a field the target wrote has changed since, the undo
-    /// is refused rather than overwriting that change.
+    /// A compensating op, the state it assumes, and the fields it leaves alone because they changed since.
+    public struct Compensation {
+        public let op: String
+        public let args: JSONObject
+        /// `{set?, absent?}`: the values the undone op left in the fields this one restores (binder-v0 §6.2, §6.10).
+        public let expect: JSONObject?
+        /// Fields the undone op changed that were changed again since; the undo keeps their newer values.
+        public let kept: [String]
+    }
+
+    /// The compensating op body for `target` (see `compensation`).
     public static func compensate(_ target: JSONObject, catalog: JSONObject, opLog: [JSONObject], stateBefore: JSONObject,
                                   stateAfter: JSONObject? = nil, year: Int, now: Date) throws -> (op: String, args: JSONObject) {
+        let c = try compensation(target, catalog: catalog, opLog: opLog, stateBefore: stateBefore, stateAfter: stateAfter,
+                                 year: year, now: now)
+        return (c.op, c.args)
+    }
+
+    /// The compensating op for `target`, given the catalog now and the op log. `stateBefore` is the catalog as it was
+    /// just before `target` (from replay), used to restore earlier values. `stateAfter`, the catalog just after it,
+    /// guards against undoing through a newer change, field by field (binder-v0 §6.10): an edit's fields changed
+    /// since keep their newer values and are reported in `kept`; a change whose fields belong together (a status
+    /// with its waiting fields, a recurring date) is refused whole when any of them changed.
+    public static func compensation(_ target: JSONObject, catalog: JSONObject, opLog: [JSONObject], stateBefore: JSONObject,
+                                    stateAfter: JSONObject? = nil, year: Int, now: Date) throws -> Compensation {
         let args = target["args"]?.objectValue ?? JSONObject()
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         func itemBefore(_ id: JSONValue) -> JSONObject? {
@@ -36,13 +55,26 @@ public enum Undo {
             let kept = was.filter { fields.contains($0) || now.contains($0) } + now.filter { !fields.contains($0) && !was.contains($0) }
             return kept.map(JSONValue.string)
         }
+        // The item as the undone op left it; without `stateAfter`, as it is now.
+        func itemAfter(_ id: JSONValue) -> JSONObject? {
+            (stateAfter ?? catalog)["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
+        }
+        func changedSince(_ id: JSONValue, _ fields: [String]) -> [String] {
+            let then = itemAfter(id), current = currentItem(id)
+            return fields.filter { current?[$0] != then?[$0] }
+        }
         func unchangedSince(_ id: JSONValue, _ fields: [String]) throws {
-            guard let stateAfter else { return }
-            let then = stateAfter["open_items"]?.arrayValue?.first { $0["id"] == id }
-            let current = catalog["open_items"]?.arrayValue?.first { $0["id"] == id }
-            for field in fields where current?[field] != then?[field] {
-                throw Unsupported(message: "\(field) changed since; edit it instead")
-            }
+            if let field = changedSince(id, fields).first { throw Unsupported(message: "\(field) changed since; edit it instead") }
+        }
+        // What the compensating op assumes: each restored field as the undone op left it, or absent.
+        func expectation(_ id: JSONValue, _ fields: [String]) -> JSONObject? {
+            let then = itemAfter(id)
+            var set = JSONObject(), absent: [JSONValue] = []
+            for field in fields { if let value = then?[field] { set.set(field, value) } else { absent.append(.string(field)) } }
+            var expect = JSONObject()
+            if !set.entries.isEmpty { expect.set("set", .object(set)) }
+            if !absent.isEmpty { expect.set("absent", .array(absent)) }
+            return expect.entries.isEmpty ? nil : expect
         }
         switch target["op"]?.stringValue {
         case "add_item":
@@ -52,22 +84,27 @@ public enum Undo {
             a.set("closed_at", .string(at))
             a.set("source", .str("user"))
             a.set("reason", .str("undo"))
-            return ("drop", a)
+            return Compensation(op: "drop", args: a, expect: nil, kept: [])
 
         case "update_item":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
             let set = args["set"]?.objectValue ?? JSONObject()
             let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
-            try unchangedSince(id, set.keys + unset)
+            // Fields changed since keep their newer values; the others go back (conversation.md §17.2).
+            let kept = changedSince(id, set.keys + unset)
+            let fields = (set.keys + unset).filter { !kept.contains($0) }
+            guard !fields.isEmpty else {
+                throw Unsupported(message: "\(kept.joined(separator: ", ")) changed since; edit it instead")
+            }
             var restore = JSONObject()
             var remove: [String] = []
-            for key in set.keys + unset {
+            for key in fields {
                 if let old = before[key] { restore.set(key, old) } else { remove.append(key) }
             }
             // An edit that wrote `derived` itself gets it back whole (the loop above). Otherwise only the names of the
             // restored fields change, and the array is supplied, since setting a field would otherwise drop its name.
-            if !(set.keys + unset).contains("derived") {
-                let derived = derivedRestored(id, before: before, fields: set.keys + unset)
+            if !fields.contains("derived") {
+                let derived = derivedRestored(id, before: before, fields: fields)
                 if !derived.isEmpty || currentItem(id)?["derived"] != nil { restore.set("derived", .array(derived)) }
             }
             var a = JSONObject()
@@ -76,7 +113,7 @@ public enum Undo {
             let current = currentItem(id)
             let reallyRemove = remove.filter { current?[$0] != nil && !restore.contains($0) }
             if !reallyRemove.isEmpty { a.set("unset", .array(reallyRemove.map(JSONValue.string))) }
-            return ("update_item", a)
+            return Compensation(op: "update_item", args: a, expect: expectation(id, fields), kept: kept)
 
         case "set_status":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
@@ -87,7 +124,7 @@ public enum Undo {
             a.set("status", before["status"] ?? .str("open"))
             for key in ["waiting_on", "follow_up_at", "expected_by"] { if let v = before[key] { a.set(key, v) } }
             a.set("derived", .array(derivedRestored(id, before: before, fields: fields)))
-            return ("set_status", a)
+            return Compensation(op: "set_status", args: a, expect: expectation(id, fields), kept: [])
 
         case "dismiss", "undismiss":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
@@ -97,7 +134,8 @@ public enum Undo {
                 throw Unsupported(message: "the item was already \(dismiss ? "hidden" : "shown"), so there is nothing to undo")
             }
             try unchangedSince(id, ["dismissed"])
-            return (dismiss ? "undismiss" : "dismiss", JSONObject([(key: "id", value: id)]))
+            return Compensation(op: dismiss ? "undismiss" : "dismiss", args: JSONObject([(key: "id", value: id)]),
+                                expect: expectation(id, ["dismissed"]), kept: [])
 
         case "complete" where args["next_due"] != nil:
             // The due date the item had just before this completion is set back, with its `derived` flag as it was: a
@@ -110,7 +148,8 @@ public enum Undo {
             var set = JSONObject([(key: "due", value: due)])
             let derived = derivedRestored(id, before: before, fields: ["due"])
             if !derived.isEmpty || currentItem(id)?["derived"] != nil { set.set("derived", .array(derived)) }
-            return ("update_item", JSONObject([(key: "id", value: id), (key: "set", value: .object(set))]))
+            return Compensation(op: "update_item", args: JSONObject([(key: "id", value: id), (key: "set", value: .object(set))]),
+                                expect: expectation(id, ["due"]), kept: [])
 
         case "complete", "drop":
             // Reopen under a new id with every field the item had when it was closed (binder-v0 §6.10). A dismissed item
@@ -195,7 +234,8 @@ public enum Undo {
             } else {
                 item.set("provenance", .object(provenance))
             }
-            return ("reopen", JSONObject([(key: "id", value: closedID), (key: "item", value: .object(item))]))
+            return Compensation(op: "reopen", args: JSONObject([(key: "id", value: closedID), (key: "item", value: .object(item))]),
+                                expect: nil, kept: [])
 
         case let other:
             throw Unsupported(message: "\(other ?? "this op") records a fact and cannot be undone")
@@ -227,15 +267,28 @@ public enum Undo {
 }
 
 extension TekaStore {
+    /// An undo as applied, and the fields it left alone because they changed since (binder-v0 §6.10).
+    public struct UndoOutcome {
+        public let ops: [JSONObject]
+        public let kept: [String]
+    }
+
     /// Undoes one applied op by appending its compensating op (actor user), with `compensates` set.
     @discardableResult
     public func undo(opID: String, now: Date = Date()) throws -> [JSONObject] {
+        try undoChange(opID: opID, now: now).ops
+    }
+
+    /// Undoes one applied op, field by field: the compensating op carries `expect` for the fields it restores, so the
+    /// guard refuses it if they changed under it, and fields changed since are kept and reported (binder-v0 §6.10).
+    public func undoChange(opID: String, now: Date = Date()) throws -> UndoOutcome {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
         let actor = JSONObject([(key: "kind", value: .str("user"))])
         // The compensation is built from the catalog and log read under the lock, after outside edits were absorbed,
         // so an edit made meanwhile is seen and never overwritten with older values.
-        return try apply(building: { catalog, log in
+        var kept: [String] = []
+        let ops = try apply(building: { catalog, log in
             // An aborted op never took effect: it cannot be undone, and an aborted compensation (an outside edit landed
             // while it was written, and the batch is being retried) does not count as an undo.
             let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
@@ -247,9 +300,12 @@ extension TekaStore {
             guard index > 0 else { throw Refused(reason: "the import snapshot cannot be undone") }
             let before = try Replay.run(Array(log[..<index]))
             let after = try Replay.run(Array(log[...index]))
-            let (op, args) = try Undo.compensate(log[index], catalog: catalog, opLog: log, stateBefore: before, stateAfter: after,
-                                                 year: calendar.component(.year, from: now), now: now)
-            var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))])]
+            let compensation = try Undo.compensation(log[index], catalog: catalog, opLog: log, stateBefore: before, stateAfter: after,
+                                                     year: calendar.component(.year, from: now), now: now)
+            let (op, args) = (compensation.op, compensation.args)
+            kept = compensation.kept
+            var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]
+                                          + (compensation.expect.map { [("expect", JSONValue.object($0))] } ?? []))]
             // An item hidden when it was closed comes back hidden: never shown on the dashboard or published (binder-v0
             // §5.7) only because its closure was undone.
             if op == "reopen", let newID = args["item"]?["id"],
@@ -271,5 +327,6 @@ extension TekaStore {
             }
             return bodies
         }, batch: UUIDv7.make(now: now), now: now)
+        return UndoOutcome(ops: ops, kept: kept)
     }
 }
