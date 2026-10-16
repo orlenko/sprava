@@ -274,7 +274,7 @@
             "required": ["id", "from", "path", "sha256"],
             "properties": {
               "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
-              "from": { "type": "string", "minLength": 1 },
+              "from": { "$ref": "#/$defs/safe_path" },
               "path": { "$ref": "#/$defs/safe_path" },
               "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
             }
@@ -291,7 +291,7 @@
             "required": ["id", "from", "to", "sha256", "document"],
             "properties": {
               "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
-              "from": { "type": "string", "minLength": 1 },
+              "from": { "$ref": "#/$defs/safe_path" },
               "to": { "$ref": "#/$defs/intake_destination" },
               "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
               "document": { "allOf": [{ "$ref": "#/$defs/document_v0" }, { "required": ["sha256"] }] }
@@ -309,7 +309,7 @@
             "required": ["id", "from", "sha256", "document", "to", "transfer"],
             "properties": {
               "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
-              "from": { "type": "string", "minLength": 1 },
+              "from": { "$ref": "#/$defs/safe_path" },
               "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
               "document": { "$ref": "#/$defs/document_v0" },
               "to": { "$ref": "#/$defs/uuid" },
