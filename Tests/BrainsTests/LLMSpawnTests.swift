@@ -17,17 +17,30 @@ import Testing
         for _ in 0..<500 where process.isRunning { usleep(10_000) }
     }
 
-    @Test func theModelIsDescriptorThreeAndNothingElseIsInherited() throws {
+    @Test(arguments: [false, true]) func theModelIsDescriptorThreeAndNothingElseIsInherited(_ reuseDescriptor: Bool) throws {
         let dir = try folder()
         defer { try? FileManager.default.removeItem(at: dir) }
         let model = dir.appendingPathComponent("model.gguf")
         try Data("invented weights".utf8).write(to: model)
         let fd = open(model.path, O_RDONLY | O_CLOEXEC)
+        try #require(fd >= 0)
         defer { close(fd) }
-        // A descriptor this process holds open without close-on-exec must still not reach the helper.
-        let other = open(model.path, O_RDONLY)
+        let excluded = dir.appendingPathComponent("excluded")
+        let noise = dir.appendingPathComponent("child-file")
+        try Data("invented excluded descriptor".utf8).write(to: excluded)
+        try Data("unrelated child file".utf8).write(to: noise)
+        // Reserve a nonstandard descriptor without close-on-exec; it must not reach the helper.
+        let opened = open(excluded.path, O_RDONLY)
+        try #require(opened >= 0)
+        let duplicated = fcntl(opened, F_DUPFD, 64)
+        close(opened)
+        try #require(duplicated >= 64)
+        let other = duplicated
         defer { close(other) }
-        let script = "cat <&3 > out; [ -e /dev/fd/\(other) ] && echo open > leak; env > env; exit 0"
+        // A child may reuse the number for its own file without inheriting the parent's file.
+        let reuse = reuseDescriptor ? "exec \(other)<'\(noise.path)'; " : ""
+        // Test the excluded file's bytes, not merely a number the child may legitimately reuse.
+        let script = "\(reuse)cat <&3 > out; /usr/bin/cmp -s /dev/fd/\(other) '\(excluded.path)' && echo open > leak; env > env; exit 0"
         let shell = try SpawnedLLM.spawn(URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "cd '\(dir.path)' && \(script)"], fd: fd)
         waitUntilEnded(shell)
         #expect(!shell.isRunning)

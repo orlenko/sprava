@@ -285,17 +285,16 @@ by code in the runtime (decisions.md D3):
 | B, one tap | `update_item`, `set_status`, `complete`, `drop`, `reopen` on other items; `update_document` on other documents; moving a document to another binder (`transfer_document`); more than 20 new items or documents in one turn (proposed) | A confirmation with the change and its source; nothing changes until Apply |
 | C, never from the conversation | `set_disclosure` and every widening the privacy ratchet names (architecture 4.5: clearing `redact`, changing or removing `slice_title`, adding a tag to a redacted item, lowering `sensitivity`), checked before any other class, `rename_teka`, `expunge`, engine and backup settings, anything outward (sending mail, `outgoing/`, exporters, a court or tax filing), deleting a file, writing a manual, `.sprava/`, `scripts/` or a dot folder | Only the app's own controls (architecture 2.1) |
 
-Three new ops (binder-v0, section 15 PR 1): `move_document {id, path}` moves a filed file within the binder
-without replacing anything; `unfile_document {id}` moves a file this implementation filed back into `intake/`
-and removes its record, the id never reused. Every invocation also records the durable intake hold of 5.3;
-it is not limited to Undo. It becomes the undo of `file_document`, so Undo returns the file held.
-`transfer_document {id, to}` moves a filed file to another binder Sprava owns: the op is logged in the source
-binder first, the file is placed in the destination's `intake/` with an exclusive create (a rename on the same
-volume, else a copy checked by SHA-256 before the source is removed) and its record is removed from the source;
-the destination then files it as a drop, in one batch with the same transfer id. After a crash the runtime
-finishes or rolls back by the logged digest: a file present in both places keeps the destination's copy only
-when its digest matches, and a file in neither place cannot happen because the source is removed last. Undo
-is the same op back. Nothing is deleted outright.
+Three ops for documents (binder-v0 §6.3, §6.9, §6.10): `move_document` moves a filed file within the binder
+without replacing anything; `unfile_document` moves a file this implementation filed, its bytes unchanged, back
+into `intake/` and removes its record, the id never reused. Every invocation records the durable intake hold of
+5.3 before the file moves; it is not limited to Undo. It is the undo of `file_document`, so Undo returns the file
+held. `transfer_document` moves a filed file to another binder Sprava owns, named by its admitted `binder_id`:
+the op is logged in the source binder first, the file is placed in the destination's `intake/` without
+replacing anything (a rename on one volume, else a copy checked by SHA-256 before it takes its name), the source
+is removed last, and the destination files it as a drop, in one batch whose id is the transfer id. After a crash
+the runtime finishes or rolls back by the logged digest, so the file is never in neither place. Undo is the same
+op back. Nothing is deleted outright.
 
 Anything created without the person's own words starts at the narrowest marker: an item read from a
 document gets `redact: true` and a `kind`, and a draft or other document a model wrote gets `sensitivity:
