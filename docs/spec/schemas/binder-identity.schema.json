@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:binder-identity",
+  "title": "binder v0 persistent identity claim",
+  "description": "A copied or planted record is not local admission or authority. Only the owner interface can supply a trusted binding (binder-v0 section 7.2.2).",
+  "type": "object",
+  "required": ["format_version", "binder_id"],
+  "properties": {
+    "format_version": { "const": "0" },
+    "binder_id": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  },
+  "additionalProperties": true
+}
