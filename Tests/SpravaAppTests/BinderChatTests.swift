@@ -143,6 +143,56 @@ import Testing
         #expect(chat.entries.count == 2 && chat.entries[0].state == .sent && chat.isReplying)
     }
 
+    @Test func sendingALineThatWasNotAcceptedAgainIsItsRetry() async {
+        let standIn = StandIn(), chat = chat(standIn)
+        await chat.show(Self.folder)
+        standIn.refuse = .unavailable
+        chat.draft = "Renew the invented permit"
+        await chat.send()
+        #expect(chat.draft == "Renew the invented permit")
+        standIn.refuse = nil
+        await chat.send()   // the person presses Send, not Retry
+        #expect(standIn.received.count == 2 && standIn.received[0].requestID == standIn.received[1].requestID)
+        #expect(chat.entries.filter { $0.speaker == .person }.count == 1)
+        #expect(!chat.entries.contains { $0.isNotSent } && chat.draft.isEmpty)
+    }
+
+    @Test func aRunawayStreamOfChangesIsBounded() async {
+        let standIn = StandIn(), chat = chat(standIn)
+        await chat.show(Self.folder)
+        chat.draft = "File everything"
+        await chat.send()
+        let long = String(repeating: "s", count: 10_000)
+        for n in 0..<(BinderChat.maximumChanges + 50) {
+            standIn.emit(.binderChanged(ChatBinderChange(operationIDs: ["op-\(n)"], summary: long, undo: ChatUndoReference(batchID: "batch-\(n)"))))
+        }
+        standIn.emit(.finished(.replied), end: true)
+        await until { chat.entries.last?.state == .replied }
+        let reply = chat.entries.last
+        #expect(reply?.changes.count == BinderChat.maximumChanges && reply?.changesCut == true)
+        #expect(reply?.changes.allSatisfy { $0.summary.utf8.count <= BinderChat.maximumChangeBytes } == true)
+        #expect(BinderChat.bounded(ChatBinderChange(operationIDs: [], summary: "x", undo: ChatUndoReference(batchID: long))).undo == nil)
+    }
+
+    @Test func aHistoryReadForAPageLeftInstallsNothingAndIsReadAgain() async {
+        actor Reads { var count = 0; func add() { count += 1 } }
+        let reads = Reads()
+        let earlier = [BinderChat.Entry(id: UUID(), speaker: .person, text: "An earlier invented line", state: .earlier)]
+        let chat = BinderChat(commands: StandIn().commands, binderID: { _ in "acme-binder" }, readHistory: { _ in
+            await reads.add()
+            if await reads.count == 1 { try? await Task.sleep(for: .seconds(30)) }
+            return (earlier, nil)
+        })
+        let first = Task { await chat.show(Self.folder) }
+        await until { chat.folder != nil }
+        first.cancel()
+        await first.value
+        #expect(chat.entries.isEmpty)
+        await chat.show(Self.folder)
+        #expect(chat.entries == earlier)
+        #expect(await reads.count == 2)
+    }
+
     @Test func eachBinderKeepsItsDraftAndAReplyStreamsIntoItsOwnThread() async {
         let standIn = StandIn(), chat = chat(standIn)
         await chat.show(Self.folder)

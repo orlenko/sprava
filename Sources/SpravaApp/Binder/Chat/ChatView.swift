@@ -57,6 +57,10 @@ private struct EntryView: View {
                     }
                 }
             }
+            if entry.changesCut {
+                Text("More changes were made than this page shows; the binder's history has them all.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             status
         }
         .frame(maxWidth: .infinity, alignment: entry.speaker == .person ? .trailing : .leading)

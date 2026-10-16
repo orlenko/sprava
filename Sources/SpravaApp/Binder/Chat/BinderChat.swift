@@ -28,6 +28,7 @@ final class BinderChat: ObservableObject {
         }
         let id: UUID
         let speaker: Speaker
+        var isNotSent: Bool { if case .notSent = state { true } else { false } }
         var text: String
         var state: State
         /// What the binder is doing now, shown while it replies.
@@ -37,6 +38,8 @@ final class BinderChat: ObservableObject {
         var requestID: UUID?
         /// The reply reached its size limit; nothing more is added to it.
         var cutShort = false
+        /// More changes came than the page keeps; the rest are in the binder's history.
+        var changesCut = false
     }
 
     /// One binder's conversation as the page keeps it.
@@ -48,12 +51,19 @@ final class BinderChat: ObservableObject {
         var message: String?
         var historyNote: String?
         var undone: Set<String> = []
+        var history = HistoryState.unread
     }
+
+    enum HistoryState { case unread, reading, read }
 
     /// A reply longer than this is cut on screen, so a runaway stream cannot exhaust the app's memory.
     nonisolated static let maximumReplyBytes = ChatCommands.maximumLineBytes
     /// The months of saved history shown when a binder opens, newest last.
     nonisolated static let historyMonths = 2
+    /// The changes one reply keeps on the page, and the bytes of each summary and reference, so a runaway stream
+    /// cannot fill the app's memory with them.
+    static let maximumChanges = 200
+    static let maximumChangeBytes = 1024
 
     /// Threads by the binder's opaque identity, so a renamed or moved binder keeps its thread and a binder that
     /// replaced another at the same place does not inherit it.
@@ -104,11 +114,15 @@ final class BinderChat: ObservableObject {
         let folder = folder.standardizedFileURL
         self.folder = folder
         let key = key(folder)
-        guard threads[key] == nil else { return }
-        threads[key] = Thread()
+        if threads[key] == nil { threads[key] = Thread() }
+        guard threads[key]?.history == .unread else { return }
+        threads[key]?.history = .reading
         let (earlier, note) = await readHistory(folder)
+        // A page left while its history was read installs nothing; the next visit reads it again.
+        guard !Task.isCancelled else { threads[key]?.history = .unread; return }
         threads[key]?.entries.insert(contentsOf: earlier, at: 0)
         threads[key]?.historyNote = note
+        threads[key]?.history = .read
     }
 
     // MARK: - Sending
@@ -118,6 +132,12 @@ final class BinderChat: ObservableObject {
     func send() async {
         guard let folder, canSend, let commands, let binder = binderID(folder) else { return }
         let key = key(folder)
+        // Sending again a line that was not accepted is its Retry: the same request id, never a second turn.
+        if let failed = shown.entries.last(where: { $0.speaker == .person && $0.isNotSent }), failed.text == draft {
+            threads[key]?.draft = ""
+            await retry(failed)
+            return
+        }
         let line = draft
         let entry = Entry(id: UUID(), speaker: .person, text: line, state: .sending, requestID: UUID())
         threads[key]?.draft = ""
@@ -172,7 +192,10 @@ final class BinderChat: ObservableObject {
             case .activity(let doing):
                 update(reply, in: key) { $0.activity = doing }
             case .binderChanged(let change):
-                update(reply, in: key) { $0.changes.append(change) }
+                update(reply, in: key) { entry in
+                    guard entry.changes.count < Self.maximumChanges else { entry.changesCut = true; return }
+                    entry.changes.append(Self.bounded(change))
+                }
                 changed(folder)
             case .finished(let how):
                 update(reply, in: key) { $0.state = how == .replied ? .replied : .stopped }
@@ -222,6 +245,14 @@ final class BinderChat: ObservableObject {
         change(&threads[key]!.entries[index])
     }
 
+    /// A change as the page keeps it: its summary cut to its limit, its ids to the reply's, and no Undo for a
+    /// reference too long to be a real one.
+    static func bounded(_ change: ChatBinderChange) -> ChatBinderChange {
+        ChatBinderChange(operationIDs: Array(change.operationIDs.prefix(64)).filter { $0.utf8.count <= maximumChangeBytes },
+                         summary: prefix(of: change.summary, bytes: maximumChangeBytes),
+                         undo: change.undo.flatMap { $0.batchID.utf8.count <= maximumChangeBytes ? $0 : nil })
+    }
+
     /// The longest start of `text` within `bytes` UTF-8 bytes, cut between characters.
     static func prefix(of text: String, bytes: Int) -> String {
         var used = 0, end = text.startIndex
@@ -248,12 +279,13 @@ final class BinderChat: ObservableObject {
 
     /// The last months of the binder's saved conversation, display-only (binder-v0 §7.2.1), read off the main actor.
     nonisolated static func history(_ folder: URL) async -> (entries: [Entry], note: String?) {
-        await Task.detached(priority: .userInitiated) { () -> (entries: [Entry], note: String?) in
+        let read = Task.detached(priority: .userInitiated) { () -> (entries: [Entry], note: String?) in
             guard case .months(let months) = ConversationHistory.months(in: folder) else {
                 return ([], "Earlier messages could not be read; they were left as they are.")
             }
             var entries: [Entry] = [], damaged = false
             for month in months.suffix(historyMonths) {
+                guard !Task.isCancelled else { return ([], nil) }
                 guard case .month(let read) = ConversationHistory.read(month: month, in: folder) else { damaged = true; continue }
                 damaged = damaged || !read.damage.isEmpty
                 entries += read.messages.map { message in
@@ -261,6 +293,8 @@ final class BinderChat: ObservableObject {
                 }
             }
             return (entries, damaged ? "Some earlier messages could not be read; they were left as they are." : nil)
-        }.value
+        }
+        // Leaving the page cancels the read between months, so abandoned pages do not pile up reads.
+        return await withTaskCancellationHandler { await read.value } onCancel: { read.cancel() }
     }
 }
