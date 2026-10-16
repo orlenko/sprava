@@ -8,7 +8,11 @@ extension Clerk {
     func checkDuplicates(_ interp: inout Interpretation, filing: [FilingBinder], today: CalendarDate, locale: String) async {
         for i in interp.items.indices {
             guard let name = interp.items[i].binder, let binder = filing.first(where: { $0.name == name }) else { continue }
-            let words = FilingBinder.significantWords(interp.items[i].sentence.text + " " + interp.items[i].title)
+            // The item is told by what the model called it, its date and amount: two tasks of one sentence can share
+            // their shown title (capture-event-v0 §6.4 check 1).
+            let new = interp.items[i]
+            let told = "New item: \(new.identity)" + (new.whenResolved.map { ", due \($0)" } ?? "") + (new.amountText.map { ", amount \($0)" } ?? "")
+            let words = FilingBinder.significantWords(new.sentence.text + " " + new.identity)
             // An id the model could not tell apart from another (7 and "7") is never offered, so a relation never
             // lands on the wrong item.
             let found = binder.openItems.filter { c in binder.openItems.filter { $0.key == c.key }.count == 1 }
@@ -27,7 +31,7 @@ extension Clerk {
             """
             interp.calls += 1
             guard let answer = try? await model.respond(instructions: instr,
-                                                        prompt: "New item: \(interp.items[i].title)\nIts sentence: \(interp.items[i].sentence.text)\nOpen items:\n\(list)",
+                                                        prompt: "\(told)\nIts sentence: \(new.sentence.text)\nOpen items:\n\(list)",
                                                         task: .duplicate(ids: found.map(\.key) + ["none"]), maxTokens: 60),
                   let key = answer["candidate"]?.stringValue, let candidate = found.first(where: { $0.key == key }) else { continue }
             var relation = answer["relation"]?.stringValue ?? "related"

@@ -9,8 +9,10 @@ extension Clerk {
     func check(_ value: JSONValue, text: String, sentences: [TextSpan], today: CalendarDate, locale: String, estimated: Bool = false,
                scope: [TextSpan]? = nil, taken: [ClerkItem] = []) -> ClerkItem? {
         guard let quote = value["quote"]?.stringValue else { return nil }
-        let title = Self.shorten((value["title"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines), to: 120)
-        guard !title.isEmpty else { return nil }
+        // What the model called the task tells items apart; the title shown is the source's words (`ownTitle`).
+        let called = Self.shorten((value["title"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines), to: 120)
+        guard !called.isEmpty else { return nil }
+        let modelWhen = value["when_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
         var action = value["action"]?.stringValue ?? "other"
         if !Self.actions.contains(action) { action = "other" }
         // Check 1. A quote that opens several sentences ("Your renewal for the plan ..." twice) is placed by the
@@ -23,12 +25,13 @@ extension Clerk {
                 let holding = found.filter { CaptureText.containsWords($0.text, words) }
                 if !holding.isEmpty { found = holding }
             }
-            let free = found.filter { s in !taken.contains { $0.sentence == s && $0.action == action && Self.similar($0.title, title) } }
+            let free = found.filter { s in !taken.contains { $0.sentence == s && $0.action == action && Self.similar($0.identity, called) } }
             if !free.isEmpty { found = free }
             ambiguous = found.count > 1
         }
         guard let sentence = found.first else { return nil }
-        var item = ClerkItem(title: title, action: action, sentence: sentence, people: [])
+        var item = ClerkItem(title: "", action: action, sentence: sentence, people: [])
+        item.called = called
         if ambiguous { item.flags.append("the quote opens more than one sentence") }
 
         // Check 4: people as whole words of the capture, never pronouns.
@@ -42,7 +45,7 @@ extension Clerk {
         if item.action == "wait" && item.people.isEmpty { item.action = "other" }
 
         // Check 2: the time words occur in the item's sentence and are a known time pattern.
-        if let when = value["when_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !when.isEmpty,
+        if let when = modelWhen, !when.isEmpty,
            CaptureText.containsWords(sentence.text, when), let found = DateGrammar.resolve(when, anchor: today, locale: locale) {
             item.whenText = when
             item.whenResolved = found.date
@@ -58,6 +61,7 @@ extension Clerk {
             // An estimated capture time resolves only full dates (capture-event-v0 §6.6).
             if estimated, !DateGrammar.isFullDate(when, locale: locale) { item.whenResolved = nil }
         }
+        item.title = Self.ownTitle(called, quote: quote, sentence: sentence.text, whenText: item.whenText)
 
         // Check 3: the amount text occurs in the sentence and parses above 0.
         if let amountText = value["amount_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !amountText.isEmpty,
@@ -69,5 +73,64 @@ extension Clerk {
             item.flags.append("amount in the note not found in the item")
         }
         return item
+    }
+
+    // MARK: - The title: the person's own words
+
+    /// An item's title is the words of its source, never a model's paraphrase (capture-event-v0 §6.4 check 1): the
+    /// model's title is kept only when every word of it is in the item's sentence; otherwise code builds it from the
+    /// sentence, so "Bill Acme today" is titled "Bill Acme", never "Call Bill Acme". Either way the time words are
+    /// taken out: the date is the item's own field.
+    static func ownTitle(_ proposed: String, quote: String, sentence: String, whenText: String?) -> String {
+        if hasOnlyWords(of: sentence, proposed) {
+            let kept = cleaned(proposed, without: whenText)
+            if hasOnlyWords(of: sentence, kept) { return kept }
+        }
+        var text = sentence
+        let q = quote.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"“”«»")))
+        if let r = phraseRange(q, in: text) { text = String(text[r.lowerBound...]) }
+        let built = cleaned(text, without: whenText)
+        if hasOnlyWords(of: sentence, built) { return built }
+        // A sentence that is only its time words ("Tomorrow!") keeps them, rather than an empty title.
+        let whole = cleaned(sentence, without: nil)
+        return whole.isEmpty ? shorten(sentence.trimmingCharacters(in: .whitespacesAndNewlines), to: 120) : whole
+    }
+
+    /// Whether `title` has words, and every one of them occurs in `source` (case-insensitively).
+    static func hasOnlyWords(of source: String, _ title: String) -> Bool {
+        let own = words(title)
+        return !own.isEmpty && own.isSubset(of: words(source))
+    }
+
+    static func words(_ s: String) -> Set<String> {
+        Set(CaptureText.asciiDigits(CaptureText.normalized(s).0).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+    }
+
+    /// Words that only lead into a time expression, left behind when the model's time words leave them out.
+    static let timeLeads: Set<String> = ["by", "before", "on", "until", "till", "at", "d'ici", "avant", "le", "la", "jusqu'à", "pour", "dès"]
+
+    /// `text` with its time words (and a word that only led into them) taken out, white space collapsed, list marks
+    /// and end punctuation trimmed, the first letter capitalized, at most 120 characters.
+    static func cleaned(_ text: String, without whenText: String?) -> String {
+        var text = text
+        if let when = whenText, let r = phraseRange(when, in: text) {
+            var before = text[..<r.lowerBound].split(whereSeparator: \.isWhitespace).map(String.init)
+            while let last = before.last, timeLeads.contains(last.lowercased().replacingOccurrences(of: "’", with: "'")) { before.removeLast() }
+            text = before.joined(separator: " ") + " " + text[r.upperBound...]
+        }
+        let ends = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?-–—•*·"))
+        let title = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            .replacingOccurrences(of: " ([,;:.!?])", with: "$1", options: .regularExpression)
+            .trimmingCharacters(in: ends)
+        let first = title.prefix(1), upper = first.uppercased()
+        return shorten((upper.count == 1 ? upper : String(first)) + title.dropFirst(), to: 120)
+    }
+
+    /// Where `phrase` occurs in `text` as whole words, case-insensitively, with any white space between its words.
+    static func phraseRange(_ phrase: String, in text: String) -> Range<String.Index>? {
+        let parts = phrase.split(whereSeparator: \.isWhitespace).map { NSRegularExpression.escapedPattern(for: String($0)) }
+        guard !parts.isEmpty else { return nil }
+        let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
     }
 }

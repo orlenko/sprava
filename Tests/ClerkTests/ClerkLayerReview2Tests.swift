@@ -57,7 +57,7 @@ import Testing
             item("Pay the inspection fee", "Pay the inspection fee", "pay"),
             item("The insurance premium is due", "Pay the insurance premium", "pay", when: "November 1"),
         ])
-        #expect(unasked.items.map(\.title) == ["Pay the inspection fee", "Pay the insurance premium"])
+        #expect(unasked.items.map(\.title) == ["Pay the inspection fee", "The insurance premium is due"])
         #expect(unasked.items.first?.whenResolved == nil)
     }
 
