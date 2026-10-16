@@ -10,6 +10,8 @@ import SwiftUI
 // ObservableObject rather than @Observable/@State: the Command Line Tools ship no SwiftUI macro plugin.
 @MainActor
 final class ShelfModel: ObservableObject {
+    /// One editor and removal admission point shared by every window that shows this Shelf.
+    let itemEditor = ItemEditor()
     @Published var rows: [ShelfRow] = []
     @Published var today = CalendarDate.today()
     @Published private(set) var counts: [URL: ShelfCounts] = [:]
@@ -183,6 +185,11 @@ final class ShelfModel: ObservableObject {
     }
 
     func removeFromShelf(_ row: ShelfRow) async {
+        guard itemEditor.beginRemoval(in: row.folder) else {
+            operationNote = "Save or cancel this binder's open edit before removing it from the Shelf."
+            return
+        }
+        defer { itemEditor.endRemoval(in: row.folder) }
         operationNote = nil
         var failure: String?
         do {
@@ -277,8 +284,8 @@ struct ShelfView: View {
     @StateObject private var inbox = InboxModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
-    /// The binder page's item editor, kept here so what was typed outlives a visit to another page.
-    @StateObject private var itemEditor = ItemEditor()
+    /// Every window uses the Shelf's editor, so none can remove another window's open draft.
+    var itemEditor: ItemEditor { model.itemEditor }
 
     var body: some View {
         NavigationSplitView {
