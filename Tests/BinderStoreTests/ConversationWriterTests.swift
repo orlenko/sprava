@@ -1,0 +1,119 @@
+import BinderFormat
+@testable import BinderStore
+import Darwin
+import Foundation
+import SpravaKit
+import SpravaTestSupport
+import Testing
+
+/// The conversation history's writer (binder-v0 §7.2.1): whole messages appended and flushed, a torn group set aside,
+/// a full month refused without writing. Invented binders and messages only.
+@Suite(.serialized) struct ConversationWriterTests {
+    func adopted() throws -> (URL, TekaStore) {
+        let folder = try makeTeka(fixture: "sprava-v0")
+        let store = TekaStore(folder: folder)
+        try store.adopt(survey: JSONObject(), owner: JSONObject(), now: Date(timeIntervalSince1970: 1_791_360_000))
+        return (folder, store)
+    }
+
+    func message(_ n: Int, text: String = "Renew the invented permit on Friday.", at: String = "2026-10-16T12:00:00Z") throws -> ConversationMessage {
+        try ConversationMessage(id: String(format: "0199e9e6-3c00-7000-8000-%012d", n), turn: "0199e9e6-3c00-7000-8000-000000000002",
+                                at: at, speaker: .person, origin: .app, text: text, device: "device-example",
+                                requestID: "0199e9e6-3c00-7000-8000-000000000003")
+    }
+
+    func read(_ folder: URL, _ month: String = "2026-10") -> ConversationHistory.Month? {
+        if case .month(let m) = ConversationHistory.read(month: month, in: folder) { return m }
+        return nil
+    }
+
+    func mode(_ url: URL) -> mode_t {
+        var st = stat()
+        return lstat(url.path, &st) == 0 ? st.st_mode & 0o777 : 0
+    }
+
+    @Test func appendsWholeMessagesToTheirMonthPrivately() throws {
+        let (folder, store) = try adopted()
+        var flushes = 0
+        store.testHookFullSync = { _ in flushes += 1; return 0 }
+        let long = try message(2, text: String(repeating: "\u{1F600}", count: 40_000))
+        try store.appendConversation(try message(1))
+        try store.appendConversation(long)
+        try store.appendConversation(try message(3, at: "2026-11-01T00:00:00Z"))
+        #expect(read(folder)?.messages == [try message(1), long])
+        #expect(read(folder)?.damage == [])
+        #expect(read(folder, "2026-11")?.messages == [try message(3, at: "2026-11-01T00:00:00Z")])
+        #expect(flushes >= 3)
+        let dir = folder.appendingPathComponent(".sprava/conversation")
+        #expect(mode(dir) == 0o700)
+        #expect(mode(dir.appendingPathComponent("2026-10.ndjson")) == 0o600)
+    }
+
+    @Test func aFailedFlushFailsTheAppend() throws {
+        let (_, store) = try adopted()
+        store.testHookFlushFails = { $0 == "flush the conversation history" }
+        #expect(throws: (any Error).self) { try store.appendConversation(try message(1)) }
+    }
+
+    @Test func aTornGroupIsSetAsideAndCutBeforeTheNextMessage() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        let url = folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson")
+        let torn = try message(2, text: String(repeating: "a", count: 100_000)).lines()
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: torn[0] + torn[1].prefix(100))
+        try handle.close()
+
+        try store.appendConversation(try message(3))
+        #expect(read(folder)?.messages.map(\.id) == [try message(1).id, try message(3).id])
+        #expect(read(folder)?.damage == [])
+        let tornDir = folder.appendingPathComponent(".sprava/torn")
+        let saved = try FileManager.default.contentsOfDirectory(atPath: tornDir.path).filter { $0.hasPrefix("conversation-2026-10-") }
+        #expect(saved.count == 1)
+        #expect(try Data(contentsOf: tornDir.appendingPathComponent(saved[0])) == torn[0] + torn[1].prefix(100))
+    }
+
+    @Test func aFullMonthRefusesTheWholeMessage() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        let url = folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson")
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(repeating: 0x0A, count: ConversationLimits.monthLines - 1))
+        try handle.close()
+        let before = try Data(contentsOf: url)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(2)) }
+        #expect(try Data(contentsOf: url) == before)
+    }
+
+    @Test func aMessageThatCannotBeStoredWholeWritesNothing() throws {
+        let (folder, store) = try adopted()
+        let wide = try (0..<64).map { _ in try ConversationMessage.Reference(kind: .op, id: .string(String(repeating: "\u{01}", count: 1024))) }
+        let tooLong = try ConversationMessage(id: "0199e9e6-3c00-7000-8000-000000000009", turn: "0199e9e6-3c00-7000-8000-000000000002",
+                                              at: "2026-10-16T12:00:00Z", speaker: .person, origin: .app,
+                                              text: String(repeating: "\u{01}", count: 2_000_000), references: wide,
+                                              device: "device-example", requestID: "0199e9e6-3c00-7000-8000-000000000003")
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(tooLong) }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson").path))
+    }
+
+    @Test func aLinkedFolderOrFileIsNeverWrittenThrough() throws {
+        let (folder, store) = try adopted()
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-outside-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let dir = folder.appendingPathComponent(".sprava/conversation")
+        try FileManager.default.createSymbolicLink(at: dir, withDestinationURL: outside)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(1)) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+
+        try FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let target = outside.appendingPathComponent("target.ndjson")
+        try Data().write(to: target)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("2026-10.ndjson"), withDestinationURL: target)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(1)) }
+        #expect(try Data(contentsOf: target).isEmpty)
+    }
+}
