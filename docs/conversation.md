@@ -735,22 +735,48 @@ Short experiments on invented binders, each before the PR that needs it. S1 to S
 - **S6 Translation** from the runtime and the helper, without a window. **S7 Retrieval**: FTS5 queries in each
   document language over 200 invented documents. **S8 Path import**: folder permissions; matching descriptions.
 
-## 15. Code PRs, in order
+## 15. Delivery order and code PRs
 
-Each under 1,000 changed lines and in one domain target where possible (code-structure 3). PRs 1 to 7 give a
-binder page that files drops and imports at once and answers with quotes, with code and the existing clerk;
-the local model follows, then the back office.
+The author's approved order (2026-10-15) puts a specialist for each binder before a local-model front desk:
+
+1. **Visible fixes first.** Preserve the person's words in Clerk titles; show runtime reconnect and sign-in
+   plainly; finish the binder's note box and About this binder, editing in place, cross-binder To-dos and
+   the app icon. Finish their remaining correctness gates rather than redoing components already landed.
+2. **The binder specialist.** Each binder page talks directly to that binder's own long-lived Claude Code
+   back office. A local router or front desk is not a prerequisite. First establish canonical identity,
+   authenticated transcript and durable request/operation interfaces; connect `Services.ChatCommands`
+   (send, typed reply events and interrupt) to that one binder's engine. The screen can use an injected fake
+   while the real engine is built. Captured attachments are authenticated opaque references, never paths a
+   model chose. Path/description import follows through the capture boundary, preserving originals.
+3. **The umbrella manager.** After the binder specialist: overdue/today reminders, a morning summary, briefs,
+   and routing a person's note to the right binder's specialist. Cross-binder work still respects disclosure
+   and each specialist's one-binder scope; it does not widen the specialist's tools.
+4. **The local front desk later.** Local-model selection and routing follow the specialist and umbrella
+   work. Existing extraction, retrieval and model-helper components are reused; they do not change this order.
+
+The specialist needs the common turn supervisor, bounded session admission, per-binder isolated homes,
+fail-closed startup, and back-office tools exposed as Sprava actions over MCP (11, 11.1, 17.5). Before a real
+backend is enabled, its installed-CLI spikes must prove literal input, effective confinement and tools/MCP,
+isolated authentication and all stores, plus session/Stop behavior. A codec, pure policy or fake-backed
+screen is not that proof. The unresolved spikes remain gates, not permission to read a live profile or sign in.
+
+The numbered component seams below retain their labels for existing cross-references; they are not a
+requirement to build the local front desk before the back office. Work on 14, 15 and the necessary engine
+controls in 18 alongside 1–7 for the specialist; defer 8–10 until the later local-front-desk stage. Each PR
+stays under 1,000 changed lines and in one domain target where possible (code-structure 3).
 
 1. **Spec (docs).** binder-v0: the transcript (§7.2), `move_document`, `unfile_document`, `transfer_document`
    (§6.3, §6.9, §6.10), conversation-applied ops and receipts (§6.2, §6.5), arrival provenance, `BRIEF.md` and
    the rules part of Sprava's manual section (with F14 of PR #347), expunge (§6.11); schemas and samples.
 2. **BinderStore: transcript and classes.** The transcript store, the class rule as one function the guard
    calls, the new ops, request receipts, a turn's batch and its expected-state Undo (17.2).
-3. **New `Retrieval` target: the index.** Passages with pages, items, log, the person's lines; rebuild; search.
+3. **`Retrieval`: reuse the existing index.** Passages with pages, items, log, authenticated person's lines;
+   rebuild and search through that target's interface.
 4. **Capture: file at once.** Drops and arrivals become a filing batch, the reasons to ask, instructions and
    rules as the reader's input, files handed over by descriptor.
-5. **Services: `ChatCommands` and the router skeleton.** Send, stream, Stop, answer, Apply, Undo a turn; intents
-   read by the clerk where the local model is absent; quote-first answers from search.
+5. **Services: `ChatCommands` and the binder-specialist adapter.** Send the person's exact line, typed reply
+   events and Stop to the selected binder's back office; answer, Apply and Undo through owner interfaces.
+   Durable acceptance precedes acknowledgment. Local-model routing is a later adapter, not this one's dependency.
 6. **SpravaApp: the conversation.** `Binder/Chat`: transcript, composer, drag and drop, strip, side panel with
    documents. May need `SPRAVA_ALLOW_LARGE=1` as a screen with its model and tests.
 7. **SpravaApp: import by path or description**, with its `Services` handler.
