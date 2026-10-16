@@ -34,8 +34,8 @@
     "op": {
       "enum": [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
-        "file_document", "update_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
-        "external_edit", "import_snapshot", "migrate", "abort", "expunge"
+        "file_document", "update_document", "move_document", "unfile_document", "transfer_document",
+        "add_log_entry", "set_meta", "set_disclosure", "rename_teka", "external_edit", "import_snapshot", "migrate", "abort", "expunge"
       ]
     },
     "args": { "type": "object" },
@@ -221,6 +221,60 @@
     {
       "if": { "properties": { "op": { "const": "update_document" } } },
       "then": { "properties": { "args": { "$ref": "#/$defs/document_change" } } }
+    },
+    {
+      "$comment": "Moves a filed file within the binder; from is the record's path (section 6.3).",
+      "if": { "properties": { "op": { "const": "move_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "from", "path", "sha256"],
+            "properties": {
+              "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
+              "from": { "type": "string", "minLength": 1 },
+              "path": { "$ref": "#/$defs/safe_path" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Returns a filed file to intake/, held, and removes its record, which args.document keeps (sections 6.3, 6.9).",
+      "if": { "properties": { "op": { "const": "unfile_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "from", "to", "sha256", "document"],
+            "properties": {
+              "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
+              "from": { "type": "string", "minLength": 1 },
+              "to": { "$ref": "#/$defs/intake_path" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "document": { "allOf": [{ "$ref": "#/$defs/document_v0" }, { "required": ["sha256"] }] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Moves a filed file to another admitted binder's intake/ and removes its record here (sections 6.3, 6.9). to is the destination's binder_id, a claim resolved only through the admitted binding (section 7.2.2).",
+      "if": { "properties": { "op": { "const": "transfer_document" } } },
+      "then": {
+        "properties": {
+          "args": {
+            "required": ["id", "from", "sha256", "document", "to", "transfer"],
+            "properties": {
+              "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
+              "from": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "document": { "$ref": "#/$defs/document_v0" },
+              "to": { "$ref": "#/$defs/uuid" },
+              "transfer": { "$ref": "#/$defs/uuid" }
+            }
+          }
+        }
+      }
     },
     {
       "if": { "properties": { "op": { "const": "add_log_entry" } } },
@@ -411,12 +465,12 @@
     },
     "safe_path": {
       "type": "string",
-      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss]|[Cc][Hh][Aa][Pp][Tt][Ee][Rr][Ss]|[Ee][Nn][Tt][Ii][Tt][Ii][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss]|[Cc][Hh][Aa][Pp][Tt][Ee][Rr][Ss]|[Ee][Nn][Tt][Ii][Tt][Ii][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
       "$comment": "Where file_document may put a file (section 4.3): relative, every segment non-empty, not starting with '.' or '~', no backslash and no Cc or Cf character; not a reserved file or folder, compared without regard to case; no agent manual name in any segment. NFC form, full Unicode case folding and containment after symlinks are conformance checks."
     },
     "record_path": {
       "type": "string",
-      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
+      "pattern": "^(?!(?:[Cc][Aa][Tt][Aa][Ll][Oo][Gg]\\.[Jj][Ss][Oo][Nn]|[Dd][Aa][Ss][Hh][Bb][Oo][Aa][Rr][Dd]\\.[Mm][Dd]|[Rr][Ee][Aa][Dd][Mm][Ee]\\.[Mm][Dd]|[Cc][Aa][Tt][Aa][Ll][Oo][Gg]_[Cc][Hh][Ee][Cc][Kk]\\.[Pp][Yy]|[Tt][Ii][Mm][Ee][Ll][Ii][Nn][Ee]\\.[Mm][Dd])$)(?!(?:[Ii][Nn][Tt][Aa][Kk][Ee]|[Ss][Cc][Rr][Ii][Pp][Tt][Ss]|[Ll][Ee][Dd][Gg][Ee][Rr]|[Ss][Oo][Uu][Rr][Cc][Ee][Ss])(?:/|$))(?!(?:.*/)?(?:[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Ll][Oo][Cc][Aa][Ll]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]\\.[Mm][Dd]|[Gg][Ee][Mm][Ii][Nn][Ii]\\.[Mm][Dd])(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*(?:/[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb.~][^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*)*$",
       "$comment": "A path update_document may record (it moves nothing): the rules of safe_path, except that it may lie under chapters/ or entities/ (section 4.3)."
     },
     "intake_path": {
@@ -627,6 +681,21 @@
             "reopened_from": {
               "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
               "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type."
+            },
+            "refiled_from": {
+              "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }],
+              "$comment": "The record whose unfile_document an Undo reversed (section 6.10). Copied with its JSON type."
+            },
+            "transfer": {
+              "type": "object",
+              "required": ["id", "from_binder", "from_document"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+                "from_binder": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+                "from_document": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "The record's id in the source binder, with its JSON type." }
+              },
+              "additionalProperties": true,
+              "$comment": "On a record a transfer filed: the transfer, the source binder's binder_id (section 7.2.2) and the record's id there (section 6.9)."
             }
           },
           "additionalProperties": true
