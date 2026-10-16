@@ -2,6 +2,7 @@ import BinderFormat
 import BinderStore
 import Foundation
 import Services
+import Shelf
 @testable import SpravaApp
 import SpravaKit
 import SpravaTestSupport
@@ -65,6 +66,40 @@ import Testing
     func openItem(_ id: String, in folder: URL) async throws -> Item { try #require(await shown(id, in: folder)).item }
 
     func applies(_ runtime: StandInRuntime) -> Int { runtime.sent.filter { $0["command"] == .str("apply") }.count }
+
+    @Test func anOpenEditMustBeSettledBeforeRemovingItsBinder() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let support = try temporaryFolder()
+        try ShelfStore(supportDirectory: support).add(folder)
+        let shelf = ShelfModel(support: support, client: runtime.client)
+        let firstWindow = ShelfView(model: shelf)
+        let secondWindow = ShelfView(model: shelf)
+        let editor = firstWindow.itemEditor
+        #expect(editor === secondWindow.itemEditor)
+        let item = try await openItem("acme-1", in: folder)
+        #expect(editor.begin(item, in: folder, actions, reload: {}))
+        editor.setTitle("Send the Acme invoice by post", in: folder)
+        await shelf.refreshAndWait()
+        let row = try #require(shelf.rows.first)
+        runtime.answers["shelf_remove"] = { _ in
+            // A new draft cannot start while the removal is awaiting its runtime answer.
+            #expect(!editor.begin(item, in: folder, actions, reload: {}))
+            try? ShelfStore(supportDirectory: support).remove(folder)
+            return #"{"ok":true}"#
+        }
+        // Removal from a second window must also respect the first window's draft.
+        await shelf.removeFromShelf(row)
+        #expect(!runtime.sent.contains { $0["command"] == .str("shelf_remove") })
+        #expect(shelf.rows.contains { $0.folder == folder })
+        #expect(shelf.selection == folder)
+        #expect(editor.row(in: folder)?.title == "Send the Acme invoice by post")
+        #expect(shelf.note == "Save or cancel this binder's open edit before removing it from the Shelf.")
+        secondWindow.itemEditor.cancel(in: folder)
+        await shelf.removeFromShelf(row)
+        #expect(runtime.sent.filter { $0["command"] == .str("shelf_remove") }.count == 1)
+        #expect(!shelf.rows.contains { $0.folder == folder })
+    }
 
     @Test func editingTheTitleAndDueWritesOneUpdateItemAndThePageShowsIt() async throws {
         let (actions, runtime, folder) = try await binder()

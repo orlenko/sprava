@@ -7,7 +7,7 @@ import SpravaKit
 ///
 /// Each binder has at most one open row, and nothing typed is ever kept anywhere but in it: opening another row
 /// saves the open one first, as an inline edit on the Mac does when the person clicks away, and Esc cancels. The
-/// window owns the editor, so the open row is still there when the person comes back from another page.
+/// shared Shelf model owns the editor, so the open row survives page changes and is the same in every window.
 @MainActor
 final class ItemEditor: ObservableObject {
     /// The open row of one binder: the item as it was when the row opened, and what was typed.
@@ -25,6 +25,18 @@ final class ItemEditor: ObservableObject {
     /// The binders whose open row's change the runtime is carrying out. The request already holds what was typed,
     /// so nothing on the row changes, and no other row opens, until the runtime answers.
     @Published private(set) var saving: Set<URL> = []
+
+    /// A removal with no open edit owns admission until its runtime request and refresh finish.
+    private var removing: Set<URL> = []
+
+    func beginRemoval(in folder: URL) -> Bool {
+        let folder = folder.standardizedFileURL
+        guard rows[folder] == nil, !saving.contains(folder), !removing.contains(folder) else { return false }
+        removing.insert(folder)
+        return true
+    }
+
+    func endRemoval(in folder: URL) { removing.remove(folder.standardizedFileURL) }
 
     /// The open row of this binder.
     func row(in folder: URL) -> Row? { rows[folder.standardizedFileURL] }
@@ -49,7 +61,7 @@ final class ItemEditor: ObservableObject {
     @discardableResult
     func begin(_ item: Item, in folder: URL, _ actions: BinderActions, reload: @escaping () -> Void) -> Bool {
         let folder = folder.standardizedFileURL
-        guard !saving.contains(folder), let id = item.object?["id"] else { return false }
+        guard !saving.contains(folder), !removing.contains(folder), let id = item.object?["id"] else { return false }
         if rows[folder]?.id == id { return true }
         if rows[folder]?.change != nil {
             return save(in: folder, actions, reload: reload, then: { [weak self] in self?.open(item, id, in: folder) }) != nil
