@@ -152,9 +152,9 @@ final class BrainsModel: ObservableObject, RuntimePage {
         }.joined(separator: " ")
     }
 
-    func copyRegistration() {
+    func copyRegistration(to pasteboard: NSPasteboard = .general) {
         guard let registration else { return }
-        message = ProtectedClipboard.copy(registration.configuration)
+        message = ProtectedClipboard.copy(registration.configuration, to: pasteboard)
             ? "Setup copied for this Mac only. It clears from the clipboard after 60 seconds."
             : "The setup could not be copied. Try again."
     }
@@ -299,7 +299,8 @@ struct BrainsView: View {
                     .disabled(!model.canConnect)
                 if let pending = model.registration {
                     Text("Setup to add by hand: merge this sprava entry into mcpServers in ~/.claude.json, keeping the other entries. It is for that file, not for Terminal.").font(.caption)
-                    Text(pending.configuration).font(.caption.monospaced()).textSelection(.enabled)
+                    // Credentials are copied only through Copy Setup, which marks the pasteboard private.
+                    Text(pending.configuration).font(.caption.monospaced()).textSelection(.disabled)
                     HStack {
                         Button("Copy Setup") { model.copyRegistration() }
                         Button("Try Again") { Task { await model.tryAgain() } }.disabled(model.busy)

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SpravaKit
 @testable import SpravaApp
@@ -213,6 +214,23 @@ final class InventedRuntime {
         await m.setDocuments(c, false)
         #expect(runtime.commands.filter { $0["command"] == .str("client_documents") }.count == 1)
         #expect(runtime.commands.first { $0["command"] == .str("client_documents") }?["documents"] == .bool(false))
+    }
+
+    @Test func copyingFallbackSetupKeepsTheCredentialOnThePrivateClipboard() async throws {
+        let runtime = InventedRuntime()
+        let m = model(runtime)
+        m.claude = { nil }
+        m.chosen = ["/Invented/acme"]
+        await m.connect()
+        let pending = try #require(m.registration)
+        let board = NSPasteboard(name: .init("sprava-invented-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        m.copyRegistration(to: board)
+        #expect(board.string(forType: .string) == pending.configuration)
+        #expect(board.types?.contains(ProtectedClipboard.concealed) == true)
+        #expect(board.types?.contains(ProtectedClipboard.transient) == true)
+        #expect(m.registration == pending)
+        #expect(m.message == "Setup copied for this Mac only. It clears from the clipboard after 60 seconds.")
     }
 
     @Test func theShownCommandKeepsAPathWithSpacesInOneArgument() {
