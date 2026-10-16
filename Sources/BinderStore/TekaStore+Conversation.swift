@@ -56,9 +56,14 @@ extension TekaStore {
             let fd = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw AtomicFile.Failure(step: "open the conversation history", code: errno) }
             defer { close(fd) }
+            try checkSingleLink(fd, message.month)
             guard ftruncate(fd, off_t(intact)) == 0 else { throw AtomicFile.Failure(step: "cut the conversation's torn tail", code: errno) }
             try flush(fd, "flush the conversation history")
             existing = existing.prefix(intact)
+        }
+        // A message id used earlier in the month would make the reader hide the new message as damage.
+        if Self.holdsMessage(message.id, in: existing) {
+            throw Refused(reason: "a message with this id is already in the history for \(message.month); the message was not saved")
         }
         // The whole message fits, or none of it is written.
         let lineCount = existing.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
@@ -72,6 +77,7 @@ extension TekaStore {
         guard fd >= 0 else { throw AtomicFile.Failure(step: "open the conversation history", code: errno) }
         defer { close(fd) }
         // A file found with wider permissions (imported, restored, edited) is narrowed before anything is added to it.
+        try checkSingleLink(fd, message.month)
         var opened = stat()
         guard fstat(fd, &opened) == 0 else { throw AtomicFile.Failure(step: "check the conversation history", code: errno) }
         if opened.st_mode & 0o077 != 0 {
@@ -82,6 +88,27 @@ extension TekaStore {
         try writeAll(fd, added)
         try flush(fd, "flush the conversation history")
         if created { try flushFolder(conversationDir, "flush the conversation folder") }
+    }
+
+    /// A month file hard-linked elsewhere (an imported or restored binder) would carry every write to the other path
+    /// too, the catalog among them; it is refused before anything changes.
+    func checkSingleLink(_ fd: Int32, _ month: String) throws {
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { throw AtomicFile.Failure(step: "check the conversation history", code: errno) }
+        guard st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else {
+            throw Refused(reason: "the conversation history for \(month) is linked to another file; the message was not saved")
+        }
+    }
+
+    /// Whether any line of a month already carries `id`, its escapes decoded as the reader decodes them.
+    static func holdsMessage(_ id: String, in month: Data) -> Bool {
+        var start = month.startIndex
+        while start < month.endIndex {
+            let end = month[start...].firstIndex(of: 0x0A) ?? month.endIndex
+            if let parsed = try? JSONParser.parse(month[start..<end]), parsed.value["id"]?.stringValue == id { return true }
+            start = end + 1
+        }
+        return false
     }
 
     /// The history folder is private (binder-v0 §7.2): one found readable or writable by others is narrowed first.

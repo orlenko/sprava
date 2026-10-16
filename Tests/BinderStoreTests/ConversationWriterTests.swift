@@ -121,6 +121,34 @@ import Testing
         #expect(read(folder)?.messages.count == 2)
     }
 
+    @Test func aMessageIDAlreadyInTheMonthIsRefused() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(1, text: "Different invented words")) }
+        // An id written with escapes is the same id to the reader.
+        let url = folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson")
+        let escaped = String(decoding: try message(2).lines()[0], as: UTF8.self)
+            .replacingOccurrences(of: "\"id\":\"0199", with: "\"id\":\"\\u00301\\u00399")
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(escaped.utf8))
+        try handle.close()
+        #expect(read(folder)?.messages.count == 2)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(2)) }
+        #expect(read(folder)?.damage == [])
+    }
+
+    @Test func aMonthFileLinkedToAnotherFileIsNeverWritten() throws {
+        let (folder, store) = try adopted()
+        let dir = folder.appendingPathComponent(".sprava/conversation")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let catalog = folder.appendingPathComponent("catalog.json")
+        let before = try Data(contentsOf: catalog)
+        #expect(link(catalog.path, dir.appendingPathComponent("2026-10.ndjson").path) == 0)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(1)) }
+        #expect(try Data(contentsOf: catalog) == before)
+    }
+
     @Test func aLinkedFolderOrFileIsNeverWrittenThrough() throws {
         let (folder, store) = try adopted()
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-outside-\(UUID().uuidString)")
