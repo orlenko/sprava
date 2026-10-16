@@ -560,7 +560,7 @@ An applied op is one line of `.sprava/ops.ndjson`. Its fields:
 | `before_hash` | `sha256:<hex>` | yes | Content hash of the catalog before the op (section 4.8). |
 | `after_hash` | `sha256:<hex>` | yes | Content hash after the op. |
 | `compensates` | UUID | no | Set on an undo: the op this one reverses (section 6.10). |
-| `expect` | object | no, only with `compensates` | `{set?, absent?}`: the values an undo assumed about the record it changes. `set` maps each field it restores to the value the reversed op left there; `absent` lists the fields the reversed op removed. The guard refuses the op unless the record matches (section 6.10). Added by this draft. |
+| `expect` | object | for a conversation's op on an existing record | `{record?, set?, absent?}`: what the op assumed about the existing record it changes, an item, a document or `meta`. `record` is the content hash (section 4.8) of that record as the op's author read it; an op a binder's conversation applies to an existing record carries it, so a change the person made meanwhile makes the op a conflict instead of being overwritten (conversation.md section 17.1). `set` and `absent`, on an undo only, name the fields it restores: `set` maps each to the value the reversed op left there, `absent` lists those the reversed op removed (section 6.10). The guard refuses the op unless the record matches. Added by this draft. |
 | `conversation` | object | no | `{turn, message}` on an op a binder's conversation applied without a proposal (section 6.5): `turn` is the runtime's turn id and `message` the id of the person's message that asked for it, both as in the transcript (section 7.2.1). Added by this draft. |
 | `request` | UUID | no | The request the op answers: for a person's turn, the app's `request_id` (section 7.2.1). Every op of one request carries it, so a retry is recognized. Added by this draft. |
 | `op` | closed list | yes | The op type (section 6.3). |
@@ -687,7 +687,7 @@ The complete list of changes applied without a proposal:
 - the import's own changes (actor `import`, section 9.4 steps 3, 4, 5 and 7), listed in the import report; an import has no Undo (section 9.4; decisions.md F13);
 - `import_snapshot`, `external_edit` and `abort`, which record facts and decide nothing;
 - completions drained from the hub's outbox (actor `external`, section 8.3);
-- the changes a person's turn in the binder's conversation applies at once, with Undo (conversation.md section 6.1, class A): actor `clerk` or `brain` with its `model`, `approved_by` naming the person, `conversation` and `request` set, the turn's changes in one batch. A change that needs the person's tap (class B) is a proposal.
+- the changes a person's turn in the binder's conversation applies at once, with Undo (conversation.md section 6.1, class A): actor `clerk` or `brain` with its `model`, `approved_by` naming the person, `conversation` and `request` set, the turn's changes in one batch, and each op on an existing record bound by `expect.record` to the revision it was based on. A change that needs the person's tap (class B) is a proposal.
 
 `conversation`, `request` and `turn` ids found in a binder are records, never authority. A binder's files can be copied, restored or edited, so a field there proves neither that the person asked nor that an effect has not already happened. The implementation decides both from its own trusted state outside the binder: its record of each accepted request and the person's message (section 7.2.1), and its receipt of each applied request. A retried request whose receipt exists returns the earlier outcome and applies nothing again (conversation.md section 17.1).
 
@@ -2041,11 +2041,12 @@ How the catalog schema handles the catalog levels. The generic layer checks only
       "type": "object",
       "minProperties": 1,
       "properties": {
+        "record": { "$ref": "#/$defs/hash" },
         "set": { "type": "object", "minProperties": 1 },
         "absent": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false,
-      "$comment": "On an undo only: the fields it restores, with the values the reversed op left (set) or the fields it removed (absent). The guard refuses the undo when the record no longer matches (section 6.10)."
+      "$comment": "What the op assumed about the record it changes: its content hash as read (record), and on an undo the fields it restores with the values the reversed op left (set) or the fields it removed (absent). The guard refuses the op when the record no longer matches (sections 6.2, 6.10)."
     },
     "conversation": {
       "type": "object",
@@ -2080,9 +2081,24 @@ How the catalog schema handles the catalog levels. The generic layer checks only
       }
     },
     {
-      "$comment": "expect belongs to an undo (section 6.10).",
-      "if": { "required": ["expect"] },
+      "$comment": "Field values in expect belong to an undo (section 6.10).",
+      "if": { "required": ["expect"], "properties": { "expect": { "anyOf": [{ "required": ["set"] }, { "required": ["absent"] }] } } },
       "then": { "required": ["compensates"] }
+    },
+    {
+      "$comment": "A conversation's op on an existing record is bound to the revision it read (section 6.5; conversation.md section 17.1).",
+      "if": {
+        "required": ["conversation"],
+        "properties": {
+          "op": {
+            "enum": [
+              "update_item", "set_status", "complete", "drop", "dismiss", "undismiss", "update_document", "move_document",
+              "unfile_document", "transfer_document", "set_meta"
+            ]
+          }
+        }
+      },
+      "then": { "required": ["expect"], "properties": { "expect": { "required": ["record"] } } }
     },
     {
       "$comment": "Ops applied together share batch; seq orders them and batch_size says how many lines the batch has (section 6.9).",
