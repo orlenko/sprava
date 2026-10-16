@@ -144,9 +144,24 @@ The terminal is not the app's window, so it cannot authorize changes (6.1): its 
 registered client, and anything it asks to change arrives in the conversation as a proposal with Apply. The
 person presses Resume in the header to hand the session back; Sprava checks that no terminal process still
 holds it, revokes the token, and imports the turns made in the terminal from the session's own history file
-into the transcript as display lines marked "in Terminal" (never instructions, 6.2 item 4) before it drives again. Session files are deleted
-only after that import has succeeded; if it fails, they are kept and the engine settings say so. A terminal
-left open is noticed at the next Resume or at the latest when the task ends, and imported the same way.
+into the transcript as display lines marked "in Terminal" (never instructions, 6.2 item 4) before it drives
+again. The import is durable before Resume succeeds; if it fails, Sprava keeps the history, reports the
+failure and does not drive that session. Retrying an import or Resume must not duplicate imported turns.
+A terminal left open is noticed at the next Resume or at the latest when the task ends, and imported the
+same way, after its process has exited.
+
+Importing display lines does **not** replace the agent's own session history. Open in Terminal, Resume and
+ordinary process restarts keep that history in the same isolated home and resume the same session id;
+none deletes or truncates it after import. Otherwise the next resume would lose what the person wrote in
+Terminal, since those display-only lines cannot seed instructions for a new session. Retention does not
+authenticate Terminal lines or authorize their replay: tool effects still require the current request's
+authority under 6.1 and 6.2. A resumed process has no back-office write authority between authenticated app
+turns. The separate cleanup operations in 11.1 still clear the home under their barrier.
+
+Before enabling this handoff, its fixtures must cover a Terminal turn followed by two Resumes and a process
+restart: the same session history remains, the transcript contains the Terminal turn once, and neither
+import nor restart upgrades it into an authenticated app instruction. An import failure retains the home
+and leaves driving paused. These are required runtime fixtures, not checks already implemented here.
 
 ## 5. Files in
 
@@ -550,6 +565,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`; Sprava's MCP token.
 - **Clearing is deleting the home.** Resume and Open in Terminal need persistence, so the session, binder text
   included, stays in the binder's home, outside the binder; the state backup excludes `brains/` (section 12).
+  A successful Terminal-history import is not clearing and never triggers deletion (4.2).
   Clearing the conversation, turning the back office off, offloading, removing the binder, and an expunge
   (binder-v0 §6.11) each delete the binder's whole agent home and its temporary folder, after any Terminal
   turns are in the transcript (4.2), and recreate it empty: no list of Claude's stores to keep up to date. The
