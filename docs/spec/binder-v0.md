@@ -560,7 +560,7 @@ An applied op is one line of `.sprava/ops.ndjson`. Its fields:
 | `before_hash` | `sha256:<hex>` | yes | Content hash of the catalog before the op (section 4.8). |
 | `after_hash` | `sha256:<hex>` | yes | Content hash after the op. |
 | `compensates` | UUID | no | Set on an undo: the op this one reverses (section 6.10). |
-| `expect` | object | for a conversation's op on an existing record | `{record?, set?, absent?}`: what the op assumed about the existing record it changes, an item, a document or `meta`. `record` is the content hash (section 4.8) of that record as the op's author read it; an op a binder's conversation applies to an existing record carries it, so a change the person made meanwhile makes the op a conflict instead of being overwritten (conversation.md section 17.1). `set` and `absent`, on an undo only, name the fields it restores: `set` maps each to the value the reversed op left there, `absent` lists those the reversed op removed (section 6.10). The guard refuses the op unless the record matches. Added by this draft. |
+| `expect` | object | for a conversation's op on an existing record | `{record?, set?, absent?}`: what the op assumed about the existing record it changes, an item, a document or `meta`. `record` is the content hash (section 4.8) of that record as the op's author read it; an op a binder's conversation applies to an existing record carries it, so a change the person made meanwhile makes the op a conflict instead of being overwritten (conversation.md section 17.1). For an op from a proposal it is the hash the proposal recorded when it was made (section 6.5). `set` and `absent`, on an undo only, name the fields it restores: `set` maps each to the value the reversed op left there, `absent` lists those the reversed op removed (section 6.10). The guard refuses the op unless the record matches. Added by this draft. |
 | `conversation` | object | no | `{turn, message}` on an op a binder's conversation applied without a proposal (section 6.5): `turn` is the runtime's turn id and `message` the id of the person's message that asked for it, both as in the transcript (section 7.2.1). Added by this draft. |
 | `request` | UUID | no | The request the op answers: for a person's turn, the app's `request_id` (section 7.2.1). Every op of one request carries it, so a retry is recognized. Added by this draft. |
 | `op` | closed list | yes | The op type (section 6.3). |
@@ -669,7 +669,7 @@ An external edit: a terminal agent raised an item's priority by hand. The patch 
 
 ### 6.5 Batches and proposal states (decisions.md A5)
 
-A proposal is a batch of op bodies with a header. Each op body has `op` and `args`, and optionally `note`, `confidence` and source `spans`. A span is `{event, start, end}`, counted in Unicode scalar values of the capture event's `text` and half-open, as in the capture-event format: `start` is the first scalar and `end` the one after the last, so `end` is never less than `start`, which the guard checks. The header requires `id`, `format_version`, `created_at`, `actor`, `state` and `ops`. It may add a one-line `title`, a `confidence` between 0 and 1, and `provenance` (capture event ids, the clerk's interpretation id, the producer). New records carry placeholder ids (section 5.6). A proposal is stored as `.sprava/proposals/<id>.json` and rewritten on each state change. A proposal file the implementation did not create is never shown as the clerk's or a brain's work (section 7.2).
+A proposal is a batch of op bodies with a header. Each op body has `op` and `args`, and optionally `note`, `confidence` and source `spans`. A span is `{event, start, end}`, counted in Unicode scalar values of the capture event's `text` and half-open, as in the capture-event format: `start` is the first scalar and `end` the one after the last, so `end` is never less than `start`, which the guard checks. The header requires `id`, `format_version`, `created_at`, `actor`, `state` and `ops`. It may add a one-line `title`, a `confidence` between 0 and 1, `provenance` (capture event ids, the clerk's interpretation id, the producer), and `expect`: the content hash of each existing record its ops touch, taken when the proposal is made (architecture 4.6). Each op applied from it carries that hash as `expect.record` (section 6.2), never one computed at approval, so a record the person changed while the proposal waited makes it a conflict. New records carry placeholder ids (section 5.6). A proposal is stored as `.sprava/proposals/<id>.json` and rewritten on each state change. A proposal file the implementation did not create is never shown as the clerk's or a brain's work (section 7.2).
 
 States:
 
@@ -765,7 +765,7 @@ The `closed-duplicate` row repairs a state that lifeproj's manual produces. The 
 
 Undo is a new op that reverses an earlier one and names it in `compensates`. The op log keeps both.
 
-An undo is computed against the record as it is now, field by field, never applied blindly (conversation.md section 17.2). For each field the reversed op set or removed, the undo restores the earlier value only when the field still holds what the reversed op left. A field changed since is left as it is and shown to the person as a conflict; restoring it is their choice. The undo carries `expect` (section 6.2) with exactly the fields it restores, and the guard refuses it when the record no longer matches, as it does for a stale proposal. When every field changed since, nothing is written and the person sees the conflicts. Undo of a batch reverses its ops in reverse `seq` order as one new batch; a conflict in one op leaves the others to apply. An undo the table below gives for a whole record (`drop` for `add_item`, `reopen`, `unfile_document`, `transfer_document`) carries no `expect`; the guard's own rules for that op decide.
+An undo is computed against the record as it is now, field by field, never applied blindly (conversation.md section 17.2). For each field the reversed op set or removed, the undo restores the earlier value only when the field still holds what the reversed op left. A field changed since is left as it is and shown to the person as a conflict; restoring it is their choice. Fields that change only together go back together: a `set_status` undo restores the status with its waiting fields, and a recurring item's undo its date, or, when any of them changed since, is refused whole and shown as a conflict, since `set_status` back to `open` removes the waiting fields (section 6.3). The undo carries `expect` (section 6.2) with exactly the fields it restores, and the guard refuses it when the record no longer matches, as it does for a stale proposal. When every field changed since, nothing is written and the person sees the conflicts. Undo of a batch reverses its ops in reverse `seq` order as one new batch; a conflict in one op leaves the others to apply. An undo the table below gives for a whole record (`drop` for `add_item`, `reopen`, `unfile_document`, `transfer_document`) carries no `expect`; the guard's own rules for that op decide.
 
 | To undo | Append |
 | ------- | ------ |
@@ -2833,6 +2833,11 @@ How the catalog schema handles the catalog levels. The generic layer checks only
         "producer": { "type": "object" }
       },
       "additionalProperties": true
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "$comment": "The content hash of each existing record the ops touch, taken when the proposal was made (section 6.5; architecture 4.6). Applied ops carry it as expect.record."
     },
     "ops": {
       "type": "array",

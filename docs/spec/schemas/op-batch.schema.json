@@ -46,6 +46,11 @@
       },
       "additionalProperties": true
     },
+    "expect": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "$comment": "The content hash of each existing record the ops touch, taken when the proposal was made (section 6.5; architecture 4.6). Applied ops carry it as expect.record."
+    },
     "ops": {
       "type": "array",
       "minItems": 1,
