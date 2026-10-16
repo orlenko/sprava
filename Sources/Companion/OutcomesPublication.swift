@@ -83,6 +83,7 @@ extension CompanionProfile {
     /// Retire a 409/410 name, retaining its reserved revision and dirty counter. Never rebuild under that name.
     public func supersedeOutcomes(_ publication: CompanionOutcomesPublication) throws {
         try store.write { t in
+            if try record(publication.deviceID, t)?.state == .revoked { return }
             let marks = try outcomesMarks(publication.deviceID, t)
             guard let head = try outcomesHead(publication.deviceID, marks: marks, t) else { throw CompanionPublicationError.invalid }
             if publication.revision < head.value.revision { return }
