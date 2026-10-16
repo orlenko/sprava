@@ -52,6 +52,8 @@ final class BinderChat: ObservableObject {
         var historyNote: String?
         var undone: Set<String> = []
         var history = HistoryState.unread
+        /// The request whose line the page put back in the composer, until the person types.
+        var restored: UUID?
     }
 
     enum HistoryState { case unread, reading, read }
@@ -101,7 +103,11 @@ final class BinderChat: ObservableObject {
     var isAvailable: Bool { commands != nil && folder.flatMap(binderID) != nil }
     var draft: String {
         get { shown.draft }
-        set { if let shownKey { threads[shownKey, default: Thread()].draft = newValue } }
+        set {
+            guard let shownKey else { return }
+            threads[shownKey, default: Thread()].draft = newValue
+            threads[shownKey]?.restored = nil   // typed by the person: no longer the line put back
+        }
     }
     var canSend: Bool {
         isAvailable && !isReplying && !shown.entries.contains { $0.state == .sending }
@@ -112,6 +118,13 @@ final class BinderChat: ObservableObject {
     /// Shows `folder`'s conversation, reading its saved history the first time.
     func show(_ folder: URL) async {
         let folder = folder.standardizedFileURL
+        // The binder left keeps its draft and any running reply; its saved history is read again on return, so
+        // visiting many binders never holds all their histories at once.
+        if let left = shownKey, left != key(folder), threads[left]?.turn == nil, threads[left]?.history == .read {
+            threads[left]?.entries.removeAll { $0.state == .earlier }
+            threads[left]?.historyNote = nil
+            threads[left]?.history = .unread
+        }
         self.folder = folder
         let key = key(folder)
         if threads[key] == nil { threads[key] = Thread() }
@@ -133,7 +146,8 @@ final class BinderChat: ObservableObject {
         guard let folder, canSend, let commands, let binder = binderID(folder) else { return }
         let key = key(folder)
         // Sending again a line that was not accepted is its Retry: the same request id, never a second turn.
-        if let failed = shown.entries.last(where: { $0.speaker == .person && $0.isNotSent }), failed.text == draft {
+        if let failed = shown.entries.last(where: { $0.speaker == .person && $0.isNotSent }),
+           failed.requestID != nil, shown.restored == failed.requestID {
             threads[key]?.draft = ""
             await retry(failed)
             return
@@ -160,15 +174,21 @@ final class BinderChat: ObservableObject {
         do {
             let turn = try await commands.send(ChatSendRequest(binderID: binder, requestID: requestID, text: entry.text))
             update(entry.id, in: key) { $0.state = .sent }
-            // A line put back in the composer when it was not accepted leaves it once it is, unless edited since.
-            if threads[key]?.draft == entry.text { threads[key]?.draft = "" }
+            // A line put back in the composer when it was not accepted leaves it once it is, unless typed over since.
+            if threads[key]?.restored == entry.requestID {
+                threads[key]?.draft = ""
+                threads[key]?.restored = nil
+            }
             let reply = Entry(id: UUID(), speaker: .binder, text: "", state: .replying)
             threads[key]?.entries.append(reply)
             threads[key]?.turn = turn.turnID
             Task { await self.follow(turn, reply: reply.id, key: key, folder: folder) }
         } catch {
             update(entry.id, in: key) { $0.state = .notSent(Self.words(error)) }
-            if threads[key]?.draft.isEmpty == true { threads[key]?.draft = entry.text }
+            if threads[key]?.draft.isEmpty == true {
+                threads[key]?.draft = entry.text
+                threads[key]?.restored = entry.requestID
+            }
         }
     }
 

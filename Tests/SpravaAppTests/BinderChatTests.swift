@@ -157,6 +157,41 @@ import Testing
         #expect(!chat.entries.contains { $0.isNotSent } && chat.draft.isEmpty)
     }
 
+    @Test func aLineRetypedWhileSendingIsKept() async {
+        let (release, released) = AsyncStream<Void>.makeStream()
+        let commands = ChatCommands(send: { request in
+            for await _ in release { break }
+            return ChatTurn(binderID: request.binderID, requestID: request.requestID, turnID: UUID(),
+                            events: AsyncStream { $0.yield(.finished(.replied)); $0.finish() })
+        }, interrupt: { _, _ in })
+        let chat = BinderChat(commands: commands, binderID: { _ in "acme-binder" }, readHistory: { _ in ([], nil) })
+        await chat.show(Self.folder)
+        chat.draft = "Check the invented meter"
+        let sending = Task { await chat.send() }
+        await until { chat.entries.first?.state == .sending }
+        chat.draft = "Check the invented meter"   // typed again on purpose while the first is being sent
+        released.yield(())
+        await sending.value
+        await until { chat.entries.last?.state == .replied }
+        #expect(chat.draft == "Check the invented meter")
+    }
+
+    @Test func savedHistoryOfABinderLeftIsReadAgainOnReturn() async {
+        actor Reads { var count = 0; func add() { count += 1 } }
+        let reads = Reads()
+        let earlier = [BinderChat.Entry(id: UUID(), speaker: .person, text: "An earlier invented line", state: .earlier)]
+        let chat = BinderChat(commands: StandIn().commands, binderID: { $0.lastPathComponent }, readHistory: { _ in
+            await reads.add()
+            return (earlier, nil)
+        })
+        await chat.show(Self.folder)
+        chat.draft = "A draft kept while away"
+        await chat.show(Self.other)
+        await chat.show(Self.folder)
+        #expect(chat.entries == earlier && chat.draft == "A draft kept while away")
+        #expect(await reads.count == 3)
+    }
+
     @Test func aRunawayStreamOfChangesIsBounded() async {
         let standIn = StandIn(), chat = chat(standIn)
         await chat.show(Self.folder)
