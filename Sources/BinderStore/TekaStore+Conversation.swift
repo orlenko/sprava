@@ -19,6 +19,13 @@ extension TekaStore {
         do { lines = try message.lines() } catch let invalid as ConversationMessage.Invalid {
             throw Refused(reason: "the message was not saved: \(invalid.reason)")
         }
+        // Members the caller kept as found may hold a repeated key or an unsafe number, which the reader refuses as
+        // damage; such a message is refused here instead of being reported saved (binder-v0 §4.8, §7.2.1).
+        for line in lines {
+            guard let parsed = try? JSONParser.parse(line.dropLast()), parsed.safety.isSafe else {
+                throw Refused(reason: "the message was not saved: it holds unsafe JSON (a repeated member name or a number out of range)")
+            }
+        }
         let added = lines.reduce(Data(), +)
         try AtomicFile.makePrivateFolder(spravaDir)
         var st = stat()
@@ -29,6 +36,7 @@ extension TekaStore {
             try flushFolder(spravaDir, "flush .sprava")
         }
         try checkContainment()
+        try keepPrivate(conversationDir, mode: 0o700)
 
         let url = conversationDir.appendingPathComponent("\(message.month).ndjson")
         var existing = Data()
@@ -63,8 +71,26 @@ extension TekaStore {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw AtomicFile.Failure(step: "open the conversation history", code: errno) }
         defer { close(fd) }
+        // A file found with wider permissions (imported, restored, edited) is narrowed before anything is added to it.
+        var opened = stat()
+        guard fstat(fd, &opened) == 0 else { throw AtomicFile.Failure(step: "check the conversation history", code: errno) }
+        if opened.st_mode & 0o077 != 0 {
+            guard fchmod(fd, 0o600) == 0, fstat(fd, &opened) == 0, opened.st_mode & 0o077 == 0 else {
+                throw Refused(reason: "the conversation history for \(message.month) is readable by others and could not be made private; the message was not saved")
+            }
+        }
         try writeAll(fd, added)
         try flush(fd, "flush the conversation history")
         if created { try flushFolder(conversationDir, "flush the conversation folder") }
+    }
+
+    /// The history folder is private (binder-v0 §7.2): one found readable or writable by others is narrowed first.
+    func keepPrivate(_ folder: URL, mode: mode_t) throws {
+        var st = stat()
+        guard lstat(folder.path, &st) == 0 else { throw AtomicFile.Failure(step: "check the conversation folder", code: errno) }
+        guard st.st_mode & 0o077 != 0 else { return }
+        guard chmod(folder.path, mode) == 0, lstat(folder.path, &st) == 0, st.st_mode & 0o077 == 0 else {
+            throw Refused(reason: "the conversation folder is open to others and could not be made private; the message was not saved")
+        }
     }
 }

@@ -98,6 +98,29 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson").path))
     }
 
+    @Test func aMessageTheReaderWouldRefuseIsNotSaved() throws {
+        let (folder, store) = try adopted()
+        let base = try message(1)
+        for extra in [JSONObject([(key: "note", value: .str("a")), (key: "note", value: .str("b"))]),
+                      JSONObject([(key: "size", value: .number(JSONNumber(text: "1e400")))])] {
+            let odd = try ConversationMessage(id: base.id, turn: base.turn, at: base.at, speaker: .person, origin: .app, text: base.text,
+                                              device: base.device, requestID: base.requestID, extra: extra)
+            #expect(throws: TekaStore.Refused.self) { try store.appendConversation(odd) }
+        }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson").path))
+    }
+
+    @Test func aHistoryFoundOpenToOthersIsMadePrivateBeforeAppending() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        let dir = folder.appendingPathComponent(".sprava/conversation")
+        let url = dir.appendingPathComponent("2026-10.ndjson")
+        #expect(chmod(url.path, 0o644) == 0 && chmod(dir.path, 0o755) == 0)
+        try store.appendConversation(try message(2))
+        #expect(mode(url) == 0o600 && mode(dir) == 0o700)
+        #expect(read(folder)?.messages.count == 2)
+    }
+
     @Test func aLinkedFolderOrFileIsNeverWrittenThrough() throws {
         let (folder, store) = try adopted()
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-outside-\(UUID().uuidString)")
