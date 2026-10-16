@@ -141,6 +141,10 @@ import Testing
             ("update_document", set(Self.document, [("path", .str("leases/other.pdf")), ("sensitivity", .str("private"))])),
             ("update_document", [("id", Self.document), ("unset", .array([.str("sensitivity")]))]),
         ]), context: own).map(\.kind) == [.a, .c])
+        // A refused op changes nothing the next is judged by, so repeating it is refused again.
+        let redactedOwn = context(.personTurn, ownItems: [Self.redactedItem: now], words: true)
+        let reveal = set(Self.redactedItem, [("tags", .array([.str("a"), .str("revealing")]))])
+        #expect(ConversationClass.classify(ops([("update_item", reveal), ("update_item", reveal)]), context: redactedOwn).map(\.kind) == [.c, .c])
         // A new item that is redacted yet carries tags, or names a hub title.
         #expect(kind("add_item", [("item", .obj([("id", .str("$new:1")), ("title", .str("Invented")), ("redact", .bool(true)),
                                                  ("kind", .str("payment")), ("tags", .array([.str("revealing")]))]))], own) == .c)

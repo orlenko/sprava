@@ -56,21 +56,21 @@ public enum ConversationClass {
     /// More new items or documents than this in one turn wait for the person's tap (§6.1, proposed).
     public static let newRecordsPerTurn = 20
 
-    /// The class of every op of one turn, in order. Each op is judged against the records as the turn's earlier ops
-    /// leave them, so a marker set and cleared within one turn, or raised and lowered, is seen as what it is.
+    /// The class of every op of one turn, in order. Each op is judged against the records as the turn's class A ops
+    /// before it leave them, so a marker set and cleared within one turn, or raised and lowered, is seen as what it
+    /// is. An op that waits for a tap or is refused changes nothing a later op is judged by.
     public static func classify(_ ops: [(op: String, args: JSONObject)], context: Context) -> [Decision] {
         var state = TurnPrivacy(catalog: context.catalog)
+        // Any start that can add records at once shows a large batch first (§6.2 item 5).
+        let overCap = ops.filter { ["add_item", "file_document"].contains($0.op) }.count > newRecordsPerTurn
         var decisions: [Decision] = []
         for (index, op) in ops.enumerated() {
-            decisions.append(classify(op.op, args: op.args, index: index, context: context, state: state))
-            state.apply(op.op, args: op.args)
-        }
-        // Any start that can add records at once shows a large batch first (§6.2 item 5).
-        let added = ops.indices.filter { ["add_item", "file_document"].contains(ops[$0].op) }
-        if added.count > newRecordsPerTurn {
-            for index in added where decisions[index].kind == .a {
-                decisions[index] = Decision(kind: .b, reason: "more than \(newRecordsPerTurn) new items or documents in one turn")
+            var decision = classify(op.op, args: op.args, index: index, context: context, state: state)
+            if overCap, decision.kind == .a, ["add_item", "file_document"].contains(op.op) {
+                decision = Decision(kind: .b, reason: "more than \(newRecordsPerTurn) new items or documents in one turn")
             }
+            decisions.append(decision)
+            if decision.kind == .a { state.apply(op.op, args: op.args) }
         }
         return decisions
     }
