@@ -13,10 +13,19 @@ struct NowView: View {
     let reload: () -> Void
     /// The runtime's state, for the line that says when changes cannot be made.
     var health: HealthModel?
+    /// The note box's model, kept by the Shelf window: this page goes away while another page is open, and the
+    /// drafts typed into each binder's box must outlive it.
+    @ObservedObject var note: BinderNote
+    /// Every binder on the Shelf, so the note box can tell when another adopted binder shares this one's name.
+    var rows: [ShelfRow] = []
     /// The item being edited in place in each binder, if any. Owned by the window, so a visit to another page
     /// leaves what was typed for the person's return.
     @ObservedObject var editor: ItemEditor
     @StateObject private var actions = BinderActions()
+
+    var sharesName: Bool {
+        rows.filter { $0.teka.isAdopted && InboxView.fold($0.name) == InboxView.fold(row.name) }.count > 1
+    }
 
     func refresh() {
         reload()
@@ -52,6 +61,16 @@ struct NowView: View {
                 }
                 .padding(.vertical, 4)
             }
+            if teka.isAdopted, !teka.writesBlocked {
+                NoteBox(note: note, row: row, sharesName: sharesName) {
+                    let folder = row.folder
+                    // The runtime makes the card within its next sweep; the page's timer picks it up if this misses it.
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        await actions.loadReview(folder)
+                    }
+                }
+            }
             ReviewSection(actions: actions, folder: row.folder, reload: refresh)
             StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
             ForEach(Bucket.allCases, id: \.self) { bucket in
@@ -85,11 +104,11 @@ struct NowView: View {
             }
             HistorySection(actions: actions, folder: row.folder, reload: refresh)
             if teka.isAdopted {
-                FilingSection(actions: actions, folder: row.folder)
-                KeepingSection(actions: actions, folder: row.folder, today: today, reload: refresh)
+                AboutSection(actions: actions, folder: row.folder, today: today, reload: refresh)
             }
         }
         .task(id: NowTask(folder: row.folder, adopted: teka.isAdopted)) {
+            note.show(row.folder)
             await actions.load(row.folder, adopted: teka.isAdopted)
             // Cards that capture, intake, the clerk or a brain add show up while the binder stays open (mvp.md:
             // "within a minute the review queue shows a card").

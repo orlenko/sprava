@@ -166,9 +166,10 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         // The Binder screen shows the same prepared page; rendering it buckets and sorts nothing again.
         let page = try #require(counts.page)
         #expect(Bucket.allCases.contains { page.count($0) > 0 })
+        let note = BinderNote(client: StandInRuntime().client, support: support)
         for _ in 0..<20 {
             _ = ShelfRowView(row: row, counts: counts).body
-            _ = NowView(row: row, today: model.today, page: page, reload: {}, editor: ItemEditor()).body
+            _ = NowView(row: row, today: model.today, page: page, reload: {}, note: note, editor: ItemEditor()).body
         }
         #expect(summary.calls.value == 1)
     }

@@ -74,8 +74,9 @@ public struct CaptureProducer: Sendable {
         public var id: String { event["id"]?.stringValue ?? "" }
     }
 
-    /// Builds one typed note (capture-event-v0 §8.1). `binderHint` is the binder the person typed in, if any.
-    public func prepareNote(_ text: String, binderHint: String? = nil, startedAt: Date, savedAt: Date = Date(),
+    /// Builds one typed note (capture-event-v0 §8.1). `isPrivate` preserves the privacy of its source context,
+    /// independently of whether `binderHint` can name a destination.
+    public func prepareNote(_ text: String, binderHint: String? = nil, isPrivate: Bool = false, startedAt: Date, savedAt: Date = Date(),
                             locale: String = Locale.current.identifier(.bcp47)) throws -> PreparedNote {
         try AtomicFile.makePrivateFolder(folder)
         // A clock state that exists but cannot be read is never written over (capture-event-v0 §5.3); a missing or
@@ -117,7 +118,7 @@ public struct CaptureProducer: Sendable {
         event.set("ended_at", .string(Self.offsetTime(savedAt)))
         event.set("locale", .string(locale.isEmpty ? "und" : locale))
         event.set("text", .string(text))
-        event.set("sensitivity", .str("unmarked"))
+        event.set("sensitivity", .str(isPrivate ? "private" : "unmarked"))
         if let binderHint { event.set("binder_hint", .string(binderHint)) }
         let bytes = Data(JSONWriter.pretty(.object(event)).utf8)
         return PreparedNote(event: event, bytes: bytes, digest: "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
@@ -153,9 +154,9 @@ public struct CaptureProducer: Sendable {
 
     /// Writes one typed note at once (the CLI and tests). Returns the event and the SHA-256 of its bytes.
     @discardableResult
-    public func writeNote(_ text: String, binderHint: String? = nil, startedAt: Date, savedAt: Date = Date(),
+    public func writeNote(_ text: String, binderHint: String? = nil, isPrivate: Bool = false, startedAt: Date, savedAt: Date = Date(),
                           locale: String = Locale.current.identifier(.bcp47)) throws -> (event: JSONObject, digest: String) {
-        let note = try prepareNote(text, binderHint: binderHint, startedAt: startedAt, savedAt: savedAt, locale: locale)
+        let note = try prepareNote(text, binderHint: binderHint, isPrivate: isPrivate, startedAt: startedAt, savedAt: savedAt, locale: locale)
         try publish(note)
         return (note.event, note.digest)
     }
