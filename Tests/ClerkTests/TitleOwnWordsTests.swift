@@ -5,9 +5,8 @@ import Foundation
 import SpravaKit
 import Testing
 
-/// An item's title is the person's own words, never a model's paraphrase (capture-event-v0 §6.4 check 1): a
-/// title with a word the source does not hold is replaced by one code builds from the sentence. Scripted models
-/// only; invented data only.
+/// Item titles preserve the whole source sentence; document headings copy a complete source sentence or line
+/// (capture-event-v0 §6.4 check 1). Scripted models and invented data only.
 @Suite struct TitleOwnWordsTests {
     let today = CalendarDate(year: 2026, month: 10, day: 8)!
     /// Noon UTC on 2026-10-08: the same calendar day in every time zone the tests run in.
@@ -34,6 +33,38 @@ import Testing
             let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
             #expect(card?.title == "Add \u{201C}Bill Acme today\u{201D}")
             #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == "Bill Acme today")
+        }
+    }
+
+    @Test func modelTitlesCannotOmitOrReorderSourceContext() async {
+        for (source, proposed) in [
+            ("Do not call Acme.", "Call Acme"),
+            ("If the estimate is approved, call Acme.", "Call Acme"),
+            ("Call Acme only after the estimate is approved.", "Call Acme"),
+            ("Send Acme the revised estimate, not the draft.", "Send Acme the draft"),
+            ("Pay the rent, not the deposit.", "Pay the deposit"),
+            ("Acme should call Beta.", "Beta should call Acme"),
+        ] {
+            let expected = String(source.dropLast())
+            let (interp, input) = await read(source, [item(source, proposed, "call")])
+            #expect(interp.items.map(\.title) == [expected])
+            let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
+            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == expected)
+        }
+    }
+
+    @Test func aDocumentHeadingCannotBeRecomposedFromSourceWords() async {
+        for (source, proposed) in [
+            ("Do not approve the estimate.", "Approve the estimate"),
+            ("Acme should call Beta.", "Beta should call Acme"),
+        ] {
+            let model = ScriptedModel(extractions: [])
+            model.document = .obj([("class", .str("information")), ("title", .str(proposed)),
+                                   ("date_text", .str("")), ("summary", .str("An invented notice.")),
+                                   ("reply_needed", .bool(false))])
+            let reading = IntakeReading(kind: "text", textFrom: "parsed", text: source, channel: "other")
+            let doc = await Clerk(model: model).readDocument(reading, name: "notice.txt", binder: nil, now: now)
+            #expect(doc.title == nil)
         }
     }
 
@@ -79,7 +110,7 @@ import Testing
     @Test func aDeadlineLeavesRepeatedWordsInTheTaskName() async {
         for (source, proposed, expected) in [
             ("Review Friday Lanterns on Friday", "Review Friday Lanterns on Friday", "Review Friday Lanterns on Friday"),
-            ("Review Friday Lanterns on Friday", "Review Friday Lanterns", "Review Friday Lanterns"),
+            ("Review Friday Lanterns on Friday", "Review Friday Lanterns", "Review Friday Lanterns on Friday"),
             ("On Friday review Friday Lanterns", "On Friday review Friday Lanterns", "On Friday review Friday Lanterns"),
             ("Review Friday Lanterns by Friday", "Summarize Friday Lanterns", "Review Friday Lanterns by Friday"),
             // Repeated or date-shaped source words remain intact in the displayed title.
@@ -94,13 +125,13 @@ import Testing
         }
     }
 
-    @Test func aTitleOfTheNotesOwnWordsIsKept() async {
+    @Test func evenCopiedModelFragmentsKeepTheWholeSentence() async {
         let (interp, _) = await read("Pay rent and send the lease to the landlord by Friday.", [
             item("Pay rent and send the lease", "Pay rent", "pay"),
             item("Pay rent and send the lease", "send the lease to the landlord by Friday", "send", when: "by Friday"),
         ])
-        // Kept, with the first letter capitalized and the model's copied time words intact.
-        #expect(interp.items.map(\.title) == ["Pay rent", "Send the lease to the landlord by Friday"])
+        // Distinct tasks retain their source context, even when model fragments contain only source words.
+        #expect(interp.items.map(\.title) == Array(repeating: "Pay rent and send the lease to the landlord by Friday", count: 2))
     }
 
     @Test func twoTasksThatDifferOnlyInTheirTimeBothStay() async {
@@ -108,7 +139,7 @@ import Testing
             item("Call the plumber on Monday", "Call the plumber on Monday", "call", when: "on Monday"),
             item("Call the plumber on Monday", "Call the plumber on Friday", "call", when: "on Friday"),
         ])
-        #expect(interp.items.map(\.title) == ["Call the plumber on Monday", "Call the plumber on Friday"])
+        #expect(interp.items.map(\.title) == Array(repeating: "Call the plumber on Monday and call the plumber on Friday", count: 2))
         #expect(interp.items.compactMap { $0.whenResolved?.description }.sorted() == ["2026-10-09", "2026-10-12"])
         // The same task listed twice is still one.
         let (once, _) = await read("Call the plumber by Friday.", [
@@ -151,7 +182,7 @@ import Testing
         ])
         #expect(interp.items.count == 2)
         #expect(interp.items.compactMap { $0.amount?.value }.sorted() == [200, 800])
-        #expect(interp.items.allSatisfy { Clerk.hasOnlyWords(of: $0.sentence.text, $0.title) })
+        #expect(interp.items.map(\.title) == Array(repeating: "The rent is $800 and the deposit is $200, both due Friday", count: 2))
     }
 
     @Test func eachLineOfAListKeepsItsWords() async {
@@ -172,23 +203,13 @@ import Testing
         let (kept, _) = await read("Payer le loyer et appeler le notaire avant vendredi.", [
             item("Payer le loyer et appeler le notaire", "Appeler le notaire", "call", when: "avant vendredi"),
         ], locale: "fr-CA")
-        #expect(kept.items.map(\.title) == ["Appeler le notaire"])
+        #expect(kept.items.map(\.title) == ["Payer le loyer et appeler le notaire avant vendredi"])
     }
 
-    @Test func aTitleIsNeverAcceptedWithWordsAbsentFromTheSource() {
-        let sentences = ["Bill Acme today", "order toner by Friday", "Rappeler la banque d'ici lundi", "Renew the permit, $40, by the 15th."]
-        let proposed = ["Call Bill Acme", "Buy toner", "Call the bank", "Renew the parking permit", "", "  ", "—", "Toner order Friday ok"]
-        for sentence in sentences {
-            for title in proposed + [sentence] {
-                let kept = Clerk.ownTitle(title, sentence: sentence)
-                #expect(Clerk.hasOnlyWords(of: sentence, kept), "\(title) -> \(kept)")
-            }
-        }
-        #expect(Clerk.ownTitle("Call Bill Acme", sentence: "Bill Acme today") == "Bill Acme today")
-        #expect(Clerk.ownTitle("Pay", sentence: "Renew the permit, $40, by the 15th.")
-            == "Renew the permit, $40, by the 15th")
-        // A sentence that is only its time words keeps them, rather than an empty title.
-        #expect(Clerk.ownTitle("Do it", sentence: "Tomorrow!") == "Tomorrow")
+    @Test func aDocumentHeadingCopiesACompleteSourceLine() {
+        #expect(Clerk.copiedHeading("Notice of special levy", in: "Notice of special levy.\nPlease keep this notice.") == "Notice of special levy")
+        #expect(Clerk.copiedHeading("notice   of special levy", in: "Notice of special levy\nPlease keep this notice.") == "Notice of special levy")
+        #expect(Clerk.copiedHeading("", in: "Notice of special levy") == nil)
     }
 
     @Test func aDocumentKeepsItsOwnWordsForItemsAndItsTitle() async {

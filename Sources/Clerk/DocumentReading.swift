@@ -202,8 +202,8 @@ extension Clerk {
             }
             let title = Self.shorten((answer["title"]?.stringValue ?? "").components(separatedBy: .newlines).joined(separator: " ")
                 .trimmingCharacters(in: .whitespaces), to: 120)
-            // A title is the document's own words, never the model's (capture-event-v0 §6.4 check 1).
-            if Self.hasOnlyWords(of: text, title) { doc.title = title }
+            // A heading copies a complete source sentence or line (capture-event-v0 §6.4 check 1).
+            doc.title = Self.copiedHeading(title, in: text)
             // The date must be written in the document, as a full date, and resolve (capture-event-v0 §6.4 check 2).
             if let when = answer["date_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !when.isEmpty,
                DateGrammar.isFullDate(when, locale: locale), CaptureText.containsWords(text, when),

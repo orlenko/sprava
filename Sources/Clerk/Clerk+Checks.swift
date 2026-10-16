@@ -61,7 +61,7 @@ extension Clerk {
             // An estimated capture time resolves only full dates (capture-event-v0 §6.6).
             if estimated, !DateGrammar.isFullDate(when, locale: locale) { item.whenResolved = nil }
         }
-        item.title = Self.ownTitle(called, sentence: sentence.text)
+        item.title = Self.ownTitle(sentence: sentence.text)
 
         // Check 3: the amount text occurs in the sentence and parses above 0.
         if let amountText = value["amount_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !amountText.isEmpty,
@@ -77,29 +77,24 @@ extension Clerk {
 
     // MARK: - The title: the person's own words
 
-    /// An item's title is the words of its source, never a model's paraphrase (capture-event-v0 §6.4 check 1): the
-    /// model's title is kept only when every word of it is in the item's sentence; otherwise code builds it from the
-    /// sentence, so "Call Bill Acme" cannot replace "Bill Acme today". Date words are never stripped from titles:
-    /// a date-shaped name is still the person's words, while the resolved date has its own field.
-    static func ownTitle(_ proposed: String, sentence: String) -> String {
-        if hasOnlyWords(of: sentence, proposed) {
-            let kept = cleaned(proposed)
-            if hasOnlyWords(of: sentence, kept) { return kept }
-        }
-        // An anchored quote may occur inside the sentence. Keep the whole sentence so a model's
-        // choice of quote cannot discard a condition or negation before it.
+    /// Item titles come only from the whole anchored source sentence (capture-event-v0 §6.4 check 1).
+    /// A model's choice of words or quote cannot drop a condition, negation or date-shaped name.
+    static func ownTitle(sentence: String) -> String {
         let whole = cleaned(sentence)
         return whole.isEmpty ? shorten(sentence.trimmingCharacters(in: .whitespacesAndNewlines), to: 120) : whole
     }
 
-    /// Whether `title` has words, and every one of them occurs in `source` (case-insensitively).
-    static func hasOnlyWords(of source: String, _ title: String) -> Bool {
-        let own = words(title)
-        return !own.isEmpty && own.isSubset(of: words(source))
-    }
-
-    static func words(_ s: String) -> Set<String> {
-        Set(CaptureText.asciiDigits(CaptureText.normalized(s).0).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+    /// A document heading must copy a complete source sentence or line, preserving order and context.
+    /// Return the source's bytes after title normalization, never the model's recomposition.
+    static func copiedHeading(_ proposed: String, in text: String) -> String? {
+        let ends = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".!?…"))
+        func normalized(_ s: String) -> String {
+            CaptureText.normalized(s).0.trimmingCharacters(in: ends)
+        }
+        let wanted = normalized(proposed)
+        guard !wanted.isEmpty,
+              let source = CaptureText.sentences(text).first(where: { normalized($0.text) == wanted }) else { return nil }
+        return ownTitle(sentence: source.text)
     }
 
     /// Collapse white space, trim list marks and end punctuation, capitalize the first letter and keep at most

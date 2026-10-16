@@ -758,16 +758,16 @@ first cleans each item, then validates each item on its own. In a meeting, turn 
    the card says only "the clerk mentioned N things that are not in your note", with no quote stored.
    This also removes items the model built from anything other than the capture. A quote or title
    longer than the strict schema allows is shortened at a word boundary, never dropped. The title is
-   the person's own words, never the model's paraphrase: code keeps the model's `title` only when every
-   word of it occurs in the item's sentence. Otherwise code builds it from the whole sentence, with
-   white space trimmed and the first letter capitalized. An interior quote cannot discard an earlier
-   condition or negation. Code never removes date-shaped words
-   from a title: they may name a person, place, document or task, as in "Meet at Friday’s" or "Review
-   Friday Lanterns". Thus "Bill Acme today" stays "Bill Acme today", never "Call Bill Acme"; the resolved
-   date is also kept in its own field. A model may supply a shorter title using only source words, and
-   code does not remove further words from it. A document's title and its items follow the same
-   source-word rule against the document's text. The model's own title is kept, never shown, to tell
-   two items of one sentence apart: two tasks can share the title code builds from their sentence.
+   the person's own words: code always builds it from the whole anchored sentence, with white space
+   trimmed and the first letter capitalized. Neither a model title nor an interior quote may discard
+   context or change word order; even an ordered substring can omit a condition or negation. Code
+   never removes date-shaped words from a title: they may name a person, place, document or task, as in
+   "Meet at Friday’s" or "Review Friday Lanterns". Thus "Bill Acme today" stays "Bill Acme today", never
+   "Call Bill Acme"; the resolved date is also kept in its own field. Document items follow the same
+   rule. A document heading is kept only when it copies a complete source sentence or line, ignoring
+   case, whitespace and sentence-ending punctuation; code returns the source's normalized text. The
+   model's own task label is kept, never shown, to tell two items of one sentence apart: two tasks can
+   share the title code builds from their sentence.
 2. Time. `when_text` is kept only when it occurs in the item's sentence and matches a known time
    pattern for the locale (section 6.6). Values such as "none", "now" or "not to the tenant" are
    dropped.

@@ -80,7 +80,7 @@ import Testing
         let text = "Pay the invented fee by Friday. Please reply."
         let model = ScriptedModel(extractions: [.obj([("items", .array([item("Pay the invented fee by Friday", "Pay the fee", "pay", when: "by Friday")]))])])
         let interp = await Clerk(model: model).read(input(text), filing: [], hint: nil, now: now)
-        #expect(interp.items.map(\.title) == ["Pay the fee"])
+        #expect(interp.items.map(\.title) == ["Pay the invented fee by Friday"])
         #expect(interp.unfiled.map(\.span.text) == ["Please reply."])
         #expect(interp.unfiled.map(\.reason) == ["not_covered"])
         #expect(interp.outcome == "partial")
@@ -138,7 +138,7 @@ import Testing
             item("Call the invented plumber", "Call the plumber", "call"),
         ]))])])
         let interp = await Clerk(model: model).read(input(text), filing: [], hint: nil, now: now)
-        #expect(interp.items.map(\.title) == ["Call the plumber", "Pay the fee"])
+        #expect(interp.items.map(\.title) == ["Call the invented plumber", "Pay the invented fee"])
     }
 
     @Test func aPrivateUpdateKeepsTheActionsKind() {

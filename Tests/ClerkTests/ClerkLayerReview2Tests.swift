@@ -50,7 +50,7 @@ import Testing
             item("Pay the inspection fee", "Pay the inspection fee", "pay"),
             item("Pay the insurance premium", "Pay the insurance premium", "pay", when: "by November 1"),
         ])
-        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "Pay the insurance premium"])
+        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "Pay the insurance premium by November 1"])
         #expect(doc.items.map(\.whenResolved) == [nil, nov1])
 
         let unasked = await read("Pay the inspection fee. The insurance premium is due November 1.", items: [

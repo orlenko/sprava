@@ -39,7 +39,7 @@ import Testing
             item("Pay the inspection fee", "Pay the inspection fee", "pay"),
             item("Submit the permit application", "Submit the permit application", "file", when: "by November 1"),
         ])
-        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "Submit the permit application"])
+        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "Submit the permit application by November 1"])
         #expect(doc.items.first?.whenResolved == nil)
         #expect(doc.items.last?.whenResolved == CalendarDate(year: 2026, month: 11, day: 1))
     }
@@ -93,7 +93,8 @@ import Testing
             item(opening, "Renew the north lot permit", "file", when: "by October 20"),
         ])
         let placed = byDate.items.sorted { $0.sentence.start < $1.sentence.start }
-        #expect(placed.map(\.title) == ["Renew the north lot permit", "Renew the south lot permit"])
+        #expect(placed.map(\.title) == ["Renew the invented parking permit for the lot on the north side by October 20",
+                                            "Renew the invented parking permit for the lot on the south side by November 15"])
         #expect(placed.map(\.whenResolved) == [CalendarDate(year: 2026, month: 10, day: 20), CalendarDate(year: 2026, month: 11, day: 15)])
 
         // The same title twice, with nothing else to tell them apart: one item per sentence, never one dropped as a duplicate.
