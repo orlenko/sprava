@@ -97,6 +97,27 @@
   "Sprava" has no live mark in classes 9/42 in the US, Canada or EU, but npm `sprava`, sprava.ai,
   sprava.dev and two iOS apps use the name; sprava.app, sprava.io and sprava.ca were free on
   2026-10-06. Get a clearance opinion before announcing. Not legal advice.
+- **P20 decided (2026-10-13, by the author).** Sprava owns its binders and shares them with no other program.
+  They live in `~/Sprava`, a visible folder in the home folder (not `~/Documents`, which iCloud often syncs;
+  Sprava refuses synced locations, architecture 2.3). New Binder creates the binder there and no longer asks
+  where. A binder made with lifeproj is imported: Sprava copies it into `~/Sprava/<name>` and processes the
+  copy on its own (F13). Importing happens once. The original is left untouched as a fallback, and Sprava never
+  writes into it or offers to remove it.
+  A binder stays an ordinary folder the person can open and browse, but its management goes through Sprava.
+  Supersedes adoption in place (F1, M1, `docs/mvp.md` §2.1 and feature 1's "Adopt a folder", binder-v0 §9.1)
+  and lifeproj coexistence for the binders Sprava owns: lifeproj as a second writer (mvp.md §6), the lifeproj
+  change of binder-v0 §9.8 and architecture 13 item 31, "an implementation never edits the manual" and the
+  dashboard switch card (both now F14). The owner record (`.sprava/owner.json`) stays for what it still
+  guards: another Mac after a restore, and a development build beside the installed app. Recommended with it:
+  a development build keeps its binders in a folder of its own and refuses `~/Sprava`, in place of today's
+  refusal of folders in lifeproj's registry; a binder already adopted in place is imported like any other,
+  its `.sprava/` history coming with the copy. The hub lane, cmirror registration and the lifeproj side of
+  the format are open (A17, A18, F15).
+- **P21 open (2026-10-13).** A manager agent. In lifeproj, Osavul (P11) was the top-level agent session that
+  managed all binders. Sprava has no equivalent: the clerk only files notes, and brains only propose. The
+  author has floated a per-binder agent that keeps its binder's `AGENTS.md` (F14), with hints from a top-level
+  manager. Not decided: whether Sprava has such agents, what they may change (Sprava's section of `AGENTS.md`
+  only, or proposals too), and how they relate to the review queue (A5) and to brains (A4).
 
 ## Licence
 
@@ -121,6 +142,8 @@
   records an `external_edit` op holding the diff. Sprava **adopts a binder in place**: it never imports
   into a store, converts nothing, and owns only `.sprava/` (the op log, index, cursors), `catalog.json`
   (through ops) and the regenerated `DASHBOARD.md`. Everything else in the folder is left alone.
+  **Superseded in part by P20 and F13 (2026-10-13):** Sprava imports a binder into `~/Sprava` instead of
+  adopting it in place, and F13 replaces the write list. The rest of F1 stands.
 - **F2 recommended.** v0 keeps lifeproj's enforced rules as the core: `id`, `title`, `status`,
   `priority` required; `status` in open|waiting|blocked|done; `priority` in high|normal|low; `due`
   XOR `no_deadline: true`, `due` matching `^\d{4}-\d{2}-\d{2}$` strictly; `waiting_on` required when
@@ -161,6 +184,8 @@
 - **F9 recommended.** Not part of the format: `AGENTS.md` and `CLAUDE.md` (operating manuals,
   informative), `.claude/`, `.agents/`, `catalog_check.py`, `scripts/`, `.git/`. An implementation
   must never execute hooks or scripts found inside a binder, and must tolerate and ignore all of these.
+  **Revised by F14 (2026-10-13):** in a binder Sprava owns, `AGENTS.md` and `CLAUDE.md` are Sprava's own
+  files. They are still not part of the format, and nothing in them is executed.
 - **F10 recommended.** JSON conventions: UTF-8 unescaped, two-space indent, trailing newline, key
   order preserved on rewrite, canonical form (RFC 8785) only for hashing; JSON Schema 2020-12.
 - **F11 open.** A structure-only survey of the author's live binders (keys, types, counts; never
@@ -168,6 +193,54 @@
   per binder. A script is ready; only the author should run it.
 - **F12 open.** The handoff says binders use local git; lifeproj scaffolds none by design. v0 tolerates
   and ignores `.git/`. Whether git history should count as a provenance fallback is the author's call.
+- **F13 decided (2026-10-13, by the author; revises F1).** An import does its processing on its own. What the
+  adoption check and its cards did (the survey, lossless fixes, repairs, the dashboard switch, the stamp;
+  binder-v0 §9.4) runs as part of the import: ops with actor `import`, listed in an import report, not cards the
+  person works through. An import has no Undo: some of these ops (`migrate`, `complete`) cannot be undone one
+  by one, and discarding the copy is safe only while the whole original is intact, which Sprava cannot keep
+  checking. To start over, the person removes the imported binder and imports the original again.
+  The copy is made in a hidden staging folder by a background job and renamed into place only when complete,
+  so a cancelled or crashed import leaves no partial binder; an unfinished staging folder is deleted for good,
+  not moved to the Trash, and a binder that would not fit is refused before the copy starts. Only a change
+  that needs the person's judgement becomes a card: an item that breaks a rule because a value is missing (a due date or `no_deadline`, a party
+  for a waiting item, a kind for a redacted item, an entity row's `status`, the v0 value of a `meta` field whose
+  found value the v0 types reject), since an import cannot invent one; an open item whose id
+  already closes a processing log entry, which may be a duplicate or an item reopened by hand; and a name the
+  binder cannot have in `~/Sprava` (not of the recommended shape, or taken by another binder), which the person
+  picks before the copy is made; and an item left at `status: done`, whose closing date lifeproj never
+  recorded, so the person gives it before the item is closed. The `migrate`s that add v0 keys beside
+  legacy ones, `set_meta` for `modules` and `id_scheme`, the starting disclosure (`full` when the binder published slices before, else
+  `none`) and the stamp are automatic; the stamp waits until the cards are settled. The write list for a
+  binder Sprava owns replaces F1's: `.sprava/`, `catalog.json` through ops, `DASHBOARD.md` and `AGENTS.md`
+  with its one-line `CLAUDE.md` (F14), `.teka.lock`, `intake/_converted/`, and new files filed into document
+  folders. Beyond these it never deletes or overwrites a file. Settles binder-v0 §12 questions 7 and 16 (its
+  first part) and architecture 13 item 36.
+- **F14 decided (2026-10-13, by the author; revises F9 for the binders Sprava owns).** `AGENTS.md`, with a
+  one-line `CLAUDE.md` that points at it, and `DASHBOARD.md` are Sprava's own files in every binder it owns,
+  written at creation or import with no prompt. Sprava keeps its own section of `AGENTS.md` between two marker
+  lines and rewrites only that section; the rest of the file is free for the person or an agent. `DASHBOARD.md`
+  is rendered as binder-v0 §7.1 says from the start, and an imported binder's hand-kept dashboard text moves
+  into its Notes section, as §7.1 describes for the switch. The app no longer shows the "Dashboard and manual"
+  rows (Preview, Let Sprava Keep It, Copy Addendum). Supersedes the dashboard switch card (binder-v0 §7.1,
+  §9.4 step 2), the paste-in addendum and "an implementation never edits the manual" (binder-v0 §9.8; mvp.md
+  feature 10 and question 13). The files are still not part of the format; nothing in them is executed, and
+  their text is data, never instructions, for the clerk (binder-v0 §3.4). Recommended with it: Sprava's section
+  carries what the addendum said (propose through Sprava, never edit `catalog.json` by hand, write
+  `DASHBOARD.md` only below `## Notes`, run no lifeproj command); an imported binder's old `CLAUDE.md` and
+  `AGENTS.md` are saved byte for byte in `.sprava/adopted/` and not carried into the new files, because a
+  lifeproj manual tells agents to run `lifeproj publish` and to edit `catalog.json` by hand (the original
+  folder keeps them too).
+- **F15 open (2026-10-13).** The format's promise to lifeproj readers. binder-v0 keeps lifeproj's enforced rules
+  as its core (F2), names lifeproj as its second implementation (binder-v0 §1.1), and keeps lifeproj's slice and
+  outbox shapes (F8); A13 and A14 keep binders readable by lifeproj. After an import lifeproj no longer touches
+  a binder Sprava owns (P20). Open: whether v0 keeps that promise (so a binder can go back to lifeproj, and the
+  hub can read its slices) or drops it; and what the import's copy leaves behind. Recommended for the second:
+  leave out `catalog_check.py`, and `.claude/settings.json` when it declares hooks, which binder-v0 §8.1 and
+  §9.2 step 12 treat as marks of a lifeproj binder and as a channel off the Mac; copy everything else. Until
+  this is decided the format does not change. Decided now, because it is a privacy floor: every hidden file or folder at the
+  binder's top level (`.claude/`, `.codex/`, `.mcp.json` and the like) is set aside under
+  `.sprava/adopted/top-level/` instead of copied into place, and every agent manual of binder-v0 §4.3's list,
+  at any depth, under `.sprava/adopted/manuals/` (binder-v0 §9.4 step 2).
 
 ## Capture events (`docs/spec/capture-event-v0.md`)
 
@@ -249,7 +322,8 @@
   routing hooks (terminal-agent configuration, not format) and never calls TypeSafe itself.
 - **A8 recommended.** Hub coexistence: for binders it manages, Sprava publishes agenda slices to
   the spool and drains the outbox with lifeproj's exact semantics; the cross-binder Today page
-  replaces the hub's web lens over time; `disclosure` is enforced at the roll-up.
+  replaces the hub's web lens over time; `disclosure` is enforced at the roll-up. **Open again for imported
+  binders (2026-10-13): A17.**
 - **A9 recommended.** Mechanical docs are generated from a capability manifest; a `doctor` command
   checks binders and docs against reality; every hook and job is timed with a circuit breaker.
 - **A10 open.** The MCP server's implementation: a hand-rolled dual-era JSON-RPC server in Swift
@@ -259,17 +333,43 @@
   `libsqlite3`, no new dependency), not in hand-written JSON files: one database per owning target in
   the support folder, opened without following links, in WAL mode, every read-change-write in one
   `BEGIN IMMEDIATE` transaction (cross-process locking, atomic, durable, crash-safe by construction).
-  `SpravaKit.StateStore` is the one door. Binders stay plain files (binder-v0; lifeproj reads them);
+  `SpravaKit.StateStore` is the one door. Binders stay plain files (binder-v0; lifeproj reads them, open as F15);
   append-only logs (`jobs.log`, the capture journal) stay files. There is no installed base before
   the MVP, so nothing is migrated: a state file moves to the store when its code is next changed, and
   the developer deletes old test state. Where `docs/architecture.md` names a JSON state file in the
   support folder, this entry governs its storage.
 - **A14 decided (2026-10-12, by the author).** No backward compatibility for Sprava's own state before
-  the MVP ships: no readers for older formats, no migrations. Binders keep theirs (binder-v0, lifeproj).
+  the MVP ships: no readers for older formats, no migrations. Binders keep theirs (binder-v0, lifeproj; the
+  lifeproj part is open, F15).
 - **A15 decided (2026-10-12, by the author).** Binders are ordinary local folders. A binder not in use is
   offloaded (a finished tax year, say) and restored when needed (an audit), so while it is in use it is
   fully local. Sprava does not defend against slow, stalled, network or removable volumes: a read that waits
   on one is not a defect, and reviews do not report it.
+- **A16 decided (2026-10-13, by the author).** No clerk filing list. Every binder receives notes, and the clerk
+  may file into any of them. The one-line description stays as an optional hint the clerk reads in the binder
+  call, pre-filled from the template and editable in the binder's settings. The clerk is Apple's on-device
+  model, so a binder's name never leaves the Mac: every binder is offered by name, and the opaque labels go.
+  Supersedes the rule that a binder at disclosure `none` is kept from the Tier 1 model unless the person opts
+  it in with a neutral description (architecture 5.4, 5.5 and 13 item 16; mvp.md feature 1, feature 5 and the
+  filing-quality measure; capture-event-v0 §6.4 step 2). Unchanged, because none of it reads the filing list:
+  a brain (Tier 2) reaches a binder only through its client's scope and the binder's disclosure
+  (architecture 7.5, 7.6); the hub's slice, the Today page and every cross-binder view apply disclosure as
+  before (binder-v0 §5.5); and a capture's `binder_hint` still never routes an item into a binder at `none`
+  without the person picking it on the card (architecture 8 step 4).
+- **A17 open (2026-10-13).** The hub lane once binders are imported. Today lifeproj publishes and drains
+  binders through the spool, and the hub mirrors them to Google Tasks (A7, A8, F8; architecture 11). After an
+  import the original folder stays in lifeproj's registry, so `lifeproj drain --all` would go on draining the
+  outbox under the binder's name into the original while Sprava drained the same file into the copy. Open:
+  whether Sprava publishes and drains imported binders at all; whether the hub and its Google Tasks mirror
+  retire in favour of the Today page and the companion (P19); and what happens to the original's registry
+  entry. Recommended until it is settled: Sprava neither publishes nor drains an imported binder whose original
+  is still in lifeproj's registry.
+- **A18 open (2026-10-13).** cmirror registration. Backup is Sprava's restic mirror (A11, A12; `docs/backup.md`),
+  so cmirror no longer backs up a binder Sprava owns. cmirror's configuration is also lifeproj's registry,
+  which `lifeproj brief` and `drain --all` read (architecture 11). Open: whether Sprava says anything about
+  cmirror for an imported binder (mvp.md feature 6 and architecture 9 and 11 still describe registering one by
+  hand), and whether the original's cmirror entry is archived once the import is checked. Recommended: Sprava
+  neither registers nor checks cmirror, and cmirror's part ends with the hub lane (A17).
 - **A19 decided (2026-10-14, by the author).** Background work is not optional. When the app starts, it checks
   that the runtime is running and starts it without asking if it is not; an action that finds it not running
   does the same and goes on. There is no Turn Off; the `runtime/background-off` marker of earlier builds is
@@ -283,7 +383,8 @@
   review queue with provenance and undo → capture inbox (text from any source; P12)
   → Tier-1 filing → two templates → slice publish and outbox drain for hub coexistence → backup via
   cmirror → health page. **Open:** include a minimal MCP surface (reads and proposals only) in the
-  MVP because the author drives binders with Claude Code today.
+  MVP because the author drives binders with Claude Code today. **Shelf part superseded by P20
+  (2026-10-13):** binders are imported into `~/Sprava`, not adopted in place.
 - **M2 recommended.** Deferred: phone capture, sync, sharing, per-binder keys, Google Tasks export,
   email intake, document OCR beyond short scans, the open-model fallback, PCC.
 - **M3 recommended.** A measurable success criterion: for 30 days the author's live binders stay
