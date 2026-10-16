@@ -192,6 +192,25 @@ import Testing
         #expect(await reads.count == 3)
     }
 
+    @Test func aBinderLeftDuringAReplyKeepsTheReplyButNotItsSavedHistory() async {
+        let standIn = StandIn()
+        let earlier = [BinderChat.Entry(id: UUID(), speaker: .person, text: "An earlier invented line", state: .earlier)]
+        let chat = BinderChat(commands: standIn.commands, binderID: { $0.lastPathComponent }, readHistory: { _ in (earlier, nil) })
+        await chat.show(Self.folder)
+        chat.draft = "A question while away"
+        await chat.send()
+        await chat.show(Self.other)
+        standIn.emit(.textDelta("The answer"))
+        standIn.emit(.finished(.replied), end: true)
+        await chat.show(Self.folder)
+        await until { chat.entries.last?.state == .replied }
+        // Saved lines are read again on return, and the live turn is still there after them.
+        #expect(chat.entries.map(\.state) == [.earlier, .sent, .replied])
+        await chat.show(Self.other)
+        await chat.show(Self.folder)
+        #expect(chat.entries.filter { $0.state == .earlier }.count == 1)
+    }
+
     @Test func aRunawayStreamOfChangesIsBounded() async {
         let standIn = StandIn(), chat = chat(standIn)
         await chat.show(Self.folder)

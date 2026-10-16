@@ -120,7 +120,7 @@ final class BinderChat: ObservableObject {
         let folder = folder.standardizedFileURL
         // The binder left keeps its draft and any running reply; its saved history is read again on return, so
         // visiting many binders never holds all their histories at once.
-        if let left = shownKey, left != key(folder), threads[left]?.turn == nil, threads[left]?.history == .read {
+        if let left = shownKey, left != key(folder) {
             threads[left]?.entries.removeAll { $0.state == .earlier }
             threads[left]?.historyNote = nil
             threads[left]?.history = .unread
@@ -132,7 +132,7 @@ final class BinderChat: ObservableObject {
         threads[key]?.history = .reading
         let (earlier, note) = await readHistory(folder)
         // A page left while its history was read installs nothing; the next visit reads it again.
-        guard !Task.isCancelled else { threads[key]?.history = .unread; return }
+        guard !Task.isCancelled, shownKey == key else { threads[key]?.history = .unread; return }
         threads[key]?.entries.insert(contentsOf: earlier, at: 0)
         threads[key]?.historyNote = note
         threads[key]?.history = .read
