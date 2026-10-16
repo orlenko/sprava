@@ -7,8 +7,9 @@ public struct ChatSendRequest: Sendable, Equatable {
     public let binderID: String
     public let requestID: UUID
     public let text: String
-    public init(binderID: String, requestID: UUID, text: String) {
-        self.binderID = binderID; self.requestID = requestID; self.text = text
+    public let attachments: [ChatAttachmentReference]
+    public init(binderID: String, requestID: UUID, text: String, attachments: [ChatAttachmentReference] = []) {
+        self.binderID = binderID; self.requestID = requestID; self.text = text; self.attachments = attachments
     }
 }
 
@@ -22,6 +23,7 @@ public enum ChatTurnCompletion: Sendable, Equatable { case replied, interrupted 
 public enum ChatReplyEvent: Sendable, Equatable {
     case textDelta(String)
     case activity(String)
+    case binderChanged(ChatBinderChange)
     case finished(ChatTurnCompletion)
     case failed(ChatCommandFailure)
 }
@@ -45,6 +47,7 @@ public struct ChatCommands: Sendable {
     public typealias Send = @Sendable (ChatSendRequest) async throws -> ChatTurn
     public typealias Interrupt = @Sendable (_ binderID: String, _ turnID: UUID) async throws -> Void
     public static let maximumLineBytes = 4 * 1024 * 1024
+    public static let maximumAttachments = 64
     private let sendLine: Send
     private let interruptTurn: Interrupt
     public init(send: @escaping Send, interrupt: @escaping Interrupt) {
@@ -52,7 +55,12 @@ public struct ChatCommands: Sendable {
     }
     public func send(_ request: ChatSendRequest) async throws -> ChatTurn {
         guard Self.validID(request.binderID), request.text.utf8.count <= Self.maximumLineBytes,
-              !request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatCommandFailure.invalidRequest }
+              request.attachments.count <= Self.maximumAttachments,
+              request.attachments.allSatisfy({ Self.validID($0.captureID) }),
+              Set(request.attachments.map(\.captureID)).count == request.attachments.count,
+              !request.attachments.isEmpty || !request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ChatCommandFailure.invalidRequest
+        }
         return try await perform {
             let turn = try await sendLine(request)
             guard turn.binderID == request.binderID, turn.requestID == request.requestID else { throw ChatCommandFailure.unavailable }
