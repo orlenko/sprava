@@ -71,7 +71,7 @@ Moves that broke the earlier cycles:
    `Commands` type itself lives in `BinderStore` (it holds the trusted-card record); higher targets add their
    areas as extensions in their own target (`Capture`'s `Commands+Inbox.swift`, the handler files in
    `Services`). Extending a lower target's type from above is the intended pattern, not a leak.
-5. The app has one folder per screen (`Shelf/`, `Binder/`, `Inbox/`, `Backup/`, `Brains/`, `Health/`). A
+5. The app has one folder per screen (`Shelf/`, `Binder/`, `Todos/`, `Inbox/`, `Backup/`, `Brains/`, `Health/`). A
    screen reads through read-only facades (`HealthSnapshot`, and a `ShelfSnapshot` when the Shelf needs one)
    or the binder readers of `BinderFormat`, because it must show everything while the runtime is down
    (architecture 2.1). It writes only through `RuntimeClient`. Three exceptions: removing `runtime/background-off` (decisions.md A19) and the

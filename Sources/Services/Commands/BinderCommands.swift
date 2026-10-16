@@ -223,7 +223,9 @@ extension Commands {
         var extra: [(String, JSONValue)] = []
         if let c = r["compensates"] { extra.append(("compensates", c)) }
         let store = TekaStore(folder: f, client: client)
-        let applied = try store.apply([.init(op: op, args: args, actor: actor, extra: extra)], now: now)
+        let body = TekaStore.OpBody(op: op, args: args, actor: actor, extra: extra)
+        // An item the person adds names itself `$new:1`; its id is minted under the binder's lock (binder-v0 §5.6).
+        let applied = op == "add_item" ? try store.applyMinting([body], now: now) : try store.apply([body], now: now)
         try recordDigests(store.createdProposals, in: f)
         return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
     }
