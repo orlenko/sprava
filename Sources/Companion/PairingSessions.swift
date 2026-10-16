@@ -66,26 +66,45 @@ extension CompanionProfile {
                 guard let row = rows.first, row.count == 3, let p = row[0].text, CompanionWire.isID(p) else { throw CompanionCredentialError.invalid }
                 if let pinned = row[1].blob, pinned != b { throw CompanionOwnerPairingError.invalid }
                 let firstHello = row[2].blob ?? hello
-                let owner = try ephemeralKey(deviceID)
-                let keys: CompanionPairingKeys
-                let label: String
-                do {
-                    keys = try CompanionPairing.derive(pairingID: p, deviceID: deviceID, devicePublicKey: b, owner: owner)
-                    let opened = try CompanionSealedObject.openPayload(name: "pairings/\(p)/hello", epoch: 0, key: keys.wrap, bytes: firstHello)
-                    label = try helloLabel(opened)
-                } catch { throw CompanionOwnerPairingError.invalid }
-                let digest = CompanionWire.base64(Data(SHA256.hash(data: Data(p.utf8) + keys.ownerPublicKey + b +
-                    (try CompanionWire.decode(deviceID)) + Data(SHA256.hash(data: firstHello)))))
+                let approval = try pairingApproval(deviceID: deviceID, pairingID: p, publicKey: b, hello: firstHello)
                 if row[1].blob == nil {
                     try t.execute("UPDATE pairings SET public_b = ?, hello = ?, label = ?, approval = ? WHERE device = ?",
-                                  .blob(b), .blob(firstHello), .text(label), .text(digest), .text(deviceID))
+                                  .blob(b), .blob(firstHello), .text(approval.label), .text(approval.digest), .text(deviceID))
                 }
-                return CompanionPairingApproval(deviceID: deviceID, pairingID: p, label: label, confirmation: keys.confirmation, digest: digest)
+                return approval
             }
         } catch CompanionOwnerPairingError.invalid {
             try abandonPairing(deviceID: deviceID)
             throw CompanionOwnerPairingError.invalid
         }
+    }
+
+    /// Restore only the pinned, unconfirmed transcript; never substitute a new relay hello after restart.
+    func recordedPairingApproval(deviceID: String) throws -> CompanionPairingApproval? {
+        guard CompanionWire.isID(deviceID) else { throw CompanionOwnerPairingError.invalid }
+        return try store.read { t in
+            guard let r = try record(deviceID, t), r.state == .pairing else { return nil }
+            guard let row = try t.rows("SELECT pairing, public_b, hello, approval FROM pairings WHERE device = ?", .text(deviceID)).first,
+                  row.count == 4, let p = row[0].text, CompanionWire.isID(p) else { throw CompanionOwnerPairingError.invalid }
+            if row[1].blob == nil && row[2].blob == nil && row[3].text == nil { return nil }
+            guard let b = row[1].blob, let hello = row[2].blob, let digest = row[3].text else { throw CompanionOwnerPairingError.invalid }
+            let approval = try pairingApproval(deviceID: deviceID, pairingID: p, publicKey: b, hello: hello)
+            guard approval.digest == digest else { throw CompanionOwnerPairingError.invalid }
+            return approval
+        }
+    }
+
+    private func pairingApproval(deviceID: String, pairingID: String, publicKey: Data, hello: Data) throws -> CompanionPairingApproval {
+        let owner = try ephemeralKey(deviceID)
+        do {
+            let keys = try CompanionPairing.derive(pairingID: pairingID, deviceID: deviceID,
+                devicePublicKey: publicKey, owner: owner)
+            let opened = try CompanionSealedObject.openPayload(name: "pairings/\(pairingID)/hello", epoch: 0, key: keys.wrap, bytes: hello)
+            let label = try helloLabel(opened)
+            let digest = CompanionWire.base64(Data(SHA256.hash(data: Data(pairingID.utf8) + keys.ownerPublicKey + publicKey +
+                (try CompanionWire.decode(deviceID)) + Data(SHA256.hash(data: hello)))))
+            return CompanionPairingApproval(deviceID: deviceID, pairingID: pairingID, label: label, confirmation: keys.confirmation, digest: digest)
+        } catch { throw CompanionOwnerPairingError.invalid }
     }
     private func helloLabel(_ opened: CompanionOpenedObject) throws -> String {
         guard opened.plaintextLength == 512, let label = opened.value["label"]?.stringValue,
