@@ -1296,7 +1296,9 @@ retry after a crash writes the same triple and is recognized as the same capture
 there is no `alt_text` and no media. `binder_hint` is set when the person typed inside a binder, and
 then the clerk takes that binder without guessing (section 6.4). `captured_at` has millisecond
 precision. `ended_at` is when the person saved the note. These events live in Sprava's own device folder under the capture root, so the same reader
-code handles them.
+code handles them. A note taken from a private context records `sensitivity: private` before its bytes
+and notice digest are prepared, independently of whether it carries a binder hint. Omitting the hint or
+filing its card from the Inbox never removes that private mark. Other typed notes remain `unmarked`.
 
 ### 8.2 Document drop with OCR (Sprava)
 
