@@ -42,7 +42,8 @@ import Testing
         #expect(kind("add_item", [("item", .obj([("title", .str("Call the invented notary"))]))], person) == .a)
         #expect(kind("add_log_entry", [("entry", .obj([("text", .str("Spoke to the invented notary"))]))], person) == .a)
         #expect(kind("file_document", [("from", .str("intake/scan.pdf")), ("document", .obj([("path", .str("leases/scan.pdf"))]))], person) == .a)
-        #expect(kind("file_document", [("document", .obj([("path", .str("drafts/letter.md"))]))], person) == .a)
+        #expect(kind("file_document", [("document", .obj([("path", .str("drafts/letter.md")), ("sensitivity", .str("private"))]))], person) == .a)
+        #expect(kind("file_document", [("document", .obj([("path", .str("drafts/letter.md"))]))], person) == .b)   // not marked private
         #expect(kind("file_document", [("document", .obj([("path", .str("leases/elsewhere.pdf"))]))], person) == .b)
         #expect(kind("file_document", [("from", .str("intake/../catalog.json")), ("document", .obj([("path", .str("x.pdf"))]))], person) == .b)
     }
@@ -96,11 +97,21 @@ import Testing
 
         // A hostile document read during a review cannot drop, update or unfile anything (§6.1).
         let review = context(.spravaWork, ownDocuments: [Self.document], ownItems: [Self.item: now], words: true)
-        #expect(kind("file_document", [("document", .obj([("path", .str("drafts/summary.md"))]))], review) == .a)
+        #expect(kind("file_document", [("document", .obj([("path", .str("drafts/summary.md")), ("sensitivity", .str("private"))]))], review) == .a)
         #expect(kind("file_document", [("from", .str("intake/scan.pdf")), ("document", .obj([("path", .str("x/scan.pdf"))]))], review) == .b)
         for op in ["drop", "update_item", "unfile_document", "update_document", "add_item"] {
             #expect(kind(op, [("id", op.hasSuffix("document") ? Self.document : Self.item)], review) == .b, "\(op)")
         }
+    }
+
+    @Test func tagsAreJudgedAgainstTheItemAsItWillBe() {
+        let own = context(.personTurn, ownItems: [Self.item: now], words: true)
+        #expect(kind("update_item", set(Self.item, [("redact", .bool(true)), ("tags", .array([.str("revealing")]))]), own) == .c)
+        let turn = ConversationClass.classify([
+            (op: "update_item", args: JSONObject(set(Self.item, [("redact", .bool(true)), ("kind", .str("payment"))]).map { (key: $0.0, value: $0.1) })),
+            (op: "update_item", args: JSONObject(set(Self.item, [("tags", .array([.str("revealing")]))]).map { (key: $0.0, value: $0.1) })),
+        ], context: own)
+        #expect(turn.map(\.kind) == [.a, .c])
     }
 
     @Test func aTurnOverTheCapWaitsForATap() {

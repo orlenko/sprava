@@ -56,7 +56,13 @@ public enum ConversationClass {
 
     /// The class of every op of one turn, in order.
     public static func classify(_ ops: [(op: String, args: JSONObject)], context: Context) -> [Decision] {
-        var decisions = ops.enumerated().map { index, op in classify(op.op, args: op.args, index: index, context: context) }
+        // Items an earlier op of this turn redacts count as redacted for the ops after it.
+        var redacting: Set<JSONValue> = []
+        var decisions: [Decision] = []
+        for (index, op) in ops.enumerated() {
+            decisions.append(classify(op.op, args: op.args, index: index, context: context, redacting: redacting))
+            if op.op == "update_item", op.args["set"]?["redact"] == .bool(true), let id = op.args["id"] { redacting.insert(id) }
+        }
         let added = ops.indices.filter { ["add_item", "file_document"].contains(ops[$0].op) }
         if context.start == .personTurn, added.count > newRecordsPerTurn {
             for index in added where decisions[index].kind == .a {
@@ -66,8 +72,8 @@ public enum ConversationClass {
         return decisions
     }
 
-    static func classify(_ op: String, args: JSONObject, index: Int, context: Context) -> Decision {
-        if let widening = widening(op, args: args, catalog: context.catalog) { return Decision(kind: .c, reason: widening) }
+    static func classify(_ op: String, args: JSONObject, index: Int, context: Context, redacting: Set<JSONValue> = []) -> Decision {
+        if let widening = widening(op, args: args, catalog: context.catalog, redacting: redacting) { return Decision(kind: .c, reason: widening) }
         func a(_ why: String) -> Decision { Decision(kind: .a, reason: why) }
         func b(_ why: String) -> Decision { Decision(kind: .b, reason: why) }
         let id = args["id"]
@@ -111,7 +117,7 @@ public enum ConversationClass {
     /// A change that loosens what the hub, the phone or a brain sees, checked before any other class (§6.1;
     /// architecture 4.5): `redact` cleared, the hub title changed, added or removed, a tag added to a redacted item,
     /// its kind removed, or a document's `sensitivity` lowered.
-    static func widening(_ op: String, args: JSONObject, catalog: JSONObject) -> String? {
+    static func widening(_ op: String, args: JSONObject, catalog: JSONObject, redacting: Set<JSONValue> = []) -> String? {
         let set = args["set"]?.objectValue ?? JSONObject()
         let unset = Set(args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
         switch op {
@@ -121,7 +127,9 @@ public enum ConversationClass {
             let redacted = item?["redact"] == .bool(true)
             if redacted, unset.contains("redact") || (set["redact"].map { $0 != .bool(true) } ?? false) { return "clearing a privacy marker" }
             if set["slice_title"] != nil || unset.contains("slice_title") { return "changing the hub title" }
-            if redacted, let tags = set["tags"]?.arrayValue,
+            // Tags are judged against the item as it will be: redacted by this op or an earlier one of the turn too.
+            let redactedAfter = redacted || redacting.contains(id) || set["redact"] == .bool(true)
+            if redactedAfter, let tags = set["tags"]?.arrayValue,
                !Set(tags).isSubset(of: Set(item?["tags"]?.arrayValue ?? [])) { return "adding a tag to a redacted item" }
             if redacted, unset.contains("kind") { return "removing a redacted item's kind" }
             return nil
@@ -144,9 +152,11 @@ public enum ConversationClass {
         return folded(from).hasPrefix("intake/") && !from.contains("/../") && !from.hasPrefix("intake/../")
     }
 
-    /// A new document a model wrote, filed without a source under `drafts/` (§6.1, §10).
+    /// A new document a model wrote, filed without a source under `drafts/` and marked `sensitivity: private`, the
+    /// narrowest marker such a document starts at (§6.1, §10).
     static func isNewDraft(_ args: JSONObject) -> Bool {
-        guard args["from"] == nil, case .string(let path)? = args["document"]?["path"] else { return false }
+        guard args["from"] == nil, args["document"]?["sensitivity"] == .str("private"),
+              case .string(let path)? = args["document"]?["path"] else { return false }
         return folded(path).hasPrefix("drafts/") && !path.split(separator: "/").contains("..")
     }
 
