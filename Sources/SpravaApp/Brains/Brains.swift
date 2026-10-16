@@ -8,7 +8,7 @@ import SwiftUI
 /// "Connect a brain" (architecture 7.5; mvp.md feature 10): register Claude Code for chosen binders, show the
 /// exact registration once, and run it for the person with no shell. Revoke is one click.
 @MainActor
-final class BrainsModel: ObservableObject {
+final class BrainsModel: ObservableObject, RuntimePage {
     struct Client: Identifiable { let id: String; let name: String; let binders: [String: String]; let documents: Bool }
 
     @Published var clients: [Client] = []
@@ -23,7 +23,8 @@ final class BrainsModel: ObservableObject {
     }
 
     @Published var registration: Registration?
-    @Published var message: String?
+    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    var readFoundNoRuntime = false
     @Published var registering = false
     let client: RuntimeClient
     let authenticate: () async throws -> Void
@@ -32,6 +33,7 @@ final class BrainsModel: ObservableObject {
          authenticate: @escaping () async throws -> Void = { try await BrainsModel.authenticatePerson() }) {
         self.client = client
         self.authenticate = authenticate
+        client.clearsNotRunning(self)
     }
 
     /// Client registration and widening document access require the person, beyond UI automation (architecture 2.1).
@@ -56,7 +58,7 @@ final class BrainsModel: ObservableObject {
                 for e in c["binders"]?.objectValue?.entries ?? [] { b[e.key] = e.value.stringValue }
                 return Client(id: id, name: c["name"]?.stringValue ?? id, binders: b, documents: c["documents"] == .bool(true))
             }
-        } catch { message = "\(error)" }
+        } catch { readFailed("\(error)", error) }
     }
 
     var canEditRegistrationChoices: Bool { registration == nil && !registering && !running }
