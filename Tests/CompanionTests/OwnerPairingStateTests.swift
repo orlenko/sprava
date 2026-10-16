@@ -160,3 +160,57 @@ private struct SessionFixture {
     #expect(try f.profile.deviceRecords().first?.state == .abandoned)
     #expect(f.secrets.entries[f.profile.deviceAccount(f.reservation.deviceID)] == nil)
 }
+
+private struct SettingsWithoutKeys: CompanionCredentialStorage {
+    func read(account: String) throws -> Data? { Issue.record("Settings must not read credentials"); throw CompanionCredentialError.unavailable }
+    func insert(account: String, bytes: Data) throws -> Bool { Issue.record("Settings must not write credentials"); throw CompanionCredentialError.unavailable }
+    func remove(account: String) throws { Issue.record("Settings must not delete credentials"); throw CompanionCredentialError.unavailable }
+}
+
+@Test func pairedDeviceSettingsStayKeylessAndDistinguishWaitingExpiredAndAcknowledgedPhones() throws {
+    let f = try SessionFixture(); defer { f.remove() }
+    let approval = try f.observe()
+    #expect(try f.profile.pairedDevices(now: "2026-10-15T11:55:00Z").devices.isEmpty)
+    _ = try f.profile.confirmPairing(approval, credentials: f.credentials, now: "2026-10-15T11:55:00Z")
+    let settings = try CompanionProfile.openConfigured(database: f.folder.appendingPathComponent("state.sqlite"), secrets: SettingsWithoutKeys())
+    let page = try #require(try settings?.pairedDevices(now: "2026-10-15T11:56:00Z"))
+    let device = try #require(page.devices.first)
+    #expect(device.deviceID == f.reservation.deviceID && device.label == "Pocket" && device.pairedAt == "2026-10-15T11:55:00Z")
+    #expect(device.confirmation == .awaiting && page.next == nil)
+    #expect(try settings?.pairedDevices(now: "2026-10-15T12:00:00Z").devices.first?.confirmation == .notConfirmed)
+    #expect(try f.profile.pairingDelivery(deviceID: device.deviceID)?.ephemeralCleanupPending == false)
+    try f.profile.acknowledgePairing(deviceID: device.deviceID)
+    #expect(try settings?.pairedDevices(now: "2026-10-15T12:01:00Z").devices.first?.confirmation == .acknowledged)
+}
+
+@Test func pairedDevicePagesAreBoundedAndSkipPendingAbandonedAndRevokedRecords() throws {
+    let f = try SessionFixture(); defer { f.remove() }
+    _ = try f.profile.confirmPairing(f.observe(), credentials: f.credentials, now: "2026-10-15T11:55:00Z")
+    let extra = (1...4).map { CompanionWire.base64(Data(repeating: UInt8($0), count: 16)) }
+    try f.profile.store.write { t in
+        for (index, id) in extra.enumerated() {
+            let state = ["active", "pairing", "abandoned", "revoked"][index]
+            try t.execute("INSERT INTO devices (device, state, key_ready, creation_attempted, cleanup_pending) VALUES (?, ?, 0, 0, 0)", .text(id), .text(state))
+            if state == "active" {
+                try t.execute("INSERT INTO pairings (device, pairing, expires, label, paired_at, acknowledged) VALUES (?, ?, ?, ?, ?, 1)",
+                    .text(id), .text(CompanionWire.base64(Data(repeating: 50, count: 16))), .text("2026-10-15T12:00:00Z"), .text("Tablet"), .text("2026-10-15T11:55:00Z"))
+            }
+        }
+    }
+    let first = try f.profile.pairedDevices(now: "2026-10-15T11:56:00Z", limit: 1)
+    let next = try #require(first.next)
+    let second = try f.profile.pairedDevices(now: "2026-10-15T11:56:00Z", limit: 1, after: next)
+    #expect(first.devices.count == 1 && second.devices.count == 1 && second.next == nil)
+    #expect((first.devices + second.devices).map(\.deviceID) == [f.reservation.deviceID, extra[0]].sorted())
+    #expect(throws: CompanionOwnerPairingError.invalid) { try f.profile.pairedDevices(now: "2026-10-15T11:56:00Z", limit: 21) }
+    #expect(throws: CompanionOwnerPairingError.invalid) { try f.profile.pairedDevices(now: "bad time") }
+    #expect(throws: CompanionOwnerPairingError.invalid) { try f.profile.pairedDevices(now: "2026-10-15T11:56:00Z", after: "bad id") }
+}
+
+@Test func aBrokenActiveDeviceRecordCannotSilentlyDisappearFromTheSettingsList() throws {
+    let f = try SessionFixture(); defer { f.remove() }
+    _ = try f.profile.confirmPairing(f.observe(), credentials: f.credentials, now: "2026-10-15T11:55:00Z")
+    try f.profile.store.write { try $0.execute("UPDATE pairings SET label = NULL WHERE device = ?", .text(f.reservation.deviceID)) }
+    #expect(throws: CompanionOwnerPairingError.invalid) { try f.profile.pairedDevices(now: "2026-10-15T11:56:00Z") }
+    #expect(try f.profile.deviceRecords().first?.state == .active)
+}
