@@ -41,7 +41,8 @@ import Testing
         let person = context(.personTurn, words: true)
         #expect(kind("add_item", [("item", .obj([("title", .str("Call the invented notary"))]))], person) == .a)
         #expect(kind("add_log_entry", [("entry", .obj([("text", .str("Spoke to the invented notary"))]))], person) == .a)
-        #expect(kind("file_document", [("from", .str("intake/scan.pdf")), ("document", .obj([("path", .str("leases/scan.pdf"))]))], person) == .a)
+        #expect(kind("file_document", [("from", .str("intake/scan.pdf")), ("document", .obj([("path", .str("leases/scan.pdf")), ("sensitivity", .str("private"))]))], person) == .a)
+        #expect(kind("file_document", [("from", .str("intake/scan.pdf")), ("document", .obj([("path", .str("leases/scan.pdf"))]))], person) == .b)   // not marked private
         #expect(kind("file_document", [("document", .obj([("path", .str("drafts/letter.md")), ("sensitivity", .str("private"))]))], person) == .a)
         #expect(kind("file_document", [("document", .obj([("path", .str("drafts/letter.md"))]))], person) == .b)   // not marked private
         #expect(kind("file_document", [("document", .obj([("path", .str("leases/elsewhere.pdf"))]))], person) == .b)
@@ -90,7 +91,7 @@ import Testing
 
     @Test func intakeAndSpravasOwnWorkHaveTheNarrowestReach() {
         let intake = context(.intakePipeline, ownItems: [Self.item: now], words: true)
-        #expect(kind("file_document", [("from", .str("intake/mail/letter.pdf")), ("document", .obj([("path", .str("letters/letter.pdf"))]))], intake) == .a)
+        #expect(kind("file_document", [("from", .str("intake/mail/letter.pdf")), ("document", .obj([("path", .str("letters/letter.pdf")), ("sensitivity", .str("private"))]))], intake) == .a)
         #expect(kind("file_document", [("document", .obj([("path", .str("drafts/letter.md"))]))], intake) == .b)
         #expect(kind("add_item", [("item", .obj([("title", .str("Invented"))]))], intake) == .b)
         #expect(kind("add_log_entry", [("entry", .obj([("text", .str("Invented"))]))], intake) == .c)
@@ -112,6 +113,13 @@ import Testing
             (op: "update_item", args: JSONObject(set(Self.item, [("tags", .array([.str("revealing")]))]).map { (key: $0.0, value: $0.1) })),
         ], context: own)
         #expect(turn.map(\.kind) == [.a, .c])
+
+        let draft = ConversationClass.classify([
+            (op: "file_document", args: JSONObject([(key: "document", value: .obj([("id", .str("$new:1")), ("path", .str("drafts/a.md")),
+                                                                                  ("sensitivity", .str("private"))]))])),
+            (op: "update_document", args: JSONObject([(key: "id", value: .str("$new:1")), (key: "unset", value: .array([.str("sensitivity")]))])),
+        ], context: own)
+        #expect(draft.map(\.kind) == [.a, .c])
     }
 
     @Test func aTurnOverTheCapWaitsForATap() {

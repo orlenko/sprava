@@ -62,6 +62,9 @@ public enum ConversationClass {
         for (index, op) in ops.enumerated() {
             decisions.append(classify(op.op, args: op.args, index: index, context: context, redacting: redacting))
             if op.op == "update_item", op.args["set"]?["redact"] == .bool(true), let id = op.args["id"] { redacting.insert(id) }
+            if op.op == "file_document", op.args["document"]?["sensitivity"] == .str("private"), let id = op.args["document"]?["id"] {
+                redacting.insert(id)
+            }
         }
         let added = ops.indices.filter { ["add_item", "file_document"].contains(ops[$0].op) }
         if context.start == .personTurn, added.count > newRecordsPerTurn {
@@ -86,7 +89,8 @@ public enum ConversationClass {
             return Decision(kind: .c, reason: "only the app's own controls make this change")
 
         case (.personTurn, "file_document"), (.intakePipeline, "file_document"):
-            if isFromIntake(args) { return a("filing a document from this binder's intake") }
+            // Intake documents start private (adaptation-layer 2), so only a private filing applies at once.
+            if isFromIntake(args), args["document"]?["sensitivity"] == .str("private") { return a("filing a document from this binder's intake") }
             if context.start == .personTurn, isNewDraft(args) { return a("a new draft in drafts/") }
             return b("filing a document from elsewhere")
         case (.spravaWork, "file_document"):
@@ -136,7 +140,7 @@ public enum ConversationClass {
         case "update_document":
             guard let id = args["id"] else { return nil }
             let document = catalog["documents"]?.arrayValue?.first { $0["id"] == id }?.objectValue
-            if document?["sensitivity"] == .str("private"),
+            if document?["sensitivity"] == .str("private") || redacting.contains(id),
                unset.contains("sensitivity") || (set["sensitivity"].map { $0 != .str("private") } ?? false) {
                 return "lowering a document's sensitivity"
             }
