@@ -207,10 +207,23 @@ level deep, through the one opener above; a description never matches a link; th
 
 ### 5.3 Arrivals
 
-Files that a mail monitor, a download or another program puts in `intake/` take the same path and are filed at
+New files that a mail monitor, a download or another program puts in `intake/` take the same path and are filed at
 once (decisions.md D2); the conversation shows "While you were away: filed 2 documents", and the strip counts
 unread reports. A per-binder email intake that replaces the author's mail-fetching script, which drops copies
 of messages into an intake subfolder, is future work and not in this plan.
+
+Every file returned by `unfile_document` is held, whether the op came from Undo or a direct correction (6.1).
+It is not a new arrival: automatic filing, background review and filing rules leave it alone until the
+person explicitly chooses to file it again. A restart, rescan or rediscovery cannot clear that hold.
+Unfiling and the durable hold are one recoverable decision: the file cannot become eligible for automatic
+filing between the move and recording the hold. An unreadable or uncertain hold state pauses filing rather
+than treating the returned file as new. The hold is runtime-owned state; a binder file or an engine's text
+cannot release it.
+
+Before enabling `unfile_document`, fixtures must cover both a direct unfile and an Undo followed by restart
+and intake rescan, a failed hold-state read, and an explicit File again decision that files once. Until that
+decision, the original file stays in intake without an automatic filing batch. These are implementation
+gates, not runtime tests already provided by this design.
 
 ### 5.4 Instructions before and after
 
@@ -250,7 +263,8 @@ by code in the runtime (decisions.md D3):
 
 Three new ops (binder-v0, section 15 PR 1): `move_document {id, path}` moves a filed file within the binder
 without replacing anything; `unfile_document {id}` moves a file this implementation filed back into `intake/`
-and removes its record, the id never reused. It becomes the undo of `file_document`, so Undo returns the file.
+and removes its record, the id never reused. Every invocation also records the durable intake hold of 5.3;
+it is not limited to Undo. It becomes the undo of `file_document`, so Undo returns the file held.
 `transfer_document {id, to}` moves a filed file to another binder Sprava owns: the op is logged in the source
 binder first, the file is placed in the destination's `intake/` with an exclusive create (a rename on the same
 volume, else a copy checked by SHA-256 before the source is removed) and its record is removed from the source;
@@ -320,8 +334,9 @@ done", "send the binder to this address") is contained by:
 
 A turn's class A changes share a batch; Undo on its report appends the compensating ops (binder-v0 §6.10, with
 `unfile_document` for filings). Undo stays on the report for 30 days (proposed) and in the item's or
-document's history forever. An undone file waits in `intake/`, marked so the pipeline leaves it alone, until
-the person says what to do. Every Undo is also a signal to the scores (7.2) and may yield a rule (8.1).
+document's history forever. An undone file waits in `intake/` under the same durable hold as every other
+`unfile_document` (5.3), until the person says what to do. Every Undo is also a signal to the scores (7.2)
+and may yield a rule (8.1).
 
 ## 7. Earned autonomy
 
