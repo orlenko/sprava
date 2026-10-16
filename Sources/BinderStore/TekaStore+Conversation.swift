@@ -39,32 +39,7 @@ extension TekaStore {
         try keepPrivate(conversationDir, mode: 0o700)
 
         let url = conversationDir.appendingPathComponent("\(message.month).ndjson")
-        var existing = Data()
-        switch SafeFile.read(url, limit: ConversationLimits.monthFileBytes) {
-        case .ok(let data): existing = data
-        case .missing: break
-        case .refused, .unreadable:
-            throw Refused(reason: "the conversation history for \(message.month) cannot be read; the message was not saved")
-        }
-        // A crash's torn group is copied aside, then cut, so the new message never joins it (binder-v0 §7.2.1, §6.9).
-        let intact = ConversationHistory.intactLength(of: existing)
-        if intact < existing.count {
-            let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
-            try AtomicFile.makePrivateFolder(tornDir)
-            let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
-            try AtomicFile.write(existing[intact...], to: tornDir.appendingPathComponent("conversation-\(message.month)-\(stamp).ndjson"))
-            let fd = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
-            guard fd >= 0 else { throw AtomicFile.Failure(step: "open the conversation history", code: errno) }
-            defer { close(fd) }
-            try checkSingleLink(fd, message.month)
-            guard ftruncate(fd, off_t(intact)) == 0 else { throw AtomicFile.Failure(step: "cut the conversation's torn tail", code: errno) }
-            try flush(fd, "flush the conversation history")
-            existing = existing.prefix(intact)
-        }
-        // A message id used earlier in the month would make the reader hide the new message as damage.
-        if Self.holdsMessage(message.id, in: existing) {
-            throw Refused(reason: "a message with this id is already in the history for \(message.month); the message was not saved")
-        }
+        let existing = try monthToAppendTo(url, message: message)
         // The whole message fits, or none of it is written.
         let lineCount = existing.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
         guard existing.count + added.count <= ConversationLimits.monthFileBytes,
@@ -90,6 +65,48 @@ extension TekaStore {
         if created { try flushFolder(conversationDir, "flush the conversation folder") }
     }
 
+    /// The month as it may be appended to: missing, or a file the one safe reader reads whole (binder-v0 §7.2.1). The
+    /// reader decides before anything changes, so its bounds hold here too: a month over its size or line limits, with
+    /// an oversized line, or with damage anywhere but a crash's torn tail is refused and left for repair. That tail is
+    /// copied to `.sprava/torn/` and cut, so the new message never joins it. A message id already in the month is
+    /// refused, since the reader would hide the new message as damage.
+    func monthToAppendTo(_ url: URL, message: ConversationMessage) throws -> Data {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else {
+            guard errno == ENOENT else { throw AtomicFile.Failure(step: "check the conversation history", code: errno) }
+            return Data()
+        }
+        // Checked on the path before the file is read or copied anywhere (races with another program are out of scope,
+        // architecture 1).
+        guard st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else {
+            throw Refused(reason: "the conversation history for \(message.month) is linked to another file; the message was not saved")
+        }
+        let unreadable = Refused(reason: "the conversation history for \(message.month) cannot be read; the message was not saved")
+        guard case .month(let month) = ConversationHistory.read(month: message.month, in: folder),
+              case .ok(var existing) = SafeFile.read(url, limit: ConversationLimits.monthFileBytes) else { throw unreadable }
+        let intact = ConversationHistory.intactLength(of: existing)
+        let intactLines = existing.prefix(intact).reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
+        guard month.damage.allSatisfy({ $0.lines.lowerBound > intactLines }) else {
+            throw Refused(reason: "the conversation history for \(message.month) has damaged lines to repair first; the message was not saved")
+        }
+        guard !month.messages.contains(where: { $0.id == message.id }) else {
+            throw Refused(reason: "a message with this id is already in the history for \(message.month); the message was not saved")
+        }
+        guard intact < existing.count else { return existing }
+        let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
+        try AtomicFile.makePrivateFolder(tornDir)
+        let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
+        try AtomicFile.write(existing[intact...], to: tornDir.appendingPathComponent("conversation-\(message.month)-\(stamp).ndjson"))
+        let fd = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw AtomicFile.Failure(step: "open the conversation history", code: errno) }
+        defer { close(fd) }
+        try checkSingleLink(fd, message.month)
+        guard ftruncate(fd, off_t(intact)) == 0 else { throw AtomicFile.Failure(step: "cut the conversation's torn tail", code: errno) }
+        try flush(fd, "flush the conversation history")
+        existing = existing.prefix(intact)
+        return existing
+    }
+
     /// A month file hard-linked elsewhere (an imported or restored binder) would carry every write to the other path
     /// too, the catalog among them; it is refused before anything changes.
     func checkSingleLink(_ fd: Int32, _ month: String) throws {
@@ -98,17 +115,6 @@ extension TekaStore {
         guard st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else {
             throw Refused(reason: "the conversation history for \(month) is linked to another file; the message was not saved")
         }
-    }
-
-    /// Whether any line of a month already carries `id`, its escapes decoded as the reader decodes them.
-    static func holdsMessage(_ id: String, in month: Data) -> Bool {
-        var start = month.startIndex
-        while start < month.endIndex {
-            let end = month[start...].firstIndex(of: 0x0A) ?? month.endIndex
-            if let parsed = try? JSONParser.parse(month[start..<end]), parsed.value["id"]?.stringValue == id { return true }
-            start = end + 1
-        }
-        return false
     }
 
     /// The history folder is private (binder-v0 §7.2): one found readable or writable by others is narrowed first.

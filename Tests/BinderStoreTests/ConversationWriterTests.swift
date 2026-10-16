@@ -149,6 +149,58 @@ import Testing
         #expect(try Data(contentsOf: catalog) == before)
     }
 
+    func appendRaw(_ data: Data, to folder: URL) throws {
+        let url = folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson")
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+        try handle.close()
+    }
+
+    func tornCopies(_ folder: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent(".sprava/torn").path)) ?? [])
+            .filter { $0.hasPrefix("conversation-") }
+    }
+
+    @Test func aMonthTheReaderRefusesIsNeverRepairedOrAppendedTo() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        let url = folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson")
+        // Damage before the end stays for repair.
+        try appendRaw(Data("not a record\n".utf8) + (try message(2).lines()[0]), to: folder)
+        var before = try Data(contentsOf: url)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(3)) }
+        #expect(try Data(contentsOf: url) == before && tornCopies(folder).isEmpty)
+
+        // A line over 512 KiB is refused unread, a whole valid array included, never parsed to scan ids.
+        try FileManager.default.removeItem(at: url)
+        try store.appendConversation(try message(1))
+        try appendRaw(Data(("[" + String(repeating: "0,", count: 300_000) + "0]\n").utf8), to: folder)
+        before = try Data(contentsOf: url)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(3)) }
+        #expect(try Data(contentsOf: url) == before)
+
+        // Over the line limit with a torn tail: refused whole, the tail neither copied nor cut.
+        try FileManager.default.removeItem(at: url)
+        try store.appendConversation(try message(1))
+        try appendRaw(Data(repeating: 0x0A, count: ConversationLimits.monthLines) + Data("{\"torn".utf8), to: folder)
+        before = try Data(contentsOf: url)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(3)) }
+        #expect(try Data(contentsOf: url) == before && tornCopies(folder).isEmpty)
+    }
+
+    @Test func aMonthLinkedToAFileWithoutAFinalNewlineIsNotCopiedAside() throws {
+        let (folder, store) = try adopted()
+        let dir = folder.appendingPathComponent(".sprava/conversation")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let outside = folder.appendingPathComponent("documents-outside.txt")
+        try Data("invented secret without a final newline".utf8).write(to: outside)
+        #expect(link(outside.path, dir.appendingPathComponent("2026-10.ndjson").path) == 0)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(1)) }
+        #expect(tornCopies(folder).isEmpty)
+        #expect(try Data(contentsOf: outside) == Data("invented secret without a final newline".utf8))
+    }
+
     @Test func aLinkedFolderOrFileIsNeverWrittenThrough() throws {
         let (folder, store) = try adopted()
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-outside-\(UUID().uuidString)")
