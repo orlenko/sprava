@@ -189,6 +189,27 @@ import Testing
         #expect(try Data(contentsOf: url) == before && tornCopies(folder).isEmpty)
     }
 
+    @Test func onlyACrashsTailIsCutAndEarlierCopiesAreKept() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        let url = folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson")
+        // An unfinished group at the end that reuses an earlier id is damage to repair, not a crash's tail.
+        try appendRaw(try message(1, text: String(repeating: "a", count: 100_000)).lines()[0], to: folder)
+        let before = try Data(contentsOf: url)
+        #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(3)) }
+        #expect(try Data(contentsOf: url) == before && tornCopies(folder).isEmpty)
+
+        // Two crashes' tails in one second each keep their own copy.
+        try FileManager.default.removeItem(at: url)
+        try store.appendConversation(try message(1))
+        try appendRaw(Data("{\"first torn".utf8), to: folder)
+        try store.appendConversation(try message(4))
+        try appendRaw(Data("{\"second torn".utf8), to: folder)
+        try store.appendConversation(try message(5))
+        #expect(tornCopies(folder).count == 2)
+        #expect(read(folder)?.messages.count == 3)
+    }
+
     @Test func aMonthLinkedToAFileWithoutAFinalNewlineIsNotCopiedAside() throws {
         let (folder, store) = try adopted()
         let dir = folder.appendingPathComponent(".sprava/conversation")

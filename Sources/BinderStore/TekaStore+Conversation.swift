@@ -86,7 +86,9 @@ extension TekaStore {
               case .ok(var existing) = SafeFile.read(url, limit: ConversationLimits.monthFileBytes) else { throw unreadable }
         let intact = ConversationHistory.intactLength(of: existing)
         let intactLines = existing.prefix(intact).reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
-        guard month.damage.allSatisfy({ $0.lines.lowerBound > intactLines }) else {
+        // Only a crash's tail is cut: a torn line, and the parts of one message written before it. Damage of any other
+        // kind stays where it is, even at the end, for the person's repair.
+        guard month.damage.allSatisfy({ $0.lines.lowerBound > intactLines && [.torn, .missingPart].contains($0.reason) }) else {
             throw Refused(reason: "the conversation history for \(message.month) has damaged lines to repair first; the message was not saved")
         }
         guard !month.messages.contains(where: { $0.id == message.id }) else {
@@ -96,7 +98,7 @@ extension TekaStore {
         let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
         try AtomicFile.makePrivateFolder(tornDir)
         let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
-        try AtomicFile.write(existing[intact...], to: tornDir.appendingPathComponent("conversation-\(message.month)-\(stamp).ndjson"))
+        try Self.keepAside(existing[intact...], in: tornDir, named: "conversation-\(message.month)-\(stamp)")
         let fd = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw AtomicFile.Failure(step: "open the conversation history", code: errno) }
         defer { close(fd) }
@@ -105,6 +107,30 @@ extension TekaStore {
         try flush(fd, "flush the conversation history")
         existing = existing.prefix(intact)
         return existing
+    }
+
+    /// Writes a torn tail under a name no file has yet, created exclusively and flushed, so an earlier copy is never
+    /// replaced (binder-v0 §7.2: `torn/` is not rebuildable).
+    static func keepAside(_ bytes: Data, in folder: URL, named stem: String) throws {
+        for attempt in 0..<100 {
+            let name = attempt == 0 ? "\(stem).ndjson" : "\(stem)-\(attempt).ndjson"
+            let fd = open(folder.appendingPathComponent(name).path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            if fd < 0, errno == EEXIST { continue }
+            guard fd >= 0 else { throw AtomicFile.Failure(step: "keep the torn conversation aside", code: errno) }
+            defer { close(fd) }
+            try bytes.withUnsafeBytes { buffer in
+                var offset = 0
+                while offset < buffer.count {
+                    let n = Darwin.write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                    if n < 0 { if errno == EINTR { continue }; throw AtomicFile.Failure(step: "keep the torn conversation aside", code: errno) }
+                    offset += n
+                }
+            }
+            try AtomicFile.flushToDisk(fd, step: "flush the torn conversation")
+            try AtomicFile.flushFolder(folder, step: "flush the torn folder")
+            return
+        }
+        throw Refused(reason: "the torn part of the conversation history could not be kept aside; the message was not saved")
     }
 
     /// A month file hard-linked elsewhere (an imported or restored binder) would carry every write to the other path
