@@ -13,6 +13,9 @@ struct NowView: View {
     let reload: () -> Void
     /// The runtime's state, for the line that says when changes cannot be made.
     var health: HealthModel?
+    /// The item being edited in place in each binder, if any. Owned by the window, so a visit to another page
+    /// leaves what was typed for the person's return.
+    @ObservedObject var editor: ItemEditor
     @StateObject private var actions = BinderActions()
 
     func refresh() {
@@ -50,6 +53,7 @@ struct NowView: View {
                 .padding(.vertical, 4)
             }
             ReviewSection(actions: actions, folder: row.folder, reload: refresh)
+            StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
             ForEach(Bucket.allCases, id: \.self) { bucket in
                 if bucket == .recentlyClosed {
                     if !page.closed.isEmpty {
@@ -70,13 +74,8 @@ struct NowView: View {
                         // Row ids are unique across sections: List reuses rows by id, and two sections that both
                         // start at 0 would show one section's row in the other.
                         ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
-                            ItemRow(item: item, bucket: bucket)
-                                .contextMenu {
-                                    if teka.isAdopted, !item.hasRecurrence {
-                                        Button("Done") { actions.close(item, as: "complete", row.folder, reload: refresh) }
-                                        Button("Drop") { actions.close(item, as: "drop", row.folder, reload: refresh) }
-                                    }
-                                }
+                            ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
+                                    editable: teka.isAdopted, reload: refresh)
                         }
                     }
                 }
@@ -113,40 +112,4 @@ struct BucketHeader: View {
     let bucket: Bucket
     let count: Int
     var body: some View { Text("\(bucket.title) (\(count))").font(.headline) }
-}
-
-struct ItemRow: View {
-    let item: Item
-    let bucket: Bucket
-
-    var dateText: String {
-        if bucket == .nudge || bucket == .waiting {
-            return item.followUpAt.map { "chase \($0)" } ?? "chase now"
-        }
-        return item.due?.description ?? ""
-    }
-
-    var details: [String] {
-        var parts: [String] = []
-        if let party = item.waitingOn { parts.append("waiting on \(party)") }
-        if bucket == .nudge || bucket == .waiting, let due = item.due { parts.append("due \(due.description)") }
-        if item.hasRecurrence { parts.append("repeats; the hub manages it for now") }
-        if !item.tags.isEmpty { parts.append(item.tags.map { "#\($0)" }.joined(separator: " ")) }
-        return parts
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: item.priority == .high ? "exclamationmark.circle.fill" : "circle")
-                .foregroundStyle(item.priority == .high ? .red : .secondary)
-            Text(dateText).monospacedDigit().foregroundStyle(.secondary).frame(width: 120, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                if !details.isEmpty {
-                    Text(details.joined(separator: "   ")).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
 }

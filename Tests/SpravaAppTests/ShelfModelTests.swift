@@ -168,7 +168,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         #expect(Bucket.allCases.contains { page.count($0) > 0 })
         for _ in 0..<20 {
             _ = ShelfRowView(row: row, counts: counts).body
-            _ = NowView(row: row, today: model.today, page: page, reload: {}).body
+            _ = NowView(row: row, today: model.today, page: page, reload: {}, editor: ItemEditor()).body
         }
         #expect(summary.calls.value == 1)
     }
