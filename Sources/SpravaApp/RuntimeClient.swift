@@ -1,6 +1,10 @@
 import Foundation
+import os
 import Services
 import SpravaKit
+
+/// Codes only (architecture 3.7): the connection's error code, for diagnosis, never shown on a page.
+private let connectionLog = Logger(subsystem: "ca.orlenko.sprava", category: "runtime-client")
 
 /// The app's side of the XPC connection. The app never writes a binder: every change goes to the runtime, the
 /// single writer. Each request has a timeout (5 s for reads, 15 s for changes; architecture 2.1).
@@ -11,20 +15,22 @@ final class RuntimeClient {
     private let answer: (@MainActor (String) async throws -> String)?
     /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
     static var whenNotRunning: (@MainActor () -> Void)?
+    /// Run after every answer from the runtime, a refusal included.
+    private var answered: [@MainActor () -> Void] = []
+
+    /// Commands that only read when sent with no fields (`binder_settings` with fields saves). A read that fails to
+    /// reach the runtime is sent once more on a new connection: the first may have been made before the runtime was
+    /// there, or kept from a runtime since restarted.
+    static let reads: Set<String> = ["ping", "unfiled", "readings", "binder_settings", "proposals", "history",
+                                     "list_clients", "backup_status"]
+
+    static func isRead(_ request: JSONObject) -> Bool {
+        guard let name = request["command"]?.stringValue, reads.contains(name) else { return false }
+        return request.keys.allSatisfy { $0 == "command" || $0 == "binder" }
+    }
 
     init(answer: (@MainActor (String) async throws -> String)? = nil) {
         self.answer = answer
-    }
-
-    private func proxy(onError: @escaping @Sendable (Error) -> Void) -> SpravaRuntimeXPC? {
-        if connection == nil {
-            let c = NSXPCConnection(machServiceName: XPCNames.runtime, options: [])
-            c.remoteObjectInterface = NSXPCInterface(with: SpravaRuntimeXPC.self)
-            c.invalidationHandler = { [weak self] in Task { @MainActor in self?.connection = nil } }
-            c.resume()
-            connection = c
-        }
-        return connection?.remoteObjectProxyWithErrorHandler(onError) as? SpravaRuntimeXPC
     }
 
     struct Failure: Error, CustomStringConvertible {
@@ -33,11 +39,26 @@ final class RuntimeClient {
         var kind = Kind.refused
         var description: String { message }
 
+        /// What a page says when the runtime cannot be reached.
+        static let notRunningLine = "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot."
+        /// What a page says when a change could not reach the runtime. The connection may have failed after the
+        /// runtime took the change, so it says "may".
+        static let changeNotRunningLine = "Sprava's background part was not running, so this may not have been saved. Sprava is starting it; reload to check, then try again."
+
         /// The connection failed: nothing answers under the runtime's name. The system's own words ("Couldn't communicate
-        /// with a helper application") tell a person nothing they can act on, so only the error's code is kept, for diagnosis.
+        /// with a helper application") and its code tell a person nothing they can act on; the code goes to the log.
         static func notRunning(_ error: Error) -> Failure {
-            Failure(message: "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot. (error \((error as NSError).code))",
-                    kind: .notRunning)
+            Failure(message: notRunningLine, kind: .notRunning)
+        }
+    }
+
+    /// Clears the page's message once the runtime answers, when a read left it because the runtime was not running
+    /// (`RuntimePage.readFailed`): the line was true when written, and the page must not keep saying it while the
+    /// runtime runs. A change's failure stays: the person must see that it was not saved.
+    func clearsNotRunning(_ page: some RuntimePage) {
+        answered.append { [weak page] in
+            guard let page, page.readFoundNoRuntime else { return }
+            page.message = nil
         }
     }
 
@@ -63,29 +84,75 @@ final class RuntimeClient {
     }
 
     /// Sends one request and returns the reply object. Throws when the runtime does not answer in time or
-    /// answers `ok: false`.
+    /// answers `ok: false`. A read that does not reach the runtime is sent once more (`reads`); a change is not,
+    /// so nothing is applied twice.
     func send(_ request: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
         let text = JSONWriter.compact(.object(request))
-        let reply: String = if let answer { try await answer(text) } else { try await viaXPC(text, timeout: timeout) }
+        let read = Self.isRead(request)
+        let reply: String
+        do {
+            do {
+                reply = try await deliver(text, timeout: timeout)
+            } catch let failure as Failure where failure.kind == .notRunning && read {
+                reply = try await deliver(text, timeout: timeout)
+            }
+        } catch let failure as Failure where failure.kind == .notRunning {
+            RuntimeClient.whenNotRunning?()
+            // A change's line stays true once the runtime runs, so the page keeps it until the next action.
+            throw read ? failure : Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
+        }
+        for run in answered { run() }
         guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
         guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused") }
         return o
     }
 
-    private func viaXPC(_ text: String, timeout: TimeInterval) async throws -> String {
+    private func deliver(_ text: String, timeout: TimeInterval) async throws -> String {
+        if let answer { return try await answer(text) }
+        let c = openConnection()
+        do {
+            return try await viaXPC(text, on: c, timeout: timeout)
+        } catch let failure as Failure where failure.kind == .notRunning {
+            // A failed connection is never used again; the next request makes a new one.
+            drop(c)
+            throw failure
+        }
+    }
+
+    private func openConnection() -> NSXPCConnection {
+        if let connection { return connection }
+        let c = NSXPCConnection(machServiceName: XPCNames.runtime, options: [])
+        c.remoteObjectInterface = NSXPCInterface(with: SpravaRuntimeXPC.self)
+        let id = ObjectIdentifier(c)
+        c.invalidationHandler = { [weak self] in Task { @MainActor in self?.forget(id) } }
+        c.resume()
+        connection = c
+        return c
+    }
+
+    private func drop(_ c: NSXPCConnection) {
+        forget(ObjectIdentifier(c))
+        c.invalidate()
+    }
+
+    /// Forgets the connection only if it is still the one kept: a late invalidation never drops a newer one.
+    private func forget(_ id: ObjectIdentifier) {
+        if let connection, ObjectIdentifier(connection) == id { self.connection = nil }
+    }
+
+    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
-            let proxy = self.proxy { error in
+            let proxy = c.remoteObjectProxyWithErrorHandler { error in
                 if once.claim() {
+                    connectionLog.notice("runtime connection failed code=\((error as NSError).code, privacy: .public)")
                     continuation.resume(throwing: Failure.notRunning(error))
-                    Task { @MainActor in RuntimeClient.whenNotRunning?() }
                 }
-            }
+            } as? SpravaRuntimeXPC
             guard let proxy else {
                 if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot.",
-                                                          kind: .notRunning))
-                    RuntimeClient.whenNotRunning?()
+                    connectionLog.notice("runtime connection failed code=no_proxy")
+                    continuation.resume(throwing: Failure(message: Failure.notRunningLine, kind: .notRunning))
                 }
                 return
             }
@@ -111,6 +178,25 @@ final class RuntimeClient {
         var r = JSONObject([(key: "command", value: .string(name)), (key: "binder", value: .string(binder.standardizedFileURL.path))])
         for (k, v) in fields { r.set(k, v) }
         return try await send(r, timeout: timeout)
+    }
+}
+
+/// A page that reads from the runtime and shows one message. Its `message` resets `readFoundNoRuntime` whenever it is
+/// set (a `didSet`), so only the line a read left is ever cleared by `RuntimeClient.clearsNotRunning`.
+@MainActor
+protocol RuntimePage: AnyObject {
+    var message: String? { get set }
+    var readFoundNoRuntime: Bool { get set }
+}
+
+extension RuntimePage {
+    /// Shows a read's failure; one that found the runtime not running is marked, so the next answer clears it. It never
+    /// covers a change's failure for the same reason: that line says what may not have been saved, and stays.
+    func readFailed(_ text: String, _ error: Error) {
+        let noRuntime = (error as? RuntimeClient.Failure)?.kind == .notRunning
+        if noRuntime, !readFoundNoRuntime, message?.contains(RuntimeClient.Failure.changeNotRunningLine) == true { return }
+        message = text
+        readFoundNoRuntime = noRuntime
     }
 }
 

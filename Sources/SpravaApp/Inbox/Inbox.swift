@@ -10,7 +10,7 @@ import SwiftUI
 /// runtime turns each into a Tier 0 card within its next sweep, and cards with no binder wait here until the
 /// person picks one.
 @MainActor
-final class InboxModel: ObservableObject {
+final class InboxModel: ObservableObject, RuntimePage {
     struct Card: Identifiable {
         let id: String
         let title: String
@@ -45,7 +45,8 @@ final class InboxModel: ObservableObject {
     @Published var draft = ""
     @Published var draftBinder: URL?
     @Published var target: [String: URL] = [:]
-    @Published var message: String?
+    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    var readFoundNoRuntime = false
     @Published var saving = false
     var startedTyping: Date?
     let client: RuntimeClient
@@ -58,6 +59,8 @@ final class InboxModel: ObservableObject {
     init(client: RuntimeClient = RuntimeClient(), support: URL = SpravaPaths.supportDirectory()) {
         self.client = client
         self.support = support
+        // The Inbox reads every 30 seconds: a launch before the runtime's must not leave its line up all day.
+        client.clearsNotRunning(self)
     }
 
     func load() async {
@@ -81,7 +84,7 @@ final class InboxModel: ObservableObject {
                 return Reading(id: id, binder: r["binder"]?.stringValue ?? "", title: Shown.preview(r["title"]?.stringValue ?? ""),
                                summary: r["summary"]?.stringValue.map(Shown.preview), reasons: Shown(strings(r["reasons"])))
             }
-        } catch { message = "\(error)" }
+        } catch { readFailed("\(error)", error) }
     }
 
     private func strings(_ value: JSONValue?) -> [String] { value?.arrayValue?.compactMap(\.stringValue) ?? [] }

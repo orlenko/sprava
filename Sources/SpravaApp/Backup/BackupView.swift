@@ -7,7 +7,7 @@ import SwiftUI
 /// runtime reports. Everything goes through the runtime's backup commands; slow work runs there and this page reads
 /// its status again. Restore, peek and offloaded binders join with their commands.
 @MainActor
-final class BackupModel: ObservableObject {
+final class BackupModel: ObservableObject, RuntimePage {
     struct Line: Identifiable, Equatable { let id: Int; let name: String; let at: String?; let error: String? }
     struct Request: Identifiable, Equatable { let id: String; let kind: String; let state: String; let message: String? }
 
@@ -34,11 +34,13 @@ final class BackupModel: ObservableObject {
     @Published var typedKey = ""
     @Published var iCloudKeychain = false
     @Published var working = false
-    @Published var message: String?
+    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    var readFoundNoRuntime = false
     let client: RuntimeClient
 
     init(client: RuntimeClient = RuntimeClient()) {
         self.client = client
+        client.clearsNotRunning(self)
     }
 
     func load() async {
@@ -61,7 +63,7 @@ final class BackupModel: ObservableObject {
                                message: q["message"]?.stringValue)
             }
         } catch {
-            message = "Backup status could not be read: \(error)"
+            readFailed("Backup status could not be read: \(error)", error)
         }
     }
 

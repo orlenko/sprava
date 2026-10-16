@@ -33,8 +33,9 @@ final class ShelfModel: ObservableObject {
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
-    private lazy var disk = ShelfDiskWorker(queue: workQueue)
+    private lazy var disk = ShelfDiskWorker(queue: workQueue, deadline: deadline)
     private let readTimeout: TimeInterval
+    private let deadline: DiskDeadline
     private var snapshotGeneration: UInt64 = 0
     private let readSnapshot: @Sendable (URL) -> ShelfSnapshot.Snapshot
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
@@ -53,10 +54,12 @@ final class ShelfModel: ObservableObject {
 
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
-         summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read) {
+         summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read,
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
         self.support = support
         self.readSnapshot = readSnapshot
         self.readTimeout = readTimeout
+        self.deadline = deadline
         self.summarize = summarize
         self.client = client
         let health = HealthModel(support: support)
