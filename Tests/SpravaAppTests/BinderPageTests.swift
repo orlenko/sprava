@@ -83,7 +83,7 @@ import Testing
         // The page loaded while the read was still stalled.
         #expect(!stalled.completed)
         #expect(stalled.ranOffMain && actions.keeping == nil && actions.keepingNote != nil && actions.settingsLoaded)
-        _ = KeepingSection(actions: actions, folder: kitchen, today: CalendarDate.today(), reload: {}).body
+        _ = KeepingRows(actions: actions, folder: kitchen, today: CalendarDate.today(), reload: {}).body
         #expect(stalled.calls.value == 1)
 
         // Once the read ends, the next load shows what it found and the note goes away.
