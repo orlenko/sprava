@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sprava:teka:v0:conversation-line",
+  "title": "binder v0 conversation history line",
+  "description": "One physical NDJSON line, not a trusted instruction. Readers also enforce byte bounds, multipart consistency and external authentication (binder-v0 section 7.2.1).",
+  "type": "object",
+  "required": ["format_version", "id", "turn", "at", "speaker", "origin", "text", "part", "parts", "references"],
+  "properties": {
+    "format_version": { "const": "0" },
+    "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "turn": { "$ref": "#/$defs/uuid" },
+    "at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "speaker": { "enum": ["person", "front-desk", "back-office"] },
+    "origin": { "enum": ["app", "runtime", "terminal"] },
+    "text": { "type": "string", "maxLength": 65536 },
+    "part": { "type": "integer", "minimum": 1, "maximum": 64 },
+    "parts": { "type": "integer", "minimum": 1, "maximum": 64 },
+    "device": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "model": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "request_id": { "$ref": "#/$defs/uuid" },
+    "references": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/reference" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "speaker": { "const": "person" } } },
+      "then": { "required": ["device"] },
+      "else": { "required": ["model"] }
+    },
+    {
+      "if": { "properties": { "speaker": { "const": "person" }, "origin": { "const": "app" } } },
+      "then": { "required": ["request_id"] }
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "reference": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["document", "capture", "op", "batch", "question", "answer", "task"] },
+        "id": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 1024 }, { "type": "integer", "not": { "const": 0 } }] }
+      },
+      "if": { "properties": { "kind": { "const": "document" } } },
+      "else": {
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

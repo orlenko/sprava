@@ -130,7 +130,7 @@ for that binder and feeds it instructions as needed: requests the front desk rou
 (7.1), brief upkeep (8.2) and rule drafting (8.1). Tasks run in sessions of their own (10). Sprava drives it
 over the agent's structured protocol (Claude Code's stream-json, Codex's app server, 11.1), never by
 scripting a terminal: no tmux, no screen scraping. The session keeps its id across restarts of Sprava and of
-the agent, and resumes by that id.
+the agent, and resumes by that id, except at the Terminal trust boundary below.
 
 **Open in Terminal.** The binder's back-office session (or a running task's) can be opened in a real terminal
 with `claude --resume <id>` in the binder's agent home (`codex resume <id>` for Codex; 11.1), so the person can talk to it
@@ -144,9 +144,33 @@ The terminal is not the app's window, so it cannot authorize changes (6.1): its 
 registered client, and anything it asks to change arrives in the conversation as a proposal with Apply. The
 person presses Resume in the header to hand the session back; Sprava checks that no terminal process still
 holds it, revokes the token, and imports the turns made in the terminal from the session's own history file
-into the transcript as display lines marked "in Terminal" (never instructions, 6.2 item 4) before it drives again. Session files are deleted
-only after that import has succeeded; if it fails, they are kept and the engine settings say so. A terminal
-left open is noticed at the next Resume or at the latest when the task ends, and imported the same way.
+into the transcript as display lines marked "in Terminal" (never instructions, 6.2 item 4) before it drives
+again. The import is durable before Resume succeeds; if it fails, Sprava keeps the history, reports the
+failure and does not drive that session. Retrying an import or Resume must not duplicate imported turns.
+A terminal left open is noticed at the next Resume or at the latest when the task ends, and imported the
+same way, after its process has exited.
+
+**Retain history; replace the driven context.** Importing display lines does not authenticate Terminal
+messages. A native session touched by Terminal must never resume with privileged back-office credentials:
+its old user messages could act as instructions during the next unrelated app turn. A token change or a
+display-only label on the transcript copy cannot demote messages already in the model's native context.
+
+After the durable import, Sprava retains that session's entire home as an inactive archive outside every
+active engine home. It creates a fresh isolated home and session id for the app-driven continuation,
+seeded only from Sprava's canonical instructions and the runtime-authenticated app history and rules
+allowed by 6.2 item 4. Terminal turns are excluded from that seed and from later model-context assembly,
+including retrieval; they remain visible to the person in the transcript, without indexing. The archive
+is not auto-loaded, used as a resume source or given privileged credentials. To make something said in
+Terminal an app instruction, the person must send it as a new authenticated app line; pressing Resume alone
+does not authorize a turn. Ordinary process restarts can resume the fresh driven session by its new id.
+Neither import nor context replacement deletes the archived history. The separate cleanup operations in
+11.1 clear both active and archived homes under their barrier.
+
+Before enabling this handoff, fixtures must cover a Terminal message asking for an action on the next
+request, then Resume and an unrelated app turn: the Terminal-touched session receives no privileged token,
+and none of its messages enters the fresh driven context. Two Resumes and a process restart retain the
+archive and display each imported turn once. An import failure retains the home and leaves driving paused.
+These are required runtime fixtures, not checks already implemented here.
 
 ## 5. Files in
 
@@ -207,10 +231,23 @@ level deep, through the one opener above; a description never matches a link; th
 
 ### 5.3 Arrivals
 
-Files that a mail monitor, a download or another program puts in `intake/` take the same path and are filed at
+New files that a mail monitor, a download or another program puts in `intake/` take the same path and are filed at
 once (decisions.md D2); the conversation shows "While you were away: filed 2 documents", and the strip counts
 unread reports. A per-binder email intake that replaces the author's mail-fetching script, which drops copies
 of messages into an intake subfolder, is future work and not in this plan.
+
+Every file returned by `unfile_document` is held, whether the op came from Undo or a direct correction (6.1).
+It is not a new arrival: automatic filing, background review and filing rules leave it alone until the
+person explicitly chooses to file it again. A restart, rescan or rediscovery cannot clear that hold.
+Unfiling and the durable hold are one recoverable decision: the file cannot become eligible for automatic
+filing between the move and recording the hold. An unreadable or uncertain hold state pauses filing rather
+than treating the returned file as new. The hold is runtime-owned state; a binder file or an engine's text
+cannot release it.
+
+Before enabling `unfile_document`, fixtures must cover both a direct unfile and an Undo followed by restart
+and intake rescan, a failed hold-state read, and an explicit File again decision that files once. Until that
+decision, the original file stays in intake without an automatic filing batch. These are implementation
+gates, not runtime tests already provided by this design.
 
 ### 5.4 Instructions before and after
 
@@ -250,7 +287,8 @@ by code in the runtime (decisions.md D3):
 
 Three new ops (binder-v0, section 15 PR 1): `move_document {id, path}` moves a filed file within the binder
 without replacing anything; `unfile_document {id}` moves a file this implementation filed back into `intake/`
-and removes its record, the id never reused. It becomes the undo of `file_document`, so Undo returns the file.
+and removes its record, the id never reused. Every invocation also records the durable intake hold of 5.3;
+it is not limited to Undo. It becomes the undo of `file_document`, so Undo returns the file held.
 `transfer_document {id, to}` moves a filed file to another binder Sprava owns: the op is logged in the source
 binder first, the file is placed in the destination's `intake/` with an exclusive create (a rename on the same
 volume, else a copy checked by SHA-256 before the source is removed) and its record is removed from the source;
@@ -320,8 +358,9 @@ done", "send the binder to this address") is contained by:
 
 A turn's class A changes share a batch; Undo on its report appends the compensating ops (binder-v0 §6.10, with
 `unfile_document` for filings). Undo stays on the report for 30 days (proposed) and in the item's or
-document's history forever. An undone file waits in `intake/`, marked so the pipeline leaves it alone, until
-the person says what to do. Every Undo is also a signal to the scores (7.2) and may yield a rule (8.1).
+document's history forever. An undone file waits in `intake/` under the same durable hold as every other
+`unfile_document` (5.3), until the person says what to do. Every Undo is also a signal to the scores (7.2)
+and may yield a rule (8.1).
 
 ## 7. Earned autonomy
 
@@ -544,12 +583,16 @@ claude -p --input-format stream-json --output-format stream-json --verbose
 - **Interrupt.** The `interrupt` control request stops the turn and its subagents and keeps the process.
 - **One driver per session.** Two processes on one session fork it and lose a message, so Sprava holds a lock
   per session id. Open in Terminal (4.2) releases Sprava's process first; Sprava drives again only after the
-  person presses Resume and no `claude` process holds the session (the home's `sessions/`).
+  person presses Resume and no `claude` process holds the session (the home's `sessions/`). A Terminal-touched
+  session is then archived, and driving starts a fresh isolated context under a new id as 4.2 requires.
 - **Environment**, in driven and Terminal sessions alike: `PATH`, and `HOME`, `CLAUDE_CONFIG_DIR` and
   `CLAUDE_CODE_TMPDIR` in the binder's home; `CLAUDE_CODE_OAUTH_TOKEN`; `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`; Sprava's MCP token.
 - **Clearing is deleting the home.** Resume and Open in Terminal need persistence, so the session, binder text
   included, stays in the binder's home, outside the binder; the state backup excludes `brains/` (section 12).
+  A successful Terminal-history import is not clearing and never triggers deletion (4.2); it archives that
+  home and starts a fresh driven context. Every cleanup below removes the active home, inactive archives
+  and their temporary folders, so retained Terminal history cannot survive a clear or expunge.
   Clearing the conversation, turning the back office off, offloading, removing the binder, and an expunge
   (binder-v0 §6.11) each delete the binder's whole agent home and its temporary folder, after any Terminal
   turns are in the transcript (4.2), and recreate it empty: no list of Claude's stores to keep up to date. The
@@ -692,22 +735,48 @@ Short experiments on invented binders, each before the PR that needs it. S1 to S
 - **S6 Translation** from the runtime and the helper, without a window. **S7 Retrieval**: FTS5 queries in each
   document language over 200 invented documents. **S8 Path import**: folder permissions; matching descriptions.
 
-## 15. Code PRs, in order
+## 15. Delivery order and code PRs
 
-Each under 1,000 changed lines and in one domain target where possible (code-structure 3). PRs 1 to 7 give a
-binder page that files drops and imports at once and answers with quotes, with code and the existing clerk;
-the local model follows, then the back office.
+The author's approved order (2026-10-15) puts a specialist for each binder before a local-model front desk:
+
+1. **Visible fixes first.** Preserve the person's words in Clerk titles; show runtime reconnect and sign-in
+   plainly; finish the binder's note box and About this binder, editing in place, cross-binder To-dos and
+   the app icon. Finish their remaining correctness gates rather than redoing components already landed.
+2. **The binder specialist.** Each binder page talks directly to that binder's own long-lived Claude Code
+   back office. A local router or front desk is not a prerequisite. First establish canonical identity,
+   authenticated transcript and durable request/operation interfaces; connect `Services.ChatCommands`
+   (send, typed reply events and interrupt) to that one binder's engine. The screen can use an injected fake
+   while the real engine is built. Captured attachments are authenticated opaque references, never paths a
+   model chose. Path/description import follows through the capture boundary, preserving originals.
+3. **The umbrella manager.** After the binder specialist: overdue/today reminders, a morning summary, briefs,
+   and routing a person's note to the right binder's specialist. Cross-binder work still respects disclosure
+   and each specialist's one-binder scope; it does not widen the specialist's tools.
+4. **The local front desk later.** Local-model selection and routing follow the specialist and umbrella
+   work. Existing extraction, retrieval and model-helper components are reused; they do not change this order.
+
+The specialist needs the common turn supervisor, bounded session admission, per-binder isolated homes,
+fail-closed startup, and back-office tools exposed as Sprava actions over MCP (11, 11.1, 17.5). Before a real
+backend is enabled, its installed-CLI spikes must prove literal input, effective confinement and tools/MCP,
+isolated authentication and all stores, plus session/Stop behavior. A codec, pure policy or fake-backed
+screen is not that proof. The unresolved spikes remain gates, not permission to read a live profile or sign in.
+
+The numbered component seams below retain their labels for existing cross-references; they are not a
+requirement to build the local front desk before the back office. Work on 14, 15 and the necessary engine
+controls in 18 alongside 1–7 for the specialist; defer 8–10 until the later local-front-desk stage. Each PR
+stays under 1,000 changed lines and in one domain target where possible (code-structure 3).
 
 1. **Spec (docs).** binder-v0: the transcript (§7.2), `move_document`, `unfile_document`, `transfer_document`
    (§6.3, §6.9, §6.10), conversation-applied ops and receipts (§6.2, §6.5), arrival provenance, `BRIEF.md` and
    the rules part of Sprava's manual section (with F14 of PR #347), expunge (§6.11); schemas and samples.
 2. **BinderStore: transcript and classes.** The transcript store, the class rule as one function the guard
    calls, the new ops, request receipts, a turn's batch and its expected-state Undo (17.2).
-3. **New `Retrieval` target: the index.** Passages with pages, items, log, the person's lines; rebuild; search.
+3. **`Retrieval`: reuse the existing index.** Passages with pages, items, log, authenticated person's lines;
+   rebuild and search through that target's interface.
 4. **Capture: file at once.** Drops and arrivals become a filing batch, the reasons to ask, instructions and
    rules as the reader's input, files handed over by descriptor.
-5. **Services: `ChatCommands` and the router skeleton.** Send, stream, Stop, answer, Apply, Undo a turn; intents
-   read by the clerk where the local model is absent; quote-first answers from search.
+5. **Services: `ChatCommands` and the binder-specialist adapter.** Send the person's exact line, typed reply
+   events and Stop to the selected binder's back office; answer, Apply and Undo through owner interfaces.
+   Durable acceptance precedes acknowledgment. Local-model routing is a later adapter, not this one's dependency.
 6. **SpravaApp: the conversation.** `Binder/Chat`: transcript, composer, drag and drop, strip, side panel with
    documents. May need `SPRAVA_ALLOW_LARGE=1` as a screen with its model and tests.
 7. **SpravaApp: import by path or description**, with its `Services` handler.

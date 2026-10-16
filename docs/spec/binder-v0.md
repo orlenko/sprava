@@ -114,6 +114,10 @@ When the folder's basename and `meta.name` differ, for example after the folder 
 
 When an implementation creates or imports a binder, it reports whether the binder's folder lies in a place a sync service uploads (section 9.2 step 14).
 
+A name and a folder path locate a binder; they are not its canonical identity. An implementation supporting
+identity-dependent sessions or effects uses the optional record and trusted admission of section 7.2.2.
+This leaves the existing name, item/document id and federation alias rules unchanged.
+
 ### 3.2 Optional files and folders with a defined meaning
 
 | Path | Meaning | Who writes it |
@@ -163,6 +167,7 @@ Running is only one way a file can act, so an implementation also follows these 
 
 - It reads as data only `catalog.json`, the files that `documents[]` names, `intake/` and `DASHBOARD.md`. Indexing, search, a model's context and MCP reads never cover `scripts/`, `.claude/`, `.agents/`, `.git/`, `.sprava/`, a file named `.env`, `.env.*` or `state.json` under `intake/mail/`, or a key file. A key file is any file whose name matches `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ecdsa*`, `id_ed25519*`, `*.age`, `age-identity*`, `.netrc`, `credentials*`, `token*.json` or `*.keychain*`. A match is excluded even when `documents[]` names the file. The email-intake module keeps a mail puller's configuration and state in `scripts/mail/` (`modules.py`), so credentials can sit inside a binder.
 - Text from a binder is data for any model, never instructions. That covers `CLAUDE.md`, `AGENTS.md`, filed emails and item titles.
+- The conversation reader of section 7.2.1 is the sole exception for `.sprava/`: it serves only the history allowed for that caller, never the surrounding files. Only a person's app message authenticated against trusted state outside the binder can become an instruction or an indexed conversation line; the text found in the binder cannot authenticate itself.
 - It never hands a file that can launch something to the system's default handler without a warning. The test uses the file's type as macOS sees it (its uniform type identifier), never the extension alone: anything that conforms to `public.executable`, an application bundle, a script, an installer package, a disk image, a shortcut or a location file (`.webloc`, `.fileloc`), and any file with the executable bit set, which Terminal would run.
 - Any view of binder content, a filed email or a Markdown document included, loads no remote resource: it renders without network access or blocks every `http` and `https` load. It never follows a link on its own. A remote link is shown as text the user can choose to open. A remote image in a filed email would otherwise tell the sender that the mail was read, and from which address.
 - Filing keeps a file's extended attributes, including `com.apple.quarantine`, which Gatekeeper relies on.
@@ -772,6 +777,8 @@ What it rewrites: free text only, never structure. A string is free text when th
 
 Before anything is written, the confirmation card shows every match by place. When the text also occurs where expunge cannot reach it, the card lists those places and says what the user can do by hand: a file name to rename, an id that cannot change, a capture event. Those matches stay.
 
+For an implementation with conversations, message `text` is also free text. Section 7.2.1 defines its multipart rewrite, trusted-copy invalidation and model-session barrier; its history is included in this operation, not left behind as an unknown file.
+
 Under the lock, the implementation:
 
 1. builds rewritten copies of `catalog.json`, every op line (the import snapshot included), every proposal, `snapshot.json`, the Notes section of `DASHBOARD.md`, the saved copies under `.sprava/adopted/` and the torn-line copies under `.sprava/torn/`. In each, every occurrence of the text inside a free-text string becomes `[expunged]`. A saved copy is parsed, rewritten and written back, so it is no longer byte-exact; a saved dashboard is rewritten as text.
@@ -857,6 +864,8 @@ The folder belongs to the full implementation that created or imported the binde
 | File | What it holds | Rebuildable? |
 | ---- | ------------- | ------------ |
 | `ops.ndjson` | The op log (section 6.9). | No. It is history. Losing it loses history, never state, because the catalog is the truth of state and closure entries keep the closed items (section 5.10). |
+| `conversation/<YYYY-MM>.ndjson` | Conversation messages and their references (section 7.2.1). | No. The person's original words are history, not something a model or the catalog can reconstruct. |
+| `binder-identity.json` | The persistent logical binder id (section 7.2.2). Its contents are an identity claim, not authority. | No. Losing it never permits silently inventing an identity for existing sessions or receipts. |
 | `proposals/<id>.json` | Proposals and their states (section 6.5). | No. Losing them loses the provenance detail of proposals that were never applied; applied ops still carry their proposal id. |
 | `adopted/` | `catalog.json` and `DASHBOARD.md` as found at import, byte for byte, the top-level hidden files and folders set aside at import under `top-level/` and the agent manuals under `manuals/`, each name that is an agent-manual name given a `.saved` suffix (section 9.4 step 2), any hand-edited dashboard saved before a new rendering (section 7.1), and, in `before-<timestamp>/`, the saved copies of an earlier adoption (section 9.4). The name stays from earlier drafts. | No. |
 | `torn/` | Op lines cut off by a crash, copied before they are truncated (section 6.9). | No, and nothing needs them. |
@@ -874,6 +883,200 @@ Files under `.sprava/` are untrusted when read. Any program that can write the b
 - the implementation keeps, outside the binder, a list of the proposal ids it created. A proposal file not on that list is shown as "found in the folder, origin unknown", never as the clerk's or a brain's work, and is never applied without the user editing or confirming each op;
 - `index.sqlite` is opened only when this installation created it, and always with SQLite's defensive settings (`SQLITE_DBCONFIG_DEFENSIVE` on, `trusted_schema` off). Otherwise it is rebuilt;
 - a `slice-key` that this installation did not make is reported before it is used, since it would change the published aliases. Paths stored under `.sprava/`, or in the survey, are relative to the binder or start with `~/`; they never contain a user name. The runtime's single-instance lease and heartbeat are not kept inside a binder (decisions.md A1).
+
+### 7.2.1 Conversation history
+
+This is the storage contract for implementations that support the binder conversation
+(`conversation.md` sections 3.2, 6.2 and 17.1). It does not enable a conversation writer or grant a brain
+access to `.sprava/`. Before enabling conversation writes, an implementation must provide the bounded
+reader, trusted acceptance and expunge behavior below. BinderStore is Sprava's only writer; the runtime
+serializes its writes with the binder's other changes under the lock of section 4.9.
+
+**Files and records.** Messages live in `.sprava/conversation/<YYYY-MM>.ndjson`, with the month taken from
+the message's UTC timestamp. The folder is mode 0700 and the files mode 0600. Ordinary writes append; they
+never replace old messages. The history travels with the binder through backup, offload and restore.
+One physical line is one UTF-8 JSON object followed by LF, described by
+`schemas/conversation-line.schema.json`. A message has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | `"0"`. |
+| `id` | A UUIDv7 identifying the message, not an item, op, turn or request. |
+| `turn` | The runtime's opaque UUID for the turn to which the message belongs. |
+| `at` | A real UTC timestamp, `YYYY-MM-DDTHH:MM:SSZ`. All parts keep the same timestamp. |
+| `speaker` | `person`, `front-desk` or `back-office`. |
+| `origin` | `app`, `runtime` or `terminal`; a description, never proof of origin. |
+| `text` | The original text, or one part of it, without trimming, normalization or truncation. |
+| `part`, `parts` | One-based part number and total part count; both are present even for a single line. |
+| `references` | At most 64 typed references to documents, captures, ops, batches, questions, answers or tasks. |
+| `device` | Required for a person's message: an opaque device id, never a computer or person's name. |
+| `model` | Required for either model speaker: the model identifier. |
+| `request_id` | Required for a person's app message: the app's client UUID used to recover acceptance. |
+
+A document reference copies the catalog id with its JSON type (section 5.6); integer `7` and string `"7"`
+are different. Other references carry opaque string ids. A reference is never an instruction to open a
+path, fetch a URL, apply an op or undo a batch. Files are not embedded in the transcript. A captured
+attachment must first be resolved by its owning target against the authenticated app request and this
+binder's scope; neither a transcript reference nor a capture id grants access by itself.
+
+**Parts and bounds.** A writer splits at Unicode scalar boundaries into at most 64 consecutive parts,
+each holding at most 65,536 UTF-8 bytes of decoded text. A message's joined text is at most 4,194,304 bytes.
+All fields except `part` and `text`, including references, are identical across its parts. It writes no
+interleaved message into that group. Concatenating the parts adds no whitespace or separator. No part
+crosses into another month file, even when a write finishes after midnight.
+
+One safe reader enforces the limits before allocating or parsing the corresponding unit:
+
+- A month file is a regular file opened without following a link or waiting on a special file, at most
+  64 MiB and 200,000 physical lines. An oversized file is refused as a whole and named on the page.
+- A physical line is at most 512 KiB before JSON decoding, excluding its final LF. JSON must be strict
+  (section 4.8), with no duplicate keys or invalid UTF-8, and at most 128 nested containers. Schema
+  character limits do not replace byte limits.
+- Before joining text, the reader checks the count, total UTF-8 bytes, consecutive numbering and identical
+  metadata. A second group reusing a message id, a missing or duplicated part, invalid record, or torn line
+  is damaged history. It is reported and preserved for repair, never silently joined, indexed or acted on.
+  It does not make another well-formed message authenticated.
+
+The writer checks the encoded group's size and the resulting month's bounds before starting an append.
+If it cannot store the complete message, it refuses acceptance and leaves the person's draft available;
+it never saves only a prefix or silently moves a message to a false month. A crash may leave a torn group;
+recovery preserves those bytes before repairing it, as section 6.9 does for torn op lines. A reader cannot
+interpret a newline in decoded `text` as a second physical record.
+
+**History is not authority.** Schema validity, ids, `speaker`, `origin`, `device`, a digest found in the
+folder, and the op log authenticate nothing. A restored, copied, edited or planted message is display-only
+unless the runtime's trusted state outside the binder authenticates its exact complete contents, origin
+and binding to this binder. A name, path or path hash is not that binder binding. The canonical binder
+identity interface must exist before a backend uses messages to authorize work.
+
+Only authenticated person's app messages can supply instructions or enter conversation search. Model
+messages, imported Terminal history and unauthenticated lines remain labelled data or display-only as
+`conversation.md` section 6.2 requires. Terminal import must be complete before its source session files
+are deleted; an import failure keeps them. Displayed text and references are inert, with no remote loads.
+The hub, companion projections and registered MCP clients receive no transcript, whatever disclosure
+allows for catalog records. Logs, notifications and the heartbeat receive no conversation content.
+
+Before send reports acceptance, the complete transcript group is appended and flushed with
+`fcntl(F_FULLFSYNC)` on macOS. The original complete text, attachments and turn identity must be durably
+recoverable, and trusted state must record the authenticated request. A duplicate `(binder, request_id)`
+returns the original turn; different text or attachments with that id is a conflict, never a second turn.
+A crash between a history append and trusted acceptance cannot turn a planted or partial message into an
+instruction: recovery must reconcile the exact pending record before accepting it or starting the engine.
+An authenticated history line alone never proves an item was changed; op and request receipts decide that
+(`conversation.md` section 17.1). End of stream is not completion, and closing a page is not Stop.
+
+**Expunge.** Section 6.11 also covers every conversation message's `text`. Match and replace on the complete
+message before splitting it again, so a match across a part boundary is removed. Preserve message and turn
+ids, timestamps, request ids and references. Include damaged and torn transcript copies in the confirmation
+inventory; when a copy cannot be safely rewritten, stop before changing any file and report it for repair.
+Check replacement sizes before changing any file too; a rewrite past the storage bounds is refused visibly,
+never truncated or partly applied.
+Under `expunge-pending`, suspend conversation reads and engine reuse. Trusted runtime copies and digests of
+rewritten text must be replaced or invalidated, and the model's old session cleared before it runs again;
+never authenticate an unknown binder message while doing this. Nothing records the removed text or a digest
+of it. Section 6.11's limits about old backups, captures and external copies still apply.
+
+Example, one physical line (all values invented):
+
+```json
+{"format_version":"0","id":"0199e9e6-3c00-7000-8000-000000000001","turn":"0199e9e6-3c00-7000-8000-000000000002","at":"2026-10-16T12:00:00Z","speaker":"person","origin":"app","device":"device-example","request_id":"0199e9e6-3c00-7000-8000-000000000003","text":"Renew the invented permit on Friday.","part":1,"parts":1,"references":[]}
+```
+
+Acceptance fixtures for the future store: join split multibyte text without alteration; refuse a missing
+part and an oversized month before allocating a joined message; show a planted `speaker: person` line
+without instructions or indexing; retry a lost acceptance reply without a second turn; reject changed
+attachments on the same request id; expunge a match spanning two parts without resurrecting the old model
+session. Schema validation alone is not these fixtures passing.
+
+### 7.2.2 Canonical binder identity and local admission
+
+This contract is for identity-dependent features, including driven brain sessions, authenticated
+conversation history and real-binder Companion adapters. It introduces no running issuer or resolver.
+Those features stay off until BinderStore's owner interface implements admission and its recovery tests;
+an implementation without this interface must not substitute a name, path, path hash or a temporary UI id.
+Ordinary format reading does not allocate an identity or become invalid merely because the record is absent.
+
+**Persistent claim.** `.sprava/binder-identity.json` is a private format record (folder mode 0700, file 0600),
+not a rebuildable cache. Its schema is `schemas/binder-identity.schema.json`. A writer allocates a random
+UUIDv4, written in canonical lowercase form as `binder_id`, with `format_version: "0"`. It is not derived
+from a folder, device, title, catalog hash or existing item ids. A rename, verified move, backup, offload or
+restore retains it. It does not replace the catalog's name or mint prefix, item/document ids, or transport
+aliases. The id is not a secret, a bearer token, or permission to read any binder.
+
+```json
+{"format_version":"0","binder_id":"719b80a0-4c10-4f01-8000-000000000001"}
+```
+
+The owner's reader validates at most 16 KiB of strict UTF-8 JSON, at most 128 nested containers, through a
+safe opener anchored to the candidate binder. Neither a linked intermediate directory nor a special file
+may redirect or block it. Missing, unreadable, malformed and unsupported-version records are distinct
+outcomes. Only absence during a new allocation permits creation; no read error is treated as absence.
+No model, registered MCP client, capture, relay request or binder file can request minting or changing it.
+Generic catalog ops do not write this record. Only an owner allocation or an explicitly chosen independent
+clone may create a new id; neither a reader nor collision handling remints it silently.
+
+**Trusted binding.** The record is copied with the binder and is untrusted under section 7.2. A matching id
+does not prove that a folder is this runtime's admitted instance. BinderStore owns a separate trusted
+binding outside every binder, in its own `StateStore` (code-structure section 4). That store binds the
+logical id to one admitted folder instance, its ownership and its current admission generation. A stored
+path or operating-system file identity may help verify the folder instance; neither supplies the logical
+id. The store's path and schema are added to the ownership table when its implementation is introduced.
+
+Callers obtain an admitted binding through the owner interface; a pair of strings supplied by an engine
+(`binder_id`, folder) is not that result. Every effect and privileged read revalidates the current binding
+and generation at admission to the serialized writer or reader queue. A queued request cannot retain
+authority across revocation, removal, offload or replacement. Session tokens, receipts and transport keys
+are never selected solely from an id found in a folder.
+
+Allocation is a runtime-writer operation for an authenticated local management request or adoption, never
+a side effect of read-only lookup. Under the binder write lock, it first durably records an allocation
+intent for the verified owned folder in its trusted store, then creates the identity record exclusively
+and flushes it, then durably marks the binding admitted. No identity-dependent work starts before both
+stores are consistent. Recovery resumes only a matching trusted pending intent; a file found without a
+matching trusted pending or admitted allocation record is not proof that this installation allocated or
+admitted it. An existing damaged or missing record for an established binding pauses identity-dependent
+effects instead of allocating a replacement.
+
+**Transitions and collisions.** Only one effective binding may act for a logical id. Discovering a second
+folder with the same claim preserves both folders and the established binding, and denies the candidate
+attachment to existing sessions, receipt processing and transport identities. A duplicate claim alone must
+not stop an otherwise verified established binder. If the trusted established binding itself is ambiguous,
+effects for that identity pause until resolved. No history is merged, binding overwritten or id changed
+as a consequence of discovery.
+
+The person's explicit management choice distinguishes these cases:
+
+- A rename or move proven to retain the admitted folder instance keeps the logical id. Its trusted locator
+  is updated through the owner; an old locator is not a new scope. A move that cannot be proven this way
+  follows the replacement rule instead of guessing by path or name.
+- A restore or replacement retains the logical id but requires a controlled binding transition. Before
+  enabling effects, the owner fences the prior writer, revokes old capabilities, reconciles the restored
+  catalog/op history with trusted receipts and anti-replay state, and installs a fresh admission generation.
+  The old folder being unavailable or the other Mac being offline is not evidence of fencing. A local
+  database uniqueness constraint or process lock alone does not fence a returning writer on another Mac.
+- An independent clone is a new binder. Its explicit allocation gives it a new logical id, preserving the
+  original binder and its binding. Copied transcript and op history remain data; their presence does not
+  transfer authenticated instructions, old sessions, approvals, receipts, phone authority or keys.
+
+Admission generations fence capabilities, not durable request deduplication. An ordinary verified move or
+runtime restart must not make an already accepted `(binder_id, client request_id)` a new request. A receipt
+from a newer catalog than a restored backup is not permission to repeat its effect or claim the restored
+state contains it. Until recovery reconciles that disagreement, the owner reports a visible conflict and
+admits no identity-dependent effects. The restore/ownership-transfer protocol must supply and test that
+reconciliation and writer fencing before such a transition is enabled; identity matching alone is not it.
+
+**Compatibility and surfaces.** The record is optional for existing v0 binders. Unknown implementations
+preserve it as format history; an implementation that does not support admission can still read the
+catalog but cannot claim identity-dependent authority. Receiving a valid record from a foreign folder or
+backup does not create a local trusted binding. This section adds no raw binder id to a hub slice, public
+alias or Companion wire format, and no new file is made available to a model or registered client.
+
+Acceptance fixtures for the future interface: initialize an owned legacy binder once; restart after each
+allocation phase without a second id; distinguish an unreadable record from absence; retain identity on a
+verified rename/move; reject a copied id without stopping the established binder; reject a stale admission
+after a queued request; restore an older catalog without replaying a newer receipt; keep replacement closed
+without writer fencing; and give an explicitly independent clone a new id without inherited authority.
+These are implementation gates, not behavior already provided by this specification or its schema.
 
 ## 8. The federation profile (optional)
 
