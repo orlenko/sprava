@@ -36,7 +36,7 @@ import Testing
             item("Pay the inspection fee of $100", "Pay the inspection fee", "pay", amount: "$100"),
             item("The insurance premium is due", "Pay the insurance premium", "pay", when: "November 1"),
         ]])
-        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "The insurance premium is due"])
+        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "The insurance premium is due November 1"])
         #expect(doc.items.first?.whenResolved == nil)
         #expect(doc.items.last?.whenResolved == nov1)
     }
@@ -47,7 +47,7 @@ import Testing
             item("Pay the inspection fee of $100", "Pay the inspection fee", "pay", amount: "$100"),
             item("The inspection report and the insurance premium", "Pay the insurance premium", "pay", when: "November 1"),
         ]])
-        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "The inspection report and the insurance premium are due"])
+        #expect(doc.items.map(\.title) == ["Pay the inspection fee", "The inspection report and the insurance premium are due November 1"])
     }
 
     // MARK: - 2. A longer title is another task, not a repeat

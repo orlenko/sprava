@@ -28,12 +28,26 @@ import Testing
     @Test func aModelVerbNeverReachesTheTitle() async {
         for when in ["today", ""] {
             let (interp, input) = await read("Bill Acme today", [item("Bill Acme today", "Call Bill Acme", "call", when: when)])
-            #expect(interp.items.map(\.title) == ["Bill Acme"], "when_text \(when)")
+            #expect(interp.items.map(\.title) == ["Bill Acme today"], "when_text \(when)")
             #expect(interp.items.first?.whenResolved == today)
             #expect(interp.items.first?.whenRole == .due)
             let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
-            #expect(card?.title == "Add \u{201C}Bill Acme\u{201D}")
-            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == "Bill Acme")
+            #expect(card?.title == "Add \u{201C}Bill Acme today\u{201D}")
+            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == "Bill Acme today")
+        }
+    }
+
+    @Test func aBareDateWordIsPreservedInTheTitle() async {
+        for (source, proposed, when) in [
+            ("Review Friday Lanterns", "Review Friday Lanterns", ""),
+            ("Review Friday", "Review Friday", "Friday"),
+            ("Read Tomorrow", "Read Tomorrow", "Tomorrow"),
+            ("Bill Acme today", "Call Bill Acme", "today"),
+        ] {
+            let (interp, input) = await read(source, [item(source, proposed, "review", when: when)])
+            #expect(interp.items.map(\.title) == [source])
+            let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
+            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == source)
         }
     }
 
@@ -122,13 +136,13 @@ import Testing
             item("order toner by Friday", "Buy printer toner", "pay", when: "Friday"),
             item("Dentist on Monday", "Visit the dentist", "meet", when: "on Monday"),
         ])
-        #expect(interp.items.map(\.title) == ["Bill Acme", "Order toner", "Dentist"])
+        #expect(interp.items.map(\.title) == ["Bill Acme today", "Order toner", "Dentist"])
     }
 
     @Test func aFrenchNoteKeepsItsFrenchWords() async {
         let (interp, _) = await read("Facturer Acme demain.", [item("Facturer Acme demain", "Bill Acme tomorrow", "send", when: "demain")],
                                      locale: "fr-CA")
-        #expect(interp.items.map(\.title) == ["Facturer Acme"])
+        #expect(interp.items.map(\.title) == ["Facturer Acme demain"])
         #expect(interp.items.first?.whenResolved == today.adding(days: 1))
         let (kept, _) = await read("Payer le loyer et appeler le notaire avant vendredi.", [
             item("Payer le loyer et appeler le notaire", "Appeler le notaire", "call", when: "avant vendredi"),
@@ -146,7 +160,7 @@ import Testing
                 #expect(Clerk.hasOnlyWords(of: sentence, kept), "\(title) -> \(kept)")
             }
         }
-        #expect(Clerk.ownTitle("Call Bill Acme", quote: "Bill", sentence: "Bill Acme today", whenText: "today") == "Bill Acme")
+        #expect(Clerk.ownTitle("Call Bill Acme", quote: "Bill", sentence: "Bill Acme today", whenText: "today") == "Bill Acme today")
         #expect(Clerk.ownTitle("Pay", quote: "Renew", sentence: "Renew the permit, $40, by the 15th.", whenText: "by the 15th")
             == "Renew the permit, $40")
         // A sentence that is only its time words keeps them, rather than an empty title.

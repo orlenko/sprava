@@ -79,8 +79,8 @@ extension Clerk {
 
     /// An item's title is the words of its source, never a model's paraphrase (capture-event-v0 §6.4 check 1): the
     /// model's title is kept only when every word of it is in the item's sentence; otherwise code builds it from the
-    /// sentence, so "Bill Acme today" is titled "Bill Acme", never "Call Bill Acme". Either way the time words are
-    /// taken out only when their source context identifies one occurrence: an ambiguous title keeps its words.
+    /// sentence, so "Call Bill Acme" cannot replace "Bill Acme today". Date words are removed only with one
+    /// explicit date lead in the source: bare or ambiguous date-shaped task words always stay.
     static func ownTitle(_ proposed: String, quote: String, sentence: String, whenText: String?) -> String {
         if hasOnlyWords(of: sentence, proposed) {
             let kept = cleaned(proposed, without: whenText, source: sentence)
@@ -140,8 +140,8 @@ extension Clerk {
                   timeLeads.contains(lead.lowercased().replacingOccurrences(of: "’", with: "'")) else { return nil }
             return String(lead) + " " + when
         }
-        if contexts.count == 1 { return contexts.first }
-        return contexts.isEmpty && found.count == 1 ? when : nil
+        // A bare date-shaped word can be part of the task, even when it occurs only once.
+        return contexts.count == 1 ? contexts.first : nil
     }
 
     /// Where `phrase` occurs in `text` as whole words, case-insensitively, with any white space between its words.
