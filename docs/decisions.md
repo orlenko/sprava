@@ -391,6 +391,13 @@
   current with no hand edit of `catalog.json`; every capture becomes a proposal within a minute of
   landing; no deadline is missed that the catalog knew about; a stopped runtime is visible in the
   app within five minutes.
+- **M4 decided (2026-10-15).** An adopted binder is on the clerk's filing list until the person takes it
+  off ("Suggest this binder for notes from the Inbox and the phone", under "About this binder" on its
+  page); one with no line about it is offered by its name. A binder at disclosure `none` stays off until
+  the person opts it in with a line they wrote (architecture 5.4). A note typed in the box at the top of
+  a binder's page names that binder, and the clerk keeps it there whether or not the binder is on the
+  list (capture-event-v0 §6.4 step 2, §8.1). Why: the list's only effect is routing notes written
+  elsewhere, and a person cannot be expected to opt each binder into it.
 
 ## The binder conversation (`docs/conversation.md`)
 

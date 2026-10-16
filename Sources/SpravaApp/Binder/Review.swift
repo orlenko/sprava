@@ -136,33 +136,58 @@ struct HistorySection: View {
     }
 }
 
-/// The binder's description for the clerk and its place on the filing list.
-struct FilingSection: View {
+/// The bottom of the page, closed until opened: what the binder is about, which helps Sprava route notes from
+/// the Inbox and the phone (the filing list, mvp.md feature 1), and the files Sprava keeps in its folder.
+struct AboutSection: View {
+    @ObservedObject var actions: BinderActions
+    let folder: URL
+    let today: CalendarDate
+    let reload: () -> Void
+
+    var body: some View {
+        Section {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 10) {
+                    RoutingRows(actions: actions, folder: folder)
+                    Divider()
+                    KeepingRows(actions: actions, folder: folder, today: today, reload: reload)
+                }
+                .padding(.vertical, 4)
+            } label: {
+                Text("About this binder").font(.headline)
+            }
+        }
+    }
+}
+
+/// The binder's line and whether notes from elsewhere may be filed here; both stay in Sprava's own settings.
+struct RoutingRows: View {
     @ObservedObject var actions: BinderActions
     let folder: URL
 
     var body: some View {
-        Section(header: Text("For the clerk").font(.headline)) {
-            TextField("One line: what this binder is about", text: $actions.description)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("What this binder is about").font(.subheadline.bold())
+            TextField("One line, such as: rental unit, tenants, repairs, rent", text: $actions.description)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { actions.saveSettings(folder) }
                 .disabled(!actions.settingsLoaded)
-            Toggle("On the clerk's filing list", isOn: Binding(get: { actions.filing }, set: {
+            Toggle("Suggest this binder for notes from the Inbox and the phone", isOn: Binding(get: { actions.filing }, set: {
                 actions.filing = $0
                 actions.saveSettings(folder)
             }))
-            .disabled(!actions.settingsLoaded || actions.description.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(!actions.settingsLoaded)
             if !actions.settingsLoaded {
                 Text("This binder's settings are being read; they can be changed once read.").font(.caption).foregroundStyle(.orange)
             }
-            Text("The clerk files a note here only when it is on the list. The line stays in Sprava, never in the binder.")
+            Text("This line only helps Sprava pick the right binder for a note written in the Inbox or on the phone. Notes typed at the top of this page always come here.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 }
 
 /// DASHBOARD.md and the manual addendum (binder-v0 §7.1, §9.8).
-struct KeepingSection: View {
+struct KeepingRows: View {
     @ObservedObject var actions: BinderActions
     let folder: URL
     let today: CalendarDate
@@ -171,12 +196,13 @@ struct KeepingSection: View {
     var body: some View {
         // Read by `BinderActions` off the main actor; rendering reads no file.
         let keeping = actions.keeping
-        Section(header: Text("Dashboard and manual").font(.headline)) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Files Sprava keeps in this folder").font(.subheadline.bold())
             if let note = actions.keepingNote { Text(note).foregroundStyle(.orange) }
             HStack {
                 switch keeping?.switched {
-                case true?: Text("Sprava keeps DASHBOARD.md. Edit only below \u{201C}## Notes\u{201D}.")
-                case false?: Text("DASHBOARD.md is kept by hand. Sprava can keep it for you; your text moves into its Notes section.")
+                case true?: Text("DASHBOARD.md is a summary of this binder for reading outside Sprava, rewritten as things change. Your own text belongs below its \u{201C}## Notes\u{201D} line, which Sprava never changes.")
+                case false?: Text("DASHBOARD.md here is written by hand. Sprava can keep it up to date for you; your text moves below its \u{201C}## Notes\u{201D} line.")
                 case nil: Text("Reading DASHBOARD.md\u{2026}").foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -195,10 +221,10 @@ struct KeepingSection: View {
             }
             HStack {
                 switch keeping?.addendum {
-                case _ where keeping == nil: Text("Reading the manual\u{2026}").foregroundStyle(.secondary)
-                case true?: Text("The manual carries Sprava's addendum.").foregroundStyle(.secondary)
-                case false?: Text("Paste Sprava's addendum into CLAUDE.md or AGENTS.md, so agents propose instead of editing.").foregroundStyle(.orange)
-                case nil: Text("No CLAUDE.md or AGENTS.md here. Paste the addendum into one if an agent works in this binder.").foregroundStyle(.secondary)
+                case _ where keeping == nil: Text("Reading the folder\u{2026}").foregroundStyle(.secondary)
+                case true?: Text("The instructions for coding agents in this folder include Sprava's addendum, so an agent asks for your OK before it changes the binder.").foregroundStyle(.secondary)
+                case false?: Text("This folder has instructions for coding agents without Sprava's addendum. If you run Claude Code or Codex here, paste the addendum into its CLAUDE.md or AGENTS.md, so the agent asks for your OK instead of changing the binder itself.")
+                case nil: Text("Only if you run Claude Code or Codex yourself in this binder's folder: paste the addendum into a CLAUDE.md or AGENTS.md there, so the agent asks for your OK instead of changing the binder itself.").foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(actions.copied ? "Copied" : "Copy Addendum") {

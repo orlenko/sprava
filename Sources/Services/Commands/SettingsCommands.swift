@@ -1,4 +1,6 @@
+import BinderFormat
 import BinderStore
+import Clerk
 import Foundation
 import Shelf
 import SpravaKit
@@ -17,7 +19,9 @@ extension Commands {
         // The clerk's filing list: read, or set when description or filing is given (mvp.md feature 1).
         let f = try folder(r)
         let list = FilingList(support: support)
-        var entry = list.load()[f.path] ?? FilingList.Entry(description: FilingList.readmeLine(f) ?? "", filing: false)
+        // Until the person saves an entry, the binder is on the list unless it is at disclosure none (FilingList+Clerk).
+        let teka = Teka.read(f)
+        var entry = list.load()[f.path] ?? FilingList.defaultEntry(folder: f, teka: teka)
         if r["description"] != nil || r["filing"] != nil {
             if case .string(let d)? = r["description"] {
                 // FilingList keeps one line of at most this many characters; a longer one is refused, never cut.
@@ -27,8 +31,11 @@ extension Commands {
                 entry.description = d
             }
             if case .bool(let on)? = r["filing"] { entry.filing = on }
-            if entry.filing, entry.description.trimmingCharacters(in: .whitespaces).isEmpty {
-                throw Failure(message: "a binder on the filing list needs a one-line description")
+            // A private binder is offered by an opaque label, which means nothing without the person's own line
+            // (architecture 5.4); any other binder can be offered by its name alone.
+            if entry.filing, entry.description.trimmingCharacters(in: .whitespaces).isEmpty,
+               PrivacyRatchet.disclosure(folder: f, teka: teka) == "none" {
+                throw Failure(message: "This binder is private, so Sprava suggests it for notes only with a line you write about what it holds.")
             }
             try list.set(f, entry)
         }
