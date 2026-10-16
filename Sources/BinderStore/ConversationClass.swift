@@ -14,7 +14,9 @@ public enum ConversationClass {
         case personTurn
         /// The intake pipeline filing a drop or an arrival.
         case intakePipeline
-        /// Work Sprava starts itself: review batches, a drop's follow-up, brief upkeep, tasks, a Terminal session.
+        /// A task the person started, whose new draft in `drafts/` is its result (§10).
+        case task
+        /// Other work Sprava starts itself: review batches, a drop's follow-up, brief upkeep, a Terminal session.
         case spravaWork
     }
 
@@ -54,20 +56,18 @@ public enum ConversationClass {
     /// More new items or documents than this in one turn wait for the person's tap (§6.1, proposed).
     public static let newRecordsPerTurn = 20
 
-    /// The class of every op of one turn, in order.
+    /// The class of every op of one turn, in order. Each op is judged against the records as the turn's earlier ops
+    /// leave them, so a marker set and cleared within one turn, or raised and lowered, is seen as what it is.
     public static func classify(_ ops: [(op: String, args: JSONObject)], context: Context) -> [Decision] {
-        // Items an earlier op of this turn redacts count as redacted for the ops after it.
-        var redacting: Set<JSONValue> = []
+        var state = TurnPrivacy(catalog: context.catalog)
         var decisions: [Decision] = []
         for (index, op) in ops.enumerated() {
-            decisions.append(classify(op.op, args: op.args, index: index, context: context, redacting: redacting))
-            if op.op == "update_item", op.args["set"]?["redact"] == .bool(true), let id = op.args["id"] { redacting.insert(id) }
-            if op.op == "file_document", op.args["document"]?["sensitivity"] == .str("private"), let id = op.args["document"]?["id"] {
-                redacting.insert(id)
-            }
+            decisions.append(classify(op.op, args: op.args, index: index, context: context, state: state))
+            state.apply(op.op, args: op.args)
         }
+        // Any start that can add records at once shows a large batch first (§6.2 item 5).
         let added = ops.indices.filter { ["add_item", "file_document"].contains(ops[$0].op) }
-        if context.start == .personTurn, added.count > newRecordsPerTurn {
+        if added.count > newRecordsPerTurn {
             for index in added where decisions[index].kind == .a {
                 decisions[index] = Decision(kind: .b, reason: "more than \(newRecordsPerTurn) new items or documents in one turn")
             }
@@ -75,8 +75,8 @@ public enum ConversationClass {
         return decisions
     }
 
-    static func classify(_ op: String, args: JSONObject, index: Int, context: Context, redacting: Set<JSONValue> = []) -> Decision {
-        if let widening = widening(op, args: args, catalog: context.catalog, redacting: redacting) { return Decision(kind: .c, reason: widening) }
+    static func classify(_ op: String, args: JSONObject, index: Int, context: Context, state: TurnPrivacy) -> Decision {
+        if let widening = state.loosening(op, args: args) { return Decision(kind: .c, reason: widening) }
         func a(_ why: String) -> Decision { Decision(kind: .a, reason: why) }
         func b(_ why: String) -> Decision { Decision(kind: .b, reason: why) }
         let id = args["id"]
@@ -93,8 +93,8 @@ public enum ConversationClass {
             if isFromIntake(args), args["document"]?["sensitivity"] == .str("private") { return a("filing a document from this binder's intake") }
             if context.start == .personTurn, isNewDraft(args) { return a("a new draft in drafts/") }
             return b("filing a document from elsewhere")
-        case (.spravaWork, "file_document"):
-            return isNewDraft(args) ? a("a task's new draft in drafts/") : b("work Sprava started files nothing without a tap")
+        case (.task, "file_document"):
+            return isNewDraft(args) ? a("a task's new draft in drafts/") : b("a task files nothing else without a tap")
 
         case (.personTurn, "add_item"):
             return context.personsWords(index) ? a("an item in the person's own words") : b("a suggestion; a document's obligations wait for a tap")
@@ -111,42 +111,11 @@ public enum ConversationClass {
         case (_, "transfer_document"):
             return b("moving a document to another binder")
         case (_, "add_item"), (_, "update_item"), (_, "set_status"), (_, "complete"), (_, "drop"), (_, "reopen"),
-             (_, "dismiss"), (_, "undismiss"), (_, "update_document"), (_, "move_document"), (_, "unfile_document"):
+             (_, "dismiss"), (_, "undismiss"), (_, "update_document"), (_, "move_document"), (_, "unfile_document"),
+             (_, "file_document"):
             return b(context.start == .personTurn ? "changing an existing item or document" : "work Sprava started changes nothing without a tap")
         default:
             return Decision(kind: .c, reason: "not a change a conversation can make")
-        }
-    }
-
-    /// A change that loosens what the hub, the phone or a brain sees, checked before any other class (§6.1;
-    /// architecture 4.5): `redact` cleared, the hub title changed, added or removed, a tag added to a redacted item,
-    /// its kind removed, or a document's `sensitivity` lowered.
-    static func widening(_ op: String, args: JSONObject, catalog: JSONObject, redacting: Set<JSONValue> = []) -> String? {
-        let set = args["set"]?.objectValue ?? JSONObject()
-        let unset = Set(args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-        switch op {
-        case "update_item":
-            guard let id = args["id"] else { return nil }
-            let item = catalog["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
-            let redacted = item?["redact"] == .bool(true)
-            if redacted, unset.contains("redact") || (set["redact"].map { $0 != .bool(true) } ?? false) { return "clearing a privacy marker" }
-            if set["slice_title"] != nil || unset.contains("slice_title") { return "changing the hub title" }
-            // Tags are judged against the item as it will be: redacted by this op or an earlier one of the turn too.
-            let redactedAfter = redacted || redacting.contains(id) || set["redact"] == .bool(true)
-            if redactedAfter, let tags = set["tags"]?.arrayValue,
-               !Set(tags).isSubset(of: Set(item?["tags"]?.arrayValue ?? [])) { return "adding a tag to a redacted item" }
-            if redacted, unset.contains("kind") { return "removing a redacted item's kind" }
-            return nil
-        case "update_document":
-            guard let id = args["id"] else { return nil }
-            let document = catalog["documents"]?.arrayValue?.first { $0["id"] == id }?.objectValue
-            if document?["sensitivity"] == .str("private") || redacting.contains(id),
-               unset.contains("sensitivity") || (set["sensitivity"].map { $0 != .str("private") } ?? false) {
-                return "lowering a document's sensitivity"
-            }
-            return nil
-        default:
-            return nil
         }
     }
 

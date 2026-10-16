@@ -68,7 +68,8 @@ import Testing
         #expect(kind("update_document", set(Self.document, [("title", .str("Invented"))]), stale) == .b)
         #expect(kind("unfile_document", [("id", Self.document)], stale) == .b)
         #expect(kind("complete", [("id", Self.item)], own) == .b)
-        #expect(kind("reopen", [("id", Self.item)], own) == .b)
+        // A reopen whose closed state is not recorded could show more than the item did (aReopenNeverShows...).
+        #expect(kind("reopen", [("id", Self.item)], own) == .c)
         #expect(kind("transfer_document", [("id", Self.document)], own) == .b)
         // An integer id is not its string twin (binder-v0 §5.6).
         let twin = context(.personTurn, ownDocuments: [.str("7")])
@@ -98,7 +99,9 @@ import Testing
 
         // A hostile document read during a review cannot drop, update or unfile anything (§6.1).
         let review = context(.spravaWork, ownDocuments: [Self.document], ownItems: [Self.item: now], words: true)
-        #expect(kind("file_document", [("document", .obj([("path", .str("drafts/summary.md")), ("sensitivity", .str("private"))]))], review) == .a)
+        let privateDraft: [(String, JSONValue)] = [("document", .obj([("path", .str("drafts/summary.md")), ("sensitivity", .str("private"))]))]
+        #expect(kind("file_document", privateDraft, review) == .b)   // only a task's own result is filed at once
+        #expect(kind("file_document", privateDraft, context(.task)) == .a)
         #expect(kind("file_document", [("from", .str("intake/scan.pdf")), ("document", .obj([("path", .str("x/scan.pdf"))]))], review) == .b)
         for op in ["drop", "update_item", "unfile_document", "update_document", "add_item"] {
             #expect(kind(op, [("id", op.hasSuffix("document") ? Self.document : Self.item)], review) == .b, "\(op)")
@@ -122,6 +125,43 @@ import Testing
         #expect(draft.map(\.kind) == [.a, .c])
     }
 
+    func ops(_ list: [(String, [(String, JSONValue)])]) -> [(op: String, args: JSONObject)] {
+        list.map { (op: $0.0, args: JSONObject($0.1.map { (key: $0.0, value: $0.1) })) }
+    }
+
+    @Test func eachOpIsJudgedAgainstTheRecordAsTheTurnLeavesIt() {
+        let own = context(.personTurn, ownDocuments: [Self.document], ownItems: [Self.item: now], words: true)
+        // Redacted, then cleared within one turn.
+        #expect(ConversationClass.classify(ops([
+            ("update_item", set(Self.item, [("title", .str("Invented private title")), ("redact", .bool(true)), ("kind", .str("payment"))])),
+            ("update_item", [("id", Self.item), ("unset", .array([.str("redact")]))]),
+        ]), context: own).map(\.kind) == [.a, .c])
+        // A document marked private, then unmarked.
+        #expect(ConversationClass.classify(ops([
+            ("update_document", set(Self.document, [("path", .str("leases/other.pdf")), ("sensitivity", .str("private"))])),
+            ("update_document", [("id", Self.document), ("unset", .array([.str("sensitivity")]))]),
+        ]), context: own).map(\.kind) == [.a, .c])
+        // A new item that is redacted yet carries tags, or names a hub title.
+        #expect(kind("add_item", [("item", .obj([("id", .str("$new:1")), ("title", .str("Invented")), ("redact", .bool(true)),
+                                                 ("kind", .str("payment")), ("tags", .array([.str("revealing")]))]))], own) == .c)
+        #expect(kind("add_item", [("item", .obj([("id", .str("$new:1")), ("title", .str("Invented")), ("slice_title", .str("Hub"))]))], own) == .c)
+        #expect(kind("add_item", [("item", .obj([("id", .str("$new:1")), ("title", .str("Invented")), ("tags", .array([.str("errand")]))]))], own) == .a)
+    }
+
+    @Test func aReopenNeverShowsMoreThanTheClosedItemDid() {
+        var withLog = catalog
+        withLog.set("processing_log", .array([.obj([("id", .str("acme-2026-003")), ("action", .str("dropped")),
+                                                     ("final", .obj([("redact", .bool(true)), ("kind", .str("payment"))]))])]))
+        let person = ConversationClass.Context(start: .personTurn, catalog: withLog, now: now)
+        func reopen(_ item: [(String, JSONValue)]) -> ConversationClass.Class {
+            ConversationClass.classify(ops([("reopen", [("id", .str("acme-2026-003")), ("item", .obj(item))])]), context: person)[0].kind
+        }
+        #expect(reopen([("id", .str("acme-2026-009")), ("title", .str("Invented")), ("redact", .bool(true)), ("kind", .str("payment"))]) == .b)
+        #expect(reopen([("id", .str("acme-2026-009")), ("title", .str("Invented")), ("kind", .str("payment"))]) == .c)
+        #expect(reopen([("id", .str("acme-2026-009")), ("title", .str("Invented")), ("redact", .bool(true)), ("kind", .str("payment")),
+                        ("tags", .array([.str("revealing")]))]) == .c)
+    }
+
     @Test func aTurnOverTheCapWaitsForATap() {
         let person = context(.personTurn, words: true)
         let ops = (0...ConversationClass.newRecordsPerTurn).map { n in
@@ -129,5 +169,11 @@ import Testing
         }
         #expect(ConversationClass.classify(Array(ops.prefix(ConversationClass.newRecordsPerTurn)), context: person).allSatisfy { $0.kind == .a })
         #expect(ConversationClass.classify(ops, context: person).allSatisfy { $0.kind == .b })
+        // Arrivals are capped too, so a large hostile arrival is shown first.
+        let arrivals = (0...ConversationClass.newRecordsPerTurn).map { n in
+            (op: "file_document", args: JSONObject([(key: "from", value: .string("intake/scan-\(n).pdf")),
+                                                    (key: "document", value: .obj([("path", .string("scans/\(n).pdf")), ("sensitivity", .str("private"))]))]))
+        }
+        #expect(ConversationClass.classify(arrivals, context: context(.intakePipeline)).allSatisfy { $0.kind == .b })
     }
 }
