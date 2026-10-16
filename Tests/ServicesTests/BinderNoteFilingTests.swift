@@ -106,10 +106,10 @@ import Testing
         #expect(list.binders(rows: rows, deviceID: c.deviceID).map(\.name) == ["globex"])
         // A note naming that name is not offered either: the name cannot tell the two apart.
         #expect(list.binders(rows: rows, deviceID: c.deviceID, hint: "acme").map(\.name) == ["globex"])
-        // Once one is taken off the list, the other is the only one the name means there.
+        // Taking one off the list cannot make a note from that sibling safe to route by name.
         _ = try settings(c, second, [("filing", .bool(false))])
-        #expect(list.binders(rows: rows, deviceID: c.deviceID).map(\.folder.standardizedFileURL.path).sorted()
-            == [first, other].map(\.standardizedFileURL.path).sorted())
+        #expect(list.binders(rows: rows, deviceID: c.deviceID).map(\.name) == ["globex"])
+        #expect(list.binders(rows: rows, deviceID: c.deviceID, hint: "acme").map(\.name) == ["globex"])
     }
 
     @Test func aPrivateBinderStaysOffTheListUntilThePersonWritesItsLine() throws {
