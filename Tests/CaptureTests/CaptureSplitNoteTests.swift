@@ -71,15 +71,19 @@ func shelfRow(_ folder: URL) -> ShelfRow { ShelfRow(folder: folder, source: .pic
         #expect(s.inbox.unfiled().isEmpty)
     }
 
-    /// A new line is proposed once, beside the item of the line before it; a clerk's own title (some of the line's
-    /// words, never others) stays.
+    /// A new line is proposed once, beside the item of the line before it; a title the person edited stays.
     @Test func aNewLineIsProposedOnce() async throws {
         let s = try pSetup()
-        let (a, b, _, adapter) = try await splitNote(s, titles: ("Roofer", "Blinds"))
+        let (a, b, _, adapter) = try await splitNote(s, titles: ("Call the roofer", "Order the blinds"))
+        let roofer = try #require(Teka.read(a).items.first { $0.title == "Call the roofer" })
+        let id = try #require(roofer.object?["id"])
+        _ = try TekaStore(folder: a).apply([.init(op: "update_item", args: JSONObject([
+            (key: "id", value: id), (key: "set", value: .obj([("title", .str("Roofer"))]))]),
+            actor: JSONObject([(key: "kind", value: .str("user"))]))], now: pNow)
         _ = try pEvent(s, device: adapter, app: "adapter", ref: "S1", revision: "rev2",
                        text: "Call the roofer before noon\nOrder the blinds\nMeasure the windows")
         _ = s.inbox.sweep(binders: [shelfRow(a), shelfRow(b)], commands: s.commands, now: pNow)
-        #expect(open(a).isEmpty)                                    // the clerk's title is its own words
+        #expect(open(a).isEmpty)                                    // the person's edited title is preserved
         let card = try #require(open(b).first)
         #expect(card.ops.map { $0["op"]?.stringValue } == ["add_item"])
         #expect(card.ops.first?["args"]?["item"]?["title"] == .str("Measure the windows"))
