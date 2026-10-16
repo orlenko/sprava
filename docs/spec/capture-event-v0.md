@@ -760,13 +760,13 @@ first cleans each item, then validates each item on its own. In a meeting, turn 
    longer than the strict schema allows is shortened at a word boundary, never dropped. The title is
    the person's own words, never the model's paraphrase: code keeps the model's `title` only when every
    word of it occurs in the item's sentence. Otherwise code builds it from the sentence, from the quote
-   on, with white space trimmed and the first letter capitalized. Time words are taken out only when a
-   unique explicit date context in the source identifies them (such as "by Friday"). Bare date-shaped
-   words stay, even if there is only one occurrence: "Review Friday Lanterns" must not become "Review
-   Lanterns". An ambiguous context stays too. Thus "Bill Acme today" stays "Bill Acme today", never "Call
-   Bill Acme"; the resolved date is also kept in its own field. A document's title and its items follow
-   the same source-word rule against the document's text. The model's own title is kept, never shown,
-   to tell two items of one sentence apart: two tasks can share the title code builds from their sentence.
+   on, with white space trimmed and the first letter capitalized. Code never removes date-shaped words
+   from a title: they may name a person, place, document or task, as in "Meet at Friday’s" or "Review
+   Friday Lanterns". Thus "Bill Acme today" stays "Bill Acme today", never "Call Bill Acme"; the resolved
+   date is also kept in its own field. A model may supply a shorter title using only source words, and
+   code does not remove further words from it. A document's title and its items follow the same
+   source-word rule against the document's text. The model's own title is kept, never shown, to tell
+   two items of one sentence apart: two tasks can share the title code builds from their sentence.
 2. Time. `when_text` is kept only when it occurs in the item's sentence and matches a known time
    pattern for the locale (section 6.6). Values such as "none", "now" or "not to the tenant" are
    dropped.

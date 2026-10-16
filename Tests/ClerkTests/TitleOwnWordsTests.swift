@@ -37,6 +37,16 @@ import Testing
         }
     }
 
+    @Test func dateShapedNamesKeepTheirWholeWords() async {
+        for name in ["Friday’s", "Friday's", "Friday-night", "Friday.txt", "Friday_report", "Friday/notes", "Friday\u{301}s"] {
+            let source = "Meet at \(name)"
+            let (interp, input) = await read(source, [item(source, source, "meet", when: "Friday")])
+            #expect(interp.items.map(\.title) == [source])
+            let card = Clerk.proposals(interp, event: input, today: today, client: "test", now: now).first?.1
+            #expect(card?.ops.first?["args"]?["item"]?["title"]?.stringValue == source)
+        }
+    }
+
     @Test func aBareDateWordIsPreservedInTheTitle() async {
         for (source, proposed, when) in [
             ("Review Friday Lanterns", "Review Friday Lanterns", ""),
@@ -53,11 +63,11 @@ import Testing
 
     @Test func aDeadlineLeavesRepeatedWordsInTheTaskName() async {
         for (source, proposed, expected) in [
-            ("Review Friday Lanterns on Friday", "Review Friday Lanterns on Friday", "Review Friday Lanterns"),
+            ("Review Friday Lanterns on Friday", "Review Friday Lanterns on Friday", "Review Friday Lanterns on Friday"),
             ("Review Friday Lanterns on Friday", "Review Friday Lanterns", "Review Friday Lanterns"),
-            ("On Friday review Friday Lanterns", "On Friday review Friday Lanterns", "Review Friday Lanterns"),
-            ("Review Friday Lanterns by Friday", "Summarize Friday Lanterns", "Review Friday Lanterns"),
-            // Without one identifiable date context, keep the words instead of guessing which one to remove.
+            ("On Friday review Friday Lanterns", "On Friday review Friday Lanterns", "On Friday review Friday Lanterns"),
+            ("Review Friday Lanterns by Friday", "Summarize Friday Lanterns", "Review Friday Lanterns by Friday"),
+            // Repeated or date-shaped source words remain intact in the displayed title.
             ("Review Friday Lanterns Friday", "Review Friday Lanterns Friday", "Review Friday Lanterns Friday"),
             ("Review On Friday on Friday", "Review On Friday on Friday", "Review On Friday on Friday"),
         ] {
@@ -74,8 +84,8 @@ import Testing
             item("Pay rent and send the lease", "Pay rent", "pay"),
             item("Pay rent and send the lease", "send the lease to the landlord by Friday", "send", when: "by Friday"),
         ])
-        // Kept, with the time words taken out and the first letter capitalized.
-        #expect(interp.items.map(\.title) == ["Pay rent", "Send the lease to the landlord"])
+        // Kept, with the first letter capitalized and the model's copied time words intact.
+        #expect(interp.items.map(\.title) == ["Pay rent", "Send the lease to the landlord by Friday"])
     }
 
     @Test func twoTasksThatDifferOnlyInTheirTimeBothStay() async {
@@ -83,7 +93,7 @@ import Testing
             item("Call the plumber on Monday", "Call the plumber on Monday", "call", when: "on Monday"),
             item("Call the plumber on Monday", "Call the plumber on Friday", "call", when: "on Friday"),
         ])
-        #expect(interp.items.map(\.title) == ["Call the plumber", "Call the plumber"])
+        #expect(interp.items.map(\.title) == ["Call the plumber on Monday", "Call the plumber on Friday"])
         #expect(interp.items.compactMap { $0.whenResolved?.description }.sorted() == ["2026-10-09", "2026-10-12"])
         // The same task listed twice is still one.
         let (once, _) = await read("Call the plumber by Friday.", [
@@ -102,18 +112,18 @@ import Testing
     /// The duplicate check tells two tasks with one shown title apart: by what the model called each, and its date.
     @Test func theDuplicateCheckTellsTasksWithOneTitleApart() async {
         let model = ScriptedModel(extractions: [.obj([("items", .array([
-            item("Call the plumber on Monday", "Call the plumber on Monday", "call", when: "on Monday"),
-            item("Call the plumber on Monday", "Call the plumber on Friday", "call", when: "on Friday"),
+            item("Call the plumber on Monday", "Book the plumber on Monday", "call", when: "on Monday"),
+            item("Call the plumber on Monday", "Schedule the plumber on Friday", "call", when: "on Friday"),
         ]))])])
         let open = FilingBinder.Candidate(id: .str("home-example-2026-001"), title: "Call the plumber", due: "2026-10-12",
                                           words: FilingBinder.significantWords("Call the plumber"))
         let folder = URL(fileURLWithPath: "/tmp/sprava-invented/home-example", isDirectory: true)
         let binder = FilingBinder(name: "home-example", description: "An invented home", folder: folder, openItems: [open])
-        model.duplicates = ["new item: call the plumber on monday, due 2026-10-12": ("home-example-2026-001", "same")]
+        model.duplicates = ["new item: book the plumber on monday, due 2026-10-12": ("home-example-2026-001", "same")]
         let input = ClerkInput(id: "evt-title", text: "Call the plumber on Monday and call the plumber on Friday.", locale: "en",
                                captureDay: today, estimated: false, isPrivate: false, sourceKind: nil, app: "test")
         let interp = await Clerk(model: model).read(input, filing: [binder], hint: "home-example", now: now)
-        #expect(interp.items.map(\.title) == ["Call the plumber", "Call the plumber"])
+        #expect(interp.items.map(\.title) == Array(repeating: "Call the plumber on Monday and call the plumber on Friday", count: 2))
         #expect(interp.items.filter { $0.match?.relation == "same" }.map { $0.whenResolved?.description } == ["2026-10-12"])
         #expect(interp.items.filter { $0.match == nil }.map { $0.whenResolved?.description } == ["2026-10-09"])
     }
@@ -136,7 +146,7 @@ import Testing
             item("order toner by Friday", "Buy printer toner", "pay", when: "Friday"),
             item("Dentist on Monday", "Visit the dentist", "meet", when: "on Monday"),
         ])
-        #expect(interp.items.map(\.title) == ["Bill Acme today", "Order toner", "Dentist"])
+        #expect(interp.items.map(\.title) == ["Bill Acme today", "Order toner by Friday", "Dentist on Monday"])
     }
 
     @Test func aFrenchNoteKeepsItsFrenchWords() async {
@@ -154,17 +164,16 @@ import Testing
         let sentences = ["Bill Acme today", "order toner by Friday", "Rappeler la banque d'ici lundi", "Renew the permit, $40, by the 15th."]
         let proposed = ["Call Bill Acme", "Buy toner", "Call the bank", "Renew the parking permit", "", "  ", "—", "Toner order Friday ok"]
         for sentence in sentences {
-            let when = DateGrammar.scan(sentence, anchor: today, locale: "en")?.text
             for title in proposed + [sentence] {
-                let kept = Clerk.ownTitle(title, quote: sentence, sentence: sentence, whenText: when)
+                let kept = Clerk.ownTitle(title, quote: sentence, sentence: sentence)
                 #expect(Clerk.hasOnlyWords(of: sentence, kept), "\(title) -> \(kept)")
             }
         }
-        #expect(Clerk.ownTitle("Call Bill Acme", quote: "Bill", sentence: "Bill Acme today", whenText: "today") == "Bill Acme today")
-        #expect(Clerk.ownTitle("Pay", quote: "Renew", sentence: "Renew the permit, $40, by the 15th.", whenText: "by the 15th")
-            == "Renew the permit, $40")
+        #expect(Clerk.ownTitle("Call Bill Acme", quote: "Bill", sentence: "Bill Acme today") == "Bill Acme today")
+        #expect(Clerk.ownTitle("Pay", quote: "Renew", sentence: "Renew the permit, $40, by the 15th.")
+            == "Renew the permit, $40, by the 15th")
         // A sentence that is only its time words keeps them, rather than an empty title.
-        #expect(Clerk.ownTitle("Do it", quote: "Tomorrow", sentence: "Tomorrow!", whenText: "Tomorrow") == "Tomorrow")
+        #expect(Clerk.ownTitle("Do it", quote: "Tomorrow", sentence: "Tomorrow!") == "Tomorrow")
     }
 
     @Test func aDocumentKeepsItsOwnWordsForItemsAndItsTitle() async {
@@ -177,7 +186,7 @@ import Testing
         let reading = IntakeReading(kind: "text", textFrom: "parsed", text: text, channel: "other")
         let doc = await Clerk(model: model).readDocument(reading, name: "notice.txt", binder: nil, locale: "en", now: now)
         #expect(doc.title == nil)
-        #expect(doc.items.map(\.title) == ["The special levy of $1,240 is payable"])
+        #expect(doc.items.map(\.title) == ["The special levy of $1,240 is payable by November 1"])
         #expect(doc.items.first?.whenResolved == CalendarDate(year: 2026, month: 11, day: 1))
     }
 }

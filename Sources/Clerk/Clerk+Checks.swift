@@ -61,7 +61,7 @@ extension Clerk {
             // An estimated capture time resolves only full dates (capture-event-v0 §6.6).
             if estimated, !DateGrammar.isFullDate(when, locale: locale) { item.whenResolved = nil }
         }
-        item.title = Self.ownTitle(called, quote: quote, sentence: sentence.text, whenText: item.whenText)
+        item.title = Self.ownTitle(called, quote: quote, sentence: sentence.text)
 
         // Check 3: the amount text occurs in the sentence and parses above 0.
         if let amountText = value["amount_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !amountText.isEmpty,
@@ -79,20 +79,20 @@ extension Clerk {
 
     /// An item's title is the words of its source, never a model's paraphrase (capture-event-v0 §6.4 check 1): the
     /// model's title is kept only when every word of it is in the item's sentence; otherwise code builds it from the
-    /// sentence, so "Call Bill Acme" cannot replace "Bill Acme today". Date words are removed only with one
-    /// explicit date lead in the source: bare or ambiguous date-shaped task words always stay.
-    static func ownTitle(_ proposed: String, quote: String, sentence: String, whenText: String?) -> String {
+    /// sentence, so "Call Bill Acme" cannot replace "Bill Acme today". Date words are never stripped from titles:
+    /// a date-shaped name is still the person's words, while the resolved date has its own field.
+    static func ownTitle(_ proposed: String, quote: String, sentence: String) -> String {
         if hasOnlyWords(of: sentence, proposed) {
-            let kept = cleaned(proposed, without: whenText, source: sentence)
+            let kept = cleaned(proposed)
             if hasOnlyWords(of: sentence, kept) { return kept }
         }
         var text = sentence
         let q = quote.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"“”«»")))
         if let r = phraseRange(q, in: text) { text = String(text[r.lowerBound...]) }
-        let built = cleaned(text, without: whenText, source: sentence)
+        let built = cleaned(text)
         if hasOnlyWords(of: sentence, built) { return built }
-        // A sentence that is only its time words ("Tomorrow!") keeps them, rather than an empty title.
-        let whole = cleaned(sentence, without: nil)
+        // If the quoted suffix has no words left, retain the source sentence.
+        let whole = cleaned(sentence)
         return whole.isEmpty ? shorten(sentence.trimmingCharacters(in: .whitespacesAndNewlines), to: 120) : whole
     }
 
@@ -106,19 +106,9 @@ extension Clerk {
         Set(CaptureText.asciiDigits(CaptureText.normalized(s).0).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
     }
 
-    /// Words that only lead into a time expression, left behind when the model's time words leave them out.
-    static let timeLeads: Set<String> = ["by", "before", "on", "until", "till", "at", "d'ici", "avant", "le", "la", "jusqu'à", "pour", "dès"]
-
-    /// `text` with its time words (and a word that only led into them) taken out, white space collapsed, list marks
-    /// and end punctuation trimmed, the first letter capitalized, at most 120 characters.
-    static func cleaned(_ text: String, without whenText: String?, source: String? = nil) -> String {
-        var text = text
-        if let when = whenText, let phrase = timePhrase(when, in: source ?? text) {
-            let found = phraseRanges(phrase, in: text)
-            if found.count == 1, let r = found.first {
-                text = text[..<r.lowerBound] + " " + text[r.upperBound...]
-            }
-        }
+    /// Collapse white space, trim list marks and end punctuation, capitalize the first letter and keep at most
+    /// 120 characters. Never guess which source words are dates to remove: names and filenames can look like dates.
+    static func cleaned(_ text: String) -> String {
         let ends = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?-–—•*·"))
         let title = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             .replacingOccurrences(of: " ([,;:.!?])", with: "$1", options: .regularExpression)
@@ -127,37 +117,11 @@ extension Clerk {
         return shorten((upper.count == 1 ? upper : String(first)) + title.dropFirst(), to: 120)
     }
 
-    /// Identify a date context in the source, not in a possibly shortened model title. When "Friday" also names
-    /// the task, only the unique "on Friday" / "by Friday" context is removable. Ambiguity preserves the words.
-    static func timePhrase(_ when: String, in source: String) -> String? {
-        let found = phraseRanges(when, in: source)
-        let startsWithLead = when.split(whereSeparator: \.isWhitespace).first.map {
-            timeLeads.contains($0.lowercased().replacingOccurrences(of: "’", with: "'"))
-        } ?? false
-        let contexts: [String] = found.compactMap { r in
-            if startsWithLead { return when }
-            guard let lead = source[..<r.lowerBound].split(whereSeparator: \.isWhitespace).last,
-                  timeLeads.contains(lead.lowercased().replacingOccurrences(of: "’", with: "'")) else { return nil }
-            return String(lead) + " " + when
-        }
-        // A bare date-shaped word can be part of the task, even when it occurs only once.
-        return contexts.count == 1 ? contexts.first : nil
-    }
-
     /// Where `phrase` occurs in `text` as whole words, case-insensitively, with any white space between its words.
     static func phraseRange(_ phrase: String, in text: String) -> Range<String.Index>? {
-        guard let pattern = phrasePattern(phrase) else { return nil }
-        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
-    }
-
-    static func phraseRanges(_ phrase: String, in text: String) -> [Range<String.Index>] {
-        guard let pattern = phrasePattern(phrase), let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
-        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range, in: text) }
-    }
-
-    static func phrasePattern(_ phrase: String) -> String? {
         let parts = phrase.split(whereSeparator: \.isWhitespace).map { NSRegularExpression.escapedPattern(for: String($0)) }
         guard !parts.isEmpty else { return nil }
-        return "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
+        let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive])
     }
 }
