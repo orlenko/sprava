@@ -103,6 +103,29 @@ public enum ConversationHistory {
         return .month(Month(month: month, messages: grouper.messages, damage: grouper.found.sorted { $0.lines.lowerBound < $1.lines.lowerBound }))
     }
 
+    /// How much of a month file a writer may append after (binder-v0 §7.2.1, as §6.9 does for the op log): its
+    /// complete lines, minus a last message whose parts stop before their count. What follows is a crash's torn
+    /// group, which the writer sets aside before cutting. A damaged line that is complete stays where it is.
+    package static func intactLength(of data: Data) -> Int {
+        let bytes = [UInt8](data)
+        let end = bytes.last == 0x0A ? bytes.count : (bytes.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0)
+        var lineEnd = end, expected: (id: String, part: Int)?
+        while lineEnd > 0 {
+            let lineStart = bytes[..<(lineEnd - 1)].lastIndex(of: 0x0A).map { $0 + 1 } ?? 0
+            guard lineEnd - 1 - lineStart <= ConversationLimits.lineBytes,
+                  let part = Part(Data(bytes[lineStart..<(lineEnd - 1)])) else { return end }
+            if let expected {
+                guard part.message.id == expected.id, part.part == expected.part else { return end }
+            } else if part.part == part.parts {
+                return end
+            }
+            if part.part == 1 { return lineStart }
+            expected = (part.message.id, part.part - 1)
+            lineEnd = lineStart
+        }
+        return end
+    }
+
     static func folder(of binder: URL) -> URL {
         binder.appendingPathComponent(".sprava/conversation", isDirectory: true)
     }

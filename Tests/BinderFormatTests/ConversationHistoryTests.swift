@@ -170,6 +170,20 @@ import Testing
         #expect(month(data)?.messages == [original])
     }
 
+    @Test func aWriterAppendsAfterCompleteMessagesOnly() throws {
+        let whole = try bytes([message(1)])
+        let long = try message(2, text: String(repeating: "a", count: 200_000)).lines()
+        #expect(ConversationHistory.intactLength(of: whole) == whole.count)
+        #expect(ConversationHistory.intactLength(of: whole + long[0] + long[1]) == whole.count)
+        #expect(ConversationHistory.intactLength(of: whole + long[0] + long[1].dropLast(3)) == whole.count)
+        #expect(ConversationHistory.intactLength(of: whole + long.reduce(Data(), +)) == whole.count + long.reduce(0) { $0 + $1.count })
+        // A complete damaged line is left in place for repair; only a crash's tail is cut.
+        let damaged = whole + line("not json") + long[0]
+        #expect(ConversationHistory.intactLength(of: damaged) == whole.count + line("not json").count)
+        #expect(ConversationHistory.intactLength(of: whole + line("not json")) == whole.count + line("not json").count)
+        #expect(ConversationHistory.intactLength(of: Data("torn".utf8)) == 0)
+    }
+
     @Test func tooManyLinesAreRefusedBeforeParsing() {
         let data = Data(repeating: 0x0A, count: ConversationLimits.monthLines + 1)
         #expect(ConversationHistory.read(data, month: "2026-10") == .refused("more than 200,000 lines"))
