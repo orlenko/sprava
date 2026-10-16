@@ -274,7 +274,8 @@ final class BinderActions: ObservableObject, RuntimePage {
     static func keptNote(_ fields: [String]) -> String? {
         guard !fields.isEmpty else { return nil }
         let names: [String: String] = ["due": "due date", "follow_up_at": "follow-up date", "expected_by": "expected date",
-                                       "waiting_on": "who it waits on", "no_deadline": "deadline", "dismissed": "hidden state"]
+                                       "waiting_on": "who it waits on", "no_deadline": "deadline", "dismissed": "hidden state",
+                                       "redact": "privacy marker", "slice_title": "hub title"]
         let words = fields.map { names[$0] ?? $0.replacingOccurrences(of: "_", with: " ") }
         let list = words.count == 1 ? words[0] : words.dropLast().joined(separator: ", ") + " and " + words.last!
         return "Undone. Your later change to the \(list) was kept."

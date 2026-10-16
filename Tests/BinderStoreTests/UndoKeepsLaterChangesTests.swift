@@ -53,6 +53,40 @@ import Testing
         _ = try Replay.run(try store.readOpLog().ops)
     }
 
+    @Test func anUndoThatKeepsALaterChangeNeverLiftsItsRedaction() throws {
+        let (folder, store) = try adopted()
+        let clerk = JSONObject([(key: "kind", value: .str("clerk")), (key: "model", value: .str("invented-model"))])
+        func privateUpdate(_ who: String) throws -> [JSONObject] {
+            let proposal = JSONValue.str(UUID().uuidString.lowercased())
+            return try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: Self.id), (key: "set", value: .obj([
+                ("waiting_on", .string(who)), ("redact", .bool(true)), ("kind", .str("reply-owed"))]))]), actor: clerk,
+                extra: [("proposal", proposal), ("approved_by", .str("user"))])], now: now)
+        }
+        let original = try #require(item(folder))
+        #expect(original["redact"] == nil && original["kind"] != nil)
+        let first = try privateUpdate("Invented Party A")
+        _ = try privateUpdate("Invented Party B")
+
+        let outcome = try store.undoChange(opID: first[0]["id"]!.stringValue!, now: now)
+        #expect(Set(outcome.kept) == ["waiting_on", "redact"])
+        #expect(item(folder)?["waiting_on"] == .str("Invented Party B"))
+        #expect(item(folder)?["redact"] == .bool(true))
+        // The earlier kind comes back: the item keeps one, so nothing is shown that its redaction hides.
+        #expect(item(folder)?["kind"] == original["kind"])
+    }
+
+    @Test func loosensNamesThePrivacyRatchetsWidenings() {
+        let redacted = JSONObject([(key: "redact", value: .bool(true)), (key: "tags", value: .array([.str("a")])), (key: "kind", value: .str("task"))])
+        #expect(Undo.loosens("redact", back: nil, current: redacted))
+        #expect(!Undo.loosens("redact", back: .bool(true), current: redacted))
+        #expect(Undo.loosens("tags", back: .array([.str("a"), .str("b")]), current: redacted))
+        #expect(!Undo.loosens("tags", back: .array([]), current: redacted))
+        #expect(Undo.loosens("kind", back: nil, current: redacted))
+        #expect(Undo.loosens("slice_title", back: nil, current: JSONObject([(key: "slice_title", value: .str("Invented"))])))
+        #expect(!Undo.loosens("tags", back: .array([.str("b")]), current: JSONObject()))
+        #expect(!Undo.loosens("due", back: nil, current: redacted))
+    }
+
     @Test func anEditWhoseEveryFieldChangedSinceIsRefusedWithNothingWritten() throws {
         let (folder, store) = try adopted()
         let first = try edit(store, [("priority", .str("low"))])

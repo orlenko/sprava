@@ -91,8 +91,15 @@ public enum Undo {
             let set = args["set"]?.objectValue ?? JSONObject()
             let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
             // Fields changed since keep their newer values; the others go back (conversation.md §17.2).
-            let kept = changedSince(id, set.keys + unset)
-            let fields = (set.keys + unset).filter { !kept.contains($0) }
+            var kept = changedSince(id, set.keys + unset)
+            var fields = (set.keys + unset).filter { !kept.contains($0) }
+            // An undo that keeps a later change keeps what that change shows, so it never loosens privacy either
+            // (binder-v0 §5.5): those markers stay as they are and are reported with the rest.
+            if !kept.isEmpty {
+                let widening = fields.filter { loosens($0, back: before[$0], current: currentItem(id)) }
+                fields.removeAll(where: widening.contains)
+                kept += widening
+            }
             guard !fields.isEmpty else {
                 throw Unsupported(message: "\(kept.joined(separator: ", ")) changed since; edit it instead")
             }
@@ -239,6 +246,20 @@ public enum Undo {
 
         case let other:
             throw Unsupported(message: "\(other ?? "this op") records a fact and cannot be undone")
+        }
+    }
+
+    /// Whether putting `field` back to `back` would loosen what the hub or a brain sees of the item as it is now:
+    /// `redact` cleared, the hub title added, changed or removed, a tag added to a redacted item, or its kind removed
+    /// (binder-v0 §5.5, the privacy ratchet's list).
+    static func loosens(_ field: String, back: JSONValue?, current: JSONObject?) -> Bool {
+        let redacted = current?["redact"] == .bool(true)
+        switch field {
+        case "redact": return redacted && back != .bool(true)
+        case "slice_title": return back != current?["slice_title"]
+        case "tags": return redacted && !Set(back?.arrayValue ?? []).isSubset(of: Set(current?["tags"]?.arrayValue ?? []))
+        case "kind": return redacted && back == nil
+        default: return false
         }
     }
 
