@@ -137,7 +137,7 @@ import Testing
         try write(s, "levy.txt", Self.notice)
         _ = card(s)
         let model = ScriptedModel(extractions: [.obj([("items", .array([
-            item("The special levy of $450.00 is due November 1, 2026", "Pay the special levy", "pay", when: "November 1, 2026", amount: "$450.00"),
+            item("The special levy of $450.00 is due November 1, 2026", "The special levy of $450.00 is due", "pay", when: "November 1, 2026", amount: "$450.00"),
             item("INVENTED NOTICE, September 30, 2026", "Read the notice", "note"),
         ]))])])
         model.document = .obj([("class", .str("action")), ("title", .str("Notice of special levy")), ("date_text", .str("September 30, 2026")),
@@ -155,7 +155,8 @@ import Testing
         #expect(doc.documentClass == "action")
         #expect(doc.date?.description == "2026-09-30")
         // The "note" item is left out; the reply the notice asks for is added by code.
-        #expect(doc.items.map(\.title) == ["Pay the special levy", "Reply about \u{201C}Notice of special levy\u{201D}"])
+        // This integration fixture supplies the task in the notice's own words.
+        #expect(doc.items.map(\.title) == ["The special levy of $450.00 is due", "Reply about \u{201C}Notice of special levy\u{201D}"])
         #expect(doc.items.last?.whenResolved?.description == "2026-10-20")
         #expect(doc.escalate.contains("a reply may be needed"))
         #expect(outcome.replaced && outcome.items == 2 && outcome.escalated)
@@ -171,7 +172,7 @@ import Testing
         #expect(card.cardNotes.contains { $0.hasPrefix("a careful reading is recommended") })
         let r = try approve(s, card, [("obtained", .obj([("channel", .str("download"))]))])
         #expect(r["ok"] == .bool(true), "\(r)")
-        #expect(Teka.read(s.folder).items.contains { $0.title == "Pay the special levy" })
+        #expect(Teka.read(s.folder).items.contains { $0.title == "The special levy of $450.00 is due" })
     }
 
 }
