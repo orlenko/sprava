@@ -31,6 +31,28 @@
     "before_hash": { "$ref": "#/$defs/hash" },
     "after_hash": { "$ref": "#/$defs/hash" },
     "compensates": { "$ref": "#/$defs/uuid" },
+    "expect": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "record": { "$ref": "#/$defs/hash" },
+        "set": { "type": "object", "minProperties": 1 },
+        "absent": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false,
+      "$comment": "What the op assumed about the record it changes: its content hash as read (record), and on an undo the fields it restores with the values the reversed op left (set) or the fields it removed (absent). The guard refuses the op when the record no longer matches (sections 6.2, 6.10)."
+    },
+    "conversation": {
+      "type": "object",
+      "required": ["turn", "message"],
+      "properties": {
+        "turn": { "$ref": "#/$defs/uuid" },
+        "message": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
+      },
+      "additionalProperties": true,
+      "$comment": "A record of the conversation turn and the person's message that applied the op (section 6.5); never authority by itself."
+    },
+    "request": { "$ref": "#/$defs/uuid" },
     "op": {
       "enum": [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
@@ -44,12 +66,33 @@
   "additionalProperties": true,
   "allOf": [
     {
-      "$comment": "An op proposed by a clerk or a brain is applied only after approval.",
+      "$comment": "An op a clerk or a brain chose is applied only after the person's approval of a proposal, or within the person's conversation turn (section 6.5).",
       "if": { "properties": { "actor": { "properties": { "kind": { "enum": ["clerk", "brain"] } } } } },
       "then": {
-        "required": ["approved_by", "proposal"],
-        "properties": { "approved_by": { "type": "string", "minLength": 1 } }
+        "required": ["approved_by"],
+        "properties": { "approved_by": { "type": "string", "minLength": 1 } },
+        "anyOf": [{ "required": ["proposal"] }, { "required": ["conversation", "request"] }]
       }
+    },
+    {
+      "$comment": "Field values in expect belong to an undo (section 6.10).",
+      "if": { "required": ["expect"], "properties": { "expect": { "anyOf": [{ "required": ["set"] }, { "required": ["absent"] }] } } },
+      "then": { "required": ["compensates"] }
+    },
+    {
+      "$comment": "A conversation's op on an existing record is bound to the revision it read (section 6.5; conversation.md section 17.1).",
+      "if": {
+        "required": ["conversation"],
+        "properties": {
+          "op": {
+            "enum": [
+              "update_item", "set_status", "complete", "drop", "dismiss", "undismiss", "update_document", "move_document",
+              "unfile_document", "transfer_document", "set_meta"
+            ]
+          }
+        }
+      },
+      "then": { "required": ["expect"], "properties": { "expect": { "required": ["record"] } } }
     },
     {
       "$comment": "Ops applied together share batch; seq orders them and batch_size says how many lines the batch has (section 6.9).",
