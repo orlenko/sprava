@@ -95,3 +95,55 @@ private actor OwnerSessionPause {
     #expect(try await session.recoverClaim() == .claim(.claimed))
     #expect(await counter.calls == 2)
 }
+
+
+@Test func anUnconfiguredOwnerActionDoesNoCredentialOrActionWorkAndFindsLaterSetup() async throws {
+    let f = OwnerSessionFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
+    let session = CompanionOwnerSession(database: f.database, secrets: OwnerSessionForbiddenSecrets(), recover: { _ in .claimed })
+    let absent: String? = try await session.withConfiguredProfile { _ in
+        Issue.record("An unconfigured action was invoked"); return "unexpected"
+    }
+    #expect(absent == nil)
+    try f.prepare()
+    let state = try await session.withConfiguredProfile { profile in try profile.ownerClaimState().rawValue }
+    #expect(state == "pending")
+}
+
+@Test func ownerActionsExcludeSetupAndRecoveryWhileStatusRemainsReadableAndCancellationReleasesAdmission() async throws {
+    let f = OwnerSessionFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; try f.prepare()
+    let pause = OwnerSessionPause()
+    let session = CompanionOwnerSession(database: f.database, secrets: OwnerSessionForbiddenSecrets(), recover: { _ in .claimed },
+        prepare: { _, _, _ in Issue.record("Busy action reached setup"); throw OwnerSessionFixtureError.transport })
+    let pending = Task { try await session.withConfiguredProfile { _ in await pause.pause(); return 42 } }
+    await pause.waitForEntry()
+    #expect(try await session.snapshot() == .claim(.pending))
+    await #expect(throws: CompanionOwnerConnectionError.busy) { try await session.recoverClaim() }
+    await #expect(throws: CompanionOwnerConnectionError.busy) {
+        try await session.configure(origin: "https://relay.example", setupCode: "invented", webOrigin: nil)
+    }
+    await #expect(throws: CompanionOwnerConnectionError.busy) {
+        try await session.withConfiguredProfile { _ in Issue.record("Overlapping action was invoked"); return 0 }
+    }
+    pending.cancel(); await pause.open()
+    await #expect(throws: CancellationError.self) { try await pending.value }
+    #expect(try await session.withConfiguredProfile { _ in 7 } == 7)
+    #expect(try await session.recoverClaim() == .claim(.claimed))
+}
+
+@Test func ownerRecoveryExcludesOtherOwnerActionsAndErrorsReleaseTheirAdmission() async throws {
+    let f = OwnerSessionFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; try f.prepare()
+    let pause = OwnerSessionPause()
+    let session = CompanionOwnerSession(database: f.database, secrets: OwnerSessionForbiddenSecrets(), recover: { _ in
+        await pause.pause(); return .claimed
+    })
+    let recovering = Task { try await session.recoverClaim() }
+    await pause.waitForEntry()
+    await #expect(throws: CompanionOwnerConnectionError.busy) {
+        try await session.withConfiguredProfile { _ in Issue.record("Owner action overlapped recovery"); return 0 }
+    }
+    await pause.open(); _ = try await recovering.value
+    await #expect(throws: OwnerSessionFixtureError.transport) {
+        try await session.withConfiguredProfile { _ async throws -> Int in throw OwnerSessionFixtureError.transport }
+    }
+    #expect(try await session.withConfiguredProfile { _ in 9 } == 9)
+}
