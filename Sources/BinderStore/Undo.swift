@@ -65,6 +65,12 @@ public enum Undo {
             let then = itemAfter(id), current = currentItem(id)
             return fields.filter { current?[$0] != then?[$0] }
         }
+        // Any field but the time it was last updated changed since the undone op: an undo earlier in the same turn's
+        // Undo, which puts the item back as that op left it, is no change.
+        func changedAtAll(_ id: JSONValue) -> Bool {
+            func content(_ o: JSONObject?) -> JSONObject? { o.map { JSONObject($0.entries.filter { $0.key != "updated_at" }) } }
+            return content(currentItem(id)) != content(itemAfter(id))
+        }
         func unchangedSince(_ id: JSONValue, _ fields: [String]) throws {
             if let field = changedSince(id, fields).first { throw Unsupported(message: "\(field) changed since; edit it instead") }
         }
@@ -81,8 +87,9 @@ public enum Undo {
         switch target["op"]?.stringValue {
         case "add_item":
             guard let id = args["item"]?["id"] else { throw Unsupported(message: "no item id") }
-            // The drop is bound to the item as it was added, so it never closes an item edited since (binder-v0 §6.10).
-            guard let added = itemAfter(id), currentItem(id) == added, let hash = try? Canonical.hash(.object(added)) else {
+            // The drop is bound to the item as it is, which must be the item as it was added, so it never closes an item
+            // edited since (binder-v0 §6.10).
+            guard itemAfter(id) != nil, let current = currentItem(id), !changedAtAll(id), let hash = try? Canonical.hash(.object(current)) else {
                 throw Unsupported(message: "the item changed since; drop it instead")
             }
             var a = JSONObject()
@@ -114,7 +121,7 @@ public enum Undo {
             // An undo after any later change to the item, to these fields or others such as its title, keeps what
             // that change shows, so it never loosens privacy either (binder-v0 §5.5): those markers stay as they are
             // and are reported with the rest.
-            if currentItem(id) != itemAfter(id) {
+            if changedAtAll(id) {
                 let widening = fields.filter { loosens($0, back: before[$0], current: currentItem(id)) }
                 fields.removeAll(where: widening.contains)
                 kept += widening
@@ -322,51 +329,57 @@ extension TekaStore {
     /// Undoes one applied op, field by field: the compensating op carries `expect` for the fields it restores, so the
     /// guard refuses it if they changed under it, and fields changed since are kept and reported (binder-v0 §6.10).
     public func undoChange(opID: String, now: Date = Date()) throws -> UndoOutcome {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        let actor = JSONObject([(key: "kind", value: .str("user"))])
         // The compensation is built from the catalog and log read under the lock, after outside edits were absorbed,
         // so an edit made meanwhile is seen and never overwritten with older values.
         var kept: [String] = []
         let ops = try apply(building: { catalog, log in
-            // An aborted op never took effect: it cannot be undone, and an aborted compensation (an outside edit landed
-            // while it was written, and the batch is being retried) does not count as an undo.
-            let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
-            guard let index = log.firstIndex(where: { $0["id"]?.stringValue == opID }) else { throw Refused(reason: "no such op") }
-            if aborted.contains(opID) { throw Refused(reason: "that change was aborted and never took effect") }
-            if log.contains(where: { $0["compensates"]?.stringValue == opID && !aborted.contains($0["id"]?.stringValue ?? "") }) {
-                throw Refused(reason: "already undone")
-            }
-            guard index > 0 else { throw Refused(reason: "the import snapshot cannot be undone") }
-            let before = try Replay.run(Array(log[..<index]))
-            let after = try Replay.run(Array(log[...index]))
-            let compensation = try Undo.compensation(log[index], catalog: catalog, opLog: log, stateBefore: before, stateAfter: after,
-                                                     year: calendar.component(.year, from: now), now: now)
-            let (op, args) = (compensation.op, compensation.args)
-            kept = compensation.kept
-            var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]
-                                          + (compensation.expect.map { [("expect", JSONValue.object($0))] } ?? []))]
-            // An item hidden when it was closed comes back hidden: never shown on the dashboard or published (binder-v0
-            // §5.7) only because its closure was undone.
-            if op == "reopen", let newID = args["item"]?["id"],
-               (try? Undo.closedItem(log[index], catalog: catalog, stateBefore: before))?["dismissed"] == .bool(true) {
-                bodies.append(.init(op: "dismiss", args: JSONObject([(key: "id", value: newID)]), actor: actor,
-                                    extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
-            }
-            // set_status keeps waiting fields it is not given unless the status is open, so fields the undone op
-            // introduced are removed by a second op in the same batch.
-            if op == "set_status", let id = args["id"],
-               let now_ = catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
-               let was = before["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
-               args["status"]?.stringValue != "open" {
-                let introduced = ["waiting_on", "follow_up_at", "expected_by"].filter { now_[$0] != nil && was[$0] == nil }
-                if !introduced.isEmpty {
-                    bodies.append(.init(op: "update_item", args: JSONObject([(key: "id", value: id), (key: "unset", value: .array(introduced.map(JSONValue.string)))]),
-                                        actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
-                }
-            }
-            return bodies
+            let built = try compensatingBodies(opID, catalog: catalog, log: log, now: now)
+            kept = built.kept
+            return built.bodies
         }, batch: UUIDv7.make(now: now), now: now)
         return UndoOutcome(ops: ops, kept: kept)
+    }
+
+    /// The op bodies that undo `opID` against `catalog`, and the fields they leave alone because they changed since.
+    func compensatingBodies(_ opID: String, catalog: JSONObject, log: [JSONObject], now: Date) throws -> (bodies: [OpBody], kept: [String]) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let actor = JSONObject([(key: "kind", value: .str("user"))])
+        // An aborted op never took effect: it cannot be undone, and an aborted compensation (an outside edit landed
+        // while it was written, and the batch is being retried) does not count as an undo.
+        let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+        guard let index = log.firstIndex(where: { $0["id"]?.stringValue == opID }) else { throw Refused(reason: "no such op") }
+        if aborted.contains(opID) { throw Refused(reason: "that change was aborted and never took effect") }
+        if log.contains(where: { $0["compensates"]?.stringValue == opID && !aborted.contains($0["id"]?.stringValue ?? "") }) {
+            throw Refused(reason: "already undone")
+        }
+        guard index > 0 else { throw Refused(reason: "the import snapshot cannot be undone") }
+        let before = try Replay.run(Array(log[..<index]))
+        let after = try Replay.run(Array(log[...index]))
+        let compensation = try Undo.compensation(log[index], catalog: catalog, opLog: log, stateBefore: before, stateAfter: after,
+                                                 year: calendar.component(.year, from: now), now: now)
+        let (op, args) = (compensation.op, compensation.args)
+        var bodies: [OpBody] = [.init(op: op, args: args, actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]
+                                      + (compensation.expect.map { [("expect", JSONValue.object($0))] } ?? []))]
+        // An item hidden when it was closed comes back hidden: never shown on the dashboard or published (binder-v0
+        // §5.7) only because its closure was undone.
+        if op == "reopen", let newID = args["item"]?["id"],
+           (try? Undo.closedItem(log[index], catalog: catalog, stateBefore: before))?["dismissed"] == .bool(true) {
+            bodies.append(.init(op: "dismiss", args: JSONObject([(key: "id", value: newID)]), actor: actor,
+                                extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
+        }
+        // set_status keeps waiting fields it is not given unless the status is open, so fields the undone op
+        // introduced are removed by a second op in the same batch.
+        if op == "set_status", let id = args["id"],
+           let now_ = catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+           let was = before["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+           args["status"]?.stringValue != "open" {
+            let introduced = ["waiting_on", "follow_up_at", "expected_by"].filter { now_[$0] != nil && was[$0] == nil }
+            if !introduced.isEmpty {
+                bodies.append(.init(op: "update_item", args: JSONObject([(key: "id", value: id), (key: "unset", value: .array(introduced.map(JSONValue.string)))]),
+                                    actor: actor, extra: [("compensates", .string(opID)), ("note", .str("undo"))]))
+            }
+        }
+        return (bodies, compensation.kept)
     }
 }
