@@ -14,6 +14,7 @@ public final class StateDirectory: @unchecked Sendable {
 
     struct Flush: Sendable {
         var directory: @Sendable (Int32) throws -> Void = { try AtomicFile.flushToDisk($0, step: "flush state directory") }
+        var file: @Sendable (Int32) throws -> Void = { try AtomicFile.flushToDisk($0, step: "flush state file") }
     }
 
     private init(fd: Int32, root: URL? = nil, parent: StateDirectory? = nil, name: String? = nil, flush: Flush) throws {
@@ -191,6 +192,34 @@ public final class StateDirectory: @unchecked Sendable {
         try write(data, to: name, beforeOpen: {})
     }
 
+    /// Publishes a complete private record without replacing any existing entry (binder-v0 §7.2.2).
+    /// A retry accepts only an existing 0600 regular file of this user with exactly the requested bytes,
+    /// and flushes it and its directory again. Different bytes, links and special files are left untouched.
+    /// Matching bytes prove no ownership or authority: that remains the caller's separate admission check.
+    public func createImmutable(_ data: Data, to name: String) throws {
+        try write(data, to: name, immutable: true, beforeOpen: {})
+    }
+
+    private func flushMatchingImmutable(_ data: Data, name: String) throws -> Bool {
+        let file = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        if file < 0 {
+            if errno == ENOENT { return false }
+            throw AtomicFile.Failure(step: "open immutable state file", code: errno)
+        }
+        defer { close(file) }
+        var info = stat()
+        guard fstat(file, &info) == 0 else { throw AtomicFile.Failure(step: "inspect immutable state file", code: errno) }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(), info.st_mode & 0o7777 == 0o600,
+              case .ok(let existing) = SafeFile.read(fd: file, limit: data.count), existing == data else {
+            throw AtomicFile.Failure(step: "immutable state entry already exists", code: EEXIST)
+        }
+        try validate()
+        try flush.file(file)
+        try flush.directory(fd)
+        try validate()
+        return true
+    }
+
     private func flushAnchors() throws {
         if let parent {
             try parent.flushAnchors()
@@ -213,18 +242,20 @@ public final class StateDirectory: @unchecked Sendable {
         }
     }
 
-    func write(_ data: Data, to name: String, beforeOpen: () throws -> Void,
+    func write(_ data: Data, to name: String, immutable: Bool = false, beforeOpen: () throws -> Void,
                beforePublish: (String) throws -> Void = { _ in }) throws {
         try Self.component(name)
         try validate()
-        try refuseOtherThanPlainFile(name)
+        if !immutable { try refuseOtherThanPlainFile(name) }
         try flushAnchors()
         try beforeOpen()
+        if immutable, try flushMatchingImmutable(data, name: name) { return }
         let temporary = ".\(UUID().uuidString).tmp"
         let file = openat(fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard file >= 0 else { throw AtomicFile.Failure(step: "create state temporary file", code: errno) }
         var renamed = false
         defer { close(file); if !renamed { unlinkat(fd, temporary, 0) } }
+        if immutable, fchmod(file, 0o600) != 0 { throw AtomicFile.Failure(step: "protect immutable state file", code: errno) }
         try data.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
@@ -237,11 +268,19 @@ public final class StateDirectory: @unchecked Sendable {
                 offset += written
             }
         }
-        try AtomicFile.flushToDisk(file, step: "flush state file")
+        try flush.file(file)
         try beforePublish(temporary)
         try validate()
-        try refuseOtherThanPlainFile(name)
-        guard renameat(fd, temporary, fd, name) == 0 else { throw AtomicFile.Failure(step: "rename state file", code: errno) }
+        if immutable {
+            if renameatx_np(fd, temporary, fd, name, UInt32(RENAME_EXCL)) != 0 {
+                let code = errno
+                if code == EEXIST, try flushMatchingImmutable(data, name: name) { return }
+                throw AtomicFile.Failure(step: "publish immutable state file", code: code)
+            }
+        } else {
+            try refuseOtherThanPlainFile(name)
+            guard renameat(fd, temporary, fd, name) == 0 else { throw AtomicFile.Failure(step: "rename state file", code: errno) }
+        }
         renamed = true
         try flush.directory(fd)
         try validate()
