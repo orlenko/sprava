@@ -32,7 +32,10 @@ extension TekaStore {
             }
         }
         let added = lines.reduce(Data(), +)
+        // Every folder on the way to the history is private before anything there is created or read: a `.sprava` found
+        // open to others (imported, restored) would let another account rename the history away (binder-v0 §7.2).
         try AtomicFile.makePrivateFolder(spravaDir)
+        try keepPrivate(spravaDir, mode: 0o700)
         var st = stat()
         let createdFolder = lstat(conversationDir.path, &st) != 0
         if createdFolder {
@@ -128,13 +131,12 @@ extension TekaStore {
             throw Refused(reason: "a message with this id is already in the history for \(message.month); the message was not saved")
         }
         guard intact < existing.count else { return existing }
-        // The copy is the only one of those bytes once the month is cut: its folder is made durable and private first,
-        // so neither a power loss nor another account can take it (binder-v0 §7.2).
+        // The copy is the only one of those bytes once the month is cut: its folder is made durable and private first
+        // (`.sprava` already is), so neither a power loss nor another account can take it (binder-v0 §7.2).
         let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
         let createdTorn = lstat(tornDir.path, &st) != 0
         try AtomicFile.makePrivateFolder(tornDir)
         if createdTorn { try flushFolder(spravaDir, "flush .sprava") }
-        try keepPrivate(spravaDir, mode: 0o700)
         try keepPrivate(tornDir, mode: 0o700)
         let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
         try Self.keepAside(existing[intact...], in: tornDir, named: "conversation-\(message.month)-\(stamp)")

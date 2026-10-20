@@ -115,9 +115,10 @@ import Testing
         try store.appendConversation(try message(1))
         let dir = folder.appendingPathComponent(".sprava/conversation")
         let url = dir.appendingPathComponent("2026-10.ndjson")
-        #expect(chmod(url.path, 0o644) == 0 && chmod(dir.path, 0o755) == 0)
+        let sprava = folder.appendingPathComponent(".sprava")
+        #expect(chmod(url.path, 0o644) == 0 && chmod(dir.path, 0o755) == 0 && chmod(sprava.path, 0o777) == 0)
         try store.appendConversation(try message(2))
-        #expect(mode(url) == 0o600 && mode(dir) == 0o700)
+        #expect(mode(url) == 0o600 && mode(dir) == 0o700 && mode(sprava) == 0o700)
         #expect(read(folder)?.messages.count == 2)
     }
 
