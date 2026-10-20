@@ -98,9 +98,10 @@ public enum Undo {
             // Fields changed since keep their newer values; the others go back (conversation.md §17.2).
             var kept = changedSince(id, set.keys + unset)
             var fields = (set.keys + unset).filter { !kept.contains($0) }
-            // An undo that keeps a later change keeps what that change shows, so it never loosens privacy either
-            // (binder-v0 §5.5): those markers stay as they are and are reported with the rest.
-            if !kept.isEmpty {
+            // An undo after any later change to the item, to these fields or others such as its title, keeps what
+            // that change shows, so it never loosens privacy either (binder-v0 §5.5): those markers stay as they are
+            // and are reported with the rest.
+            if currentItem(id) != itemAfter(id) {
                 let widening = fields.filter { loosens($0, back: before[$0], current: currentItem(id)) }
                 fields.removeAll(where: widening.contains)
                 kept += widening
