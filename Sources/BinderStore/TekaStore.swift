@@ -312,7 +312,7 @@ public final class TekaStore {
             lines[i].set("after_hash", .string(hashes[i]))
             previous = hashes[i]
         }
-        let moves = try prepareMoves(lines)
+        let moves = try prepareMoves(lines, result: result)
         try write(catalog: result, appending: lines, expectedHash: hash, moves: moves)
         return lines
     }

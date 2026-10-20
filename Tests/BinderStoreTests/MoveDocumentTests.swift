@@ -73,6 +73,16 @@ import Testing
         #expect(exists(folder, "documents/letter.pdf") && record(folder)?["path"] == .str("documents/letter.pdf"))
     }
 
+    @Test func aFileAnotherRecordNamesStaysWhereItIs() throws {
+        let (folder, store, sha) = try filed()
+        _ = try store.apply([.init(op: "file_document", args: JSONObject([
+            (key: "document", value: .obj([("id", .str("estate-example-doc-2026-011")), ("title", .str("Invented copy")),
+                                          ("path", .str("documents/letter.pdf")), ("sha256", .string(sha))]))]), actor: user)], now: now)
+        let lines = try store.readOpLog().ops.count
+        #expect(throws: TekaStore.Refused.self) { try store.apply([move("documents/letter.pdf", "letters/letter.pdf", sha)], now: now) }
+        #expect(try store.readOpLog().ops.count == lines && exists(folder, "documents/letter.pdf"))
+    }
+
     @Test func aRecordNamingTheCatalogNeverMovesIt() throws {
         let catalog = try #require(Teka.read(try filed().0).catalog)
         let op = JSONObject([(key: "id", value: .str("op-1")), (key: "at", value: .str("2026-10-20T09:00:00Z")),

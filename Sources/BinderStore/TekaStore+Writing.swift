@@ -11,7 +11,8 @@ extension TekaStore {
     /// destination must be free and lie inside the binder. A filing without `from` needs the file in place. A key or
     /// credential file is never read or moved, at either end (binder-v0 §3.3). An `update_document` that sets a path
     /// needs the file there, reached without a link, or filed earlier in the batch.
-    func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String, sha: String)] {
+    /// `result` is the catalog the batch leaves: no record in it may still name a file a move takes away.
+    func prepareMoves(_ lines: [JSONObject], result: JSONObject) throws -> [(from: String, to: String, sha: String)] {
         var moves: [(String, String, String)] = []
         var claimed = Set<String>()
         for line in lines where line["op"] == .str("update_document") {
@@ -45,11 +46,16 @@ extension TekaStore {
             }
         }
         // A move takes the filed file at its record's path, with the digest the op was built on, to a free path
-        // (binder-v0 §6.3, §6.9).
+        // (binder-v0 §6.3, §6.9). Records may share a file (an adopted binder's paths need not be unique): a file
+        // another record still names stays where it is.
+        let named = Set((result["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue.map(DocumentPaths.fold) })
         for line in lines where line["op"] == .str("move_document") {
             let args = line["args"]?.objectValue ?? JSONObject()
             guard let from = args["from"]?.stringValue, let path = args["path"]?.stringValue, let sha = args["sha256"]?.stringValue else { continue }
             guard claimed.insert(DocumentPaths.fold(path)).inserted else { throw Refused(reason: "two documents would be put at \(path)") }
+            guard !named.contains(DocumentPaths.fold(from)) else {
+                throw Refused(reason: "another document record also names \(from); it cannot move without that record")
+            }
             guard DocumentPaths.plainFile(from, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha else {
                 throw Refused(reason: "the document's file at \(from) changed or is gone since the change was made")
             }
