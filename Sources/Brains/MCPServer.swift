@@ -18,16 +18,32 @@ public final class MCPServer: @unchecked Sendable {
     public static let serverInfo = JSONValue.obj([("name", .str("sprava")), ("version", .str("0.1.0"))])
 
     let client: MCPClientRecord
+    /// Nil for registered clients, even if their request claims a runtime role or session.
+    let runtimeSession: MCPSessionIdentity?
     let commands: Commands
     let shelf: () -> [ShelfRow]
     let now: () -> Date
     private var era: String?
+    private let sessionReady: () -> Bool
 
     public init(client: MCPClientRecord, commands: Commands, shelf: @escaping () -> [ShelfRow], now: @escaping () -> Date = Date.init) {
         self.client = client
+        self.runtimeSession = nil
+        self.sessionReady = { true }
         self.commands = commands
         self.shelf = shelf
         self.now = now
+    }
+
+    /// Only a runtime-owned authentication record supplies this identity. Existing disclosure/proposal limits
+    /// still apply; a future back-office tool adapter must separately check current turn/consent admission.
+    init(session: MCPRuntimeSessions.Authenticated, commands: Commands, shelf: @escaping () -> [ShelfRow],
+         sessionReady: @escaping () -> Bool,
+         now: @escaping () -> Date = Date.init) {
+        self.client = session.client
+        self.runtimeSession = session.identity
+        self.sessionReady = sessionReady
+        self.commands = commands; self.shelf = shelf; self.now = now
     }
 
     // MARK: - JSON-RPC
@@ -81,6 +97,7 @@ public final class MCPServer: @unchecked Sendable {
             if modern { r += [("ttlMs", .int(3_600_000)), ("cacheScope", .str("server"))] }
             return Self.result(id: id, .obj(r), modern: modern)
         case "tools/call":
+            guard sessionReady() else { return Self.result(id: id, Self.toolError("session not ready"), modern: modern) }
             guard case .string(let name)? = params["name"] else { return Self.error(id: id, code: -32602, message: "tool name") }
             let args = params["arguments"]?.objectValue ?? JSONObject()
             let outcome = call(name, args)
