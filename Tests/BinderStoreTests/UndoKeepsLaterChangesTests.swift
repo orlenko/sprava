@@ -75,6 +75,17 @@ import Testing
         #expect(item(folder)?["kind"] == original["kind"])
     }
 
+    @Test func anUndoAfterAnUnrelatedLaterEditNeverLiftsItsRedaction() throws {
+        let (folder, store) = try adopted()
+        let first = try edit(store, [("redact", .bool(true)), ("priority", .str("low"))])
+        _ = try edit(store, [("title", .str("Invented private title"))])   // a later change to another field
+
+        let outcome = try store.undoChange(opID: first[0]["id"]!.stringValue!, now: now)
+        #expect(outcome.kept == ["redact"])
+        #expect(item(folder)?["redact"] == .bool(true) && item(folder)?["title"] == .str("Invented private title"))
+        #expect(item(folder)?["priority"] != .str("low"))
+    }
+
     @Test func loosensNamesThePrivacyRatchetsWidenings() {
         let redacted = JSONObject([(key: "redact", value: .bool(true)), (key: "tags", value: .array([.str("a")])), (key: "kind", value: .str("task"))])
         #expect(Undo.loosens("redact", back: nil, current: redacted))

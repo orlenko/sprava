@@ -87,6 +87,7 @@ func unixAddress(_ path: String) -> sockaddr_un? {
 public final class MCPListener: @unchecked Sendable {
     public let socketURL: URL
     let support: URL
+    private let runtimeSessions: MCPRuntimeSessions?
     let commands: Commands
     let shelf: @Sendable () -> [ShelfRow]
     let queue: DispatchQueue
@@ -122,8 +123,10 @@ public final class MCPListener: @unchecked Sendable {
     }
 
     public init(support: URL, commands: Commands, queue: DispatchQueue, shelf: @escaping @Sendable () -> [ShelfRow],
-                limits: Limits = Limits(), log: @escaping @Sendable (String) -> Void) {
+                limits: Limits = Limits(), runtimeSessions: MCPRuntimeSessions? = nil,
+                log: @escaping @Sendable (String) -> Void) {
         self.support = support
+        self.runtimeSessions = runtimeSessions
         socketURL = support.appendingPathComponent("mcp/mcp.sock")
         self.commands = commands
         self.queue = queue
@@ -215,9 +218,11 @@ public final class MCPListener: @unchecked Sendable {
             _ = writeLine(conn, #"{"sprava_auth":{"ok":false,"code":"bad_preamble"}}"#)
             return
         }
-        // A registry that cannot be read authenticates no one.
-        let registry = try? MCPClients.load(support)
-        guard let client = registry?.authenticate(clientID: clientID, token: token) else {
+        // Runtime sessions live in memory and never require reading the registered clients' file.
+        // A role/session field supplied by the peer grants no authority; only the token lookup does.
+        let session = runtimeSessions?.authenticate(clientID: clientID, token: token)
+        let registry = session == nil ? (try? MCPClients.load(support)) : nil
+        guard let client = session?.client ?? registry?.authenticate(clientID: clientID, token: token) else {
             // The id came from the peer: it reaches the log only when it names a registered client, so no text a
             // peer chose is ever written there.
             let known = registry?.clients.first { $0.id == clientID }
@@ -236,7 +241,13 @@ public final class MCPListener: @unchecked Sendable {
         release()
         setTimeout(conn, seconds: limits.idle)
         log("mcp client=\(client.id) connected")
-        let server = MCPServer(client: client, commands: commands, shelf: shelf)
+        let server: MCPServer
+        if let session {
+            let sessions = runtimeSessions
+            server = MCPServer(session: session, commands: commands, shelf: shelf,
+                               sessionReady: { sessions?.isActive(session) == true })
+        }
+        else { server = MCPServer(client: client, commands: commands, shelf: shelf) }
         while true {
             switch reader.next(limit: Self.lineLimit) {
             case .line(let line):
@@ -245,11 +256,15 @@ public final class MCPListener: @unchecked Sendable {
                 enum Gate { case revoked, changed, reply(String?) }
                 let started = Date()
                 let gate = queue.sync { () -> Gate in
-                    guard let current = (try? MCPClients.load(support))?.clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
-                          !current.revoked else { return .revoked }
-                    // So is any other change to its rights (scope, documents): the connection ends, and the next one
-                    // gets the new record.
-                    guard current == client else { return .changed }
+                    if let session {
+                        // Never fall back to a persisted client after this runtime lease was revoked/replaced.
+                        guard runtimeSessions?.isCurrent(session) == true else { return .revoked }
+                    } else {
+                        guard let current = (try? MCPClients.load(support))?.clients.first(where: { $0.id == client.id && $0.tokenSHA256 == client.tokenSHA256 }),
+                              !current.revoked else { return .revoked }
+                        // Other changes to registered rights also end the old connection.
+                        guard current == client else { return .changed }
+                    }
                     return .reply(server.handle(line: line))
                 }
                 let reply: String
