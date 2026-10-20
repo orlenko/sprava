@@ -15,6 +15,11 @@ extension TekaStore {
     }
 
     func appendConversationLocked(_ message: ConversationMessage) throws {
+        // Members kept as found are checked with bounded work before anything encodes them, so a value too deep or too
+        // large for one line is refused instead of exhausting the stack or memory.
+        guard Self.fitsOneLine([message.extra] + message.references.map(\.extra)) else {
+            throw Refused(reason: "the message was not saved: its extra members are too deep or too large for one line")
+        }
         let lines: [Data]
         do { lines = try message.lines() } catch let invalid as ConversationMessage.Invalid {
             throw Refused(reason: "the message was not saved: \(invalid.reason)")
@@ -65,6 +70,34 @@ extension TekaStore {
         if created { try flushFolder(conversationDir, "flush the conversation folder") }
     }
 
+    /// Whether `members` could fit in one history line: nested no deeper than the reader parses, counting the line,
+    /// its references and a reference around them, and no longer than a line even before any escaping. The walk
+    /// stops at the first bound it passes; every value adds at least one byte, so its work is bounded too.
+    static func fitsOneLine(_ members: [JSONObject]) -> Bool {
+        let depthLimit = 128 - 3
+        var bytes = 0
+        var pending: [(value: JSONValue, depth: Int)] = members.map { (.object($0), 1) }
+        while let (value, depth) = pending.popLast() {
+            guard depth <= depthLimit else { return false }
+            switch value {
+            case .null, .bool: bytes += 4
+            case .number(let n): bytes += n.description.utf8.count
+            case .string(let s): bytes += s.utf8.count + 2
+            case .array(let a):
+                bytes += 2
+                pending.append(contentsOf: a.map { ($0, depth + 1) })
+            case .object(let o):
+                bytes += 2
+                for entry in o.entries {
+                    bytes += entry.key.utf8.count + 3
+                    pending.append((entry.value, depth + 1))
+                }
+            }
+            guard bytes <= ConversationLimits.lineBytes else { return false }
+        }
+        return true
+    }
+
     /// The month as it may be appended to: missing, or a file the one safe reader reads whole (binder-v0 §7.2.1). The
     /// reader decides before anything changes, so its bounds hold here too: a month over its size or line limits, with
     /// an oversized line, or with damage anywhere but a crash's torn tail is refused and left for repair. That tail is
@@ -95,8 +128,14 @@ extension TekaStore {
             throw Refused(reason: "a message with this id is already in the history for \(message.month); the message was not saved")
         }
         guard intact < existing.count else { return existing }
+        // The copy is the only one of those bytes once the month is cut: its folder is made durable and private first,
+        // so neither a power loss nor another account can take it (binder-v0 §7.2).
         let tornDir = spravaDir.appendingPathComponent("torn", isDirectory: true)
+        let createdTorn = lstat(tornDir.path, &st) != 0
         try AtomicFile.makePrivateFolder(tornDir)
+        if createdTorn { try flushFolder(spravaDir, "flush .sprava") }
+        try keepPrivate(spravaDir, mode: 0o700)
+        try keepPrivate(tornDir, mode: 0o700)
         let stamp = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!).replacingOccurrences(of: ":", with: "")
         try Self.keepAside(existing[intact...], in: tornDir, named: "conversation-\(message.month)-\(stamp)")
         let fd = open(url.path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -143,13 +182,13 @@ extension TekaStore {
         }
     }
 
-    /// The history folder is private (binder-v0 §7.2): one found readable or writable by others is narrowed first.
+    /// The history's folders are private (binder-v0 §7.2): one found readable or writable by others is narrowed first.
     func keepPrivate(_ folder: URL, mode: mode_t) throws {
         var st = stat()
         guard lstat(folder.path, &st) == 0 else { throw AtomicFile.Failure(step: "check the conversation folder", code: errno) }
         guard st.st_mode & 0o077 != 0 else { return }
         guard chmod(folder.path, mode) == 0, lstat(folder.path, &st) == 0, st.st_mode & 0o077 == 0 else {
-            throw Refused(reason: "the conversation folder is open to others and could not be made private; the message was not saved")
+            throw Refused(reason: "a folder of the conversation history is open to others and could not be made private; the message was not saved")
         }
     }
 }

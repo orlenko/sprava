@@ -240,4 +240,32 @@ import Testing
         #expect(throws: TekaStore.Refused.self) { try store.appendConversation(try message(1)) }
         #expect(try Data(contentsOf: target).isEmpty)
     }
+
+    @Test func extrasTooDeepOrTooLargeForALineAreRefusedBeforeEncoding() throws {
+        let (folder, store) = try adopted()
+        let base = try message(1)
+        var deep = JSONValue.null
+        for _ in 0..<200 { deep = .array([deep]) }
+        let large = JSONValue.array(Array(repeating: .str(String(repeating: "b", count: 1024)), count: 600))
+        for extra in [JSONObject([(key: "nested", value: deep)]), JSONObject([(key: "bulk", value: large)])] {
+            let odd = try ConversationMessage(id: base.id, turn: base.turn, at: base.at, speaker: .person, origin: .app, text: base.text,
+                                              device: base.device, requestID: base.requestID, extra: extra)
+            #expect(throws: TekaStore.Refused.self) { try store.appendConversation(odd) }
+        }
+        #expect(!TekaStore.fitsOneLine([JSONObject([(key: "nested", value: deep)])]) && !TekaStore.fitsOneLine([JSONObject([(key: "bulk", value: large)])]))
+        #expect(TekaStore.fitsOneLine([JSONObject([(key: "nested", value: .array([.array([.null])]))])]))
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".sprava/conversation/2026-10.ndjson").path))
+    }
+
+    @Test func theTornCopysFoldersAreMadePrivateBeforeTheMonthIsCut() throws {
+        let (folder, store) = try adopted()
+        try store.appendConversation(try message(1))
+        let torn = folder.appendingPathComponent(".sprava/torn")
+        try FileManager.default.createDirectory(at: torn, withIntermediateDirectories: true)
+        #expect(chmod(torn.path, 0o777) == 0 && chmod(folder.appendingPathComponent(".sprava").path, 0o755) == 0)
+        try appendRaw(Data("{\"torn".utf8), to: folder)
+        try store.appendConversation(try message(2))
+        #expect(mode(torn) == 0o700 && mode(folder.appendingPathComponent(".sprava")) == 0o700)
+        #expect(tornCopies(folder).count == 1 && read(folder)?.messages.count == 2)
+    }
 }
