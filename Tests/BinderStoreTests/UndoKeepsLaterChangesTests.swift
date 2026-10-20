@@ -134,6 +134,34 @@ import Testing
         _ = try Replay.run(try store.readOpLog().ops)
     }
 
+    @Test func undoingAnAddedItemEditedSinceIsRefusedAndKeepsIt() throws {
+        let (folder, store) = try adopted()
+        let added = JSONValue.str("estate-example-2026-108")
+        let applied = try store.apply([.init(op: "add_item", args: JSONObject([(key: "item", value: .obj([("id", added),
+            ("title", .str("Invented new task")), ("status", .str("open")), ("priority", .str("low")), ("no_deadline", .bool(true))]))]),
+                                             actor: user)], now: now)
+        _ = try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: added), (key: "set", value: .obj([("priority", .str("high"))]))]),
+                                   actor: user)], now: now)
+        let lines = try store.readOpLog().ops.count
+        #expect(refusal { try store.undo(opID: applied[0]["id"]!.stringValue!, now: now) }.contains("the item changed since"))
+        #expect(try store.readOpLog().ops.count == lines)
+        let open = Teka.read(folder).catalog?["open_items"]?.arrayValue?.first { $0["id"] == added }
+        #expect(open?["priority"] == .str("high"))
+    }
+
+    @Test func undoingAnAddedItemBindsTheDropToTheItemAsAdded() throws {
+        let (folder, store) = try adopted()
+        let added = JSONValue.str("estate-example-2026-109")
+        let applied = try store.apply([.init(op: "add_item", args: JSONObject([(key: "item", value: .obj([("id", added),
+            ("title", .str("Invented new task")), ("status", .str("open")), ("priority", .str("low")), ("no_deadline", .bool(true))]))]),
+                                             actor: user)], now: now)
+        let item = try #require(Teka.read(folder).catalog?["open_items"]?.arrayValue?.first { $0["id"] == added })
+        try store.undo(opID: applied[0]["id"]!.stringValue!, now: now)
+        let line = try #require(try store.readOpLog().ops.last)
+        #expect(line["op"] == .str("drop"))
+        #expect(line["expect"] == .obj([("record", .string(try Canonical.hash(item)))]))
+    }
+
     @Test func expectOnAnOpWithoutAnExistingRecordIsRefused() throws {
         let (_, store) = try adopted()
         let item = JSONObject([(key: "title", value: .str("Invented new item")), (key: "status", value: .str("open")),

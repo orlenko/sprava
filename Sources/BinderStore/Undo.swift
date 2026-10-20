@@ -17,7 +17,8 @@ public enum Undo {
     public struct Compensation {
         public let op: String
         public let args: JSONObject
-        /// `{set?, absent?}`: the values the undone op left in the fields this one restores (binder-v0 §6.2, §6.10).
+        /// `{set?, absent?}`: the values the undone op left in the fields this one restores; `{record}` for an undo of a
+        /// whole record, its hash as the undone op left it (binder-v0 §6.2, §6.10).
         public let expect: JSONObject?
         /// Fields the undone op changed that were changed again since; the undo keeps their newer values.
         public let kept: [String]
@@ -79,12 +80,16 @@ public enum Undo {
         switch target["op"]?.stringValue {
         case "add_item":
             guard let id = args["item"]?["id"] else { throw Unsupported(message: "no item id") }
+            // The drop is bound to the item as it was added, so it never closes an item edited since (binder-v0 §6.10).
+            guard let added = itemAfter(id), currentItem(id) == added, let hash = try? Canonical.hash(.object(added)) else {
+                throw Unsupported(message: "the item changed since; drop it instead")
+            }
             var a = JSONObject()
             a.set("id", id)
             a.set("closed_at", .string(at))
             a.set("source", .str("user"))
             a.set("reason", .str("undo"))
-            return Compensation(op: "drop", args: a, expect: nil, kept: [])
+            return Compensation(op: "drop", args: a, expect: JSONObject([(key: "record", value: .string(hash))]), kept: [])
 
         case "update_item":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
