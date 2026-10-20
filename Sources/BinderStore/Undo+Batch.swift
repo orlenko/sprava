@@ -1,3 +1,4 @@
+import BinderFormat
 import Foundation
 import SpravaKit
 
@@ -28,8 +29,16 @@ extension TekaStore {
             let used = Set(IDMint.usedIDs(opLog: log))
             var state = catalog
             var bodies: [OpBody] = []
+            // A record whose later op in the batch was left, whole or in part, keeps what the person sees now: its
+            // earlier ops are left too, so no earlier reversal writes over a value a skipped one protected.
+            var held = Set<String>()
             for target in members {
                 guard let id = target["id"]?.stringValue else { continue }
+                let record = Self.record(of: target)
+                if let record, held.contains(record) {
+                    notUndone.append((id, "a later change to the same record in this batch was left as it is"))
+                    continue
+                }
                 do {
                     // Each reversal is checked by the guard on the state the ones before it leave, so one that no
                     // longer matches is left out alone instead of refusing the whole Undo.
@@ -37,9 +46,13 @@ extension TekaStore {
                     let lines = built.bodies.map { provisionalLine($0, at: at, now: now) }
                     state = try TransactionGuard.check(lines, on: state, knownIDs: used).catalog
                     bodies += built.bodies
-                    if !built.kept.isEmpty { kept[id] = built.kept }
+                    if !built.kept.isEmpty {
+                        kept[id] = built.kept
+                        if let record { held.insert(record) }
+                    }
                 } catch {
                     notUndone.append((id, "\(error)"))
+                    if let record { held.insert(record) }
                 }
             }
             guard !bodies.isEmpty else {
@@ -48,6 +61,19 @@ extension TekaStore {
             return bodies
         }, batch: UUIDv7.make(now: now), now: now)
         return BatchUndoOutcome(ops: ops, kept: kept, notUndone: notUndone)
+    }
+
+    /// The record an op changes, keyed by kind so an item and a document with the same id stay apart.
+    static func record(of op: JSONObject) -> String? {
+        let args = op["args"]?.objectValue ?? JSONObject()
+        switch op["op"]?.stringValue {
+        case "add_item", "reopen": return args["item"]?["id"].map { "item:" + canonicalText($0) }
+        case "update_item", "set_status", "complete", "drop", "dismiss", "undismiss": return args["id"].map { "item:" + canonicalText($0) }
+        case "file_document": return args["document"]?["id"].map { "document:" + canonicalText($0) }
+        case "update_document", "move_document": return args["id"].map { "document:" + canonicalText($0) }
+        case "set_meta": return "meta"
+        default: return nil
+        }
     }
 
     /// An op line as `applyOnce` writes it, for the guard to judge before the batch is built.

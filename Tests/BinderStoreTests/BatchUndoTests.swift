@@ -67,6 +67,18 @@ import Testing
         #expect(outcome.ops.count == 1)
     }
 
+    @Test func anEarlierOpOnARecordWhoseLaterOpWasLeftIsLeftToo() throws {
+        let (folder, store) = try adopted()
+        let turn = try store.apply([edit(Self.a, [("priority", .str("low"))]), edit(Self.a, [("priority", .str("high"))]),
+                                    edit(Self.b, [("priority", .str("low"))])], now: now)
+        _ = try store.apply([edit(Self.a, [("priority", .str("low"))])], now: now)   // the person's later choice
+
+        let outcome = try store.undoBatch(try #require(turn[0]["batch"]?.stringValue), now: now)
+        #expect(item(folder, Self.a)?["priority"] == .str("low"))
+        #expect(Set(outcome.notUndone.map(\.op)) == Set([turn[0]["id"]!.stringValue!, turn[1]["id"]!.stringValue!]))
+        #expect(outcome.ops.map { $0["compensates"] } == [turn[2]["id"]])
+    }
+
     @Test func aTurnWithNothingLeftToUndoWritesNothing() throws {
         let (folder, store) = try adopted()
         let turn = try store.apply([edit(Self.a, [("priority", .str("low"))]), edit(Self.b, [("priority", .str("low"))])], now: now)
