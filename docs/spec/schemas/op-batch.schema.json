@@ -56,7 +56,8 @@
           "op": {
             "enum": [
               "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
-              "file_document", "update_document", "add_log_entry", "set_meta", "migrate"
+              "file_document", "update_document", "move_document", "unfile_document", "transfer_document",
+              "add_log_entry", "set_meta", "migrate"
             ]
           },
           "args": { "type": "object" },
