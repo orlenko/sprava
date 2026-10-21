@@ -60,9 +60,24 @@ public enum Undo {
         func itemAfter(_ id: JSONValue) -> JSONObject? {
             (stateAfter ?? catalog)["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue
         }
+        // The item's fields any later op wrote, even one set back to the value the undone op left: a person who
+        // changed a field and chose that value again keeps it. Nil when the log after the target cannot be stepped
+        // through, which counts as every field changed.
+        var written: [JSONValue: Set<String>?] = [:]
+        func writtenSince(_ id: JSONValue) -> Set<String>? {
+            if let known = written[id] { return known }
+            let fields = stateAfter.flatMap { after in
+                opLog.firstIndex { $0["id"] == target["id"] }.flatMap { writes(after: $0, in: opLog, from: after, item: id) }
+            } ?? (stateAfter == nil ? [] : nil)
+            written[id] = fields
+            return fields
+        }
         func changedSince(_ id: JSONValue, _ fields: [String]) -> [String] {
-            let then = itemAfter(id), current = currentItem(id)
-            return fields.filter { current?[$0] != then?[$0] }
+            let then = itemAfter(id), current = currentItem(id), later = writtenSince(id)
+            return fields.filter { current?[$0] != then?[$0] || later?.contains($0) ?? true }
+        }
+        func itemChangedSince(_ id: JSONValue) -> Bool {
+            currentItem(id) != itemAfter(id) || !(writtenSince(id)?.isEmpty ?? false)
         }
         func unchangedSince(_ id: JSONValue, _ fields: [String]) throws {
             if let field = changedSince(id, fields).first { throw Unsupported(message: "\(field) changed since; edit it instead") }
@@ -81,7 +96,7 @@ public enum Undo {
         case "add_item":
             guard let id = args["item"]?["id"] else { throw Unsupported(message: "no item id") }
             // The drop is bound to the item as it was added, so it never closes an item edited since (binder-v0 §6.10).
-            guard let added = itemAfter(id), currentItem(id) == added, let hash = try? Canonical.hash(.object(added)) else {
+            guard let added = itemAfter(id), !itemChangedSince(id), let hash = try? Canonical.hash(.object(added)) else {
                 throw Unsupported(message: "the item changed since; drop it instead")
             }
             var a = JSONObject()
@@ -96,16 +111,16 @@ public enum Undo {
             let set = args["set"]?.objectValue ?? JSONObject()
             let unset = args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
             // Fields changed since keep their newer values; the others go back (conversation.md §17.2).
-            var kept = changedSince(id, set.keys + unset)
-            var fields = (set.keys + unset).filter { !kept.contains($0) }
-            // An undo after any later change to the item, to these fields or others such as its title, keeps what
-            // that change shows, so it never loosens privacy either (binder-v0 §5.5): those markers stay as they are
-            // and are reported with the rest.
-            if currentItem(id) != itemAfter(id) {
-                let widening = fields.filter { loosens($0, back: before[$0], current: currentItem(id)) }
-                fields.removeAll(where: widening.contains)
-                kept += widening
+            // After any later change to the item, by an op or an outside edit, an undo goes field by field only while
+            // the item's privacy stands as it did before the undone edit: one that wrote a privacy marker, or one
+            // undone after a marker changed, is refused whole, so restored content never meets a looser privacy state
+            // than it had (binder-v0 §5.5).
+            if itemChangedSince(id),
+               !privacyFields.isDisjoint(with: set.keys + unset) || !changedSince(id, privacyFields.sorted()).isEmpty {
+                throw Unsupported(message: "the item changed since and this undo touches its privacy; edit it instead")
             }
+            let kept = changedSince(id, set.keys + unset)
+            let fields = (set.keys + unset).filter { !kept.contains($0) }
             guard !fields.isEmpty else {
                 throw Unsupported(message: "\(kept.joined(separator: ", ")) changed since; edit it instead")
             }
@@ -255,19 +270,53 @@ public enum Undo {
         }
     }
 
-    /// Whether putting `field` back to `back` would loosen what the hub or a brain sees of the item as it is now:
-    /// `redact` cleared, the hub title added, changed or removed, a tag added to a redacted item, or its kind removed
-    /// (binder-v0 §5.5, the privacy ratchet's list).
-    static func loosens(_ field: String, back: JSONValue?, current: JSONObject?) -> Bool {
-        let redacted = current?["redact"] == .bool(true)
-        switch field {
-        case "redact": return redacted && back != .bool(true)
-        case "slice_title": return back != current?["slice_title"]
-        case "tags": return redacted && !Set(back?.arrayValue ?? []).isSubset(of: Set(current?["tags"]?.arrayValue ?? []))
-        case "kind": return redacted && back == nil
-        default: return false
+    /// The fields of open item `id` that the ops after `log[index]` changed at any step, starting from `state`, the
+    /// catalog just after it; aborted ops never took effect and are skipped. A later op that was undone, and the op
+    /// that undid it, cancel out and count for nothing. Nil when a step cannot be applied.
+    static func writes(after index: Int, in log: [JSONObject], from state: JSONObject, item id: JSONValue) -> Set<String>? {
+        let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+        let later = log.dropFirst(index + 1).filter { !aborted.contains($0["id"]?.stringValue ?? "") }
+        let laterIDs = Set(later.compactMap { $0["id"]?.stringValue })
+        var cancelled = Set<String>()
+        for op in later {
+            guard let undone = op["compensates"]?.stringValue, laterIDs.contains(undone), let id = op["id"]?.stringValue else { continue }
+            cancelled.formUnion([undone, id])
+        }
+        func item(_ c: JSONObject) -> JSONObject? { c["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue }
+        var state = state, fields = Set<String>()
+        for op in later {
+            let next: JSONObject
+            if op["op"] == .str("import_snapshot") {
+                guard case .object(let snapshot)? = op["args"]?["catalog"] else { return nil }
+                next = snapshot
+            } else {
+                guard let applied = try? OpApplier.apply(op, to: state) else { return nil }
+                next = applied
+            }
+            let was = item(state), now = item(next)
+            if !cancelled.contains(op["id"]?.stringValue ?? "") {
+                for key in Set((was?.keys ?? []) + (now?.keys ?? [])) where was?[key] != now?[key] { fields.insert(key) }
+                // A value written again unchanged, such as an approved proposal that sets the same date, is a choice too.
+                if op["args"]?["id"] == id { fields.formUnion(named(op)) }
+            }
+            state = next
+        }
+        return fields
+    }
+
+    /// The item fields `op` writes by name, whatever their values were: an edit's `set` and `unset`, a status with the
+    /// waiting fields it is given.
+    static func named(_ op: JSONObject) -> [String] {
+        let args = op["args"]?.objectValue ?? JSONObject()
+        switch op["op"]?.stringValue {
+        case "update_item": return (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+        case "set_status": return ["status"] + ["waiting_on", "follow_up_at", "expected_by"].filter { args[$0] != nil }
+        default: return []
         }
     }
+
+    /// The item fields the privacy ratchet watches (binder-v0 §5.5).
+    static let privacyFields: Set<String> = ["redact", "slice_title", "tags", "kind"]
 
     /// The item `target` closed, as it was then: the closure entry's `final` with the entry's title and kind, or, for
     /// an entry without `final` (an outside edit removed it), the replayed item just before the closing op (binder-v0

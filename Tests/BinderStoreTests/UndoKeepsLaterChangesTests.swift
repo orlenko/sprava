@@ -53,49 +53,85 @@ import Testing
         _ = try Replay.run(try store.readOpLog().ops)
     }
 
-    @Test func anUndoThatKeepsALaterChangeNeverLiftsItsRedaction() throws {
+    @Test func aFieldSetBackToTheUndoneValueSinceKeepsTheLaterChoice() throws {
         let (folder, store) = try adopted()
-        let clerk = JSONObject([(key: "kind", value: .str("clerk")), (key: "model", value: .str("invented-model"))])
-        func privateUpdate(_ who: String) throws -> [JSONObject] {
-            let proposal = JSONValue.str(UUID().uuidString.lowercased())
-            return try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: Self.id), (key: "set", value: .obj([
-                ("waiting_on", .string(who)), ("redact", .bool(true)), ("kind", .str("reply-owed"))]))]), actor: clerk,
-                extra: [("proposal", proposal), ("approved_by", .str("user"))])], now: now)
-        }
         let original = try #require(item(folder))
-        #expect(original["redact"] == nil && original["kind"] != nil)
-        let first = try privateUpdate("Invented Party A")
-        _ = try privateUpdate("Invented Party B")
+        let first = try edit(store, [("priority", .str("low")), ("estimate_min", .int(30))])
+        _ = try edit(store, [("priority", .str("high"))])
+        _ = try edit(store, [("priority", .str("low")), ("estimate_min", .int(45))])   // chosen again, with another change
 
-        let outcome = try store.undoChange(opID: first[0]["id"]!.stringValue!, now: now)
-        #expect(Set(outcome.kept) == ["waiting_on", "redact"])
-        #expect(item(folder)?["waiting_on"] == .str("Invented Party B"))
-        #expect(item(folder)?["redact"] == .bool(true))
-        // The earlier kind comes back: the item keeps one, so nothing is shown that its redaction hides.
-        #expect(item(folder)?["kind"] == original["kind"])
+        #expect(throws: (any Error).self) { try store.undoChange(opID: first[0]["id"]!.stringValue!, now: now) }
+        #expect(item(folder)?["priority"] == .str("low") && item(folder)?["estimate_min"] == .int(45))
+
+        // With only the cycled field changed since, the other field still goes back and the cycled one is kept.
+        let (folder2, store2) = try adopted()
+        let second = try edit(store2, [("priority", .str("low")), ("estimate_min", .int(30))])
+        _ = try edit(store2, [("priority", .str("high"))])
+        _ = try edit(store2, [("priority", .str("low"))])
+        let outcome = try store2.undoChange(opID: second[0]["id"]!.stringValue!, now: now)
+        #expect(outcome.kept == ["priority"])
+        #expect(item(folder2)?["priority"] == .str("low") && item(folder2)?["estimate_min"] == original["estimate_min"])
     }
 
-    @Test func anUndoAfterAnUnrelatedLaterEditNeverLiftsItsRedaction() throws {
+    @Test func aValueApprovedAgainUnchangedIsKept() throws {
         let (folder, store) = try adopted()
-        let first = try edit(store, [("redact", .bool(true)), ("priority", .str("low"))])
-        _ = try edit(store, [("title", .str("Invented private title"))])   // a later change to another field
-
+        let original = try #require(item(folder))
+        let first = try edit(store, [("priority", .str("low")), ("estimate_min", .int(30))])
+        _ = try edit(store, [("priority", .str("low"))], extra: [("proposal", .str(UUID().uuidString.lowercased())),
+                                                                 ("approved_by", .str("user"))])
         let outcome = try store.undoChange(opID: first[0]["id"]!.stringValue!, now: now)
-        #expect(outcome.kept == ["redact"])
-        #expect(item(folder)?["redact"] == .bool(true) && item(folder)?["title"] == .str("Invented private title"))
-        #expect(item(folder)?["priority"] != .str("low"))
+        #expect(outcome.kept == ["priority"])
+        #expect(item(folder)?["priority"] == .str("low") && item(folder)?["estimate_min"] == original["estimate_min"])
     }
 
-    @Test func loosensNamesThePrivacyRatchetsWidenings() {
-        let redacted = JSONObject([(key: "redact", value: .bool(true)), (key: "tags", value: .array([.str("a")])), (key: "kind", value: .str("task"))])
-        #expect(Undo.loosens("redact", back: nil, current: redacted))
-        #expect(!Undo.loosens("redact", back: .bool(true), current: redacted))
-        #expect(Undo.loosens("tags", back: .array([.str("a"), .str("b")]), current: redacted))
-        #expect(!Undo.loosens("tags", back: .array([]), current: redacted))
-        #expect(Undo.loosens("kind", back: nil, current: redacted))
-        #expect(Undo.loosens("slice_title", back: nil, current: JSONObject([(key: "slice_title", value: .str("Invented"))])))
-        #expect(!Undo.loosens("tags", back: .array([.str("b")]), current: JSONObject()))
-        #expect(!Undo.loosens("due", back: nil, current: redacted))
+    /// Undoes `first` after `since` and checks it was refused whole: no undo logged and the item as it was.
+    func refusedWhole(_ folder: URL, _ store: TekaStore, _ first: [JSONObject], since: () throws -> Void) throws {
+        try since()
+        let was = item(folder)
+        #expect(throws: Undo.Unsupported.self) { try store.undoChange(opID: first[0]["id"]!.stringValue!, now: now) }
+        #expect(item(folder) == was)
+        #expect(!(try store.readOpLog().ops.contains { $0["compensates"] != nil }))
+    }
+
+    @Test func aPartialUndoNeverSplitsContentFromItsPrivacy() throws {
+        // The undone edit set a privacy marker, and the item changed since in another field.
+        var (folder, store) = try adopted()
+        var first = try edit(store, [("redact", .bool(true)), ("priority", .str("low"))])
+        try refusedWhole(folder, store, first) { _ = try edit(store, [("title", .str("Invented private title"))]) }
+
+        // The undone edit made a confidential title public and lifted the redaction; a later edit changed the priority.
+        // Undoing it field by field would bring the confidential title back unredacted.
+        (folder, store) = try adopted()
+        _ = try edit(store, [("title", .str("Invented confidential title")), ("redact", .bool(true))])
+        first = try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: Self.id),
+            (key: "set", value: .obj([("title", .str("Invented public title"))])), (key: "unset", value: .array([.str("redact")]))]),
+                                       actor: user)], now: now)
+        try refusedWhole(folder, store, first) { _ = try edit(store, [("priority", .str("high"))]) }
+
+        // The undone edit touched no marker, but the redaction was lifted since.
+        (folder, store) = try adopted()
+        _ = try edit(store, [("title", .str("Invented confidential title")), ("redact", .bool(true))])
+        first = try edit(store, [("title", .str("Invented public title"))])
+        try refusedWhole(folder, store, first) {
+            _ = try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: Self.id),
+                (key: "unset", value: .array([.str("redact")]))]), actor: user)], now: now)
+        }
+
+        // Another program removed the redaction the undone edit set; the ratchet still holds the item redacted.
+        (folder, store) = try adopted()
+        _ = try edit(store, [("tags", .array([.str("invented-private-tag")]))])
+        first = try edit(store, [("redact", .bool(true)), ("tags", .array([])), ("priority", .str("low"))])
+        try refusedWhole(folder, store, first) {
+            let url = folder.appendingPathComponent("catalog.json")
+            var catalog = try #require(try JSONParser.parse(try Data(contentsOf: url)).value.objectValue)
+            var items = catalog["open_items"]?.arrayValue ?? []
+            let at = try #require(items.firstIndex { $0["id"] == Self.id })
+            var changed = try #require(items[at].objectValue)
+            changed.remove("redact")
+            items[at] = .object(changed)
+            catalog.set("open_items", .array(items))
+            try Data(JSONWriter.pretty(.object(catalog)).utf8).write(to: url)
+        }
     }
 
     @Test func anEditWhoseEveryFieldChangedSinceIsRefusedWithNothingWritten() throws {
@@ -171,6 +207,20 @@ import Testing
         let line = try #require(try store.readOpLog().ops.last)
         #expect(line["op"] == .str("drop"))
         #expect(line["expect"] == .obj([("record", .string(try Canonical.hash(item)))]))
+    }
+
+    @Test func anAddedItemEditedAndSetBackIsNotDroppedByUndo() throws {
+        let (folder, store) = try adopted()
+        let added = JSONValue.str("estate-example-2026-109")
+        let applied = try store.apply([.init(op: "add_item", args: JSONObject([(key: "item", value: .obj([("id", added),
+            ("title", .str("Invented new task")), ("status", .str("open")), ("priority", .str("low")), ("no_deadline", .bool(true))]))]),
+                                             actor: user)], now: now)
+        for priority in ["high", "low"] {
+            _ = try store.apply([.init(op: "update_item", args: JSONObject([(key: "id", value: added),
+                (key: "set", value: .obj([("priority", .string(priority))]))]), actor: user)], now: now)
+        }
+        #expect(throws: (any Error).self) { try store.undo(opID: applied[0]["id"]!.stringValue!, now: now) }
+        #expect(Teka.read(folder).catalog?["open_items"]?.arrayValue?.contains { $0["id"] == added } == true)
     }
 
     @Test func expectOnAnOpWithoutAnExistingRecordIsRefused() throws {
