@@ -188,6 +188,47 @@ public final class StateDirectory: @unchecked Sendable {
         try validate()
     }
 
+    /// Publishes a prepared directory without replacing any entry, for owner creation (binder-v0 §7.2.2).
+    /// The caller must have flushed its files first; this flushes the directory and both parent chains.
+    /// A failure after rename leaves the published entry intact. Recovery must reconcile its trusted instance,
+    /// not treat an existing destination as proof of ownership. Cross-volume moves are refused, never copied.
+    public func publishDirectory(_ name: String, to destination: StateDirectory,
+                                 as newName: String) throws -> StateDirectory {
+        try publishDirectory(name, to: destination, as: newName, beforePublish: {})
+    }
+
+    func publishDirectory(_ name: String, to destination: StateDirectory, as newName: String,
+                          beforePublish: () throws -> Void) throws -> StateDirectory {
+        try Self.component(name)
+        try Self.component(newName)
+        try validate()
+        try destination.validate()
+        guard let staged = try directory(name) else {
+            throw AtomicFile.Failure(step: "missing staged directory", code: ENOENT)
+        }
+        try staged.flushAnchors()
+        try destination.flushAnchors()
+        try flush.directory(staged.fd)
+        try beforePublish()
+        try staged.validate()
+        try destination.validate()
+        guard renameatx_np(fd, name, destination.fd, newName, UInt32(RENAME_EXCL)) == 0 else {
+            throw AtomicFile.Failure(step: "publish state directory", code: errno)
+        }
+        // Never roll back or delete by name after publication, including when either flush fails.
+        try flush.directory(fd)
+        try destination.flush.directory(destination.fd)
+        try validate()
+        try destination.validate()
+        let descriptor = fcntl(staged.fd, F_DUPFD_CLOEXEC, 0)
+        guard descriptor >= 0 else { throw AtomicFile.Failure(step: "retain published directory", code: errno) }
+        let published: StateDirectory
+        do { published = try StateDirectory(fd: descriptor, parent: destination, name: newName, flush: destination.flush) }
+        catch { close(descriptor); throw error }
+        try published.validate()
+        return published
+    }
+
     public func write(_ data: Data, to name: String) throws {
         try write(data, to: name, beforeOpen: {})
     }
