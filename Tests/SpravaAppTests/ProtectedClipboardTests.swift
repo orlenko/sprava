@@ -11,7 +11,9 @@ import Testing
         #expect(board.string(forType: .string) == "invented-registration")
         #expect(board.types?.contains(ProtectedClipboard.concealed) == true)
         #expect(board.types?.contains(ProtectedClipboard.transient) == true)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        // The expiry runs on the main actor, which the app's other tests share while the suite runs in parallel; there
+        // it has come 9 s late. The wait ends as soon as the credential is gone, so the long bound costs a passing run nothing.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
         while board.string(forType: .string) != nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

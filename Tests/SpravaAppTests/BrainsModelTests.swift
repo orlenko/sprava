@@ -275,7 +275,8 @@ final class InventedRuntime {
         #expect(m.busy)
         #expect(!completed)
         await run.value
-        #expect(Date().timeIntervalSince(started) < 10)
+        // A bound against a hang, not a speed test: in the parallel suite the main actor's turns come seconds late.
+        #expect(Date().timeIntervalSince(started) < 30)
         #expect(m.message?.contains("was stopped") == true)
         #expect(m.registration != nil)
         #expect(!m.busy)

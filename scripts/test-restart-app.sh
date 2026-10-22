@@ -53,9 +53,19 @@ if name == "launchctl":
         if os.environ.get("TEST_JOBS") != "1":
             sys.exit(1)
         app = os.environ.get("TEST_JOB_APP", os.environ["SPRAVA_INSTALL_DIR"] + "/Sprava.app")
-        print("program = " + app + "/Contents/MacOS/sprava-runtime")
+        if os.environ.get("TEST_JOB_FORMAT") == "27":
+            # macOS 27 names the program relative to its bundle and gives the pid only while it runs.
+            print("\\tprogram identifier = Contents/MacOS/sprava-runtime (mode: 2)")
+            if os.environ.get("TEST_JOB_RUNNING", "1") == "1":
+                print("\\tpid = 4242")
+        else:
+            print("program = " + app + "/Contents/MacOS/sprava-runtime")
     elif os.environ.get("TEST_RESTART_FAIL") == "1":
         sys.exit(1)
+elif name == "lsof":
+    app = os.environ.get("TEST_JOB_APP", os.environ["SPRAVA_INSTALL_DIR"] + "/Sprava.app")
+    assert args == ["-a", "-p", "4242", "-d", "txt", "-Fn"], args
+    print("p4242\\nftxt\\nn" + app + "/Contents/MacOS/sprava-runtime")
 elif name == "osascript":
     script = sys.stdin.read()
     assert script.index("display dialog") < script.index("to quit")
@@ -76,7 +86,7 @@ elif name == "mv":
     shutil.move(*args)
 ''')
         fake.chmod(0o755)
-        for name in ["launchctl", "osascript", "pgrep", "open", "sleep", "mv"]:
+        for name in ["launchctl", "lsof", "osascript", "pgrep", "open", "sleep", "mv"]:
             (self.bin / name).symlink_to(fake)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         SPRAVA_INSTALL_DIR=str(self.apps), TEST_LOG=str(self.log), TEST_APP_RUNNING="1")
@@ -139,6 +149,27 @@ elif name == "mv":
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("build", self.log.read_text())
         self.assertEqual((self.app / "version").read_text(), "old\n")
+
+    def test_macos_27_running_job_of_this_copy_is_restarted(self):
+        self.installed()
+        result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log.read_text().count("kickstart -k"), 2)
+        self.assertEqual((self.app / "version").read_text(), "new\n")
+
+    def test_macos_27_running_job_of_another_copy_is_refused(self):
+        self.installed()
+        result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27", TEST_JOB_APP="/another/Sprava.app")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("build", self.log.read_text())
+        self.assertEqual((self.app / "version").read_text(), "old\n")
+
+    def test_macos_27_job_that_is_not_running_is_left_to_the_app(self):
+        self.installed()
+        result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27", TEST_JOB_RUNNING="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("kickstart", self.log.read_text())
+        self.assertEqual((self.app / "version").read_text(), "new\n")
 
     def test_failed_install_restores_and_opens_previous_bundle(self):
         self.installed()
