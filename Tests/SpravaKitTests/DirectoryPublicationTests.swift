@@ -148,6 +148,79 @@ import Testing
         func set(_ value: Bool) { lock.withLock { enabled = value } }
     }
 
+    /// A durability model at the flush boundary: until the destination parent is durable, recovery must
+    /// still have the original source name. No physical power loss is performed by the fixture.
+    final class PublicationDurability: @unchecked Sendable {
+        private let lock = NSLock()
+        private let source: ino_t
+        private let destination: ino_t
+        private let failDestination: Bool
+        private var armed = false
+        private var destinationDurable = false
+        private var sourceRemovalDurable = false
+        private var lostOnlyName = false
+
+        init(source: ino_t, destination: ino_t, failDestination: Bool) {
+            self.source = source; self.destination = destination; self.failDestination = failDestination
+        }
+        func arm() { lock.withLock { armed = true } }
+        var lostOnlyDurableName: Bool { lock.withLock { lostOnlyName } }
+        var committedSourceRemoval: Bool { lock.withLock { sourceRemovalDurable } }
+
+        func flush(_ fd: Int32) throws {
+            try lock.withLock {
+                var info = stat()
+                guard fstat(fd, &info) == 0 else {
+                    throw AtomicFile.Failure(step: "inspect fixture flush", code: errno)
+                }
+                if armed, info.st_ino == destination, failDestination {
+                    throw AtomicFile.Failure(step: "invented destination flush failure", code: EIO)
+                }
+                try AtomicFile.flushToDisk(fd, step: "flush fixture directory")
+                if armed, info.st_ino == destination { destinationDurable = true }
+                if armed, info.st_ino == source {
+                    sourceRemovalDurable = true
+                    if !destinationDurable { lostOnlyName = true }
+                }
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func recoveryKeepsADurableNameWhenDestinationFlushFails(failDestination: Bool) throws {
+        let base = try temporary()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = try #require(try StateDirectory.open(base))
+        _ = try root.directory("private", create: true)
+        _ = try root.directory("visible", create: true)
+        var from = stat(), to = stat()
+        try #require(lstat(base.appendingPathComponent("private").path, &from) == 0)
+        try #require(lstat(base.appendingPathComponent("visible").path, &to) == 0)
+        let durability = PublicationDurability(source: from.st_ino, destination: to.st_ino,
+                                             failDestination: failDestination)
+        let flush = StateDirectory.Flush(directory: { try durability.flush($0) })
+        let privateArea = try #require(try StateDirectory.open(base.appendingPathComponent("private"),
+                                                             create: false, flush: flush))
+        let visible = try #require(try StateDirectory.open(base.appendingPathComponent("visible"),
+                                                         create: false, flush: flush))
+        let staged = try #require(try privateArea.directory("pending", create: true))
+        let bytes = Data("invented complete binder contents".utf8)
+        try staged.createImmutable(bytes, to: "record")
+        if failDestination {
+            #expect(throws: (any Error).self) {
+                try privateArea.publishDirectory("pending", to: visible, as: "binder",
+                                                 beforePublish: { durability.arm() })
+            }
+        } else {
+            _ = try privateArea.publishDirectory("pending", to: visible, as: "binder",
+                                                beforePublish: { durability.arm() })
+        }
+        #expect(!durability.lostOnlyDurableName)
+        #expect(durability.committedSourceRemoval == !failDestination)
+        let published = try #require(try visible.directory("binder"))
+        #expect(try data(published, "record") == bytes)
+    }
+
     @Test func aFlushFailureAfterRenameLeavesThePublishedDirectoryIntact() throws {
         let base = try temporary()
         defer { try? FileManager.default.removeItem(at: base) }

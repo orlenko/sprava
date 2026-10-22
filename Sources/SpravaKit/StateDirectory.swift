@@ -215,9 +215,10 @@ public final class StateDirectory: @unchecked Sendable {
         guard renameatx_np(fd, name, destination.fd, newName, UInt32(RENAME_EXCL)) == 0 else {
             throw AtomicFile.Failure(step: "publish state directory", code: errno)
         }
+        // Persist the destination name before committing removal of the source name.
         // Never roll back or delete by name after publication, including when either flush fails.
-        try flush.directory(fd)
         try destination.flush.directory(destination.fd)
+        try flush.directory(fd)
         try validate()
         try destination.validate()
         let descriptor = fcntl(staged.fd, F_DUPFD_CLOEXEC, 0)
