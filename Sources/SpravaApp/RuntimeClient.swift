@@ -13,6 +13,8 @@ final class RuntimeClient {
     private var connection: NSXPCConnection?
     /// Answers in place of the runtime, for tests: no test reaches a runtime over XPC.
     private let answer: (@MainActor (String) async throws -> String)?
+    /// The runtime's XPC name; tests name one that does not exist.
+    private let serviceName: String
     /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
     static var whenNotRunning: (@MainActor () -> Void)?
     /// Run after every answer from the runtime, a refusal included.
@@ -29,8 +31,9 @@ final class RuntimeClient {
         return request.keys.allSatisfy { $0 == "command" || $0 == "binder" }
     }
 
-    init(answer: (@MainActor (String) async throws -> String)? = nil) {
+    init(answer: (@MainActor (String) async throws -> String)? = nil, serviceName: String = XPCNames.runtime) {
         self.answer = answer
+        self.serviceName = serviceName
     }
 
     struct Failure: Error, CustomStringConvertible {
@@ -121,10 +124,10 @@ final class RuntimeClient {
 
     private func openConnection() -> NSXPCConnection {
         if let connection { return connection }
-        let c = NSXPCConnection(machServiceName: XPCNames.runtime, options: [])
+        let c = NSXPCConnection(machServiceName: serviceName, options: [])
         c.remoteObjectInterface = NSXPCInterface(with: SpravaRuntimeXPC.self)
         let id = ObjectIdentifier(c)
-        c.invalidationHandler = { [weak self] in Task { @MainActor in self?.forget(id) } }
+        c.invalidationHandler = { @Sendable [weak self] in Task { @MainActor in self?.forget(id) } }
         c.resume()
         connection = c
         return c
@@ -140,10 +143,12 @@ final class RuntimeClient {
         if let connection, ObjectIdentifier(connection) == id { self.connection = nil }
     }
 
+    /// XPC calls its error and reply blocks on its own queue, so they are `@Sendable`: a block isolated to the main
+    /// actor, as one written here would be, traps the app the moment the runtime cannot be reached.
     private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
-            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+            let proxy = c.remoteObjectProxyWithErrorHandler { @Sendable error in
                 if once.claim() {
                     connectionLog.notice("runtime connection failed code=\((error as NSError).code, privacy: .public)")
                     continuation.resume(throwing: Failure.notRunning(error))
@@ -156,10 +161,10 @@ final class RuntimeClient {
                 }
                 return
             }
-            proxy.handle(text) { answer in
+            proxy.handle(text) { @Sendable answer in
                 if once.claim() { continuation.resume(returning: answer) }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { @Sendable in
                 if once.claim() {
                     continuation.resume(throwing: Failure(message: "Runtime not answering in time. The change may still be applied; reload to check before trying again.",
                                                           kind: .timedOut))

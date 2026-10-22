@@ -32,6 +32,18 @@ import Testing
 
     let kitchen = URL(fileURLWithPath: "/Invented/kitchen-reno", isDirectory: true)
 
+    /// Over real XPC, to a name no service holds: XPC calls the error block on its own queue. A block isolated to the
+    /// main actor trapped the app there whenever the runtime could not be reached.
+    @Test func aRuntimeThatIsNotThereOverXPCIsReportedWithoutATrap() async throws {
+        let client = RuntimeClient(serviceName: "ca.orlenko.sprava.test.absent-\(UUID().uuidString)")
+        do {
+            _ = try await client.global("ping", timeout: 10)
+            Issue.record("an absent runtime answered")
+        } catch let failure as RuntimeClient.Failure {
+            #expect(failure.kind == .notRunning)
+        }
+    }
+
     @Test func aReadThatFindsNoRuntimeIsSentOnceMore() async throws {
         let runtime = Flaky(failures: 1)
         _ = try await runtime.client.global("unfiled", timeout: 5)
