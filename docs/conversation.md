@@ -305,8 +305,8 @@ architecture 4.5). Items from the person's own message start unmarked, as notes 
 A typed request does not lift a change out of class B: "mark the plumber's invoice paid" gives "Close 'Pay
 plumber invoice', due 2026-10-20? Apply", because the front desk may have picked the wrong item. Ops applied
 from the conversation carry the actor that chose them (`clerk` or `brain`, with the model), `approved_by`
-naming the person, and a `conversation` provenance field naming the transcript line that authorized them;
-binder-v0 §6.2 and §6.5 gain this. Only the person typing, dropping or tapping in the app's window for this
+naming the person, a `conversation` field naming the turn and the person's message that asked for them, and
+the request id (binder-v0 §6.2, §6.5); these fields are records, never authority. Only the person typing, dropping or tapping in the app's window for this
 binder authorizes anything, proven as the app's capture notices are (architecture 2.1, 8); arrivals in
 `intake/` are filed as class A because filing is additive and undoable. MCP text, other producers' captures,
 the companion relay and the hub's outbox keep their own paths.
