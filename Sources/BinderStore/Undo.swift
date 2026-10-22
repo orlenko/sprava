@@ -10,7 +10,8 @@ public enum Undo {
 
     /// The ops `compensate` can reverse; every other op records a fact or is corrected by another op (binder-v0 §6.10).
     public static func supported(_ op: JSONObject) -> Bool {
-        ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop"].contains(op["op"]?.stringValue ?? "")
+        ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop", "move_document"]
+            .contains(op["op"]?.stringValue ?? "")
     }
 
     /// A compensating op, the state it assumes, and the fields it leaves alone because they changed since.
@@ -105,6 +106,18 @@ public enum Undo {
             a.set("source", .str("user"))
             a.set("reason", .str("undo"))
             return Compensation(op: "drop", args: a, expect: JSONObject([(key: "record", value: .string(hash))]), kept: [])
+
+        case "move_document":
+            // Moved back, from and path swapped, only while the record is still where the move put it; otherwise the
+            // person decides (binder-v0 §6.10). The move back checks the file's digest as the move did.
+            guard let id = args["id"], case .string(let from)? = args["from"], case .string(let path)? = args["path"],
+                  let sha = args["sha256"] else { throw Unsupported(message: "the move is incomplete") }
+            let current = catalog["documents"]?.arrayValue?.first { $0["id"] == id }
+            guard current?["path"] == .string(path) else { throw Unsupported(message: "the document moved or changed since; move it yourself") }
+            let back = JSONObject([(key: "id", value: id), (key: "from", value: .string(path)), (key: "path", value: .string(from)),
+                                   (key: "sha256", value: sha)])
+            return Compensation(op: "move_document", args: back, expect: JSONObject([(key: "set", value: .obj([("path", .string(path))]))]),
+                                kept: [])
 
         case "update_item":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }

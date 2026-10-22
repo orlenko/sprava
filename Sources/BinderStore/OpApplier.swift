@@ -14,7 +14,7 @@ public enum OpApplier {
 
     public static let opTypes: Set<String> = [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
-        "file_document", "update_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
+        "file_document", "update_document", "move_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
         "external_edit", "import_snapshot", "migrate", "abort", "expunge",
     ]
 
@@ -198,6 +198,22 @@ public enum OpApplier {
             docs[i] = .object(doc)
             c.set("documents", .array(docs))
 
+        case "move_document":
+            // The record moves with its file and keeps its place; every other field, its digest included, stays
+            // (binder-v0 §6.3). Applying the op moves the file (§6.9); replay never does.
+            let id = try required(args, "id", type)
+            guard case .string(let from)? = args["from"], case .string(let path)? = args["path"] else {
+                throw Failure("move_document: from and path are required")
+            }
+            var docs = c["documents"]?.arrayValue ?? []
+            guard let i = docs.firstIndex(where: { $0["id"] == id }), case .object(var doc) = docs[i] else {
+                throw Failure("move_document: no document \(id)")
+            }
+            guard doc["path"] == .string(from) else { throw Failure("move_document: from is not the document's path") }
+            doc.set("path", .string(path))
+            docs[i] = .object(doc)
+            c.set("documents", .array(docs))
+
         case "set_meta":
             var meta = try metaObject(c, type)
             let set = args["set"]?.objectValue ?? JSONObject()
@@ -249,7 +265,7 @@ public enum OpApplier {
         switch type {
         case "update_item", "set_status", "complete", "drop", "dismiss", "undismiss":
             record = try findItem(id: try required(args, "id", type), in: c).1
-        case "update_document":
+        case "update_document", "move_document":
             let id = try required(args, "id", type)
             guard let found = c["documents"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue else {
                 throw Failure("\(type): expect names a document that is not there")
