@@ -519,6 +519,15 @@ resumed by id. Applied changes stay with Undo. Engine sections below name only t
 
 ### 11.1 The back office: Claude Code, then Codex
 
+**First read/draft pilot.** Establish useful dialogue with one Claude and one binder before enabling
+actions: feed a consented snapshot of intake, priorities, reference material and TODOs as labelled data,
+and require source ids for urgency assessments and reply drafts. Nothing is sent or applied. The
+`ClaudeReadOnlyTurn` transport is initially unregistered: an isolated, verified launch and real installed-CLI
+Stop/resume checks are still required before an app caller can enable it. It ends the process after each
+result and resumes the native session on the next successful turn; failed or interrupted turns require a
+new session seeded only from canonical app history. This preserves conversation context without keeping
+idle processes resident. Local routing and additional providers follow the usable Claude workflow.
+
 The runtime starts Claude Code in print mode with structured input and output, no shell (2.1.299, spikes S1,
 S2). It runs in **a Claude home of Sprava's own per binder**, as Codex does: `CLAUDE_CONFIG_DIR`, `HOME` and
 `CLAUDE_CODE_TMPDIR` all point into `brains/<binder id>/claude/` in the support folder, which is also the
