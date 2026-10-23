@@ -46,9 +46,12 @@ import Testing
             time.sleep(30); sys.exit(0)
         if mode == 'stubborn':
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        emit(dict(type='system', subtype='init', session_id='wrong' if mode == 'session' else sid,
-            tools=['shell'] if mode == 'tools' else [], mcp_servers=['outside'] if mode == 'mcp' else [],
-            permissionMode='default' if mode == 'permissions' else 'dontAsk'))
+        if mode in ['metadata', 'no_init']:
+            emit(dict(type='system', subtype='future_startup_telemetry', session_id=sid))
+        if mode != 'no_init':
+            emit(dict(type='system', subtype='init', session_id='wrong' if mode == 'session' else sid,
+                tools=['shell'] if mode == 'tools' else [], mcp_servers=['outside'] if mode == 'mcp' else [],
+                permissionMode='default' if mode == 'permissions' else 'dontAsk'))
         line = json.loads(sys.stdin.readline())
         assert line['client_composed'] and line['session_id'] == sid
         text = line['message']['content']
@@ -87,11 +90,33 @@ import Testing
         elif mode == 'error': result('invented-private-marker', True)
         elif mode == 'abnormal':
             result(); sys.exit(9)
-        elif mode == 'stop':
+        elif mode in ['metadata', 'partial', 'stream_tool', 'stream_tool_delta', 'metadata_scope', 'metadata_hook', 'no_init', 'missing_result']:
+            if mode == 'metadata':
+                emit(dict(type='system', subtype='future_turn_telemetry', session_id=sid))
+            if mode == 'metadata_scope':
+                emit(dict(type='system', subtype='future_turn_telemetry', session_id=sid, tools=['Read']))
+            if mode == 'metadata_hook':
+                emit(dict(type='system', subtype='hook_started', session_id=sid))
+            if mode in ['partial', 'stream_tool', 'stream_tool_delta']:
+                emit(dict(type='stream_event', session_id=sid, event=dict(type='message_start', message=dict(content=[]))))
+                emit(dict(type='stream_event', session_id=sid, event=dict(type='content_block_start',
+                    content_block=dict(type='tool_use' if mode == 'stream_tool' else 'text', text=''))))
+                emit(dict(type='stream_event', session_id=sid, event=dict(type='content_block_delta',
+                    delta=dict(type='input_json_delta' if mode == 'stream_tool_delta' else 'text_delta', text='unfinished partial'))))
+            if mode == 'missing_result':
+                emit(dict(type='result', session_id=sid, subtype='success', is_error=False))
+            else: result('invented final reply')
+        elif mode.startswith('stop'):
             control = json.loads(sys.stdin.readline())
             assert control['request']['subtype'] == 'interrupt'
-            emit(dict(type='control_response', response=dict(subtype='success', request_id=control['request_id'])))
-            result('', True)
+            if mode == 'stop_late': result('', True)
+            emit(dict(type='control_response', response=dict(subtype='success',
+                request_id='wrong' if mode == 'stop_bad_ack' else control['request_id'])))
+            if mode == 'stop_context':
+                emit(dict(type='user', message=dict(role='user', content='[Request interrupted by user]')))
+            if mode == 'stop_empty':
+                emit(dict(type='result', session_id=sid, subtype='success', is_error=False))
+            elif mode != 'stop_late': result('', True)
         elif mode == 'stubborn':
             while True: time.sleep(1)
         elif mode == 'chatter':
@@ -107,7 +132,8 @@ import Testing
         #expect(try await fixture.runner.run("next invented line", resume: true) == .text("next invented line"))
     }
 
-    @Test(arguments: ["session", "tools", "mcp", "permissions", "ack", "tool", "truncated", "invalid", "error", "abnormal", "flood", "stderr"])
+    @Test(arguments: ["session", "tools", "mcp", "permissions", "ack", "tool", "truncated", "invalid", "error", "abnormal", "flood", "stderr",
+                      "metadata_scope", "metadata_hook", "no_init", "stream_tool", "stream_tool_delta", "missing_result"])
     func malformedOrIncompleteResponsesAreNeverPresentedAsReplies(_ mode: String) async throws {
         let fixture = try Fixture(mode)
         do {
@@ -124,6 +150,31 @@ import Testing
     @Test func outputIsDrainedEvenWhenTheChildHasAlreadyExited() async throws {
         let fixture = try Fixture("large")
         #expect(try await fixture.runner.run("invented", resume: false) == .text(String(repeating: "a", count: 200000)))
+    }
+
+    @Test(arguments: ["metadata", "partial"])
+    func systemMetadataAndPartialFramesDoNotReplaceTheFinalReply(_ mode: String) async throws {
+        let fixture = try Fixture(mode)
+        #expect(try await fixture.runner.run("invented", resume: false) == .text("invented final reply"))
+    }
+
+    @Test(arguments: ["stop_late", "stop_context", "stop_empty"])
+    func interruptedEngineContextAndResultOrderingDoNotLoseStop(_ mode: String) async throws {
+        let fixture = try Fixture(mode)
+        let task = Task { try await fixture.runner.run("invented", resume: false) }
+        let pid = try await fixture.ready()
+        fixture.runner.stop()
+        #expect(try await task.value == .interrupted)
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
+    }
+
+    @Test func anUncorrelatedInterruptAcknowledgmentIsRefused() async throws {
+        let fixture = try Fixture("stop_bad_ack")
+        let task = Task { try await fixture.runner.run("invented", resume: false) }
+        let pid = try await fixture.ready()
+        fixture.runner.stop()
+        await #expect(throws: ClaudeReadOnlyTurn.Failure.protocolMismatch) { try await task.value }
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }
 
     @Test func environmentAndUnrelatedDescriptorsDoNotReachTheChild() async throws {
