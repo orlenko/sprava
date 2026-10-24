@@ -31,9 +31,12 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         let environment: [String: String]
         let directory: URL
         let sessionID: UUID
-        package init(executable: URL, arguments: [String], environment: [String: String], directory: URL, sessionID: UUID) {
+        let onSpawn: @Sendable (pid_t) throws -> Void
+        package init(executable: URL, arguments: [String], environment: [String: String], directory: URL, sessionID: UUID,
+                     onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
             self.executable = executable; self.arguments = arguments; self.environment = environment
             self.directory = directory; self.sessionID = sessionID
+            self.onSpawn = onSpawn
         }
         package var description: String { "<Claude read-only launch>" }
         package var debugDescription: String { description }
@@ -76,6 +79,8 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
 
     /// Stop is repeatable and only applies to the current reservation; dropping a UI stream is not Stop.
     package func stop() { lock.withLock { if active != nil { stopped = true } } }
+    /// A process reservation is released only after the owner confirms exit, including on failure.
+    package var processExitConfirmed: Bool { lock.withLock { active == nil && !quarantined } }
     private func requestStop(_ id: UUID) { lock.withLock { if active == id { stopped = true } } }
     private func isStopped(_ id: UUID) -> Bool { lock.withLock { active == id && stopped } }
 
@@ -84,6 +89,9 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         defer {
             if !child.finish() { lock.withLock { quarantined = true } }
         }
+        // Persist the worker identity BEFORE any person line can enter its stdin. A failed journal
+        // callback reaps this child without submitting the line; it must never become an untracked turn.
+        do { try launch.onSpawn(child.pid) } catch { throw Failure.startFailed }
         var decoder = try AgentJSONLines(maximumLineBytes: 2 * 1024 * 1024)
         var frames = ClaudeReadOnlyFrames(sessionID: launch.sessionID, original: text)
         var supervisor = TurnSupervisorPolicy(limits: limits)

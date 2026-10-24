@@ -9,7 +9,7 @@ import Testing
         let directory: URL
         let runner: ClaudeReadOnlyTurn
         init(_ mode: String, inactivity: Duration = .seconds(10), overall: Duration = .seconds(20),
-             environment: [String: String] = [:]) throws {
+             environment: [String: String] = [:], onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) throws {
             directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("claude-turn-\(UUID())")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let script = directory.appendingPathComponent("fake.py")
@@ -23,7 +23,7 @@ import Testing
             locator.waitUntilExit()
             guard locator.terminationStatus == 0, path.hasPrefix("/") else { throw ClaudeReadOnlyTurn.Failure.startFailed }
             runner = ClaudeReadOnlyTurn(launch: .init(executable: URL(fileURLWithPath: path),
-                arguments: ["-I", "-S", "-u", script.path, mode], environment: environment, directory: directory, sessionID: UUID()),
+                arguments: ["-I", "-S", "-u", script.path, mode], environment: environment, directory: directory, sessionID: UUID(), onSpawn: onSpawn),
                 limits: try .init(inactivity: inactivity, overall: overall, terminationGrace: .milliseconds(100)))
         }
         deinit { try? FileManager.default.removeItem(at: directory) }
@@ -150,6 +150,25 @@ import Testing
     @Test func outputIsDrainedEvenWhenTheChildHasAlreadyExited() async throws {
         let fixture = try Fixture("large")
         #expect(try await fixture.runner.run("invented", resume: false) == .text(String(repeating: "a", count: 200000)))
+    }
+
+    @Test func aWorkerThatCannotBeJournaledNeverReceivesThePersonsLine() async throws {
+        final class Worker: @unchecked Sendable {
+            let lock = NSLock()
+            private var saved: pid_t?
+            var pid: pid_t? { lock.withLock { saved } }
+            func saw(_ pid: pid_t) { lock.withLock { saved = pid } }
+        }
+        enum JournalFailure: Error { case unavailable }
+        let worker = Worker()
+        let fixture = try Fixture("echo", onSpawn: { pid in worker.saw(pid); throw JournalFailure.unavailable })
+        await #expect(throws: ClaudeReadOnlyTurn.Failure.startFailed) {
+            try await fixture.runner.run("This invented line must not be submitted.", resume: false)
+        }
+        let pid = try #require(worker.pid)
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("ready").path))
+        #expect(fixture.runner.processExitConfirmed)
     }
 
     @Test(arguments: ["metadata", "partial"])
