@@ -20,6 +20,7 @@ public actor ClaudeConversationRuntime {
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
         let replace: @Sendable (String?) throws -> Void
+        var persistent: @Sendable () -> Bool = { true }
     }
     typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
@@ -107,7 +108,10 @@ public actor ClaudeConversationRuntime {
     public func handle(_ request: JSONObject) async throws -> JSONObject {
         try await recover()
         guard let command = request["command"]?.stringValue, Self.commands.contains(command) else { throw Refused.invalidRequest }
-        if command == "claude_status" { return .init([(key: "enabled", value: .bool(try state.account() != nil))]) }
+        if command == "claude_status" {
+            let enabled = try state.account() != nil && secrets.read() != nil
+            return .init([(key: "enabled", value: .bool(enabled)), (key: "credential_persistent", value: .bool(secrets.persistent()))])
+        }
         if command == "claude_configure" {
             guard let path = request["program"]?.stringValue, path.hasPrefix("/"), let credential = request["credential"]?.stringValue else { throw Refused.invalidRequest }
             try await configure(program: URL(fileURLWithPath: path), credential: credential)
@@ -123,7 +127,7 @@ public actor ClaudeConversationRuntime {
         guard !configuring, let path = request["binder"]?.stringValue, path.hasPrefix("/"), !path.contains("\0") else { throw Refused.invalidRequest }
         let folder = URL(fileURLWithPath: path)
         if command == "claude_enable" {
-            guard try state.account() != nil, try available(folder) else { throw Refused.notConnected }
+            guard try state.account() != nil, try secrets.read() != nil, try available(folder) else { throw Refused.notConnected }
             guard preparing.isEmpty else { throw Refused.busy }
             configuring = true; defer { configuring = false }
             try await stopAll()
@@ -136,7 +140,7 @@ public actor ClaudeConversationRuntime {
             let current: ClaudeReadConnections.Connection?
             do { current = try connections.connection(for: folder) }
             catch ClaudeReadConnections.Refused.changed { current = nil }
-            if let current, try state.account() != nil, try available(folder) { return scopeJSON(current) }
+            if let current, try state.account() != nil, try secrets.read() != nil, try available(folder) { return scopeJSON(current) }
             return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null)])
         }
         if command == "chat_history" || command == "chat_clear" {

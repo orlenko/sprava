@@ -759,6 +759,8 @@ Short experiments on invented binders, each before the PR that needs it. S1 to S
 - **S6 Translation** from the runtime and the helper, without a window. **S7 Retrieval**: FTS5 queries in each
   document language over 200 invented documents. **S8 Path import**: folder permissions; matching descriptions.
 
+The read/draft pilot never writes a token to a plaintext fallback file. Its own data-protection Keychain item requires a provisioned runtime (Apple TN3137); the current ad-hoc build treats only a missing-entitlement refusal as a memory-only account. Brains and status disclose that re-enabling is required after a background restart. Locked/damaged Keychains remain refusals. Saved app history remains durable independently of the token.
+
 ## 15. Delivery order and code PRs
 
 The author's approved order (2026-10-15) puts a specialist for each binder before a local-model front desk:

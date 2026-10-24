@@ -98,7 +98,12 @@ import Testing
         #expect(!server.calls.contains { $0["command"] == .str("claude_configure") })
         await model.enable()
         #expect(model.token.isEmpty && model.enabled)
-        #expect(server.calls.last?["credential"] == .str("invented-subscription-token"))
+        let submitted = server.calls.filter { $0["command"] == .str("claude_configure") }
+        #expect(submitted.count == 1)
+        #expect(submitted.first?["credential"] == .str("invented-subscription-token"))
+        #expect(server.calls.filter { $0["command"] != .str("claude_configure") }.allSatisfy { $0["credential"] == nil })
+        #expect(server.calls.last?["command"] == .str("claude_status"))
+        #expect(!model.persistent && model.message?.contains("background memory") == true)
         #expect(model.message?.contains("invented-subscription-token") == false)
     }
 }
