@@ -33,6 +33,7 @@ final class ShelfModel: ObservableObject {
         return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
     @Published var lastRefresh: Date?
+    @Published private(set) var creatingBinder = false
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
@@ -65,7 +66,7 @@ final class ShelfModel: ObservableObject {
         self.deadline = deadline
         self.summarize = summarize
         self.client = client
-        let health = HealthModel(support: support)
+        let health = HealthModel(support: support, client: client)
         self.health = health
         startRuntime = { await health.keeper.ensureRunning() }
     }
@@ -211,6 +212,9 @@ final class ShelfModel: ObservableObject {
     /// A new binder from a template (mvp.md feature 6), created by the runtime. Nothing is asked until the runtime is
     /// there, so the person never fills in dialogs that cannot succeed.
     func startNewBinder() async {
+        guard !creatingBinder else { return }
+        creatingBinder = true
+        defer { creatingBinder = false }
         operationNote = nil
         guard await runtimeReady() else { return }
         let year = Calendar.current.component(.year, from: Date())
@@ -225,11 +229,11 @@ final class ShelfModel: ObservableObject {
         return BinderCreator.name(for: answer.name, template: template, year: year, existing: existing)
     }
 
-    /// Whether the runtime is there for an action that needs it (`ping`, two seconds at most; one only slow to answer goes
-    /// ahead). When it is not running, Sprava starts it without asking (decisions.md A19), and the action goes ahead once the
+    /// Whether the runtime answers an action's readiness check. Silence is not readiness: launchd may still be starting it.
+    /// Sprava starts it without asking (decisions.md A19), and the action goes ahead once the
     /// runtime answers within `startWait`; otherwise it stops before any dialog or request, and the note says why.
     func runtimeReady() async -> Bool {
-        guard await client.presence() == .notRunning else { return true }
+        guard await client.presence() != .answers else { return true }
         operationNote = "Starting Sprava's background part…"
         switch await startRuntime() {
         case .failed(let why):
@@ -331,6 +335,7 @@ struct ShelfView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Button { model.newBinder() } label: { Label("New Binder…", systemImage: "plus") }
                         .buttonStyle(.borderless)
+                        .disabled(model.creatingBinder)
                     if let note = model.note {
                         Text(note).font(.caption).foregroundStyle(.orange)
                     }
@@ -363,9 +368,14 @@ struct ShelfView: View {
                 } actions: {
                     Button("New Binder…") { model.newBinder() }
                         .buttonStyle(.borderedProminent)
+                        .disabled(model.creatingBinder)
                     Button("Add Folder…") { model.addFolderWithPanel() }
                 }
             }
+        }
+        .safeAreaInset(edge: .top) {
+            RuntimeBanner(health: model.health, openHealth: { model.selection = healthSelection })
+                .padding(.horizontal)
         }
         .task {
             while !Task.isCancelled {
@@ -382,6 +392,7 @@ struct ShelfView: View {
         }
         .toolbar {
             Button { model.newBinder() } label: { Label("New Binder", systemImage: "plus.rectangle.on.folder") }
+                .disabled(model.creatingBinder)
             Button { model.addFolderWithPanel() } label: { Label("Add Folder", systemImage: "folder.badge.plus") }
             Button { model.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
         }

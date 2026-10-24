@@ -20,6 +20,7 @@ final class HealthModel: ObservableObject {
     @Published var deviceIDError: String?
     /// Starts recorded today in the runtime's own state file, which rises even when no heartbeat is written.
     @Published var startsToday = 0
+    @Published private(set) var connectionPresence: RuntimeClient.Presence?
     @Published var backups: [HealthSnapshot.BackupLine] = []
     @Published var backupConfigured = false
     /// Why the backup settings cannot be read, if they cannot: not the same as backup not set up.
@@ -41,17 +42,21 @@ final class HealthModel: ObservableObject {
 
     let support: URL
     let reads: Reads
+    private let client: RuntimeClient?
     private var observers: [Any] = []
     /// The read in flight, if any: never more than one of each, so a read that hangs holds one thread, not one per tick.
     private var runtimeRead: Task<Void, Never>?
     private var checksRead: Task<Void, Never>?
+    private var connectionRead: Task<Void, Never>?
     /// A refresh was asked for while the runtime read was in flight: that read's result is older than the request
     /// (a start may have happened since), so it is dropped and the records are read again.
     private var runtimeReadStale = false
 
-    init(support: URL = SpravaPaths.supportDirectory(), reads: Reads = Reads(), keeper: RuntimeKeeper? = nil) {
+    init(support: URL = SpravaPaths.supportDirectory(), reads: Reads = Reads(), keeper: RuntimeKeeper? = nil,
+         client: RuntimeClient? = nil) {
         self.support = support
         self.reads = reads
+        self.client = client
         self.keeper = keeper ?? RuntimeKeeper(system: RuntimeStart.system(support: support))
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -75,6 +80,12 @@ final class HealthModel: ObservableObject {
         runtimeStatus = runtime.status
         watchStatus = watcher.status
         readRuntime()
+        if connectionRead == nil, let client {
+            connectionRead = Task {
+                connectionPresence = await client.presence()
+                connectionRead = nil
+            }
+        }
         // The doctor and the backup records read every binder on the Shelf: at most once a minute.
         if checksRead == nil, lastDoctor.map({ now.timeIntervalSince($0) > 60 }) ?? true {
             lastDoctor = now
@@ -114,8 +125,19 @@ final class HealthModel: ObservableObject {
 
     /// Waits until no read is in flight and every result has been published or dropped.
     func settled() async {
-        while let read = runtimeRead ?? checksRead { await read.value }
+        while let read = runtimeRead ?? checksRead ?? connectionRead { await read.value }
     }
+
+    /// A heartbeat proves the process is alive, not that the app can reach its command listener.
+    var connectionProblem: String? {
+        guard !starting, let connectionPresence, connectionPresence != .answers else { return nil }
+        if beatGrade == .green {
+            return "The background process is alive, but Sprava cannot connect to it. Restart it below; if this continues, open Health."
+        }
+        return nil
+    }
+
+    var statusGrade: HealthGrade { connectionProblem == nil ? beatGrade : .red }
 
     /// The beat's grade; red when there is no valid heartbeat.
     var beatGrade: HealthGrade {
@@ -211,7 +233,7 @@ struct HealthView: View {
     @ViewBuilder var runtimeLines: some View {
         let grade = model.beatGrade
         HStack {
-            Circle().fill(grade.color).frame(width: 10, height: 10)
+            Circle().fill(model.statusGrade.color).frame(width: 10, height: 10)
             VStack(alignment: .leading) {
                 Text(statusText(grade)).font(.headline)
                 if case .success(let beat) = model.heartbeat {
@@ -230,6 +252,7 @@ struct HealthView: View {
     }
 
     func statusText(_ grade: HealthGrade) -> String {
+        if let problem = model.connectionProblem { return problem }
         switch model.runtimeStatus {
         case .notRegistered, .notFound:
             if case .success = model.heartbeat, grade == .green {
@@ -268,11 +291,11 @@ struct HealthView: View {
         case .requiresApproval:
             Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
         case .enabled:
-            if (grade == .red || grade == .amber || model.startFailure != nil) && !model.starting {
+            if (grade == .red || grade == .amber || model.startFailure != nil || model.connectionProblem != nil) && !model.starting {
                 Button("Restart") { model.restart() }
             }
         default:
-            if !model.starting && grade != .green { Button("Restart") { model.restart() } }
+            if !model.starting && model.statusGrade != .green { Button("Restart") { model.restart() } }
         }
     }
 
@@ -305,7 +328,7 @@ struct HealthLabel: View {
 
     var body: some View {
         HStack {
-            Circle().fill(health.beatGrade.color).frame(width: 9, height: 9)
+            Circle().fill(health.statusGrade.color).frame(width: 9, height: 9)
             Text("Health").font(.headline)
         }
     }
@@ -315,18 +338,26 @@ struct HealthLabel: View {
 /// only the person can give, or why starting failed. Nothing is opened for the person; the button is theirs to press.
 struct RuntimeBanner: View {
     @ObservedObject var health: HealthModel
+    var openHealth: (() -> Void)? = nil
 
     var body: some View {
-        if health.runtimeStatus == .requiresApproval {
+        if health.starting {
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Starting Sprava's background part… Binder creation waits until it can answer.")
+                    .foregroundStyle(.secondary)
+            }
+        } else if health.runtimeStatus == .requiresApproval || health.keeper.state == .needsApproval {
             HStack {
                 Text("Sprava's background part is waiting for your approval in System Settings › General › Login Items; changes wait until then.")
                     .foregroundStyle(.orange)
                 Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
             }
-        } else if let failure = health.startFailure {
+        } else if let failure = health.connectionProblem ?? health.startFailure {
             HStack {
                 Text(failure).foregroundStyle(.orange)
                 Button("Restart") { health.restart() }.disabled(health.starting)
+                if let openHealth { Button("Open Health", action: openHealth) }
             }
         }
     }

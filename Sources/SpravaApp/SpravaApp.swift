@@ -38,6 +38,7 @@ struct SpravaApp: App {
                 // ⌘N stays with the WindowGroup's New Window; the table in MenuCommands.swift keeps them apart.
                 Button(MenuCommand.newBinder.title) { model.newBinder() }
                     .menuShortcut(.newBinder)
+                    .disabled(model.creatingBinder)
                 Button(MenuCommand.addFolder.title) { model.addFolderWithPanel() }
                     .menuShortcut(.addFolder)
                 Button(MenuCommand.refresh.title) { model.refresh() }
