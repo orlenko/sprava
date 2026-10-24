@@ -1,3 +1,4 @@
+import Brains
 import BinderFormat
 import BinderStore
 import Foundation
@@ -214,6 +215,14 @@ extension Commands {
     func apply(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
         // A direct action by the person in the app (actor user): complete, drop, set status, edit, add.
         let f = try folder(r)
+        // A conversation card is still the person's ordinary app action, not a model capability.
+        // Check its local physical binding so a moved/replaced path cannot save into a different binder.
+        if let binding = r["conversation_binding"] {
+            guard let expected = binding.stringValue.flatMap(UUID.init(uuidString:)),
+                  try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite")).savedID(for: f) == expected else {
+                throw Failure(message: "This binder changed since the task was shown. Reopen it before saving.")
+            }
+        }
         guard case .string(let op)? = r["op"], case .object(let args)? = r["args"] else {
             throw Failure(message: "apply needs op and args")
         }

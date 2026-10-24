@@ -11,15 +11,17 @@ final class XPCService: NSObject, NSXPCListenerDelegate, SpravaRuntimeXPC, @unch
     let queues: RequestQueues
     /// The same session is available to future companion jobs; never construct another owner per request.
     let companion: CompanionRuntimeRequests?
+    let claude: ClaudeConversationRuntime?
     /// The command queue, which the MCP listener and the jobs that write cards share.
     var queue: DispatchQueue { queues.commands }
     let log: @Sendable (String) -> Void
     var listener: NSXPCListener?
 
-    init(commands: Commands, watch: WatchBox?, companion: CompanionRuntimeRequests?, log: @escaping @Sendable (String) -> Void) {
+    init(commands: Commands, watch: WatchBox?, companion: CompanionRuntimeRequests?, claude: ClaudeConversationRuntime? = nil, log: @escaping @Sendable (String) -> Void) {
         self.commands = commands
         queues = RequestQueues(watch: watch)
         self.companion = companion
+        self.claude = claude
         self.log = log
     }
 
@@ -56,6 +58,24 @@ final class XPCService: NSObject, NSXPCListenerDelegate, SpravaRuntimeXPC, @unch
         let commands = self.commands
         let log = self.log
         nonisolated(unsafe) let reply = reply
+        // Only this app-authenticated door owns model turns and binder lifecycle barriers. A
+        // removal is not acknowledged until pending reads/native workers are fenced and disabled.
+        if let claude = self.claude {
+            let queues = self.queues, companion = self.companion
+            Task {
+                let answer = await claude.routeAppRequest(request) { body in
+                    await withCheckedContinuation { continuation in
+                        queues.submit(body, handle: { commands.handle($0) }, companion: companion?.requests) { answer, command, ms in
+                            let ok = (try? JSONParser.parse(answer).value["ok"]) == .bool(true)
+                            log("job=app_request command=\(command) ok=\(ok) ms=\(ms)")
+                            continuation.resume(returning: answer)
+                        }
+                    }
+                }
+                reply(answer)
+            }
+            return
+        }
         queues.submit(request, handle: { commands.handle($0) }, companion: companion?.requests) { answer, command, ms in
             // Names, counts and codes only (architecture 3.7).
             let ok = (try? JSONParser.parse(answer).value["ok"]) == .bool(true)

@@ -526,11 +526,23 @@ search index can include an explicit intake-owner manifest for this consented co
 and separately extracted attachments keep their source paths/revisions; email sender, recipient, subject
 and Message-ID remain source data for reply drafting. Ordinary searches exclude intake unless the caller
 explicitly includes it. Indexing alone neither grants model consent nor starts an importer.
-The `ClaudeReadOnlyTurn` transport is initially unregistered: an isolated, verified launch and real installed-CLI
-Stop/resume checks are still required before an app caller can enable it. It ends the process after each
-result and resumes the native session on the next successful turn; failed or interrupted turns require a
-new session seeded only from canonical app history. This preserves conversation context without keeping
-idle processes resident. Local routing and additional providers follow the usable Claude workflow.
+The installed app's read/draft pilot uses `ClaudeReadOnlyTurn` with no tools at all. The person enables a
+private subscription connection in Brains, then explicitly shares each physical binder's tasks/app history
+and optionally its documents and intake. A copy or replacement gets no inherited consent or native context.
+The account check verifies the pinned signed CLI, the effective first-party subscription/private config,
+and two harmless acknowledged turns across process restarts in the same native session, with newer app
+state overriding the first value. Failure never enables the new account; no binder data is sent by that check.
+Native processes end after each reply and resume by id; failed/interrupted context is replaced from bounded
+authenticated app history, never an imported/Terminal transcript. Stop during indexing prevents the model
+from starting; its already-admitted sandboxed document read may finish before another turn can start.
+Conversations and acceptance receipts are private to this installation in `binder-store/conversation.sqlite`;
+copying a binder does not copy their instruction authority. Clear fences workers and removes its local app
+history/native cache. General owner admission and autonomous operation tools remain disabled.
+
+The app displays cited answers, a durable email draft for explicit private Copy/Save (never SMTP), and
+editable task suggestions. Only the person's Add to To-dos button calls the existing authenticated item
+writer, private by default, with the displayed deadline/priority. Uncertain saves are shown and never
+retried automatically. Local routing and other providers follow this usable Claude workflow.
 
 The runtime starts Claude Code in print mode with structured input and output, no shell (2.1.299, spikes S1,
 S2). It runs in **a Claude home of Sprava's own per binder**, as Codex does: `CLAUDE_CONFIG_DIR`, `HOME` and
