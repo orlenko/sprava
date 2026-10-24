@@ -99,7 +99,7 @@ final class RuntimeKeeper: ObservableObject {
     }
 
     private func perform(restartNow: Bool) async -> Outcome {
-        let task = Task { await steps(waited: restartNow) }
+        let task = Task { await steps(waited: restartNow, restartNow: restartNow) }
         run = task
         let outcome = await task.value
         run = nil
@@ -111,7 +111,7 @@ final class RuntimeKeeper: ObservableObject {
         return outcome
     }
 
-    private func steps(waited startWaited: Bool) async -> Outcome {
+    private func steps(waited startWaited: Bool, restartNow: Bool) async -> Outcome {
         let system = system
         var starts = 0
         var waited = startWaited
@@ -119,7 +119,9 @@ final class RuntimeKeeper: ObservableObject {
         while true {
             let after = since
             let (registration, live) = await Task.detached { (system.registration(), system.live(after)) }.value
-            let step = RuntimeAutostart.next(registration, live: live, starts: starts, waited: waited)
+            // An explicit Restart must also repair an alive process whose XPC listener is unreachable.
+            let acceptExistingBeat = !(restartNow && starts == 0)
+            let step = RuntimeAutostart.next(registration, live: live && acceptExistingBeat, starts: starts, waited: waited)
             switch step {
             case .done: return .running
             case .needsApproval: return .needsApproval

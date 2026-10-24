@@ -85,6 +85,14 @@ import Testing
         #expect(launchd.starts.isEmpty && keeper.state == .running)
     }
 
+    @Test func anExplicitRestartRestartsEvenAProcessWithALiveHeartbeat() async {
+        let launchd = Launchd(.enabled, live: true, works: .kickstart)
+        let keeper = launchd.keeper()
+        #expect(await keeper.restart() == .running)
+        // A heartbeat can be live while the app cannot connect. Restart must not just return "running".
+        #expect(launchd.starts == [.kickstart])
+    }
+
     @Test func anUnregisteredRuntimeIsRegisteredWithoutAsking() async {
         let launchd = Launchd(.notRegistered, works: .register)
         let keeper = launchd.keeper()

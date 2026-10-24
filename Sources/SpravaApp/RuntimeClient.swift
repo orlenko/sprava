@@ -15,6 +15,7 @@ final class RuntimeClient {
     private let answer: (@MainActor (String) async throws -> String)?
     /// The runtime's XPC name; tests name one that does not exist.
     private let serviceName: String
+    private let onNotRunning: (@MainActor () -> Void)?
     /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
     static var whenNotRunning: (@MainActor () -> Void)?
     /// Run after every answer from the runtime, a refusal included.
@@ -31,9 +32,11 @@ final class RuntimeClient {
         return request.keys.allSatisfy { $0 == "command" || $0 == "binder" }
     }
 
-    init(answer: (@MainActor (String) async throws -> String)? = nil, serviceName: String = XPCNames.runtime) {
+    init(answer: (@MainActor (String) async throws -> String)? = nil, serviceName: String = XPCNames.runtime,
+         onNotRunning: (@MainActor () -> Void)? = nil) {
         self.answer = answer
         self.serviceName = serviceName
+        self.onNotRunning = onNotRunning
     }
 
     struct Failure: Error, CustomStringConvertible {
@@ -73,7 +76,8 @@ final class RuntimeClient {
     /// `answers` for any reply, a refusal included.
     func presence(timeout: TimeInterval = 2) async -> Presence {
         do {
-            _ = try await global("ping", timeout: timeout)
+            // Readiness/Health checks observe only; the caller decides whether to start the runtime.
+            _ = try await send(JSONObject([("command", .string("ping"))]), timeout: timeout, startIfMissing: false)
             return .answers
         } catch let failure as Failure {
             switch failure.kind {
@@ -89,7 +93,7 @@ final class RuntimeClient {
     /// Sends one request and returns the reply object. Throws when the runtime does not answer in time or
     /// answers `ok: false`. A read that does not reach the runtime is sent once more (`reads`); a change is not,
     /// so nothing is applied twice.
-    func send(_ request: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
+    func send(_ request: JSONObject, timeout: TimeInterval, startIfMissing: Bool = true) async throws -> JSONObject {
         let text = JSONWriter.compact(.object(request))
         let read = Self.isRead(request)
         let reply: String
@@ -100,7 +104,7 @@ final class RuntimeClient {
                 reply = try await deliver(text, timeout: timeout)
             }
         } catch let failure as Failure where failure.kind == .notRunning {
-            RuntimeClient.whenNotRunning?()
+            if startIfMissing { (onNotRunning ?? RuntimeClient.whenNotRunning)?() }
             // A change's line stays true once the runtime runs, so the page keeps it until the next action.
             throw read ? failure : Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
         }

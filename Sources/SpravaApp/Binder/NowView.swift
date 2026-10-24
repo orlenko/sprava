@@ -47,7 +47,6 @@ struct NowView: View {
                                 .disabled(actions.busy)
                         }
                     }
-                    if let health { RuntimeBanner(health: health) }
                     if let message = actions.message { Text(message).foregroundStyle(.orange) }
                     Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
                         .foregroundStyle(.secondary)

@@ -102,6 +102,50 @@ import Testing
         #expect(runtime.pings == 1 && person.starts == 0 && person.folderQuestions == 1)
     }
 
+    @Test(arguments: [false, true])
+    func aSilentRuntimeCannotOpenNewBinderDialogs(startReportsRunning: Bool) async throws {
+        let person = Person()
+        var commands: [String] = []
+        let client = RuntimeClient(answer: { text in
+            commands.append(try JSONParser.parse(text).value["command"]!.stringValue!)
+            throw RuntimeClient.Failure(message: "No reply", kind: .timedOut)
+        })
+        let model = ShelfModel(support: try temporaryFolder(), client: client)
+        let parent = try temporaryFolder()
+        model.askForBinder = { _, _ in person.binderQuestions.append(nil); return ("blank", "garden-shed") }
+        model.chooseParent = { person.parentQuestions += 1; return parent }
+        model.startRuntime = { person.starts += 1; return startReportsRunning ? .running : .failed(RuntimeKeeper.noBeat) }
+        model.startWait = .zero
+        await model.startNewBinder()
+        #expect(person.starts == 1)
+        #expect(person.binderQuestions.isEmpty && person.parentQuestions == 0)
+        #expect(commands.allSatisfy { $0 == "ping" })
+        #expect(model.note != nil)
+    }
+
+    @Test func anotherNewBinderClickCannotStartASecondSetOfDialogs() async throws {
+        let runtime = StandInRuntime()
+        runtime.running = false
+        runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
+        let person = Person()
+        let model = model(runtime, person, support: try temporaryFolder(), parent: try temporaryFolder())
+        var start: CheckedContinuation<RuntimeKeeper.Outcome, Never>?
+        model.startRuntime = {
+            person.starts += 1
+            return await withCheckedContinuation { start = $0 }
+        }
+        let first = Task { await model.startNewBinder() }
+        while start == nil { await Task.yield() }
+        #expect(model.creatingBinder && person.binderQuestions.isEmpty)
+        await model.startNewBinder()
+        runtime.running = true
+        start?.resume(returning: .running)
+        await first.value
+        #expect(!model.creatingBinder && person.starts == 1)
+        #expect(person.binderQuestions.count == 1 && person.parentQuestions == 1)
+        #expect(runtime.sent.count == 1)
+    }
+
     @Test func theMessageForNoRuntimeLeavesOutTheSystemsWords() {
         let error = NSError(domain: NSCocoaErrorDomain, code: 4099,
                             userInfo: [NSLocalizedDescriptionKey: "Couldn't communicate with a helper application."])
@@ -118,5 +162,17 @@ import Testing
         #expect(await refusing.presence() == .answers)
         let absent = RuntimeClient(answer: { _ in throw RuntimeClient.Failure.notRunning(NSError(domain: NSCocoaErrorDomain, code: 4099)) })
         #expect(await absent.presence() == .notRunning)
+    }
+
+    @Test func presenceIsPassiveButAFailedActionStillRequestsStartup() async {
+        var starts = 0
+        let absent = RuntimeClient(answer: { _ in
+            throw RuntimeClient.Failure.notRunning(NSError(domain: NSCocoaErrorDomain, code: 4099))
+        }, onNotRunning: { starts += 1 })
+        #expect(await absent.presence() == .notRunning)
+        #expect(starts == 0)
+        do { _ = try await absent.global("create_binder") }
+        catch { }
+        #expect(starts == 1)
     }
 }
