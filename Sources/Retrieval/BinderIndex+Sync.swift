@@ -29,6 +29,7 @@ extension BinderIndex {
         let records = Self.documents(in: teka), listed = Set(records.map { PassageSource.document($0.id) })
         for source in indexed.keys where current[source] == nil && !listed.contains(source) {
             if case .personLine = source { continue }
+            if case .intake = source { continue }
             try remove(source)
         }
         for record in records { try update(record, reader: reader, indexed: indexed[.document(record.id)]) }
@@ -58,8 +59,8 @@ extension BinderIndex {
         }
     }
 
-    func update(_ record: DocumentRecord, reader: DocumentReader, indexed: String?) throws {
-        let source = PassageSource.document(record.id)
+    func update(_ record: DocumentRecord, reader: DocumentReader, indexed: String?, source: PassageSource? = nil) throws {
+        let source = source ?? PassageSource.document(record.id)
         var coverage = DocumentCoverage(document: record.id.description)
         if let why = Self.excluded(record.path) {
             coverage.notIndexed = why
@@ -87,7 +88,8 @@ extension BinderIndex {
             }
         }
         // Past a cap the rest is left out, and the coverage says so.
-        let others = try db.rows("SELECT coalesce(sum(bytes), 0) FROM passages WHERE kind = 'document' AND key != ?", .text(source.key)).first?.first?.integer ?? 0
+        let others = try db.rows("SELECT coalesce(sum(bytes), 0) FROM passages WHERE kind IN ('document', 'intake') AND NOT (kind = ? AND key = ?)",
+                                 .text(source.kind), .text(source.key)).first?.first?.integer ?? 0
         var room = Int64(Self.maxIndexTextBytes) - others, kept = 0
         while kept < min(cuts.count, Self.maxPassagesPerSource), Int64(cuts[kept].text.utf8.count) <= room {
             room -= Int64(cuts[kept].text.utf8.count)

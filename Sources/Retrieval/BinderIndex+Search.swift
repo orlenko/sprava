@@ -7,13 +7,15 @@ extension BinderIndex {
     /// result says what was searched and what could not be. The query is words, never FTS5 syntax: any of them
     /// matches. The person's own lines are searched only with `conversation`, which only the binder's own roles
     /// ask for (§9.1). With `teka`, documents the catalog lists and the index has not seen are named.
-    public func search(_ query: String, limit: Int = 8, conversation: Bool = false, teka: Teka? = nil) throws -> SearchResult {
-        let coverage = try coverage(conversation: conversation, teka: teka)
+    public func search(_ query: String, limit: Int = 8, conversation: Bool = false, teka: Teka? = nil,
+                       intake: Bool = false) throws -> SearchResult {
+        let coverage = try coverage(conversation: conversation, teka: teka, intake: intake)
         guard let match = Self.match(query), limit > 0 else { return SearchResult(hits: [], coverage: coverage) }
         let rows = try db.rows("""
             SELECT \(Self.columns) FROM passages_fts JOIN passages p ON p.id = passages_fts.rowid
-            WHERE passages_fts MATCH ? AND (? OR p.kind != 'person-line') ORDER BY bm25(passages_fts), p.id LIMIT ?
-            """, .text(match), .integer(conversation ? 1 : 0), .integer(Int64(min(limit, Self.maxSearchLimit))))
+            WHERE passages_fts MATCH ? AND (? OR p.kind != 'person-line') AND (? OR p.kind != 'intake')
+            ORDER BY bm25(passages_fts), p.id LIMIT ?
+            """, .text(match), .integer(conversation ? 1 : 0), .integer(intake ? 1 : 0), .integer(Int64(min(limit, Self.maxSearchLimit))))
         let hits = try rows.compactMap(Self.passage).map { p in Hit(passage: p, original: try p.translationOf.flatMap { try passage(id: $0) }) }
         return SearchResult(hits: hits, coverage: coverage)
     }
@@ -28,9 +30,13 @@ extension BinderIndex {
                     .text(PassageSource.document(document).key)).compactMap(Self.passage)
     }
 
-    public func coverage(conversation: Bool = false, teka: Teka? = nil) throws -> Coverage {
+    public func coverage(conversation: Bool = false, teka: Teka? = nil, intake: Bool = false) throws -> Coverage {
         var c = Coverage()
         c.conversation = conversation
+        c.intake = intake
+        if intake {
+            c.intakeManifestIndexed = try !db.rows("SELECT 1 FROM sources WHERE kind = 'intake-manifest' AND key = ''").isEmpty
+        }
         var seen = Set<PassageSource>()
         for row in try db.rows("SELECT kind, key, coverage FROM sources") {
             guard let kind = row[0].text, let key = row[1].text, let source = PassageSource(kind: kind, key: key) else { continue }
@@ -39,6 +45,11 @@ extension BinderIndex {
             case .document(let id):
                 c.documents.append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
                                    ?? DocumentCoverage(document: id.description, notIndexed: "its coverage cannot be read"))
+            case .intake(let path):
+                if intake {
+                    c.documents.append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
+                        ?? DocumentCoverage(document: "intake:\(path)", notIndexed: "its coverage cannot be read"))
+                }
             case .openItem: c.openItems += 1
             case .closedItem: c.closedItems += 1
             case .log: c.logEntries += 1
@@ -46,7 +57,7 @@ extension BinderIndex {
             }
         }
         for translations in [false, true] {
-            let languages = try db.rows("SELECT DISTINCT language FROM passages WHERE kind = 'document' AND translation_of IS \(translations ? "NOT " : "")NULL ORDER BY language")
+            let languages = try db.rows("SELECT DISTINCT language FROM passages WHERE (kind = 'document' OR (? AND kind = 'intake')) AND translation_of IS \(translations ? "NOT " : "")NULL ORDER BY language", .integer(intake ? 1 : 0))
                 .compactMap { $0.first?.text }
             if translations { c.translationLanguages = languages } else { c.languages = languages }
         }

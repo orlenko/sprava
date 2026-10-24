@@ -4,6 +4,8 @@ import Foundation
 /// Where an indexed passage comes from (docs/conversation.md §9.1): every row carries its source.
 public enum PassageSource: Sendable, Hashable {
     case document(ItemID)
+    /// An unfiled intake file, visible only when a consented binder conversation requests intake.
+    case intake(String)
     case openItem(ItemID)
     case closedItem(ItemID)
     /// A `processing_log[]` entry that closes nothing, keyed `#<position>`: the log is append-only, and one op may write several.
@@ -14,6 +16,7 @@ public enum PassageSource: Sendable, Hashable {
     var kind: String {
         switch self {
         case .document: "document"
+        case .intake: "intake"
         case .openItem: "open-item"
         case .closedItem: "closed-item"
         case .log: "log"
@@ -27,6 +30,7 @@ public enum PassageSource: Sendable, Hashable {
         case .document(.string(let s)), .openItem(.string(let s)), .closedItem(.string(let s)): "s:" + s
         case .document(.integer(let i)), .openItem(.integer(let i)), .closedItem(.integer(let i)): "i:" + String(i)
         case .log(let k), .personLine(let k): k
+        case .intake(let path): path
         }
     }
 
@@ -39,6 +43,7 @@ public enum PassageSource: Sendable, Hashable {
         case ("closed-item", let id?): self = .closedItem(id)
         case ("log", _): self = .log(key)
         case ("person-line", _): self = .personLine(key)
+        case ("intake", _): self = .intake(key)
         default: return nil
         }
     }

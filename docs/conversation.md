@@ -522,7 +522,11 @@ resumed by id. Applied changes stay with Undo. Engine sections below name only t
 **First read/draft pilot.** Establish useful dialogue with one Claude and one binder before enabling
 actions: feed a consented snapshot of intake, priorities, reference material and TODOs as labelled data,
 and require source ids for urgency assessments and reply drafts. Nothing is sent or applied. The
-`ClaudeReadOnlyTurn` transport is initially unregistered: an isolated, verified launch and real installed-CLI
+search index can include an explicit intake-owner manifest for this consented conversation: unfiled mail
+and separately extracted attachments keep their source paths/revisions; email sender, recipient, subject
+and Message-ID remain source data for reply drafting. Ordinary searches exclude intake unless the caller
+explicitly includes it. Indexing alone neither grants model consent nor starts an importer.
+The `ClaudeReadOnlyTurn` transport is initially unregistered: an isolated, verified launch and real installed-CLI
 Stop/resume checks are still required before an app caller can enable it. It ends the process after each
 result and resumes the native session on the next successful turn; failed or interrupted turns require a
 new session seeded only from canonical app history. This preserves conversation context without keeping
