@@ -258,6 +258,7 @@ final class BrainsModel: ObservableObject, RuntimePage {
 }
 
 struct BrainsView: View {
+    @StateObject private var claudeAccount = ClaudeAccountModel()
     @ObservedObject var model: BrainsModel
     let rows: [ShelfRow]
 
@@ -275,7 +276,8 @@ struct BrainsView: View {
 
     var body: some View {
         List {
-            Section("Claude Code") {
+            ClaudeAccountView(model: claudeAccount)
+            Section("External Claude Code (advanced)") {
                 Text("""
                 Connecting adds Sprava to Claude Code's settings for your user account (~/.claude.json). Then start a new \
                 Claude Code session in any folder and ask it about these binders: through Sprava it sees each ticked binder's \

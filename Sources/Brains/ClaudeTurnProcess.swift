@@ -10,8 +10,8 @@ final class ClaudeTurnProcess {
     private var reaped = false
     private var exitStatus: Int32?
     private var cleanupDone = false
-    init(_ launch: ClaudeReadOnlyTurn.Launch, resume: Bool) throws {
-        let arguments = [launch.executable.path] + launch.arguments + [resume ? "--resume" : "--session-id", launch.sessionID.uuidString.lowercased()]
+    init(_ launch: ClaudeReadOnlyTurn.Launch, resume: Bool, sessionArgument: Bool = true) throws {
+        let arguments = [launch.executable.path] + launch.arguments + (sessionArgument ? [resume ? "--resume" : "--session-id", launch.sessionID.uuidString.lowercased()] : [])
         guard arguments.allSatisfy({ !$0.contains("\0") }), !launch.directory.path.contains("\0"),
               launch.environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") }) else {
             throw ClaudeReadOnlyTurn.Failure.startFailed

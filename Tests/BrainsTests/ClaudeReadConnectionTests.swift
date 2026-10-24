@@ -82,6 +82,7 @@ import Testing
         #expect(throws: ClaudeReadConnections.Refused.changed) { try f.connections.disable(original) }
         try f.connections.disable(changed)
         #expect(try f.connections.connection(for: f.folder) == nil)
+        #expect(try f.connections.savedID(for: f.folder) == changed.id)
         #expect(throws: ClaudeReadConnections.Refused.inactive) { try f.connections.currentFolder(changed) }
         let enabled = try f.connections.enable(folder: f.folder, documents: true, intake: true)
         try f.connections.disableAll()

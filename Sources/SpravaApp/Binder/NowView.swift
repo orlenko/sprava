@@ -21,6 +21,7 @@ struct NowView: View {
     /// The item being edited in place in each binder, if any. Owned by the window, so a visit to another page
     /// leaves what was typed for the person's return.
     @ObservedObject var editor: ItemEditor
+    var conversation: ClaudeBinderConversation? = nil
     @StateObject private var actions = BinderActions()
 
     var sharesName: Bool {
@@ -60,7 +61,9 @@ struct NowView: View {
                 }
                 .padding(.vertical, 4)
             }
-            if teka.isAdopted, !teka.writesBlocked {
+            if let conversation {
+                ConversationSection(model: conversation, row: row, reload: refresh)
+            } else if teka.isAdopted, !teka.writesBlocked {
                 NoteBox(note: note, row: row, sharesName: sharesName) {
                     let folder = row.folder
                     // The runtime makes the card within its next sweep; the page's timer picks it up if this misses it.

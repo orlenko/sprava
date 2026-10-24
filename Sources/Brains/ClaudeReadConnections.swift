@@ -77,6 +77,24 @@ package final class ClaudeReadConnections: Sendable {
         }
     }
 
+    /// Trusted runtime lifecycle checks only; this does not enable anything or inspect binder files.
+    package func activeConnections() throws -> [Connection] {
+        try state.read { t in
+            try t.rows("SELECT \(Self.columns) FROM claude_read_connections WHERE enabled = 1").map { try Self.decode($0).connection }
+        }
+    }
+
+    /// Display-only identity for the person's saved local conversation, including a disconnected or
+    /// moved instance. It grants no current read/model/operation permission; currentFolder still fences reads.
+    package func savedID(for folder: URL) throws -> UUID? {
+        let folder = folder.standardizedFileURL.resolvingSymlinksInPath(), instance = try Self.instance(folder)
+        return try state.read { t in
+            let rows = try t.rows("SELECT \(Self.columns) FROM claude_read_connections WHERE folder_instance = ? LIMIT 2", .text(instance))
+            guard rows.count <= 1 else { throw Refused.damagedState }
+            return try rows.first.map { try Self.decode($0).connection.id }
+        }
+    }
+
     /// Called when queued work actually begins, not merely when the user pressed Send.
     package func currentFolder(_ connection: Connection) throws -> URL {
         try state.read { t in

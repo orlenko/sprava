@@ -105,7 +105,10 @@ final class Runtime: @unchecked Sendable {
             let companion: CompanionRuntimeRequests?
             if development { companion = nil }
             else { companion = try .production(support: support, watch: watch) }
-            let service = XPCService(commands: commands, watch: watch, companion: companion) { [weak self] line in self?.log(line) }
+            let claude: ClaudeConversationRuntime?
+            do { claude = development ? nil : try .production(support: support) }
+            catch { claude = nil; log("claude_state_unavailable") }
+            let service = XPCService(commands: commands, watch: watch, companion: companion, claude: claude) { [weak self] line in self?.log(line) }
             service.start()
             xpc = service
             // Brains share the command queue with the app: one writer.
@@ -142,6 +145,7 @@ final class Runtime: @unchecked Sendable {
     // MARK: - Jobs (architecture 3.4)
 
     func schedule() {
+        if let claude = xpc?.claude { Task { await claude.reconcileAvailability() } }
         for key in scheduler.due(now: Date(), sentinelRunning: records.jobs["sentinel"]?.running == true) {
             if let body = body(for: key) { run(key, body) }
         }
