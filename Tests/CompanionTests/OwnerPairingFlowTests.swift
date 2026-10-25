@@ -21,8 +21,10 @@ private final class FlowSecrets: CompanionCredentialStorage, @unchecked Sendable
     func remove(account: String) throws { lock.lock(); defer { lock.unlock() }; values.removeValue(forKey: account) }
 }
 private actor FlowClaimRelay: OwnerClaimTransport {
+    private(set) var healthCalls = 0
     func health() async throws -> CompanionRelayReply<CompanionRelayHealth> {
-        CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: "0123456789abcdef0123456789abcdef", claimed: true))
+        healthCalls += 1
+        return CompanionRelayReply(status: 200, value: CompanionRelayHealth(instance: "0123456789abcdef0123456789abcdef", claimed: true))
     }
     func claim(_ body: Data) async throws -> Int { Issue.record("No claim allowed in this fixture"); return 409 }
 }
@@ -78,9 +80,10 @@ private struct FlowFixture {
         _ = try CompanionOwnerVault(backend: secrets).prepare(identity, setupCode: Data(repeating: 14, count: 32).base64EncodedString())
         let p = try profile(); _ = try p.prepareAccount(); try p.recordClaimState(.claimed)
     }
-    func flow() throws -> CompanionOwnerPairingFlow {
-        let p = try profile(), c = try CompanionOwnerConnection(profile: p, transport: FlowClaimRelay())
-        return CompanionOwnerPairingFlow(profile: p, connection: c, transport: relay, now: { clock.now() })
+    func flow(claimRelay: FlowClaimRelay = FlowClaimRelay(), recoverRefusals: Bool = true) throws -> CompanionOwnerPairingFlow {
+        let p = try profile(), c = try CompanionOwnerConnection(profile: p, transport: claimRelay)
+        return CompanionOwnerPairingFlow(profile: p, connection: c, transport: relay, now: { clock.now() },
+                                        recoverRefusals: recoverRefusals)
     }
 }
 
@@ -159,4 +162,29 @@ private struct FlowFixture {
     await #expect(throws: CompanionOwnerPairingError.expired) { try await flow.confirm(approval) }
     #expect(try f.profile().pairingDelivery(deviceID: started.deviceID) == nil)
     #expect(try f.profile().deviceRecords().first?.state == .abandoned)
+}
+
+@Test(arguments: [false, true]) func aBoundedPairingActionDefersRefusedTokenRecoveryUntilASeparateTurn(poll: Bool) async throws {
+    let f = FlowFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; try f.prepare()
+    let claimRelay = FlowClaimRelay()
+    let flow = try f.flow(claimRelay: claimRelay, recoverRefusals: false)
+    if poll {
+        let started = try await flow.start()
+        await f.relay.status(poll: 401)
+        await #expect(throws: CompanionPairingFlowError.relayRejected(401)) { try await flow.poll(deviceID: started.deviceID) }
+    } else {
+        await f.relay.status(create: 401)
+        await #expect(throws: CompanionPairingFlowError.relayRejected(401)) { try await flow.start() }
+        #expect(try f.profile().deviceRecords().first?.state == .abandoned)
+    }
+    #expect(await claimRelay.healthCalls == 0)
+    #expect(try f.profile().ownerClaimState() == .checkingRefusal)
+    let counts = await f.relay.counts()
+    let restarted = try f.flow(claimRelay: claimRelay, recoverRefusals: false)
+    await #expect(throws: CompanionPairingFlowError.ownerUnavailable(.checkingRefusal)) { try await restarted.start() }
+    #expect(await f.relay.counts().0 == counts.0)
+    #expect(await f.relay.counts().1 == counts.1)
+    let recovery = try CompanionOwnerConnection(profile: f.profile(), transport: claimRelay)
+    #expect(try await recovery.recoverClaim() == .needsReset)
+    #expect(await claimRelay.healthCalls == 1)
 }

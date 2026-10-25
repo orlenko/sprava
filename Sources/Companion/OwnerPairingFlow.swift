@@ -30,25 +30,29 @@ public actor CompanionOwnerPairingFlow {
     private let connection: CompanionOwnerConnection
     private let transport: any OwnerPairingTransport
     private let now: @Sendable () -> String
+    private let recoverRefusals: Bool
     private var busy = false
 
-    public init(profile: CompanionProfile) throws {
+    /// A bounded Phone action passes false and schedules claim recovery as a separate action after a 401.
+    public init(profile: CompanionProfile, recoverRefusals: Bool = true) throws {
         guard let owner = try CompanionOwnerVault(backend: profile.secrets).load(profile.relay) else { throw CompanionCredentialError.unavailable }
         self.profile = profile
         connection = try CompanionOwnerConnection(profile: profile)
         transport = try CompanionOwnerRelay(relay: profile.relay, token: owner.ownerToken)
         now = { Date().ISO8601Format() }
+        self.recoverRefusals = recoverRefusals
     }
     init(profile: CompanionProfile, connection: CompanionOwnerConnection, transport: any OwnerPairingTransport,
-         now: @escaping @Sendable () -> String) {
+         now: @escaping @Sendable () -> String, recoverRefusals: Bool = true) {
         self.profile = profile; self.connection = connection; self.transport = transport; self.now = now
+        self.recoverRefusals = recoverRefusals
     }
     private func admit() throws {
         let state = try profile.ownerClaimState()
         guard state == .claimed else { throw CompanionPairingFlowError.ownerUnavailable(state) }
     }
     private func rejected(_ status: Int) async throws -> Never {
-        if status == 401 { _ = try await connection.ownerTokenRefused() }
+        if status == 401 && recoverRefusals { _ = try await connection.ownerTokenRefused() }
         throw CompanionPairingFlowError.relayRejected(status)
     }
 
