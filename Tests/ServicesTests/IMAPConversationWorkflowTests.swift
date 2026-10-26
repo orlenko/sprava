@@ -11,11 +11,10 @@ import Testing
 @Suite struct IMAPConversationWorkflowTests {
     @Test func importedMailIsSearchableDraftGroundedAndTaskWrittenOnlyOnPersonConfirmation() throws {
         let (commands, folder) = try DirectAddTests().adopted()
-        let support = commands.support, environment = support.appendingPathComponent(".env")
-        try AtomicFile.write(Data("IMAP_PASSWORD=invented-only\n".utf8), to: environment)
+        let support = commands.support
         let connections = try BinderIMAPConnections(support: support, hash: { "fixture" })
-        let connection = try connections.configure(folder: folder, environment: environment, mailbox: "Labels/Workshop", sender: "manager@")
-        // The compatibility tool baselines, then acknowledges one complete Markdown export.
+        let connection = try connections.configure(folder: folder, account: IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: "resident@example.invalid")!, mailbox: "Labels/Workshop", sender: "manager@")
+        // The worker baselines, then acknowledges one complete message.
         _ = try IMAPIntakeImport.run(connection, support: support, connections: connections, fetch: { _, cwd, _ in
             try Data("{\"uid_validity\":7,\"last_seen_uid\":1}".utf8).write(to: cwd.appendingPathComponent("state.json"))
         }, reader: .inProcess)

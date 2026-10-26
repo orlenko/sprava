@@ -61,7 +61,7 @@ struct NowView: View {
                 }
                 .padding(.vertical, 4)
             }
-            if teka.isAdopted, !teka.writesBlocked { BinderIMAPPlugin(row: row) }
+            if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
             if let conversation {
                 ConversationSection(model: conversation, row: row, reload: refresh)
             } else if teka.isAdopted, !teka.writesBlocked {

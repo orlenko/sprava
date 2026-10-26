@@ -3,19 +3,21 @@ import Foundation
 /// App-owned read-only raw-message exporter. Runs isolated stdlib only; no legacy MIME conversion.
 enum IMAPExporterSource {
     static let script = #"""
-"""Sprava's isolated, read-only IMAP fetcher. TECAS .env keys; complete raw EML only.
-No profiles, imported code, shell, logs, message parsing, flags or server mutations.
+"""Sprava's isolated, read-only IMAP worker: probes a server, lists its folders, or exports complete raw EML.
+Credentials arrive on stdin, never argv, environment or a file. No profiles, imported code, shell, logs,
+message parsing, flags or server mutations.
 """
 import argparse
 import base64
+import hashlib
 import imaplib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import socket
 import ssl
-import stat
 import sys
 import time
 
@@ -35,59 +37,143 @@ def bounded_read(self, size):
 imaplib.IMAP4.read = bounded_read
 
 
-def environment(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+class AuthenticationRefused(Exception):
+    pass
+
+
+class Untrusted(Exception):
+    pass
+
+
+def plain(value, limit):
+    if not isinstance(value, str) or not value or len(value) > limit or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("invalid credential")
+    return value
+
+
+def credentials(stream):
+    data = stream.read(65537)
+    if len(data) > 65536:
+        raise ValueError("credential limit")
+    value = json.loads(data.decode("utf-8"))
+    if not isinstance(value, dict) or set(value) != {"user", "password"}:
+        raise ValueError("invalid credentials")
+    return {"user": plain(value["user"], 1024), "password": plain(value["password"], 4096)}
+
+
+def loopback(host):
+    if host.lower() == "localhost":
+        return True
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 131072:
-            raise ValueError("private environment required")
-        text = os.read(fd, 131073).decode("utf-8-sig")
-    finally:
-        os.close(fd)
-    values, literal = {}, set()
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        key, separator, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", key):
-            raise ValueError("invalid environment")
-        if value.startswith('"'):
-            # dotenv's common quoted escapes; no command substitution or process environment.
-            value, consumed = json.JSONDecoder().raw_decode(value)
-            tail = line.partition("=")[2].strip()[consumed:].strip()
-            if tail and not tail.startswith("#"):
-                raise ValueError("invalid quoted suffix")
-        elif value.startswith("'"):
-            if not value.endswith("'") or len(value) < 2:
-                raise ValueError("invalid quoted value")
-            value = value[1:-1]
-            literal.add(key)
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def verified():
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def unverified():
+    # Only to read a certificate's fingerprint, or with a fingerprint pinned for this Mac's own bridge.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+def close(session):
+    # After a failed handshake the socket is already gone; closing must never hide the error that matters.
+    try:
+        session.shutdown()
+    except Exception:
+        pass
+
+
+def open_session(host, port, starttls, context, timeout):
+    if starttls:
+        session = imaplib.IMAP4(host, port, timeout=timeout)
+        try:
+            if "STARTTLS" not in session.capabilities:
+                raise ssl.SSLError("STARTTLS not offered")
+            checked(*session.starttls(ssl_context=context))
+        except BaseException:
+            close(session)
+            raise
+        return session
+    return imaplib.IMAP4_SSL(host, port, ssl_context=context, timeout=timeout)
+
+
+def fingerprint(session):
+    certificate = session.sock.getpeercert(binary_form=True)
+    if not certificate:
+        raise Untrusted()
+    return hashlib.sha256(certificate).hexdigest()
+
+
+def connect(host, port, starttls, pin):
+    if not pin:
+        return open_session(host, port, starttls, verified(), 20)
+    if not loopback(host) or not re.fullmatch(r"[0-9a-f]{64}", pin):
+        raise ValueError("a pinned certificate is only for this Mac's own bridge")
+    session = open_session(host, port, starttls, unverified(), 20)
+    # Nothing but the greeting and capabilities has crossed before this check; credentials never do.
+    if fingerprint(session) != pin:
+        close(session)
+        raise Untrusted()
+    return session
+
+
+def probe(host, port, starttls):
+    try:
+        session = open_session(host, port, starttls, verified(), 8)
+    except ssl.SSLCertVerificationError:
+        try:
+            session = open_session(host, port, starttls, unverified(), 8)
+        except ssl.SSLError:
+            return {"result": "tls"}
+        except Exception:
+            return {"result": "not_imap"}
+        try:
+            value = fingerprint(session)
+        finally:
+            close(session)
+        return {"result": "untrusted", "fingerprint": value}
+    except socket.gaierror:
+        return {"result": "unknown_host"}
+    except (socket.timeout, TimeoutError):
+        return {"result": "no_answer"}
+    except ssl.SSLError:
+        return {"result": "tls"}
+    except ConnectionError:
+        return {"result": "unreachable"}
+    except (imaplib.IMAP4.error, ValueError, EOFError):
+        return {"result": "not_imap"}
+    except OSError:
+        return {"result": "unreachable"}
+    capabilities = session.capabilities
+    try:
+        session.logout()
+    except Exception:
+        close(session)
+    password = "LOGINDISABLED" not in capabilities or "AUTH=PLAIN" in capabilities
+    return {"result": "ok" if password else "oauth_only"}
+
+
+def authenticate(session, credentials):
+    try:
+        if "LOGINDISABLED" in session.capabilities:
+            if "AUTH=PLAIN" not in session.capabilities:
+                raise ValueError("no password sign-in")
+            token = ("\0" + credentials["user"] + "\0" + credentials["password"]).encode("utf-8")
+            checked(*session.authenticate("PLAIN", lambda _: token))
         else:
-            value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
-        if not isinstance(value, str) or len(value) > 16384:
-            raise ValueError("invalid value")
-        values[key] = value
-    for _ in range(8):
-        changed = False
-        for key, value in list(values.items()):
-            if key in literal:
-                continue
-            replaced = re.sub(r"\$\{([A-Za-z_][A-Za-z_0-9]*)\}", lambda m: values.get(m.group(1), ""), value)
-            changed = changed or replaced != value
-            values[key] = replaced
-        if not changed:
-            break
-    else:
-        raise ValueError("environment expansion cycle")
-    for key in ("IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD"):
-        value = values.get(key, "")
-        if not value or (key not in literal and re.search(r"\$\{[A-Za-z_][A-Za-z_0-9]*\}", value)) or any(ord(c) < 32 or ord(c) == 127 for c in value):
-            raise ValueError("missing IMAP setting")
-    return {key: values[key] for key in ("IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD")}
+            checked(*session.login(quoted(credentials["user"]), credentials["password"]))
+    except (imaplib.IMAP4.error, ValueError) as error:
+        raise AuthenticationRefused() from error
 
 
 def mailbox_name(value):
@@ -106,6 +192,59 @@ def mailbox_name(value):
     flush()
     result = "".join(output)
     return '"' + result.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def decoded_name(value):
+    output, index = [], 0
+    while index < len(value):
+        char = value[index]
+        if char != "&":
+            output.append(char)
+            index += 1
+            continue
+        end = value.index("-", index)
+        chunk = value[index + 1:end]
+        if chunk:
+            chunk = chunk.replace(",", "/")
+            output.append(base64.b64decode(chunk + "=" * (-len(chunk) % 4), validate=True).decode("utf-16be"))
+        else:
+            output.append("&")
+        index = end + 1
+    return "".join(output)
+
+
+LISTED = re.compile(rb'\(([^)]*)\) (?:NIL|"(?:[^"\\]|\\.)*") ?(.*)$')
+
+
+def folders(session, credentials):
+    authenticate(session, credentials)
+    names = []
+    for item in checked(*session.list()):
+        head, literal = (item[0], item[1]) if isinstance(item, tuple) else (item, None)
+        if not isinstance(head, bytes) or not head.strip() or head.strip() == b")":
+            continue
+        match = LISTED.match(head)
+        if not match:
+            raise ValueError("unreadable folder list")
+        flags = match.group(1).lower().split()
+        if b"\\noselect" in flags or b"\\nonexistent" in flags:
+            continue
+        raw = literal if literal is not None else match.group(2)
+        if raw.startswith(b'"'):
+            if len(raw) < 2 or not raw.endswith(b'"'):
+                raise ValueError("unreadable folder name")
+            raw = re.sub(rb'\\(.)', rb'\1', raw[1:-1])
+        try:
+            name = decoded_name(raw.decode("utf-8"))
+        except ValueError:
+            continue  # A name Sprava could not encode back the same way is not offered.
+        if not name or len(name) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            continue
+        names.append(name)
+        if len(names) > 2000:
+            raise ValueError("folder limit")
+    unique = sorted(set(names), key=lambda name: (name.upper() != "INBOX", name.casefold()))
+    return unique
 
 
 def atomic(path, data):
@@ -141,18 +280,11 @@ def quoted(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-class AuthenticationRefused(Exception):
-    pass
-
-
 def synchronize(session, folder, target, credentials, search="", sender="", subject=""):
     for value in (folder, search, sender, subject):
         if len(value) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError("invalid filter")
-    try:
-        checked(*session.login(quoted(credentials["IMAP_USER"]), credentials["IMAP_PASSWORD"]))
-    except (imaplib.IMAP4.error, ValueError) as error:
-        raise AuthenticationRefused() from error
+    authenticate(session, credentials)
     checked(*session.select(mailbox_name(folder), readonly=True))
     kind, values = session.response("UIDVALIDITY")
     validity = int(values[0]) if kind == "UIDVALIDITY" and values else 0
@@ -210,31 +342,37 @@ def synchronize(session, folder, target, credentials, search="", sender="", subj
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--folder", required=True)
-    parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--env-file", required=True)
+    parser.add_argument("--mode", choices=["probe", "folders", "sync"], required=True)
+    parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--starttls", action="store_true")
+    parser.add_argument("--pin", default="")
+    parser.add_argument("--folder", default="")
+    parser.add_argument("--target", type=Path)
     parser.add_argument("--search", default="")
     parser.add_argument("--from-contains", default="")
     parser.add_argument("--subject-contains", default="")
     args = parser.parse_args()
-    credentials = environment(args.env_file)
-    context = ssl.create_default_context()
+    if not re.fullmatch(r"[A-Za-z0-9.:-]{1,253}", args.host) or not 0 < args.port < 65536:
+        raise ValueError("invalid server")
     socket.setdefaulttimeout(20)
-    host = credentials["IMAP_HOST"]
-    if args.starttls:
-        session = imaplib.IMAP4(host, args.port, timeout=20)
-        checked(*session.starttls(ssl_context=context))
-    else:
-        session = imaplib.IMAP4_SSL(host, args.port, ssl_context=context, timeout=20)
+    if args.mode == "probe":
+        atomic(Path("result.json"), json.dumps(probe(args.host, args.port, args.starttls)).encode())
+        return
+    account = credentials(sys.stdin.buffer)
+    session = connect(args.host, args.port, args.starttls, args.pin)
     try:
-        synchronize(session, args.folder, args.target, credentials, args.search, args.from_contains, args.subject_contains)
+        if args.mode == "folders":
+            atomic(Path("result.json"), json.dumps({"folders": folders(session, account)}).encode())
+        else:
+            if not args.folder or args.target is None:
+                raise ValueError("folder and target required")
+            synchronize(session, args.folder, args.target, account, args.search, args.from_contains, args.subject_contains)
     finally:
         try:
             session.logout()
         except Exception:
-            session.shutdown()
+            close(session)
 
 
 if __name__ == "__main__":
@@ -242,6 +380,8 @@ if __name__ == "__main__":
         main()
     except AuthenticationRefused:
         sys.exit(21)
+    except Untrusted:
+        sys.exit(22)
     except BaseException:
         # Never print credentials, server metadata, message headers or provider errors.
         sys.exit(1)
