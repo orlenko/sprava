@@ -42,17 +42,7 @@ public actor BinderIMAPRuntime {
     public init(support: URL) throws {
         self.support = support; connections = try BinderIMAPConnections(support: support); fetch = nil; reader = .located()
         passwords = IMAPPasswords(); checks = .native(support)
-        available = { folder in
-            let shelf = ShelfStore(supportDirectory: support)
-            let folders = try shelf.readFolders() + (shelf.registryForShelf()?.entries.filter { !$0.archived }.compactMap(\.workingDir).map {
-                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
-            } ?? [])
-            let listed = folders.contains { $0.resolvingSymlinksInPath() == folder.resolvingSymlinksInPath() }
-            let offloading = try BackupRequests(support: support).all().contains {
-                $0.binder == folder.path && $0.kind == "offload" && ["queued", "running", "waiting_for_icloud"].contains($0.state)
-            }
-            return listed && !offloading
-        }
+        available = { try ListedBinder.accepts($0, support: support) }
     }
     init(support: URL, connections: BinderIMAPConnections, passwords: IMAPPasswords, checks: Checks? = nil, fetch: @escaping IMAPIntakeImport.Fetch,
          available: @escaping @Sendable (URL) throws -> Bool = { _ in true }, reader: ExtractHelper.Reader = .inProcess) {

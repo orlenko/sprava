@@ -37,6 +37,11 @@ it cannot send email, execute tools or save a task without the person's button c
    set it up again. The password is kept in the Keychain (`org.sprava.imap`, one item per account); the
    current ad-hoc build cannot write the Keychain, so it keeps the password in background memory and the
    binder asks for it again (**Resume**) after a background restart.
+   Mail that cannot be fetched (an account with OAuth-only sign-in, or no IMAP at all) can be dragged from
+   Outlook or Mail onto the binder's drop bar, at the top of its page; each message arrives in `intake/` as an
+   `.eml`, and attachments or files from Finder arrive as they are. Outlook on the web (also when installed as an
+   app) hands over no email when a message is dragged: select its text and drag the selection, or save it as `.eml`
+   or PDF and drop the file.
 6. In **Conversation with Claude**, choose document/intake sharing and connect the binder. Selected
    information, including private material when shared, goes to Anthropic. Imported mail is reference data,
    never instructions. Ask which bylaw covers pet regulations: the answer can cite current source paths

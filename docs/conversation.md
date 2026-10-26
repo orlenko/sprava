@@ -216,6 +216,18 @@ it receives. There is no second path to get wrong:
 Held files (encrypted, unreadable, a key file's name, an executable; adaptation-layer 4.5) are not filed; the
 report says why and offers "File as is" where that is safe.
 
+Built so far (2026-10-26): a drop bar above every adopted binder's page takes files from Finder and the file
+promises that Outlook, Mail and Photos send for a dragged message (each arrives as an `.eml` or the promised file).
+The app opens each through the opener above, folders one level deep, with the drop's bounds; the runtime
+(`intake_drop`, over its own XPC method that carries the open file) copies it into `intake/` under a cleaned name,
+never replacing an existing file, refusing a key file's name, a file over 512 MB, and a copy that would leave the
+binder's volume under the 5 GB reserve. Selected text dragged from any app is kept as one `.html` (or `.txt`) file
+named for its arrival. A message dragged out of a web app (Outlook on the web) carries only the page's own reference
+(`org.chromium.web-custom-data`), no email; the bar says so and suggests dragging the selected text or dropping a
+saved `.eml` or PDF. The bar reports what was added and what was not. From `intake/` the
+existing intake cards take over: step 3's filing at once, step 4's report with Undo, and removing a part-way
+batch's copies are not built yet.
+
 ### 5.2 Importing by path or description
 
 "Include `this-file.ext` from `/that/folder/over/there/`", "include the March statement from Downloads". A

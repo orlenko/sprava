@@ -83,4 +83,19 @@ final class XPCService: NSObject, NSXPCListenerDelegate, SpravaRuntimeXPC, @unch
             reply(answer)
         }
     }
+
+    /// A dropped file (conversation.md 5.1): copied on the command queue, so it is serialized with every binder change.
+    func importFile(_ request: String, file: FileHandle, reply: @escaping (String) -> Void) {
+        let commands = self.commands, log = self.log, support = commands.support
+        nonisolated(unsafe) let reply = reply
+        queue.async {
+            let started = ContinuousClock.now
+            let answer = commands.dropIntake(request, file: file, listed: { try ListedBinder.accepts($0, support: support) })
+            try? file.close()
+            let ok = (try? JSONParser.parse(answer).value["ok"]) == .bool(true)
+            let ms = Int((ContinuousClock.now - started) / .milliseconds(1))
+            log("job=app_request command=intake_drop ok=\(ok) ms=\(ms)")
+            reply(answer)
+        }
+    }
 }
