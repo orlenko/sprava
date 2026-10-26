@@ -3,10 +3,10 @@ import Foundation
 import Extract
 import SpravaKit
 
-/// TECAS-configuration-compatible raw adapter. Its cursor advances only after complete, immutable intake
+/// The built-in raw-message intake. Its cursor advances only after complete, immutable intake
 /// publication. A crash re-fetches from the last committed cursor; it never acknowledges partial mail.
 public enum IMAPIntakeImport {
-    public enum Refused: Error { case invalidCursor, invalidExport, limit, unavailable, authentication, partial(Int) }
+    public enum Refused: Error, Equatable { case invalidCursor, invalidExport, limit, unavailable, authentication, untrusted, needsPassword, partial(Int) }
     public struct Cursor: Codable, Equatable, Sendable {
         let uid_validity: UInt32?
         let last_seen_uid: UInt32
@@ -27,7 +27,7 @@ public enum IMAPIntakeImport {
 
     /// Fetch receives only a private cwd and export directory, never the live intake destination.
     public static func run(_ config: BinderIMAPConnections.Configuration, support: URL,
-                           connections: BinderIMAPConnections, fetch: Fetch = IMAPNativeFetch.run, reader: ExtractHelper.Reader = .located(),
+                           connections: BinderIMAPConnections, fetch: Fetch, reader: ExtractHelper.Reader = .located(),
                            canPublish: @Sendable () throws -> Bool = { true }) throws -> Int {
         let root = support.appendingPathComponent("capture/imap-runs/" + config.id.uuidString)
         guard let home = try StateDirectory.open(root, create: true) else { throw Refused.unavailable }

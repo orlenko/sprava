@@ -8,22 +8,19 @@ import Testing
 
 @Suite(.serialized) struct BinderIMAPTests {
     struct Fixture: Sendable {
-        let support: URL, folder: URL, environment: URL
+        let support: URL, folder: URL, outside: URL
         let store: BinderIMAPConnections
         let configuration: BinderIMAPConnections.Configuration
         init(sender: String = "", subject: String = "", includeExisting: Bool = true) throws {
             support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-imap-" + UUID().uuidString)
             try AtomicFile.makePrivateFolder(support)
             folder = try makeTeka(fixture: "sprava-v0")
-            environment = support.appendingPathComponent("account.env")
-            try AtomicFile.write(Data("IMAP_PASSWORD=invented-only\n".utf8), to: environment)
-            chmod(environment.path, 0o600)
-            // Real private file names follow the .env key-file convention.
-            let selected = support.appendingPathComponent(".env")
-            try FileManager.default.moveItem(at: environment, to: selected)
+            outside = support.appendingPathComponent("outside-private.txt")
+            try AtomicFile.write(Data("Invented private material outside the binder".utf8), to: outside)
             store = try BinderIMAPConnections(support: support, hash: { "invented-program-hash" })
-            configuration = try store.configure(folder: folder, environment: selected, mailbox: "INBOX/Workshop", sender: sender, subject: subject, includeExisting: includeExisting)
+            configuration = try store.configure(folder: folder, account: Self.account, mailbox: "INBOX/Workshop", sender: sender, subject: subject, includeExisting: includeExisting)
         }
+        static let account = IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: "member@example.invalid")!
         func cursor(_ cwd: URL, _ uid: UInt32, validity: UInt32 = 7) throws {
             try Data("{\"uid_validity\":\(validity),\"last_seen_uid\":\(uid)}".utf8).write(to: cwd.appendingPathComponent("state.json"))
         }
@@ -136,7 +133,7 @@ import Testing
             try Self.message(target, uid: 3)
             let attachment = target.appendingPathComponent("mail-3.eml")
             try FileManager.default.removeItem(at: attachment)
-            try FileManager.default.createSymbolicLink(at: attachment, withDestinationURL: f.configuration.environment)
+            try FileManager.default.createSymbolicLink(at: attachment, withDestinationURL: f.outside)
             try f.cursor(cwd, 3)
         } }
         #expect(IntakeWatcher.candidates(in: f.folder).isEmpty)
@@ -145,38 +142,37 @@ import Testing
         } }
         #expect(IntakeWatcher.candidates(in: f.folder).isEmpty)
     }
-    @Test func environmentNeverEntersStateAndCopiesOrChangedCredentialsRequireReconnect() throws {
+    @Test func noSecretEntersStateAndACopiedBinderIsNotConnected() throws {
         let f = try Fixture()
         let copy = f.support.appendingPathComponent("copy")
         try FileManager.default.copyItem(at: f.folder, to: copy)
         #expect(try f.store.configuration(for: copy) == nil)
-        let state = try Data(contentsOf: f.support.appendingPathComponent("capture/imap.sqlite"))
-        #expect(!String(decoding: state, as: UTF8.self).contains("invented-only"))
-        try Data("IMAP_PASSWORD=changed-invented-value\n".utf8).write(to: f.configuration.environment)
-        #expect(throws: (any Error).self) { try f.store.current(f.configuration) }
-        chmod(f.configuration.environment.path, 0o644)
-        #expect(throws: (any Error).self) { try f.store.configure(folder: f.folder, environment: f.configuration.environment, mailbox: "INBOX") }
+        #expect(try f.store.configuration(for: f.folder)?.account == Fixture.account)
+        // A bridge's certificate may be pinned only for this Mac's own loopback address.
+        #expect(IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, pin: String(repeating: "a", count: 64)) == nil)
+        #expect(IMAPAccount(host: "127.0.0.1", port: 1143, security: .startTLS, pin: String(repeating: "a", count: 64)) != nil)
+        #expect(IMAPAccount(host: "bad host", port: 993, security: .tls) == nil)
+        #expect(throws: (any Error).self) { try f.store.configure(folder: f.folder, account: IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls)!, mailbox: "INBOX") }
     }
-    @Test func nativeLaunchOverridesUnsafeEnvironmentAndConfinementRefusesOtherFiles() throws {
+    @Test func nativeLaunchCarriesNoSecretInArgumentsOrEnvironmentAndConfinementRefusesOtherFiles() throws {
         let f = try Fixture()
         let home = f.support.appendingPathComponent("private-worker"); try AtomicFile.makePrivateFolder(home)
-        let env = IMAPNativeFetch.environment(f.configuration, home: home)
-        #expect(env["IMAP_MARK_READ"] == "false"); #expect(env["IMAP_TLS_REJECT_UNAUTHORIZED"] == "true")
-        #expect(env["IMAP_PASSWORD"] == nil); #expect(env["CLAUDE_CODE_OAUTH_TOKEN"] == nil)
-        let other = f.support.appendingPathComponent("unselected-private.txt"); try Data("Invented private material".utf8).write(to: other)
-        let paths = try IMAPNativeFetch.paths(program: URL(fileURLWithPath: "/bin/bash"), home: home, environment: f.configuration.environment, messages: home)
-        let literalFolder = try f.store.configure(folder: f.folder, environment: f.configuration.environment, mailbox: "--mark-read")
-        let arguments = IMAPNativeFetch.arguments(literalFolder, paths: paths)
-        #expect(arguments.contains("--folder=--mark-read"))
-        #expect(!arguments.contains("--mark-read"))
-        #expect(arguments.contains("-I") && arguments.contains("-S") && arguments.contains("-B"))
+        let env = IMAPNativeFetch.environment(home: home)
+        #expect(Set(env.keys) == ["PATH", "HOME", "TMPDIR"])
+        let literalFolder = try f.store.configure(folder: f.folder, account: Fixture.account, mailbox: "--mark-read")
+        let arguments = IMAPNativeFetch.arguments(literalFolder, messages: home)
+        #expect(arguments.contains("--folder=--mark-read")); #expect(!arguments.contains("--mark-read"))
+        #expect(arguments.contains("--host=mail.example.invalid")); #expect(!arguments.contains("--starttls"))
+        #expect(!arguments.joined().contains("member@example.invalid"))
+        let credentials = try JSONParser.parse(IMAPNativeFetch.credentials(Fixture.account, "invented-password")).value
+        #expect(credentials["user"] == .str("member@example.invalid")); #expect(credentials["password"] == .str("invented-password"))
         let profile = home.appendingPathComponent("sandbox.sb")
-        try IMAPNativeFetch.profile(program: paths.program, home: paths.home, environment: paths.environment).write(to: profile, atomically: true, encoding: .utf8)
+        try IMAPNativeFetch.profile(program: URL(fileURLWithPath: "/bin/bash"), home: home).write(to: profile, atomically: true, encoding: .utf8)
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-        process.arguments = ["-f", profile.path, "/bin/bash", "-c", "IFS= read -r selected < \"$1\" || exit 21; if IFS= read -r forbidden < \"$2\"; then exit 22; fi; printf '%s' \"$selected\" > \"$3\"", "fixture", paths.environment.path, other.path, paths.home.appendingPathComponent("result").path]
-        process.environment = IMAPNativeFetch.environment(f.configuration, home: paths.home); process.currentDirectoryURL = paths.home
+        process.arguments = ["-f", profile.path, "/bin/bash", "-c", "if IFS= read -r forbidden < \"$1\"; then exit 22; fi; printf confined > \"$2\"", "fixture", f.outside.path, home.appendingPathComponent("result").path]
+        process.environment = env; process.currentDirectoryURL = home
         process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
         try process.run(); process.waitUntilExit(); #expect(process.terminationStatus == 0)
-        #expect(try String(contentsOf: home.appendingPathComponent("result"), encoding: .utf8) == "IMAP_PASSWORD=invented-only")
+        #expect(try String(contentsOf: home.appendingPathComponent("result"), encoding: .utf8) == "confined")
     }
 }
