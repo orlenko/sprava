@@ -95,4 +95,28 @@ import Testing
         #expect(runtime.received.last?.name == "Dropped text 2026-10-26 15.42.05.txt")
         #expect(!model.dropText(html: "", plain: nil, into: Self.binder))
     }
+
+    @Test func promisedFilesArriveOnABackgroundQueueAndEveryNamedFileIsWaitedFor() async throws {
+        // AppKit calls a promise's reader on the queue it was given; a main-actor reader would trap there.
+        let state = IntakeDropModel.Received(), reader = IntakeDropModel.reader(state)
+        let urls = (1...3).map { URL(fileURLWithPath: "/invented/staging/message-\($0).eml") }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { reader(urls[0], nil); reader(urls[1], nil); done.resume() }
+        }
+        // A legacy promise announced one type but named three files: two arrivals must not end the wait.
+        state.expect(3)
+        DispatchQueue.global().async { reader(urls[2], nil) }
+        let result = await state.result()
+        #expect(result.files == urls); #expect(result.failed == 0)
+    }
+
+    @Test func aLinkToAKeyFileIsHeldWhateverTheLinkIsCalled() async throws {
+        let root = try Self.scratch(), runtime = Runtime()
+        try Data("-----BEGIN INVENTED KEY-----".utf8).write(to: root.appendingPathComponent("server.pem"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("receipt.txt"), withDestinationURL: root.appendingPathComponent("server.pem"))
+        let model = IntakeDropModel(send: runtime.send)
+        await model.add([root.appendingPathComponent("receipt.txt")], into: Self.binder)
+        #expect(runtime.received.isEmpty)
+        #expect(model.report == "Not added: receipt.txt, a key or credential file, which Sprava never takes in.")
+    }
 }

@@ -109,6 +109,10 @@ final class IntakeDropModel: ObservableObject {
                     files.append((child, name, Int64(c.st_size)))
                 }
             } else if info.st_mode & S_IFMT == S_IFREG {
+                // A link is judged by what it points at too: `receipt.txt` pointing at `server.pem` is a key file.
+                if DocumentPaths.isKeyFile(url.lastPathComponent) {
+                    held.append((item.lastPathComponent, "a key or credential file, which Sprava never takes in")); continue
+                }
                 files.append((url, item.lastPathComponent, Int64(info.st_size)))
             } else {
                 held.append((item.lastPathComponent, "not a plain file"))
@@ -151,34 +155,43 @@ final class IntakeDropModel: ObservableObject {
         return lines.isEmpty ? "Nothing was dropped." : lines.joined(separator: "\n")
     }
 
-    /// Asks for every promised file; `result()` waits for them, or a minute, after which an undelivered file counts as failed.
-    static func receive(_ promises: [NSFilePromiseReceiver], into folder: URL) -> Received {
-        let state = Received(expected: promises.reduce(0) { $0 + max($1.fileTypes.count, 1) })
+    /// Asks for every promised file; `result()` waits for them, or a minute, after which an undelivered file counts as
+    /// failed. Nonisolated: AppKit calls the readers on the queue it is given, never the main actor.
+    nonisolated static func receive(_ promises: [NSFilePromiseReceiver], into folder: URL) -> Received {
+        let state = Received()
         let queue = OperationQueue()
         for promise in promises {
-            promise.receivePromisedFiles(atDestination: folder, options: [:], operationQueue: queue) { url, error in
-                state.arrived(error == nil ? url : nil)
-            }
+            promise.receivePromisedFiles(atDestination: folder, options: [:], operationQueue: queue, reader: reader(state))
         }
+        // A legacy promise may announce one type and deliver several files; its names are known once asked for, so the
+        // count comes from them, and the wait ends only when every named file has arrived or failed.
+        state.expect(promises.reduce(0) { $0 + max($1.fileNames.count, $1.fileTypes.count, 1) })
         DispatchQueue.global().asyncAfter(deadline: .now() + 60) { state.finish() }
         return state
     }
 
+    nonisolated static func reader(_ state: Received) -> @Sendable (URL, (any Error)?) -> Void {
+        { url, error in state.arrived(error == nil ? url : nil) }
+    }
+
     final class Received: @unchecked Sendable {
         private let lock = NSLock()
-        private let expected: Int
+        private var expected: Int?
         private var files: [URL] = []
         private var count = 0
         private var finished: (files: [URL], failed: Int)?
         private var waiting: [CheckedContinuation<(files: [URL], failed: Int), Never>] = []
-        init(expected: Int) { self.expected = expected }
+        func expect(_ total: Int) {
+            lock.lock(); expected = total; let done = count >= total; lock.unlock()
+            if done { finish() }
+        }
         func arrived(_ url: URL?) {
-            lock.lock(); count += 1; if let url, finished == nil { files.append(url) }; let done = count >= expected; lock.unlock()
+            lock.lock(); count += 1; if let url, finished == nil { files.append(url) }; let done = expected.map { count >= $0 } ?? false; lock.unlock()
             if done { finish() }
         }
         func finish() {
             lock.lock()
-            if finished == nil { finished = (files, expected - files.count) }
+            if finished == nil { finished = (files, max(expected ?? count, count) - files.count) }
             let result = finished!, resume = waiting; waiting = []
             lock.unlock()
             for c in resume { c.resume(returning: result) }

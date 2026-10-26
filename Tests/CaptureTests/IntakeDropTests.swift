@@ -38,6 +38,9 @@ import Testing
         let fd = try Self.file("-----BEGIN INVENTED KEY-----", in: source); defer { close(fd) }
         #expect(throws: IntakeDrop.Refused.keyFile) { try IntakeDrop.publish(fd, name: "server.pem", into: binder) }
         #expect(throws: IntakeDrop.Refused.keyFile) { try IntakeDrop.publish(fd, name: ".env", into: binder) }
+        // Offered under a harmless name, the descriptor is still the key file.
+        let key = try Self.file("-----BEGIN INVENTED KEY-----", in: source, named: "server.pem"); defer { close(key) }
+        #expect(throws: IntakeDrop.Refused.keyFile) { try IntakeDrop.publish(key, name: "receipt.txt", into: binder) }
         #expect(throws: IntakeDrop.Refused.noSpace) { try IntakeDrop.publish(fd, name: "notes.txt", into: binder, freeSpace: { _ in 1024 }) }
         let folder = open(source.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC); defer { close(folder) }
         #expect(throws: IntakeDrop.Refused.notAFile) { try IntakeDrop.publish(folder, name: "folder", into: binder) }

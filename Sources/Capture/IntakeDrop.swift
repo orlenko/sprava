@@ -21,8 +21,12 @@ public enum IntakeDrop {
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw Refused.notAFile }
         guard info.st_size <= fileLimit else { throw Refused.tooLarge }
         let base = DocumentPaths.safeName((name as NSString).lastPathComponent)
-        // A key or credential file stays where it is, whatever it is renamed to (binder-v0 §3.3).
-        guard !DocumentPaths.isKeyFile(name), !DocumentPaths.isKeyFile(base) else { throw Refused.keyFile }
+        // A key or credential file stays where it is, whatever it is called on the way here (binder-v0 §3.3): the
+        // offered name, the cleaned one, and the name of the file the descriptor really is.
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(fd, F_GETPATH, &path) == 0 else { throw Refused.notAFile }
+        let real = (String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self) as NSString).lastPathComponent
+        guard ![name, base, real].contains(where: DocumentPaths.isKeyFile) else { throw Refused.keyFile }
         if let free = freeSpace(folder), free < Int64(info.st_size) + reserve { throw Refused.noSpace }
         guard case .ok(let data) = SafeFile.read(fd: fd, limit: fileLimit) else { throw Refused.notAFile }
         guard data.count == Int(info.st_size) else { throw Refused.changed }
