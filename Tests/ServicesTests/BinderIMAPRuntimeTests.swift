@@ -163,4 +163,21 @@ import Testing
         for _ in 0..<200 where !restartGate.entered { try await Task.sleep(for: .milliseconds(5)) }
         #expect(restartGate.entered)
     }
+
+    @Test func disconnectingOneBinderKeepsThePasswordAnotherBinderOfTheSameAccountStillUses() async throws {
+        let support = try Self.support("shared"), first = try makeTeka(fixture: "sprava-v0"), second = try makeTeka(fixture: "sprava-v0")
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.memoryOnly()
+        let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: passwords, fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
+        let bridge: [(String, JSONValue)] = [("host", .str("127.0.0.1")), ("port", .int(1143)), ("security", .str("starttls")), ("user", .str("member@example.invalid"))]
+        // The same bridge account, one binder still holding the certificate pin from before the bridge renewed it.
+        _ = try await Self.answer(runtime, "imap_configure", first, bridge + [("pin", .str(String(repeating: "a", count: 64))), ("mailbox", .str("Labels/One")), ("password", .str("invented"))])
+        while try await Self.answer(runtime, "imap_status", first)["running"] == .bool(true) { try await Task.sleep(for: .milliseconds(5)) }
+        _ = try await Self.answer(runtime, "imap_configure", second, bridge + [("pin", .str(String(repeating: "b", count: 64))), ("mailbox", .str("Labels/Two"))])
+        while try await Self.answer(runtime, "imap_status", second)["running"] == .bool(true) { try await Task.sleep(for: .milliseconds(5)) }
+        _ = try await Self.answer(runtime, "imap_disable", first)
+        #expect(try await Self.answer(runtime, "imap_status", second)["needs_password"] == .bool(false))
+        _ = try await Self.answer(runtime, "imap_disable", second)
+        let account = try #require(IMAPAccount(host: "127.0.0.1", port: 1143, security: .startTLS, user: "member@example.invalid"))
+        #expect(try passwords.read(account) == nil)
+    }
 }

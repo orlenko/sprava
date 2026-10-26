@@ -34,6 +34,9 @@ public struct IMAPAccount: Codable, Sendable, Hashable {
 
     public var isLoopback: Bool { Self.isLoopback(host) }
 
+    /// Whether the two use one Keychain password: the same host, port and user, whatever certificate each pinned.
+    public func sharesPassword(with other: IMAPAccount) -> Bool { key == other.key }
+
     /// The Keychain account name: host, port and user together, so one sign-in serves every binder that names it.
     var key: String { JSONWriter.compact(.array([.str(host), .int(port), .str(user)])) }
 

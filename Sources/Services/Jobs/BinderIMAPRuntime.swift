@@ -87,7 +87,7 @@ public actor BinderIMAPRuntime {
             case "imap_disable":
                 let account = try connections.configuration(for: folder)?.account
                 try await retire(folder)
-                if let account, try !connections.enabled().contains(where: { $0.account == account }) { passwords.remove(account) }
+                if let account, try !connections.enabled().contains(where: { $0.account.sharesPassword(with: account) }) { passwords.remove(account) }
             case "imap_sync":
                 guard running == nil, let value = try connections.configuration(for: folder), value.enabled, try available(folder) else { throw IMAPIntakeImport.Refused.unavailable }
                 start(value)
