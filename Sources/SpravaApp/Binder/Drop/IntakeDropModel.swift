@@ -99,8 +99,10 @@ final class IntakeDropModel: ObservableObject {
             var info = stat()
             guard lstat(url.path, &info) == 0 else { held.append((item.lastPathComponent, "it is no longer there")); continue }
             if info.st_mode & S_IFMT == S_IFDIR {
-                let names = ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).sorted()
-                for name in names where !name.hasPrefix(".") {
+                guard let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
+                    held.append((item.lastPathComponent, "the folder could not be read")); continue
+                }
+                for name in names.sorted() where !name.hasPrefix(".") {
                     let child = url.appendingPathComponent(name)
                     var c = stat()
                     guard lstat(child.path, &c) == 0, c.st_mode & S_IFMT == S_IFREG else {

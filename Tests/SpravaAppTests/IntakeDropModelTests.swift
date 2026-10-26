@@ -119,4 +119,17 @@ import Testing
         #expect(runtime.received.isEmpty)
         #expect(model.report == "Not added: receipt.txt, a key or credential file, which Sprava never takes in.")
     }
+
+    @Test func aFolderThatCannotBeReadIsReportedNotTakenForEmpty() async throws {
+        let root = try Self.scratch(), runtime = Runtime()
+        try Data("Invented".utf8).write(to: root.appendingPathComponent("a.txt"))
+        let locked = root.appendingPathComponent("Locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+        try Data("Invented".utf8).write(to: locked.appendingPathComponent("inside.txt"))
+        chmod(locked.path, 0o000); defer { chmod(locked.path, 0o700) }
+        let model = IntakeDropModel(send: runtime.send)
+        await model.add([root.appendingPathComponent("a.txt"), locked], into: Self.binder)
+        #expect(runtime.received.map(\.name) == ["a.txt"])
+        #expect(model.report?.contains("Not added: Locked, the folder could not be read.") == true); #expect(model.problem)
+    }
 }
