@@ -10,7 +10,7 @@ import SwiftUI
 /// runtime turns each into a Tier 0 card within its next sweep, and cards with no binder wait here until the
 /// person picks one.
 @MainActor
-final class InboxModel: ObservableObject, RuntimePage {
+final class InboxModel: ObservableObject, RuntimePage, DraftOwner {
     struct Card: Identifiable {
         let id: String
         let title: String
@@ -48,6 +48,7 @@ final class InboxModel: ObservableObject, RuntimePage {
     @Published var message: String? { didSet { readFoundNoRuntime = false } }
     var readFoundNoRuntime = false
     @Published var saving = false
+    var draftState: DraftState { DraftState(hasChanges: !draft.isEmpty, saving: saving) }
     var startedTyping: Date?
     let client: RuntimeClient
     /// Sprava's support folder, where the device id and the typed notes' capture folder live.

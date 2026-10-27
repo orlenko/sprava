@@ -9,7 +9,7 @@ import SwiftUI
 
 // ObservableObject rather than @Observable/@State: the Command Line Tools ship no SwiftUI macro plugin.
 @MainActor
-final class ShelfModel: ObservableObject {
+final class ShelfModel: ObservableObject, DraftOwner {
     /// One editor and removal admission point shared by every window that shows this Shelf.
     let itemEditor = ItemEditor()
     @Published var rows: [ShelfRow] = []
@@ -34,6 +34,7 @@ final class ShelfModel: ObservableObject {
     }
     @Published var lastRefresh: Date?
     @Published private(set) var creatingBinder = false
+    var draftState: DraftState { DraftState(saving: creatingBinder) }
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
@@ -294,6 +295,8 @@ struct ShelfView: View {
     @StateObject private var backup = BackupModel()
     @StateObject private var binderNote = BinderNote()
     @StateObject private var binderConversation = ClaudeBinderConversation()
+    @StateObject private var binderActions = BinderActions()
+    @StateObject private var drafts = DraftRegistry()
     /// Every window uses the Shelf's editor, so none can remove another window's open draft.
     var itemEditor: ItemEditor { model.itemEditor }
 
@@ -360,7 +363,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation)
+                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
@@ -377,6 +380,11 @@ struct ShelfView: View {
         .safeAreaInset(edge: .top) {
             RuntimeBanner(health: model.health, openHealth: { model.selection = healthSelection })
                 .padding(.horizontal)
+        }
+        .background(WindowCloseGuard(registry: drafts).allowsHitTesting(false))
+        .onAppear {
+            drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
+            drafts.track(binderActions); drafts.track(binderConversation)
         }
         .task {
             while !Task.isCancelled {

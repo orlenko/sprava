@@ -84,6 +84,18 @@ Use an invented binder adopted in the installed app, with invented documents onl
 7. **Logs.** `runtime/jobs.log` has `intake carded=… held=…` and `clerk document outcome=… class=…` lines
    with counts only: no names, titles or text.
 
+## Unfinished work
+
+Use invented text in an Inbox note, a binder note, a To-do draft, an item edit, a review-card edit, a filing answer,
+the binder's instruction line, the conversation composer and an edited task suggestion.
+
+1. Visit another page and return: every draft is still present.
+2. Close the window or quit: **Keep Working** leaves the words in place; closing without saving takes
+   a separate explicit choice. Opening an editor without changing it does not prompt.
+3. Save an edit or note, then immediately try to quit: the app refuses to close until the runtime acknowledges it.
+   A failed save keeps the draft. A successful save no longer needs the unfinished-work prompt.
+4. With two windows, quitting checks both. Closing one checks that window, and preserves the other.
+
 ## The weekly fault drill (mvp.md 1.2, M3 part 4)
 
 1. **Freeze.** `kill -STOP <pid>`: within five minutes Health shows red "runtime not answering"; `kill -CONT <pid>`.

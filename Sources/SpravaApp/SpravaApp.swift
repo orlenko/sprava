@@ -8,6 +8,7 @@ import SwiftUI
 
 @main
 struct SpravaApp: App {
+    @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
     @StateObject private var model = ShelfModel()
 
     init() {
