@@ -17,7 +17,7 @@ import Testing
             let object = try #require(value.objectValue); calls.append(object)
             var fields: [(String, JSONValue)] = [("ok", .bool(true))]
             switch value["command"]?.stringValue {
-            case "claude_status": fields += [("enabled", .bool(true))]
+            case "claude_status": fields += [("enabled", .bool(true)), ("credential_persistent", .bool(true))]
             case "claude_binder", "claude_enable": fields += [("enabled", .bool(enabled)), ("binder_id", .str(scope.uuidString)), ("documents", .bool(true)), ("intake", .bool(true))]
             case "chat_history": fields += [("turns", .array([]))]
             case "chat_send":
@@ -103,7 +103,7 @@ import Testing
         #expect(submitted.first?["credential"] == .str("invented-subscription-token"))
         #expect(server.calls.filter { $0["command"] != .str("claude_configure") }.allSatisfy { $0["credential"] == nil })
         #expect(server.calls.last?["command"] == .str("claude_status"))
-        #expect(!model.persistent && model.message?.contains("background memory") == true)
+        #expect(model.persistent && model.message?.contains("Claude is ready") == true)
         #expect(model.message?.contains("invented-subscription-token") == false)
     }
 }

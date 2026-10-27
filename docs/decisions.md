@@ -376,6 +376,12 @@
   removed when the app starts the runtime. Only the Login Items approval is left to the person, shown as one line
   with a button, never opened by itself. Each start is bounded (architecture 3.1).
 
+- **A20 decided (2026-10-27).** Subscription tokens and email passwords survive background restarts in
+  Sprava's own non-synchronized Keychain items. A provisioned runtime uses the data-protection Keychain;
+  only a missing-entitlement refusal selects the Mac login Keychain for an ad-hoc build (Apple TN3137).
+  Locked or damaged Keychains fail visibly. Only an explicit credential save may ask macOS to authorize
+  access. No plaintext file or memory-only success substitutes for a credential that could not be saved.
+
 ## MVP (`docs/mvp.md`)
 
 - **M1 recommended.** The smallest release that proves "a binder that keeps itself": Shelf (adopt

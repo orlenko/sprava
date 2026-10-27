@@ -5,19 +5,24 @@ import SpravaKit
 import Testing
 
 @Suite struct ClaudeCredentialStorageTests {
-    @Test func anUnprovisionedRuntimeCanKeepOnlyThisRunsExplicitlyEnteredToken() throws {
+    final class Keychain: @unchecked Sendable {
+        let lock = NSLock()
+        var token: String?
         func storage() -> ClaudeCredentialStorage {
-            .init(load: { (errSecMissingEntitlement, nil) }, save: { _ in errSecMissingEntitlement })
+            .init(load: { self.lock.withLock { self.token.map { (errSecSuccess, Data($0.utf8)) } ?? (errSecItemNotFound, nil) } },
+                  save: { token in self.lock.withLock { self.token = token }; return errSecSuccess })
         }
-        let first = storage()
+    }
+    @Test func theSubscriptionTokenSurvivesAStorageRestartAndDisconnectRemovesIt() throws {
+        let keychain = Keychain(), first = keychain.storage()
         #expect(try first.read() == nil)
         try first.replace("invented-token")
-        #expect(try first.read() == "invented-token"); #expect(!first.persistent)
-        #expect(try storage().read() == nil) // A restarted process does not pretend to have a token.
-        try first.replace(nil); #expect(try first.read() == nil)
+        #expect(try first.read() == "invented-token"); #expect(first.persistent)
+        #expect(try keychain.storage().read() == "invented-token")
+        try first.replace(nil); #expect(try keychain.storage().read() == nil)
     }
     @Test func lockedOrDamagedKeychainsCannotSilentlyDowngradeCredentialStorage() throws {
-        for refusal in [errSecInteractionNotAllowed, errSecDecode] {
+        for refusal in [errSecInteractionNotAllowed, errSecDecode, errSecMissingEntitlement] {
             let storage = ClaudeCredentialStorage(load: { (refusal, nil) }, save: { _ in refusal })
             #expect(throws: (any Error).self) { try storage.replace("invented-token") }
             #expect(throws: (any Error).self) { try storage.read() }
