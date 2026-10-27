@@ -504,3 +504,27 @@ D1 to D14 were decided by the author on 2026-10-14 ("go ahead with the plan"); n
   (attachments with their message, arrival provenance, page and legibility coverage, page images, original
   beside translation, validation and replay, correction history, drafts, freshness), with no shell or web; a
   missing capability is named, never invented (conversation.md §17.5).
+- **D18 recommended (2026-10-27, from a reading of Steve Yegge's essay "The Counting House", which ladders
+  model autonomy per intent by measured evals).** A job kind's scores belong to the engine that earned them:
+  the front desk's model, variant and prompt version, as C3's `producer` records them. When any of these
+  changes, every kind goes back on probation, its old scores kept beside the new ones. Before a model change
+  the person did not ask for (a new pinned list, a larger Mac, D5), the new model may first run in shadow: it
+  decides the same jobs as the current one, nothing it decides is applied or shown in the conversation, and
+  its decisions are scored against the same explicit signals (conversation.md §7.2) and shown in the engine
+  settings. Why: today scores earned by one model carry over silently to another.
+- **D19 recommended (same reading).** Job kinds differ in what a miss costs and in whether it is seen. A
+  misfiling is seen and undone; a date or to-do the front desk did not find produces no signal, since nobody
+  undoes what never appeared. Kinds whose miss is unseen (dates found, to-dos found; proposed list) are also
+  measured by recall: a miss is a back-office verdict that read every page (conversation.md §17.6) and found
+  one more, or the person adding a date or to-do that cites a document the front desk filed. These kinds
+  never graduate: the back office reviews every case. D10's graduation applies to kinds whose miss is seen.
+- **D20 recommended (same reading).** D10's counts cannot show 95%: 30 right of 30 still allows a true error
+  rate near 10% (rule of three), and one binder rarely gives more cases of a kind. Graduation counts the
+  person's cases of a kind across all their binders for the same engine (D18), as counts only, never content,
+  in Sprava's state on the Mac (A13); probation stays per binder. The thresholds are still set from measured
+  fixtures.
+- **D21 recommended (same reading).** The reviewer is checked before its verdicts count. Back-office verdicts
+  count toward graduation only once the person has chosen the back office's version on enough of the
+  disagreement cards they answered (proposed: 15 of the last 20); until then they are shown apart and nothing
+  graduates. A confirmation given faster than the card can be read (proposed: under 2 seconds) is not counted
+  as human-checked, so tapping through does not raise the score meant to measure it.
