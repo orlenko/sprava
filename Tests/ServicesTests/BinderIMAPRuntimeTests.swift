@@ -21,10 +21,17 @@ import Testing
         func add(_ value: String) { lock.lock(); values.append(value); lock.unlock() }
         var all: [String] { lock.lock(); defer { lock.unlock() }; return values }
     }
-    /// A development build: the Keychain refuses for want of an access group, so passwords live in memory only.
-    static func memoryOnly() -> IMAPPasswords {
-        IMAPPasswords(backend: .init(load: { _ in (errSecMissingEntitlement, nil) }, save: { _, _ in errSecMissingEntitlement }))
+    /// An invented persistent Keychain, independent of each runtime's in-memory password cache.
+    final class Keychain: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String: Data] = [:]
+        func passwords() -> IMAPPasswords {
+            IMAPPasswords(backend: .init(load: { key in
+                self.lock.withLock { self.values[key].map { (errSecSuccess, $0) } ?? (errSecItemNotFound, nil) }
+            }, save: { key, data in self.lock.withLock { self.values[key] = data }; return errSecSuccess }))
+        }
     }
+    static func passwords() -> IMAPPasswords { Keychain().passwords() }
     static let account = IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: "member@example.invalid")!
     static func support(_ name: String) throws -> URL {
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-imap-" + name + "-" + UUID().uuidString)
@@ -40,7 +47,7 @@ import Testing
 
     @Test func disablingInFlightFetchPreventsPublicationBeforeAcknowledgment() async throws {
         let support = try Self.support("service"), folder = try makeTeka(fixture: "sprava-v0")
-        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.memoryOnly()
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.passwords()
         let config = try store.configure(folder: folder, account: Self.account, mailbox: "INBOX")
         try passwords.store("invented", for: Self.account)
         let runHome = support.appendingPathComponent("capture/imap-runs/" + config.id.uuidString)
@@ -67,7 +74,7 @@ import Testing
 
     @Test func anAuthenticationRefusalDisablesAutomaticChecksUntilExplicitReconnect() async throws {
         let support = try Self.support("auth"), folder = try makeTeka(fixture: "sprava-v0")
-        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.memoryOnly()
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.passwords()
         _ = try store.configure(folder: folder, account: Self.account, mailbox: "INBOX")
         try passwords.store("invented", for: Self.account)
         let gate = FetchGate()
@@ -87,7 +94,7 @@ import Testing
         let store = try BinderIMAPConnections(support: support, hash: { "fixture" })
         let checks = BinderIMAPRuntime.Checks(probe: { _ in Issue.record("No server contact for an unlisted binder"); return .init(result: .ok) },
                                               folders: { _, _ in Issue.record("No sign-in for an unlisted binder"); return [] })
-        let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: Self.memoryOnly(), checks: checks,
+        let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: Self.passwords(), checks: checks,
                                         fetch: { _, _, _ in Issue.record("No server contact without explicit listed-binder consent") }, available: { _ in false })
         for command in ["imap_sync", "imap_configure", "imap_probe", "imap_folders", "run_script"] {
             let fields = Self.accountFields + [("mailbox", .str("INBOX")), ("password", .str("invented"))]
@@ -103,7 +110,7 @@ import Testing
             return account.port == 1993 ? .init(result: .untrusted, fingerprint: fingerprint) : .init(result: .unreachable)
         }, folders: { _, _ in [] })
         let runtime = BinderIMAPRuntime(support: support, connections: try BinderIMAPConnections(support: support, hash: { "fixture" }),
-                                        passwords: Self.memoryOnly(), checks: checks, fetch: { _, _, _ in })
+                                        passwords: Self.passwords(), checks: checks, fetch: { _, _, _ in })
         let found = try await Self.answer(runtime, "imap_probe", folder, [("host", .str("127.0.0.1"))])
         #expect(calls.all == ["starttls:1143", "tls:1993"])
         #expect(found["result"] == .str("untrusted")); #expect(found["fingerprint"] == .str(fingerprint)); #expect(found["loopback"] == .bool(true))
@@ -123,7 +130,7 @@ import Testing
             return ["INBOX", "Labels/Workshop"]
         })
         let runtime = BinderIMAPRuntime(support: support, connections: try BinderIMAPConnections(support: support, hash: { "fixture" }),
-                                        passwords: Self.memoryOnly(), checks: checks, fetch: { _, _, _ in })
+                                        passwords: Self.passwords(), checks: checks, fetch: { _, _, _ in })
         let refused = try await Self.answer(runtime, "imap_folders", folder, Self.accountFields + [("password", .str("invented-wrong"))])
         #expect(refused["ok"] == .bool(false)); #expect(refused["error"]?.stringValue?.contains("refused this username or password") == true)
         let listed = try await Self.answer(runtime, "imap_folders", folder, Self.accountFields + [("password", .str("invented-right"))])
@@ -134,14 +141,15 @@ import Testing
         #expect(calls.all.count == 2)
     }
 
-    @Test func aRestartedDevelopmentRuntimeAsksForThePasswordAndNeverTriesTheServerWithoutIt() async throws {
+    @Test func aRestartedRuntimeUsesTheSavedPasswordWithoutAnotherSignIn() async throws {
         let support = try Self.support("restart"), folder = try makeTeka(fixture: "sprava-v0")
         let store = try BinderIMAPConnections(support: support, hash: { "fixture" })
         let gate = FetchGate()
         let fetch: IMAPIntakeImport.Fetch = { _, cwd, _ in
             gate.enter(); try Data("{\"uid_validity\":7,\"last_seen_uid\":4}".utf8).write(to: cwd.appendingPathComponent("state.json"))
         }
-        let first = BinderIMAPRuntime(support: support, connections: store, passwords: Self.memoryOnly(), fetch: fetch)
+        let keychain = Keychain()
+        let first = BinderIMAPRuntime(support: support, connections: store, passwords: keychain.passwords(), fetch: fetch)
         let connected = try await Self.answer(first, "imap_configure", folder, Self.accountFields + [("mailbox", .str("Labels/Workshop")), ("password", .str("invented"))])
         #expect(connected["enabled"] == .bool(true)); #expect(connected["needs_password"] == .bool(false))
         #expect(connected["user"] == .str("member@example.invalid")); #expect(connected["mailbox"] == .str("Labels/Workshop"))
@@ -151,22 +159,30 @@ import Testing
         while try await Self.answer(first, "imap_status", folder)["running"] == .bool(true) { try await Task.sleep(for: .milliseconds(5)) }
 
         let restartGate = FetchGate()
-        let restarted = BinderIMAPRuntime(support: support, connections: store, passwords: Self.memoryOnly(), fetch: { config, cwd, target in
+        let restarted = BinderIMAPRuntime(support: support, connections: store, passwords: keychain.passwords(), fetch: { config, cwd, target in
             restartGate.enter(); try fetch(config, cwd, target)
         })
-        #expect(try await Self.answer(restarted, "imap_status", folder)["needs_password"] == .bool(true))
+        #expect(try await Self.answer(restarted, "imap_status", folder)["needs_password"] == .bool(false))
         await restarted.tick(now: Date().addingTimeInterval(3600))
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(!restartGate.entered)
-        let resumed = try await Self.answer(restarted, "imap_password", folder, [("password", .str("invented"))])
-        #expect(resumed["needs_password"] == .bool(false))
         for _ in 0..<200 where !restartGate.entered { try await Task.sleep(for: .milliseconds(5)) }
         #expect(restartGate.entered)
     }
 
+    @Test func aRuntimeWithoutASavedPasswordNeverContactsTheServer() async throws {
+        let support = try Self.support("missing-password"), folder = try makeTeka(fixture: "sprava-v0")
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" })
+        _ = try store.configure(folder: folder, account: Self.account, mailbox: "INBOX")
+        let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: Self.passwords(), fetch: { _, _, _ in
+            Issue.record("No server contact without a saved password")
+        })
+        #expect(try await Self.answer(runtime, "imap_status", folder)["needs_password"] == .bool(true))
+        await runtime.tick(now: Date().addingTimeInterval(3600))
+        #expect(try await Self.answer(runtime, "imap_status", folder)["running"] == .bool(false))
+    }
+
     @Test func disconnectingOneBinderKeepsThePasswordAnotherBinderOfTheSameAccountStillUses() async throws {
         let support = try Self.support("shared"), first = try makeTeka(fixture: "sprava-v0"), second = try makeTeka(fixture: "sprava-v0")
-        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.memoryOnly()
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" }), passwords = Self.passwords()
         let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: passwords, fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
         let bridge: [(String, JSONValue)] = [("host", .str("127.0.0.1")), ("port", .int(1143)), ("security", .str("starttls")), ("user", .str("member@example.invalid"))]
         // The same bridge account, one binder still holding the certificate pin from before the bridge renewed it.

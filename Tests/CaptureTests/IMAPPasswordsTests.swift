@@ -31,15 +31,12 @@ import Testing
         #expect(items.values.isEmpty)
     }
 
-    @Test func aDevelopmentBuildKeepsThePasswordOnlyInMemoryAndADamagedKeychainFailsClosed() throws {
-        let items = Items(); items.status = errSecMissingEntitlement
+    @Test(arguments: [errSecMissingEntitlement, errSecInteractionNotAllowed, errSecDecode])
+    func anUnavailableKeychainNeverPretendsToSaveAPassword(_ refusal: OSStatus) throws {
+        let items = Items(); items.status = refusal
         let passwords = IMAPPasswords(backend: items.backend)
-        try passwords.store("invented-password", for: Self.account)
-        #expect(try passwords.read(Self.account) == "invented-password")
-        // After a restart the binder asks again; nothing was written anywhere.
-        #expect(try IMAPPasswords(backend: items.backend).read(Self.account) == nil)
-        items.status = errSecInteractionNotAllowed
-        #expect(throws: IMAPPasswords.Refused.self) { try IMAPPasswords(backend: items.backend).read(Self.account) }
-        #expect(throws: IMAPPasswords.Refused.self) { try IMAPPasswords(backend: items.backend).store("invented", for: Self.account) }
+        #expect(throws: IMAPPasswords.Refused.self) { try passwords.store("invented-password", for: Self.account) }
+        #expect(throws: IMAPPasswords.Refused.self) { try passwords.read(Self.account) }
+        #expect(items.values.isEmpty)
     }
 }

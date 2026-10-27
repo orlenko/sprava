@@ -63,7 +63,7 @@ struct EmailIntakeSection: View {
                 .foregroundStyle(.secondary)
         }
         if s.needsPassword {
-            Note(symbol: "key.fill", tint: .orange, text: "Sprava restarted and needs this account's password again to keep checking.")
+            Note(symbol: "key.fill", tint: .orange, text: "This account's saved password is unavailable. Unlock the Keychain or enter it again to keep checking.")
             HStack {
                 SecureField("Password", text: $model.password).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
                     .onSubmit { Task { await model.resume() } }

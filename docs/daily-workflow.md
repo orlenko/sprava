@@ -34,9 +34,9 @@ it cannot send email, execute tools or save a task without the person's button c
    already completed messages can be retained with an explicit partial-sync status. A changed
    worker or unsafe state requires reconnecting rather than silently resetting a cursor. A refused sign-in, or
    a bridge that now offers a different certificate, stops automatic checks until you choose **Change…** and
-   set it up again. The password is kept in the Keychain (`org.sprava.imap`, one item per account); the
-   current ad-hoc build cannot write the Keychain, so it keeps the password in background memory and the
-   binder asks for it again (**Resume**) after a background restart.
+   set it up again. The password is kept in the Mac's Keychain (`org.sprava.imap`, one item per account)
+   across background restarts, including development builds. If Keychain access is unavailable, the
+   binder asks you to unlock it or enter the password again (**Resume**).
    Mail that cannot be fetched (an account with OAuth-only sign-in, or no IMAP at all) can be dragged from
    Outlook or Mail onto the binder's drop bar, at the top of its page; each message arrives in `intake/` as an
    `.eml`, and attachments or files from Finder arrive as they are. Outlook on the web (also when installed as an
