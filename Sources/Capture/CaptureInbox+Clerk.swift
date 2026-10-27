@@ -13,6 +13,22 @@ extension CaptureInbox {
         public let hint: String?
         package let tier0: String
         package let tier0Binder: String?
+        let pickedBinder: URL?
+        static let pickedName = "selected-binder"
+
+        /// Plan and match only against the physical binder the person selected. Its fixed local
+        /// label cannot be confused with a sibling's display name or binder-local item IDs.
+        public func filing(rows: [ShelfRow], list: FilingList, deviceID: String) -> [FilingBinder] {
+            guard let pickedBinder else { return list.binders(rows: rows, deviceID: deviceID, hint: hint) }
+            guard let row = rows.first(where: {
+                $0.folder.resolvingSymlinksInPath() == pickedBinder && $0.teka.isAdopted && !$0.teka.writesBlocked
+                    && Owner.device(of: $0.folder) == deviceID
+            }) else { return [] }
+            let description = list.load()[row.folder.standardizedFileURL.path]?.description ?? ""
+            return [FilingBinder(name: Self.pickedName, description: description, folder: row.folder,
+                                 words: FilingBinder.index(catalog: row.teka.catalog, description: description),
+                                 openItems: FilingBinder.candidates(catalog: row.teka.catalog))]
+        }
     }
 
     /// Picks the oldest capture waiting for the clerk whose code-built card is still untouched, and records the
@@ -65,7 +81,10 @@ extension CaptureInbox {
             state.attempts = attempts
             guard (try? save(state)) != nil else { return nil }
             journal([("event", .string(id)), ("stage", .str("clerk_attempt")), ("n", .int(attempts[id]!))])
-            return ClerkWork(event: Self.asFiled(event, privates: Set(state.privates ?? [])), hint: state.hints?[id], tier0: card, tier0Binder: binder)
+            let picked = state.pickedBinders?[id].map { URL(fileURLWithPath: $0) }
+            return ClerkWork(event: Self.asFiled(event, privates: Set(state.privates ?? [])),
+                             hint: picked == nil ? state.hints?[id] : ClerkWork.pickedName,
+                             tier0: card, tier0Binder: binder, pickedBinder: picked)
         }
         return nil
     }
@@ -124,6 +143,19 @@ extension CaptureInbox {
                      ("filed", .int(outcome.filed)), ("not_sure", .int(outcome.unsure)), ("dropped", .int(interp.dropped)),
                      ("unfiled_spans", .int(interp.unfiled.count)), ("calls", .int(interp.calls)), ("ms", .int(Int(seconds * 1000)))])
         }
+        if let picked = state.pickedBinders?[id] {
+            let scoped = work.pickedBinder?.path == picked && filing.count <= 1 && filing.allSatisfy {
+                $0.folder.resolvingSymlinksInPath().path == picked && $0.name == ClerkWork.pickedName
+            }
+            let matches = interp.items.allSatisfy { item in
+                guard item.binder == nil || item.binder == ClerkWork.pickedName else { return false }
+                guard let match = item.match else { return true }
+                return item.binder == ClerkWork.pickedName && filing.first?.openItems.contains(match.candidate) == true
+            }
+            guard scoped && matches else {
+                clerk[id] = "kept"; log("clerk_scope_mismatch"); return outcome
+            }
+        }
         // The interpretation the cards will name is on disk first (decisions.md C3); if it cannot be written, the
         // code-built card stays and the reading is tried again.
         // Each reading is kept under its own id, the one the cards name, in its capture's folder: a later reading of
@@ -171,8 +203,15 @@ extension CaptureInbox {
         }
         // A binder name resolves through the filing list (where a disclosure-none binder has only its label), else
         // to an adopted binder this Mac manages that is not at disclosure none, as the privacy ratchet reads it.
+        let picked = state.pickedBinders?[id]
+        let pickedRow = picked.flatMap { path in rows.first {
+            $0.folder.resolvingSymlinksInPath().path == path && $0.teka.isAdopted && !$0.teka.writesBlocked
+                && Owner.device(of: $0.folder) == commands.deviceID
+        } }
         let placed = cards.map { binder, proposal in
-            (proposal, binder.flatMap { name in
+            // A choice made on the binder's own page outranks a model's filing guess, including
+            // when private binders or repeated display names could not be resolved by a hint.
+            (proposal, picked != nil ? pickedRow?.folder : binder.flatMap { name in
                 filing.first { $0.name == name }?.folder ?? rows.first {
                     $0.teka.isAdopted && $0.name == name && !$0.teka.writesBlocked && Owner.device(of: $0.folder) == commands.deviceID
                         && PrivacyRatchet.disclosure($0) != "none"
