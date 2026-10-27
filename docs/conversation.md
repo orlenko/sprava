@@ -397,7 +397,7 @@ agreement: only explicit signals count.
 | Signal | Counts toward |
 |---|---|
 | The person's Undo or fix of a front-desk decision | human-checked accuracy, as a miss |
-| The person's explicit confirmation (Keep or Move It on a card, a tap on "right") | human-checked accuracy, as a hit for the version chosen |
+| The person's explicit confirmation (Keep or Move It on a card, a tap on "right"), given no sooner than the card can be read (7.3) | human-checked accuracy, as a hit for the version chosen |
 | A back-office verdict | reviewer agreement, shown apart from human-checked accuracy |
 | Anything else, including an action nobody undid and a front desk and back office agreeing with no human look | unreviewed; never counted |
 
@@ -410,6 +410,30 @@ settings show human-checked accuracy alone. The engine settings show both number
 kind's state, and the person may put a kind back on probation. Scores are Sprava's state in the support
 folder (decisions.md A13), counted only from the runtime's own records of verdicts and of the person's taps
 and Undos; the transcript, which any program can write, is never a source for them.
+
+### 7.3 What a score is worth
+
+Four rules keep the numbers of 7.2 honest (decisions.md D18 to D21; all numbers proposed).
+
+- **Scores belong to the engine that earned them.** A score is kept per engine: the front desk's model,
+  variant and prompt version, as the derived event's `producer` records them (decisions.md C3). When any of
+  these changes, every kind goes back on probation, and the old scores stay beside the new ones in the engine
+  settings. Before a model change the person did not ask for (a new pinned list, a larger Mac; 11.2), Sprava may
+  first run the new model in shadow: it decides the same jobs as the current one, nothing it decides is applied
+  or shown in the conversation, and its decisions are scored against the same explicit signals as the current
+  model's. The settings show the two side by side before the switch.
+- **An unseen miss is measured by recall.** A misfiling is seen and undone. A date or to-do the front desk did
+  not find leaves no Undo behind, so for dates found and to-dos found a miss is also counted when a back-office
+  verdict that read every page (17.6) finds one more, or when the person adds a date or to-do that cites a
+  document the front desk filed. These kinds never graduate: the back office reviews every case of them.
+- **Graduation counts across binders.** One binder rarely gives enough cases of a kind, and 30 right of 30
+  still allows a true error rate near 10%. Graduation counts the person's cases of a kind in all their binders
+  for the same engine, as counts only, never content; probation stays per binder, and so does the person's
+  choice to put a kind back on probation.
+- **The reviewer is checked first.** Back-office verdicts count toward graduation only once the person has
+  chosen the back office's version on 15 of the last 20 disagreement cards they answered. Until then they are
+  shown apart and nothing graduates. A confirmation given less than 2 seconds after its card appeared is not
+  counted as human-checked, so tapping through does not raise the score meant to measure it.
 
 ## 8. What the front desk reads
 
