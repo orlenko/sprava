@@ -108,6 +108,28 @@ final class RuntimeClient {
             // A change's line stays true once the runtime runs, so the page keeps it until the next action.
             throw read ? failure : Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
         }
+        return try object(reply)
+    }
+
+    /// A file the app opened from a drop, handed to the runtime as an open descriptor (conversation.md 5.1). Never sent
+    /// twice: a second send after a lost reply could copy the file twice.
+    func importFile(binder: URL, name: String, file: FileHandle, timeout: TimeInterval = 120) async throws -> JSONObject {
+        let text = JSONWriter.compact(.obj([("command", .str("intake_drop")), ("binder", .str(binder.standardizedFileURL.path)), ("name", .str(name))]))
+        let reply: String
+        if let answer { reply = try await answer(text) } else {
+            let c = openConnection()
+            do {
+                reply = try await viaXPC(text, on: c, timeout: timeout) { proxy, done in proxy.importFile(text, file: file, reply: done) }
+            } catch let failure as Failure where failure.kind == .notRunning {
+                drop(c)
+                (onNotRunning ?? RuntimeClient.whenNotRunning)?()
+                throw Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
+            }
+        }
+        return try object(reply)
+    }
+
+    private func object(_ reply: String) throws -> JSONObject {
         for run in answered { run() }
         guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
         guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused") }
@@ -118,7 +140,7 @@ final class RuntimeClient {
         if let answer { return try await answer(text) }
         let c = openConnection()
         do {
-            return try await viaXPC(text, on: c, timeout: timeout)
+            return try await viaXPC(text, on: c, timeout: timeout) { proxy, done in proxy.handle(text, reply: done) }
         } catch let failure as Failure where failure.kind == .notRunning {
             // A failed connection is never used again; the next request makes a new one.
             drop(c)
@@ -149,7 +171,8 @@ final class RuntimeClient {
 
     /// XPC calls its error and reply blocks on its own queue, so they are `@Sendable`: a block isolated to the main
     /// actor, as one written here would be, traps the app the moment the runtime cannot be reached.
-    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval) async throws -> String {
+    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval,
+                        call: (SpravaRuntimeXPC, @escaping @Sendable (String) -> Void) -> Void) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
             let proxy = c.remoteObjectProxyWithErrorHandler { @Sendable error in
@@ -165,7 +188,7 @@ final class RuntimeClient {
                 }
                 return
             }
-            proxy.handle(text) { @Sendable answer in
+            call(proxy) { @Sendable answer in
                 if once.claim() { continuation.resume(returning: answer) }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { @Sendable in

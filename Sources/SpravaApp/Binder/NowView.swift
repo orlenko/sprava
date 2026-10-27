@@ -37,77 +37,80 @@ struct NowView: View {
 
     var body: some View {
         let teka = row.teka
-        List {
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(teka.name).font(.title2.bold())
-                        Spacer()
-                        if !teka.isAdopted, teka.state >= .needsMigration {
-                            Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
-                                .disabled(actions.busy)
+        VStack(spacing: 0) {
+            if teka.isAdopted, !teka.writesBlocked { IntakeDropBar(folder: row.folder) }
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(teka.name).font(.title2.bold())
+                            Spacer()
+                            if !teka.isAdopted, teka.state >= .needsMigration {
+                                Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
+                                    .disabled(actions.busy)
+                            }
+                        }
+                        if let message = actions.message { Text(message).foregroundStyle(.orange) }
+                        Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
+                            .foregroundStyle(.secondary)
+                        if teka.state < .needsMigration {
+                            ForEach(DisplayLine.rows(teka.reasons)) { Text("• \($0.text)").foregroundStyle(.orange) }
+                        }
+                        if !teka.findings.isEmpty {
+                            Text("\(teka.findings.count) rule finding(s); run `sprava check` for the list.")
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    if let message = actions.message { Text(message).foregroundStyle(.orange) }
-                    Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
-                        .foregroundStyle(.secondary)
-                    if teka.state < .needsMigration {
-                        ForEach(DisplayLine.rows(teka.reasons)) { Text("• \($0.text)").foregroundStyle(.orange) }
-                    }
-                    if !teka.findings.isEmpty {
-                        Text("\(teka.findings.count) rule finding(s); run `sprava check` for the list.")
-                            .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+                }
+                if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
+                if let conversation {
+                    ConversationSection(model: conversation, row: row, reload: refresh)
+                } else if teka.isAdopted, !teka.writesBlocked {
+                    NoteBox(note: note, row: row, sharesName: sharesName) {
+                        let folder = row.folder
+                        // The runtime makes the card within its next sweep; the page's timer picks it up if this misses it.
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            await actions.loadReview(folder)
+                        }
                     }
                 }
-                .padding(.vertical, 4)
-            }
-            if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
-            if let conversation {
-                ConversationSection(model: conversation, row: row, reload: refresh)
-            } else if teka.isAdopted, !teka.writesBlocked {
-                NoteBox(note: note, row: row, sharesName: sharesName) {
-                    let folder = row.folder
-                    // The runtime makes the card within its next sweep; the page's timer picks it up if this misses it.
-                    Task {
-                        try? await Task.sleep(for: .seconds(2))
-                        await actions.loadReview(folder)
-                    }
-                }
-            }
-            ReviewSection(actions: actions, folder: row.folder, reload: refresh)
-            StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
-            ForEach(Bucket.allCases, id: \.self) { bucket in
-                if bucket == .recentlyClosed {
-                    if !page.closed.isEmpty {
-                        Section(header: BucketHeader(bucket: bucket, count: page.closed.count)) {
-                            ForEach(page.closed.enumerated().map { ("closed-\($0.offset)", $0.element) }, id: \.0) { _, entry in
-                                HStack {
-                                    Text(entry.closedOn?.description ?? "date unknown")
-                                        .monospacedDigit().foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
-                                    Text(entry.title).strikethrough(entry.action == "done")
-                                    Spacer()
-                                    Text(entry.action).foregroundStyle(.secondary)
+                ReviewSection(actions: actions, folder: row.folder, reload: refresh)
+                StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
+                ForEach(Bucket.allCases, id: \.self) { bucket in
+                    if bucket == .recentlyClosed {
+                        if !page.closed.isEmpty {
+                            Section(header: BucketHeader(bucket: bucket, count: page.closed.count)) {
+                                ForEach(page.closed.enumerated().map { ("closed-\($0.offset)", $0.element) }, id: \.0) { _, entry in
+                                    HStack {
+                                        Text(entry.closedOn?.description ?? "date unknown")
+                                            .monospacedDigit().foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
+                                        Text(entry.title).strikethrough(entry.action == "done")
+                                        Spacer()
+                                        Text(entry.action).foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
-                    }
-                } else if let items = page.items[bucket], !items.isEmpty {
-                    Section(header: BucketHeader(bucket: bucket, count: items.count)) {
-                        // Row ids are unique across sections: List reuses rows by id, and two sections that both
-                        // start at 0 would show one section's row in the other.
-                        ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
-                            ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
-                                    editable: teka.isAdopted, reload: refresh)
+                    } else if let items = page.items[bucket], !items.isEmpty {
+                        Section(header: BucketHeader(bucket: bucket, count: items.count)) {
+                            // Row ids are unique across sections: List reuses rows by id, and two sections that both
+                            // start at 0 would show one section's row in the other.
+                            ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
+                                ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
+                                        editable: teka.isAdopted, reload: refresh)
+                            }
                         }
                     }
                 }
-            }
-            if page.hiddenCount > 0 {
-                Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
-            }
-            HistorySection(actions: actions, folder: row.folder, reload: refresh)
-            if teka.isAdopted {
-                AboutSection(actions: actions, folder: row.folder, today: today, reload: refresh)
+                if page.hiddenCount > 0 {
+                    Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
+                }
+                HistorySection(actions: actions, folder: row.folder, reload: refresh)
+                if teka.isAdopted {
+                    AboutSection(actions: actions, folder: row.folder, today: today, reload: refresh)
+                }
             }
         }
         .task(id: NowTask(folder: row.folder, adopted: teka.isAdopted)) {
