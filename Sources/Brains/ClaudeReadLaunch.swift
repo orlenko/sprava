@@ -7,7 +7,6 @@ import SpravaKit
 /// still authenticates/consents the read connection and verifies its effective account/setup first.
 /// No personal Claude profile is read and no surrounding process environment is inherited.
 package enum ClaudeReadLaunch {
-    package static let supportedVersion = "2.1.304"
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
@@ -16,8 +15,8 @@ package enum ClaudeReadLaunch {
         package var debugDescription: String { description }
     }
 
-    /// Pinned vendor/version checks happen on every preparation. A newer binary needs compatibility
-    /// validation before support is widened; an arbitrary executable is never a model-selected setting.
+    /// Verify the vendor signature on every preparation. Connection setup checks the installed
+    /// CLI's protocol instead of requiring a particular release or executable filename.
     package static func prepare(program: URL, support: URL, connectionID: UUID, sessionID: UUID, credential: String,
                                 policy: String, onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
         let program = program.resolvingSymlinksInPath()
@@ -89,8 +88,12 @@ package enum ClaudeReadLaunch {
         """
     }
 
-    private static func installationHash(_ program: URL) throws -> String {
-        guard program.lastPathComponent == supportedVersion else { throw Refused.unsupportedInstallation }
+    static func installationHash(_ program: URL, validatedSignature: (URL) throws -> Data = signedInstallationHash) throws -> String {
+        let hash = try validatedSignature(program)
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func signedInstallationHash(_ program: URL) throws -> Data {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(program as CFURL, [], &code) == errSecSuccess, let code,
               SecStaticCodeCheckValidity(code, [], nil) == errSecSuccess else { throw Refused.unsupportedInstallation }
@@ -98,7 +101,7 @@ package enum ClaudeReadLaunch {
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
               let values = information as NSDictionary?, values[kSecCodeInfoTeamIdentifier as String] as? String == "Q6L2SF6YDW",
               let hash = values[kSecCodeInfoUnique as String] as? Data, !hash.isEmpty else { throw Refused.unsupportedInstallation }
-        return hash.map { String(format: "%02x", $0) }.joined()
+        return hash
     }
 
     private static func refuseManagedPolicy() throws {

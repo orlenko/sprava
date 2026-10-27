@@ -16,16 +16,17 @@ import Testing
         var hold = false
         var stopped = false
         var running = false
+        var hash = "fixture-hash"
         var reply = #"{"answer":"The invented bylaw permits pets with permission.","citations":["S1"],"task":{"title":"Ask the board","details":"Request written permission."},"draft":null}"#
         func driver(policy: String) -> ClaudeConversationRuntime.Driver {
-            lock.withLock { policies.append(policy) }
+            let hash = lock.withLock { policies.append(policy); return self.hash }
             return .init(run: { [self] line, resume in
                 lock.withLock { lines.append(line); resumes.append(resume); running = true; stopped = false }
                 defer { lock.withLock { running = false } }
                 if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return policy.hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
-            }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: "fixture-hash")
+            }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash)
         }
     }
     struct Fixture {
@@ -99,6 +100,16 @@ import Testing
         _ = try await f.request("chat_stop", [("request_id", .str(id.uuidString)), ("turn_id", try #require(started["turn_id"]))])
         #expect(try await f.completed(id)["phase"] == .str("interrupted"))
         #expect(!f.engine.lock.withLock { f.engine.running })
+    }
+
+    @Test func anUpdatedVerifiedClaudeContinuesTheEnabledConversation() async throws {
+        let f = try Fixture(); try await f.connect()
+        let first = UUID(); _ = try await f.send(first, "Read the invented bylaw.")
+        #expect(try await f.completed(first)["phase"] == .str("replied"))
+        f.engine.lock.withLock { f.engine.hash = "updated-fixture-hash" }
+        let next = UUID(); _ = try await f.send(next, "Continue after the Claude update.")
+        #expect(try await f.completed(next)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, true, false, true])
     }
     @Test func disablingAndClearingDoNotReuseNativeContextOrEraseAnUnrelatedThread() async throws {
         let f = try Fixture(); try await f.connect(); let id = UUID()
