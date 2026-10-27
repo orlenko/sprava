@@ -31,7 +31,7 @@ import Testing
                     ("citations", .array([.obj([("path", .str("documents/bylaw.pdf")), ("page", .int(2))])])),
                     ("task", .obj([("title", .str("Ask the board")), ("details", .str("Request written permission."))])),
                     ("draft", .obj([("to", .str("manager@example.com")), ("subject", .str("Pet permission")), ("body", .str("Please confirm permission.")), ("recipient_in_sources", .bool(true))]))]))
-                fields += [("phase", .str("replied")), ("turn_id", .str(turn.uuidString)), ("binder_id", .str(scope.uuidString)), ("reply", .str(reply))]
+                fields += [("phase", .str("replied")), ("request_id", .str(request.uuidString)), ("turn_id", .str(turn.uuidString)), ("binder_id", .str(scope.uuidString)), ("reply", .str(reply))]
             case "apply":
                 if loseTaskReply { throw RuntimeClient.Failure(message: "Invented timeout", kind: .timedOut) }
                 fields += [("op", .str("invented-op"))]

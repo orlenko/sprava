@@ -46,6 +46,12 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     @Published var cards: [UUID: Card] = [:]
     private var scopes: [URL: String] = [:]
     private var requests: [UUID: UUID] = [:]
+    private struct SavedTurn {
+        let binderID: String
+        let requestID: UUID
+        let turnID: UUID
+    }
+    private var pending: [URL: SavedTurn] = [:]
     private(set) var folder: URL?
     let client: RuntimeClient
     let authenticate: () async throws -> Void
@@ -81,6 +87,10 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             message = nil
         } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; message = "Open Brains to enable Claude, or Health to check the background connection." }
         await chat.show(folder)
+        if self.folder == folder, let turn = pending[folder], turn.binderID == scopes[folder],
+           chat.needsResume(requestID: turn.requestID, in: folder) {
+            chat.resume(observe(turn, in: folder), in: folder)
+        }
     }
     func connect() async {
         guard !busy, let folder else { return }; busy = true; defer { busy = false }
@@ -100,6 +110,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         do {
             _ = try await client.command("chat_clear", binder: folder, timeout: 30)
             cards = cards.filter { $0.value.binder != folder }
+            pending[folder] = nil
             chat.forgetHistory(folder)
             if self.folder == folder { await show(folder) }
         } catch { message = "The saved conversation could not be cleared. Nothing was reported as cleared." }
@@ -110,7 +121,13 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         let accepted = try await client.command("chat_send", binder: folder, [("request_id", .str(request.requestID.uuidString)), ("text", .str(request.text))], timeout: 45)
         guard accepted["binder_id"] == .str(request.binderID), accepted["request_id"] == .str(request.requestID.uuidString),
               let turn = accepted["turn_id"]?.stringValue.flatMap(UUID.init(uuidString:)) else { throw ChatCommandFailure.unavailable }
-        requests[turn] = request.requestID
+        let saved = SavedTurn(binderID: request.binderID, requestID: request.requestID, turnID: turn)
+        pending[folder] = saved
+        return observe(saved, in: folder)
+    }
+
+    private func observe(_ turn: SavedTurn, in folder: URL) -> ChatTurn {
+        requests[turn.turnID] = turn.requestID
         let events = AsyncStream<ChatReplyEvent> { continuation in
             let polling = Task { @MainActor [weak self] in
                 guard let self else { continuation.finish(); return }
@@ -118,14 +135,16 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                 defer { continuation.finish() }
                 while !Task.isCancelled {
                     do {
-                        let value = try await self.client.command("chat_poll", binder: folder, [("request_id", .str(request.requestID.uuidString))])
-                        guard value["turn_id"] == .str(turn.uuidString), value["binder_id"] == .str(request.binderID) else { throw ChatCommandFailure.unavailable }
+                        let value = try await self.client.command("chat_poll", binder: folder, [("request_id", .str(turn.requestID.uuidString))])
+                        guard value["turn_id"] == .str(turn.turnID.uuidString), value["binder_id"] == .str(turn.binderID),
+                              value["request_id"] == .str(turn.requestID.uuidString) else { throw ChatCommandFailure.unavailable }
                         switch value["phase"]?.stringValue {
                         case "replied":
-                            let body = try self.displayReply(value, turn: turn, folder: folder, historical: false)
+                            self.forgetPending(turn, in: folder)
+                            let body = try self.displayReply(value, turn: turn.turnID, folder: folder, historical: false)
                             continuation.yield(.textDelta(body)); continuation.yield(.finished(.replied)); return
-                        case "interrupted": continuation.yield(.finished(.interrupted)); return
-                        case "failed": continuation.yield(.failed(.unavailable)); return
+                        case "interrupted": self.forgetPending(turn, in: folder); continuation.yield(.finished(.interrupted)); return
+                        case "failed": self.forgetPending(turn, in: folder); continuation.yield(.failed(.unavailable)); return
                         case "accepted", "running": break
                         default: throw ChatCommandFailure.unavailable
                         }
@@ -136,7 +155,10 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             }
             continuation.onTermination = { _ in polling.cancel() } // Never Stop on lost subscription.
         }
-        return ChatTurn(binderID: request.binderID, requestID: request.requestID, turnID: turn, events: events)
+        return ChatTurn(binderID: turn.binderID, requestID: turn.requestID, turnID: turn.turnID, events: events)
+    }
+    private func forgetPending(_ turn: SavedTurn, in folder: URL) {
+        if pending[folder]?.turnID == turn.turnID { pending[folder] = nil }
     }
     private func interrupt(binder: String, turn: UUID) async throws {
         guard let folder = scopes.first(where: { $0.value == binder })?.key, let request = requests[turn] else { throw ChatCommandFailure.unavailable }
@@ -149,6 +171,10 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             for row in value["turns"]?.arrayValue ?? [] {
                 guard let request = row["request_id"]?.stringValue.flatMap(UUID.init(uuidString:)), let turn = row["turn_id"]?.stringValue.flatMap(UUID.init(uuidString:)), let text = row["text"]?.stringValue else { continue }
                 entries.append(.init(id: request, speaker: .person, text: text, state: .earlier, requestID: request))
+                if ["accepted", "running"].contains(row["phase"]?.stringValue ?? ""),
+                   let binder = row["binder_id"]?.stringValue, binder == scopes[folder] {
+                    pending[folder] = SavedTurn(binderID: binder, requestID: request, turnID: turn)
+                } else if pending[folder]?.turnID == turn { pending[folder] = nil }
                 if row["phase"] == .str("replied"), let object = row.objectValue {
                     entries.append(.init(id: turn, speaker: .binder, text: try displayReply(object, turn: turn, folder: folder, historical: true), state: .earlier))
                 } else if ["failed", "interrupted"].contains(row["phase"]?.stringValue ?? "") {
