@@ -53,11 +53,11 @@ final class HealthModel: ObservableObject {
     private var runtimeReadStale = false
 
     init(support: URL = SpravaPaths.supportDirectory(), reads: Reads = Reads(), keeper: RuntimeKeeper? = nil,
-         client: RuntimeClient? = nil) {
+         client: RuntimeClient? = nil, refreshRegistration: Bool = false) {
         self.support = support
         self.reads = reads
         self.client = client
-        self.keeper = keeper ?? RuntimeKeeper(system: RuntimeStart.system(support: support))
+        self.keeper = keeper ?? RuntimeKeeper(system: RuntimeStart.system(support: support), refreshRegistration: refreshRegistration)
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.lastWake = Date() }

@@ -60,14 +60,14 @@ final class ShelfModel: ObservableObject, DraftOwner {
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
          summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read,
-         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock, refreshRegistration: Bool = false) {
         self.support = support
         self.readSnapshot = readSnapshot
         self.readTimeout = readTimeout
         self.deadline = deadline
         self.summarize = summarize
         self.client = client
-        let health = HealthModel(support: support, client: client)
+        let health = HealthModel(support: support, client: client, refreshRegistration: refreshRegistration)
         self.health = health
         startRuntime = { await health.keeper.ensureRunning() }
     }

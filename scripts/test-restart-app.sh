@@ -60,8 +60,6 @@ if name == "launchctl":
                 print("\\tpid = 4242")
         else:
             print("program = " + app + "/Contents/MacOS/sprava-runtime")
-    elif os.environ.get("TEST_RESTART_FAIL") == "1":
-        sys.exit(1)
 elif name == "lsof":
     app = os.environ.get("TEST_JOB_APP", os.environ["SPRAVA_INSTALL_DIR"] + "/Sprava.app")
     assert args == ["-a", "-p", "4242", "-d", "txt", "-Fn"], args
@@ -84,6 +82,11 @@ elif name == "mv":
             sys.exit(1)
     import shutil
     shutil.move(*args)
+elif name == "open":
+    if "--refresh-background-registration" in args:
+        assert args[1:] == ["--args", "--refresh-background-registration"], args
+        assert (Path(args[0]) / "version").read_text() == "new\\n"
+    sys.exit(int(os.environ.get("TEST_OPEN_FAIL", "0")))
 ''')
         fake.chmod(0o755)
         for name in ["launchctl", "lsof", "osascript", "pgrep", "open", "sleep", "mv"]:
@@ -111,14 +114,14 @@ elif name == "mv":
         self.assertNotIn("kickstart", events)
         self.assertNotIn("osascript", events)
 
-    def test_update_builds_before_quitting_and_restarts_existing_jobs(self):
+    def test_update_builds_before_quitting_and_hands_registration_to_the_new_app(self):
         self.installed()
         result = self.run_script(TEST_JOBS="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         events = self.log.read_text()
         self.assertLess(events.index("build"), events.index("osascript"))
-        self.assertLess(events.index("kickstart"), events.index("open "))
-        self.assertEqual(events.count("kickstart -k"), 2)
+        self.assertIn(f"open {self.app} --args --refresh-background-registration", events)
+        self.assertNotIn("kickstart", events)
         self.assertEqual((self.app / "version").read_text(), "new\n")
 
     def test_build_failure_leaves_installed_app_running(self):
@@ -154,7 +157,8 @@ elif name == "mv":
         self.installed()
         result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text().count("kickstart -k"), 2)
+        self.assertIn(f"open {self.app} --args --refresh-background-registration", self.log.read_text())
+        self.assertNotIn("kickstart", self.log.read_text())
         self.assertEqual((self.app / "version").read_text(), "new\n")
 
     def test_macos_27_running_job_of_another_copy_is_refused(self):
@@ -169,6 +173,7 @@ elif name == "mv":
         result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27", TEST_JOB_RUNNING="0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("kickstart", self.log.read_text())
+        self.assertNotIn("--refresh-background-registration", self.log.read_text())
         self.assertEqual((self.app / "version").read_text(), "new\n")
 
     def test_failed_install_restores_and_opens_previous_bundle(self):
@@ -178,13 +183,12 @@ elif name == "mv":
         self.assertEqual((self.app / "version").read_text(), "old\n")
         self.assertIn(f"open {self.app}", self.log.read_text())
 
-    def test_failed_runtime_restart_opens_app_and_reports_failure(self):
+    def test_failed_open_is_reported_after_installing_the_complete_bundle(self):
         self.installed()
-        result = self.run_script(TEST_JOBS="1", TEST_RESTART_FAIL="1")
+        result = self.run_script(TEST_JOBS="1", TEST_OPEN_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.app / "version").read_text(), "new\n")
         self.assertIn(f"open {self.app}", self.log.read_text())
-        self.assertIn("Check Health", result.stderr)
 
     def test_install_link_is_refused(self):
         other = self.root / "other.app"
