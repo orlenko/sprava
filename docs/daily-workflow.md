@@ -1,4 +1,44 @@
-# Claude and IMAP daily workflow
+# Daily workflow
+
+Two everyday uses first, with no provider and no subscription: a tax year and a condo board. Binders, to-dos and
+filed documents work on their own; Claude and email intake, further down, are optional. This covers binders made
+in Sprava; bringing in an existing lifeproj binder is not covered here. Sprava sends no email: mail is opened and
+sent in your mail client.
+
+## Before you rely on it
+
+- **Health:** the background part answers. No "Starting Sprava's background part…" or Login Items line remains.
+- **Saving:** a note or a drop is acknowledged ("Added…"). A note that says the background part did not confirm its
+  destination means checking the binder and the Inbox before saving it again.
+- **Backup:** set up on the Backup page. Pick a binder and **Run Restore Drill**; once it reports "Restore drill
+  passed.", "Last restore drill" shows a date rather than "never".
+
+## A tax year
+
+1. **New Binder…**, pick **A tax year**, and set **Tax year** to the year it is for. The name follows the year
+   (`tax-2027`) unless you type your own. **Choose Where…** picks the folder that holds it.
+2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Edit** it to
+   leave lines out or to give a date of your own, then **Approve**. No item carries a filing deadline; any date on
+   it is one you chose, and you can add one later by double-clicking the item and choosing **Add date**.
+3. Add slips and receipts by dropping them on **Drop emails or files here**, at the top of the binder's page. Each
+   becomes a card within a minute. Check its **Folder** (`slips`, `receipts` or `return`) and **How did it reach
+   you?**, change the folder if it is wrong, then **Approve** to file it.
+
+## A condo board
+
+1. **New Binder…**, pick **A condo board**. It has folders for `governing`, `meetings`, `finances`, `maintenance`
+   and `correspondence`, and an undated starter checklist to approve as above.
+2. Keep the records by dropping minutes, statements, quotes and letters on the binder, and choosing the folder on
+   each card before **Approve**.
+3. Track action items. Type one per line in **Tell this binder…** (it comes back as a card for your OK), or use
+   **Add a to-do** on the To-dos page with this binder chosen. On the binder's page, double-click an item (or
+   choose **Edit** from its right-click menu) to set its **Details** and **Priority**; set **Status** to
+   **Waiting** to name who it is **Waiting on** and **Add follow-up date**, then **Save**. **Mark Done**, in the
+   same menu, closes it.
+4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
+   selects its file.
+
+## Optional: Claude and email intake
 
 This pilot uses one isolated Claude conversation per physical binder. Local models are optional; they do
 not route or replace this conversation. Claude reads explicitly shared sources and suggests drafts/tasks;
