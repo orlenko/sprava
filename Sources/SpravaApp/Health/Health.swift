@@ -341,7 +341,10 @@ struct RuntimeBanner: View {
     var openHealth: (() -> Void)? = nil
 
     var body: some View {
-        if health.starting {
+        if health.keeper.launching {
+            // The starting screen, or the Health page, shows the launch's start.
+            EmptyView()
+        } else if health.starting {
             HStack {
                 ProgressView().controlSize(.small)
                 Text("Starting Sprava's background part… Binder creation waits until it can answer.")
