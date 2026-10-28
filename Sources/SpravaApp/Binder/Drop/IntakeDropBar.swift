@@ -43,8 +43,10 @@ struct IntakeDropBar: View {
             .accessibilityLabel("Drop emails or files here to add them to this binder's intake")
             if let report = model.report {
                 HStack(alignment: .firstTextBaseline) {
+                    // No vertical fixedSize: outside the List, it would make the window's minimum height that of
+                    // the report wrapped at no width, thousands of points, and push the page above the window's top.
                     Text(verbatim: report).font(.callout).foregroundStyle(model.problem ? .orange : .secondary)
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        .lineLimit(8).textSelection(.enabled).help(report)
                     Spacer(minLength: 0)
                     Button { model.dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Dismiss")
                 }
