@@ -12,6 +12,11 @@ sent in your mail client.
   destination means checking the binder and the Inbox before saving it again.
 - **Backup:** set up on the Backup page. Pick a binder and **Run Restore Drill**; once it reports "Restore drill
   passed.", "Last restore drill" shows a date rather than "never".
+- **Backup key, in this development build:** the key is kept in the Mac's login Keychain, not synchronized, and iCloud
+  Keychain is unavailable, so keep your own copy of the key. After each update of the app, backups stop until you
+  type the key once in the Backup page's **Backup key** section and choose **Use This Key**. The key must open your
+  existing backup; a wrong one changes nothing. If macOS asks to let Sprava use the key, choose **Always Allow** so
+  backups run unattended. See `docs/backup.md` §4.
 
 ## A tax year
 
@@ -37,6 +42,10 @@ sent in your mail client.
    same menu, closes it.
 4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
    selects its file.
+   If it was filed in the wrong folder or under the wrong name, choose **Move / rename…**, type its **New path inside
+   this binder** (such as `finances/annual-budget.pdf`) and choose **Move**: the file and its catalog record move
+   together. **Undo** under **Recent changes** moves it back, for seven days and while it is still where the move
+   put it.
 
 ## Optional: Claude and email intake
 
