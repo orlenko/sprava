@@ -60,11 +60,15 @@ public struct CaptureInbox: Sendable {
 
     /// Records that the app wrote this event, so its binder hint can be trusted. Throws when the line is not on
     /// disk, so the app knows the binder the person chose would be lost (architecture 8).
-    public func recordNotice(event: String, digest: String, now: Date = Date()) throws {
+    public func recordNotice(event: String, digest: String, binder: URL? = nil, now: Date = Date()) throws {
         guard CaptureEvent.isUUIDText(event), digest.hasPrefix("sha256:") else { throw Commands.Failure(message: "bad notice") }
+        guard binder == nil || (binder!.isFileURL && binder!.path.hasPrefix("/") && !binder!.path.contains("\0")) else {
+            throw Commands.Failure(message: "bad binder destination")
+        }
         try AtomicFile.makePrivateFolder(dir)
-        try Self.appendDurably(JSONWriter.compact(.obj([("at", .string(ISOTime.string(now))), ("event", .string(event)),
-                                                        ("sha256", .string(digest))])), to: noticesURL)
+        var fields: [(String, JSONValue)] = [("at", .string(ISOTime.string(now))), ("event", .string(event)), ("sha256", .string(digest))]
+        if let binder { fields.append(("binder", .string(binder.resolvingSymlinksInPath().path))) }
+        try Self.appendDurably(JSONWriter.compact(.obj(fields)), to: noticesURL)
     }
 
     /// Appends one whole line and flushes it, or throws.
@@ -87,13 +91,18 @@ public struct CaptureInbox: Sendable {
 
     /// The app's notices by event id. A journal that is there but cannot be read throws: read as empty, every note of
     /// the app's would be taken in unverified and the binder the person chose lost for good.
-    func notices() throws -> [String: String] {
+    struct AppNotice { let digest: String; let binder: URL? }
+    func notices() throws -> [String: AppNotice] {
         guard FileManager.default.fileExists(atPath: noticesURL.path) else { return [:] }
         guard let text = try? String(contentsOf: noticesURL, encoding: .utf8) else { throw StateFile.Unreadable(path: noticesURL.path) }
-        var out: [String: String] = [:]
+        var out: [String: AppNotice] = [:]
         for line in text.split(separator: "\n") {
             guard let v = try? JSONParser.parse(String(line)).value, let e = v["event"]?.stringValue, let d = v["sha256"]?.stringValue else { continue }
-            out[e] = d
+            let path = v["binder"]?.stringValue
+            guard v["binder"] == nil || (path?.hasPrefix("/") == true && path?.contains("\0") == false) else {
+                throw StateFile.Unreadable(path: noticesURL.path)
+            }
+            out[e] = AppNotice(digest: d, binder: path.map { URL(fileURLWithPath: $0) })
         }
         return out
     }

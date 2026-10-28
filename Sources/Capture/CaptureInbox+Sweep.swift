@@ -17,7 +17,7 @@ extension CaptureInbox {
         // capture again and save over what is there (capture-event-v0 §5.3).
         var state: State
         let producers: [String: String]
-        let notices: [String: String]
+        let notices: [String: AppNotice]
         do {
             state = try readState()
             producers = try readProducers()
@@ -148,7 +148,7 @@ extension CaptureInbox {
     /// reads it again. Change it whenever `CaptureEvent.check` learns a new `format_version`.
     static let deferredOutcome = "deferred:0"
 
-    func ingest(_ event: CaptureEvent, device: String, producer: String?, notice: String?, size: Int, state: inout State,
+    func ingest(_ event: CaptureEvent, device: String, producer: String?, notice: AppNotice?, size: Int, state: inout State,
                 result: inout SweepResult, binders: [ShelfRow], commands: Commands, now: Date) {
         let id = event.id
         let textHash = CaptureInbox.digest(Data(event.text.utf8))
@@ -346,8 +346,10 @@ extension CaptureInbox {
         // unverified; a hint is honoured only from a verified note of Sprava's own. Every card made from the event
         // says when its source is unverified.
         let own = producer == "sprava"
-        let verified = own ? notice == event.digest : producer != nil
+        let verified = own ? notice?.digest == event.digest : producer != nil
         let hint = own && verified ? event.binderHint : nil
+        let picked = own && verified ? notice?.binder : nil
+        if let picked { state.pickedBinders = (state.pickedBinders ?? [:]).merging([id: picked.path]) { $1 } }
         // A later event of the chain: the same text changes only sensitivity; other text replaces what still waits.
         // A restore after a deletion is new content to review, since what was filed may be dropped by now (§3.2).
         var replaces: String?
@@ -406,7 +408,7 @@ extension CaptureInbox {
         do {
             // A card made before a crash, whose id never reached the cursor, is kept, never made twice (§5.3).
             made = try orphanCard(id, binders: binders, commands: commands, now: now)
-                ?? card(for: filedAs, hint: hint, verified: verified, producer: producer ?? event.app,
+                ?? card(for: filedAs, hint: hint, picked: picked, verified: verified, producer: producer ?? event.app,
                         replaces: replaces, binders: binders, commands: commands, now: now)
         } catch {
             // The stage stays "ingested", so the next sweep makes the card.

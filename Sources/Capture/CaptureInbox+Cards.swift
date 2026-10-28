@@ -7,9 +7,9 @@ import SpravaKit
 // The code-built Tier 0 card (architecture 5.2), and the words a card left unfiled.
 extension CaptureInbox {
     /// The Tier 0 card: one item per non-empty line of the capture (at most 10), undated (`no_deadline`), filed into
-    /// the binder the person named when it is adopted, owned by this Mac and not at disclosure `none`, otherwise
-    /// kept unfiled with the binder "not sure". Returns the card's id and, when filed, the binder folder.
-    func card(for event: CaptureEvent, hint: String?, verified: Bool, producer: String, replaces: String?,
+    /// the physical binder explicitly selected in the app, or a non-private binder resolved from a verified
+    /// hint. Both must be adopted and owned here. Otherwise keep it unfiled. Returns its id and destination.
+    func card(for event: CaptureEvent, hint: String?, picked: URL? = nil, verified: Bool, producer: String, replaces: String?,
               binders: [ShelfRow], commands: Commands, now: Date) throws -> (String, URL?) {
         let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)),
                                 (key: "model", value: .str("none"))])
@@ -50,9 +50,12 @@ extension CaptureInbox {
 
         // A binder whose writes are blocked until a repair (an op log that cannot be read counts as adopted) gets no
         // new card; the note waits in the Inbox, as the clerk's cards do.
-        if let hint, let row = binders.first(where: { $0.teka.isAdopted && !$0.teka.writesBlocked && $0.teka.name == hint }),
-           Owner.device(of: row.folder) == commands.deviceID,
-           PrivacyRatchet.disclosure(row) != "none" {
+        let destination = binders.first { row in
+            guard row.teka.isAdopted, !row.teka.writesBlocked, Owner.device(of: row.folder) == commands.deviceID else { return false }
+            if let picked { return row.folder.resolvingSymlinksInPath() == picked.resolvingSymlinksInPath() }
+            return hint != nil && row.teka.name == hint && PrivacyRatchet.disclosure(row) != "none"
+        }
+        if let row = destination {
             do {
                 try BinderWrite.save(proposal, in: row.folder, deviceID: commands.deviceID)
                 do {
