@@ -9,12 +9,13 @@ import SwiftUI
 @main
 struct SpravaApp: App {
     @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
-    @StateObject private var model = ShelfModel()
+    @StateObject private var model: ShelfModel
 
     init() {
         // Hidden: `SpravaApp --snapshot out.png` renders the window offscreen and exits, for layout checks
         // against invented binders (point SPRAVA_SUPPORT_DIR and CMIRROR_CONFIG at a test folder).
         let args = CommandLine.arguments
+        _model = StateObject(wrappedValue: ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument)))
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             Snapshot.render(to: URL(fileURLWithPath: args[i + 1]))
             exit(0)

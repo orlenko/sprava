@@ -75,17 +75,12 @@ if ! mv "$stage/Sprava.app" "$app"; then
     exit 1
 fi
 
-# Only jobs already loaded before the update are restarted. Registration and
-# Login Items approval stay intact; the app starts a job that is not running.
-restart_failed=0
-for label in $jobs; do
-    if ! launchctl kickstart -k "$domain/$label"; then
-        restart_failed=1
-    fi
-done
-open "$app"
-if [ "$restart_failed" -ne 0 ]; then
-    echo "restart-app: installed and opened Sprava, but a background job could not restart. Check Health." >&2
-    exit 1
+# The replacement app renews its SMAppService records before starting background
+# work. A kickstart here would use the previous ad-hoc bundle's launch constraints.
+# Only the already loaded jobs verified above request this update handoff.
+if [ -n "$jobs" ]; then
+    open "$app" --args --refresh-background-registration
+else
+    open "$app"
 fi
-echo "Installed and opened $app. On first launch, use Health → Set Up Background Work."
+echo "Installed and opened $app. Check Health for background-work status."

@@ -36,6 +36,9 @@ Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `
 11. **Start at launch.** Quit the app, stop the runtime's job by hand as in step 10, then open the app: without
     a prompt, Health goes from "Starting background work…" to "Runtime running" within a minute. Health has no
     Turn Off.
+12. **Update a running copy.** With background work approved, run `./scripts/restart-app.sh`. The replacement
+    app renews its background registration before starting the new runtime. Check Health for a working
+    connection and verify that the update did not produce a runtime launch-constraint crash.
 
 ## Increment 5: the capture inbox and the intake cards
 
