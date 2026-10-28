@@ -326,7 +326,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
         let model = ShelfModel(support: support, client: runtime.client)
         var asked: [URL?] = []
-        model.askForBinder = { folder, _ in asked.append(folder); return ("blank", "garden-shed") }
+        model.askForBinder = { folder, _ in asked.append(folder); return ("blank", "garden-shed", "") }
         await model.add([empty])
         #expect(asked == [empty])
         let sent = try #require(runtime.sent.first)
@@ -348,7 +348,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
         let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
         let parent = try temporaryFolder()
-        model.askForBinder = { _, _ in ("blank", typed) }
+        model.askForBinder = { _, _ in ("blank", typed, "") }
         model.chooseParent = { parent }
         await model.startNewBinder()
         #expect(runtime.sent.first?["name"]?.stringValue == sent)
@@ -364,7 +364,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         let shed = base.appendingPathComponent("Garden Shed")
         let other = base.appendingPathComponent("\u{65E5}\u{672C}")
         for folder in [shed, other] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        model.askForBinder = { _, _ in ("tax-year", "!!") }
+        model.askForBinder = { _, current in ("tax-year", "!!", String(current)) }
         await model.add([shed])
         await model.add([other])
         let year = Calendar.current.component(.year, from: Date())
