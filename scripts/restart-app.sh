@@ -11,6 +11,18 @@ if [ -L "$app" ] || { [ -e "$app" ] && [ ! -d "$app" ]; }; then
     exit 1
 fi
 
+# This checkout's own build, the one copy besides the installed app whose background work may be handed over: a
+# person who ran build/Sprava.app moves to the installed app. Only a genuine bundle qualifies: a real folder (no link
+# at build/ or the app), whose signature verifies, with Sprava's bundle identifier and a regular runtime executable.
+build_app="$repo/build/Sprava.app"
+genuine_build() {
+    [ -d "$repo/build" ] && [ ! -L "$repo/build" ] && [ -d "$build_app" ] && [ ! -L "$build_app" ] || return 1
+    [ -f "$build_app/Contents/MacOS/sprava-runtime" ] && [ ! -L "$build_app/Contents/MacOS/sprava-runtime" ] || return 1
+    [ -f "$build_app/Contents/Info.plist" ] && [ ! -L "$build_app/Contents/Info.plist" ] || return 1
+    [ "$(plutil -extract CFBundleIdentifier raw -o - "$build_app/Contents/Info.plist" 2>/dev/null)" = ca.orlenko.sprava ] || return 1
+    codesign --verify --deep --strict "$build_app" >/dev/null 2>&1
+}
+
 domain="gui/$(id -u)"
 jobs=""
 for label in ca.orlenko.sprava.runtime ca.orlenko.sprava.watch; do
@@ -28,8 +40,14 @@ for label in ca.orlenko.sprava.runtime ca.orlenko.sprava.watch; do
             program=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
         fi
         if [ "$program" != "$app/Contents/MacOS/sprava-runtime" ]; then
-            echo "restart-app: background work belongs to another Sprava copy. Turn it off in that copy's Health screen, then run this script again." >&2
-            exit 1
+            if [ "$program" != "$build_app/Contents/MacOS/sprava-runtime" ]; then
+                echo "restart-app: background work belongs to another Sprava copy ($program). Remove that copy's background item in System Settings › General › Login Items, then run this script again." >&2
+                exit 1
+            fi
+            if ! genuine_build; then
+                echo "restart-app: background work runs from $build_app, which is not a genuine Sprava build (a link, a changed signature or another bundle identifier); it was left as it is." >&2
+                exit 1
+            fi
         fi
         jobs="$jobs $label"
     fi
