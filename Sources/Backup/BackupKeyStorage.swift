@@ -2,11 +2,11 @@ import Foundation
 import Security
 import SpravaKit
 
-/// The backup key (docs/backup.md §4). The runtime keeps a this-device-only copy in the Keychain so backups run
-/// unattended; the person keeps their own copy, or asks Sprava to keep one in iCloud Keychain.
-/// `SPRAVA_BACKUP_KEY_FILE` replaces the Keychain in tests and development runs.
-/// Host executables (the app and the runtime) need the `keychain-access-groups` entitlement
-/// `$(TeamIdentifierPrefix)ca.orlenko.sprava`; ad-hoc development runs have no team and use the file override.
+/// The backup key (docs/backup.md §4). The runtime keeps a local copy in the Keychain so backups run unattended; the
+/// person keeps their own copy, or asks Sprava to keep one in iCloud Keychain. A provisioned runtime, with the
+/// `keychain-access-groups` entitlement `$(TeamIdentifierPrefix)ca.orlenko.sprava`, keeps it in the data-protection
+/// Keychain, this device only; an ad-hoc one keeps it in the login Keychain and cannot use iCloud Keychain
+/// (`BackupKeyItems.swift`). `SPRAVA_BACKUP_KEY_FILE` replaces the Keychain in tests and development runs.
 extension BackupKey {
     static let service = "ca.orlenko.sprava.backup"
     /// The access group both hosts share. It must match the signed entitlement exactly, team prefix included, so it
@@ -40,7 +40,10 @@ extension BackupKey {
 
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
+        /// The Keychain's status, when the Keychain refused.
+        var status: OSStatus? = nil
         public var description: String { message }
+        init(message: String, status: OSStatus? = nil) { self.message = message; self.status = status }
     }
 
     static func fileOverride(environment: [String: String]) throws -> URL? {
@@ -59,15 +62,6 @@ extension BackupKey {
                                     kSecUseDataProtectionKeychain as String: true]
         if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
         return query
-    }
-
-    static func readSystem(_ acct: String, synchronizable: Bool) -> (OSStatus, String?) {
-        var query = query(account: acct, synchronizable: synchronizable)
-        query[kSecReturnData as String] = true
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &out)
-        guard status == errSecSuccess, let data = out as? Data else { return (status, nil) }
-        return (status, String(decoding: data, as: UTF8.self))
     }
 
     public static func load() -> String? {
@@ -121,7 +115,7 @@ extension BackupKey {
 
     /// A key shown to the person and not yet typed back. Kept on this device only, until confirmed.
     public static func storePending(_ key: String) throws {
-        try storePending(key, environment: ProcessInfo.processInfo.environment, keychain: .system)
+        try storePending(key, environment: ProcessInfo.processInfo.environment, keychain: .system(interactive: true))
     }
 
     static func storePending(_ key: String, environment: [String: String], keychain: Keychain) throws {
@@ -148,7 +142,7 @@ extension BackupKey {
     }
 
     public static func clearPending() throws {
-        try clearPending(environment: ProcessInfo.processInfo.environment, keychain: .system)
+        try clearPending(environment: ProcessInfo.processInfo.environment, keychain: .system(interactive: true))
     }
 
     static func clearPending(environment: [String: String], keychain: Keychain) throws {
@@ -178,41 +172,51 @@ extension BackupKey {
             self.delete = delete
             self.read = read
         }
-        static var system: Keychain {
-            var keychain = Keychain(put: { try BackupKey.put($0, account: $1, synchronizable: $2) }, delete: { acct, synchronizable in
-                SecItemDelete(query(account: acct, synchronizable: synchronizable) as CFDictionary)
-            }, read: { acct, synchronizable in
-                readSystem(acct, synchronizable: synchronizable)
-            })
-            // The Keychain namespace is per user, regardless of a development support-folder override. Every
-            // production caller must therefore lock the same canonical path; mocked Keychains retain test injection.
-            keychain.lockURL = SpravaPaths.supportDirectory(environment: [:]).appendingPathComponent("backup/keychain.lock")
-            keychain.accounts = synchronizedAccounts
-            return keychain
-        }
+        /// The runtime's Keychain for unattended reads (`system(calls:interactive:)`).
+        static var system: Keychain { system() }
+    }
+
+    /// What a store did with iCloud Keychain.
+    public struct Stored: Sendable, Equatable {
+        /// False when iCloud Keychain was out of reach, so an earlier copy there could be neither found nor removed;
+        /// the caller keeps saying so (`Backup.recordICloudKeychainChecked`). Never a claim that the cloud is empty.
+        public let cloudChecked: Bool
     }
 
     /// Stores the key on this device, and in iCloud Keychain when the person chose that.
-    public static func store(_ key: String, inICloudKeychain: Bool) throws {
-        try store(key, inICloudKeychain: inICloudKeychain, environment: ProcessInfo.processInfo.environment, keychain: .system)
+    @discardableResult
+    public static func store(_ key: String, inICloudKeychain: Bool) throws -> Stored {
+        try store(key, inICloudKeychain: inICloudKeychain, environment: ProcessInfo.processInfo.environment,
+                  keychain: .system(interactive: true))
     }
 
-    static func store(_ key: String, inICloudKeychain: Bool, environment: [String: String], keychain: Keychain) throws {
+    @discardableResult
+    static func store(_ key: String, inICloudKeychain: Bool, environment: [String: String], keychain: Keychain) throws -> Stored {
         if let file = try fileOverride(environment: environment) {
             try AtomicFile.makePrivateFolder(file.deletingLastPathComponent())
             try AtomicFile.write(Data(key.utf8), to: file)
-            return
+            // A development key file has no iCloud Keychain beside it to check.
+            return Stored(cloudChecked: true)
         }
-        try store(key, inICloudKeychain: inICloudKeychain, keychain: keychain)
+        return try store(key, inICloudKeychain: inICloudKeychain, keychain: keychain)
     }
 
     /// Choosing not to keep the key in iCloud Keychain takes an earlier copy out of it, or says it could not:
     /// a copy left there would stay as reachable as the person chose it not to be, and `load()` would still use it.
-    static func store(_ key: String, inICloudKeychain: Bool, keychain: Keychain) throws {
+    @discardableResult
+    static func store(_ key: String, inICloudKeychain: Bool, keychain: Keychain) throws -> Stored {
         try keychain.withLock { try storeUnlocked(key, inICloudKeychain: inICloudKeychain, keychain: keychain) }
     }
 
-    private static func storeUnlocked(_ key: String, inICloudKeychain: Bool, keychain: Keychain) throws {
+    private static func storeUnlocked(_ key: String, inICloudKeychain: Bool, keychain: Keychain) throws -> Stored {
+        // A runtime without the entitlement cannot reach iCloud Keychain at all (`BackupKeyItems.swift`). Opting in
+        // there is refused before anything changes. Opting out keeps the key on this Mac and reports the cloud as not
+        // checked: an earlier copy there can be neither found nor removed from here.
+        let cloudReachable = keychain.read(syncedAccount, true).0 != errSecMissingEntitlement
+        if !cloudReachable, inICloudKeychain {
+            throw Failure(message: "iCloud Keychain is unavailable in this development build; the backup key can be kept on this Mac only. Nothing was changed.",
+                          status: errSecMissingEntitlement)
+        }
         func read(_ acct: String, _ synchronized: Bool) throws -> String? {
             let (status, value) = keychain.read(acct, synchronized)
             guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -246,8 +250,10 @@ extension BackupKey {
             try restore(previous)
         }
 
-        let previous = StoredKeys(local: try read(account, false), synchronized: try read(syncedAccount, true),
-                                  recovery: try recoveryRecords(keychain))
+        // Out of reach, the cloud's part of the journal stays unknown (nil), never read as empty: the journal only ever
+        // restores this Mac's item.
+        let previous = StoredKeys(local: try read(account, false), synchronized: cloudReachable ? try read(syncedAccount, true) : nil,
+                                  recovery: cloudReachable ? try recoveryRecords(keychain) : nil)
         func journal(_ keys: StoredKeys) throws -> String {
             let data = try JSONEncoder().encode(keys)
             guard let text = String(data: data, encoding: .utf8) else {
@@ -282,7 +288,7 @@ extension BackupKey {
             // both persisted local records still name the usable key and the next call can safely retry.
             try keychain.put(try journal(committed), rollbackAccount, false)
             localCommitted = true
-            if !inICloudKeychain {
+            if !inICloudKeychain, cloudReachable {
                 // Keep every cloud copy on this Mac before it leaves iCloud: an older key may be the only one
                 // that opens an earlier repository.
                 try keepLocally([try read(syncedAccount, true)] + (previous.recovery ?? [:]).values.sorted(), in: keychain)
@@ -308,6 +314,7 @@ extension BackupKey {
                 }
             }
             try remove(rollbackAccount, false)
+            return Stored(cloudChecked: cloudReachable)
         } catch {
             if localCommitted { throw error }
             do {
@@ -341,6 +348,6 @@ extension BackupKey {
             // Two writers can add the same immutable recovery item through different Macs' local locks.
             if status == errSecDuplicateItem { status = items.update(base as CFDictionary, values as CFDictionary) }
         }
-        guard status == errSecSuccess else { throw Failure(message: "the Keychain refused the backup key (\(status))") }
+        guard status == errSecSuccess else { throw Failure(message: "the Keychain refused the backup key (\(status))", status: status) }
     }
 }

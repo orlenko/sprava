@@ -40,6 +40,10 @@ extension Commands {
             (key: "configured", value: .bool(st.configured)), (key: "second", value: .bool(st.secondConfigured)),
             (key: "primary", value: Self.optional(s.primary)), (key: "second_path", value: Self.optional(s.second)),
             (key: "pending_key", value: .bool(BackupKey.loadPending() != nil)), (key: "upload", value: upload),
+            // An unattended read that found no key: after an update of an ad-hoc build, or with the Keychain locked.
+            (key: "key_unavailable", value: .bool(st.configured && backup.key == nil)),
+            (key: "icloud_keychain", value: .bool(s.iCloudKeychain)),
+            (key: "icloud_keychain_unchecked", value: .bool(s.iCloudKeychainUnchecked == true)),
             (key: "upload_checked_at", value: uploadCheckedAt),
             (key: "last_check", value: Self.optional(st.lastCheck)), (key: "last_second_check", value: Self.optional(st.lastSecondCheck)),
             (key: "last_drill", value: Self.optional(st.lastDrill)), (key: "state_error", value: Self.optional(st.stateError)),
@@ -77,14 +81,18 @@ extension Commands {
             key = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let icloud = r["icloud_keychain"] == .bool(true)
-        // One change of the backup's state at a time with the backup job (`BackupStateLock`).
+        let backup = Backup(support: support, key: key)
+        // One change of the backup's state at a time with the backup job (`BackupStateLock`). The repository opens with
+        // this key before anything is saved, so a wrong key changes nothing; this is also how a key re-entered after an
+        // update is checked. iCloud Keychain counts as unchecked until a store reaches it.
         try BackupStateLock.of(support).command {
-            try BackupUploadGate.bounded(Backup(support: support, key: key))
-                .setUp(primary: URL(fileURLWithPath: primaryPath, isDirectory: true), iCloudKeychain: icloud)
+            try BackupUploadGate.bounded(backup).setUp(primary: URL(fileURLWithPath: primaryPath, isDirectory: true), iCloudKeychain: icloud)
+            try backup.recordICloudKeychainChecked(false)
         }
-        try BackupKey.store(key, inICloudKeychain: icloud)
+        let stored = try BackupKey.store(key, inICloudKeychain: icloud)
+        if stored.cloudChecked { try BackupStateLock.of(support).command { try backup.recordICloudKeychainChecked(true) } }
         try BackupKey.clearPending()
-        return JSONObject()
+        return JSONObject([(key: "icloud_keychain_unchecked", value: .bool(!stored.cloudChecked))])
     }
 
     func backupSecond(_ r: JSONObject) throws -> JSONObject {
