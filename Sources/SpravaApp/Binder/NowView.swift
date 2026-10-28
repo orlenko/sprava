@@ -36,6 +36,20 @@ struct NowView: View {
         Task { await actions.load(row.folder, adopted: row.teka.isAdopted) }
     }
 
+    var inputs: BinderInputs {
+        let local: NoteBox? = row.teka.isAdopted && !row.teka.writesBlocked
+            ? NoteBox(note: note, row: row, sharesName: sharesName) {
+                let folder = row.folder
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    await actions.loadReview(folder)
+                }
+            } : nil
+        return BinderInputs(note: local, conversation: conversation.map {
+            ConversationSection(model: $0, row: row, reload: refresh)
+        })
+    }
+
     var body: some View {
         let teka = row.teka
         VStack(spacing: 0) {
@@ -65,18 +79,7 @@ struct NowView: View {
                     .padding(.vertical, 4)
                 }
                 if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
-                if let conversation {
-                    ConversationSection(model: conversation, row: row, reload: refresh)
-                } else if teka.isAdopted, !teka.writesBlocked {
-                    NoteBox(note: note, row: row, sharesName: sharesName) {
-                        let folder = row.folder
-                        // The runtime makes the card within its next sweep; the page's timer picks it up if this misses it.
-                        Task {
-                            try? await Task.sleep(for: .seconds(2))
-                            await actions.loadReview(folder)
-                        }
-                    }
-                }
+                inputs
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
                 FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
