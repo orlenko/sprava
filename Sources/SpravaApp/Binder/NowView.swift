@@ -77,6 +77,7 @@ struct NowView: View {
                     }
                 }
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
+                FiledDocumentsSection(row: row)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
                 ForEach(Bucket.allCases, id: \.self) { bucket in
                     if bucket == .recentlyClosed {
