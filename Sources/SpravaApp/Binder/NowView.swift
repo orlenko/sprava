@@ -23,6 +23,7 @@ struct NowView: View {
     @ObservedObject var editor: ItemEditor
     var conversation: ClaudeBinderConversation? = nil
     @ObservedObject var actions = BinderActions()
+    @ObservedObject var documents = FiledDocuments()
 
     var sharesName: Bool {
         rows.filter { $0.teka.isAdopted && InboxView.fold($0.name) == InboxView.fold(row.name) }.count > 1
@@ -77,7 +78,7 @@ struct NowView: View {
                     }
                 }
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
-                FiledDocumentsSection(row: row)
+                FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
                 ForEach(Bucket.allCases, id: \.self) { bucket in
                     if bucket == .recentlyClosed {
