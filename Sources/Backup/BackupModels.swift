@@ -7,6 +7,9 @@ extension Backup {
         public var primary: String?
         public var second: String?
         public var iCloudKeychain = false
+        /// True while the last save of the key could not reach iCloud Keychain, so a copy an earlier build kept there
+        /// may remain (`BackupKey.Stored`). Kept here so the warning outlives a lost reply or a relaunch.
+        public var iCloudKeychainUnchecked: Bool?
         public var resticSHA256: String?
         public var keepLast = 30
         public var keepWithinDays = 90
@@ -256,6 +259,7 @@ extension Backup.Settings {
         primary = try c.decodeIfPresent(String.self, forKey: .primary)
         second = try c.decodeIfPresent(String.self, forKey: .second)
         iCloudKeychain = try c.decodeIfPresent(Bool.self, forKey: .iCloudKeychain) ?? false
+        iCloudKeychainUnchecked = try c.decodeIfPresent(Bool.self, forKey: .iCloudKeychainUnchecked)
         resticSHA256 = try c.decodeIfPresent(String.self, forKey: .resticSHA256)
         keepLast = try c.decodeIfPresent(Int.self, forKey: .keepLast) ?? 30
         keepWithinDays = try c.decodeIfPresent(Int.self, forKey: .keepWithinDays) ?? 90

@@ -71,6 +71,14 @@ extension Backup {
         try saveTogether(st, s, previous: previous)
     }
 
+    /// Records whether the key's last save reached iCloud Keychain. Marked unchecked before the key is stored and
+    /// cleared only by a store that did reach it, so a crash in between leaves the warning standing.
+    public func recordICloudKeychainChecked(_ checked: Bool) throws {
+        var s = try settings()
+        s.iCloudKeychainUnchecked = checked ? nil : true
+        try save(s)
+    }
+
     /// The second backup offloading requires: another cloud service's folder or an external disk. It must not
     /// share a fate with the mirror (§5): not the mirror's folder, not in or around it, and not in iCloud Drive.
     public func setSecond(_ folder: URL) throws {

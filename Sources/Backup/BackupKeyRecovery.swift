@@ -46,15 +46,14 @@ extension BackupKey {
     }
 
     /// Password data must be fetched individually: SecItemCopyMatching forbids ReturnData with MatchLimitAll.
-    static func synchronizedAccounts() -> (OSStatus, [String]) {
+    static func synchronizedAccounts(calls: Calls) -> (OSStatus, [String]) {
         var q = query(account: syncedAccount, synchronizable: true)
         q[kSecAttrAccount as String] = nil
         q[kSecReturnAttributes as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitAll
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        let (status, result) = calls.list(q)
         guard status == errSecSuccess else { return (status, []) }
-        guard let records = result as? [[String: Any]] else { return (errSecDecode, []) }
+        guard let records = result else { return (errSecDecode, []) }
         var names: [String] = []
         for record in records {
             guard let name = record[kSecAttrAccount as String] as? String else { return (errSecDecode, []) }
