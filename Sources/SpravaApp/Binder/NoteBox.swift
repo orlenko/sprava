@@ -11,7 +11,7 @@ import SwiftUI
 /// model while the person moves between binders, so each binder keeps its own draft, and a note is always sent
 /// with the binder it was typed in.
 @MainActor
-final class BinderNote: ObservableObject {
+final class BinderNote: ObservableObject, DraftOwner {
     /// Why a note typed here would not be filed here by the runtime, read off the main actor.
     enum Route: Equatable, Sendable {
         case here
@@ -29,6 +29,9 @@ final class BinderNote: ObservableObject {
     private(set) var folder: URL?
     private(set) var startedTyping: Date?
     private var drafts: [URL: (text: String, started: Date?)] = [:]
+    var draftState: DraftState {
+        DraftState(hasChanges: !text.isEmpty || drafts.values.contains { !$0.text.isEmpty }, saving: !saving.isEmpty)
+    }
     let client: RuntimeClient
     let support: URL
     private let disk: ShelfDiskWorker

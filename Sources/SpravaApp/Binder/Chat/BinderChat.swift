@@ -101,6 +101,11 @@ final class BinderChat: ObservableObject {
     var entries: [Entry] { shown.entries }
     var message: String? { shown.message }
     var historyNote: String? { shown.historyNote }
+    var draftState: DraftState {
+        DraftState(hasChanges: threads.values.contains { thread in
+            !thread.draft.isEmpty || thread.entries.contains { $0.speaker == .person && $0.isNotSent }
+        }, saving: threads.values.contains { $0.entries.contains { $0.state == .sending } })
+    }
     var isReplying: Bool { shown.turn != nil }
     var isStopping: Bool { shown.stopping }
     var isAvailable: Bool { commands != nil && folder.flatMap(binderID) != nil && folder.map(binderReady) == true }

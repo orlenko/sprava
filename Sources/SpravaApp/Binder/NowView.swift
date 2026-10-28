@@ -22,7 +22,7 @@ struct NowView: View {
     /// leaves what was typed for the person's return.
     @ObservedObject var editor: ItemEditor
     var conversation: ClaudeBinderConversation? = nil
-    @StateObject private var actions = BinderActions()
+    @ObservedObject var actions = BinderActions()
 
     var sharesName: Bool {
         rows.filter { $0.teka.isAdopted && InboxView.fold($0.name) == InboxView.fold(row.name) }.count > 1

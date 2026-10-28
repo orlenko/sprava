@@ -9,7 +9,13 @@ import SpravaKit
 /// The real app adapter. Accepted turns outlive polling subscriptions; only Stop requests an interrupt.
 /// Cards are editable display suggestions. Saving a task is an explicit ordinary app writer action.
 @MainActor
-final class ClaudeBinderConversation: ObservableObject {
+final class ClaudeBinderConversation: ObservableObject, DraftOwner {
+    struct TaskDraft: Equatable {
+        let title: String?
+        let details: String
+        let due: String
+        let priority: String
+    }
     struct Card: Identifiable {
         let id: UUID
         var binder: URL
@@ -28,6 +34,8 @@ final class ClaudeBinderConversation: ObservableObject {
         var uncertain = false
         var message: String?
         var citations: [JSONValue] = []
+        var originalTask: TaskDraft?
+        var taskDraft: TaskDraft { TaskDraft(title: taskTitle, details: taskDetails, due: due, priority: priority) }
     }
     @Published var askToClear = false
     @Published private(set) var connected = false
@@ -42,6 +50,10 @@ final class ClaudeBinderConversation: ObservableObject {
     let client: RuntimeClient
     let authenticate: () async throws -> Void
     var changed: () -> Void = {}
+    var draftState: DraftState {
+        chat.draftState.merging(DraftState(hasChanges: cards.values.contains { !$0.saved && $0.originalTask != nil && $0.taskDraft != $0.originalTask },
+                                           saving: cards.values.contains { $0.saving }))
+    }
     private lazy var adapter = ChatCommands(send: { [weak self] request in
         guard let self else { throw ChatCommandFailure.unavailable }
         return try await self.send(request)
@@ -158,6 +170,8 @@ final class ClaudeBinderConversation: ObservableObject {
             cards[turn]?.citations = data["citations"]?.arrayValue ?? []
             cards[turn]?.due = data["task"]?["due"]?.stringValue ?? ""
             cards[turn]?.priority = data["task"]?["priority"]?.stringValue ?? "normal"
+            let original = cards[turn]?.taskDraft
+            cards[turn]?.originalTask = original
         }
         if cards[turn]?.scopeID == scopes[folder] { cards[turn]?.binder = folder }
         let citations = (data["citations"]?.arrayValue ?? []).compactMap { citation -> String? in
