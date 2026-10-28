@@ -270,7 +270,8 @@ public actor ClaudeConversationRuntime {
             })
             driver = made; active[scope.id]?.driver = made
             guard !signal.stopped else { throw Refused.stopped }
-            guard made.hash == account.hash else { throw Refused.notConnected }
+            // prepare verifies Anthropic's signature for each launch; a normal Claude update may
+            // change its binary hash without disconnecting the person's enabled account.
             _ = try currentFolder(scope)
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
             let result = try await made.run(record.text, session.resumed)

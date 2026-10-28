@@ -42,6 +42,23 @@ import Testing
         }
     }
 
+    @Test(arguments: ["/opt/invented/bin/claude", "/opt/invented/versions/9.8.765"])
+    func aVerifiedInstallationDoesNotRequireAParticularVersionOrFilename(_ path: String) throws {
+        let program = URL(fileURLWithPath: path)
+        let hash = try ClaudeReadLaunch.installationHash(program, validatedSignature: { candidate in
+            #expect(candidate == program)
+            return Data([0x01, 0xab])
+        })
+        #expect(hash == "01ab")
+    }
+
+    @Test func anotherVendorsSignedExecutableIsStillRefused() throws {
+        #expect(throws: ClaudeReadLaunch.Refused.unsupportedInstallation) {
+            try ClaudeReadLaunch.prepare(program: URL(fileURLWithPath: "/usr/bin/true"), support: home(), connectionID: UUID(),
+                                        sessionID: UUID(), credential: "invented", policy: "Canonical", onSpawn: { _ in })
+        }
+    }
+
     @Test func sandboxKeepsItsOwnFilesButRefusesOtherUserDataAndChildCommands() throws {
         let folder = try home()
         let locator = Process(), located = Pipe()

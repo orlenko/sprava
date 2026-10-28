@@ -6,9 +6,9 @@ it cannot send email, execute tools or save a task without the person's button c
 
 1. Build/install Sprava using the normal app scripts. Open Health and wait for the background connection
    to answer before creating or adopting a binder. A running heartbeat alone is not an XPC connection.
-2. Install Claude Code **2.1.304**. In Brains, select its executable, privately obtain a subscription token
+2. Install Claude Code. In Brains, select its executable, privately obtain a subscription token
    with `claude setup-token`, paste into the secure field, and select **Verify and Enable Claude**.
-   Sprava verifies two harmless fixed turns across a CLI restart before enabling the account. A provisioned build uses its own local Keychain item; the current ad-hoc build can keep the token only in background memory and clearly asks you to re-enable after a background restart.
+   Sprava verifies the Anthropic signature and two harmless fixed turns across a CLI restart before enabling the account. Ordinary Claude updates are accepted; the signature is checked on each launch. A provisioned build uses its own local Keychain item; the current ad-hoc build can keep the token only in background memory and clearly asks you to re-enable after a background restart.
 3. Open the binder. Expand **Email intake (IMAP)**, which is built into Sprava. Homebrew Python 3 must be
    installed (`brew install python`). Sprava runs a bundled stdlib-only worker, not the older imap-extract
    converter, which can overwrite attachments with duplicate names. Disable any pre-existing watcher for the
