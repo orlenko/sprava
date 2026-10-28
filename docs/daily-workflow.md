@@ -2,7 +2,7 @@
 
 Two everyday uses first, with no provider and no subscription: a tax year and a condo board. Binders, to-dos and
 filed documents work on their own; Claude and email intake, further down, are optional. This covers binders made
-in Sprava; bringing in an existing lifeproj binder is not covered here. Sprava sends nothing: mail is opened and
+in Sprava; bringing in an existing lifeproj binder is not covered here. Sprava sends no email: mail is opened and
 sent in your mail client.
 
 ## Before you rely on it
@@ -10,7 +10,8 @@ sent in your mail client.
 - **Health:** the background part answers. No "Starting Sprava's background part…" or Login Items line remains.
 - **Saving:** a note or a drop is acknowledged ("Added…"). A note that says the background part did not confirm its
   destination means checking the binder and the Inbox before saving it again.
-- **Backup:** set up on the Backup page, with a date under "Last restore drill" rather than "never".
+- **Backup:** set up on the Backup page. Pick a binder and **Run Restore Drill**; once it reports "Restore drill
+  passed.", "Last restore drill" shows a date rather than "never".
 
 ## A tax year
 
