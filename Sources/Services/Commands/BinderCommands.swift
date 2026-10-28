@@ -243,9 +243,11 @@ extension Commands {
         let f = try folder(r)
         guard case .string(let opID)? = r["op_id"] else { throw Failure(message: "undo needs op_id") }
         let store = TekaStore(folder: f, client: client)
-        let applied = try store.undo(opID: opID, now: now)
+        let outcome = try store.undoChange(opID: opID, now: now)
         try recordDigests(store.createdProposals, in: f)
-        return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
+        // Fields changed again since the undone change keep their newer values; the app names them (binder-v0 §6.10).
+        return JSONObject([(key: "op", value: outcome.ops.first?["id"] ?? .null),
+                           (key: "kept", value: .array(outcome.kept.map(JSONValue.string)))])
     }
 
     func switchDashboard(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
