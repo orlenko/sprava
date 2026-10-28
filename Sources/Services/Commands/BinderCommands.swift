@@ -226,15 +226,16 @@ extension Commands {
         guard case .string(let op)? = r["op"], case .object(let args)? = r["args"] else {
             throw Failure(message: "apply needs op and args")
         }
-        let allowed: Set<String> = ["add_item", "update_item", "set_status", "complete", "drop", "reopen", "set_meta", "set_disclosure"]
+        let allowed: Set<String> = ["add_item", "update_item", "edit_item", "set_status", "complete", "drop", "reopen", "set_meta", "set_disclosure"]
         guard allowed.contains(op) else { throw Failure(message: "\(op) is not a direct action") }
         let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
         var extra: [(String, JSONValue)] = []
         if let c = r["compensates"] { extra.append(("compensates", c)) }
         let store = TekaStore(folder: f, client: client)
         let body = TekaStore.OpBody(op: op, args: args, actor: actor, extra: extra)
+        let bodies = op == "edit_item" ? try Self.itemEdit(args, actor: actor) : [body]
         // An item the person adds names itself `$new:1`; its id is minted under the binder's lock (binder-v0 §5.6).
-        let applied = op == "add_item" ? try store.applyMinting([body], now: now) : try store.apply([body], now: now)
+        let applied = op == "add_item" ? try store.applyMinting(bodies, now: now) : try store.apply(bodies, now: now)
         try recordDigests(store.createdProposals, in: f)
         return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
     }
