@@ -64,6 +64,9 @@ elif name == "lsof":
     app = os.environ.get("TEST_JOB_APP", os.environ["SPRAVA_INSTALL_DIR"] + "/Sprava.app")
     assert args == ["-a", "-p", "4242", "-d", "txt", "-Fn"], args
     print("p4242\\nftxt\\nn" + app + "/Contents/MacOS/sprava-runtime")
+elif name == "codesign":
+    assert args[:3] == ["--verify", "--deep", "--strict"] and len(args) == 4, args
+    sys.exit(int(os.environ.get("TEST_CODESIGN_FAIL", "0")))
 elif name == "osascript":
     script = sys.stdin.read()
     assert script.index("display dialog") < script.index("to quit")
@@ -89,10 +92,23 @@ elif name == "open":
     sys.exit(int(os.environ.get("TEST_OPEN_FAIL", "0")))
 ''')
         fake.chmod(0o755)
-        for name in ["launchctl", "lsof", "osascript", "pgrep", "open", "sleep", "mv"]:
+        for name in ["launchctl", "lsof", "codesign", "osascript", "pgrep", "open", "sleep", "mv"]:
             (self.bin / name).symlink_to(fake)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         SPRAVA_INSTALL_DIR=str(self.apps), TEST_LOG=str(self.log), TEST_APP_RUNNING="1")
+
+    def bundle(self, path, identifier="ca.orlenko.sprava"):
+        """A stand-in for a built Sprava.app: its Info.plist and runtime executable; codesign is the fake."""
+        import plistlib
+        (path / "Contents/MacOS").mkdir(parents=True)
+        (path / "Contents/MacOS/sprava-runtime").write_text("runtime\n")
+        with open(path / "Contents/Info.plist", "wb") as f:
+            plistlib.dump({"CFBundleIdentifier": identifier}, f)
+        return path
+
+    @property
+    def build_app(self):
+        return self.repo / "build/Sprava.app"
 
     def installed(self):
         self.app.mkdir()
@@ -198,6 +214,69 @@ elif name == "open":
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("build", self.log.read_text())
         self.assertTrue(self.app.is_symlink())
+
+    def test_background_work_of_this_checkouts_build_moves_to_the_installed_app(self):
+        self.bundle(self.build_app)
+        for job_format in ["", "27"]:
+            with self.subTest(job_format=job_format or "program ="):
+                if self.app.exists():
+                    shutil.rmtree(self.app)
+                self.log.write_text("")
+                Path(str(self.log) + ".quit").unlink(missing_ok=True)
+                result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT=job_format, TEST_JOB_APP=str(self.build_app))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.log.read_text()
+                self.assertIn(f"codesign --verify --deep --strict {self.build_app}", events)
+                self.assertLess(events.index("build"), events.index("osascript"))
+                self.assertIn(f"open {self.app} --args --refresh-background-registration", events)
+                self.assertNotIn("kickstart", events)
+                self.assertNotIn("bootout", events)
+                self.assertEqual((self.app / "version").read_text(), "new\n")
+                # The build copy itself is left as it was.
+                self.assertTrue((self.build_app / "Contents/MacOS/sprava-runtime").is_file())
+
+    def assert_refused(self, result, job_app):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("build ", self.log.read_text())
+        self.assertNotIn("open ", self.log.read_text())
+        self.assertEqual((self.app / "version").read_text(), "old\n")
+
+    def test_a_build_of_another_checkout_is_refused(self):
+        self.installed()
+        other = self.bundle(self.root / "another checkout/build/Sprava.app")
+        result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27", TEST_JOB_APP=str(other))
+        self.assert_refused(result, other)
+        self.assertIn("another Sprava copy", result.stderr)
+        self.assertIn("Login Items", result.stderr)
+        self.assertNotIn("Health", result.stderr)
+        self.assertNotIn("codesign", self.log.read_text())
+
+    def test_a_build_copy_that_is_not_genuine_is_refused(self):
+        self.installed()
+        elsewhere = self.bundle(self.root / "elsewhere/Sprava.app")
+        cases = {
+            "signature": lambda: (self.bundle(self.build_app), {"TEST_CODESIGN_FAIL": "1"})[1],
+            "identifier": lambda: (self.bundle(self.build_app, "org.invented.other"), {})[1],
+            "linked app": lambda: ((self.repo / "build").mkdir(), self.build_app.symlink_to(elsewhere), {})[2],
+            "linked build folder": lambda: ((self.repo / "build").symlink_to(elsewhere.parent), {})[1],
+            "linked runtime": lambda: (self.bundle(self.build_app),
+                                       (self.build_app / "Contents/MacOS/sprava-runtime").unlink(),
+                                       (self.build_app / "Contents/MacOS/sprava-runtime").symlink_to(
+                                           elsewhere / "Contents/MacOS/sprava-runtime"), {})[3],
+            "missing": lambda: {},
+        }
+        for case, prepare in cases.items():
+            with self.subTest(case=case):
+                build = self.repo / "build"
+                if build.is_symlink():
+                    build.unlink()
+                elif build.exists():
+                    shutil.rmtree(build)
+                self.log.write_text("")
+                extra = prepare()
+                result = self.run_script(TEST_JOBS="1", TEST_JOB_FORMAT="27", TEST_JOB_APP=str(self.build_app), **extra)
+                self.assert_refused(result, self.build_app)
+                self.assertIn("not a genuine Sprava build", result.stderr)
 
 
 unittest.main(argv=[sys.argv[0]])
