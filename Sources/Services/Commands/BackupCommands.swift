@@ -41,7 +41,8 @@ extension Commands {
             (key: "primary", value: Self.optional(s.primary)), (key: "second_path", value: Self.optional(s.second)),
             (key: "pending_key", value: .bool(BackupKey.loadPending() != nil)), (key: "upload", value: upload),
             // An unattended read that found no key: after an update of an ad-hoc build, or with the Keychain locked.
-            (key: "key_unavailable", value: .bool(st.configured && backup.key == nil)),
+            // Set up (a mirror and a pinned restic on record) but with no key, which `configured` also requires.
+            (key: "key_unavailable", value: .bool(s.primary != nil && s.resticSHA256 != nil && backup.key == nil)),
             (key: "icloud_keychain", value: .bool(s.iCloudKeychain)),
             (key: "icloud_keychain_unchecked", value: .bool(s.iCloudKeychainUnchecked == true)),
             (key: "upload_checked_at", value: uploadCheckedAt),

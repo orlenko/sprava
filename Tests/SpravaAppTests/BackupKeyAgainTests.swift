@@ -22,7 +22,8 @@ import Testing
                 keyUnavailable = false
                 return #"{"ok":true,"icloud_keychain_unchecked":true}"#
             }
-            return JSONWriter.compact(.obj([("ok", .bool(true)), ("configured", .bool(true)), ("primary", .str("/Invented/Mirror")),
+            // Set up, but with no readable key: not configured, as the runtime reports it.
+            return JSONWriter.compact(.obj([("ok", .bool(true)), ("configured", .bool(!keyUnavailable)), ("primary", .str("/Invented/Mirror")),
                                             ("key_unavailable", .bool(keyUnavailable)), ("icloud_keychain", .bool(true)),
                                             ("icloud_keychain_unchecked", .bool(unchecked)), ("binders", .array([])), ("requests", .array([]))]))
         })
@@ -55,14 +56,19 @@ import Testing
         #expect(model.keyUnavailable)
     }
 
-    @Test func nothingIsSentWithoutAConfiguredBackupOrATypedKey() async {
+    @Test func nothingIsSentUnlessTheKeyIsUnavailableAndOneIsTyped() async {
         let runtime = StandIn()
         let model = BackupModel(client: runtime.client)
         model.typedKey = "INVNT-KEYAA"
         await model.reenterKey()   // the runtime has not answered yet
         await model.load()
+        #expect(model.configured == false && model.keyUnavailable)
         model.typedKey = ""
         await model.reenterKey()
+        runtime.keyUnavailable = false
+        await model.load()
+        model.typedKey = "INVNT-KEYAA"
+        await model.reenterKey()   // a readable key needs no re-entry
         #expect(runtime.setups.isEmpty)
     }
 

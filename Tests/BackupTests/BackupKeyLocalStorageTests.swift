@@ -2,6 +2,7 @@
 import Foundation
 import LocalAuthentication
 import Security
+import SpravaKit
 import Testing
 
 /// Where the runtime keeps the backup key when it is ad-hoc signed (decisions.md A20): the login Keychain for local
@@ -131,6 +132,26 @@ import Testing
         keychain.loginWriteStatus = nil
         #expect(BackupKey.loadPending(environment: [:], keychain: keychain.keychain(lock: lock)) == nil)
         #expect(keychain.login.isEmpty)
+    }
+
+    /// The runtime's real calls go through the login Keychain's dialog switch: an unattended read runs with it off.
+    @Test func theRuntimesLoginCallsRunWithTheDialogSwitchFromTheirContext() throws {
+        final class Switch: @unchecked Sendable { var on = true }
+        let state = Switch()
+        let interaction = LegacyKeychainInteraction.Switch(get: { state.on }, set: { state.on = $0 })
+        let keychain = StandIn(entitled: false)
+        var seen: [Bool] = []
+        var base = keychain.calls
+        let copy = base.copy
+        base.copy = { q in
+            if q[kSecUseDataProtectionKeychain as String] as? Bool == false { seen.append(state.on) }
+            return copy(q)
+        }
+        let calls = base.guarded(by: interaction)
+        _ = BackupKey.read(BackupKey.account, synchronizable: false, interactive: false, calls: calls)
+        _ = BackupKey.read(BackupKey.account, synchronizable: false, interactive: true, calls: calls)
+        #expect(seen == [false, true])
+        #expect(state.on)
     }
 
     /// Only the missing entitlement selects the login Keychain: any other refusal of a provisioned runtime fails.

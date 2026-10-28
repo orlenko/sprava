@@ -61,7 +61,7 @@ final class BackupModel: ObservableObject, RuntimePage {
             keyUnavailable = r["key_unavailable"] == .bool(true)
             iCloudKeychainUnchecked = r["icloud_keychain_unchecked"] == .bool(true)
             // A key re-entered for a configured backup keeps the person's iCloud Keychain choice.
-            if configured == true { iCloudKeychain = r["icloud_keychain"] == .bool(true) }
+            if configured == true || keyUnavailable { iCloudKeychain = r["icloud_keychain"] == .bool(true) }
             lines = (r["binders"]?.arrayValue ?? []).enumerated().map { i, b in
                 Line(id: i, name: b["name"]?.stringValue ?? "?", at: b["at"]?.stringValue, error: b["error"]?.stringValue)
             }
@@ -111,7 +111,7 @@ final class BackupModel: ObservableObject, RuntimePage {
     /// the same mirror, which opens the repository with it before saving anything: a wrong key changes nothing. This
     /// explicit save is the one time macOS may ask to let Sprava use the key.
     func reenterKey() async {
-        guard !working, configured == true, !typedKey.isEmpty else { return }
+        guard !working, keyUnavailable, !typedKey.isEmpty else { return }
         working = true
         defer { working = false }
         do {
@@ -157,6 +157,8 @@ struct BackupView: View {
             if let error = model.stateError { Text("Backup records cannot be read: \(error)").foregroundStyle(.red) }
             switch model.configured {
             case nil: Text("Asking Sprava's background part…").foregroundStyle(.secondary)
+            // Set up, but the key cannot be read: type it again, never a new setup that would make a new key.
+            case false? where model.keyUnavailable: keyAgain
             case false?: setup
             case true?: status
             }
@@ -229,7 +231,6 @@ struct BackupView: View {
     }
 
     @ViewBuilder var status: some View {
-        if model.keyUnavailable { keyAgain }
         if model.iCloudKeychainUnchecked {
             Text("iCloud Keychain is unavailable in this development build, so Sprava could not check it for a backup key an earlier Sprava build kept there. Only that build can remove such a copy.")
                 .font(.caption).foregroundStyle(.orange)

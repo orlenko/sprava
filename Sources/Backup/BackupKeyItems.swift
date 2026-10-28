@@ -30,12 +30,24 @@ extension BackupKey {
                 var out: CFTypeRef?
                 let status = SecItemCopyMatching(query as CFDictionary, &out)
                 return (status, out as? [[String: Any]])
-            })
+            }).guarded(by: .system)
+        }
+
+        /// The same calls with the login Keychain's dialog switch set from each query (`LegacyKeychainInteraction`):
+        /// its calls ignore the query's `LAContext`.
+        func guarded(by interaction: LegacyKeychainInteraction.Switch) -> Calls {
+            let base = self
+            return Calls(copy: { q in LegacyKeychainInteraction.run(q, switch: interaction) { base.copy(q) } },
+                         update: { q, c in LegacyKeychainInteraction.run(q, switch: interaction) { base.update(q, c) } },
+                         add: { q in LegacyKeychainInteraction.run(q, switch: interaction) { base.add(q) } },
+                         delete: { q in LegacyKeychainInteraction.run(q, switch: interaction) { base.delete(q) } },
+                         list: { q in LegacyKeychainInteraction.run(q, switch: interaction) { base.list(q) } })
         }
     }
 
     /// A local item in the login Keychain. `interactive` is true only while the person saves the key, the one time
-    /// macOS may ask to let a rebuilt runtime use it; reads and background work never ask.
+    /// macOS may ask to let a rebuilt runtime use it; reads and background work never ask. The login Keychain takes
+    /// that from the process-wide switch the context sets (`Calls.guarded`), not from the context itself.
     static func loginQuery(account: String, interactive: Bool) -> [String: Any] {
         let context = LAContext()
         context.interactionNotAllowed = !interactive
