@@ -22,7 +22,7 @@ import Testing
                starting: @escaping @MainActor () -> RuntimeKeeper.Outcome = { .running }) -> ShelfModel {
         let model = ShelfModel(support: support, client: runtime.client)
         model.startRuntime = { person.starts += 1; return starting() }
-        model.askForBinder = { folder, _ in person.binderQuestions.append(folder); return ("blank", "garden-shed") }
+        model.askForBinder = { folder, _ in person.binderQuestions.append(folder); return ("blank", "garden-shed", "") }
         model.chooseParent = { person.parentQuestions += 1; return parent }
         model.chooseFolders = { person.folderQuestions += 1; return [] }
         model.startWait = .milliseconds(200)
@@ -112,7 +112,7 @@ import Testing
         })
         let model = ShelfModel(support: try temporaryFolder(), client: client)
         let parent = try temporaryFolder()
-        model.askForBinder = { _, _ in person.binderQuestions.append(nil); return ("blank", "garden-shed") }
+        model.askForBinder = { _, _ in person.binderQuestions.append(nil); return ("blank", "garden-shed", "") }
         model.chooseParent = { person.parentQuestions += 1; return parent }
         model.startRuntime = { person.starts += 1; return startReportsRunning ? .running : .failed(RuntimeKeeper.noBeat) }
         model.startWait = .zero
