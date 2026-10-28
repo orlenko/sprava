@@ -8,12 +8,14 @@ import SwiftUI
 
 @main
 struct SpravaApp: App {
-    @StateObject private var model = ShelfModel()
+    @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
+    @StateObject private var model: ShelfModel
 
     init() {
         // Hidden: `SpravaApp --snapshot out.png` renders the window offscreen and exits, for layout checks
         // against invented binders (point SPRAVA_SUPPORT_DIR and CMIRROR_CONFIG at a test folder).
         let args = CommandLine.arguments
+        _model = StateObject(wrappedValue: ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument)))
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             Snapshot.render(to: URL(fileURLWithPath: args[i + 1]))
             exit(0)
@@ -38,6 +40,7 @@ struct SpravaApp: App {
                 // ⌘N stays with the WindowGroup's New Window; the table in MenuCommands.swift keeps them apart.
                 Button(MenuCommand.newBinder.title) { model.newBinder() }
                     .menuShortcut(.newBinder)
+                    .disabled(model.creatingBinder)
                 Button(MenuCommand.addFolder.title) { model.addFolderWithPanel() }
                     .menuShortcut(.addFolder)
                 Button(MenuCommand.refresh.title) { model.refresh() }

@@ -9,7 +9,7 @@ import SpravaKit
 /// saves the open one first, as an inline edit on the Mac does when the person clicks away, and Esc cancels. The
 /// shared Shelf model owns the editor, so the open row survives page changes and is the same in every window.
 @MainActor
-final class ItemEditor: ObservableObject {
+final class ItemEditor: ObservableObject, DraftOwner {
     /// The open row of one binder: the item as it was when the row opened, and what was typed.
     struct Row {
         let item: Item
@@ -25,6 +25,11 @@ final class ItemEditor: ObservableObject {
     /// The binders whose open row's change the runtime is carrying out. The request already holds what was typed,
     /// so nothing on the row changes, and no other row opens, until the runtime answers.
     @Published private(set) var saving: Set<URL> = []
+
+    var draftState: DraftState {
+        DraftState(hasChanges: rows.values.contains { $0.title != $0.item.object?["title"]?.stringValue || $0.due != $0.item.due },
+                   saving: !saving.isEmpty)
+    }
 
     /// A removal with no open edit owns admission until its runtime request and refresh finish.
     private var removing: Set<URL> = []

@@ -1,4 +1,5 @@
 import BinderStore
+import BinderFormat
 import Capture
 import Foundation
 import SpravaKit
@@ -19,10 +20,22 @@ extension Commands {
         guard case .string(let event)? = r["event"], case .string(let digest)? = r["sha256"] else {
             throw Failure(message: "capture_notice needs event and sha256")
         }
+        var destination: URL?
+        if r["binder"] != nil {
+            let folder = try self.folder(r).resolvingSymlinksInPath()
+            guard !folder.path.contains("\0"), try ListedBinder.accepts(folder, support: support) else {
+                throw Failure(message: "This binder is not on the shelf or is being offloaded.")
+            }
+            let teka = Teka.read(folder)
+            guard teka.isAdopted, !teka.writesBlocked, ownerDevice(folder) == deviceID else {
+                throw Failure(message: "This binder cannot receive a note on this Mac.")
+            }
+            destination = folder
+        }
         // The app writes into this Mac's device folder as `sprava`. Registering it here, before the notice, is what
         // lets the sweep trust the event's source and the binder the person chose; nothing else registers it.
         try inbox.registerProducer(folder: deviceID, app: "sprava")
-        try inbox.recordNotice(event: event, digest: digest, now: now)
+        try inbox.recordNotice(event: event, digest: digest, binder: destination, now: now)
         return JSONObject()
     }
 

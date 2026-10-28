@@ -64,7 +64,7 @@ public final class TekaStore {
         if lstat(spravaDir.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR {
             throw Refused(reason: ".sprava is not a regular folder; a repair must be approved first")
         }
-        for name in ["torn", "proposals", "adopted"] {
+        for name in ["torn", "proposals", "adopted", "conversation"] {
             let url = spravaDir.appendingPathComponent(name)
             if lstat(url.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR { throw Refused(reason: ".sprava/\(name) is not a regular folder") }
         }

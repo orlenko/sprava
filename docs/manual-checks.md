@@ -36,6 +36,9 @@ Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `
 11. **Start at launch.** Quit the app, stop the runtime's job by hand as in step 10, then open the app: without
     a prompt, Health goes from "Starting background work…" to "Runtime running" within a minute. Health has no
     Turn Off.
+12. **Update a running copy.** With background work approved, run `./scripts/restart-app.sh`. The replacement
+    app renews its background registration before starting the new runtime. Check Health for a working
+    connection and verify that the update did not produce a runtime launch-constraint crash.
 
 ## Increment 5: the capture inbox and the intake cards
 
@@ -83,6 +86,18 @@ Use an invented binder adopted in the installed app, with invented documents onl
    documents" off, `read_document` is refused for that reason.
 7. **Logs.** `runtime/jobs.log` has `intake carded=… held=…` and `clerk document outcome=… class=…` lines
    with counts only: no names, titles or text.
+
+## Unfinished work
+
+Use invented text in an Inbox note, a binder note, a To-do draft, an item edit, a review-card edit, a filing answer,
+the binder's instruction line, the conversation composer and an edited task suggestion.
+
+1. Visit another page and return: every draft is still present.
+2. Close the window or quit: **Keep Working** leaves the words in place; closing without saving takes
+   a separate explicit choice. Opening an editor without changing it does not prompt.
+3. Save an edit or note, then immediately try to quit: the app refuses to close until the runtime acknowledges it.
+   A failed save keeps the draft. A successful save no longer needs the unfinished-work prompt.
+4. With two windows, quitting checks both. Closing one checks that window, and preserves the other.
 
 ## The weekly fault drill (mvp.md 1.2, M3 part 4)
 

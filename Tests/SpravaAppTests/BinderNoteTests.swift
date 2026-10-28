@@ -44,6 +44,7 @@ import Testing
         #expect(written.first?["text"] == .str("Renew the acme permit\nCall the acme landlord"))
         // The runtime is told first, so it trusts the binder named; nothing else is asked.
         #expect(runtime.sent.compactMap { $0["command"]?.stringValue } == ["capture_notice"])
+        #expect(runtime.sent.first?["binder"] == .str(acme.standardizedFileURL.path))
     }
 
     @Test func eachBinderKeepsItsOwnDraft() async throws {
@@ -118,24 +119,25 @@ import Testing
         }
     }
 
-    @Test func aNoteThatCannotBeFiledHereSaysItWaitsInTheInbox() async throws {
+    @Test func privateAndSharedNameBindersKeepTheExplicitFolderWithoutANameHint() async throws {
         let support = try temporaryFolder()
         let deviceID = try DeviceID.load(support: support)
         let runtime = StandInRuntime()
         runtime.answers["capture_notice"] = { _ in #"{"ok":true}"# }
-        // Another binder has the same name: a hint could land there, so none is sent.
+        // A name alone is ambiguous; the authenticated notice keeps the selected folder.
         let shared = BinderNote(client: runtime.client, support: support, readRoute: { _, _ in .here })
         shared.show(acme)
         shared.text = "Renew the acme permit"
         #expect(await shared.add(row(acme), sharesName: true))
-        #expect(shared.message?.contains("Inbox") == true)
-        // A private binder: a hint never files into it on its own.
+        #expect(shared.message?.hasPrefix("Added.") == true)
+        // Selecting the private binder on its own page is an explicit destination choice.
         let secret = BinderNote(client: runtime.client, support: support, readRoute: { _, _ in .privateBinder })
         secret.show(acme)
         secret.text = "Sign the acme papers"
         #expect(await secret.add(row(acme), sharesName: false))
-        #expect(secret.message?.contains("private") == true)
+        #expect(secret.message?.hasPrefix("Added.") == true)
         let written = try events(support, deviceID)
         #expect(written.count == 2 && written.allSatisfy { $0["binder_hint"] == nil })
+        #expect(runtime.sent.count == 2 && runtime.sent.allSatisfy { $0["binder"] == .str(acme.standardizedFileURL.path) })
     }
 }

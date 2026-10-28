@@ -16,8 +16,18 @@ jobs=""
 for label in ca.orlenko.sprava.runtime ca.orlenko.sprava.watch; do
     if job=$(launchctl print "$domain/$label" 2>/dev/null); then
         # An SMAppService job keeps its registered bundle path. Replacing another
-        # copy would leave the old runtime serving the new app.
-        if ! printf '%s\n' "$job" | grep -Fq "program = $app/Contents/MacOS/sprava-runtime"; then
+        # copy would leave the old runtime serving the new app. Older macOS prints
+        # that path as "program = …"; macOS 27 prints only "program identifier =
+        # Contents/MacOS/sprava-runtime", so a running job is placed by its
+        # process's executable, and a job that is not running is left for the app
+        # to start (which copy it would start is not shown).
+        program=$(printf '%s\n' "$job" | sed -n 's/^[[:space:]]*program = //p' | head -n 1)
+        if [ -z "$program" ]; then
+            pid=$(printf '%s\n' "$job" | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -n 1)
+            [ -n "$pid" ] || continue
+            program=$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
+        fi
+        if [ "$program" != "$app/Contents/MacOS/sprava-runtime" ]; then
             echo "restart-app: background work belongs to another Sprava copy. Turn it off in that copy's Health screen, then run this script again." >&2
             exit 1
         fi
@@ -65,17 +75,12 @@ if ! mv "$stage/Sprava.app" "$app"; then
     exit 1
 fi
 
-# Only jobs already loaded before the update are restarted. Registration and
-# Login Items approval stay intact; the app starts a job that is not running.
-restart_failed=0
-for label in $jobs; do
-    if ! launchctl kickstart -k "$domain/$label"; then
-        restart_failed=1
-    fi
-done
-open "$app"
-if [ "$restart_failed" -ne 0 ]; then
-    echo "restart-app: installed and opened Sprava, but a background job could not restart. Check Health." >&2
-    exit 1
+# The replacement app renews its SMAppService records before starting background
+# work. A kickstart here would use the previous ad-hoc bundle's launch constraints.
+# Only the already loaded jobs verified above request this update handoff.
+if [ -n "$jobs" ]; then
+    open "$app" --args --refresh-background-registration
+else
+    open "$app"
 fi
-echo "Installed and opened $app. On first launch, use Health → Set Up Background Work."
+echo "Installed and opened $app. Check Health for background-work status."

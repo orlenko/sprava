@@ -7,15 +7,15 @@ import SpravaKit
 import SwiftUI
 
 /// The note box at the top of a binder's page: what the person types there is saved as a capture event with this
-/// binder as its hint (capture-event-v0 §8.1), so its card is made here, not in the Inbox. The page keeps one
+/// binder as its explicit destination in the runtime's notice, so its card is made here, not in the Inbox. The page keeps one
 /// model while the person moves between binders, so each binder keeps its own draft, and a note is always sent
 /// with the binder it was typed in.
 @MainActor
-final class BinderNote: ObservableObject {
-    /// Why a note typed here would not be filed here by the runtime, read off the main actor.
+final class BinderNote: ObservableObject, DraftOwner {
+    /// The binder's privacy or foreign ownership, read off the main actor.
     enum Route: Equatable, Sendable {
         case here
-        /// Disclosure `none`: a hint never files into it without the person picking it on the card (architecture 8).
+        /// Disclosure `none`: a name hint alone cannot select it (architecture 8).
         case privateBinder
         /// Another Mac keeps this binder; only that Mac files into it.
         case otherMac
@@ -29,6 +29,9 @@ final class BinderNote: ObservableObject {
     private(set) var folder: URL?
     private(set) var startedTyping: Date?
     private var drafts: [URL: (text: String, started: Date?)] = [:]
+    var draftState: DraftState {
+        DraftState(hasChanges: !text.isEmpty || drafts.values.contains { !$0.text.isEmpty }, saving: !saving.isEmpty)
+    }
     let client: RuntimeClient
     let support: URL
     private let disk: ShelfDiskWorker
@@ -68,9 +71,8 @@ final class BinderNote: ObservableObject {
         }
     }
 
-    /// Saves the draft of `row`'s binder, the one shown, and returns whether it was saved. `sharesName` is true
-    /// when another adopted binder has the same name: a hint is a name, so it could land there, and the note is
-    /// sent without one. The draft is cleared only if it is still the text saved.
+    /// Saves into the physical binder selected on screen. An ambiguous name is omitted as a hint,
+    /// while the authenticated notice still keeps the selected folder. Clear only the text saved.
     func add(_ row: ShelfRow, sharesName: Bool) async -> Bool {
         let folder = row.folder.standardizedFileURL
         guard self.folder == folder, !saving.contains(folder) else { return false }
@@ -86,18 +88,14 @@ final class BinderNote: ObservableObject {
         // keep the note private in the Inbox until the person can choose its destination.
         let route = await disk.run(timeout: 5) { read(row, support) }
         let isPrivate = route == .privateBinder || route == nil
-        let elsewhere: String? = if sharesName {
-            "Another binder is also called \(row.name), so this note waits in the Inbox. File it into this binder from there."
-        } else {
-            switch route {
-            case .privateBinder?: "This binder is private, so Sprava files nothing into it on its own. The note waits in the Inbox; file it into this binder from there."
+        let elsewhere: String? = switch route {
+            case .privateBinder?, .here?: nil
             case .otherMac?: "Another Mac keeps this binder, so the note waits in the Inbox."
             case nil: "Sprava could not check this binder, so the note waits privately in the Inbox. File it into this binder from there."
-            case .here?: nil
-            }
         }
-        let outcome = await NoteWriter.save(words, binderHint: elsewhere == nil ? row.name : nil, startedAt: started,
-                                            client: client, support: support, isPrivate: isPrivate)
+        let destination = route == .here || route == .privateBinder ? folder : nil
+        let outcome = await NoteWriter.save(words, binderHint: route == .here && !sharesName ? row.name : nil, startedAt: started,
+                                            client: client, support: support, isPrivate: isPrivate, binder: destination)
         let shown = self.folder == folder
         guard case .saved(let noticed) = outcome else {
             if shown, case .refused(let why) = outcome { message = why }
@@ -110,7 +108,7 @@ final class BinderNote: ObservableObject {
             drafts[folder] = nil
         }
         if shown {
-            message = !noticed ? "Saved, but Sprava's background part did not answer, so the note waits in the Inbox for you to pick its binder."
+            message = !noticed ? "Saved. The background part did not confirm its destination; check this binder and the Inbox before saving another copy."
                 : elsewhere ?? "Added. Its card shows below, under Waiting for your OK, in a moment."
         }
         return true

@@ -81,8 +81,11 @@ final class RuntimeKeeper: ObservableObject {
     var beatWait: Duration = .seconds(30)
     var poll: Duration = .seconds(2)
     private var run: Task<Outcome, Never>?
+    private var refreshRegistration: Bool
 
-    init(system: System) { self.system = system }
+    init(system: System, refreshRegistration: Bool = false) {
+        self.system = system; self.refreshRegistration = refreshRegistration
+    }
 
     /// Has the runtime running. After a run that failed, nothing is tried again until `restart()`, so a failure is
     /// reported, not retried on every launch of a screen or every failed request.
@@ -99,7 +102,7 @@ final class RuntimeKeeper: ObservableObject {
     }
 
     private func perform(restartNow: Bool) async -> Outcome {
-        let task = Task { await steps(waited: restartNow) }
+        let task = Task { await steps(waited: restartNow, restartNow: restartNow) }
         run = task
         let outcome = await task.value
         run = nil
@@ -111,15 +114,28 @@ final class RuntimeKeeper: ObservableObject {
         return outcome
     }
 
-    private func steps(waited startWaited: Bool) async -> Outcome {
+    private func steps(waited startWaited: Bool, restartNow: Bool) async -> Outcome {
         let system = system
         var starts = 0
         var waited = startWaited
         var since: Date?
+        if refreshRegistration {
+            if await Task.detached(operation: { system.registration() }).value == .requiresApproval { return .needsApproval }
+            state = .starting
+            starts += 1
+            waited = false
+            since = Date()
+            // Replacing an ad-hoc bundle changes launch constraints. Renew the record before
+            // starting the replacement; kickstarting the old registration can kill it (#479).
+            if let failure = await Task.detached(operation: { system.start(.reregister) }).value { return .failed(failure) }
+            refreshRegistration = false
+        }
         while true {
             let after = since
             let (registration, live) = await Task.detached { (system.registration(), system.live(after)) }.value
-            let step = RuntimeAutostart.next(registration, live: live, starts: starts, waited: waited)
+            // An explicit Restart must also repair an alive process whose XPC listener is unreachable.
+            let acceptExistingBeat = !(restartNow && starts == 0)
+            let step = RuntimeAutostart.next(registration, live: live && acceptExistingBeat, starts: starts, waited: waited)
             switch step {
             case .done: return .running
             case .needsApproval: return .needsApproval
@@ -151,6 +167,7 @@ final class RuntimeKeeper: ObservableObject {
 
 /// The real system calls: `SMAppService`, `launchctl` and the heartbeat on disk.
 enum RuntimeStart {
+    static let refreshArgument = "--refresh-background-registration"
     static let runtimePlist = "ca.orlenko.sprava.runtime.plist"
     static let watchPlist = "ca.orlenko.sprava.watch.plist"
     static let runtimeLabel = "ca.orlenko.sprava.runtime"

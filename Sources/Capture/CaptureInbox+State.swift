@@ -14,6 +14,7 @@ extension CaptureInbox {
         package var paths: [String: String]? = [:]            // id -> device/name, for the clerk
         var cardBinder: [String: String]? = [:]       // id -> folder path of a filed Tier 0 card
         var hints: [String: String]? = [:]            // id -> the binder name a verified hint named
+        var pickedBinders: [String: String]? = [:]    // id -> the physical binder chosen on its own app page
         package var clerk: [String: String]? = [:]            // id -> pending, retry, done, kept, acted, poison, failed, retracted, superseded
         package var attempts: [String: Int]? = [:]
         var chains: [String: [String]]? = [:]         // app|ref -> event ids, as older cursors kept them; read only
