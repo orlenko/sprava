@@ -52,7 +52,7 @@ it cannot send email, execute tools or save a task without the person's button c
    This is an ordinary authenticated app write, and the task appears on the global To-dos page. An older
    conversation suggestion creates a *new* task only after a separate confirmation; it is not auto-replayed.
 
-Stop interrupts the active turn; closing a window only stops polling. Saved app dialogue survives a
+Stop interrupts the active turn; reopening a window resumes an accepted turn without sending it again. Saved app dialogue survives a
 restart. Disconnecting stops future sharing but cannot recall information already sent to Anthropic.
 Removing/offloading a binder fences its Claude and importer before the app acknowledges that change.
 These paths have invented-data fixture coverage; real server credentials, the final installed app launch

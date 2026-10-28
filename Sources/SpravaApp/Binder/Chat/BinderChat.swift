@@ -159,6 +159,25 @@ final class BinderChat: ObservableObject {
         threads[key]?.turn = nil
     }
 
+    /// Reattach to an accepted turn from durable history; never send the person's line again.
+    func needsResume(requestID: UUID, in folder: URL) -> Bool {
+        guard let thread = threads[key(folder.standardizedFileURL)], thread.turn == nil else { return false }
+        return thread.entries.contains { $0.speaker == .person && $0.requestID == requestID }
+    }
+
+    func resume(_ turn: ChatTurn, in folder: URL) {
+        let folder = folder.standardizedFileURL
+        guard binderID(folder) == turn.binderID, needsResume(requestID: turn.requestID, in: folder) else { return }
+        let key = key(folder)
+        let reply = Entry(id: turn.turnID, speaker: .binder, text: "", state: .replying)
+        if let index = threads[key]?.entries.firstIndex(where: { $0.id == reply.id }) {
+            threads[key]?.entries[index] = reply
+        } else { threads[key]?.entries.append(reply) }
+        threads[key]?.turn = turn.turnID
+        threads[key]?.stopping = false
+        Task { await self.follow(turn, reply: reply.id, key: key, folder: folder) }
+    }
+
     // MARK: - Sending
 
     /// Sends the draft of the binder shown. The draft leaves the composer at once and comes back if the line is not
