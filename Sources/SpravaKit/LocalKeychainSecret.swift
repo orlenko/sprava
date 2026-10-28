@@ -69,11 +69,16 @@ package struct LocalKeychainSecret: Sendable {
         let add: @Sendable ([String: Any]) -> OSStatus
         let remove: @Sendable ([String: Any]) -> OSStatus
 
+        // The login Keychain ignores the query's LAContext; its dialogs follow the process-wide switch, set per call
+        // from that context (`LegacyKeychainInteraction`).
         static let system = Operations(read: { query in
-            var result: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
-            return (status, result as? Data)
-        }, update: { SecItemUpdate($0 as CFDictionary, $1 as CFDictionary) },
-           add: { SecItemAdd($0 as CFDictionary, nil) }, remove: { SecItemDelete($0 as CFDictionary) })
+            LegacyKeychainInteraction.run(query, switch: .system) {
+                var result: CFTypeRef?
+                let status = SecItemCopyMatching(query as CFDictionary, &result)
+                return (status, result as? Data)
+            }
+        }, update: { q, c in LegacyKeychainInteraction.run(q, switch: .system) { SecItemUpdate(q as CFDictionary, c as CFDictionary) } },
+           add: { q in LegacyKeychainInteraction.run(q, switch: .system) { SecItemAdd(q as CFDictionary, nil) } },
+           remove: { q in LegacyKeychainInteraction.run(q, switch: .system) { SecItemDelete(q as CFDictionary) } })
     }
 }

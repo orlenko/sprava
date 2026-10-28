@@ -121,7 +121,15 @@ The person chooses how it is kept:
 - **Sprava keeps it in iCloud Keychain.** Recovery on a new Mac signed in to the same Apple account needs no
   typing. Less private: anyone who reaches the iCloud account reaches both the backup and its key.
 
-Either way the runtime holds a copy in the local Keychain, this device only, so backups run unattended. restic
+Either way the runtime holds a copy in the local Keychain so backups run unattended. A provisioned build keeps it in
+the data-protection Keychain, this device only. An ad-hoc build (the development app) is refused there for the missing
+entitlement and keeps it in the Mac login Keychain instead: never synchronized, and read without asking only by the
+runtime that saved it, but not bound to this device as "this device only" is, since a login Keychain copied to another
+Mac carries it. That build cannot use iCloud Keychain at all: opting in is refused, and with it opted out the Backup
+page keeps saying that iCloud Keychain could not be checked for a copy an earlier build kept there, until a build
+that can reach it saves the key again. If, after an update, the rebuilt runtime cannot read the key unattended,
+backups stop and the Backup page asks for the key once; it must open the mirror before it is saved, and macOS may
+ask to let Sprava use it then. Background reads never ask. restic
 receives it through a short-lived file, readable by the person's user only, in Sprava's own folder and deleted when
 the command ends; never through an environment variable or a file in a binder.
 

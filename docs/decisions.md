@@ -381,6 +381,10 @@
   only a missing-entitlement refusal selects the Mac login Keychain for an ad-hoc build (Apple TN3137).
   Locked or damaged Keychains fail visibly. Only an explicit credential save may ask macOS to authorize
   access. No plaintext file or memory-only success substitutes for a credential that could not be saved.
+  The backup key follows the same rule for its local items (2026-10-28): the login Keychain does not enforce
+  ThisDeviceOnly; an ad-hoc runtime cannot reach iCloud Keychain, so opting in is refused and, with opt-out, "not
+  checked" is recorded in the backup settings and shown until a store reaches it; a key re-entered after an update
+  must open the mirror before it is saved (docs/backup.md §4).
 
 ## MVP (`docs/mvp.md`)
 
