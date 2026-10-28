@@ -46,8 +46,9 @@ final class ShelfModel: ObservableObject, DraftOwner {
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
     private var refreshTask: Task<Void, Never>?
     let client: RuntimeClient
-    /// Asks for a new binder's template and name, for an empty folder the person picked or (nil) a folder still to choose.
-    var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> (template: String, name: String)? = ShelfModel.binderAlert
+    /// Asks for a new binder's template, name and year as typed, for an empty folder the person picked or (nil) a folder
+    /// still to choose; `year` is the current one.
+    var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> NewBinderAnswer? = ShelfModel.binderAlert
     var chooseParent: @MainActor () -> URL? = ShelfModel.parentPanel
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
@@ -173,9 +174,13 @@ final class ShelfModel: ObservableObject, DraftOwner {
             }
         }
         await refreshAndWait(afterChanges: true)
-        let year = Calendar.current.component(.year, from: Date())
+        let current = Self.currentYear()
         for url in empty {
-            guard let answer = askForBinder(url, year) else { continue }
+            guard let answer = askForBinder(url, current) else { continue }
+            guard let year = Self.year(answer, current: current) else {
+                failed.append("\(url.lastPathComponent) did not become a binder: \(Self.yearRefusal(current))")
+                continue
+            }
             if let failure = await create(parent: url.deletingLastPathComponent(), name: Self.binderName(answer, year: year, existing: url),
                                           template: answer.template,
                                           year: year, existing: url) {
@@ -218,14 +223,29 @@ final class ShelfModel: ObservableObject, DraftOwner {
         defer { creatingBinder = false }
         operationNote = nil
         guard await runtimeReady() else { return }
-        let year = Calendar.current.component(.year, from: Date())
-        guard let answer = askForBinder(nil, year), let parent = chooseParent() else { return }
+        let current = Self.currentYear()
+        guard let answer = askForBinder(nil, current) else { return }
+        // A malformed year is refused before the folder is asked for, so nothing is sent.
+        guard let year = Self.year(answer, current: current) else {
+            operationNote = "The binder was not created: \(Self.yearRefusal(current))"
+            return
+        }
+        guard let parent = chooseParent() else { return }
         await createBinder(parent: parent, name: Self.binderName(answer, year: year), template: answer.template, year: year)
+    }
+
+    /// The year a new binder is for: the one typed for a tax year, checked, or the current one for any other template.
+    static func year(_ answer: NewBinderAnswer, current: Int) -> Int? {
+        asksYear(answer.template) ? taxYear(answer.year, current: current) : current
+    }
+
+    static func yearRefusal(_ current: Int) -> String {
+        "the tax year is a four-digit year from 1900 to \(current + 1)."
     }
 
     /// The name typed in the alert, made a valid binder name: "Maple Street" becomes `maple-street`, never a refusal after the
     /// dialogs. The runtime does the same and adds `-2` when the name is taken.
-    static func binderName(_ answer: (template: String, name: String), year: Int, existing: URL? = nil) -> String {
+    static func binderName(_ answer: NewBinderAnswer, year: Int, existing: URL? = nil) -> String {
         let template = BinderTemplate.all.first { $0.key == answer.template } ?? .taxYear
         return BinderCreator.name(for: answer.name, template: template, year: year, existing: existing)
     }
