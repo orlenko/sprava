@@ -376,32 +376,34 @@ struct ShelfView: View {
                 .padding(8)
             }
         } detail: {
-            if model.selection == healthSelection {
-                HealthView(model: model.health)
-            } else if model.selection == todosSelection {
-                TodosView(model: todo, board: model.todos, rows: model.rows, open: { model.selection = $0 },
-                          reload: { await model.refreshAndWait(afterChanges: true) })
-            } else if model.selection == inboxSelection {
-                InboxView(model: inbox, rows: model.rows)
-            } else if model.selection == backupSelection {
-                BackupView(model: backup, rows: model.rows)
-            } else if model.selection == brainsSelection {
-                BrainsView(model: brains, rows: model.rows)
-            } else if let row = model.selectedRow {
-                NowView(row: row, today: model.today,
-                        page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions,
-                        documents: model.documents.model(for: row.folder))
-            } else {
-                ContentUnavailableView {
-                    Label("No binders yet", systemImage: "books.vertical")
-                } description: {
-                    Text("Start a new binder, or add a folder that already holds one.")
-                } actions: {
-                    Button("New Binder…") { model.newBinder() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.creatingBinder)
-                    Button("Add Folder…") { model.addFolderWithPanel() }
+            StartingScreen(keeper: model.health.keeper, covers: model.selection != healthSelection) {
+                if model.selection == healthSelection {
+                    HealthView(model: model.health)
+                } else if model.selection == todosSelection {
+                    TodosView(model: todo, board: model.todos, rows: model.rows, open: { model.selection = $0 },
+                              reload: { await model.refreshAndWait(afterChanges: true) })
+                } else if model.selection == inboxSelection {
+                    InboxView(model: inbox, rows: model.rows)
+                } else if model.selection == backupSelection {
+                    BackupView(model: backup, rows: model.rows)
+                } else if model.selection == brainsSelection {
+                    BrainsView(model: brains, rows: model.rows)
+                } else if let row = model.selectedRow {
+                    NowView(row: row, today: model.today,
+                            page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
+                            reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions,
+                            documents: model.documents.model(for: row.folder))
+                } else {
+                    ContentUnavailableView {
+                        Label("No binders yet", systemImage: "books.vertical")
+                    } description: {
+                        Text("Start a new binder, or add a folder that already holds one.")
+                    } actions: {
+                        Button("New Binder…") { model.newBinder() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.creatingBinder)
+                        Button("Add Folder…") { model.addFolderWithPanel() }
+                    }
                 }
             }
         }

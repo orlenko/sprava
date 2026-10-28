@@ -15,11 +15,18 @@ struct SpravaApp: App {
         // Hidden: `SpravaApp --snapshot out.png` renders the window offscreen and exits, for layout checks
         // against invented binders (point SPRAVA_SUPPORT_DIR and CMIRROR_CONFIG at a test folder).
         let args = CommandLine.arguments
-        _model = StateObject(wrappedValue: ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument)))
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             Snapshot.render(to: URL(fileURLWithPath: args[i + 1]))
             exit(0)
         }
+        let model = ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument))
+        _model = StateObject(wrappedValue: model)
+        // Before the first page: pages wait behind the starting screen and requests wait for the start, so the
+        // seconds launchd takes to bring the runtime up show as starting, not as failures.
+        let keeper = model.health.keeper
+        keeper.beginLaunch()
+        RuntimeClient.whenNotRunning = { Task { _ = await keeper.ensureRunning() } }
+        RuntimeClient.untilStarted = { await keeper.untilStarted() }
     }
 
     var body: some Scene {
@@ -29,11 +36,7 @@ struct SpravaApp: App {
                 .task { await model.refreshLoop() }
                 // Background work is not optional (decisions.md A19): at launch the app has the runtime running,
                 // without a prompt, and a request that finds it not running starts it the same way.
-                .task {
-                    let keeper = model.health.keeper
-                    RuntimeClient.whenNotRunning = { Task { _ = await keeper.ensureRunning() } }
-                    _ = await keeper.ensureRunning()
-                }
+                .task { _ = await model.health.keeper.ensureRunning() }
         }
         .commands {
             CommandGroup(after: .newItem) {
