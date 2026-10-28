@@ -265,9 +265,31 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                    onSuccess: { [weak self] in self?.savedDescription = line })
     }
 
+    /// Undoes a change. Fields the person changed again since keep their newer values, and the page says which.
     @discardableResult
     func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never> {
-        run("undo", folder, [("op_id", .string(change.id))], then: reload)
+        busy = true
+        return Task {
+            defer { busy = false }
+            do {
+                let reply = try await client.command("undo", binder: folder, [("op_id", .string(change.id))])
+                if serves(folder) { message = Self.keptNote(reply["kept"]?.arrayValue?.compactMap(\.stringValue) ?? []) }
+            } catch {
+                if serves(folder) { message = "\(error)" }
+            }
+            if serves(folder) { reload() }
+        }
+    }
+
+    /// "Undone. Your later change to the due date was kept." for fields an undo left alone; nil when there were none.
+    static func keptNote(_ fields: [String]) -> String? {
+        guard !fields.isEmpty else { return nil }
+        let names: [String: String] = ["due": "due date", "follow_up_at": "follow-up date", "expected_by": "expected date",
+                                       "waiting_on": "who it waits on", "no_deadline": "deadline", "dismissed": "hidden state",
+                                       "redact": "privacy marker", "slice_title": "hub title"]
+        let words = fields.map { names[$0] ?? $0.replacingOccurrences(of: "_", with: " ") }
+        let list = words.count == 1 ? words[0] : words.dropLast().joined(separator: ", ") + " and " + words.last!
+        return "Undone. Your later change to the \(list) was kept."
     }
 
     @discardableResult

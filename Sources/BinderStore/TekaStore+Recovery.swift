@@ -44,15 +44,13 @@ extension TekaStore {
             guard try Canonical.hash(.object(state)) == a else { throw Refused(reason: "roll-forward did not reach the logged hash") }
             var moves: [(from: String, to: String, sha: String)] = []
             var possible = true
-            for op in trailing where op["op"] == .str("file_document") {
-                let args = op["args"]?.objectValue ?? JSONObject()
-                guard let to = args["document"]?["path"]?.stringValue, let sha = args["document"]?["sha256"]?.stringValue else { continue }
+            for op in trailing {
+                guard let (from, to, sha) = Self.loggedMove(op) else { continue }
                 // A key or credential file is never read or moved, even for a logged write (binder-v0 §3.3), and a
                 // logged path outside the filing rules is never read or moved either: the log is not sealed, so it is
                 // held to the rules the guard applies (binder-v0 §4.3).
-                let from = args["from"]?.stringValue
                 if DocumentPaths.isKeyFile(to) || from.map(DocumentPaths.isKeyFile) == true
-                    || !DocumentPaths.isSafe(to) || from.map(DocumentPaths.isIntake) == false {
+                    || !DocumentPaths.isSafe(to) || from.map({ Self.isSource($0, of: op) }) == false {
                     possible = false
                     continue
                 }
@@ -70,7 +68,7 @@ extension TekaStore {
             }
             guard possible else {
                 let stranded = restoreMoves(trailing, catalog: catalog)
-                let reason = "a filed file is missing from both intake/ and its destination"
+                let reason = "a filed or moved file is missing from both its source and its destination"
                     + (stranded.isEmpty ? "" : "; moved but not recorded: " + stranded.joined(separator: ", "))
                 var abort = JSONObject()
                 abort.set("id", .string(UUIDv7.make(now: now)))
@@ -193,20 +191,40 @@ extension TekaStore {
         if !createdProposals.contains(card.id) { createdProposals.append(card.id) }
     }
 
-    /// Files a write cut short already moved go back to intake/, so its card can be approved again. A file the
+    /// The file a logged op files or moves (binder-v0 §6.9): its source (none for a filing recorded where the file
+    /// is), its destination and its digest.
+    static func loggedMove(_ op: JSONObject) -> (from: String?, to: String, sha: String)? {
+        let args = op["args"]?.objectValue ?? JSONObject()
+        switch op["op"]?.stringValue {
+        case "file_document":
+            guard let to = args["document"]?["path"]?.stringValue, let sha = args["document"]?["sha256"]?.stringValue else { return nil }
+            return (args["from"]?.stringValue, to, sha)
+        case "move_document":
+            guard let from = args["from"]?.stringValue, let to = args["path"]?.stringValue, let sha = args["sha256"]?.stringValue else { return nil }
+            return (from, to, sha)
+        default:
+            return nil
+        }
+    }
+
+    /// Where a logged op may take a file from: a filing from `intake/`, a move from a filed path (binder-v0 §4.3).
+    static func isSource(_ from: String, of op: JSONObject) -> Bool {
+        op["op"] == .str("move_document") ? DocumentPaths.isSafe(from) : DocumentPaths.isIntake(from)
+    }
+
+    /// Files a write cut short already moved go back where they were (intake/ for a filing), so its card can be
+    /// approved again. A file the
     /// found catalog records stays where it is, and a key or credential file is never touched (binder-v0 §3.3).
     /// Returns the files that could not go back, for the abort to name.
     func restoreMoves(_ trailing: [JSONObject], catalog: JSONObject) -> [String] {
         // Compared folded, as the path rules compare paths: `Documents/Letter.pdf` names the same file (binder-v0 §4.3).
         let recorded = Set((catalog["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue.map(DocumentPaths.fold) })
         var stranded: [String] = []
-        for op in trailing where op["op"] == .str("file_document") {
-            let args = op["args"]?.objectValue ?? JSONObject()
-            guard let from = args["from"]?.stringValue, let to = args["document"]?["path"]?.stringValue,
-                  let sha = args["document"]?["sha256"]?.stringValue, !recorded.contains(DocumentPaths.fold(to)),
+        for op in trailing {
+            guard let (source, to, sha) = Self.loggedMove(op), let from = source, !recorded.contains(DocumentPaths.fold(to)),
                   !DocumentPaths.isKeyFile(from), !DocumentPaths.isKeyFile(to), DocumentPaths.isSafe(to),
                   DocumentPaths.plainFile(to, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(to)) == sha else { continue }
-            if DocumentPaths.isIntake(from), DocumentPaths.isFreeDestination(from, in: folder),
+            if Self.isSource(from, of: op), DocumentPaths.isFreeDestination(from, in: folder),
                (try? DocumentPaths.makeParents(from, in: folder) { try flushFolder($0, "flush the parent of a new folder") }) != nil,
                renamex_np(folder.appendingPathComponent(to).path, folder.appendingPathComponent(from).path, UInt32(RENAME_EXCL)) == 0 {
                 continue

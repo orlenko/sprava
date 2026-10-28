@@ -14,7 +14,7 @@ public enum OpApplier {
 
     public static let opTypes: Set<String> = [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
-        "file_document", "update_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
+        "file_document", "update_document", "move_document", "add_log_entry", "set_meta", "set_disclosure", "rename_teka",
         "external_edit", "import_snapshot", "migrate", "abort", "expunge",
     ]
 
@@ -28,6 +28,7 @@ public enum OpApplier {
         let via = actor["client"] ?? .null
         let actorKind = actor["kind"] ?? .null
         var c = catalog
+        if let expect = op["expect"] { try checkExpect(expect, type: type, args: args, in: c) }
 
         switch type {
         case "import_snapshot", "abort", "expunge":
@@ -197,6 +198,22 @@ public enum OpApplier {
             docs[i] = .object(doc)
             c.set("documents", .array(docs))
 
+        case "move_document":
+            // The record moves with its file and keeps its place; every other field, its digest included, stays
+            // (binder-v0 §6.3). Applying the op moves the file (§6.9); replay never does.
+            let id = try required(args, "id", type)
+            guard case .string(let from)? = args["from"], case .string(let path)? = args["path"] else {
+                throw Failure("move_document: from and path are required")
+            }
+            var docs = c["documents"]?.arrayValue ?? []
+            guard let i = docs.firstIndex(where: { $0["id"] == id }), case .object(var doc) = docs[i] else {
+                throw Failure("move_document: no document \(id)")
+            }
+            guard doc["path"] == .string(from) else { throw Failure("move_document: from is not the document's path") }
+            doc.set("path", .string(path))
+            docs[i] = .object(doc)
+            c.set("documents", .array(docs))
+
         case "set_meta":
             var meta = try metaObject(c, type)
             let set = args["set"]?.objectValue ?? JSONObject()
@@ -239,6 +256,45 @@ public enum OpApplier {
 
     /// The catalog's `meta`, or an empty one when there is none. A `meta` that holds something else, as a
     /// pre-lifeproj catalog may, is never written over: the op is refused until a migration keeps that value.
+    /// `expect` (binder-v0 §6.2): the state an op assumed about the existing record it changes. Its content hash
+    /// (`record`) and the fields in `set` and `absent` must match the record, or the op is refused, so an op built on
+    /// an older revision never overwrites a newer change.
+    static func checkExpect(_ expect: JSONValue, type: String, args: JSONObject, in c: JSONObject) throws {
+        guard case .object(let e) = expect, !e.entries.isEmpty else { throw Failure("\(type): expect must be a non-empty object") }
+        let record: JSONObject
+        switch type {
+        case "update_item", "set_status", "complete", "drop", "dismiss", "undismiss":
+            record = try findItem(id: try required(args, "id", type), in: c).1
+        case "update_document", "move_document":
+            let id = try required(args, "id", type)
+            guard let found = c["documents"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue else {
+                throw Failure("\(type): expect names a document that is not there")
+            }
+            record = found
+        case "set_meta":
+            record = try metaObject(c, type)
+        default:
+            throw Failure("\(type): expect applies only to an op on an existing record")
+        }
+        for entry in e.entries {
+            switch (entry.key, entry.value) {
+            case ("record", .string(let hash)):
+                guard (try? Canonical.hash(.object(record))) == hash else { throw Failure("\(type): the record changed since the op was built") }
+            case ("set", .object(let fields)) where !fields.entries.isEmpty:
+                for field in fields.entries where record[field.key] != field.value {
+                    throw Failure("\(type): \(field.key) changed since the op was built")
+                }
+            case ("absent", .array(let names)) where !names.isEmpty:
+                for name in names {
+                    guard case .string(let field) = name else { throw Failure("\(type): expect.absent holds field names") }
+                    guard record[field] == nil else { throw Failure("\(type): \(field) changed since the op was built") }
+                }
+            default:
+                throw Failure("\(type): expect holds only record, set and absent")
+            }
+        }
+    }
+
     static func metaObject(_ c: JSONObject, _ type: String) throws -> JSONObject {
         switch c["meta"] {
         case nil: return JSONObject()

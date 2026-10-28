@@ -126,7 +126,7 @@ public enum TransactionGuard {
         case "update_item", "set_status", "dismiss", "undismiss", "complete":
             return args["id"].map { [("open_items", $0)] } ?? []
         case "file_document": return args["document"]?["id"].map { [("documents", $0)] } ?? []
-        case "update_document": return args["id"].map { [("documents", $0)] } ?? []
+        case "update_document", "move_document": return args["id"].map { [("documents", $0)] } ?? []
         default: return []
         }
     }
@@ -173,6 +173,17 @@ public enum TransactionGuard {
             if [doc?["path"], args?["from"]].contains(where: { $0?.stringValue.map(DocumentPaths.isKeyFile) == true }) {
                 problems.append("file_document: a key or credential file is never filed")
             }
+        }
+        // A move takes a filed file from a path the filing rules allow to another such path, by more than letter case,
+        // since a volume that ignores case holds both names in one file; a record found naming catalog.json, the op
+        // log or a file under scripts/ never moves it, and no key file moves (binder-v0 §3.3, §4.3, §6.3).
+        if type == "move_document" {
+            let from = args?["from"]?.stringValue ?? "", path = args?["path"]?.stringValue ?? ""
+            if !DocumentPaths.isSafe(from) { problems.append("move_document: from breaks the path rules") }
+            if !DocumentPaths.isSafe(path) { problems.append("move_document: path breaks the path rules") }
+            if DocumentPaths.fold(from) == DocumentPaths.fold(path) { problems.append("move_document: path differs from from by letter case at most") }
+            if (args?["sha256"]?.stringValue ?? "").wholeMatch(of: /[0-9a-f]{64}/) == nil { problems.append("move_document: sha256 is required") }
+            if DocumentPaths.isKeyFile(from) || DocumentPaths.isKeyFile(path) { problems.append("move_document: a key or credential file is never moved") }
         }
         // A new path follows the path rules, under chapters/ and entities/ too, since nothing moves (binder-v0 §4.3).
         if type == "update_document", let path = args?["set"]?["path"],

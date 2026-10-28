@@ -154,6 +154,29 @@ import Testing
         #expect(try await openItem("acme-2", in: folder).due == nil)
     }
 
+    @Test func undoingAnOlderEditKeepsALaterChangeAndSaysSo() async throws {
+        let (actions, _, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let editor = ItemEditor()
+        editor.begin(try await openItem("acme-1", in: folder), in: folder, actions, reload: {})
+        editor.setTitle("Send the Acme invoice by email", in: folder)
+        editor.setDue(CalendarDate(year: 2026, month: 12, day: 22), in: folder)
+        try await #require(editor.save(in: folder, actions, reload: {})).value
+        editor.begin(try await openItem("acme-1", in: folder), in: folder, actions, reload: {})
+        editor.setTitle("Send the Acme invoice by post", in: folder)
+        try await #require(editor.save(in: folder, actions, reload: {})).value
+
+        await actions.loadReview(folder)
+        let older = try #require(actions.history.dropFirst().first)
+        await actions.undo(older, folder, reload: {}).value
+        #expect(actions.message == "Undone. Your later change to the title was kept.")
+        let item = try await openItem("acme-1", in: folder)
+        #expect(item.title == "Send the Acme invoice by post")
+        #expect(item.due == CalendarDate(year: 2026, month: 12, day: 20))
+        #expect(BinderActions.keptNote(["due", "waiting_on", "title"]) == "Undone. Your later change to the due date, who it waits on and title was kept.")
+        #expect(BinderActions.keptNote([]) == nil)
+    }
+
     @Test func aRefusedEditKeepsTheRowOpenWithWhatWasTyped() async throws {
         let (actions, runtime, folder) = try await binder()
         await actions.load(folder, adopted: true)
