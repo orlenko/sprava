@@ -30,6 +30,10 @@ final class BackupModel: ObservableObject, RuntimePage {
     @Published var lastCheck: String?
     @Published var lastDrill: String?
     @Published var stateError: String?
+    /// A configured backup whose key the runtime cannot read (after an update of an ad-hoc build, or a locked Keychain).
+    @Published var keyUnavailable = false
+    /// The last save of the key could not reach iCloud Keychain, so a copy an earlier build kept there may remain.
+    @Published var iCloudKeychainUnchecked = false
     @Published var lines: [Line] = []
     @Published var requests: [Request] = []
     /// A key the runtime made and holds as pending: shown once, never saved by the app.
@@ -63,6 +67,12 @@ final class BackupModel: ObservableObject, RuntimePage {
             lastCheck = r["last_check"]?.stringValue
             lastDrill = r["last_drill"]?.stringValue
             stateError = r["state_error"]?.stringValue
+            let wasUnavailable = keyUnavailable
+            keyUnavailable = r["key_unavailable"] == .bool(true)
+            iCloudKeychainUnchecked = r["icloud_keychain_unchecked"] == .bool(true)
+            // A key re-entered for a configured backup keeps the person's iCloud Keychain choice.
+            // The saved choice, until the person changes it on the re-entry screen (the page reloads every 5 seconds).
+            if configured == true || (keyUnavailable && !wasUnavailable) { iCloudKeychain = r["icloud_keychain"] == .bool(true) }
             lines = (r["binders"]?.arrayValue ?? []).enumerated().map { i, b in
                 Line(id: i, name: b["name"]?.stringValue ?? "?", at: b["at"]?.stringValue, error: b["error"]?.stringValue)
             }
@@ -104,6 +114,24 @@ final class BackupModel: ObservableObject, RuntimePage {
             message = "Backup is set up. The first backups start within the hour."
         } catch {
             message = "Backup is not set up: \(error)"
+        }
+        await load()
+    }
+
+    /// The backup key typed again for a configured backup whose key the runtime cannot read. It goes through setup at
+    /// the same mirror, which opens the repository with it before saving anything: a wrong key changes nothing. This
+    /// explicit save is the one time macOS may ask to let Sprava use the key.
+    func reenterKey() async {
+        guard !working, keyUnavailable, !typedKey.isEmpty else { return }
+        working = true
+        defer { working = false }
+        do {
+            _ = try await client.global("backup_setup", [("key", .string(typedKey)), ("primary", .string(primary)),
+                                                          ("icloud_keychain", .bool(iCloudKeychain))], timeout: 300)
+            typedKey = ""
+            message = "The backup key is in use again."
+        } catch {
+            message = "The backup key was not used: \(error)"
         }
         await load()
     }
@@ -182,6 +210,8 @@ struct BackupView: View {
             if let error = model.stateError { Text("Backup records cannot be read: \(error)").foregroundStyle(.red) }
             switch model.configured {
             case nil: Text("Asking Sprava's background part…").foregroundStyle(.secondary)
+            // Set up, but the key cannot be read: type it again, never a new setup that would make a new key.
+            case false? where model.keyUnavailable: keyAgain
             case false?: setup
             case true?: status
             }
@@ -260,7 +290,23 @@ struct BackupView: View {
         }
     }
 
+    @ViewBuilder var keyAgain: some View {
+        Section("Backup key") {
+            Text("Sprava's background part cannot read the backup key, so backups have stopped. This happens after an update of this development build, or while the Keychain is locked. Type the backup key to use it again; if macOS asks to let Sprava use it, choose Always Allow so backups run unattended.")
+                .foregroundStyle(.orange)
+            Toggle("Also keep the key in iCloud Keychain", isOn: $model.iCloudKeychain)
+            HStack {
+                TextField("backup key", text: $model.typedKey).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                Button("Use This Key") { Task { await model.reenterKey() } }.disabled(model.typedKey.isEmpty)
+            }
+        }
+    }
+
     @ViewBuilder var status: some View {
+        if model.iCloudKeychainUnchecked {
+            Text("iCloud Keychain is unavailable in this development build, so Sprava could not check it for a backup key an earlier Sprava build kept there. Only that build can remove such a copy.")
+                .font(.caption).foregroundStyle(.orange)
+        }
         Section("Backup") {
             LabeledContent("Mirror", value: model.primary)
             LabeledContent("iCloud", value: model.upload ?? "not checked yet")
