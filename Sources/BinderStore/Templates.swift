@@ -35,7 +35,22 @@ public struct BinderTemplate: Sendable {
         folders: ["documents"],
         checklist: [])
 
-    public static let all = [blank, taxYear]
+    /// A seat on a condominium board: the papers and recurring work of the role. It names no law, place or date, since
+    /// those differ by jurisdiction and building.
+    public static let condoBoard = BinderTemplate(
+        key: "condo-board", title: "A condo board",
+        suggestedName: { _ in "condo-board" },
+        description: { _ in "Condo board: governing documents, meetings and minutes, finances, maintenance and correspondence" },
+        folders: ["governing", "meetings", "finances", "maintenance", "correspondence"],
+        checklist: [
+            "Gather the governing documents and rules in one place",
+            "Draft the agenda for the next board meeting",
+            "Review the last meeting's minutes and open action items",
+            "Track quotes for pending maintenance work",
+            "Review the latest financial statements and budget",
+        ])
+
+    public static let all = [blank, taxYear, condoBoard]
 }
 
 /// Creates a binder from a template: a ready binder-v0 folder at disclosure `none`, adopted at once, whose checklist
