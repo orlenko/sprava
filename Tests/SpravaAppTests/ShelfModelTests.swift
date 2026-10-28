@@ -367,7 +367,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         model.askForBinder = { _, current in ("tax-year", "!!", String(current)) }
         await model.add([shed])
         await model.add([other])
-        let year = Calendar.current.component(.year, from: Date())
+        let year = ShelfModel.currentYear()
         #expect(runtime.sent.map { $0["name"]?.stringValue } == ["garden-shed", "tax-\(year)"])
         #expect(model.note == nil)
     }

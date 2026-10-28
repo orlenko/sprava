@@ -32,12 +32,21 @@ extension ShelfModel {
     /// Whether a template's binder is for one year, which the person picks.
     static func asksYear(_ template: String) -> Bool { template == BinderTemplate.taxYear.key }
 
-    /// The year typed for a tax year: four digits, from 1900 to the year after `current`; nil for anything else.
+    /// The year typed for a tax year: four digits, from 1900 to the year after `current`; nil for anything else. Compared,
+    /// never made a range, so a `current` below 1900 refuses every year instead of trapping.
     static func taxYear(_ typed: String, current: Int) -> Int? {
         let text = typed.trimmingCharacters(in: .whitespaces)
         guard text.count == 4, text.allSatisfy(\.isASCII), text.allSatisfy(\.isNumber), let year = Int(text),
-              (1900...current + 1).contains(year) else { return nil }
+              year >= 1900, year <= current + 1 else { return nil }
         return year
+    }
+
+    /// The current year in the Gregorian calendar, as `create_binder` counts it: the system calendar may be another one,
+    /// such as the Japanese, whose year is the era's.
+    static func currentYear(_ now: Date = Date()) -> Int {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar.component(.year, from: now)
     }
 
     /// The name the dialog suggests for a template and year.

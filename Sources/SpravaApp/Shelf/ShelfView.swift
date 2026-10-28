@@ -173,7 +173,7 @@ final class ShelfModel: ObservableObject {
             }
         }
         await refreshAndWait(afterChanges: true)
-        let current = Calendar.current.component(.year, from: Date())
+        let current = Self.currentYear()
         for url in empty {
             guard let answer = askForBinder(url, current) else { continue }
             guard let year = Self.year(answer, current: current) else {
@@ -222,7 +222,7 @@ final class ShelfModel: ObservableObject {
         defer { creatingBinder = false }
         operationNote = nil
         guard await runtimeReady() else { return }
-        let current = Calendar.current.component(.year, from: Date())
+        let current = Self.currentYear()
         guard let answer = askForBinder(nil, current) else { return }
         // A malformed year is refused before the folder is asked for, so nothing is sent.
         guard let year = Self.year(answer, current: current) else {

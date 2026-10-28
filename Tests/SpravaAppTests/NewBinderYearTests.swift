@@ -8,7 +8,7 @@ import Testing
 /// name follows the template and year until the person types their own. Invented folders only.
 @MainActor
 @Suite struct NewBinderYearTests {
-    let current = Calendar.current.component(.year, from: Date())
+    let current = ShelfModel.currentYear()
 
     func model(_ runtime: StandInRuntime) throws -> ShelfModel {
         runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
@@ -48,6 +48,17 @@ import Testing
         #expect(ShelfModel.taxYear("1900", current: 2026) == 1900)
         #expect(ShelfModel.taxYear(" 2027 ", current: 2026) == 2027)
         #expect(ShelfModel.taxYear("2028", current: 2026) == nil)
+        // An era year, as a non-Gregorian calendar gives, refuses every year instead of trapping on a reversed range.
+        #expect(ShelfModel.taxYear("2025", current: 7) == nil)
+    }
+
+    /// The year is the Gregorian one whatever the system calendar is, as create_binder counts it.
+    @Test func theCurrentYearIsGregorian() throws {
+        var japanese = Calendar(identifier: .japanese)
+        japanese.timeZone = .current
+        let day = try #require(Calendar(identifier: .gregorian).date(from: DateComponents(timeZone: .current, year: 2025, month: 6, day: 15)))
+        #expect(japanese.component(.year, from: day) == 7)
+        #expect(ShelfModel.currentYear(day) == 2025)
     }
 
     /// Another template has no year field: whatever it holds, the binder is for the current year.
