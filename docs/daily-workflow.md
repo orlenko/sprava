@@ -13,10 +13,10 @@ sent in your mail client.
 - **Backup:** set up on the Backup page. Pick a binder and **Run Restore Drill**; once it reports "Restore drill
   passed.", "Last restore drill" shows a date rather than "never".
 - **Backup key, in this development build:** the key is kept in the Mac's login Keychain, not synchronized, and iCloud
-  Keychain is unavailable, so keep your own copy of the key. After each update of the app, backups stop until you
-  type the key once in the Backup page's **Backup key** section and choose **Use This Key**. The key must open your
-  existing backup; a wrong one changes nothing. If macOS asks to let Sprava use the key, choose **Always Allow** so
-  backups run unattended. See `docs/backup.md` §4.
+  Keychain is unavailable, so keep your own copy of the key. If backups stop after an update because Sprava cannot
+  read the key, the Backup page shows a **Backup key** section: type the key there and choose **Use This Key**. The
+  key must open your existing backup; a wrong one changes nothing. If macOS asks to let Sprava use the key, **Always
+  Allow** lets backups read it unattended. See `docs/backup.md` §4.
 
 ## A tax year
 
