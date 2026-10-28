@@ -148,6 +148,8 @@ public struct Proposal: Sendable {
             let stamps = (args["patch"]?.arrayValue ?? []).contains { $0["path"] == .str("/meta/format_version") }
             return (stamps ? "Stamp the catalog as binder v0: " : "Migrate the catalog: ")
                 + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
+        case "move_document":
+            return "Move " + (args["from"]?.stringValue ?? "?") + " to " + (args["path"]?.stringValue ?? "?")
         case "set_meta": return "Set " + (args["set"]?.objectValue?.keys.joined(separator: ", ") ?? "binder settings")
         case let other?: return other.replacingOccurrences(of: "_", with: " ")
         case nil: return "?"
@@ -186,7 +188,7 @@ extension Proposal {
             out.set(key, .string(hash))
         }
         // A document record a card changes, keyed apart from items, whose ids may be the same text.
-        for op in ops where op["op"] == .str("update_document") {
+        for op in ops where op["op"] == .str("update_document") || op["op"] == .str("move_document") {
             guard let id = op["args"]?["id"], let key = try? Canonical.serialize(id),
                   let document = catalog?["documents"]?.arrayValue?.first(where: { $0["id"] == id }),
                   let hash = try? Canonical.hash(document) else { continue }

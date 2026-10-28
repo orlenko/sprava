@@ -6,12 +6,13 @@ import SpravaKit
 /// The write protocol (binder-v0 §4.9, §6.9): the temporary catalog, the op log append, the filed files' moves
 /// and the flushes that make each step durable.
 extension TekaStore {
-    /// The files a batch files (binder-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
+    /// The files a batch files or moves (binder-v0 §4.3, §6.9 step 4). A move out of `intake/` needs the source to be a plain
     /// file with the recorded digest, so a file that changed or is gone since the card was made is refused; the
     /// destination must be free and lie inside the binder. A filing without `from` needs the file in place. A key or
     /// credential file is never read or moved, at either end (binder-v0 §3.3). An `update_document` that sets a path
     /// needs the file there, reached without a link, or filed earlier in the batch.
-    func prepareMoves(_ lines: [JSONObject]) throws -> [(from: String, to: String, sha: String)] {
+    /// `result` is the catalog the batch leaves: no record in it may still name a file a move takes away.
+    func prepareMoves(_ lines: [JSONObject], result: JSONObject) throws -> [(from: String, to: String, sha: String)] {
         var moves: [(String, String, String)] = []
         var claimed = Set<String>()
         for line in lines where line["op"] == .str("update_document") {
@@ -44,21 +45,41 @@ extension TekaStore {
                 }
             }
         }
+        // A move takes the filed file at its record's path, with the digest the op was built on, to a free path
+        // (binder-v0 §6.3, §6.9). Records may share a file (an adopted binder's paths need not be unique): a file
+        // another record still names stays where it is.
+        let named = Set((result["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue.map(DocumentPaths.fold) })
+        for line in lines where line["op"] == .str("move_document") {
+            let args = line["args"]?.objectValue ?? JSONObject()
+            guard let from = args["from"]?.stringValue, let path = args["path"]?.stringValue, let sha = args["sha256"]?.stringValue else { continue }
+            guard claimed.insert(DocumentPaths.fold(path)).inserted else { throw Refused(reason: "two documents would be put at \(path)") }
+            guard !named.contains(DocumentPaths.fold(from)) else {
+                throw Refused(reason: "another document record also names \(from); it cannot move without that record")
+            }
+            guard DocumentPaths.plainFile(from, in: folder), DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha else {
+                throw Refused(reason: "the document's file at \(from) changed or is gone since the change was made")
+            }
+            guard DocumentPaths.isFreeDestination(path, in: folder) else {
+                throw Refused(reason: "a file already exists at \(path), or the way there is not a plain folder")
+            }
+            moves.append((from, path, sha))
+        }
         return moves
     }
 
-    /// Step 4: each move is a rename that never replaces a file, from a file under `intake/` to a path the filing
-    /// rules allow (binder-v0 §4.3), whoever asks for it: a logged move recovery finishes is held to the same rules.
+    /// Step 4: each move is a rename that never replaces a file, from a file under `intake/` or a filed path to a
+    /// path the filing rules allow (binder-v0 §4.3), whoever asks for it: a logged move recovery finishes is held to
+    /// the same rules. Every folder a rename changes or creates is flushed before the catalog is written.
     package func performMoves(_ moves: [(from: String, to: String, sha: String)]) throws {
         for move in moves {
-            guard DocumentPaths.isIntake(move.from), DocumentPaths.isSafe(move.to) else {
-                throw Refused(reason: "a file is moved only from intake/ to a path inside the binder")
+            guard DocumentPaths.isIntake(move.from) || DocumentPaths.isSafe(move.from), DocumentPaths.isSafe(move.to) else {
+                throw Refused(reason: "a file is moved only from intake/ or a filed path to a path inside the binder")
             }
             // Checked again right before the rename: the source is still a plain file, the way there has no link.
             guard !DocumentPaths.isKeyFile(move.from), !DocumentPaths.isKeyFile(move.to),
                   DocumentPaths.plainFile(move.from, in: folder), DocumentPaths.isFreeDestination(move.to, in: folder),
                   DocumentPaths.sha256(of: folder.appendingPathComponent(move.from)) == move.sha else {
-                throw Refused(reason: "the file in intake/ or its destination changed while it was being filed")
+                throw Refused(reason: "a file being moved, or its destination, changed while it was being moved")
             }
             try DocumentPaths.makeParents(move.to, in: folder) { try flushFolder($0, "flush the parent of a new folder") }
             let source = folder.appendingPathComponent(move.from).path
