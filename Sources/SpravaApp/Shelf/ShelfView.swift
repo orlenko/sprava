@@ -384,7 +384,7 @@ struct ShelfView: View {
             } else if model.selection == inboxSelection {
                 InboxView(model: inbox, rows: model.rows)
             } else if model.selection == backupSelection {
-                BackupView(model: backup)
+                BackupView(model: backup, rows: model.rows)
             } else if model.selection == brainsSelection {
                 BrainsView(model: brains, rows: model.rows)
             } else if let row = model.selectedRow {
