@@ -226,7 +226,7 @@ extension Commands {
         guard case .string(let op)? = r["op"], case .object(let args)? = r["args"] else {
             throw Failure(message: "apply needs op and args")
         }
-        let allowed: Set<String> = ["add_item", "update_item", "edit_item", "set_status", "complete", "drop", "reopen", "set_meta", "set_disclosure"]
+        let allowed: Set<String> = ["add_item", "update_item", "edit_item", "move_document", "set_status", "complete", "drop", "reopen", "set_meta", "set_disclosure"]
         guard allowed.contains(op) else { throw Failure(message: "\(op) is not a direct action") }
         let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
         var extra: [(String, JSONValue)] = []

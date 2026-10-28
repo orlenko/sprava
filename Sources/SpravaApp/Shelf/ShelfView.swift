@@ -12,6 +12,7 @@ import SwiftUI
 final class ShelfModel: ObservableObject, DraftOwner {
     /// One editor and removal admission point shared by every window that shows this Shelf.
     let itemEditor = ItemEditor()
+    let documents: FiledDocumentModels
     @Published var rows: [ShelfRow] = []
     @Published var today = CalendarDate.today()
     @Published private(set) var counts: [URL: ShelfCounts] = [:]
@@ -34,7 +35,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
     }
     @Published var lastRefresh: Date?
     @Published private(set) var creatingBinder = false
-    var draftState: DraftState { DraftState(saving: creatingBinder) }
+    var draftState: DraftState { DraftState(saving: creatingBinder).merging(documents.draftState) }
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
@@ -68,6 +69,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
         self.deadline = deadline
         self.summarize = summarize
         self.client = client
+        documents = FiledDocumentModels(client: client)
         let health = HealthModel(support: support, client: client, refreshRegistration: refreshRegistration)
         self.health = health
         startRuntime = { await health.keeper.ensureRunning() }
@@ -199,6 +201,11 @@ final class ShelfModel: ObservableObject, DraftOwner {
             return
         }
         defer { itemEditor.endRemoval(in: row.folder) }
+        guard documents.beginRemoval(row.folder) else {
+            operationNote = "Save or cancel this binder's document move before removing it from the Shelf."
+            return
+        }
+        defer { documents.endRemoval(row.folder) }
         operationNote = nil
         var failure: String?
         do {
@@ -383,7 +390,8 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions)
+                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions,
+                        documents: model.documents.model(for: row.folder))
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
