@@ -176,6 +176,14 @@ extension BackupKey {
         static var system: Keychain { system() }
     }
 
+    /// Whether this runtime can reach iCloud Keychain at all; an ad-hoc build cannot (`BackupKeyItems.swift`). Asked
+    /// before setup saves the person's choice, so an opt-in that would be refused is never left on record.
+    public static func iCloudKeychainAvailable() -> Bool { iCloudKeychainAvailable(keychain: .system) }
+
+    static func iCloudKeychainAvailable(keychain: Keychain) -> Bool {
+        keychain.read(syncedAccount, true).0 != errSecMissingEntitlement
+    }
+
     /// What a store did with iCloud Keychain.
     public struct Stored: Sendable, Equatable {
         /// False when iCloud Keychain was out of reach, so an earlier copy there could be neither found nor removed;

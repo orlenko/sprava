@@ -166,6 +166,11 @@ import Testing
         #expect(keychain.loginQueries.isEmpty)
     }
 
+    @Test func iCloudKeychainIsReportedUnavailableOnlyWithoutTheEntitlement() {
+        #expect(!BackupKey.iCloudKeychainAvailable(keychain: StandIn(entitled: false).keychain(lock: lock)))
+        #expect(BackupKey.iCloudKeychainAvailable(keychain: StandIn(entitled: true).keychain(lock: lock)))
+    }
+
     /// iCloud Keychain is out of an ad-hoc runtime's reach. Opting in is refused before anything changes.
     @Test func optingIntoICloudKeychainIsRefusedOnAnAdHocRuntimeWithNothingChanged() throws {
         let keychain = StandIn(entitled: false)

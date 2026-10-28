@@ -82,6 +82,10 @@ extension Commands {
             key = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let icloud = r["icloud_keychain"] == .bool(true)
+        // Refused before setup saves the choice: a refused opt-in left on record would make every later try fail too.
+        if icloud, !BackupKey.iCloudKeychainAvailable() {
+            throw Failure(message: "iCloud Keychain is unavailable in this development build; keep the key yourself. Nothing was changed.")
+        }
         let backup = Backup(support: support, key: key)
         // One change of the backup's state at a time with the backup job (`BackupStateLock`). The repository opens with
         // this key before anything is saved, so a wrong key changes nothing; this is also how a key re-entered after an

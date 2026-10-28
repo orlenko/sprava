@@ -43,6 +43,20 @@ import Testing
         #expect(!model.keyUnavailable)
     }
 
+    /// The saved iCloud choice is taken once; a change the person makes on the re-entry screen survives the reloads.
+    @Test func theICloudChoiceCanBeChangedWhileReenteringTheKey() async throws {
+        let runtime = StandIn()
+        let model = BackupModel(client: runtime.client)
+        await model.load()
+        #expect(model.iCloudKeychain)
+        model.iCloudKeychain = false
+        await model.load()
+        #expect(!model.iCloudKeychain)
+        model.typedKey = "INVNT-KEYAA-KEYBB"
+        await model.reenterKey()
+        #expect(try #require(runtime.setups.first)["icloud_keychain"] == .bool(false))
+    }
+
     /// A key the runtime refuses (it does not open the mirror) keeps what was typed, so it can be corrected.
     @Test func aRefusedKeyIsKeptForCorrection() async {
         let runtime = StandIn()
