@@ -34,6 +34,26 @@ import Testing
         #expect(!keeper.launching)
     }
 
+    @Test func aLaunchThatNeedsApprovalEndsTheStartingScreenAndSaysSo() async {
+        let launchd = Launchd(.requiresApproval)
+        let keeper = launchd.keeper()
+        keeper.beginLaunch()
+        await keeper.untilStarted()
+        // Approval is the person's to give: the pages show again and the banner asks for it.
+        #expect(keeper.state == .needsApproval && !keeper.launching && launchd.starts.isEmpty)
+    }
+
+    @Test func requestsAtLaunchShareOneStart() async {
+        let launchd = Launchd(.notRegistered, works: .register)
+        let keeper = launchd.keeper()
+        keeper.beginLaunch()
+        async let page = keeper.untilStarted()
+        async let inbox = keeper.untilStarted()
+        async let app = keeper.ensureRunning()
+        _ = await (page, inbox, app)
+        #expect(launchd.starts == [.register] && keeper.state == .running)
+    }
+
     @Test func aRequestDuringTheLaunchStartsTheRuntimeAndWaitsForIt() async {
         let launchd = Launchd(.notRegistered, works: .register)
         let keeper = launchd.keeper()
