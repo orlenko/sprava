@@ -46,6 +46,12 @@
       },
       "additionalProperties": true
     },
+    "expect": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "propertyNames": { "anyOf": [{ "pattern": "^(\"|-?[0-9])" }, { "pattern": "^document:(\"|-?[0-9])" }, { "pattern": "^/" }] },
+      "$comment": "The content hash of each existing record the ops touch, taken when the proposal was made (section 6.5; architecture 4.6). Keys keep the record's identity typed: an item's id as canonical JSON text, a document's as document: and that text, a meta field as its JSON Pointer. Applied ops carry the hash as expect.record."
+    },
     "ops": {
       "type": "array",
       "minItems": 1,

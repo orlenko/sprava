@@ -40,6 +40,9 @@ public struct Coverage: Sendable, Equatable {
     public var translationLanguages: [String] = []
     /// Whether the person's own lines were searched.
     public var conversation = false
+    /// Intake is a separately consented search surface; a manifest must be supplied before claiming coverage.
+    public var intake = false
+    public var intakeManifestIndexed = false
     /// Whether the catalog was compared with the index, so `notYetIndexed` is known.
     public var catalogChecked = false
 
@@ -47,7 +50,9 @@ public struct Coverage: Sendable, Equatable {
     public var gaps: [DocumentCoverage] { documents.filter { !$0.isComplete || !$0.pagesKnown }.sorted { $0.document < $1.document } }
 
     /// Every listed document is wholly indexed: only then may an empty search say more than "no relevant passage was found" (§17.7).
-    public var isExhaustive: Bool { catalogChecked && gaps.isEmpty && notYetIndexed.isEmpty }
+    public var isExhaustive: Bool {
+        catalogChecked && gaps.isEmpty && notYetIndexed.isEmpty && (!intake || intakeManifestIndexed)
+    }
 }
 
 /// One passage found, and for a translation the original it translates.

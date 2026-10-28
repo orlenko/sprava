@@ -13,6 +13,9 @@ final class RuntimeClient {
     private var connection: NSXPCConnection?
     /// Answers in place of the runtime, for tests: no test reaches a runtime over XPC.
     private let answer: (@MainActor (String) async throws -> String)?
+    /// The runtime's XPC name; tests name one that does not exist.
+    private let serviceName: String
+    private let onNotRunning: (@MainActor () -> Void)?
     /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
     static var whenNotRunning: (@MainActor () -> Void)?
     /// Run after every answer from the runtime, a refusal included.
@@ -22,15 +25,18 @@ final class RuntimeClient {
     /// reach the runtime is sent once more on a new connection: the first may have been made before the runtime was
     /// there, or kept from a runtime since restarted.
     static let reads: Set<String> = ["ping", "unfiled", "readings", "binder_settings", "proposals", "history",
-                                     "list_clients", "backup_status"]
+                                     "list_clients", "backup_status", "claude_status", "claude_binder", "chat_history", "imap_status"]
 
     static func isRead(_ request: JSONObject) -> Bool {
         guard let name = request["command"]?.stringValue, reads.contains(name) else { return false }
         return request.keys.allSatisfy { $0 == "command" || $0 == "binder" }
     }
 
-    init(answer: (@MainActor (String) async throws -> String)? = nil) {
+    init(answer: (@MainActor (String) async throws -> String)? = nil, serviceName: String = XPCNames.runtime,
+         onNotRunning: (@MainActor () -> Void)? = nil) {
         self.answer = answer
+        self.serviceName = serviceName
+        self.onNotRunning = onNotRunning
     }
 
     struct Failure: Error, CustomStringConvertible {
@@ -70,7 +76,8 @@ final class RuntimeClient {
     /// `answers` for any reply, a refusal included.
     func presence(timeout: TimeInterval = 2) async -> Presence {
         do {
-            _ = try await global("ping", timeout: timeout)
+            // Readiness/Health checks observe only; the caller decides whether to start the runtime.
+            _ = try await send(JSONObject([("command", .string("ping"))]), timeout: timeout, startIfMissing: false)
             return .answers
         } catch let failure as Failure {
             switch failure.kind {
@@ -86,7 +93,7 @@ final class RuntimeClient {
     /// Sends one request and returns the reply object. Throws when the runtime does not answer in time or
     /// answers `ok: false`. A read that does not reach the runtime is sent once more (`reads`); a change is not,
     /// so nothing is applied twice.
-    func send(_ request: JSONObject, timeout: TimeInterval) async throws -> JSONObject {
+    func send(_ request: JSONObject, timeout: TimeInterval, startIfMissing: Bool = true) async throws -> JSONObject {
         let text = JSONWriter.compact(.object(request))
         let read = Self.isRead(request)
         let reply: String
@@ -97,10 +104,32 @@ final class RuntimeClient {
                 reply = try await deliver(text, timeout: timeout)
             }
         } catch let failure as Failure where failure.kind == .notRunning {
-            RuntimeClient.whenNotRunning?()
+            if startIfMissing { (onNotRunning ?? RuntimeClient.whenNotRunning)?() }
             // A change's line stays true once the runtime runs, so the page keeps it until the next action.
             throw read ? failure : Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
         }
+        return try object(reply)
+    }
+
+    /// A file the app opened from a drop, handed to the runtime as an open descriptor (conversation.md 5.1). Never sent
+    /// twice: a second send after a lost reply could copy the file twice.
+    func importFile(binder: URL, name: String, file: FileHandle, timeout: TimeInterval = 120) async throws -> JSONObject {
+        let text = JSONWriter.compact(.obj([("command", .str("intake_drop")), ("binder", .str(binder.standardizedFileURL.path)), ("name", .str(name))]))
+        let reply: String
+        if let answer { reply = try await answer(text) } else {
+            let c = openConnection()
+            do {
+                reply = try await viaXPC(text, on: c, timeout: timeout) { proxy, done in proxy.importFile(text, file: file, reply: done) }
+            } catch let failure as Failure where failure.kind == .notRunning {
+                drop(c)
+                (onNotRunning ?? RuntimeClient.whenNotRunning)?()
+                throw Failure(message: Failure.changeNotRunningLine, kind: .notRunning)
+            }
+        }
+        return try object(reply)
+    }
+
+    private func object(_ reply: String) throws -> JSONObject {
         for run in answered { run() }
         guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
         guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused") }
@@ -111,7 +140,7 @@ final class RuntimeClient {
         if let answer { return try await answer(text) }
         let c = openConnection()
         do {
-            return try await viaXPC(text, on: c, timeout: timeout)
+            return try await viaXPC(text, on: c, timeout: timeout) { proxy, done in proxy.handle(text, reply: done) }
         } catch let failure as Failure where failure.kind == .notRunning {
             // A failed connection is never used again; the next request makes a new one.
             drop(c)
@@ -121,10 +150,10 @@ final class RuntimeClient {
 
     private func openConnection() -> NSXPCConnection {
         if let connection { return connection }
-        let c = NSXPCConnection(machServiceName: XPCNames.runtime, options: [])
+        let c = NSXPCConnection(machServiceName: serviceName, options: [])
         c.remoteObjectInterface = NSXPCInterface(with: SpravaRuntimeXPC.self)
         let id = ObjectIdentifier(c)
-        c.invalidationHandler = { [weak self] in Task { @MainActor in self?.forget(id) } }
+        c.invalidationHandler = { @Sendable [weak self] in Task { @MainActor in self?.forget(id) } }
         c.resume()
         connection = c
         return c
@@ -140,10 +169,13 @@ final class RuntimeClient {
         if let connection, ObjectIdentifier(connection) == id { self.connection = nil }
     }
 
-    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval) async throws -> String {
+    /// XPC calls its error and reply blocks on its own queue, so they are `@Sendable`: a block isolated to the main
+    /// actor, as one written here would be, traps the app the moment the runtime cannot be reached.
+    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval,
+                        call: (SpravaRuntimeXPC, @escaping @Sendable (String) -> Void) -> Void) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
-            let proxy = c.remoteObjectProxyWithErrorHandler { error in
+            let proxy = c.remoteObjectProxyWithErrorHandler { @Sendable error in
                 if once.claim() {
                     connectionLog.notice("runtime connection failed code=\((error as NSError).code, privacy: .public)")
                     continuation.resume(throwing: Failure.notRunning(error))
@@ -156,10 +188,10 @@ final class RuntimeClient {
                 }
                 return
             }
-            proxy.handle(text) { answer in
+            call(proxy) { @Sendable answer in
                 if once.claim() { continuation.resume(returning: answer) }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { @Sendable in
                 if once.claim() {
                     continuation.resume(throwing: Failure(message: "Runtime not answering in time. The change may still be applied; reload to check before trying again.",
                                                           kind: .timedOut))

@@ -1,4 +1,5 @@
 import BinderFormat
+import Brains
 import BinderStore
 import Foundation
 @testable import Services
@@ -61,4 +62,21 @@ import Testing
         #expect(undone["ok"] == .bool(true), "\(undone)")
         #expect(!Teka.read(folder).items.contains { $0.title == "Send the Acme invoice" })
     }
+    @Test func aConversationCardCannotApplyThroughAnotherPhysicalBindersPath() throws {
+        let (c, folder) = try adopted(), (_, other) = try adopted()
+        let scopes = try ClaudeReadConnections(at: c.support.appendingPathComponent("brains/read-scopes.sqlite"))
+        let scope = try scopes.enable(folder: folder, documents: true, intake: true)
+        func save(_ target: URL) throws -> JSONValue {
+            try call(c, [("command", .str("apply")), ("binder", .str(target.path)), ("conversation_binding", .str(scope.id.uuidString)),
+                         ("op", .str("add_item")), ("args", .obj([("item", .obj([("id", .str("$new:1")),
+                            ("title", .str("Review invented pet permission")), ("status", .str("open")), ("priority", .str("normal")),
+                            ("no_deadline", .bool(true)), ("sensitivity", .str("private"))]))]))])
+        }
+        #expect(try save(folder)["ok"] == .bool(true))
+        let before = Teka.read(other).items.count
+        #expect(try save(other)["ok"] == .bool(false))
+        #expect(Teka.read(other).items.count == before)
+        #expect(Teka.read(folder).items.contains { $0.title == "Review invented pet permission" && $0.object?["sensitivity"] == .str("private") })
+    }
+
 }

@@ -58,6 +58,36 @@ import Testing
         #expect(!starting.starting && starting.startFailure == RuntimeKeeper.noBeat)
     }
 
+    @Test(arguments: [RuntimeClient.Failure.Kind.notRunning, .timedOut])
+    func aLiveHeartbeatDoesNotHideAnUnreachableConnection(failure: RuntimeClient.Failure.Kind) async throws {
+        var reachable = false
+        let client = RuntimeClient(answer: { _ in
+            if reachable { return #"{"ok":true}"# }
+            throw RuntimeClient.Failure(message: "Invented connection failure", kind: failure)
+        })
+        var heartbeat = beat(pid: getpid(), at: Date())
+        heartbeat.started_at = ISOTime.string(try #require(ProcessCheck.startTime(pid: getpid())))
+        var records = HealthSnapshot.Runtime()
+        records.heartbeat = .success(heartbeat)
+        let snapshot = records
+        var reads = HealthModel.Reads()
+        reads.runtime = { _ in snapshot }
+        reads.checks = { _ in HealthSnapshot.Checks() }
+        let model = HealthModel(support: try temporaryFolder(), reads: reads, client: client)
+        model.refresh()
+        await model.settled()
+        model.runtimeStatus = .enabled
+        #expect(model.beatGrade == .green && model.statusGrade == .red)
+        #expect(HealthView(model: model).statusText(.green).contains("cannot connect"))
+        // The same health status recovers as soon as its next connection check answers.
+        reachable = true
+        model.refresh()
+        await model.settled()
+        model.runtimeStatus = .enabled
+        #expect(model.connectionProblem == nil && model.statusGrade == .green)
+        #expect(HealthView(model: model).statusText(.green).contains("Runtime running"))
+    }
+
     /// A read that waits until the test lets it go, standing in for a binder whose files block (a FIFO) or a slow disk.
     final class Gate: @unchecked Sendable {
         let open = DispatchSemaphore(value: 0)

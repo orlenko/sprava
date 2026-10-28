@@ -8,7 +8,7 @@ import SpravaKit
 @MainActor
 enum NoteWriter {
     enum Outcome: Equatable {
-        /// Written; `noticed` is false when the runtime did not answer, and the card will then ask for a binder.
+        /// Written; `noticed` is false when the runtime did not confirm the destination.
         case saved(noticed: Bool)
         /// Not written, with the sentence that says why.
         case refused(String)
@@ -18,7 +18,7 @@ enum NoteWriter {
     static let largestNote = 16 * 1024 * 1024
 
     static func save(_ text: String, binderHint: String?, startedAt: Date, client: RuntimeClient, support: URL,
-                     isPrivate: Bool = false) async -> Outcome {
+                     isPrivate: Bool = false, binder: URL? = nil) async -> Outcome {
         do {
             // The runtime makes this Mac's id at its first start; the app only reads it, never makes one.
             guard let deviceID = try DeviceID.existing(support: support) else {
@@ -32,7 +32,9 @@ enum NoteWriter {
             }
             var noticed = true
             do {
-                _ = try await client.global("capture_notice", [("event", .string(note.id)), ("sha256", .string(note.digest))], timeout: 5)
+                var fields: [(String, JSONValue)] = [("event", .string(note.id)), ("sha256", .string(note.digest))]
+                if let binder { fields.append(("binder", .string(binder.path))) }
+                _ = try await client.global("capture_notice", fields, timeout: 5)
             } catch {
                 noticed = false
             }

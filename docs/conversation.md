@@ -216,6 +216,18 @@ it receives. There is no second path to get wrong:
 Held files (encrypted, unreadable, a key file's name, an executable; adaptation-layer 4.5) are not filed; the
 report says why and offers "File as is" where that is safe.
 
+Built so far (2026-10-26): a drop bar above every adopted binder's page takes files from Finder and the file
+promises that Outlook, Mail and Photos send for a dragged message (each arrives as an `.eml` or the promised file).
+The app opens each through the opener above, folders one level deep, with the drop's bounds; the runtime
+(`intake_drop`, over its own XPC method that carries the open file) copies it into `intake/` under a cleaned name,
+never replacing an existing file, refusing a key file's name, a file over 512 MB, and a copy that would leave the
+binder's volume under the 5 GB reserve. Selected text dragged from any app is kept as one `.html` (or `.txt`) file
+named for its arrival. A message dragged out of a web app (Outlook on the web) carries only the page's own reference
+(`org.chromium.web-custom-data`), no email; the bar says so and suggests dragging the selected text or dropping a
+saved `.eml` or PDF. The bar reports what was added and what was not. From `intake/` the
+existing intake cards take over: step 3's filing at once, step 4's report with Undo, and removing a part-way
+batch's copies are not built yet.
+
 ### 5.2 Importing by path or description
 
 "Include `this-file.ext` from `/that/folder/over/there/`", "include the March statement from Downloads". A
@@ -305,8 +317,8 @@ architecture 4.5). Items from the person's own message start unmarked, as notes 
 A typed request does not lift a change out of class B: "mark the plumber's invoice paid" gives "Close 'Pay
 plumber invoice', due 2026-10-20? Apply", because the front desk may have picked the wrong item. Ops applied
 from the conversation carry the actor that chose them (`clerk` or `brain`, with the model), `approved_by`
-naming the person, and a `conversation` provenance field naming the transcript line that authorized them;
-binder-v0 §6.2 and §6.5 gain this. Only the person typing, dropping or tapping in the app's window for this
+naming the person, a `conversation` field naming the turn and the person's message that asked for them, and
+the request id (binder-v0 §6.2, §6.5); these fields are records, never authority. Only the person typing, dropping or tapping in the app's window for this
 binder authorizes anything, proven as the app's capture notices are (architecture 2.1, 8); arrivals in
 `intake/` are filed as class A because filing is additive and undoable. MCP text, other producers' captures,
 the companion relay and the hub's outbox keep their own paths.
@@ -385,7 +397,7 @@ agreement: only explicit signals count.
 | Signal | Counts toward |
 |---|---|
 | The person's Undo or fix of a front-desk decision | human-checked accuracy, as a miss |
-| The person's explicit confirmation (Keep or Move It on a card, a tap on "right") | human-checked accuracy, as a hit for the version chosen |
+| The person's explicit confirmation (Keep or Move It on a card, a tap on "right"), given no sooner than the card can be read (7.3) | human-checked accuracy, as a hit for the version chosen |
 | A back-office verdict | reviewer agreement, shown apart from human-checked accuracy |
 | Anything else, including an action nobody undid and a front desk and back office agreeing with no human look | unreviewed; never counted |
 
@@ -398,6 +410,30 @@ settings show human-checked accuracy alone. The engine settings show both number
 kind's state, and the person may put a kind back on probation. Scores are Sprava's state in the support
 folder (decisions.md A13), counted only from the runtime's own records of verdicts and of the person's taps
 and Undos; the transcript, which any program can write, is never a source for them.
+
+### 7.3 What a score is worth
+
+Four rules keep the numbers of 7.2 honest (decisions.md D18 to D21; all numbers proposed).
+
+- **Scores belong to the engine that earned them.** A score is kept per engine: the front desk's model,
+  variant and prompt version, as the derived event's `producer` records them (decisions.md C3). When any of
+  these changes, every kind goes back on probation, and the old scores stay beside the new ones in the engine
+  settings. Before a model change the person did not ask for (a new pinned list, a larger Mac; 11.2), Sprava may
+  first run the new model in shadow: it decides the same jobs as the current one, nothing it decides is applied
+  or shown in the conversation, and its decisions are scored against the same explicit signals as the current
+  model's. The settings show the two side by side before the switch.
+- **An unseen miss is measured by recall.** A misfiling is seen and undone. A date or to-do the front desk did
+  not find leaves no Undo behind, so for dates found and to-dos found a miss is also counted when a back-office
+  verdict that read every page (17.6) finds one more, or when the person adds a date or to-do that cites a
+  document the front desk filed. These kinds never graduate: the back office reviews every case of them.
+- **Graduation counts across binders.** One binder rarely gives enough cases of a kind, and 30 right of 30
+  still allows a true error rate near 10%. Graduation counts the person's cases of a kind in all their binders
+  for the same engine, as counts only, never content; probation stays per binder, and so does the person's
+  choice to put a kind back on probation.
+- **The reviewer is checked first.** Back-office verdicts count toward graduation only once the person has
+  chosen the back office's version on 15 of the last 20 disagreement cards they answered. Until then they are
+  shown apart and nothing graduates. A confirmation given less than 2 seconds after its card appeared is not
+  counted as human-checked, so tapping through does not raise the score meant to measure it.
 
 ## 8. What the front desk reads
 
@@ -518,6 +554,31 @@ interrupt, then SIGTERM after 5 s, then SIGKILL and a restart of that engine's p
 resumed by id. Applied changes stay with Undo. Engine sections below name only their interrupt.
 
 ### 11.1 The back office: Claude Code, then Codex
+
+**First read/draft pilot.** Establish useful dialogue with one Claude and one binder before enabling
+actions: feed a consented snapshot of intake, priorities, reference material and TODOs as labelled data,
+and require source ids for urgency assessments and reply drafts. Nothing is sent or applied. The
+search index can include an explicit intake-owner manifest for this consented conversation: unfiled mail
+and separately extracted attachments keep their source paths/revisions; email sender, recipient, subject
+and Message-ID remain source data for reply drafting. Ordinary searches exclude intake unless the caller
+explicitly includes it. Indexing alone neither grants model consent nor starts an importer.
+The installed app's read/draft pilot uses `ClaudeReadOnlyTurn` with no tools at all. The person enables a
+private subscription connection in Brains, then explicitly shares each physical binder's tasks/app history
+and optionally its documents and intake. A copy or replacement gets no inherited consent or native context.
+The account check verifies the pinned signed CLI, the effective first-party subscription/private config,
+and two harmless acknowledged turns across process restarts in the same native session, with newer app
+state overriding the first value. Failure never enables the new account; no binder data is sent by that check.
+Native processes end after each reply and resume by id; failed/interrupted context is replaced from bounded
+authenticated app history, never an imported/Terminal transcript. Stop during indexing prevents the model
+from starting; its already-admitted sandboxed document read may finish before another turn can start.
+Conversations and acceptance receipts are private to this installation in `binder-store/conversation.sqlite`;
+copying a binder does not copy their instruction authority. Clear fences workers and removes its local app
+history/native cache. General owner admission and autonomous operation tools remain disabled.
+
+The app displays cited answers, a durable email draft for explicit private Copy/Save (never SMTP), and
+editable task suggestions. Only the person's Add to To-dos button calls the existing authenticated item
+writer, private by default, with the displayed deadline/priority. Uncertain saves are shown and never
+retried automatically. Local routing and other providers follow this usable Claude workflow.
 
 The runtime starts Claude Code in print mode with structured input and output, no shell (2.1.299, spikes S1,
 S2). It runs in **a Claude home of Sprava's own per binder**, as Codex does: `CLAUDE_CONFIG_DIR`, `HOME` and
@@ -733,6 +794,8 @@ Short experiments on invented binders, each before the PR that needs it. S1 to S
 - **S5 llama.cpp**: one mixture-of-experts model; larger fixtures scored against Claude; the build script.
 - **S6 Translation** from the runtime and the helper, without a window. **S7 Retrieval**: FTS5 queries in each
   document language over 200 invented documents. **S8 Path import**: folder permissions; matching descriptions.
+
+The read/draft pilot keeps its token in its own non-synchronized Keychain item (decisions.md A20), never a plaintext fallback file. Provisioned runtimes use the data-protection Keychain; ad-hoc builds use the Mac login Keychain only after a missing-entitlement refusal (Apple TN3137). Both survive background restarts. Only an explicit credential save may ask macOS to authorize access; background reads never prompt. Locked/damaged Keychains remain refusals. Saved app history remains durable independently of the token.
 
 ## 15. Delivery order and code PRs
 

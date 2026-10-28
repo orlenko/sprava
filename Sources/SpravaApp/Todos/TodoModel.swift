@@ -6,7 +6,7 @@ import SpravaKit
 /// The To-dos page's state: its filters, the quick-add row, and the changes it sends, each through the runtime with the
 /// commands the binder page uses (`apply`, `undo`).
 @MainActor
-final class TodoModel: ObservableObject {
+final class TodoModel: ObservableObject, DraftOwner {
     /// A binder the quick-add row can file into.
     struct Target: Identifiable, Equatable {
         let folder: URL
@@ -35,6 +35,8 @@ final class TodoModel: ObservableObject {
     @Published private(set) var adding = false
     /// Items being closed: hidden until the refresh that no longer lists them.
     @Published private(set) var closing: Set<String> = []
+    @Published private(set) var undoing = false
+    var draftState: DraftState { DraftState(hasChanges: !draft.isEmpty, saving: adding || !closing.isEmpty || undoing) }
     let client: RuntimeClient
 
     init(client: RuntimeClient = RuntimeClient()) {
@@ -105,7 +107,9 @@ final class TodoModel: ObservableObject {
     }
 
     func undo(reload: @escaping () async -> Void) async {
-        guard let change = lastChange else { return }
+        guard !undoing, let change = lastChange else { return }
+        undoing = true
+        defer { undoing = false }
         lastChange = nil
         do {
             _ = try await client.command("undo", binder: change.folder, [("op_id", .string(change.opID))])

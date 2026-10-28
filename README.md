@@ -55,7 +55,7 @@ Run the same script after pulling changes; SwiftPM options pass through (`./scri
 The build finishes before Sprava quits. If the app is open, a dialog lets you save unfinished notes and
 wait for saves to finish before choosing Quit and Update; Cancel leaves the installed app running.
 A failed build leaves the installed app running; a successful
-update restarts only background jobs already registered. Set `SPRAVA_INSTALL_DIR` to another writable
+update asks the new app to refresh already registered background work before starting it. Set `SPRAVA_INSTALL_DIR` to another writable
 Applications folder if needed (for example `SPRAVA_INSTALL_DIR="$HOME/Applications"`). Run without sudo.
 
 Developer commands (invented data only; `sprava dev` refuses any folder in lifeproj's registry):

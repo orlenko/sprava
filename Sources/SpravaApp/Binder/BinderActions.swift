@@ -6,7 +6,7 @@ import SpravaKit
 
 /// One binder's review cards and actions, all through the runtime (mvp.md feature 3).
 @MainActor
-final class BinderActions: ObservableObject, RuntimePage {
+final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     struct Card: Identifiable {
         let id: String
         let title: String
@@ -86,10 +86,19 @@ final class BinderActions: ObservableObject, RuntimePage {
         var folders: [String: String] = [:]
         var channels: [String: String] = [:]
         var said: [String: String] = [:]
+        var originalItems: [String: [Editable]] = [:]
+        var originalFolders: [String: String] = [:]
         var isEmpty: Bool { description == nil && editing.isEmpty && folders.isEmpty && channels.isEmpty && said.isEmpty }
+        var hasChanges: Bool {
+            description != nil || editing.contains { $0.value != originalItems[$0.key] }
+                || folders.contains { $0.value != originalFolders[$0.key] } || !channels.isEmpty || !said.isEmpty
+        }
     }
     /// The drafts of the binders left behind, by folder, so returning to one brings its drafts back.
     private var drafts: [URL: Draft] = [:]
+    var draftState: DraftState {
+        DraftState(hasChanges: draft.hasChanges || drafts.values.contains { $0.hasChanges }, saving: busy || !pending.isEmpty)
+    }
     let client: RuntimeClient
 
     /// Whether Sprava keeps DASHBOARD.md, and whether the manual carries the addendum (nil: no manual).
@@ -191,7 +200,9 @@ final class BinderActions: ObservableObject, RuntimePage {
     /// What the person has set in the binder shown and not yet saved or approved.
     private var draft: Draft {
         let typed = settingsLoaded ? (description == savedDescription ? nil : description) : descriptionDraft
-        return Draft(description: typed, editing: editing, folders: folders, channels: channels, said: said)
+        return Draft(description: typed, editing: editing, folders: folders, channels: channels, said: said,
+                     originalItems: Dictionary(cards.map { ($0.id, $0.editable) }, uniquingKeysWith: { first, _ in first }),
+                     originalFolders: Dictionary(cards.compactMap { card in card.folder.map { (card.id, $0) } }, uniquingKeysWith: { first, _ in first }))
     }
 
     /// The cards and the history only: the page's timer calls this, so it never overwrites the description being

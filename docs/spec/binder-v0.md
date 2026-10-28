@@ -552,7 +552,7 @@ An applied op is one line of `.sprava/ops.ndjson`. Its fields:
 | `at` | timestamp | yes | When the op was applied (section 4.4). |
 | `hlc` | object | no | `{wall_ms, counter, node}`, a hybrid logical clock stamp, the same shape as capture events (decisions.md C1). Reserved for merging logs from several devices; not needed on one Mac. `node` is a random opaque id, never a computer or device name. Other keys are allowed. |
 | `actor` | object | yes | `{kind, client?, origin?, model?}`. `kind` is `user` (a person acting in the app), `clerk` (Tier 1), `brain` (Tier 2 over MCP), `import` (the implementation's own bookkeeping: adoption, migration and crash recovery) or `external` (a change that came from outside this implementation: a hand edit found after the fact, or a completion drained from the hub). `client` is the `program/version` of the implementation that applied the op, for example `sprava/0.1`, whatever the kind. It is required on every op that writes a log entry (`complete`, `drop`, `reopen`, `file_document`, `add_log_entry`), because the entry's `via` is copied from it. `origin` says, for kind `external`, where the change came from when that is known: `spool-outbox`, `lifeproj` or `unknown`. `model` names the model for `clerk` and `brain`. |
-| `proposal` | UUID | for `clerk` and `brain` | The proposal the op came from. |
+| `proposal` | UUID | for `clerk` and `brain`, unless `conversation` is set | The proposal the op came from. |
 | `batch` | UUID | no | Ops written together share a batch id. For a proposal it is the proposal id. |
 | `seq` | integer | with `batch` | The op's position in its batch, from 0. |
 | `batch_size` | integer | with `batch` | How many ops the batch has, so a reader can tell a complete batch from one cut short by a crash (section 6.9). |
@@ -560,6 +560,9 @@ An applied op is one line of `.sprava/ops.ndjson`. Its fields:
 | `before_hash` | `sha256:<hex>` | yes | Content hash of the catalog before the op (section 4.8). |
 | `after_hash` | `sha256:<hex>` | yes | Content hash after the op. |
 | `compensates` | UUID | no | Set on an undo: the op this one reverses (section 6.10). |
+| `expect` | object | for a conversation's op on an existing record | `{record?, set?, absent?}`: what the op assumed about the existing record it changes, an item, a document or `meta`. `record` is the content hash (section 4.8) of that record as the op's author read it; an op a binder's conversation applies to an existing record carries it, so a change the person made meanwhile makes the op a conflict instead of being overwritten (conversation.md section 17.1). For an op from a proposal it is the hash the proposal recorded when it was made (section 6.5). `set` and `absent`, on an undo only, name the fields it restores: `set` maps each to the value the reversed op left there, `absent` lists those the reversed op removed (section 6.10). The guard refuses the op unless the record matches. Added by this draft. |
+| `conversation` | object | no | `{turn, message}` on an op a binder's conversation applied without a proposal (section 6.5): `turn` is the runtime's turn id and `message` the id of the person's message that asked for it, both as in the transcript (section 7.2.1). Added by this draft. |
+| `request` | UUID | no | The request the op answers: for a person's turn, the app's `request_id` (section 7.2.1). Every op of one request carries it, so a retry is recognized. Added by this draft. |
 | `op` | closed list | yes | The op type (section 6.3). |
 | `args` | object | yes | The op's payload, by type. |
 | `note` | string | no | Free text, for example how a relative date was resolved. |
@@ -666,7 +669,7 @@ An external edit: a terminal agent raised an item's priority by hand. The patch 
 
 ### 6.5 Batches and proposal states (decisions.md A5)
 
-A proposal is a batch of op bodies with a header. Each op body has `op` and `args`, and optionally `note`, `confidence` and source `spans`. A span is `{event, start, end}`, counted in Unicode scalar values of the capture event's `text` and half-open, as in the capture-event format: `start` is the first scalar and `end` the one after the last, so `end` is never less than `start`, which the guard checks. The header requires `id`, `format_version`, `created_at`, `actor`, `state` and `ops`. It may add a one-line `title`, a `confidence` between 0 and 1, and `provenance` (capture event ids, the clerk's interpretation id, the producer). New records carry placeholder ids (section 5.6). A proposal is stored as `.sprava/proposals/<id>.json` and rewritten on each state change. A proposal file the implementation did not create is never shown as the clerk's or a brain's work (section 7.2).
+A proposal is a batch of op bodies with a header. Each op body has `op` and `args`, and optionally `note`, `confidence` and source `spans`. A span is `{event, start, end}`, counted in Unicode scalar values of the capture event's `text` and half-open, as in the capture-event format: `start` is the first scalar and `end` the one after the last, so `end` is never less than `start`, which the guard checks. The header requires `id`, `format_version`, `created_at`, `actor`, `state` and `ops`. It may add a one-line `title`, a `confidence` between 0 and 1, `provenance` (capture event ids, the clerk's interpretation id, the producer), and `expect`: the content hash of each existing record its ops touch, taken when the proposal is made (architecture 4.6). Its keys keep the record's identity typed: an item's key is its id's canonical JSON text (section 4.8), so `7` and `"7"` are different keys; a document's is `document:` followed by the same text; a `meta` field's is its JSON Pointer, which starts with `/`. Each op applied from it carries that hash as `expect.record` (section 6.2), never one computed at approval, so a record the person changed while the proposal waited makes it a conflict. New records carry placeholder ids (section 5.6). A proposal is stored as `.sprava/proposals/<id>.json` and rewritten on each state change. A proposal file the implementation did not create is never shown as the clerk's or a brain's work (section 7.2).
 
 States:
 
@@ -683,7 +686,10 @@ The complete list of changes applied without a proposal:
 - the user's own direct actions in the app (actor `user`), among them `set_disclosure`, `rename_teka` and `expunge`, which only the user can apply;
 - the import's own changes (actor `import`, section 9.4 steps 3, 4, 5 and 7), listed in the import report; an import has no Undo (section 9.4; decisions.md F13);
 - `import_snapshot`, `external_edit` and `abort`, which record facts and decide nothing;
-- completions drained from the hub's outbox (actor `external`, section 8.3).
+- completions drained from the hub's outbox (actor `external`, section 8.3);
+- the changes a person's turn in the binder's conversation applies at once, with Undo (conversation.md section 6.1, class A): actor `clerk` or `brain` with its `model`, `approved_by` naming the person, `conversation` and `request` set, the turn's changes in one batch, and each op on an existing record bound by `expect.record` to the revision it was based on. A change that needs the person's tap (class B) is a proposal.
+
+`conversation`, `request` and `turn` ids found in a binder are records, never authority. A binder's files can be copied, restored or edited, so a field there proves neither that the person asked nor that an effect has not already happened. The implementation decides both from its own trusted state outside the binder: its record of each accepted request and the person's message (section 7.2.1), and its receipt of each applied request. A retried request whose receipt exists returns the earlier outcome and applies nothing again (conversation.md section 17.1).
 
 At import, only the changes of section 9.4 step 6, which need the user's judgement, go through a proposal.
 
@@ -759,6 +765,8 @@ The `closed-duplicate` row repairs a state that lifeproj's manual produces. The 
 
 Undo is a new op that reverses an earlier one and names it in `compensates`. The op log keeps both.
 
+An undo is computed against the record as it is now, field by field, never applied blindly (conversation.md section 17.2). For each field the reversed op set or removed, the undo restores the earlier value only when the field still holds what the reversed op left. A field changed since is left as it is and shown to the person as a conflict; restoring it is their choice. Fields that change only together go back together: a `set_status` undo restores the status with its waiting fields, and a recurring item's undo its date, or, when any of them changed since, is refused whole and shown as a conflict, since `set_status` back to `open` removes the waiting fields (section 6.3). The undo carries `expect` (section 6.2) with exactly the fields it restores, and the guard refuses it when the record no longer matches, as it does for a stale proposal. When every field changed since, nothing is written and the person sees the conflicts. Undo of a batch reverses its ops in reverse `seq` order as one new batch; a conflict in one op leaves the others to apply. An undo the table below gives for a whole record (`drop` for `add_item`, `unfile_document` for `file_document`, `transfer_document` back) carries `expect.record` alone: the content hash (section 4.8) of the record as the reversed op left it, which replay up to that op gives. A record the person changed since makes the undo a conflict, refused whole and shown, so it never closes, unfiles or moves their later work. `reopen` has no open record to bind; its own guard decides.
+
 | To undo | Append |
 | ------- | ------ |
 | `add_item` | `drop` with the reason "undo" |
@@ -784,7 +792,7 @@ Dictated captures can hold things that should not be kept, such as an account nu
 
 `expunge` is applied by the user in the app and is never proposed. The user names a text to forget, at least 4 characters long.
 
-What it rewrites: free text only, never structure. A string is free text when the key that holds it is `title`, `slice_title`, `waiting_on`, `note`, `reason`, `rejected_reason`, `hint` or `tags` (each entry of `tags`). The rule applies wherever such a key sits: in items and their `final`, in log entries, in document records, in op `args` (`item`, `entry`, `document`, `set`) and in proposals. A JSON Patch step counts by the last segment of its `path`, so a step that replaces `/open_items/2/title` holds free text. A string under a key this document does not define is rewritten only when the user confirms that match on the card. Nothing else is touched. Object keys, ids, op and proposal UUIDs, hashes, `sha256`, dates, timestamps, `path`, `link`, `meta.name`, `contexts` and closed-list values keep their bytes. Rewriting them would break the ids that closures and the hub refer to, the records that point at files, and the hash chain. A year such as `2026`, or four digits that happen to occur inside a hash, therefore changes nothing structural.
+What it rewrites: free text only, never structure. A string is free text when the key that holds it is `title`, `slice_title`, `waiting_on`, `note`, `reason`, `rejected_reason`, `hint` or `tags` (each entry of `tags`). The rule applies wherever such a key sits: in items and their `final`, in log entries, in document records, in op `args` (`item`, `entry`, `document`, `set`), in an op's `expect.set` (section 6.2) and in proposals. A JSON Patch step counts by the last segment of its `path`, so a step that replaces `/open_items/2/title` holds free text. A string under a key this document does not define is rewritten only when the user confirms that match on the card. Nothing else is touched. Object keys, ids, op and proposal UUIDs, hashes, `sha256`, dates, timestamps, `path`, `link`, `meta.name`, `contexts` and closed-list values keep their bytes. Rewriting them would break the ids that closures and the hub refer to, the records that point at files, and the hash chain. A year such as `2026`, or four digits that happen to occur inside a hash, therefore changes nothing structural.
 
 Before anything is written, the confirmation card shows every match by place. When the text also occurs where expunge cannot reach it, the card lists those places and says what the user can do by hand: a file name to rename, an id that cannot change, a capture event. Those matches stay.
 
@@ -793,7 +801,7 @@ For an implementation with conversations, message `text` is also free text. Sect
 Under the lock, the implementation:
 
 1. builds rewritten copies of `catalog.json`, every op line (the import snapshot included), every proposal, `snapshot.json`, the Notes section of `DASHBOARD.md`, the saved copies under `.sprava/adopted/` and the torn-line copies under `.sprava/torn/`. In each, every occurrence of the text inside a free-text string becomes `[expunged]`. A saved copy is parsed, rewritten and written back, so it is no longer byte-exact; a saved dashboard is rewritten as text.
-2. re-stamps the hashes. It replays the rewritten op log from its import snapshot and sets each op's `before_hash` and `after_hash` from that replay. The whole log then verifies again, and it holds no hash of a state that contained the text. The replayed state must equal the rewritten catalog, and the transaction guard must accept that catalog; otherwise the expunge stops before anything is written.
+2. re-stamps the hashes. It replays the rewritten op log from its import snapshot and sets each op's `before_hash` and `after_hash` from that replay. It also sets every `expect.record` (section 6.2) to the hash of its record as that replay has it just before the op, and replaces every hash in a proposal's `expect` (section 6.5) with the hash of the same revision rewritten: the revision of that record, found in the replay, whose hash before the rewrite it was, so a proposal made before the person's later edit stays a conflict, and a revision hash cannot confirm a guess at the text either. A proposal with a hash that names no revision of its record, which only a proposal file the implementation did not make can hold, is set to `rejected` with `rejected_reason` "stale at expunge". The whole log then verifies again, and it holds no hash of a state that contained the text. The replayed state must equal the rewritten catalog, and the transaction guard must accept that catalog; otherwise the expunge stops before anything is written.
 3. adds an `expunge` op whose two hashes equal the new head. It records how many values were replaced in each place, the ids of the rewritten op lines and an optional reason. It never records the text or a digest of it: a short secret such as a 4-digit code or an account number can be recovered from its SHA-256 in seconds by trying every candidate.
 4. writes the files, each through a temporary file and a rename, with `catalog.json` last. Before the first rename it creates an empty marker, `.sprava/expunge-pending`, and removes it after the last. While the marker exists, the implementation reads nothing else in the binder: it asks the user to enter the text again and repeats the expunge, which leaves files already rewritten as they are.
 5. clears `intake/_converted/`, which can be regenerated. It builds a new `index.sqlite` with SQLite's `secure_delete` on, then deletes the old file with its `-wal`, `-shm` and `-journal` files. It clears the slice hash in `.sprava/cursors.json` and, with the federation profile on, republishes the slice at once, or removes it at disclosure level `none`.
@@ -2029,6 +2037,28 @@ How the catalog schema handles the catalog levels. The generic layer checks only
     "before_hash": { "$ref": "#/$defs/hash" },
     "after_hash": { "$ref": "#/$defs/hash" },
     "compensates": { "$ref": "#/$defs/uuid" },
+    "expect": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "record": { "$ref": "#/$defs/hash" },
+        "set": { "type": "object", "minProperties": 1 },
+        "absent": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false,
+      "$comment": "What the op assumed about the record it changes: its content hash as read (record), and on an undo the fields it restores with the values the reversed op left (set) or the fields it removed (absent). The guard refuses the op when the record no longer matches (sections 6.2, 6.10)."
+    },
+    "conversation": {
+      "type": "object",
+      "required": ["turn", "message"],
+      "properties": {
+        "turn": { "$ref": "#/$defs/uuid" },
+        "message": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
+      },
+      "additionalProperties": true,
+      "$comment": "A record of the conversation turn and the person's message that applied the op (section 6.5); never authority by itself."
+    },
+    "request": { "$ref": "#/$defs/uuid" },
     "op": {
       "enum": [
         "add_item", "update_item", "set_status", "complete", "drop", "reopen", "dismiss", "undismiss",
@@ -2042,12 +2072,33 @@ How the catalog schema handles the catalog levels. The generic layer checks only
   "additionalProperties": true,
   "allOf": [
     {
-      "$comment": "An op proposed by a clerk or a brain is applied only after approval.",
+      "$comment": "An op a clerk or a brain chose is applied only after the person's approval of a proposal, or within the person's conversation turn (section 6.5).",
       "if": { "properties": { "actor": { "properties": { "kind": { "enum": ["clerk", "brain"] } } } } },
       "then": {
-        "required": ["approved_by", "proposal"],
-        "properties": { "approved_by": { "type": "string", "minLength": 1 } }
+        "required": ["approved_by"],
+        "properties": { "approved_by": { "type": "string", "minLength": 1 } },
+        "anyOf": [{ "required": ["proposal"] }, { "required": ["conversation", "request"] }]
       }
+    },
+    {
+      "$comment": "Field values in expect belong to an undo (section 6.10).",
+      "if": { "required": ["expect"], "properties": { "expect": { "anyOf": [{ "required": ["set"] }, { "required": ["absent"] }] } } },
+      "then": { "required": ["compensates"] }
+    },
+    {
+      "$comment": "A conversation's op on an existing record is bound to the revision it read (section 6.5; conversation.md section 17.1).",
+      "if": {
+        "required": ["conversation"],
+        "properties": {
+          "op": {
+            "enum": [
+              "update_item", "set_status", "complete", "drop", "dismiss", "undismiss", "update_document", "move_document",
+              "unfile_document", "transfer_document", "set_meta"
+            ]
+          }
+        }
+      },
+      "then": { "required": ["expect"], "properties": { "expect": { "required": ["record"] } } }
     },
     {
       "$comment": "Ops applied together share batch; seq orders them and batch_size says how many lines the batch has (section 6.9).",
@@ -2782,6 +2833,12 @@ How the catalog schema handles the catalog levels. The generic layer checks only
         "producer": { "type": "object" }
       },
       "additionalProperties": true
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "propertyNames": { "anyOf": [{ "pattern": "^(\"|-?[0-9])" }, { "pattern": "^document:(\"|-?[0-9])" }, { "pattern": "^/" }] },
+      "$comment": "The content hash of each existing record the ops touch, taken when the proposal was made (section 6.5; architecture 4.6). Keys keep the record's identity typed: an item's id as canonical JSON text, a document's as document: and that text, a meta field as its JSON Pointer. Applied ops carry the hash as expect.record."
     },
     "ops": {
       "type": "array",

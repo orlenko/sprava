@@ -85,6 +85,33 @@ import Testing
         #expect(launchd.starts.isEmpty && keeper.state == .running)
     }
 
+    @Test func anExplicitRestartRestartsEvenAProcessWithALiveHeartbeat() async {
+        let launchd = Launchd(.enabled, live: true, works: .kickstart)
+        let keeper = launchd.keeper()
+        #expect(await keeper.restart() == .running)
+        // A heartbeat can be live while the app cannot connect. Restart must not just return "running".
+        #expect(launchd.starts == [.kickstart])
+    }
+
+    @Test func anUpdatedAppRenewsRegistrationBeforeAcceptingEvenALiveOldHeartbeat() async {
+        let launchd = Launchd(.enabled, live: true, works: .reregister)
+        let keeper = RuntimeKeeper(system: launchd.system, refreshRegistration: true)
+        #expect(await keeper.ensureRunning() == .running)
+        #expect(launchd.starts == [.reregister])
+        #expect(await keeper.ensureRunning() == .running)
+        #expect(launchd.starts == [.reregister]) // The handoff is consumed once.
+    }
+
+    @Test func updatingPreservesApprovalAndSignatureRefusals() async {
+        let approval = Launchd(.requiresApproval)
+        let waiting = RuntimeKeeper(system: approval.system, refreshRegistration: true)
+        #expect(await waiting.ensureRunning() == .needsApproval && approval.starts.isEmpty)
+        let refused = Launchd(.enabled, failure: "The app signature could not be verified.")
+        let keeper = RuntimeKeeper(system: refused.system, refreshRegistration: true)
+        #expect(await keeper.ensureRunning() == .failed("The app signature could not be verified."))
+        #expect(refused.starts == [.reregister])
+    }
+
     @Test func anUnregisteredRuntimeIsRegisteredWithoutAsking() async {
         let launchd = Launchd(.notRegistered, works: .register)
         let keeper = launchd.keeper()

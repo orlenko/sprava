@@ -9,7 +9,7 @@ import SwiftUI
 
 // ObservableObject rather than @Observable/@State: the Command Line Tools ship no SwiftUI macro plugin.
 @MainActor
-final class ShelfModel: ObservableObject {
+final class ShelfModel: ObservableObject, DraftOwner {
     /// One editor and removal admission point shared by every window that shows this Shelf.
     let itemEditor = ItemEditor()
     @Published var rows: [ShelfRow] = []
@@ -33,6 +33,8 @@ final class ShelfModel: ObservableObject {
         return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
     @Published var lastRefresh: Date?
+    @Published private(set) var creatingBinder = false
+    var draftState: DraftState { DraftState(saving: creatingBinder) }
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
@@ -58,14 +60,14 @@ final class ShelfModel: ObservableObject {
     init(support: URL = SpravaPaths.supportDirectory(), client: RuntimeClient = RuntimeClient(),
          readSnapshot: @escaping @Sendable (URL) -> ShelfSnapshot.Snapshot = ShelfSnapshot.read, readTimeout: TimeInterval = 5,
          summarize: @escaping @Sendable (ShelfRow, CalendarDate) -> ShelfCounts = ShelfCounts.read,
-         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock, refreshRegistration: Bool = false) {
         self.support = support
         self.readSnapshot = readSnapshot
         self.readTimeout = readTimeout
         self.deadline = deadline
         self.summarize = summarize
         self.client = client
-        let health = HealthModel(support: support)
+        let health = HealthModel(support: support, client: client, refreshRegistration: refreshRegistration)
         self.health = health
         startRuntime = { await health.keeper.ensureRunning() }
     }
@@ -211,6 +213,9 @@ final class ShelfModel: ObservableObject {
     /// A new binder from a template (mvp.md feature 6), created by the runtime. Nothing is asked until the runtime is
     /// there, so the person never fills in dialogs that cannot succeed.
     func startNewBinder() async {
+        guard !creatingBinder else { return }
+        creatingBinder = true
+        defer { creatingBinder = false }
         operationNote = nil
         guard await runtimeReady() else { return }
         let year = Calendar.current.component(.year, from: Date())
@@ -225,11 +230,11 @@ final class ShelfModel: ObservableObject {
         return BinderCreator.name(for: answer.name, template: template, year: year, existing: existing)
     }
 
-    /// Whether the runtime is there for an action that needs it (`ping`, two seconds at most; one only slow to answer goes
-    /// ahead). When it is not running, Sprava starts it without asking (decisions.md A19), and the action goes ahead once the
+    /// Whether the runtime answers an action's readiness check. Silence is not readiness: launchd may still be starting it.
+    /// Sprava starts it without asking (decisions.md A19), and the action goes ahead once the
     /// runtime answers within `startWait`; otherwise it stops before any dialog or request, and the note says why.
     func runtimeReady() async -> Bool {
-        guard await client.presence() == .notRunning else { return true }
+        guard await client.presence() != .answers else { return true }
         operationNote = "Starting Sprava's background part…"
         switch await startRuntime() {
         case .failed(let why):
@@ -289,6 +294,9 @@ struct ShelfView: View {
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
     @StateObject private var binderNote = BinderNote()
+    @StateObject private var binderConversation = ClaudeBinderConversation()
+    @StateObject private var binderActions = BinderActions()
+    @StateObject private var drafts = DraftRegistry()
     /// Every window uses the Shelf's editor, so none can remove another window's open draft.
     var itemEditor: ItemEditor { model.itemEditor }
 
@@ -331,6 +339,7 @@ struct ShelfView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Button { model.newBinder() } label: { Label("New Binder…", systemImage: "plus") }
                         .buttonStyle(.borderless)
+                        .disabled(model.creatingBinder)
                     if let note = model.note {
                         Text(note).font(.caption).foregroundStyle(.orange)
                     }
@@ -354,7 +363,7 @@ struct ShelfView: View {
             } else if let row = model.selectedRow {
                 NowView(row: row, today: model.today,
                         page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor)
+                        reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions)
             } else {
                 ContentUnavailableView {
                     Label("No binders yet", systemImage: "books.vertical")
@@ -363,9 +372,19 @@ struct ShelfView: View {
                 } actions: {
                     Button("New Binder…") { model.newBinder() }
                         .buttonStyle(.borderedProminent)
+                        .disabled(model.creatingBinder)
                     Button("Add Folder…") { model.addFolderWithPanel() }
                 }
             }
+        }
+        .safeAreaInset(edge: .top) {
+            RuntimeBanner(health: model.health, openHealth: { model.selection = healthSelection })
+                .padding(.horizontal)
+        }
+        .background(WindowCloseGuard(registry: drafts).allowsHitTesting(false))
+        .onAppear {
+            drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
+            drafts.track(binderActions); drafts.track(binderConversation)
         }
         .task {
             while !Task.isCancelled {
@@ -382,6 +401,7 @@ struct ShelfView: View {
         }
         .toolbar {
             Button { model.newBinder() } label: { Label("New Binder", systemImage: "plus.rectangle.on.folder") }
+                .disabled(model.creatingBinder)
             Button { model.addFolderWithPanel() } label: { Label("Add Folder", systemImage: "folder.badge.plus") }
             Button { model.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
         }
