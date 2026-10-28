@@ -24,6 +24,7 @@ struct ItemRow: View {
 
     var details: [String] {
         var parts: [String] = []
+        if let text = item.object?["details"]?.stringValue, !text.isEmpty { parts.append(text) }
         if let party = item.waitingOn { parts.append("waiting on \(party)") }
         if bucket == .nudge || bucket == .waiting, let due = item.due { parts.append("due \(due.description)") }
         if item.hasRecurrence { parts.append("repeats; the hub manages it for now") }
@@ -48,7 +49,7 @@ struct ItemRow: View {
                     Text(item.title)
                         .onTapGesture { begin() }
                     if !details.isEmpty {
-                        Text(details.joined(separator: "   ")).font(.caption).foregroundStyle(.secondary)
+                        Text(details.joined(separator: "   ")).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -122,7 +123,8 @@ struct ItemEditFields: View {
 
     var body: some View {
         let row = editor.row(in: folder)
-        HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(alignment: .firstTextBaseline) {
             if let due = row?.due {
                 DatePicker("Due", selection: Binding(get: { ItemEditor.date(editor.row(in: folder)?.due ?? due) },
                                                      set: { editor.setDue(ItemEditor.day($0), in: folder) }),
@@ -137,8 +139,40 @@ struct ItemEditFields: View {
                                              set: { editor.setTitle($0, in: folder) }))
                 .textFieldStyle(.roundedBorder)
                 .focused($titleFocused)
-            Button("Save") { save() }.disabled(actions.busy)
+            Button("Save") { save() }.disabled(actions.busy || row?.validation != nil)
             Button("Cancel") { editor.cancel(in: folder) }.keyboardShortcut(.cancelAction)
+          }
+          TextField("Details", text: Binding(get: { editor.row(in: folder)?.details ?? "" },
+                                              set: { editor.setDetails($0, in: folder) }), axis: .vertical)
+              .lineLimit(2...5)
+          HStack {
+              Picker("Priority", selection: Binding(get: { editor.row(in: folder)?.priority.rawValue ?? "normal" },
+                  set: { if let value = Priority(rawValue: $0) { editor.setPriority(value, in: folder) } })) {
+                  Text("High").tag("high")
+                  Text("Normal").tag("normal")
+                  Text("Low").tag("low")
+              }
+              Picker("Status", selection: Binding(get: { editor.row(in: folder)?.status.rawValue ?? "open" },
+                  set: { if let value = ItemStatus(rawValue: $0) { editor.setStatus(value, in: folder) } })) {
+                  Text("Open").tag("open")
+                  Text("Waiting").tag("waiting")
+                  Text("Blocked").tag("blocked")
+              }
+          }
+          if row?.waiting == true {
+              HStack {
+                  TextField("Waiting on", text: Binding(get: { editor.row(in: folder)?.waitingOn ?? "" },
+                                                       set: { editor.setWaitingOn($0, in: folder) }))
+                  if let day = row?.followUp {
+                      DatePicker("Follow up", selection: Binding(get: { ItemEditor.date(editor.row(in: folder)?.followUp ?? day) },
+                          set: { editor.setFollowUp(ItemEditor.day($0), in: folder) }), displayedComponents: .date)
+                          .datePickerStyle(.field)
+                  } else {
+                      Button("Add follow-up date") { editor.setFollowUp(CalendarDate.today(), in: folder) }
+                  }
+              }
+              if let message = row?.validation { Text(message).font(.caption).foregroundStyle(.secondary) }
+          }
         }
         // Locked while its change is on its way: the request already holds what was typed.
         .disabled(editor.saving.contains(folder.standardizedFileURL))

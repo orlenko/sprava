@@ -2,8 +2,8 @@ import BinderFormat
 import Foundation
 import SpravaKit
 
-/// The item being edited in place on each binder's page. Each saved change is one `update_item` (binder-v0 §6.3),
-/// sent through the runtime like every binder write; the runtime's store stays the only writer.
+/// The item being edited on each binder's page. Text, dates and waiting state are saved together through the
+/// runtime's write transaction (binder-v0 §6.9); the runtime's store stays the only writer.
 ///
 /// Each binder has at most one open row, and nothing typed is ever kept anywhere but in it: opening another row
 /// saves the open one first, as an inline edit on the Mac does when the person clicks away, and Esc cancels. The
@@ -16,8 +16,41 @@ final class ItemEditor: ObservableObject, DraftOwner {
         let id: JSONValue
         var title: String
         var due: CalendarDate?
+        var details: String
+        var priority: Priority
+        var status: ItemStatus
+        var waitingOn: String
+        var followUp: CalendarDate?
+        var waiting: Bool { status == .waiting || status == .blocked }
+        var validation: String? {
+            waiting && (waitingOn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || followUp == nil)
+                ? "Enter who you are waiting on and a follow-up date before saving." : nil
+        }
+        var dirty: Bool {
+            title != item.object?["title"]?.stringValue || due != item.due
+                || details != (item.object?["details"]?.stringValue ?? "") || priority != (item.priority ?? .normal)
+                || status != item.status || (waiting && (waitingOn != (item.waitingOn ?? "") || followUp != item.followUpAt))
+        }
         /// The change typed so far, as `update_item` args; nil when nothing changed.
-        var change: JSONObject? { ItemEditor.change(of: item, title: title, due: due) }
+        var change: JSONObject? {
+            var args = ItemEditor.change(of: item, title: title, due: due) ?? JSONObject([(key: "id", value: id)])
+            var set = args["set"]?.objectValue ?? JSONObject()
+            var unset = args["unset"]?.arrayValue ?? []
+            if details != (item.object?["details"]?.stringValue ?? "") {
+                if details.isEmpty { unset.append(.str("details")) } else { set.set("details", .string(details)) }
+            }
+            if priority != (item.priority ?? .normal) { set.set("priority", .string(priority.rawValue)) }
+            if !set.entries.isEmpty { args.set("set", .object(set)) }
+            if !unset.isEmpty { args.set("unset", .array(unset)) }
+            if status != item.status || (waiting && (waitingOn != (item.waitingOn ?? "") || followUp != item.followUpAt)) {
+                args.set("status", .string(status.rawValue))
+                if waiting {
+                    args.set("waiting_on", .string(waitingOn.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    if let followUp { args.set("follow_up_at", .string(followUp.description)) }
+                }
+            }
+            return args.entries.count > 1 ? args : nil
+        }
     }
 
     /// The open row of each binder, by folder.
@@ -27,7 +60,7 @@ final class ItemEditor: ObservableObject, DraftOwner {
     @Published private(set) var saving: Set<URL> = []
 
     var draftState: DraftState {
-        DraftState(hasChanges: rows.values.contains { $0.title != $0.item.object?["title"]?.stringValue || $0.due != $0.item.due },
+        DraftState(hasChanges: rows.values.contains(where: \.dirty),
                    saving: !saving.isEmpty)
     }
 
@@ -76,7 +109,9 @@ final class ItemEditor: ObservableObject, DraftOwner {
     }
 
     private func open(_ item: Item, _ id: JSONValue, in folder: URL) {
-        rows[folder] = Row(item: item, id: id, title: item.object?["title"]?.stringValue ?? "", due: item.due)
+        rows[folder] = Row(item: item, id: id, title: item.object?["title"]?.stringValue ?? "", due: item.due,
+                           details: item.object?["details"]?.stringValue ?? "", priority: item.priority ?? .normal,
+                           status: item.status, waitingOn: item.waitingOn ?? "", followUp: item.followUpAt)
     }
 
     /// Closes this binder's open row and drops what was typed into it; false while its change is on its way.
@@ -106,6 +141,19 @@ final class ItemEditor: ObservableObject, DraftOwner {
         return true
     }
 
+    func setDetails(_ value: String, in folder: URL) { edit(in: folder) { $0.details = value } }
+    func setPriority(_ value: Priority, in folder: URL) { edit(in: folder) { $0.priority = value } }
+    func setStatus(_ value: ItemStatus, in folder: URL) { edit(in: folder) { $0.status = value } }
+    func setWaitingOn(_ value: String, in folder: URL) { edit(in: folder) { $0.waitingOn = value } }
+    func setFollowUp(_ value: CalendarDate?, in folder: URL) { edit(in: folder) { $0.followUp = value } }
+
+    private func edit(in folder: URL, _ body: (inout Row) -> Void) {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder), var row = rows[folder] else { return }
+        body(&row)
+        rows[folder] = row
+    }
+
     /// Sends what changed as one `update_item`, with the row locked until the runtime answers, and closes the row
     /// once the runtime accepts it. A refused change keeps the row open with what was typed, and the page shows why.
     /// Nothing changed: the row just closes.
@@ -114,9 +162,10 @@ final class ItemEditor: ObservableObject, DraftOwner {
               then next: @escaping () -> Void = {}) -> Task<Void, Never>? {
         let folder = folder.standardizedFileURL
         guard !saving.contains(folder), !actions.busy, actions.serves(folder), let row = rows[folder] else { return nil }
+        if let why = row.validation { actions.message = why; return nil }
         guard let args = row.change else { rows[folder] = nil; next(); return nil }
         saving.insert(folder)
-        return actions.run("apply", folder, [("op", .str("update_item")), ("args", .object(args))], then: reload,
+        return actions.run("apply", folder, [("op", .str("edit_item")), ("args", .object(args))], then: reload,
                            onSuccess: { [weak self] in self?.rows[folder] = nil },
                            onEnd: { [weak self] in
                                guard let self else { return }
