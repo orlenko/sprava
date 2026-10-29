@@ -6,6 +6,7 @@ struct DraftEditor: View {
     static let minHeight: CGFloat = 60
     static let maxHeight: CGFloat = 240
     @Binding var text: String
+    var placeholder = "Tell this binder\u{2026}"
 
     var body: some View {
         TextEditor(text: $text)
@@ -13,7 +14,7 @@ struct DraftEditor: View {
             .frame(minHeight: Self.minHeight, maxHeight: Self.maxHeight)
             .overlay(alignment: .topLeading) {
                 if text.isEmpty {
-                    Text("Tell this binder\u{2026}").foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
+                    Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
                 }
             }
     }

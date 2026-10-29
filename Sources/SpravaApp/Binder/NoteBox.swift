@@ -23,6 +23,12 @@ final class BinderNote: ObservableObject, DraftOwner {
 
     /// The draft of the binder shown.
     @Published var text = ""
+    /// Opened by the person while the binder's conversation is the page's input: the box that adds to-dos without
+    /// Claude stays one click away.
+    @Published var directOpen = false
+    /// Whether the box shows while the conversation is the page's input: when opened, and always while it holds a
+    /// draft or a message, so nothing typed or reported is ever out of sight.
+    var directShown: Bool { directOpen || !text.isEmpty || message != nil }
     @Published private(set) var message: String?
     /// The binders whose note is being saved: the box is locked meanwhile, and cleared once the note is in.
     @Published private(set) var saving: Set<URL> = []
@@ -122,28 +128,40 @@ final class BinderNote: ObservableObject, DraftOwner {
     }
 }
 
-/// The box itself, drawn at the top of the page.
+/// The box itself, drawn at the top of the page. It adds to-dos; it does not answer, so it says so (2026-10-28: a
+/// question typed into "Tell this binder" became a to-do).
 struct NoteBox: View {
+    static let placeholder = "Add to-dos, one per line\u{2026}"
     @ObservedObject var note: BinderNote
     let row: ShelfRow
     let sharesName: Bool
     /// Called once a note is saved, so the page reads its new card.
     let added: () -> Void
+    /// True while the binder's conversation is the page's input: this box is then the way to add to-dos without
+    /// Claude, and leaves Command-Return to the conversation's Send.
+    var talking = false
+
+    /// This box as shown below a connected conversation.
+    func besideConversation() -> NoteBox { var box = self; box.talking = true; return box }
+
+    var caption: String {
+        talking ? "Each line becomes a to-do card here for your OK, without Claude."
+            : "Each line becomes a to-do card here for your OK. To ask this binder questions, connect it to Claude below."
+    }
 
     var body: some View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
-                DraftEditor(text: $note.text)
+                DraftEditor(text: $note.text, placeholder: Self.placeholder)
                     .disabled(note.isSaving)
                     .onChange(of: note.text) { _, new in note.changed(new) }
                 HStack {
-                    Text("One line per thing to do. It comes to this binder as a card for your OK.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(caption).font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Add") {
                         Task { if await note.add(row, sharesName: sharesName) { added() } }
                     }
-                    .keyboardShortcut(.return, modifiers: .command)
+                    .keyboardShortcut(talking ? nil : KeyboardShortcut(.return, modifiers: .command))
                     .disabled(note.isSaving || note.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 if let message = note.message { Text(message).font(.callout).foregroundStyle(.secondary) }
