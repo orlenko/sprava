@@ -174,6 +174,34 @@ final class ItemEditor: ObservableObject, DraftOwner {
                            })
     }
 
+    /// Closes the open row's item: Mark Done saves what was typed first and completes the item once the runtime
+    /// accepts that; Delete drops the item, and what was typed with it. The row stays open and locked until the
+    /// runtime answers, so a refusal leaves the typed text in place and the page says why.
+    @discardableResult
+    func close(as op: String, in folder: URL, _ actions: BinderActions, reload: @escaping () -> Void) -> Task<Void, Never>? {
+        let folder = folder.standardizedFileURL
+        guard !saving.contains(folder), !actions.busy, actions.serves(folder), let row = rows[folder] else { return nil }
+        if op == "complete", row.change != nil || row.validation != nil {
+            return save(in: folder, actions, reload: reload, then: { [weak self] in
+                self?.close(row.item, as: op, in: folder, actions, reload: reload)
+            })
+        }
+        return close(row.item, as: op, in: folder, actions, reload: reload)
+    }
+
+    @discardableResult
+    private func close(_ item: Item, as op: String, in folder: URL, _ actions: BinderActions,
+                       reload: @escaping () -> Void) -> Task<Void, Never>? {
+        saving.insert(folder)
+        guard let task = actions.close(item, as: op, folder, reload: reload,
+                                       onSuccess: { [weak self] in self?.rows[folder] = nil },
+                                       onEnd: { [weak self] in self?.saving.remove(folder) }) else {
+            saving.remove(folder)
+            return nil
+        }
+        return task
+    }
+
     /// The `update_item` args for a new title and due date, or nil when neither changed. An empty title leaves the
     /// title as it was (binder-v0 §6.3: `title` cannot be removed). A due date replaces `no_deadline`, and "no
     /// date" replaces the due date with `no_deadline: true`, so the item keeps exactly one (binder-v0 §4.4).

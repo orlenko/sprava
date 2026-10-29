@@ -3,8 +3,8 @@ import SpravaKit
 import SwiftUI
 
 /// One item on the binder's page. On an adopted binder the circle marks it done, a click on the title (or a double
-/// click on the row) edits its title and due date in place, and the context menu offers Edit, Mark Done and Delete.
-/// Each is one op through the runtime; a closing is undone from Recent changes.
+/// click on the row) edits it in place, and the context menu offers Edit, Mark Done and Delete; the open row has
+/// Delete beside Save and Cancel. Each is one op through the runtime; a closing is undone from Recent changes.
 struct ItemRow: View {
     let item: Item
     let bucket: Bucket
@@ -35,16 +35,17 @@ struct ItemRow: View {
     /// Whether the row can be changed at all: an op names the item by its id, and an item that repeats is shown
     /// read-only, since the hub manages it for now (mvp.md feature 2).
     var changeable: Bool { editable && item.object?["id"] != nil && !item.hasRecurrence }
-    /// An open row is saved or cancelled first, so a closing the runtime refuses never takes what was typed with it.
+    /// A row that is not open closes at once; the open row closes through the editor, which saves what was typed first
+    /// (Mark Done) or drops it with the item (Delete), so a closing the runtime refuses never takes the typed text.
     var closable: Bool { changeable && !editor.isEditing(item, in: folder) }
+    var editing: Bool { changeable && editor.isEditing(item, in: folder) }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             circle
-            if changeable, editor.isEditing(item, in: folder) {
+            if editing {
                 ItemEditFields(actions: actions, editor: editor, folder: folder, reload: reload)
             } else {
-                Text(dateText).monospacedDigit().foregroundStyle(.secondary).frame(width: 120, alignment: .leading)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title)
                         .onTapGesture { begin() }
@@ -53,6 +54,8 @@ struct ItemRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // After the title, so an item without a date does not push its title right of the others.
+                if !dateText.isEmpty { Text(dateText).monospacedDigit().foregroundStyle(.secondary) }
             }
         }
         .contentShape(Rectangle())
@@ -60,10 +63,8 @@ struct ItemRow: View {
         .contextMenu {
             if changeable {
                 Button("Edit") { begin() }
-                if closable {
-                    Button("Mark Done") { close("complete") }
-                    Button("Delete") { close("drop") }
-                }
+                Button("Mark Done") { close("complete") }
+                Button("Delete") { close("drop") }
             }
         }
     }
@@ -71,11 +72,11 @@ struct ItemRow: View {
     @ViewBuilder var circle: some View {
         let image = Image(systemName: item.priority == .high ? "exclamationmark.circle.fill" : "circle")
             .foregroundStyle(item.priority == .high ? .red : .secondary)
-        if closable {
+        if closable || editing {
             Button { close("complete") } label: { image }
                 .buttonStyle(.plain)
-                .disabled(actions.busy)
-                .help("Mark done")
+                .disabled(actions.busy || editor.saving.contains(folder.standardizedFileURL))
+                .help(editing ? "Save and mark done" : "Mark done")
         } else {
             image
         }
@@ -87,8 +88,11 @@ struct ItemRow: View {
     }
 
     func close(_ op: String) {
-        guard closable else { return }
-        actions.close(item, as: op, folder, reload: reload)
+        if editing {
+            editor.close(as: op, in: folder, actions, reload: reload)
+        } else if closable {
+            actions.close(item, as: op, folder, reload: reload)
+        }
     }
 }
 
@@ -106,7 +110,7 @@ struct StrandedItemEdit: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("This item is no longer on the page: it was closed or changed elsewhere. Save what you typed, or cancel it.")
                         .font(.caption).foregroundStyle(.orange)
-                    ItemEditFields(actions: actions, editor: editor, folder: folder, reload: reload)
+                    ItemEditFields(actions: actions, editor: editor, folder: folder, reload: reload, deletable: false)
                 }
             }
         }
@@ -119,6 +123,8 @@ struct ItemEditFields: View {
     @ObservedObject var editor: ItemEditor
     let folder: URL
     let reload: () -> Void
+    /// False for a row whose item is no longer on the page, which there is nothing to delete from.
+    var deletable = true
     @FocusState private var titleFocused: Bool
 
     var body: some View {
@@ -141,23 +147,26 @@ struct ItemEditFields: View {
                 .focused($titleFocused)
             Button("Save") { save() }.disabled(actions.busy || row?.validation != nil)
             Button("Cancel") { editor.cancel(in: folder) }.keyboardShortcut(.cancelAction)
+            if deletable {
+                Button("Delete", role: .destructive) { editor.close(as: "drop", in: folder, actions, reload: reload) }
+                    .disabled(actions.busy)
+                    .help("Delete this item; Undo in Recent changes brings it back")
+            }
           }
           TextField("Details", text: Binding(get: { editor.row(in: folder)?.details ?? "" },
                                               set: { editor.setDetails($0, in: folder) }), axis: .vertical)
+              .textFieldStyle(.roundedBorder)
               .lineLimit(2...5)
-          HStack {
-              Picker("Priority", selection: Binding(get: { editor.row(in: folder)?.priority.rawValue ?? "normal" },
-                  set: { if let value = Priority(rawValue: $0) { editor.setPriority(value, in: folder) } })) {
-                  Text("High").tag("high")
-                  Text("Normal").tag("normal")
-                  Text("Low").tag("low")
-              }
-              Picker("Status", selection: Binding(get: { editor.row(in: folder)?.status.rawValue ?? "open" },
-                  set: { if let value = ItemStatus(rawValue: $0) { editor.setStatus(value, in: folder) } })) {
-                  Text("Open").tag("open")
-                  Text("Waiting").tag("waiting")
-                  Text("Blocked").tag("blocked")
-              }
+          // Each label beside its menu, at the menu's own width: in a List row, labelled pickers in an HStack each
+          // stretch to half the row and leave their labels far from their menus.
+          HStack(spacing: 16) {
+              LabeledPicker(label: "Priority", selection: Binding(get: { editor.row(in: folder)?.priority.rawValue ?? "normal" },
+                  set: { if let value = Priority(rawValue: $0) { editor.setPriority(value, in: folder) } }),
+                  options: [("High", "high"), ("Normal", "normal"), ("Low", "low")])
+              LabeledPicker(label: "Status", selection: Binding(get: { editor.row(in: folder)?.status.rawValue ?? "open" },
+                  set: { if let value = ItemStatus(rawValue: $0) { editor.setStatus(value, in: folder) } }),
+                  options: [("Open", "open"), ("Waiting", "waiting"), ("Blocked", "blocked")])
+              Spacer()
           }
           if row?.waiting == true {
               HStack {
@@ -182,4 +191,22 @@ struct ItemEditFields: View {
     }
 
     func save() { editor.save(in: folder, actions, reload: reload) }
+}
+
+/// A short label and its menu, kept together at the menu's natural width.
+struct LabeledPicker: View {
+    let label: String
+    let selection: Binding<String>
+    let options: [(String, String)]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label).foregroundStyle(.secondary)
+            Picker(label, selection: selection) {
+                ForEach(options, id: \.1) { Text($0.0).tag($0.1) }
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+    }
 }

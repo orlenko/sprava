@@ -226,22 +226,72 @@ import Testing
         #expect(editor.row(in: folder)?.title == "Call the Acme accountant" && applies(runtime) == sent)
     }
 
-    @Test func anOpenRowIsSavedOrCancelledBeforeItCanBeClosed() async throws {
+    /// Waits for work the editor starts after a save (the completion that follows it), at most a few seconds.
+    func settle(_ editor: ItemEditor, _ actions: BinderActions, _ done: () -> Bool) async {
+        for _ in 0..<300 where !done() || actions.busy || !editor.saving.isEmpty {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// The circle and Mark Done work on the open row too (2026-10-28: "I cannot click these… not if it's expanded"):
+    /// what was typed is saved first, then the item is completed, so nothing typed is lost.
+    @Test func markingTheOpenRowDoneSavesWhatWasTypedFirst() async throws {
         let (actions, runtime, folder) = try await binder()
         await actions.load(folder, adopted: true)
         let editor = ItemEditor()
         let invoice = try await openItem("acme-1", in: folder)
         let row = ItemRow(item: invoice, bucket: .later, actions: actions, editor: editor, folder: folder, editable: true, reload: {})
-        #expect(row.closable)
         editor.begin(invoice, in: folder, actions, reload: {})
         editor.setTitle("Send the Acme invoice by post", in: folder)
-        // A completion the runtime refused would otherwise have taken the typed title with it.
-        #expect(!row.closable)
+        #expect(row.editing && !row.closable)
         row.close("complete")
-        #expect(applies(runtime) == 0)
-        #expect(editor.row(in: folder)?.title == "Send the Acme invoice by post")
-        editor.cancel(in: folder)
-        #expect(row.closable)
+        await settle(editor, actions) { applies(runtime) == 2 }
+        #expect(actions.message == nil && editor.row(in: folder) == nil)
+        let ops = runtime.sent.filter { $0["command"] == .str("apply") }.map { $0["op"] }
+        #expect(ops == [.str("edit_item"), .str("complete")])
+        #expect(await shown("acme-1", in: folder) == nil)
+        #expect(await page(folder).closed.contains { $0.title == "Send the Acme invoice by post" && $0.action == "done" })
+    }
+
+    /// Delete sits in the open row (2026-10-28: "There's no way to delete something that I mistakenly added").
+    @Test func deletingTheOpenRowDropsTheItemAndWhatWasTyped() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let editor = ItemEditor()
+        let call = try await openItem("acme-2", in: folder)
+        editor.begin(call, in: folder, actions, reload: {})
+        editor.setTitle("Call the Acme accountant on Monday", in: folder)
+        try await #require(editor.close(as: "drop", in: folder, actions, reload: {})).value
+        #expect(actions.message == nil && editor.row(in: folder) == nil && editor.saving.isEmpty)
+        #expect(applies(runtime) == 1)
+        #expect(try await lastOp(in: folder)["op"] == .str("drop"))
+        #expect(await page(folder).closed.contains { $0.title == "Call the Acme accountant" && $0.action == "dropped" })
+    }
+
+    @Test func aRefusedDeleteKeepsTheOpenRowAndItsText() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        runtime.answers["apply"] = { _ in #"{"ok":false,"error":"the binder needs a repair first"}"# }
+        let editor = ItemEditor()
+        let call = try await openItem("acme-2", in: folder)
+        editor.begin(call, in: folder, actions, reload: {})
+        editor.setTitle("Call the Acme accountant on Monday", in: folder)
+        try await #require(editor.close(as: "drop", in: folder, actions, reload: {})).value
+        #expect(actions.message != nil && editor.saving.isEmpty)
+        #expect(editor.row(in: folder)?.title == "Call the Acme accountant on Monday")
+        #expect(await shown("acme-2", in: folder) != nil)
+    }
+
+    @Test func anInvalidOpenRowIsNotMarkedDone() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let editor = ItemEditor()
+        let invoice = try await openItem("acme-1", in: folder)
+        editor.begin(invoice, in: folder, actions, reload: {})
+        // Waiting needs whom and until when; the row says so and keeps what was typed.
+        editor.setStatus(.waiting, in: folder)
+        #expect(editor.close(as: "complete", in: folder, actions, reload: {}) == nil)
+        #expect(applies(runtime) == 0 && actions.message != nil && editor.row(in: folder)?.status == .waiting)
     }
 
     @Test func aRowIsLockedWhileItsChangeIsOnItsWay() async throws {

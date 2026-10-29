@@ -432,10 +432,12 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
 
     /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id.
     @discardableResult
-    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
+    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void,
+               onSuccess: @escaping () -> Void = {}, onEnd: @escaping () -> Void = {}) -> Task<Void, Never>? {
         guard let id = item.object?["id"] else { return nil }
         let at = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)
         return run("apply", folder, [("op", .string(op)),
-                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))], then: reload)
+                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))],
+                   then: reload, onSuccess: onSuccess, onEnd: onEnd)
     }
 }
