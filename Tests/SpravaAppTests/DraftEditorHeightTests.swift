@@ -48,3 +48,23 @@ import Testing
         #expect(height <= DraftEditor.maxHeight)
     }
 }
+
+/// The border drawn around the box must not take the clicks meant for the text inside it.
+@MainActor
+@Suite struct DraftEditorClickTests {
+    @Test func aClickInsideTheBorderReachesTheText() async throws {
+        let host = NSHostingView(rootView: DraftEditor(text: .constant("Invented line")).frame(width: 400, height: 120))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 120), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        for _ in 0..<5 { host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(50)) }
+        func find(_ view: NSView) -> NSTextView? {
+            (view as? NSTextView) ?? view.subviews.lazy.compactMap(find).first
+        }
+        let text = try #require(find(host))
+        let scroll = try #require(text.enclosingScrollView)
+        let center = host.convert(NSPoint(x: scroll.bounds.midX, y: scroll.bounds.midY), from: scroll)
+        let hit = try #require(host.hitTest(center))
+        #expect(hit === text || hit.isDescendant(of: scroll))
+    }
+}

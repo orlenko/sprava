@@ -10,6 +10,8 @@ struct ChatView: View {
     var connected = true
 
     static let emptyHint = "Ask about this binder's to-dos and documents, or ask for a draft."
+    /// Over a line kept in the composer of a binder that is not connected, so it is not taken for the to-do box.
+    static let unsentNote = "Unsent message to Claude, kept here until this binder is connected again."
 
     /// What the conversation shows. A transcript only with turns in it, so an empty one takes no room; the hint only
     /// where there is someone to ask.
@@ -31,7 +33,10 @@ struct ChatView: View {
             if parts.hint { Text(Self.emptyHint).font(.callout).foregroundStyle(.secondary) }
             if parts.transcript { transcript }
             if let message = chat.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
-            if parts.composer { Composer(chat: chat) }
+            if parts.composer {
+                if !connected { Text(Self.unsentNote).font(.caption).foregroundStyle(.secondary) }
+                Composer(chat: chat)
+            }
         }
     }
 
