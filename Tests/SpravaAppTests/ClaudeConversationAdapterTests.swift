@@ -152,4 +152,60 @@ import Testing
         #expect(model.enableBlocker == nil)
         #expect(ClaudeAccountModel.setupCommand == "claude setup-token")
     }
+
+    /// A binder whose setup read is still on its way must not take the page back once another binder is shown: its
+    /// conversation would show the old binder while the page belongs to the new one, and Send would stay unavailable.
+    @Test func aSlowSetupReadDoesNotTakeThePageBackFromTheNextBinder() async throws {
+        let old = URL(fileURLWithPath: "/invented/old-workshop"), new = URL(fileURLWithPath: "/invented/new-workshop")
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        let server = Server()
+        let client = RuntimeClient(answer: { text in
+            let value = try JSONParser.parse(text).value
+            switch value["command"]?.stringValue {
+            case "claude_binder" where value["binder"] == .str(old.path):
+                return #"{"ok":true,"enabled":false,"binder_id":null}"#
+            case "claude_status":
+                for await _ in gate { break }   // held until the new binder is shown
+                return #"{"ok":true,"enabled":false,"credential_persistent":true}"#
+            default:
+                return try server.answer(text)
+            }
+        })
+        let model = ClaudeBinderConversation(client: client, authenticate: {})
+        let first = Task { await model.show(old) }
+        try await Task.sleep(for: .milliseconds(50))
+        await model.show(new)
+        #expect(model.connected && model.chat.folder == new.standardizedFileURL && model.chat.isAvailable)
+        release.yield()
+        await first.value
+        #expect(model.folder == new.standardizedFileURL && model.chat.folder == new.standardizedFileURL)
+        #expect(model.chat.isAvailable && model.accountReady == true)
+    }
+
+    /// A refused connect reports into its own binder only.
+    @Test func aConnectRefusalStaysWithItsBinder() async throws {
+        let old = URL(fileURLWithPath: "/invented/old-workshop"), new = URL(fileURLWithPath: "/invented/new-workshop")
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        let server = Server()
+        let client = RuntimeClient(answer: { text in
+            let value = try JSONParser.parse(text).value
+            switch value["command"]?.stringValue {
+            case "claude_binder" where value["binder"] == .str(old.path):
+                return #"{"ok":true,"enabled":false,"binder_id":null}"#
+            case "claude_enable":
+                for await _ in gate { break }
+                throw RuntimeClient.Failure(message: "Enable Claude in Brains, then connect this binder.", kind: .refused)
+            default:
+                return try server.answer(text)
+            }
+        })
+        let model = ClaudeBinderConversation(client: client, authenticate: {})
+        await model.show(old)
+        let connecting = Task { await model.connect() }
+        try await Task.sleep(for: .milliseconds(50))
+        await model.show(new)
+        release.yield()
+        await connecting.value
+        #expect(model.folder == new.standardizedFileURL && model.message == nil)
+    }
 }
