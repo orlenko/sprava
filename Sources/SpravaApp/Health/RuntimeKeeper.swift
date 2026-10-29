@@ -235,15 +235,84 @@ enum RuntimeStart {
     static func register(again: Bool) -> String? {
         if let problem = locationProblem { return problem }
         if let problem = BundleSignature.problem(at: Bundle.main.bundleURL) { return problem }
-        do {
-            for plist in [runtimePlist, watchPlist] {
-                let service = SMAppService.agent(plistName: plist)
-                if again { try? service.unregister() }
-                try service.register()
+        return register(again: again, services: .system, wait: unregisterWait)
+    }
+
+    /// The two `SMAppService` calls a registration makes, by plist name. Tests stand them in; none touches launchd.
+    struct Services: Sendable {
+        var unregister: @Sendable (_ plist: String, _ done: @escaping @Sendable ((any Error)?) -> Void) -> Void
+        var register: @Sendable (_ plist: String) throws -> Void
+
+        static let system = Services(
+            unregister: { plist, done in SMAppService.agent(plistName: plist).unregister(completionHandler: done) },
+            register: { plist in try SMAppService.agent(plistName: plist).register() })
+    }
+
+    /// How long registering again waits for each unregister to complete.
+    static let unregisterWait: TimeInterval = 10
+
+    /// Registers each service in turn. With `again`, each is first unregistered, and registered only once macOS says the
+    /// unregister is complete: "After the completion handler has been invoked it is safe to re-register the service"
+    /// (SMAppService.h). A register sent 15 ms after a synchronous unregister kept the old build's launch constraint,
+    /// and launchd refused the watcher on every run after an update (2026-10-28). A service that was not registered is
+    /// fine; any other unregister error, or no completion within `wait`, stops before anything more is registered.
+    static func register(again: Bool, services: Services, wait: TimeInterval) -> String? {
+        for plist in [runtimePlist, watchPlist] {
+            if again, let failure = unregister(plist, services: services, wait: wait) { return failure }
+            do {
+                try services.register(plist)
+            } catch {
+                return BundleSignature.registerFailure(error)
             }
+        }
+        return nil
+    }
+
+    /// Unregisters one service and waits for its completion; nil when it completed or the service was not registered.
+    static func unregister(_ plist: String, services: Services, wait: TimeInterval) -> String? {
+        let completion = OneCompletion()
+        services.unregister(plist) { error in completion.complete(error) }
+        switch completion.wait(timeout: wait) {
+        case .completed(nil):
             return nil
-        } catch {
-            return BundleSignature.registerFailure(error)
+        case .completed(let error?):
+            if notRegistered(error) { return nil }
+            return "Could not renew background work (\(plist)): \(error.localizedDescription). Restart it from Health to try again."
+        case .timedOut:
+            return "Could not renew background work: macOS did not finish removing the previous \(plist) in \(Int(wait)) seconds. Restart it from Health to try again."
+        }
+    }
+
+    /// `kSMErrorJobNotFound`: the service was not registered, so there was nothing to remove.
+    static func notRegistered(_ error: any Error) -> Bool {
+        let error = error as NSError
+        return error.domain == SMAppServiceErrorDomain && error.code == Int(kSMErrorJobNotFound)
+    }
+
+    /// One unregister's completion, waited for with a bound. The first completion counts; one that comes after the
+    /// wait has given up, or a second one, is dropped, so a late completion can never let a register through.
+    final class OneCompletion: @unchecked Sendable {
+        enum Outcome { case completed((any Error)?), timedOut }
+        private let lock = NSLock()
+        private let signal = DispatchSemaphore(value: 0)
+        private var outcome: Outcome?
+        private var abandoned = false
+
+        func complete(_ error: (any Error)?) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard outcome == nil, !abandoned else { return }
+            outcome = .completed(error)
+            signal.signal()
+        }
+
+        func wait(timeout: TimeInterval) -> Outcome {
+            _ = signal.wait(timeout: .now() + timeout)
+            lock.lock()
+            defer { lock.unlock() }
+            if let outcome { return outcome }
+            abandoned = true
+            return .timedOut
         }
     }
 }
