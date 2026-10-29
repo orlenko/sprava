@@ -75,6 +75,8 @@ if name == "codesign":
         return "bundle" if path.suffix == ".app" or path.name == "SpravaApp" else path.name
     if "--verify" in args:
         if any(a.startswith("-R=") for a in args):
+            if Path(args[-1]).name == os.environ.get("TEST_ANCHOR_FAIL_EXE"):
+                sys.exit(1)
             sys.exit(int(os.environ.get("TEST_ANCHOR_FAIL", "0")))
         sys.exit(int(os.environ.get("TEST_VERIFY_FAIL", "0")))
     if "-d" in args:
@@ -232,6 +234,13 @@ sys.exit(0)
                     if line.startswith("codesign --force"):
                         self.assertIn("--timestamp=none --options runtime", line)
                 self.assertIn('-R=anchor apple generic and certificate leaf[subject.OU] = "TEAMFAKE01"', self.log.read_text())
+
+    def test_a_helper_whose_signature_is_not_apple_issued_stops_the_build(self):
+        self.previous()
+        result = self.run_script(TEST_IDENTITIES="Developer ID Application", TEST_ANCHOR_FAIL_EXE="sprava-runtime")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sprava-runtime's signature is not Apple-issued", result.stderr)
+        self.assertEqual((self.bundle / "version").read_text(), "old\n")
 
     def test_no_identity_or_several_build_nothing(self):
         for kinds, message in [("", "no Developer ID Application"),

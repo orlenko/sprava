@@ -136,6 +136,10 @@ for exe in "$work"/Contents/MacOS/*; do
         echo "build-app: $(basename "$exe") is not signed by the same team as the app" >&2
         exit 1
     fi
+    if [ "$identity" != - ] && ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$team\"" "$exe"; then
+        echo "build-app: $(basename "$exe")'s signature is not Apple-issued for the team $team" >&2
+        exit 1
+    fi
 done
 # SMAppService loads each agent's plist only from the bundle's sealed resources.
 for plist in Resources/LaunchAgents/*.plist; do

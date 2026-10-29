@@ -46,12 +46,10 @@ verify_signed() {   # <bundle> <team>
     if ! codesign --verify --deep --strict "$1"; then
         echo "restart-app: $1 does not pass signature verification." >&2; return 1
     fi
-    if ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$2\"" "$1"; then
-        echo "restart-app: $1 is not signed with an Apple-issued identity of the team $2." >&2; return 1
-    fi
     for exe in "$1" "$1"/Contents/MacOS/*; do
-        if [ "$(team_of "$exe")" != "$2" ]; then
-            echo "restart-app: $(basename "$exe") in $1 is not signed by the team $2." >&2; return 1
+        if [ "$(team_of "$exe")" != "$2" ] ||
+            ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$2\"" "$exe"; then
+            echo "restart-app: $(basename "$exe") in $1 is not signed by an Apple-issued identity of the team $2." >&2; return 1
         fi
     done
 }
@@ -114,13 +112,18 @@ else
     SPRAVA_APP_BUNDLE="$stage/Sprava.app" "$repo/scripts/build-app.sh" "$@"
     new_team=$(team_of "$stage/Sprava.app")
 fi
-# macOS keeps its record of the background jobs, launch constraint included, under the old signer: a replacement
-# signed otherwise (ad-hoc to a team, a team to ad-hoc, or another team) is refused at launch until that record is
-# renewed. Such a change is made on purpose, once.
-if [ -d "$app" ] && [ "${SPRAVA_ALLOW_SIGNING_CHANGE:-0}" != 1 ]; then
+# macOS keeps its record of the background jobs, launch constraint included, under the old signer, and an ad-hoc
+# signature changes with every build: only an Apple-issued, team-signed app is installed. Over an ad-hoc one that is
+# the intended move to stable signing; over a team-signed one, the team must stay the same. A move to ad-hoc, or to
+# another team, is refused, with no way around it here.
+if [ -z "$new_team" ] || [ "$new_team" = "not set" ]; then
+    echo "restart-app: the new Sprava is not signed by a team (ad-hoc builds, SPRAVA_SIGN_IDENTITY=-, are for development only); the installed app was left as it was." >&2
+    exit 1
+fi
+if [ -d "$app" ]; then
     old_team=$(team_of "$app")
-    if [ "$old_team" != "$new_team" ]; then
-        echo "restart-app: the installed Sprava is signed by $(signer "$old_team") and the new one by $(signer "$new_team"). To change the signer, run again with SPRAVA_ALLOW_SIGNING_CHANGE=1, then check Health and the watcher; the installed app was left as it was." >&2
+    if [ -n "$old_team" ] && [ "$old_team" != "not set" ] && [ "$old_team" != "$new_team" ]; then
+        echo "restart-app: the installed Sprava is signed by $(signer "$old_team") and the new one by $(signer "$new_team"). Sprava does not move between teams; the installed app was left as it was." >&2
         exit 1
     fi
 fi

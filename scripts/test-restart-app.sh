@@ -33,7 +33,9 @@ echo "build $*" >> "$TEST_LOG"
 [ "${TEST_BUILD_FAIL:-0}" = 0 ] || exit 1
 mkdir -p "$SPRAVA_APP_BUNDLE"
 echo new > "$SPRAVA_APP_BUNDLE/version"
-[ -z "${TEST_BUILD_TEAM:-}" ] || echo "$TEST_BUILD_TEAM" > "$SPRAVA_APP_BUNDLE/team"
+# Team-signed by default; TEST_BUILD_TEAM=- builds ad-hoc.
+team=${TEST_BUILD_TEAM-TEAMFAKE01}
+[ "$team" = - ] || echo "$team" > "$SPRAVA_APP_BUNDLE/team"
 ''')
         builder.chmod(0o755)
         self.apps = self.root / "Applications with spaces"
@@ -70,7 +72,8 @@ elif name == "lsof":
     print("p4242\\nftxt\\nn" + app + "/Contents/MacOS/sprava-runtime")
 elif name == "codesign":
     # A stand-in bundle names its signer in a "team" file (none: ad-hoc); "odd-team" names an executable signed by
-    # another team, and "not-apple" a signature that is not Apple-issued.
+    # another team, "not-apple" a signature that is not Apple-issued, and "not-apple-exe" one executable whose
+    # signature is not Apple-issued though it names the team.
     target = Path(args[-1])
     bundle = next((p for p in [target, *target.parents] if p.suffix == ".app"), target)
     team = (bundle / "team").read_text().strip() if (bundle / "team").exists() else "not set"
@@ -79,7 +82,8 @@ elif name == "codesign":
     if args[0] == "--verify" and args[1].startswith("-R=") and len(args) == 3:
         wanted = args[1].split('leaf[subject.OU] = "')[1].rstrip('"')
         assert args[1].startswith("-R=anchor apple generic and "), args
-        sys.exit(0 if team == wanted and not (bundle / "not-apple").exists() else 1)
+        odd_exe = (bundle / "not-apple-exe").read_text().strip() if (bundle / "not-apple-exe").exists() else None
+        sys.exit(0 if team == wanted and not (bundle / "not-apple").exists() and target.name != odd_exe else 1)
     assert args[:2] == ["-d", "--verbose=2"] and len(args) == 3, args
     odd = (bundle / "odd-team").read_text().strip() if (bundle / "odd-team").exists() else None
     print("TeamIdentifier=" + ("TEAMOTHER9" if target.name == odd else team), file=sys.stderr)
@@ -278,7 +282,8 @@ elif name == "open":
         events = self.log.read_text()
         self.assertNotIn("build", events)
         # Checked where it was and again once copied onto the install volume, all before Sprava is asked to quit.
-        anchors = [i for i, line in enumerate(events.splitlines()) if "-R=anchor apple generic" in line]
+        anchors = [i for i, line in enumerate(events.splitlines())
+                   if "-R=anchor apple generic" in line and line.endswith("Sprava.app")]
         self.assertEqual(len(anchors), 2, events)
         self.assertIn(str(source), events.splitlines()[anchors[0]])
         self.assertIn(".sprava-update.", events.splitlines()[anchors[1]])
@@ -293,6 +298,8 @@ elif name == "open":
             "not Apple-issued": (lambda b: (b / "not-apple").write_text(""), "Apple-issued identity of the team"),
             "a helper of another team": (lambda b: (b / "odd-team").write_text("sprava-runtime"),
                                          "sprava-runtime in"),
+            "a helper not Apple-issued": (lambda b: (b / "not-apple-exe").write_text("sprava-runtime"),
+                                          "sprava-runtime in"),
             "ad-hoc": (lambda b: (b / "team").unlink(), "Apple-issued identity of the team"),
             "another app": (lambda b: self.bundle_id(b, "org.invented.other"), "not Sprava"),
         }
@@ -339,32 +346,49 @@ elif name == "open":
                 self.assert_refused(result, source)
                 self.assertIn(message, result.stderr)
 
-    def test_a_change_of_signer_is_refused_unless_asked_for(self):
-        for installed, new, kind in [(None, TEAM, "install"), ("TEAMOTHER9", TEAM, "install"),
-                                     (TEAM, None, "build")]:
-            with self.subTest(installed=installed, new=new):
-                shutil.rmtree(self.app, ignore_errors=True)
-                shutil.rmtree(self.root / "from the other Mac", ignore_errors=True)
-                Path(str(self.log) + ".quit").unlink(missing_ok=True)
-                self.installed(installed)
-                self.log.write_text("")
-                if kind == "install":
-                    source = self.signed_elsewhere()
-                    run = lambda **env: self.install(source, **env)
-                else:
-                    run = self.run_script
-                result = run(TEST_JOBS="1")
-                # Refused once the new bundle's signer is known: after building, before Sprava is asked to quit.
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual((self.app / "version").read_text(), "old\n")
-                self.assertNotIn("open ", self.log.read_text())
-                self.assertIn("SPRAVA_ALLOW_SIGNING_CHANGE=1", result.stderr)
-                self.assertIn("ad-hoc" if None in (installed, new) else "TEAMOTHER9", result.stderr)
-                self.assertNotIn("osascript", self.log.read_text())
-                self.log.write_text("")
-                result = run(TEST_JOBS="1", SPRAVA_ALLOW_SIGNING_CHANGE="1")
+    def reset(self, installed):
+        shutil.rmtree(self.app, ignore_errors=True)
+        shutil.rmtree(self.root / "from the other Mac", ignore_errors=True)
+        Path(str(self.log) + ".quit").unlink(missing_ok=True)
+        if installed != "none":
+            self.installed(installed)
+        self.log.write_text("")
+
+    def test_an_ad_hoc_app_moves_to_a_team_signed_one_without_being_asked(self):
+        # The move to stable signing this updater exists for: built here or signed elsewhere.
+        for kind in ["build", "install"]:
+            with self.subTest(kind=kind):
+                self.reset(None)
+                result = self.install(self.signed_elsewhere(), TEST_JOBS="1") if kind == "install" \
+                    else self.run_script(TEST_JOBS="1")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((self.app / "version").read_text(), "new\n")
+
+    def test_a_move_to_ad_hoc_or_another_team_is_refused_with_no_way_around(self):
+        for installed, new, kind, message in [
+            (TEAM, "-", "build", "not signed by a team"),
+            (None, "-", "build", "not signed by a team"),
+            ("none", "-", "build", "not signed by a team"),
+            ("TEAMOTHER9", TEAM, "build", "does not move between teams"),
+            ("TEAMOTHER9", TEAM, "install", "does not move between teams"),
+        ]:
+            # An override that an earlier version of this script honoured changes nothing.
+            for env in [{}, {"SPRAVA_ALLOW_SIGNING_CHANGE": "1"}]:
+                with self.subTest(installed=installed, new=new, kind=kind, env=env):
+                    self.reset(installed)
+                    if kind == "install":
+                        result = self.install(self.signed_elsewhere(), TEST_JOBS="1", **env)
+                    else:
+                        result = self.run_script(TEST_JOBS="1", TEST_BUILD_TEAM=new, **env)
+                    # Refused once the new bundle's signer is known: after building, before Sprava is asked to quit.
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    self.assertNotIn("osascript", self.log.read_text())
+                    self.assertNotIn("open ", self.log.read_text())
+                    if installed != "none":
+                        self.assertEqual((self.app / "version").read_text(), "old\n")
+                    else:
+                        self.assertFalse(self.app.exists())
 
     def test_a_team_signed_build_replaces_a_build_of_the_same_team(self):
         self.installed(TEAM)

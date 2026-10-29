@@ -29,9 +29,9 @@ signed it, not from the bundle. The script checks the copy where it is and again
 bundle identifier, a valid deep signature, an Apple-issued identity of that team, and the same team on every
 executable. Then it asks Sprava to quit and installs it as an update does.
 
-Both ways refuse to replace an app of another signer (ad-hoc to a team, a team to ad-hoc, or another team).
-For the first signed install over an ad-hoc one, run with `SPRAVA_ALLOW_SIGNING_CHANGE=1`, then check that Health
-shows the runtime running and that `runtime/watch.json` gets a new `ran_at` at the next quarter hour.
+Both ways install only a team-signed app. Over an ad-hoc one, that is the intended move to stable signing; check
+afterwards that Health shows the runtime running and that `runtime/watch.json` gets a new `ran_at` at the next
+quarter hour. Over a team-signed one, the team must be the same: a move to ad-hoc or to another team is refused.
 
 1. **Registration (spike c).** Open Sprava with neither job registered. It registers its background work
    without a prompt (decisions.md A19); within a minute Health shows "Runtime running". If macOS wants approval
