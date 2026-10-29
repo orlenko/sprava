@@ -84,8 +84,19 @@ elif name == "codesign":
         assert args[1].startswith("-R=anchor apple generic and "), args
         odd_exe = (bundle / "not-apple-exe").read_text().strip() if (bundle / "not-apple-exe").exists() else None
         sys.exit(0 if team == wanted and not (bundle / "not-apple").exists() and target.name != odd_exe else 1)
+    def marked(name):
+        return (bundle / name).exists() and target.name in (bundle / name).read_text().split()
+    if args[:4] == ["-d", "--entitlements", "-", "--xml"] and len(args) == 5:
+        # "no-sandbox" names helpers signed without the sandbox, "sandbox-false" ones whose entitlement is false.
+        if not marked("no-sandbox"):
+            value = "false" if marked("sandbox-false") else "true"
+            print('<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+                  '<key>com.apple.security.app-sandbox</key><%s/></dict></plist>' % value)
+        sys.exit(0)
     assert args[:2] == ["-d", "--verbose=2"] and len(args) == 3, args
     odd = (bundle / "odd-team").read_text().strip() if (bundle / "odd-team").exists() else None
+    # "no-runtime" names executables signed without the hardened runtime.
+    print("flags=0x" + ("2(adhoc)" if marked("no-runtime") else "10000(runtime)"), file=sys.stderr)
     print("TeamIdentifier=" + ("TEAMOTHER9" if target.name == odd else team), file=sys.stderr)
 elif name == "osascript":
     script = sys.stdin.read()
@@ -139,7 +150,8 @@ elif name == "open":
     def signed_elsewhere(self, team=TEAM, identifier="ca.orlenko.sprava"):
         """A bundle built and signed on another Mac, as the person copied it here."""
         path = self.bundle(self.root / "from the other Mac/Sprava.app", identifier)
-        (path / "Contents/MacOS/SpravaApp").write_text("app\n")
+        for name in ["SpravaApp", "sprava", "sprava-mcp", "sprava-extract", "sprava-llm", "restic"]:
+            (path / "Contents/MacOS" / name).write_text(name + "\n")
         (path / "version").write_text("new\n")
         (path / "team").write_text(team + "\n")
         return path
@@ -300,6 +312,18 @@ elif name == "open":
                                          "sprava-runtime in"),
             "a helper not Apple-issued": (lambda b: (b / "not-apple-exe").write_text("sprava-runtime"),
                                           "sprava-runtime in"),
+            "an app without the hardened runtime": (lambda b: (b / "no-runtime").write_text("Sprava.app"),
+                                                    "not signed with the hardened runtime"),
+            "a helper without the hardened runtime": (lambda b: (b / "no-runtime").write_text("sprava-mcp"),
+                                                      "sprava-mcp in"),
+            "a helper without its sandbox": (lambda b: (b / "no-sandbox").write_text("sprava-extract"),
+                                             "sprava-extract in"),
+            "a helper whose sandbox is false": (lambda b: (b / "sandbox-false").write_text("sprava-llm"),
+                                                "sprava-llm in"),
+            "a missing helper": (lambda b: (b / "Contents/MacOS/sprava-llm").unlink(), "has no sprava-llm"),
+            "a helper that is a link": (lambda b: ((b / "Contents/MacOS/restic").unlink(),
+                                                   (b / "Contents/MacOS/restic").symlink_to("/bin/sh")),
+                                        "has no restic"),
             "ad-hoc": (lambda b: (b / "team").unlink(), "Apple-issued identity of the team"),
             "another app": (lambda b: self.bundle_id(b, "org.invented.other"), "not Sprava"),
         }

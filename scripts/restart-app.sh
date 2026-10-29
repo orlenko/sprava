@@ -37,12 +37,19 @@ fi
 
 team_of() { codesign -d --verbose=2 "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
 signer() { case "$1" in "not set") echo "ad-hoc" ;; "") echo "a signature that cannot be read" ;; *) echo "the team $1" ;; esac; }
-# A bundle signed as the person expects: sealed and whole, Sprava's identifier, Apple-issued for the team, and every
-# executable signed by that team.
+# A bundle signed as the person expects, checked as build-app.sh checks its own: sealed and whole, Sprava's
+# identifier, every executable Sprava needs present as a plain file, each Apple-issued for the team and signed with
+# the hardened runtime, and the two helpers the runtime starts sandboxed carrying their sandbox entitlement.
+required_executables="SpravaApp sprava sprava-runtime sprava-mcp sprava-extract sprava-llm restic"
 verify_signed() {   # <bundle> <team>
     if [ "$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null)" != ca.orlenko.sprava ]; then
         echo "restart-app: $1 is not Sprava (another bundle identifier)." >&2; return 1
     fi
+    for name in $required_executables; do
+        if [ -L "$1/Contents/MacOS/$name" ] || [ ! -f "$1/Contents/MacOS/$name" ]; then
+            echo "restart-app: $1 has no $name (an incomplete build)." >&2; return 1
+        fi
+    done
     if ! codesign --verify --deep --strict "$1"; then
         echo "restart-app: $1 does not pass signature verification." >&2; return 1
     fi
@@ -50,6 +57,15 @@ verify_signed() {   # <bundle> <team>
         if [ "$(team_of "$exe")" != "$2" ] ||
             ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$2\"" "$exe"; then
             echo "restart-app: $(basename "$exe") in $1 is not signed by an Apple-issued identity of the team $2." >&2; return 1
+        fi
+        if ! codesign -d --verbose=2 "$exe" 2>&1 | grep -q 'flags=.*runtime'; then
+            echo "restart-app: $(basename "$exe") in $1 is not signed with the hardened runtime." >&2; return 1
+        fi
+    done
+    for name in sprava-extract sprava-llm; do
+        if ! codesign -d --entitlements - --xml "$1/Contents/MacOS/$name" 2>/dev/null |
+            plutil -extract 'com\.apple\.security\.app-sandbox' raw -o - - 2>/dev/null | grep -qx true; then
+            echo "restart-app: $name in $1 is not signed to run sandboxed." >&2; return 1
         fi
     done
 }
