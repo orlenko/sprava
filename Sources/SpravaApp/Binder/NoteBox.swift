@@ -133,16 +133,9 @@ struct NoteBox: View {
     var body: some View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
-                TextEditor(text: $note.text)
-                    .font(.body)
-                    .frame(minHeight: 60)
+                DraftEditor(text: $note.text)
                     .disabled(note.isSaving)
                     .onChange(of: note.text) { _, new in note.changed(new) }
-                    .overlay(alignment: .topLeading) {
-                        if note.text.isEmpty {
-                            Text("Tell this binder\u{2026}").foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
-                        }
-                    }
                 HStack {
                     Text("One line per thing to do. It comes to this binder as a card for your OK.")
                         .font(.caption).foregroundStyle(.secondary)

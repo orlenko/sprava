@@ -1,0 +1,20 @@
+import SwiftUI
+
+/// The box a person types a note or a message into, with its placeholder. It grows with what is typed up to
+/// `maxHeight`, then scrolls inside: grown to a long pasted text, it ran past the page's top and bottom.
+struct DraftEditor: View {
+    static let minHeight: CGFloat = 60
+    static let maxHeight: CGFloat = 240
+    @Binding var text: String
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(.body)
+            .frame(minHeight: Self.minHeight, maxHeight: Self.maxHeight)
+            .overlay(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text("Tell this binder\u{2026}").foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
+                }
+            }
+    }
+}
