@@ -60,16 +60,37 @@ if name == "swift":
     if "--show-bin-path" in args:
         print(os.environ["TEST_PRODUCTS"])
     sys.exit(0)
+if name == "security":
+    # Invented identities only: a made-up SHA-1 and name per kind listed in TEST_IDENTITIES.
+    kinds = [k for k in os.environ.get("TEST_IDENTITIES", "").split(",") if k]
+    for i, kind in enumerate(kinds):
+        print('  %d) %s "%s: Invented Signer (TEAMFAKE01)"' % (i + 1, ("%X" % (i + 10)) * 40, kind))
+    print("     %d valid identities found" % len(kinds))
+    sys.exit(0)
 if name == "codesign":
+    import json
+    signers = Path(os.environ["TEST_LOG"] + ".signers")
+    def key(path):
+        # The main executable is signed with the bundle.
+        return "bundle" if path.suffix == ".app" or path.name == "SpravaApp" else path.name
     if "--verify" in args:
+        if any(a.startswith("-R=") for a in args):
+            sys.exit(int(os.environ.get("TEST_ANCHOR_FAIL", "0")))
         sys.exit(int(os.environ.get("TEST_VERIFY_FAIL", "0")))
     if "-d" in args:
         if "--entitlements" in args:
             print("<key>com.apple.security.app-sandbox</key>")
         else:
-            print("flags=0x10002(adhoc,runtime)", file=sys.stderr)
+            identity = json.loads(signers.read_text()).get(key(Path(args[-1])), "-") if signers.exists() else "-"
+            team = "not set" if identity == "-" else os.environ.get("TEST_TEAM", "TEAMFAKE01")
+            if Path(args[-1]).name == os.environ.get("TEST_ODD_TEAM"):
+                team = "TEAMOTHER9"
+            print("flags=0x10002(adhoc,runtime)\\nTeamIdentifier=" + team, file=sys.stderr)
         sys.exit(0)
     target = Path(args[-1])
+    recorded = json.loads(signers.read_text()) if signers.exists() else {}
+    recorded[key(target)] = args[args.index("--sign") + 1]
+    signers.write_text(json.dumps(recorded))
     if target.is_dir():
         if os.environ.get("TEST_SIGN_FAIL") == "1":
             sys.exit(1)
@@ -83,12 +104,13 @@ if name == "codesign":
 sys.exit(0)
 ''')
         fake.chmod(0o755)
-        for name in ["swift", "codesign", "plutil", "pgrep"]:
+        for name in ["swift", "codesign", "plutil", "pgrep", "security"]:
             (self.bin / name).symlink_to(fake)
         self.bundle = self.root / "staging with spaces" / "Sprava.app"
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", TEST_LOG=str(self.log),
                         TEST_PRODUCTS=str(self.products), SPRAVA_RESTIC=str(self.restic),
-                        SPRAVA_APP_BUNDLE=str(self.bundle))
+                        SPRAVA_APP_BUNDLE=str(self.bundle), TEST_IDENTITIES="Developer ID Application")
+        self.env.pop("SPRAVA_SIGN_IDENTITY", None)
 
     def previous(self):
         self.bundle.mkdir(parents=True)
@@ -192,6 +214,73 @@ sys.exit(0)
         self.previous()
         result = self.run_script(TEST_VERIFY_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.bundle / "version").read_text(), "old\n")
+
+    def identities(self):
+        return {line.split()[-1]: line.split()[line.split().index("--sign") + 1]
+                for line in self.log.read_text().splitlines() if line.startswith("codesign --force")}
+
+    def test_the_one_apple_issued_identity_signs_everything_without_a_timestamp(self):
+        for kind in ["Developer ID Application", "Apple Development"]:
+            with self.subTest(kind):
+                self.log.write_text("")
+                Path(str(self.log) + ".signers").unlink(missing_ok=True)
+                result = self.run_script(TEST_IDENTITIES=kind)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(set(self.identities().values()), {"A" * 40})
+                for line in self.log.read_text().splitlines():
+                    if line.startswith("codesign --force"):
+                        self.assertIn("--timestamp=none --options runtime", line)
+                self.assertIn('-R=anchor apple generic and certificate leaf[subject.OU] = "TEAMFAKE01"', self.log.read_text())
+
+    def test_no_identity_or_several_build_nothing(self):
+        for kinds, message in [("", "no Developer ID Application"),
+                               ("Developer ID Application,Apple Development", "2 signing identities"),
+                               ("Apple Distribution", "no Developer ID Application")]:
+            with self.subTest(kinds):
+                shutil.rmtree(self.bundle, ignore_errors=True)
+                self.previous()
+                self.log.write_text("")
+                result = self.run_script(TEST_IDENTITIES=kinds)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertIn("SPRAVA_SIGN_IDENTITY", result.stderr)
+                self.assertNotIn("swift", self.log.read_text())
+                self.assertEqual((self.bundle / "version").read_text(), "old\n")
+
+    def test_a_named_identity_is_used_without_looking_for_one(self):
+        result = self.run_script(SPRAVA_SIGN_IDENTITY="B" * 40, TEST_IDENTITIES="Developer ID Application,Apple Development")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(self.identities().values()), {"B" * 40})
+        self.assertNotIn("security", self.log.read_text())
+
+    def test_ad_hoc_only_when_asked_and_said_so(self):
+        result = self.run_script(SPRAVA_SIGN_IDENTITY="-", TEST_IDENTITIES="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(self.identities().values()), {"-"})
+        self.assertIn("ad-hoc", result.stderr)
+        self.assertIn("development only", result.stderr)
+        self.assertNotIn("-R=", self.log.read_text())
+
+    def test_a_helper_of_another_team_keeps_the_previous_bundle(self):
+        self.previous()
+        result = self.run_script(TEST_ODD_TEAM="sprava-runtime")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sprava-runtime is not signed by the same team", result.stderr)
+        self.assertEqual((self.bundle / "version").read_text(), "old\n")
+
+    def test_a_signature_that_is_not_apple_issued_keeps_the_previous_bundle(self):
+        self.previous()
+        result = self.run_script(TEST_ANCHOR_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not Apple-issued", result.stderr)
+        self.assertEqual((self.bundle / "version").read_text(), "old\n")
+
+    def test_an_identity_that_leaves_no_team_keeps_the_previous_bundle(self):
+        self.previous()
+        result = self.run_script(TEST_TEAM="not set")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("carries no team", result.stderr)
         self.assertEqual((self.bundle / "version").read_text(), "old\n")
 
     def test_unsealed_launch_agent_plist_is_refused(self):

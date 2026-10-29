@@ -1,5 +1,7 @@
 #!/bin/sh
 # Build, install and reopen Sprava. SwiftPM options (e.g. -c release) pass through.
+# Or install a bundle built and signed on another Mac, without building: --install <Sprava.app> --team <team id>
+# (docs/manual-checks.md, "Signing"). The team is the person's to name; it is never read from the bundle.
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 install_dir=${SPRAVA_INSTALL_DIR:-/Applications}
@@ -10,6 +12,49 @@ if [ -L "$app" ] || { [ -e "$app" ] && [ ! -d "$app" ]; }; then
     echo "restart-app: $app must be an app folder, not a link or file." >&2
     exit 1
 fi
+
+prebuilt=""; team=""
+if [ "${1:-}" = --install ]; then
+    if [ $# -ne 4 ] || [ "$3" != --team ]; then
+        echo "restart-app: usage: restart-app.sh --install <Sprava.app> --team <team id>" >&2
+        exit 1
+    fi
+    prebuilt=$2; team=$4
+    if ! printf '%s\n' "$team" | grep -Eqx '[A-Z0-9]{10}'; then
+        echo "restart-app: $team is not a team id (ten capital letters and digits)." >&2
+        exit 1
+    fi
+    if [ -L "$prebuilt" ] || [ ! -d "$prebuilt" ]; then
+        echo "restart-app: $prebuilt must be an app folder, not a link or file." >&2
+        exit 1
+    fi
+    prebuilt=$(cd "$prebuilt" && pwd -P)
+    if [ "$prebuilt" = "$app" ]; then
+        echo "restart-app: $prebuilt is the installed app itself." >&2
+        exit 1
+    fi
+fi
+
+team_of() { codesign -d --verbose=2 "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
+signer() { case "$1" in "not set") echo "ad-hoc" ;; "") echo "a signature that cannot be read" ;; *) echo "the team $1" ;; esac; }
+# A bundle signed as the person expects: sealed and whole, Sprava's identifier, Apple-issued for the team, and every
+# executable signed by that team.
+verify_signed() {   # <bundle> <team>
+    if [ "$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null)" != ca.orlenko.sprava ]; then
+        echo "restart-app: $1 is not Sprava (another bundle identifier)." >&2; return 1
+    fi
+    if ! codesign --verify --deep --strict "$1"; then
+        echo "restart-app: $1 does not pass signature verification." >&2; return 1
+    fi
+    if ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$2\"" "$1"; then
+        echo "restart-app: $1 is not signed with an Apple-issued identity of the team $2." >&2; return 1
+    fi
+    for exe in "$1" "$1"/Contents/MacOS/*; do
+        if [ "$(team_of "$exe")" != "$2" ]; then
+            echo "restart-app: $(basename "$exe") in $1 is not signed by the team $2." >&2; return 1
+        fi
+    done
+}
 
 # This checkout's own build, the one copy besides the installed app whose background work may be handed over: a
 # person who ran build/Sprava.app moves to the installed app. Only a genuine bundle qualifies: a real folder (no link
@@ -59,7 +104,26 @@ stage=$(mktemp -d "$install_dir/.sprava-update.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-SPRAVA_APP_BUNDLE="$stage/Sprava.app" "$repo/scripts/build-app.sh" "$@"
+if [ -n "$prebuilt" ]; then
+    # Checked where it is, then copied whole onto the install volume and checked again there.
+    verify_signed "$prebuilt" "$team"
+    ditto "$prebuilt" "$stage/Sprava.app"
+    verify_signed "$stage/Sprava.app" "$team"
+    new_team=$team
+else
+    SPRAVA_APP_BUNDLE="$stage/Sprava.app" "$repo/scripts/build-app.sh" "$@"
+    new_team=$(team_of "$stage/Sprava.app")
+fi
+# macOS keeps its record of the background jobs, launch constraint included, under the old signer: a replacement
+# signed otherwise (ad-hoc to a team, a team to ad-hoc, or another team) is refused at launch until that record is
+# renewed. Such a change is made on purpose, once.
+if [ -d "$app" ] && [ "${SPRAVA_ALLOW_SIGNING_CHANGE:-0}" != 1 ]; then
+    old_team=$(team_of "$app")
+    if [ "$old_team" != "$new_team" ]; then
+        echo "restart-app: the installed Sprava is signed by $(signer "$old_team") and the new one by $(signer "$new_team"). To change the signer, run again with SPRAVA_ALLOW_SIGNING_CHANGE=1, then check Health and the watcher; the installed app was left as it was." >&2
+        exit 1
+    fi
+fi
 
 # Older builds keep Inbox drafts only in memory. Let the person save them and
 # finish pending saves before requesting Quit; never force-kill the UI.
