@@ -39,6 +39,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     }
     @Published var askToClear = false
     @Published private(set) var connected = false
+    /// Whether Claude is set up in Sprava (Brains): true or false as the runtime said, nil when it could not be asked,
+    /// which is no evidence either way.
+    @Published private(set) var accountReady: Bool?
     @Published private(set) var busy = false
     @Published var documents = true
     @Published var intake = true
@@ -85,20 +88,46 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             scopes[folder] = state["binder_id"]?.stringValue
             if connected { documents = state["documents"] == .bool(true); intake = state["intake"] == .bool(true) }
             message = nil
-        } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; message = "Open Brains to enable Claude, or Health to check the background connection." }
+        } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; message = "Sprava could not check this binder's Claude connection. Open Health to check the background part." }
+        // A connected binder needs Claude set up; only an unconnected one asks, for what to offer next.
+        if connected { accountReady = true } else { await readAccount() }
         await chat.show(folder)
         if self.folder == folder, let turn = pending[folder], turn.binderID == scopes[folder],
            chat.needsResume(requestID: turn.requestID, in: folder) {
             chat.resume(observe(turn, in: folder), in: folder)
         }
     }
+    /// Asks the runtime whether Claude is set up in Sprava; a failed read leaves the answer unknown.
+    func readAccount() async {
+        do { accountReady = try await client.global("claude_status", timeout: 5)["enabled"] == .bool(true) }
+        catch { accountReady = nil }
+    }
+
     func connect() async {
         guard !busy, let folder else { return }; busy = true; defer { busy = false }
         do {
             try await authenticate()
+        } catch { message = "Connecting needs your Touch ID or login password. Nothing was changed."; return }
+        do {
             _ = try await client.command("claude_enable", binder: folder, [("documents", .bool(documents)), ("intake", .bool(intake))], timeout: 30)
             if self.folder == folder { await show(folder) }
-        } catch { message = "The binder was not connected. Enable Claude in Brains first, then try again." }
+        } catch {
+            await readAccount()
+            message = Self.notConnected(error, accountReady: accountReady)
+        }
+    }
+
+    /// Why a binder was not connected, naming what to do: the setup in Brains when the runtime says Claude is not set
+    /// up, the background part when it could not be asked, and the binder itself otherwise.
+    static func notConnected(_ error: Error, accountReady: Bool?) -> String {
+        if let failure = error as? RuntimeClient.Failure, failure.kind != .refused {
+            return "The binder was not connected: Sprava's background part did not answer. Open Health, then try again."
+        }
+        switch accountReady {
+        case false?: return "The binder was not connected: Claude is not set up in Sprava yet. Open Brains and follow its steps, then connect here."
+        case nil: return "The binder was not connected, and Sprava could not check Claude's setup. Open Health, then try again."
+        case true?: return "The binder was not connected. Claude is set up; check that this binder is adopted and ready, then try again."
+        }
     }
     func disconnect() async {
         guard !busy, let folder else { return }; busy = true; defer { busy = false }

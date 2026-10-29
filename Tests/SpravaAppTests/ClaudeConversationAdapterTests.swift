@@ -12,12 +12,20 @@ import Testing
         var loseSendReply = false
         var loseTaskReply = false
         var enabled = true
+        /// What claude_status says: whether Claude is set up in Sprava; nil makes the read itself fail.
+        var accountReady: Bool? = true
+        /// Whether claude_enable refuses, as the runtime does for a binder while Claude is not set up.
+        var refuseEnable = false
         func answer(_ text: String) throws -> String {
             let value = try JSONParser.parse(text).value
             let object = try #require(value.objectValue); calls.append(object)
             var fields: [(String, JSONValue)] = [("ok", .bool(true))]
             switch value["command"]?.stringValue {
-            case "claude_status": fields += [("enabled", .bool(true)), ("credential_persistent", .bool(true))]
+            case "claude_status":
+                guard let ready = accountReady else { throw RuntimeClient.Failure(message: "Invented timeout", kind: .timedOut) }
+                fields += [("enabled", .bool(ready)), ("credential_persistent", .bool(true))]
+            case "claude_enable" where refuseEnable:
+                throw RuntimeClient.Failure(message: "Enable Claude in Brains, then connect this binder.", kind: .refused)
             case "claude_binder", "claude_enable": fields += [("enabled", .bool(enabled)), ("binder_id", .str(scope.uuidString)), ("documents", .bool(true)), ("intake", .bool(true))]
             case "chat_history": fields += [("turns", .array([]))]
             case "chat_send":
@@ -105,5 +113,43 @@ import Testing
         #expect(server.calls.last?["command"] == .str("claude_status"))
         #expect(model.persistent && model.message?.contains("Claude is ready") == true)
         #expect(model.message?.contains("invented-subscription-token") == false)
+    }
+
+    /// A binder could only say "Enable Claude in Brains first", whatever was missing (2026-10-28: the person had set
+    /// up the external Claude Code connection instead, and nothing said which setup the binder needs).
+    @Test func aBinderSaysWhichSetupIsMissing() async throws {
+        let server = Server(), model = model(server)
+        server.enabled = false; server.accountReady = false; server.refuseEnable = true
+        await model.show(folder)
+        #expect(model.accountReady == false && !model.connected)
+        await model.connect()
+        #expect(model.message?.contains("Claude is not set up in Sprava yet. Open Brains") == true)
+        // A status read that fails is no evidence that the setup is missing.
+        server.accountReady = nil
+        await model.connect()
+        #expect(model.accountReady == nil)
+        #expect(model.message?.contains("could not check Claude's setup") == true)
+        #expect(model.message?.contains("not set up") == false)
+        server.accountReady = true
+        await model.connect()
+        #expect(model.message?.contains("Claude is set up; check that this binder is adopted") == true)
+    }
+
+    @Test func enablingSaysWhichStepIsMissing() async throws {
+        let server = Server(), client = RuntimeClient(answer: { try server.answer($0) })
+        let model = ClaudeAccountModel(client: client, authenticate: {})
+        #expect(model.enableBlocker?.hasPrefix("Checking") == true)
+        server.accountReady = nil
+        await model.load()
+        #expect(model.enableBlocker?.contains("background part did not answer") == true)
+        server.accountReady = false
+        await model.load()
+        model.program = ""
+        #expect(model.enableBlocker?.hasPrefix("Step 1") == true)
+        model.program = "/invented/claude"
+        #expect(model.enableBlocker?.hasPrefix("Step 3") == true)
+        model.token = "invented-subscription-token"
+        #expect(model.enableBlocker == nil)
+        #expect(ClaudeAccountModel.setupCommand == "claude setup-token")
     }
 }

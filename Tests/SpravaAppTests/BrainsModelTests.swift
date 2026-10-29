@@ -286,6 +286,8 @@ final class InventedRuntime {
         let m = model("/bin/sh", ["-c", "yes | head -c 1000000; exit 0"])
         await m.tryAgain()
         #expect(m.message?.hasPrefix("Claude Code is connected") == true)
+        // Success reads as success, not in the warning colour (2026-10-28).
+        #expect(!m.messageIsProblem)
         #expect(m.registration == nil)
     }
 }
