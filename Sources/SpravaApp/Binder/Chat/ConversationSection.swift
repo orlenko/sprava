@@ -8,6 +8,8 @@ struct ConversationSection: View {
     @ObservedObject var model: ClaudeBinderConversation
     let row: ShelfRow
     let reload: () -> Void
+    /// Shows the Brains page, where Claude is set up for Sprava.
+    var openBrains: () -> Void = {}
     var body: some View {
         Section("Conversation with Claude") {
             if model.connected {
@@ -19,12 +21,20 @@ struct ConversationSection: View {
                     Button("Clear conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy)
                 }
             } else {
-                Text("Connect this binder to Claude, then ask about priorities, find a source, draft an email, or suggest a To-do. Selected information is sent to Anthropic; copied binders have separate contexts.")
-                Toggle("Share filed documents, including private ones", isOn: $model.documents)
-                Toggle("Share intake mail and attachments", isOn: $model.intake)
-                Button("Connect this binder to Claude") { Task { await model.connect() } }.disabled(model.busy || !row.teka.isAdopted)
-                Text("Enable the subscription once in Brains. Basic sharing includes this binder's task titles/details and saved app conversation. Claude cannot send mail or save tasks itself.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Connect this binder to Claude, then ask about priorities, find a source, draft an email, or suggest a To-do.")
+                if model.accountReady == false {
+                    // The sharing choices come after the one-time setup, so the first thing asked is the thing missing.
+                    HStack {
+                        Text("First set up Claude in Sprava, once, in Brains.").font(.callout)
+                        Button("Open Brains") { openBrains() }
+                    }
+                } else {
+                    Toggle("Share filed documents, including private ones", isOn: $model.documents)
+                    Toggle("Share intake mail and attachments", isOn: $model.intake)
+                    Button("Connect this binder to Claude") { Task { await model.connect() } }.disabled(model.busy || !row.teka.isAdopted)
+                    Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude cannot send mail or save tasks itself.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             if model.hasSavedScope {
                 if !model.connected { Button("Clear saved conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy) }

@@ -33,7 +33,9 @@ final class BrainsModel: ObservableObject, RuntimePage {
     }
 
     @Published var registration: Registration?
-    @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    @Published var message: String? { didSet { readFoundNoRuntime = false; messageIsProblem = message != nil } }
+    /// False for a message that reports success, which the page shows plainly rather than as a warning.
+    @Published private(set) var messageIsProblem = false
     var readFoundNoRuntime = false
     @Published var busy = false
     let client: RuntimeClient
@@ -191,6 +193,7 @@ final class BrainsModel: ObservableObject, RuntimePage {
             case .exited(0):
                 registration = nil
                 message = "Claude Code is connected. Start a new Claude Code session to use it."
+                messageIsProblem = false
             case .exited:
                 let said = String(decoding: r.stderr.isEmpty ? r.stdout : r.stderr, as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -277,7 +280,11 @@ struct BrainsView: View {
     var body: some View {
         List {
             ClaudeAccountView(model: claudeAccount)
-            Section("External Claude Code (advanced)") {
+            Section {
+              DisclosureGroup(model.claudeCode.map { "Advanced: your own Claude Code sessions (connected: \(names($0)))" }
+                              ?? "Advanced: your own Claude Code sessions") {
+                Text("Not needed for the conversation on a binder's page; that is Claude in Sprava, above. This lets a Claude Code session you start yourself, in Terminal, see the binders you tick.")
+                    .font(.callout)
                 Text("""
                 Connecting adds Sprava to Claude Code's settings for your user account (~/.claude.json). Then start a new \
                 Claude Code session in any folder and ask it about these binders: through Sprava it sees each ticked binder's \
@@ -308,13 +315,21 @@ struct BrainsView: View {
                         Button("Try Again") { Task { await model.tryAgain() } }.disabled(model.busy)
                     }
                 }
-                if let m = model.message { Text(m).foregroundStyle(.orange) }
+                if let m = model.message { Text(m).foregroundStyle(model.messageIsProblem ? .orange : .secondary) }
+                Text("Before you connect").font(.headline)
+                Text("""
+                Claude Code cannot apply anything through Sprava: every change waits for you. What it reads goes to the \
+                model provider Claude Code uses. Claude Code can also read binder folders with its own file tools. In its \
+                permission settings, deny Read, Edit and Write on each entire binder folder, on the capture root and on \
+                ~/Library/Application Support/Sprava, or use its sandbox controls. Sprava cannot check those settings.
+                """).foregroundStyle(.secondary)
                 DisclosureGroup("What Sprava runs") {
                     Text("Without a shell, so the key never reaches a shell history file:").font(.caption)
                     Text(BrainsModel.shellLine(BrainsModel.removeArguments)).font(.caption.monospaced())
                     Text(BrainsModel.shellLine(BrainsModel.addArguments(token: "KEY"))).font(.caption.monospaced())
                     Text("KEY is a new secret made each time you connect. Only its fingerprint stays in Sprava; Claude Code keeps the key in its settings.").font(.caption)
                 }
+              }
             }
             if !model.others.isEmpty {
                 Section("Other connections") {
@@ -330,14 +345,6 @@ struct BrainsView: View {
                         }
                     }
                 }
-            }
-            Section("Before you connect") {
-                Text("""
-                Claude Code cannot apply anything through Sprava: every change waits for you. What it reads goes to the \
-                model provider Claude Code uses. Claude Code can also read binder folders with its own file tools. In its \
-                permission settings, deny Read, Edit and Write on each entire binder folder, on the capture root and on \
-                ~/Library/Application Support/Sprava, or use its sandbox controls. Sprava cannot check those settings.
-                """).foregroundStyle(.secondary)
             }
         }
         .task { await model.load() }

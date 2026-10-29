@@ -22,6 +22,8 @@ struct NowView: View {
     /// leaves what was typed for the person's return.
     @ObservedObject var editor: ItemEditor
     var conversation: ClaudeBinderConversation? = nil
+    /// Shows the Brains page, for the conversation's one-time setup.
+    var openBrains: () -> Void = {}
     @ObservedObject var actions = BinderActions()
     @ObservedObject var documents = FiledDocuments()
 
@@ -46,7 +48,7 @@ struct NowView: View {
                 }
             } : nil
         return BinderInputs(note: local, conversation: conversation.map {
-            ConversationSection(model: $0, row: row, reload: refresh)
+            ConversationSection(model: $0, row: row, reload: refresh, openBrains: openBrains)
         })
     }
 

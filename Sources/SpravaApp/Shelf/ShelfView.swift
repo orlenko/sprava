@@ -391,7 +391,8 @@ struct ShelfView: View {
                 } else if let row = model.selectedRow {
                     NowView(row: row, today: model.today,
                             page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
-                            reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation, actions: binderActions,
+                            reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation,
+                            openBrains: { model.selection = brainsSelection }, actions: binderActions,
                             documents: model.documents.model(for: row.folder))
                 } else {
                     ContentUnavailableView {
