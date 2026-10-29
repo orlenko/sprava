@@ -10,6 +10,31 @@ binders only, for example copies of `Tests/SpravaCoreTests/Fixtures/*.json` in f
 Run `./scripts/restart-app.sh` to build, install in `/Applications` and open the app (also after updates).
 Alternatively, build with `./scripts/build-app.sh`, copy `build/Sprava.app` to `/Applications`, and open it.
 
+### Signing
+
+macOS keeps its record of Sprava's background jobs, launch constraint included, under the app's signer. An ad-hoc
+signature changes with every build, so an updated ad-hoc build is refused at launch ("Launch Constraint
+Violation") and background work stops. `build-app.sh` therefore signs the app and every helper with one
+Apple-issued identity:
+
+- With exactly one Developer ID Application or Apple Development identity in the keychain, it is used.
+- Otherwise name one: `SPRAVA_SIGN_IDENTITY=<SHA-1 or name> ./scripts/build-app.sh`; `security find-identity -v -p
+  codesigning` lists them. Never commit an identity, a team id or a fingerprint.
+- The keychain that holds the identity must be unlocked: being listed by `security find-identity` does not mean
+  `codesign` can use it, and a locked one fails with `errSecInternalComponent`.
+- `SPRAVA_SIGN_IDENTITY=-` signs ad-hoc, for development only.
+- No secure timestamp is requested (`--timestamp=none`): the build stays offline, and nothing is notarized.
+
+On a Mac without an identity, install a bundle built and signed on one that has it, without building:
+`./scripts/restart-app.sh --install <path to Sprava.app> --team <team id>`. The team id comes from the person who
+signed it, not from the bundle. The script checks the copy where it is and again on the install volume: Sprava's
+bundle identifier, a valid deep signature, an Apple-issued identity of that team, and the same team on every
+executable. Then it asks Sprava to quit and installs it as an update does.
+
+Both ways install only a team-signed app. Over an ad-hoc one, that is the intended move to stable signing; check
+afterwards that Health shows the runtime running and that `runtime/watch.json` gets a new `ran_at` at the next
+quarter hour. Over a team-signed one, the team must be the same: a move to ad-hoc or to another team is refused.
+
 1. **Registration (spike c).** Open Sprava with neither job registered. It registers its background work
    without a prompt (decisions.md A19); within a minute Health shows "Runtime running". If macOS wants approval
    instead, Health and the binder page show one line with Open Login Items, and nothing opens by itself.

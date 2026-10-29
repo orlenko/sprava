@@ -1,6 +1,11 @@
 #!/bin/sh
-# Build build/Sprava.app (ad-hoc signed with the hardened runtime, not launched). Pass SwiftPM options through, e.g. -c release.
+# Build build/Sprava.app (signed with the hardened runtime, not launched). Pass SwiftPM options through, e.g. -c release.
 # SPRAVA_APP_BUNDLE selects a separate staging bundle for restart-app.sh. Needs restic and, for scripts/build-llm.sh, cmake.
+# The app and every helper are signed with one Apple-issued identity (docs/manual-checks.md, "Signing"): macOS keys
+# its record of the background jobs to the signer, and an ad-hoc signature changes with every build, so an updated
+# ad-hoc build is refused at launch ("Launch Constraint Violation"). SPRAVA_SIGN_IDENTITY names the identity (its
+# SHA-1 or its name, as `security find-identity -v -p codesigning` lists it); unset, the one Developer ID Application
+# or Apple Development identity in the keychain is used. SPRAVA_SIGN_IDENTITY=- signs ad-hoc, for development only.
 # The bundle is assembled and signed beside its destination and moved into place only once its signature verifies:
 # a build that stops halfway leaves the previous bundle as it was, never a bundle whose resources are not sealed
 # (SMAppService refuses to load a LaunchAgent plist from such a bundle: "Codesigning failure loading plist ... -67056").
@@ -23,6 +28,29 @@ if [ -z "$restic_bin" ] || [ ! -x "$restic_bin" ]; then
     echo "restic not found: install it (brew install restic) or set SPRAVA_RESTIC to its path" >&2
     exit 1
 fi
+# The identity, chosen before anything is built.
+identity=${SPRAVA_SIGN_IDENTITY:-}
+if [ -z "$identity" ]; then
+    found=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -E '^ *[0-9]+\) [0-9A-F]{40} "(Developer ID Application|Apple Development): ' | awk '{print $2}' | sort -u)
+    count=$(printf '%s' "$found" | grep -c . || true)
+    if [ "$count" -eq 0 ]; then
+        echo "build-app: no Developer ID Application or Apple Development signing identity in the keychain. Add one (Xcode › Settings › Accounts), name one with SPRAVA_SIGN_IDENTITY=<SHA-1 or name>, or set SPRAVA_SIGN_IDENTITY=- for an ad-hoc development build." >&2
+        exit 1
+    fi
+    if [ "$count" -gt 1 ]; then
+        echo "build-app: $count signing identities could sign Sprava; name one with SPRAVA_SIGN_IDENTITY=<SHA-1> (security find-identity -v -p codesigning lists them)." >&2
+        exit 1
+    fi
+    identity=$found
+fi
+if [ "$identity" = - ]; then
+    echo "build-app: signing ad-hoc (SPRAVA_SIGN_IDENTITY=-), for development only: macOS does not keep an ad-hoc build's background work across updates." >&2
+fi
+# No secure timestamp: the build stays offline, and nothing here is notarized, which is what needs one.
+sign() { codesign --force --sign "$identity" --timestamp=none --options runtime "$@"; }
+team_of() { codesign -d --verbose=2 "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
+
 plutil -lint Resources/App-Info.plist
 plutil -lint Resources/LaunchAgents/*.plist
 plutil -lint Resources/sprava-extract.entitlements
@@ -62,12 +90,12 @@ cp "$(realpath "$restic_bin")" "$work/Contents/MacOS/restic"
 restic_license="$(dirname "$(realpath "$restic_bin")")/../LICENSE"
 if [ -f "$restic_license" ]; then cp "$restic_license" "$work/Contents/Resources/restic-LICENSE.txt"; fi
 # Nested code first, the bundle last: signing the bundle seals the helpers and the LaunchAgents plists as they are.
-codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.restic "$work/Contents/MacOS/restic"
-codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.mcp "$work/Contents/MacOS/sprava-mcp"
+sign --identifier ca.orlenko.sprava.restic "$work/Contents/MacOS/restic"
+sign --identifier ca.orlenko.sprava.mcp "$work/Contents/MacOS/sprava-mcp"
 # The runtime refuses a helper that does not run sandboxed, so a helper signed without its entitlement stops the build.
 # The identifier names the helper's sandbox container, where the model helper's socket lives.
 sign_sandboxed() {
-    if ! codesign --force --sign - --options runtime --identifier "$2" --entitlements "$3" "$work/Contents/MacOS/$1"; then
+    if ! sign --identifier "$2" --entitlements "$3" "$work/Contents/MacOS/$1"; then
         echo "build-app: signing the helper $1 failed" >&2
         exit 1
     fi
@@ -78,14 +106,38 @@ sign_sandboxed() {
 }
 sign_sandboxed sprava-extract ca.orlenko.sprava.extract Resources/sprava-extract.entitlements
 sign_sandboxed sprava-llm ca.orlenko.sprava.llm Resources/sprava-llm.entitlements
-codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.runtime "$work/Contents/MacOS/sprava-runtime"
-codesign --force --sign - --options runtime --identifier ca.orlenko.sprava.cli "$work/Contents/MacOS/sprava"
-codesign --force --sign - --options runtime --identifier ca.orlenko.sprava "$work"
+sign --identifier ca.orlenko.sprava.runtime "$work/Contents/MacOS/sprava-runtime"
+sign --identifier ca.orlenko.sprava.cli "$work/Contents/MacOS/sprava"
+sign --identifier ca.orlenko.sprava "$work"
 codesign --verify --deep --strict "$work"
 # Every executable runs with the hardened runtime: no injected libraries, no DYLD_ variables, no unsigned code.
 for exe in "$work"/Contents/MacOS/*; do
     if ! codesign -d --verbose=2 "$exe" 2>&1 | grep -q 'flags=.*runtime'; then
         echo "build-app: $(basename "$exe") is not signed with the hardened runtime" >&2
+        exit 1
+    fi
+done
+# One signer for the app and every helper: an Apple-issued identity names a team, the same on each; ad-hoc names none.
+team=$(team_of "$work")
+if [ "$identity" = - ]; then
+    [ "$team" = "not set" ] || { echo "build-app: an ad-hoc build carries the team $team" >&2; exit 1; }
+else
+    if [ -z "$team" ] || [ "$team" = "not set" ]; then
+        echo "build-app: the bundle carries no team after signing with $identity" >&2
+        exit 1
+    fi
+    if ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$team\"" "$work"; then
+        echo "build-app: the bundle's signature is not Apple-issued for the team $team" >&2
+        exit 1
+    fi
+fi
+for exe in "$work"/Contents/MacOS/*; do
+    if [ "$(team_of "$exe")" != "$team" ]; then
+        echo "build-app: $(basename "$exe") is not signed by the same team as the app" >&2
+        exit 1
+    fi
+    if [ "$identity" != - ] && ! codesign --verify -R="anchor apple generic and certificate leaf[subject.OU] = \"$team\"" "$exe"; then
+        echo "build-app: $(basename "$exe")'s signature is not Apple-issued for the team $team" >&2
         exit 1
     fi
 done
