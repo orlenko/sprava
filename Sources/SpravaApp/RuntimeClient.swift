@@ -18,6 +18,10 @@ final class RuntimeClient {
     private let onNotRunning: (@MainActor () -> Void)?
     /// Called when a request finds no runtime under its name; the app starts it there (decisions.md A19).
     static var whenNotRunning: (@MainActor () -> Void)?
+    /// Awaited before a request is sent: the app waits there while its background part is being started
+    /// (`RuntimeKeeper.untilStarted`), so a page opened at launch reads once the runtime can answer.
+    static var untilStarted: (@MainActor () async -> Void)?
+    private let untilStarted: (@MainActor () async -> Void)?
     /// Run after every answer from the runtime, a refusal included.
     private var answered: [@MainActor () -> Void] = []
 
@@ -33,10 +37,11 @@ final class RuntimeClient {
     }
 
     init(answer: (@MainActor (String) async throws -> String)? = nil, serviceName: String = XPCNames.runtime,
-         onNotRunning: (@MainActor () -> Void)? = nil) {
+         onNotRunning: (@MainActor () -> Void)? = nil, untilStarted: (@MainActor () async -> Void)? = nil) {
         self.answer = answer
         self.serviceName = serviceName
         self.onNotRunning = onNotRunning
+        self.untilStarted = untilStarted
     }
 
     struct Failure: Error, CustomStringConvertible {
@@ -47,6 +52,10 @@ final class RuntimeClient {
 
         /// What a page says when the runtime cannot be reached.
         static let notRunningLine = "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot."
+        /// What a page says when a read had no answer in time: nothing was changed, so trying again is safe.
+        static let readTimedOutLine = "Sprava's background part did not answer in time. Reload to try again."
+        /// What a page says when a change had no answer in time. The runtime may have taken it.
+        static let changeTimedOutLine = "Sprava's background part did not answer in time. The change may still be applied; reload to check before trying again."
         /// What a page says when a change could not reach the runtime. The connection may have failed after the
         /// runtime took the change, so it says "may".
         static let changeNotRunningLine = "Sprava's background part was not running, so this may not have been saved. Sprava is starting it; reload to check, then try again."
@@ -96,12 +105,14 @@ final class RuntimeClient {
     func send(_ request: JSONObject, timeout: TimeInterval, startIfMissing: Bool = true) async throws -> JSONObject {
         let text = JSONWriter.compact(.object(request))
         let read = Self.isRead(request)
+        // A request that may start the runtime first waits for a start in progress; `presence` only observes.
+        if startIfMissing { await (untilStarted ?? RuntimeClient.untilStarted)?() }
         let reply: String
         do {
             do {
-                reply = try await deliver(text, timeout: timeout)
+                reply = try await deliver(text, timeout: timeout, read: read)
             } catch let failure as Failure where failure.kind == .notRunning && read {
-                reply = try await deliver(text, timeout: timeout)
+                reply = try await deliver(text, timeout: timeout, read: read)
             }
         } catch let failure as Failure where failure.kind == .notRunning {
             if startIfMissing { (onNotRunning ?? RuntimeClient.whenNotRunning)?() }
@@ -115,11 +126,12 @@ final class RuntimeClient {
     /// twice: a second send after a lost reply could copy the file twice.
     func importFile(binder: URL, name: String, file: FileHandle, timeout: TimeInterval = 120) async throws -> JSONObject {
         let text = JSONWriter.compact(.obj([("command", .str("intake_drop")), ("binder", .str(binder.standardizedFileURL.path)), ("name", .str(name))]))
+        await (untilStarted ?? RuntimeClient.untilStarted)?()
         let reply: String
         if let answer { reply = try await answer(text) } else {
             let c = openConnection()
             do {
-                reply = try await viaXPC(text, on: c, timeout: timeout) { proxy, done in proxy.importFile(text, file: file, reply: done) }
+                reply = try await viaXPC(text, on: c, timeout: timeout, read: false) { proxy, done in proxy.importFile(text, file: file, reply: done) }
             } catch let failure as Failure where failure.kind == .notRunning {
                 drop(c)
                 (onNotRunning ?? RuntimeClient.whenNotRunning)?()
@@ -136,11 +148,11 @@ final class RuntimeClient {
         return o
     }
 
-    private func deliver(_ text: String, timeout: TimeInterval) async throws -> String {
+    private func deliver(_ text: String, timeout: TimeInterval, read: Bool) async throws -> String {
         if let answer { return try await answer(text) }
         let c = openConnection()
         do {
-            return try await viaXPC(text, on: c, timeout: timeout) { proxy, done in proxy.handle(text, reply: done) }
+            return try await viaXPC(text, on: c, timeout: timeout, read: read) { proxy, done in proxy.handle(text, reply: done) }
         } catch let failure as Failure where failure.kind == .notRunning {
             // A failed connection is never used again; the next request makes a new one.
             drop(c)
@@ -171,7 +183,7 @@ final class RuntimeClient {
 
     /// XPC calls its error and reply blocks on its own queue, so they are `@Sendable`: a block isolated to the main
     /// actor, as one written here would be, traps the app the moment the runtime cannot be reached.
-    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval,
+    private func viaXPC(_ text: String, on c: NSXPCConnection, timeout: TimeInterval, read: Bool,
                         call: (SpravaRuntimeXPC, @escaping @Sendable (String) -> Void) -> Void) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let once = Once()
@@ -193,7 +205,7 @@ final class RuntimeClient {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { @Sendable in
                 if once.claim() {
-                    continuation.resume(throwing: Failure(message: "Runtime not answering in time. The change may still be applied; reload to check before trying again.",
+                    continuation.resume(throwing: Failure(message: read ? Failure.readTimedOutLine : Failure.changeTimedOutLine,
                                                           kind: .timedOut))
                 }
             }

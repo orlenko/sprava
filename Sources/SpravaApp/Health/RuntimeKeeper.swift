@@ -76,6 +76,14 @@ final class RuntimeKeeper: ObservableObject {
     static let noBeat = "Sprava's background part did not start: no heartbeat came after two restarts."
 
     @Published private(set) var state = State.idle
+    /// True from the app's launch until its first run ends. Meanwhile pages show the starting screen and requests wait
+    /// (`untilStarted`): one sent while launchd brings the runtime up would time out, and its failure line would only
+    /// alarm. Set by the app (`beginLaunch`), so a model made for a test or a snapshot never waits.
+    @Published private(set) var launching = false
+    /// When the launch began; the starting screen fades in a moment after it.
+    private(set) var launchBegan: Date?
+    /// The step the run in progress is on, for the starting screen; nil before its first step.
+    @Published private(set) var step: RuntimeAutostart.Step?
     let system: System
     /// How long a run waits for a beat after a start, and how often it looks.
     var beatWait: Duration = .seconds(30)
@@ -95,6 +103,23 @@ final class RuntimeKeeper: ObservableObject {
         return await perform(restartNow: false)
     }
 
+    /// Marks the app's launch, before its first page is shown; the launch's run ends it.
+    func beginLaunch() {
+        guard state == .idle, run == nil else { return }
+        launching = true
+        launchBegan = Date()
+    }
+
+    /// Waits for the run in progress, or during the launch for its first run (starting it if no page has yet); returns
+    /// at once otherwise. A request waits here, so none goes to a runtime that is being started or replaced.
+    func untilStarted() async {
+        if let run {
+            _ = await run.value
+        } else if launching {
+            _ = await ensureRunning()
+        }
+    }
+
     /// Health's Restart: a run that starts the runtime at once, even after a failed run.
     func restart() async -> Outcome {
         if let run { return await run.value }
@@ -106,6 +131,8 @@ final class RuntimeKeeper: ObservableObject {
         run = task
         let outcome = await task.value
         run = nil
+        step = nil
+        launching = false
         switch outcome {
         case .running: state = .running
         case .needsApproval: state = .needsApproval
@@ -122,6 +149,7 @@ final class RuntimeKeeper: ObservableObject {
         if refreshRegistration {
             if await Task.detached(operation: { system.registration() }).value == .requiresApproval { return .needsApproval }
             state = .starting
+            self.step = .reregister
             starts += 1
             waited = false
             since = Date()
@@ -142,10 +170,12 @@ final class RuntimeKeeper: ObservableObject {
             case .giveUp: return .failed(Self.noBeat)
             case .wait:
                 state = .starting
+                self.step = .wait
                 waited = true
                 if await beat(since: after) { return .running }
             case .register, .kickstart, .reregister:
                 state = .starting
+                self.step = step
                 starts += 1
                 waited = false
                 since = Date()
