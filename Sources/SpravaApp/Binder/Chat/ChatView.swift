@@ -89,15 +89,8 @@ private struct Composer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextEditor(text: Binding(get: { chat.draft }, set: { chat.draft = $0 }))
-                .font(.body)
-                .frame(minHeight: 60)
+            DraftEditor(text: Binding(get: { chat.draft }, set: { chat.draft = $0 }))
                 .disabled(!chat.isAvailable)
-                .overlay(alignment: .topLeading) {
-                    if chat.draft.isEmpty {
-                        Text("Tell this binder\u{2026}").foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
-                    }
-                }
             HStack {
                 if !chat.isAvailable {
                     Text("This binder cannot hold a conversation yet.").font(.caption).foregroundStyle(.secondary)
