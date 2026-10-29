@@ -17,5 +17,8 @@ struct DraftEditor: View {
                     Text(placeholder).foregroundStyle(.tertiary).padding(.leading, 5).allowsHitTesting(false)
                 }
             }
+            // A box you can see: in a List row a bare TextEditor has no edge, and reads as empty page.
+            .padding(4)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)).allowsHitTesting(false))
     }
 }

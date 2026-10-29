@@ -5,10 +5,42 @@ import SwiftUI
 /// shown as plain text, never as Markdown or a link, so a reply or a saved line cannot load anything.
 struct ChatView: View {
     @ObservedObject var chat: BinderChat
+    /// False while the binder is not connected: its saved turns stay in view, but there is nothing to send to, so
+    /// there is no second input on the page, unless an unsent line is kept there, which stays in sight.
+    var connected = true
+
+    static let emptyHint = "Ask about this binder's to-dos and documents, or ask for a draft."
+    /// Over a line kept in the composer of a binder that is not connected, so it is not taken for the to-do box.
+    static let unsentNote = "Unsent message to Claude, kept here until this binder is connected again."
+
+    /// What the conversation shows. A transcript only with turns in it, so an empty one takes no room; the hint only
+    /// where there is someone to ask.
+    struct Parts: Equatable { var transcript: Bool; var hint: Bool; var composer: Bool }
+    static func parts(turns: Int, draft: String, connected: Bool) -> Parts {
+        Parts(transcript: turns > 0, hint: connected && turns == 0, composer: connected || !draft.isEmpty)
+    }
+
+    /// Whether a binder that is not connected shows its conversation at all: saved turns, a note about them (it
+    /// could not be read, say), a message, or an unsent line. Nothing when there is truly nothing.
+    static func showsWhileDisconnected(_ chat: BinderChat) -> Bool {
+        !chat.entries.isEmpty || chat.historyNote != nil || chat.message != nil || !chat.draft.isEmpty
+    }
 
     var body: some View {
+        let parts = Self.parts(turns: chat.entries.count, draft: chat.draft, connected: connected)
         VStack(alignment: .leading, spacing: 8) {
             if let note = chat.historyNote { Text(note).font(.caption).foregroundStyle(.secondary) }
+            if parts.hint { Text(Self.emptyHint).font(.callout).foregroundStyle(.secondary) }
+            if parts.transcript { transcript }
+            if let message = chat.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
+            if parts.composer {
+                if !connected { Text(Self.unsentNote).font(.caption).foregroundStyle(.secondary) }
+                Composer(chat: chat)
+            }
+        }
+    }
+
+    var transcript: some View {
             ScrollViewReader { scroller in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -22,9 +54,8 @@ struct ChatView: View {
                     if let last { withAnimation { scroller.scrollTo(last, anchor: .bottom) } }
                 }
             }
-            if let message = chat.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
-            Composer(chat: chat)
-        }
+            // The turns take the room; the composer keeps the height of what is typed in it.
+            .frame(minHeight: 160, idealHeight: 340, maxHeight: 460)
     }
 }
 

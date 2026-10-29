@@ -38,7 +38,7 @@ struct ConversationSection: View {
             }
             if model.hasSavedScope {
                 if !model.connected { Button("Clear saved conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy) }
-                ChatView(chat: model.chat).frame(minHeight: 260, idealHeight: 400, maxHeight: 520)
+                ConversationThread(chat: model.chat, connected: model.connected)
                 ForEach(model.chat.entries.compactMap { model.cards[$0.id] }.filter { $0.taskTitle != nil || $0.to != nil || !$0.citations.isEmpty }) { card in
                     ConversationCard(model: model, id: card.id)
                 }
@@ -109,5 +109,15 @@ private struct ConversationCard: View {
             try AtomicFile.write(Data("To: \(card.to ?? "")\nSubject: \(card.subject)\n\n\(card.body)".utf8), to: url)
             model.cards[id]?.message = "Draft text saved. No email was sent."
         } catch { model.cards[id]?.message = "The draft could not be saved. Its text is still here." }
+    }
+}
+
+/// The thread, observed on its own, so saved turns that load after the page appears are shown when they arrive.
+private struct ConversationThread: View {
+    @ObservedObject var chat: BinderChat
+    let connected: Bool
+
+    var body: some View {
+        if connected || ChatView.showsWhileDisconnected(chat) { ChatView(chat: chat, connected: connected) }
     }
 }

@@ -88,7 +88,7 @@ struct ClaudeAccountView: View {
                     Text("1. Claude Code on this Mac").font(.headline)
                     Text(model.program.isEmpty ? "Not found. Install Claude Code, or enter where it is:" : "Found. Change the path only if you use another copy:")
                         .font(.caption).foregroundStyle(.secondary)
-                    TextField("Path to claude", text: $model.program).disabled(model.busy)
+                    TextField("Path to claude", text: $model.program).textFieldStyle(.roundedBorder).disabled(model.busy)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("2. Get a token").font(.headline)
@@ -100,7 +100,7 @@ struct ClaudeAccountView: View {
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("3. Paste the token").font(.headline)
-                    SecureField("Token from step 2", text: $model.token).disabled(model.busy)
+                    SecureField("Token from step 2", text: $model.token).textFieldStyle(.roundedBorder).disabled(model.busy)
                     Text("Sprava keeps it in your Mac's Keychain, and Claude runs in a home of its own.").font(.caption).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 4) {
