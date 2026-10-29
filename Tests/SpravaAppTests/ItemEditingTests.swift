@@ -253,6 +253,33 @@ import Testing
         #expect(await page(folder).closed.contains { $0.title == "Send the Acme invoice by post" && $0.action == "done" })
     }
 
+    /// Showing another binder while the save is on its way must not drop the completion that follows it.
+    @Test func aCompletionAfterASaveSurvivesShowingAnotherBinder() async throws {
+        let (actions, runtime, folder) = try await binder()
+        await actions.load(folder, adopted: true)
+        let applied = try #require(runtime.answers["apply"])
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        var held = true
+        runtime.answers["apply"] = { request in
+            if held { held = false; for await _ in gate { break } }
+            return await applied(request)
+        }
+        let editor = ItemEditor()
+        let invoice = try await openItem("acme-1", in: folder)
+        editor.begin(invoice, in: folder, actions, reload: {})
+        editor.setTitle("Send the Acme invoice by post", in: folder)
+        let save = try #require(editor.close(as: "complete", in: folder, actions, reload: {}))
+        await actions.load(try temporaryFolder(), adopted: false)
+        #expect(!actions.serves(folder))
+        open.yield()
+        await save.value
+        await settle(editor, actions) { applies(runtime) == 2 }
+        let ops = runtime.sent.filter { $0["command"] == .str("apply") }.map { $0["op"] }
+        #expect(ops == [.str("edit_item"), .str("complete")])
+        #expect(editor.row(in: folder) == nil)
+        #expect(await page(folder).closed.contains { $0.title == "Send the Acme invoice by post" && $0.action == "done" })
+    }
+
     /// Delete sits in the open row (2026-10-28: "There's no way to delete something that I mistakenly added").
     @Test func deletingTheOpenRowDropsTheItemAndWhatWasTyped() async throws {
         let (actions, runtime, folder) = try await binder()

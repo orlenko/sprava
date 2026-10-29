@@ -166,7 +166,9 @@ final class ItemEditor: ObservableObject, DraftOwner {
         guard let args = row.change else { rows[folder] = nil; next(); return nil }
         saving.insert(folder)
         return actions.run("apply", folder, [("op", .str("edit_item")), ("args", .object(args))], then: reload,
-                           onSuccess: { [weak self] in self?.rows[folder] = nil },
+                           // The row is the binder's, not the page's: it closes, and what follows the save goes on,
+                           // even when another binder is shown by the time the runtime answers.
+                           onAccepted: { [weak self] in self?.rows[folder] = nil },
                            onEnd: { [weak self] in
                                guard let self else { return }
                                saving.remove(folder)
@@ -194,7 +196,7 @@ final class ItemEditor: ObservableObject, DraftOwner {
                        reload: @escaping () -> Void) -> Task<Void, Never>? {
         saving.insert(folder)
         guard let task = actions.close(item, as: op, folder, reload: reload,
-                                       onSuccess: { [weak self] in self?.rows[folder] = nil },
+                                       onAccepted: { [weak self] in self?.rows[folder] = nil },
                                        onEnd: { [weak self] in self?.saving.remove(folder) }) else {
             saving.remove(folder)
             return nil
