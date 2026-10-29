@@ -20,6 +20,8 @@ Apple-issued identity:
 - With exactly one Developer ID Application or Apple Development identity in the keychain, it is used.
 - Otherwise name one: `SPRAVA_SIGN_IDENTITY=<SHA-1 or name> ./scripts/build-app.sh`; `security find-identity -v -p
   codesigning` lists them. Never commit an identity, a team id or a fingerprint.
+- The keychain that holds the identity must be unlocked: being listed by `security find-identity` does not mean
+  `codesign` can use it, and a locked one fails with `errSecInternalComponent`.
 - `SPRAVA_SIGN_IDENTITY=-` signs ad-hoc, for development only.
 - No secure timestamp is requested (`--timestamp=none`): the build stays offline, and nothing is notarized.
 
