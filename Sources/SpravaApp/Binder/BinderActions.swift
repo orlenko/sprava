@@ -294,19 +294,23 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
 
     @discardableResult
     func run(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], then reload: @escaping () -> Void,
-             onSuccess: @escaping () -> Void = {}, onEnd: @escaping () -> Void = {}) -> Task<Void, Never> {
+             onSuccess: @escaping () -> Void = {}, onAccepted: @escaping () -> Void = {},
+             onEnd: @escaping () -> Void = {}) -> Task<Void, Never> {
         busy = true
         return Task {
             defer { busy = false; onEnd() }
-            await send(name, folder, fields, onSuccess: onSuccess)
+            await send(name, folder, fields, onSuccess: onSuccess, onAccepted: onAccepted)
             if serves(folder) { reload() }
         }
     }
 
-    /// One change through the runtime; its outcome is shown only while its binder is the one shown.
-    func send(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], onSuccess: () -> Void = {}) async {
+    /// One change through the runtime; its outcome is shown only while its binder is the one shown. `onAccepted`
+    /// runs whenever the runtime accepts it, shown or not, for state kept per binder that must follow the binder.
+    func send(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], onSuccess: () -> Void = {},
+              onAccepted: () -> Void = {}) async {
         do {
             _ = try await client.command(name, binder: folder, fields)
+            onAccepted()
             guard serves(folder) else { return }
             message = nil
             onSuccess()
@@ -432,10 +436,12 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
 
     /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id.
     @discardableResult
-    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
+    func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void,
+               onAccepted: @escaping () -> Void = {}, onEnd: @escaping () -> Void = {}) -> Task<Void, Never>? {
         guard let id = item.object?["id"] else { return nil }
         let at = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)
         return run("apply", folder, [("op", .string(op)),
-                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))], then: reload)
+                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))],
+                   then: reload, onAccepted: onAccepted, onEnd: onEnd)
     }
 }
