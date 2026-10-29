@@ -89,31 +89,40 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             if connected { documents = state["documents"] == .bool(true); intake = state["intake"] == .bool(true) }
             message = nil
         } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; message = "Sprava could not check this binder's Claude connection. Open Health to check the background part." }
-        // A connected binder needs Claude set up; only an unconnected one asks, for what to offer next.
-        if connected { accountReady = true } else { await readAccount() }
+        // A connected binder needs Claude set up; only an unconnected one asks, for what to offer next. Another binder
+        // shown meanwhile owns the page from then on, its conversation included.
+        let ready = connected ? true : await accountStatus()
+        guard self.folder == folder else { return }
+        accountReady = ready
         await chat.show(folder)
         if self.folder == folder, let turn = pending[folder], turn.binderID == scopes[folder],
            chat.needsResume(requestID: turn.requestID, in: folder) {
             chat.resume(observe(turn, in: folder), in: folder)
         }
     }
-    /// Asks the runtime whether Claude is set up in Sprava; a failed read leaves the answer unknown.
-    func readAccount() async {
-        do { accountReady = try await client.global("claude_status", timeout: 5)["enabled"] == .bool(true) }
-        catch { accountReady = nil }
+    /// Asks the runtime whether Claude is set up in Sprava; nil when it could not be asked.
+    func accountStatus() async -> Bool? {
+        do { return try await client.global("claude_status", timeout: 5)["enabled"] == .bool(true) }
+        catch { return nil }
     }
 
     func connect() async {
         guard !busy, let folder else { return }; busy = true; defer { busy = false }
+        // Each outcome is reported only while its binder is still the one shown.
         do {
             try await authenticate()
-        } catch { message = "Connecting needs your Touch ID or login password. Nothing was changed."; return }
+        } catch {
+            if self.folder == folder { message = "Connecting needs your Touch ID or login password. Nothing was changed." }
+            return
+        }
         do {
             _ = try await client.command("claude_enable", binder: folder, [("documents", .bool(documents)), ("intake", .bool(intake))], timeout: 30)
             if self.folder == folder { await show(folder) }
         } catch {
-            await readAccount()
-            message = Self.notConnected(error, accountReady: accountReady)
+            let ready = await accountStatus()
+            guard self.folder == folder else { return }
+            accountReady = ready
+            message = Self.notConnected(error, accountReady: ready)
         }
     }
 
