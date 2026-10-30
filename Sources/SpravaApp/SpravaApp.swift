@@ -10,6 +10,7 @@ import SwiftUI
 struct SpravaApp: App {
     @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
     @StateObject private var model: ShelfModel
+    @StateObject private var appearance: AppearanceSettings
 
     init() {
         // Hidden: `SpravaApp --snapshot out.png` renders the window offscreen and exits, for layout checks
@@ -21,6 +22,10 @@ struct SpravaApp: App {
         }
         let model = ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument))
         _model = StateObject(wrappedValue: model)
+        // Before the first window, so none opens in the wrong look.
+        let appearance = AppearanceSettings()
+        appearance.apply()
+        _appearance = StateObject(wrappedValue: appearance)
         // Before the first page: pages wait behind the starting screen and requests wait for the start, so the
         // seconds launchd takes to bring the runtime up show as starting, not as failures.
         let keeper = model.health.keeper
@@ -59,6 +64,8 @@ struct SpravaApp: App {
                     .menuShortcut(.refresh)
             }
         }
+        // The app menu's Settings… item, ⌘,.
+        Settings { SettingsView(appearance: appearance) }
     }
 }
 
