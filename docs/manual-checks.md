@@ -35,6 +35,49 @@ Both ways install only a team-signed app. Over an ad-hoc one, that is the intend
 afterwards that Health shows the runtime running and that `runtime/watch.json` gets a new `ran_at` at the next
 quarter hour. Over a team-signed one, the team must be the same: a move to ad-hoc or to another team is refused.
 
+#### Moving a signed bundle to another Mac
+
+1. On the signing Mac, after `codesign --verify --deep --strict build/<dir>/Sprava.app` passes, pack it with
+   `ditto -c -k --keepParent build/<dir>/Sprava.app Sprava-<sha>.zip` (ditto keeps the signature and extended
+   attributes; `zip` does not) and record `shasum -a 256 Sprava-<sha>.zip`. Send the zip, for example with
+   `tailscale file cp Sprava-<sha>.zip <target>:`, and the checksum by a separate channel.
+2. On the target Mac, receive it into an empty folder (`tailscale file get <folder>`), compare `shasum -a 256`
+   with the recorded checksum, and unpack with `ditto -x -k Sprava-<sha>.zip <folder>`.
+3. Check before trusting it: `codesign --verify --deep --strict <folder>/Sprava.app` passes, and `codesign -dv
+   <folder>/Sprava.app` shows `TeamIdentifier=<team id>`. `spctl` rejects it as "Unnotarized Developer ID"; that
+   is expected, since nothing is notarized.
+4. Only when both checks pass, clear the download quarantine. `xattr -dr com.apple.quarantine` stops with
+   "Permission denied" on `Contents/MacOS/restic`, which is read-only (0555), and leaves it quarantined, so clear
+   that file on its own and restore its mode:
+
+   ```sh
+   app=<folder>/Sprava.app
+   xattr -dr com.apple.quarantine "$app"            # fails on restic only
+   chmod u+w "$app/Contents/MacOS/restic"
+   xattr -d com.apple.quarantine "$app/Contents/MacOS/restic"
+   chmod 0555 "$app/Contents/MacOS/restic"
+   xattr -lr "$app" | grep -c quarantine            # 0
+   codesign --verify --deep --strict "$app"         # still valid: modes and xattrs are not signed
+   ```
+
+5. Install with `./scripts/restart-app.sh --install <folder>/Sprava.app --team <team id>` from a checkout of the
+   same main or later. The runtime fails one launch on the old constraint and comes back within about 30 seconds,
+   registered under the team.
+
+The first move from ad-hoc to team-signed leaves the outside watcher behind: macOS reuses its old record, which
+still names the ad-hoc build, and the app does not register it again by itself (issue #523). Until that is
+fixed, repair it once by hand:
+
+1. `launchctl kickstart gui/$(id -u)/ca.orlenko.sprava.watch` twice. The first run is refused with a
+   launch constraint violation; the second exits 78, after launchd has asked for a repair and macOS has dropped the
+   watcher's record.
+2. Quit Sprava normally (`osascript -e 'tell application id "ca.orlenko.sprava" to quit'`; unsaved drafts get their
+   prompt), then `open /Applications/Sprava.app --args --refresh-background-registration`.
+3. `launchctl print gui/$(id -u)/ca.orlenko.sprava.watch` shows `team-identifier` in its constraint. One more
+   plain `kickstart` exits 0 and `runtime/watch.json` gets a new `ran_at`; so does the next quarter-hour run.
+
+Later updates signed by the same team keep the constraint and need only step 5 above.
+
 1. **Registration (spike c).** Open Sprava with neither job registered. It registers its background work
    without a prompt (decisions.md A19); within a minute Health shows "Runtime running". If macOS wants approval
    instead, Health and the binder page show one line with Open Login Items, and nothing opens by itself.
