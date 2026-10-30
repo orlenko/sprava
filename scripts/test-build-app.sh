@@ -113,6 +113,9 @@ sys.exit(0)
                         TEST_PRODUCTS=str(self.products), SPRAVA_RESTIC=str(self.restic),
                         SPRAVA_APP_BUNDLE=str(self.bundle), TEST_IDENTITIES="Developer ID Application")
         self.env.pop("SPRAVA_SIGN_IDENTITY", None)
+        # Run from a hook, git's own variables would point build-app.sh at the real repository instead of this copy.
+        for name in [k for k in self.env if k.startswith("GIT_")]:
+            del self.env[name]
 
     def previous(self):
         self.bundle.mkdir(parents=True)
@@ -165,6 +168,37 @@ sys.exit(0)
         seal = (self.bundle / "Contents/_CodeSignature/CodeResources").read_text()
         for name in [icns.name, "Assets.car"]:
             self.assertIn(f"<key>Resources/{name}</key>", seal)
+
+    def info(self):
+        with open(self.bundle / "Contents/Info.plist", "rb") as f:
+            return plistlib.load(f)
+
+    def git(self, *args):
+        env = dict(self.env, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=self.repo, env=env, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_info_plist_names_the_commit_it_was_built_from(self):
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.git("-c", "user.name=Invented", "-c", "user.email=invented@example.com", "commit", "-q", "-m", "one")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.info()["CFBundleVersion"], "1")
+        self.assertEqual(self.info()["SpravaCommit"], self.git("rev-parse", "--short=7", "HEAD"))
+        # Stamped before the bundle is signed, so the signature seals it.
+        self.assertTrue(self.signed()[-1].endswith(".building-Sprava.app"))
+        # A tracked file changed since that commit: the build says so.
+        (self.repo / "LICENSE").write_text("changed\n")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.info()["SpravaCommit"], self.git("rev-parse", "--short=7", "HEAD") + "-dirty")
+
+    def test_outside_a_checkout_the_plist_keeps_its_version(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.info()["CFBundleVersion"], "1")
+        self.assertNotIn("SpravaCommit", self.info())
 
     def test_missing_app_icon_keeps_previous_bundle(self):
         for name in ["AppIcon.icns", "Assets.car"]:

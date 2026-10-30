@@ -74,6 +74,12 @@ trap 'exit 143' TERM
 mkdir -p "$work/Contents/MacOS" "$work/Contents/Resources" "$work/Contents/Library/LaunchAgents"
 cp Resources/LaunchAgents/*.plist "$work/Contents/Library/LaunchAgents/"
 cp Resources/App-Info.plist "$work/Contents/Info.plist"
+# Which build this is (SpravaKit's BuildIdentity): the commit count as CFBundleVersion and the short commit, marked
+# "-dirty" when tracked files differ from it. Outside a git checkout the plist keeps its own CFBundleVersion.
+if count=$(git rev-list --count HEAD 2>/dev/null) && commit=$(git rev-parse --short=7 HEAD 2>/dev/null); then
+    if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then commit="$commit-dirty"; fi
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $count" -c "Add :SpravaCommit string $commit" "$work/Contents/Info.plist"
+fi
 cp LICENSE "$work/Contents/Resources/LICENSE.txt"
 # The app icon: Assets.car (CFBundleIconName, with its dark and tinted looks) and AppIcon.icns (CFBundleIconFile),
 # both committed by scripts/make-app-icon.sh, so the build needs no Xcode.

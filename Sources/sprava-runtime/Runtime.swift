@@ -14,7 +14,7 @@ import SpravaKit
 /// function in `Services/Jobs`; this file holds the timers, the lease, the heartbeat, the watchdog, power and
 /// clock events, and the wiring (docs/code-structure.md rule 8).
 final class Runtime: @unchecked Sendable {
-    static let build = "0.1.0 (2)"
+    static let build = BuildIdentity.current
     static let xpcProtocol = 1
 
     let support: URL
