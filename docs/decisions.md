@@ -538,3 +538,41 @@ D1 to D14 were decided by the author on 2026-10-14 ("go ahead with the plan"); n
   disagreement cards they answered (proposed: 15 of the last 20); until then they are shown apart and nothing
   graduates. A confirmation given faster than the card can be read (proposed: under 2 seconds) is not counted
   as human-checked, so tapping through does not raise the score meant to measure it.
+- **D22 decided (2026-10-30, the author).** The agent is the front door. In a binder with an engine connected,
+  every typed message goes to that binder's agent session: Sonnet drives, and a turn that reads a document or
+  needs hard reasoning or writing runs on Opus. The local model shadows (D27) and is the voice only when no
+  engine is connected. Supersedes D4's front desk and back office roles and D5's front desk as the primary voice
+  (conversation.md §18.2). Why: a usable tool from the start beats a ladder of weaker models.
+- **D23 decided (same day).** The agent's reach: read, write and run tools inside its binder folder and its own
+  agent home, enforced by an operating-system sandbox; nothing outside them. Web search and fetch are allowed,
+  every request goes through Sprava's proxy and is listed in the turn's summary, and once a turn has read
+  untrusted text a request to a domain new to the binder waits for the person's tap (allow once, always for this
+  binder, deny). Outward actions stay drafts (D13). Supersedes "no file tools, no shell, no web" in D4 and D17
+  (conversation.md §18.3).
+- **D24 decided (same day).** Undo by version history: a history per binder kept outside the folder (proposed:
+  git, its directory in Sprava's support folder), an entry before each turn for changes since the last one and
+  an entry after it for the turn's changes; Undo reverts one turn alone and shows a conflict instead of
+  overwriting a later edit; each turn ends with a one-line summary and Undo. Replaces D3's class B taps inside the
+  binder; class C stays in the app's controls; restic stays the backup (conversation.md §18.4).
+- **D25 decided (same day).** Plain controls for plain actions: done, cancel, deadline, priority, description and
+  adding a to-do are controls in the to-do list, applied by code with no model. A shopping list is to-dos with a
+  tag, not a separate kind (conversation.md §18.2).
+- **D26 decided (same day).** No agent for the overall view. The cross-binder to-do list, the briefs and their sync
+  are code, with the on-device model where wording is needed; a built-in General binder holds what fits no other.
+  Remote access comes from the planned secure web app, not a calendar sync (conversation.md §18.2).
+- **D27 decided (same day; method from Consultant's reading of "The Counting House", 2026-10-27).** Shadowing:
+  the agent acts; for each of Sprava's structured tool calls a local model decides the same input in shadow,
+  unapplied and unshown. It is scored against the person's outcome on the agent's action (accepted, edited,
+  undone), never against the agent alone, and a verb hands down, agent to local model to code, when the Wilson
+  lower bound of that score passes a bar set by the verb's error cost (D18, D20); a sampled share keeps going to
+  the agent forever and a rise in Undo or edits sends the verb back (D10, D21); unseen-miss verbs (D19) never hand
+  down. Sprava's own files are writable only through its tools, so the tool calls are not a sample of only the
+  easy cases. Every turn and call is measured as counts only (conversation.md §18.5 to §18.7).
+- **D28 decided (same day).** Engines: Claude first; Codex and Antigravity behind the same contract, each on the
+  person's own subscription, routed to whichever has capacity. Open, recorded for the sharing story: Anthropic's
+  Agent SDK documentation says that, unless previously approved, third-party developers may not offer claude.ai
+  login or its rate limits for their products and should use API keys; whether that covers Sprava driving the
+  person's own Claude Code with their own token is to be settled before Sprava is offered to others.
+- **D29 decided (same day).** The Brains page no longer registers Sprava in the person's own Claude Code. A
+  person's own session can open a binder folder directly; the registration added a token to manage per Claude
+  profile and nothing a folder does not give. Sprava's MCP server stays, for Sprava's own agent sessions (§18.5).
