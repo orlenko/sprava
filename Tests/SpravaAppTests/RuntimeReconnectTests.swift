@@ -105,4 +105,47 @@ import Testing
         await actions.loadReview(kitchen)
         #expect(actions.message == RuntimeClient.Failure.changeNotRunningLine)
     }
+
+    /// Times out the next `stalls` requests, as a runtime held up behind a slow job does, then answers.
+    @MainActor
+    final class Stalled {
+        var stalls: Int
+        init(stalls: Int) { self.stalls = stalls }
+
+        lazy var client = RuntimeClient(answer: { [self] text in
+            let request = try JSONParser.parse(text).value
+            if stalls > 0 {
+                stalls -= 1
+                let read = request.objectValue.map(RuntimeClient.isRead) ?? false
+                throw RuntimeClient.Failure(message: read ? RuntimeClient.Failure.readTimedOutLine : RuntimeClient.Failure.changeTimedOutLine,
+                                            kind: .timedOut)
+            }
+            return #"{"ok":true,"proposals":[],"ops":[]}"#
+        })
+    }
+
+    /// The binder page kept "did not answer in time" after one slow read, while every read after it was answered.
+    @Test func aReadThatTimedOutLeavesItsLineOnlyUntilTheRuntimeAnswers() async {
+        let runtime = Stalled(stalls: 0)
+        let actions = BinderActions(client: runtime.client)
+        await actions.load(kitchen, adopted: false)
+        runtime.stalls = 1
+        await actions.loadReview(kitchen)
+        #expect(actions.message == RuntimeClient.Failure.readTimedOutLine)
+        await actions.loadReview(kitchen)
+        #expect(actions.message == nil)
+    }
+
+    @Test func aChangeThatTimedOutKeepsItsLineThroughASlowReadAndALaterAnswer() async {
+        let runtime = Stalled(stalls: 0)
+        let actions = BinderActions(client: runtime.client)
+        await actions.load(kitchen, adopted: false)
+        runtime.stalls = 2
+        await actions.send("binder_settings", kitchen, [("description", .str("Invented quotes"))])
+        #expect(actions.message == RuntimeClient.Failure.changeTimedOutLine)
+        await actions.loadReview(kitchen)
+        #expect(actions.message == RuntimeClient.Failure.changeTimedOutLine)
+        await actions.loadReview(kitchen)
+        #expect(actions.message == RuntimeClient.Failure.changeTimedOutLine)
+    }
 }
