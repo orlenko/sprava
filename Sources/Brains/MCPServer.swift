@@ -75,7 +75,7 @@ public final class MCPServer: @unchecked Sendable {
             return Self.result(id: id, .obj([("supportedVersions", .array([.str(Self.modern)] + Self.legacy.map(JSONValue.string))),
                                              ("capabilities", .obj([("tools", .obj([("listChanged", .bool(false))]))])),
                                              ("instructions", .str(Self.instructions)),
-                                             ("ttlMs", .int(3_600_000)), ("cacheScope", .str("server")),
+                                             ("ttlMs", .int(3_600_000)), ("cacheScope", .str("public")),
                                              ("_meta", .obj([("io.modelcontextprotocol/serverInfo", Self.serverInfo)]))]), modern: true)
         case "ping":
             return Self.result(id: id, .obj([]), modern: metaVersion != nil)
@@ -94,7 +94,7 @@ public final class MCPServer: @unchecked Sendable {
         switch method {
         case "tools/list":
             var r: [(String, JSONValue)] = [("tools", .array(Self.tools))]
-            if modern { r += [("ttlMs", .int(3_600_000)), ("cacheScope", .str("server"))] }
+            if modern { r += [("ttlMs", .int(3_600_000)), ("cacheScope", .str("public"))] }
             return Self.result(id: id, .obj(r), modern: modern)
         case "tools/call":
             guard sessionReady() else { return Self.result(id: id, Self.toolError("session not ready"), modern: modern) }

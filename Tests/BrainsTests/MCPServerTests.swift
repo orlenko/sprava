@@ -32,9 +32,12 @@ import Testing
         let (s, _, _) = try setup()
         let d = try call(s, #"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{\#(meta)}}"#)
         #expect(d["result"]?["supportedVersions"]?.arrayValue?.first == .str("2026-07-28"))
+        // Claude Code accepts only "public" or "private" and refused the whole tool list over "server".
+        #expect(d["result"]?["cacheScope"] == .str("public"))
         let tools = try call(s, #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{\#(meta)}}"#)
         #expect(tools["result"]?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue } == ["list_binders", "propose_ops", "get_proposal", "list_readings", "read_document", "finish_reading"])
         #expect(tools["result"]?["resultType"] == .str("complete"))
+        #expect(tools["result"]?["cacheScope"] == .str("public"))
         let bare = try call(s, #"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#)
         #expect(bare["error"]?["code"] == .int(-32602))
     }
