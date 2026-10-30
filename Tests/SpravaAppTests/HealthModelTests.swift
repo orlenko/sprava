@@ -152,4 +152,13 @@ import Testing
         // The first read's result began before the newer refreshes, so only the second read's is published.
         #expect(gate.calls == 2 && published == [2])
     }
+
+    /// The person could not tell which build was installed, or whether the runtime was left from before an update.
+    @Test func aRuntimeOfAnotherBuildThanTheAppIsNamed() {
+        let line = HealthModel.buildMismatch(runtime: "0.1.0 (411 · 6d57a1a)", app: "0.1.0 (412 · 119b640)")
+        #expect(line?.contains("0.1.0 (411 · 6d57a1a)") == true && line?.contains("0.1.0 (412 · 119b640)") == true)
+        #expect(HealthModel.buildMismatch(runtime: "0.1.0 (412 · 119b640)", app: "0.1.0 (412 · 119b640)") == nil)
+        // `swift run` has no bundle and so no build to compare.
+        #expect(HealthModel.buildMismatch(runtime: "0.1.0 (412 · 119b640)", app: "dev") == nil)
+    }
 }

@@ -39,6 +39,15 @@ struct SpravaApp: App {
                 .task { _ = await model.health.keeper.ensureRunning() }
         }
         .commands {
+            // The standard panel shows only CFBundleVersion after the version; this one adds the commit, so About says
+            // what Health says (BuildIdentity).
+            CommandGroup(replacing: .appInfo) {
+                Button("About Sprava") {
+                    var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
+                    if let version = BuildIdentity.aboutVersion(Bundle.main.infoDictionary) { options[.applicationVersion] = version }
+                    NSApp.orderFrontStandardAboutPanel(options: options)
+                }
+            }
             CommandGroup(after: .newItem) {
                 // ⌘N stays with the WindowGroup's New Window; the table in MenuCommands.swift keeps them apart.
                 Button(MenuCommand.newBinder.title) { model.newBinder() }

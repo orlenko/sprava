@@ -246,6 +246,7 @@ struct HealthView: View {
             Spacer()
             buttons(grade)
         }
+        if let stale = model.staleRuntimeBuild { Text(stale).foregroundStyle(.orange) }
         if let failure = model.startFailure, failure != model.locationProblem { Text(failure).foregroundStyle(.orange) }
         if let problem = model.locationProblem { Text(problem).foregroundStyle(.orange) }
         ForEach(HealthLine.rows("refusal", model.refusals)) { Text($0.value).font(.caption.monospaced()).foregroundStyle(.secondary) }
@@ -291,7 +292,8 @@ struct HealthView: View {
         case .requiresApproval:
             Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
         case .enabled:
-            if (grade == .red || grade == .amber || model.startFailure != nil || model.connectionProblem != nil) && !model.starting {
+            if (grade == .red || grade == .amber || model.startFailure != nil || model.connectionProblem != nil
+                || model.staleRuntimeBuild != nil) && !model.starting {
                 Button("Restart") { model.restart() }
             }
         default:
