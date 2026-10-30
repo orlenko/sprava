@@ -27,6 +27,10 @@ final class HealthModel: ObservableObject {
     @Published var backupSettingsError: String?
     var lastDoctor: Date?
     var lastWake: Date?
+    /// The last time the watcher was registered again, the attempt in flight, and why the last one failed (#523).
+    var lastWatcherRepair: Date?
+    var watcherRepair: Task<Void, Never>?
+    @Published var watcherRepairFailure: String?
     /// Starts the runtime without asking (decisions.md A19). While it starts, launchd can take several seconds, and
     /// that wait is shown as "starting", not as a failure.
     let keeper: RuntimeKeeper
@@ -38,6 +42,8 @@ final class HealthModel: ObservableObject {
     struct Reads: Sendable {
         var runtime: @Sendable (URL) -> HealthSnapshot.Runtime = { HealthSnapshot.runtime(support: $0) }
         var checks: @Sendable (URL) -> HealthSnapshot.Checks = { HealthSnapshot.checks(support: $0) }
+        /// Registers the outside watcher again (`WatcherRepair`); what went wrong, or nil.
+        var repairWatcher: @Sendable () -> String? = { RuntimeStart.reregisterWatcher() }
     }
 
     let support: URL
@@ -120,12 +126,13 @@ final class HealthModel: ObservableObject {
             watchRecord = records.watchRecord
             refusals = records.refusals
             startsToday = records.startsToday
+            repairWatcherIfDue()
         }
     }
 
     /// Waits until no read is in flight and every result has been published or dropped.
     func settled() async {
-        while let read = runtimeRead ?? checksRead ?? connectionRead { await read.value }
+        while let read = runtimeRead ?? checksRead ?? connectionRead ?? watcherRepair { await read.value }
     }
 
     /// A heartbeat proves the process is alive, not that the app can reach its command listener.
@@ -247,6 +254,7 @@ struct HealthView: View {
             buttons(grade)
         }
         if let stale = model.staleRuntimeBuild { Text(stale).foregroundStyle(.orange) }
+        if let failure = model.watcherRepairFailure { Text(failure).foregroundStyle(.orange) }
         if let failure = model.startFailure, failure != model.locationProblem { Text(failure).foregroundStyle(.orange) }
         if let problem = model.locationProblem { Text(problem).foregroundStyle(.orange) }
         ForEach(HealthLine.rows("refusal", model.refusals)) { Text($0.value).font(.caption.monospaced()).foregroundStyle(.secondary) }

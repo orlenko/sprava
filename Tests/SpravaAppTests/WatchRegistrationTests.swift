@@ -45,6 +45,13 @@ import Testing
                               "unregister \(watch)", "removed \(watch)", "register \(watch)"])
     }
 
+    /// Repairing the watcher (issue #523) renews its record alone and leaves the running runtime as it is.
+    @Test func theWatcherAloneCanBeRegisteredAgain() {
+        let calls = Calls()
+        #expect(RuntimeStart.register([watch], again: true, services: calls.services(), wait: 5) == nil)
+        #expect(calls.log == ["unregister \(watch)", "removed \(watch)", "register \(watch)"])
+    }
+
     @Test func aFirstRegistrationUnregistersNothing() {
         let calls = Calls()
         #expect(RuntimeStart.register(again: false, services: calls.services(), wait: 5) == nil)
