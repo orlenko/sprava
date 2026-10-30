@@ -67,9 +67,9 @@ final class RuntimeClient {
         }
     }
 
-    /// Clears the page's message once the runtime answers, when a read left it because the runtime was not running
-    /// (`RuntimePage.readFailed`): the line was true when written, and the page must not keep saying it while the
-    /// runtime runs. A change's failure stays: the person must see that it was not saved.
+    /// Clears the page's message once the runtime answers, when a read left it because the runtime was not running or
+    /// did not answer in time (`RuntimePage.readFailed`): the line was true when written, and the page must not keep
+    /// saying it while the runtime answers. A change's failure stays: the person must see that it was not saved.
     func clearsNotRunning(_ page: some RuntimePage) {
         answered.append { [weak page] in
             guard let page, page.readFoundNoRuntime else { return }
@@ -234,13 +234,16 @@ protocol RuntimePage: AnyObject {
 }
 
 extension RuntimePage {
-    /// Shows a read's failure; one that found the runtime not running is marked, so the next answer clears it. It never
-    /// covers a change's failure for the same reason: that line says what may not have been saved, and stays.
+    /// Shows a read's failure; one that found the runtime not running, or had no answer in time, is marked, so the next
+    /// answer clears it: such a read changed nothing, and the line is untrue once the runtime answers. It never covers a
+    /// change's failure for the same reason: that line says what may not have been saved, and stays.
     func readFailed(_ text: String, _ error: Error) {
-        let noRuntime = (error as? RuntimeClient.Failure)?.kind == .notRunning
-        if noRuntime, !readFoundNoRuntime, message?.contains(RuntimeClient.Failure.changeNotRunningLine) == true { return }
+        let kind = (error as? RuntimeClient.Failure)?.kind
+        let passing = kind == .notRunning || kind == .timedOut
+        let changeLines = [RuntimeClient.Failure.changeNotRunningLine, RuntimeClient.Failure.changeTimedOutLine]
+        if passing, !readFoundNoRuntime, let message, changeLines.contains(where: message.contains) { return }
         message = text
-        readFoundNoRuntime = noRuntime
+        readFoundNoRuntime = passing
     }
 }
 
