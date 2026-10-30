@@ -268,6 +268,13 @@ enum RuntimeStart {
         return register(again: again, services: .system, wait: unregisterWait)
     }
 
+    /// Registers the outside watcher again, alone, after the same refusals (issue #523). The runtime is left running.
+    static func reregisterWatcher() -> String? {
+        if let problem = locationProblem { return problem }
+        if let problem = BundleSignature.problem(at: Bundle.main.bundleURL) { return problem }
+        return register([watchPlist], again: true, services: .system, wait: unregisterWait)
+    }
+
     /// The two `SMAppService` calls a registration makes, by plist name. Tests stand them in; none touches launchd.
     struct Services: Sendable {
         var unregister: @Sendable (_ plist: String, _ done: @escaping @Sendable ((any Error)?) -> Void) -> Void
@@ -286,8 +293,8 @@ enum RuntimeStart {
     /// (SMAppService.h). A register sent 15 ms after a synchronous unregister kept the old build's launch constraint,
     /// and launchd refused the watcher on every run after an update (2026-10-28). A service that was not registered is
     /// fine; any other unregister error, or no completion within `wait`, stops before anything more is registered.
-    static func register(again: Bool, services: Services, wait: TimeInterval) -> String? {
-        for plist in [runtimePlist, watchPlist] {
+    static func register(_ plists: [String] = [runtimePlist, watchPlist], again: Bool, services: Services, wait: TimeInterval) -> String? {
+        for plist in plists {
             if again, let failure = unregister(plist, services: services, wait: wait) { return failure }
             do {
                 try services.register(plist)

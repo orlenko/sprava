@@ -61,12 +61,13 @@ quarter hour. Over a team-signed one, the team must be the same: a move to ad-ho
    ```
 
 5. Install with `./scripts/restart-app.sh --install <folder>/Sprava.app --team <team id>` from a checkout of the
-   same main or later. The runtime fails one launch on the old constraint and comes back within about 30 seconds,
-   registered under the team.
+   same main or later. Over a build of the same team the runtime restarts at once. Over an ad-hoc build it fails
+   one launch on the old constraint and comes back within about 30 seconds, registered under the team.
 
-The first move from ad-hoc to team-signed leaves the outside watcher behind: macOS reuses its old record, which
-still names the ad-hoc build, and the app does not register it again by itself (issue #523). Until that is
-fixed, repair it once by hand:
+The first move from ad-hoc to team-signed leaves the outside watcher behind for a while: macOS reuses its old
+record, which still names the ad-hoc build, so its next run is refused and launchd's own repair fails. While Sprava
+is open, Health registers the watcher again once it has missed two runs under a live runtime (issue #523), and the
+run after that succeeds. To repair it at once instead:
 
 1. `launchctl kickstart gui/$(id -u)/ca.orlenko.sprava.watch` twice. The first run is refused with a
    launch constraint violation; the second exits 78, after launchd has asked for a repair and macOS has dropped the
