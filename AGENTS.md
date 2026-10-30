@@ -65,6 +65,9 @@ Read this first; then `docs/code-structure.md` for which target owns what.
 - `../merge-pr.sh <number>`: the last step of the gate.
 - `prune-worktrees.sh [--apply]`: removes worktrees under `.claude/worktrees` that hold nothing unmerged and no file
   but build products; `test-prune.sh` tests it.
+- `claude-mcp-probe.sh [<claude config dir>...]`: opens `/mcp` in a real Claude Code session in a detached tmux pane
+  and prints what it says about the installed Sprava server, with the runtime's log lines for that attempt. It reads
+  no token and calls no tool. Exits 0 only when every config dir shows Sprava connected with tools.
 
 ## Review guidelines
 
