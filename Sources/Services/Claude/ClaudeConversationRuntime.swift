@@ -26,6 +26,7 @@ public actor ClaudeConversationRuntime {
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
     private let support: URL
     private let connections: ClaudeReadConnections
+    private var exports = ConversationExport()
     private let receipts: ConversationTurnStore
     private let state: ClaudeConversationState
     private let secrets: Secrets
@@ -83,7 +84,7 @@ public actor ClaudeConversationRuntime {
         })
     }
 
-    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_stop", "chat_clear"]
+    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_stop", "chat_clear"]
 
     public func respond(_ text: String) async -> String {
         guard text.utf8.count <= 5 * 1024 * 1024,
@@ -143,6 +144,10 @@ public actor ClaudeConversationRuntime {
             catch ClaudeReadConnections.Refused.changed { current = nil }
             if let current, try state.account() != nil, try secrets.read() != nil, try available(folder) { return scopeJSON(current) }
             return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null)])
+        }
+        if command == "chat_export" {
+            guard let id = try connections.savedID(for: folder) else { throw Refused.notConnected }
+            return try exports.page(request, binder: id, store: receipts)
         }
         if command == "chat_history" || command == "chat_clear" {
             guard let id = try connections.savedID(for: folder) else { return .init([(key: "turns", value: .array([]))]) }
