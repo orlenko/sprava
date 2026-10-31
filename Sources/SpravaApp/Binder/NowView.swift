@@ -80,8 +80,8 @@ struct NowView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
                 inputs
+                if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
                 FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)

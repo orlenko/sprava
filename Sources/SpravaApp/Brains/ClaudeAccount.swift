@@ -23,8 +23,7 @@ final class ClaudeAccountModel: ObservableObject {
         guard try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Enable a private Claude connection in Sprava.") else { throw CancellationError() }
     }) { self.client = client; self.authenticate = authenticate }
     static func installedProgram() -> String {
-        [NSHomeDirectory() + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) } ?? ""
+        ClaudeInstallation.locate()?.path ?? ""
     }
     func load() async {
         do { let status = try await client.global("claude_status", timeout: 5); enabled = status["enabled"] == .bool(true); persistent = status["credential_persistent"] == .bool(true); available = true }
@@ -33,21 +32,24 @@ final class ClaudeAccountModel: ObservableObject {
     }
 
     /// The command that prints a subscription token, run by the person in Terminal.
-    static let setupCommand = "claude setup-token"
+    var setupCommand: String {
+        let executable = program.isEmpty ? "claude" : program
+        return "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "' setup-token"
+    }
 
     /// Why Verify and Enable cannot be pressed yet, naming the step to do; nil when it can. A status read that
     /// failed says so: it is no evidence that a step is missing.
     var enableBlocker: String? {
         if !checked { return "Checking Sprava's background part…" }
         if !available { return "Sprava's background part did not answer, so the setup cannot be checked. Open Health, then Refresh." }
-        if program.isEmpty { return "Step 1: enter where Claude Code is installed." }
-        if token.isEmpty { return "Step 3: paste the token from step 2." }
+        if program.isEmpty { return "Install native Claude Code, or choose its executable under Claude installation." }
+        if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Paste your subscription token below." }
         return nil
     }
 
     func copySetupCommand() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Self.setupCommand, forType: .string)
+        NSPasteboard.general.setString(setupCommand, forType: .string)
     }
     func enable() async {
         guard !busy else { return }
@@ -55,13 +57,19 @@ final class ClaudeAccountModel: ObservableObject {
         defer { busy = false }
         do {
             try await authenticate()
-            let credential = token; token = ""
+            let credential = token.trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try await client.global("claude_configure", [("program", .str(program)), ("credential", .str(credential))], timeout: 270)
+            token = ""
             await load()
             NotificationCenter.default.post(name: .init("Sprava.ClaudeConnectionChanged"), object: nil)
-            message = enabled ? "Claude is ready. Connect a binder on its Conversation section to choose what it may read." : "Refresh the background connection before connecting a binder."
+            message = enabled ? "Claude is ready. Open a binder and choose Connect to Claude to start its conversation." : "Refresh the background connection before connecting a binder."
+        } catch let failure as RuntimeClient.Failure {
+            if let issue = failure.code.flatMap(ClaudeSetupFailure.init(rawValue:)) { message = issue.message }
+            else if failure.kind == .timedOut { message = ClaudeSetupFailure.timeout.message }
+            else if failure.kind == .notRunning { message = failure.message }
+            else { message = ClaudeSetupFailure.unavailable.message }
         } catch {
-            message = "Claude could not be enabled. Check Claude Code, the subscription token and Keychain access. If verification timed out, Refresh before trying again."
+            message = "Claude setup was cancelled or could not be authorized. Your token is still in the secure field."
         }
     }
     func disconnect() async {
@@ -74,8 +82,8 @@ final class ClaudeAccountModel: ObservableObject {
 struct ClaudeAccountView: View {
     @ObservedObject var model: ClaudeAccountModel
     var body: some View {
-        Section("Claude in Sprava") {
-            Text("Talk with each binder: ask about its to-dos and documents, or have a draft written. The conversation on a binder's page uses this. You confirm suggested tasks; Sprava never sends email.")
+        Section("Claude assistant") {
+            Text("Set up Claude once, then talk with it on each binder's page.")
             if model.enabled {
                 Label("Set up. Connect each binder from its own page, where you choose what Claude may read.", systemImage: "checkmark.circle")
                 HStack {
@@ -85,33 +93,35 @@ struct ClaudeAccountView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("1. Claude Code on this Mac").font(.headline)
-                    Text(model.program.isEmpty ? "Not found. Install Claude Code, or enter where it is:" : "Found. Change the path only if you use another copy:")
-                        .font(.caption).foregroundStyle(.secondary)
-                    TextField("Path to claude", text: $model.program).textFieldStyle(.roundedBorder).disabled(model.busy)
+                    Label(model.program.isEmpty ? "Native Claude Code was not found" : "Native Claude Code selected",
+                          systemImage: model.program.isEmpty ? "exclamationmark.triangle" : "checkmark.circle")
+                    DisclosureGroup("Claude installation") {
+                        TextField("Native Claude executable", text: $model.program).textFieldStyle(.roundedBorder).disabled(model.busy)
+                        Text("Sprava uses this executable directly, with its own private settings.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("2. Get a token").font(.headline)
+                    Text("Subscription token").font(.headline)
                     HStack {
-                        Text("In Terminal, run \(ClaudeAccountModel.setupCommand) and sign in with your Claude subscription. It prints a token.")
+                        Text("Copy this command, run it in Terminal, and sign in with your Claude subscription. Then paste the token below.")
                             .font(.caption).foregroundStyle(.secondary)
                         Button("Copy Command") { model.copySetupCommand() }.controlSize(.small)
                     }
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("3. Paste the token").font(.headline)
-                    SecureField("Token from step 2", text: $model.token).textFieldStyle(.roundedBorder).disabled(model.busy)
+                    SecureField("Paste subscription token", text: $model.token).textFieldStyle(.roundedBorder).disabled(model.busy)
                     Text("Sprava keeps it in your Mac's Keychain, and Claude runs in a home of its own.").font(.caption).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("4. Verify").font(.headline)
                     HStack {
-                        Button("Verify and Enable Claude") { Task { await model.enable() } }.disabled(model.busy || model.enableBlocker != nil)
+                        Button("Connect Claude") { Task { await model.enable() } }.disabled(model.busy || model.enableBlocker != nil)
+                            .buttonStyle(.borderedProminent)
                         Button("Refresh") { Task { await model.load() } }.disabled(model.busy)
                         if model.busy { ProgressView().controlSize(.small) }
                     }
                     if !model.busy, let why = model.enableBlocker { Text(why).font(.caption).foregroundStyle(.secondary) }
-                    Text("Verify sends two small fixed checks to Anthropic, with no binder data. Each conversation process has a $2 list-price-equivalent cap; that is not a subscription charge estimate.")
+                    Text("Connection checks send no binder data. You choose what to share on each binder's page.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

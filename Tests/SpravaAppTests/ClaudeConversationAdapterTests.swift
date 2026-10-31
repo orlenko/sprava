@@ -123,7 +123,7 @@ import Testing
         await model.show(folder)
         #expect(model.accountReady == false && !model.connected)
         await model.connect()
-        #expect(model.message?.contains("Claude is not set up in Sprava yet. Open Brains") == true)
+        #expect(model.message?.contains("Claude is not set up in Sprava yet. Open Assistant") == true)
         // A status read that fails is no evidence that the setup is missing.
         server.accountReady = nil
         await model.connect()
@@ -145,12 +145,12 @@ import Testing
         server.accountReady = false
         await model.load()
         model.program = ""
-        #expect(model.enableBlocker?.hasPrefix("Step 1") == true)
+        #expect(model.enableBlocker?.hasPrefix("Install native Claude Code") == true)
         model.program = "/invented/claude"
-        #expect(model.enableBlocker?.hasPrefix("Step 3") == true)
+        #expect(model.enableBlocker?.hasPrefix("Paste your subscription token") == true)
         model.token = "invented-subscription-token"
         #expect(model.enableBlocker == nil)
-        #expect(ClaudeAccountModel.setupCommand == "claude setup-token")
+        #expect(model.setupCommand == "'/invented/claude' setup-token")
     }
 
     /// A binder whose setup read is still on its way must not take the page back once another binder is shown: its

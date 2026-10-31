@@ -93,6 +93,10 @@ package enum ClaudeReadLaunch {
         return hash.map { String(format: "%02x", $0) }.joined()
     }
 
+    package static func isNativeInstallation(_ program: URL) -> Bool {
+        (try? signedInstallationHash(program)) != nil
+    }
+
     private static func signedInstallationHash(_ program: URL) throws -> Data {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(program as CFURL, [], &code) == errSecSuccess, let code,

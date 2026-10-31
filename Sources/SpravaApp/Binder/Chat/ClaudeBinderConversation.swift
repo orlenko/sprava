@@ -133,7 +133,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             return "The binder was not connected: Sprava's background part did not answer. Open Health, then try again."
         }
         switch accountReady {
-        case false?: return "The binder was not connected: Claude is not set up in Sprava yet. Open Brains and follow its steps, then connect here."
+        case false?: return "The binder was not connected: Claude is not set up in Sprava yet. Open Assistant and follow its steps, then connect here."
         case nil: return "The binder was not connected, and Sprava could not check Claude's setup. Open Health, then try again."
         case true?: return "The binder was not connected. Claude is set up; check that this binder is adopted and ready, then try again."
         }

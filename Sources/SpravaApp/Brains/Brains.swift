@@ -280,56 +280,15 @@ struct BrainsView: View {
     var body: some View {
         List {
             ClaudeAccountView(model: claudeAccount)
-            Section {
-              DisclosureGroup(model.claudeCode.map { "Advanced: your own Claude Code sessions (connected: \(names($0)))" }
-                              ?? "Advanced: your own Claude Code sessions") {
-                Text("Not needed for the conversation on a binder's page; that is Claude in Sprava, above. This lets a Claude Code session you start yourself, in Terminal, see the binders you tick.")
-                    .font(.callout)
-                Text("""
-                Connecting adds Sprava to Claude Code's settings for your user account (~/.claude.json). Then start a new \
-                Claude Code session in any folder and ask it about these binders: through Sprava it sees each ticked binder's \
-                name and how many items are open, overdue or waiting, and it can suggest changes. A suggestion waits in its \
-                binder until you approve it.
-                """).foregroundStyle(.secondary)
-                if let c = model.claudeCode {
-                    HStack {
-                        Text("Connected: \(names(c))").font(.headline)
-                        Spacer()
-                        documentsToggle(c)
-                        Button("Disconnect") { Task { await model.disconnect(c) } }.disabled(model.busy)
-                    }
+            if let external = model.claudeCode {
+                Section("Existing Terminal connection") {
+                    Text("This older connection is separate from the assistant inside Sprava.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(names(external))
+                    Button("Disconnect Terminal connection") { Task { await model.disconnect(external) } }
+                        .disabled(model.busy)
+                    if let message = model.message { Text(message).font(.caption) }
                 }
-                ForEach(rows.filter { $0.teka.isAdopted }, id: \.folder) { row in
-                    Toggle(row.name, isOn: Binding(get: { model.chosen.contains(row.folder.standardizedFileURL.path) },
-                                                   set: { on in model.choose(row.folder, on) }))
-                }
-                .disabled(model.busy)
-                Button(model.claudeCode == nil ? "Connect Claude Code" : "Update") { Task { await model.connect() } }
-                    .disabled(!model.canConnect)
-                if let pending = model.registration {
-                    Text("Setup to add by hand: merge this sprava entry into mcpServers in ~/.claude.json, keeping the other entries. It is for that file, not for Terminal.").font(.caption)
-                    // Credentials are copied only through Copy Setup, which marks the pasteboard private.
-                    Text(pending.configuration).font(.caption.monospaced()).textSelection(.disabled)
-                    HStack {
-                        Button("Copy Setup") { model.copyRegistration() }
-                        Button("Try Again") { Task { await model.tryAgain() } }.disabled(model.busy)
-                    }
-                }
-                if let m = model.message { Text(m).foregroundStyle(model.messageIsProblem ? .orange : .secondary) }
-                Text("Before you connect").font(.headline)
-                Text("""
-                Claude Code cannot apply anything through Sprava: every change waits for you. What it reads goes to the \
-                model provider Claude Code uses. Claude Code can also read binder folders with its own file tools. In its \
-                permission settings, deny Read, Edit and Write on each entire binder folder, on the capture root and on \
-                ~/Library/Application Support/Sprava, or use its sandbox controls. Sprava cannot check those settings.
-                """).foregroundStyle(.secondary)
-                DisclosureGroup("What Sprava runs") {
-                    Text("Without a shell, so the key never reaches a shell history file:").font(.caption)
-                    Text(BrainsModel.shellLine(BrainsModel.removeArguments)).font(.caption.monospaced())
-                    Text(BrainsModel.shellLine(BrainsModel.addArguments(token: "KEY"))).font(.caption.monospaced())
-                    Text("KEY is a new secret made each time you connect. Only its fingerprint stays in Sprava; Claude Code keeps the key in its settings.").font(.caption)
-                }
-              }
             }
             if !model.others.isEmpty {
                 Section("Other connections") {
