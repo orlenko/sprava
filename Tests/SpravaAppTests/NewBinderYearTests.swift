@@ -12,16 +12,19 @@ import Testing
 
     func model(_ runtime: StandInRuntime) throws -> ShelfModel {
         runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
-        return ShelfModel(support: try temporaryFolder(), client: runtime.client)
+        let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
+        let parent = try temporaryFolder()
+        model.binderParent = { parent }
+        return model
     }
 
-    @Test(arguments: [("", "tax-2024"), ("Tax 2024", "tax-2024"), ("Household Taxes", "household-taxes")])
+    @Test(arguments: [("Tax 2024", "tax-2024"), ("Household Taxes", "household-taxes")])
     func aTaxYearIsCreatedForTheYearPicked(typed: String, name: String) async throws {
         let runtime = StandInRuntime()
         let model = try model(runtime)
         let parent = try temporaryFolder()
-        model.askForBinder = { _, _ in ("tax-year", typed, "2024") }
-        model.chooseParent = { parent }
+        model.askForBinder = { _, _, _ in ("tax-year", typed, "2024") }
+        model.binderParent = { parent }
         await model.startNewBinder()
         let sent = try #require(runtime.sent.first)
         #expect(runtime.sent.count == 1 && sent["command"]?.stringValue == "create_binder")
@@ -34,12 +37,9 @@ import Testing
         for typed in ["", "25", "abcd", "20255", "1899", String(current + 2), "\u{FF12}\u{FF10}\u{FF12}\u{FF14}", "2O24"] {
             let runtime = StandInRuntime()
             let model = try model(runtime)
-            var askedWhere = false
-            model.askForBinder = { _, _ in ("tax-year", "tax", typed) }
-            model.chooseParent = { askedWhere = true; return nil }
+            model.askForBinder = { _, _, _ in ("tax-year", "tax", typed) }
             await model.startNewBinder()
             #expect(runtime.sent.isEmpty, "year \(typed)")
-            #expect(!askedWhere, "year \(typed)")
             #expect(model.note == "The binder was not created: the tax year is a four-digit year from 1900 to \(current + 1).")
         }
     }
@@ -66,8 +66,8 @@ import Testing
         let runtime = StandInRuntime()
         let model = try model(runtime)
         let parent = try temporaryFolder()
-        model.askForBinder = { _, _ in ("blank", "garden-shed", "not a year") }
-        model.chooseParent = { parent }
+        model.askForBinder = { _, _, _ in ("blank", "garden-shed", "not a year") }
+        model.binderParent = { parent }
         await model.startNewBinder()
         #expect(runtime.sent.first?["year"] == .int(current) && runtime.sent.first?["name"]?.stringValue == "garden-shed")
         #expect(model.note == nil)
@@ -76,11 +76,9 @@ import Testing
     @Test func cancellingSendsNothing() async throws {
         let runtime = StandInRuntime()
         let model = try model(runtime)
-        var askedWhere = false
-        model.askForBinder = { _, _ in nil }
-        model.chooseParent = { askedWhere = true; return nil }
+        model.askForBinder = { _, _, _ in nil }
         await model.startNewBinder()
-        #expect(runtime.sent.isEmpty && !askedWhere && model.note == nil)
+        #expect(runtime.sent.isEmpty && model.note == nil)
     }
 
     /// An empty folder made a tax year takes the year picked; a malformed year leaves it alone and says why.
@@ -88,11 +86,11 @@ import Testing
         let runtime = StandInRuntime()
         let model = try model(runtime)
         let empty = try temporaryFolder()
-        model.askForBinder = { _, _ in ("tax-year", "household-taxes", "2023") }
+        model.askForBinder = { _, _, _ in ("tax-year", "household-taxes", "2023") }
         await model.add([empty])
         #expect(runtime.sent.count == 1 && runtime.sent.first?["year"] == .int(2023))
         #expect(runtime.sent.first?["folder"]?.stringValue == empty.path)
-        model.askForBinder = { _, _ in ("tax-year", "household-taxes", "23") }
+        model.askForBinder = { _, _, _ in ("tax-year", "household-taxes", "23") }
         await model.add([empty])
         #expect(runtime.sent.count == 1)
         #expect(model.note?.contains("\(empty.lastPathComponent) did not become a binder: the tax year is a four-digit year") == true)

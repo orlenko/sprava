@@ -47,10 +47,10 @@ final class ShelfModel: ObservableObject, DraftOwner {
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
     private var refreshTask: Task<Void, Never>?
     let client: RuntimeClient
-    /// Asks for a new binder's template, name and year as typed, for an empty folder the person picked or (nil) a folder
-    /// still to choose; `year` is the current one.
-    var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> NewBinderAnswer? = ShelfModel.binderAlert
-    var chooseParent: @MainActor () -> URL? = ShelfModel.parentPanel
+    /// The template, name and year, with the destination shown before the explicit Create Binder action.
+    var askForBinder: @MainActor (_ empty: URL?, _ year: Int, _ parent: URL) -> NewBinderAnswer? = ShelfModel.binderAlert
+    var binderParent: @MainActor () -> URL? = { nil }
+    var openSettings: @MainActor () -> Void = {}
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
     let health: HealthModel
@@ -178,7 +178,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
         await refreshAndWait(afterChanges: true)
         let current = Self.currentYear()
         for url in empty {
-            guard let answer = askForBinder(url, current) else { continue }
+            guard let answer = askForBinder(url, current, url.deletingLastPathComponent()) else { continue }
             guard let year = Self.year(answer, current: current) else {
                 failed.append("\(url.lastPathComponent) did not become a binder: \(Self.yearRefusal(current))")
                 continue
@@ -230,14 +230,21 @@ final class ShelfModel: ObservableObject, DraftOwner {
         defer { creatingBinder = false }
         operationNote = nil
         guard await runtimeReady() else { return }
+        guard let parent = binderParent() else {
+            operationNote = "Choose your binders folder in Settings, then create a binder."
+            openSettings()
+            return
+        }
         let current = Self.currentYear()
-        guard let answer = askForBinder(nil, current) else { return }
-        // A malformed year is refused before the folder is asked for, so nothing is sent.
+        guard let answer = askForBinder(nil, current, parent) else { return }
+        guard !answer.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            operationNote = "The binder was not created: enter a name."
+            return
+        }
         guard let year = Self.year(answer, current: current) else {
             operationNote = "The binder was not created: \(Self.yearRefusal(current))"
             return
         }
-        guard let parent = chooseParent() else { return }
         await createBinder(parent: parent, name: Self.binderName(answer, year: year), template: answer.template, year: year)
     }
 
@@ -316,6 +323,7 @@ let brainsSelection = URL(string: "sprava:brains")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
+    @Environment(\.openSettings) private var openSettings
     @StateObject private var inbox = InboxModel()
     @StateObject private var todo = TodoModel()
     @StateObject private var brains = BrainsModel()
@@ -414,6 +422,7 @@ struct ShelfView: View {
         }
         .background(WindowCloseGuard(registry: drafts).allowsHitTesting(false))
         .onAppear {
+            model.openSettings = { [openSettings] in openSettings() }
             drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
             drafts.track(binderActions); drafts.track(binderConversation)
         }

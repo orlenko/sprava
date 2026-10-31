@@ -11,6 +11,7 @@ struct SpravaApp: App {
     @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
     @StateObject private var model: ShelfModel
     @StateObject private var appearance: AppearanceSettings
+    @StateObject private var binderLocation: BinderLocationSettings
 
     init() {
         // Hidden: `SpravaApp --snapshot out.png` renders the window offscreen and exits, for layout checks
@@ -21,6 +22,9 @@ struct SpravaApp: App {
             exit(0)
         }
         let model = ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument))
+        let binderLocation = BinderLocationSettings()
+        model.binderParent = { binderLocation.folder }
+        _binderLocation = StateObject(wrappedValue: binderLocation)
         _model = StateObject(wrappedValue: model)
         // Before the first window, so none opens in the wrong look.
         let appearance = AppearanceSettings()
@@ -65,7 +69,7 @@ struct SpravaApp: App {
             }
         }
         // The app menu's Settings… item, ⌘,.
-        Settings { SettingsView(appearance: appearance) }
+        Settings { SettingsView(appearance: appearance, binderLocation: binderLocation) }
     }
 }
 

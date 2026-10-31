@@ -20,8 +20,11 @@ sent in your mail client.
 
 ## A tax year
 
+Choose the folder for new binders once in **Sprava › Settings › Binders › Choose Folder…**.
+New Binder opens Settings first if no folder has been chosen. Changing the location later affects only new binders.
+
 1. **New Binder…**, pick **A tax year**, and set **Tax year** to the year it is for. The name follows the year
-   (`tax-2027`) unless you type your own. **Choose Where…** picks the folder that holds it.
+   (`tax-2027`) unless you type your own. Check the name and location, then choose **Create Binder**.
 2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Edit** it to
    leave lines out or to give a date of your own, then **Approve**. No item carries a filing deadline; any date on
    it is one you chose, and you can add one later by double-clicking the item and choosing **Add date**.
