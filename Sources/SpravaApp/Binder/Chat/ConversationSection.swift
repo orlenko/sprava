@@ -12,7 +12,11 @@ struct ConversationSection: View {
     var openBrains: () -> Void = {}
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Talk to this binder").font(.headline)
+            HStack {
+                Text("Talk to this binder").font(.headline)
+                Spacer()
+                ConversationSharingControls(model: model, sharing: model.sharing, folder: row.folder)
+            }
             if model.folder == row.folder, model.chat.folder == row.folder {
                 DisclosureGroup(model.connected ? "Sharing and connection" : "Claude is not connected — connection setup") {
                     controls
@@ -131,5 +135,30 @@ private struct ConversationCard: View {
             try AtomicFile.write(Data("To: \(card.to ?? "")\nSubject: \(card.subject)\n\n\(card.body)".utf8), to: url)
             model.cards[id]?.message = "Draft text saved. No email was sent."
         } catch { model.cards[id]?.message = "The draft could not be saved. Its text is still here." }
+    }
+}
+
+private struct ConversationSharingControls: View {
+    @ObservedObject var model: ClaudeBinderConversation
+    @ObservedObject var sharing: ConversationSharing
+    let folder: URL
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack {
+                Button("Copy conversation") { share(.clipboard) }
+                Button("Save transcript…") { share(.file) }
+            }.disabled(sharing.busy || model.folder != folder || model.chat.folder != folder)
+            if sharing.busy { ProgressView().controlSize(.small) }
+            if let message = sharing.message { Text(verbatim: message).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    private func share(_ destination: ConversationSharing.Destination) {
+        let scope = model.scopeID
+        let entries = model.chat.entries
+        let cards = model.cards.filter { $0.value.binder == folder && $0.value.scopeID == scope }
+        Task {
+            await sharing.share(destination, folder: folder, scope: scope, entries: entries, cards: cards,
+                                stillSelected: { model.folder == folder && model.chat.folder == folder && model.scopeID == scope })
+        }
     }
 }

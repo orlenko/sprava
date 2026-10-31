@@ -74,6 +74,8 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         guard let self else { return ([], "Saved conversation is unavailable.") }
         return await self.history(folder)
     })
+    lazy var sharing = ConversationSharing(client: client)
+    var scopeID: String? { folder.flatMap { scopes[$0] } }
     var hasSavedScope: Bool { folder.flatMap { scopes[$0] } != nil }
     init(client: RuntimeClient = RuntimeClient(), authenticate: @escaping () async throws -> Void = {
         guard try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Share this binder's selected information with Claude.") else { throw CancellationError() }
