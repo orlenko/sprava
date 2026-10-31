@@ -1,34 +1,17 @@
 import SwiftUI
 
-/// The page's input. With the binder connected to Claude, the conversation is the one input, and adding to-dos
-/// without Claude stays one click away below it. Otherwise the to-do box comes first, labelled for what it does,
-/// and the conversation section below offers the setup and keeps any saved transcript in view. Both models keep
-/// their drafts whichever is shown, and nothing typed in one is ever sent through the other.
+/// The binder's assistant is always first. Direct to-do entry remains separately labelled and preserves drafts,
+/// so an unavailable assistant never turns a question into an unintended to-do.
 struct BinderInputs: View {
     let note: NoteBox?
     let conversation: ConversationSection?
 
     var body: some View {
         if let conversation {
-            InputsWithConversation(model: conversation.model, note: note, conversation: conversation)
-        } else if let note {
-            note
-        }
-    }
-}
-
-private struct InputsWithConversation: View {
-    @ObservedObject var model: ClaudeBinderConversation
-    let note: NoteBox?
-    let conversation: ConversationSection
-
-    var body: some View {
-        if model.connected {
             conversation
             if let note { DirectNote(box: note, note: note.note) }
-        } else {
-            if let note { note }
-            conversation
+        } else if let note {
+            note
         }
     }
 }

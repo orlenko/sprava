@@ -566,10 +566,10 @@ The installed app's read/draft pilot uses `ClaudeReadOnlyTurn` with no tools at 
 private subscription connection in Brains, then explicitly shares each physical binder's tasks/app history
 and optionally its documents and intake. A copy or replacement gets no inherited consent or native context.
 The account check verifies the pinned signed CLI, the effective first-party subscription/private config,
-and two harmless acknowledged turns across process restarts in the same native session, with newer app
-state overriding the first value. Failure never enables the new account; no binder data is sent by that check.
-Native processes end after each reply and resume by id; failed/interrupted context is replaced from bounded
-authenticated app history, never an imported/Terminal transcript. Stop during indexing prevents the model
+and two harmless acknowledged turns in fresh native sessions, each receiving the current app context. Failure never enables the new account; no binder data is sent by that check.
+Each native turn starts fresh with the current scoped source pack and bounded authenticated app history.
+The saved app conversation persists; native session memory is never its authority. Failed/interrupted context
+is rebuilt from that same app history, never an imported/Terminal transcript. Stop during indexing prevents the model
 from starting; its already-admitted sandboxed document read may finish before another turn can start.
 Conversations and acceptance receipts are private to this installation in `binder-store/conversation.sqlite`;
 copying a binder does not copy their instruction authority. Clear fences workers and removes its local app

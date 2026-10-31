@@ -13,17 +13,23 @@ import Testing
         var resumes: [Bool] = []
         var lines: [String] = []
         var policies: [String] = []
+        var sessions: [UUID] = []
+        var originalPolicies: [UUID: String] = [:]
         var hold = false
         var stopped = false
         var running = false
         var hash = "fixture-hash"
         var reply = #"{"answer":"The invented bylaw permits pets with permission.","citations":["S1"],"task":{"title":"Ask the board","details":"Request written permission."},"draft":null}"#
-        func driver(policy: String) -> ClaudeConversationRuntime.Driver {
-            let hash = lock.withLock { policies.append(policy); return self.hash }
+        func driver(policy: String, session: UUID = UUID()) -> ClaudeConversationRuntime.Driver {
+            let hash = lock.withLock { policies.append(policy); sessions.append(session); return self.hash }
+            let originalPolicy = lock.withLock {
+                if originalPolicies[session] == nil { originalPolicies[session] = policy }
+                return originalPolicies[session]!
+            }
             return .init(run: { [self] line, resume in
                 lock.withLock { lines.append(line); resumes.append(resume); running = true; stopped = false }
                 defer { lock.withLock { running = false } }
-                if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return policy.hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
+                if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return (resume ? originalPolicy : policy).hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
             }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash)
@@ -43,8 +49,8 @@ import Testing
             let engine = Engine(); self.engine = engine
             runtime = try ClaudeConversationRuntime(support: root.appendingPathComponent("support"), secrets: .init(read: {
                 engine.lock.withLock { engine.token }
-            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, _, policy, _ in
-                engine.driver(policy: policy)
+            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, session, policy, _ in
+                engine.driver(policy: policy, session: session)
             }, context: { folder, documents, intake, query, cancelled in
                 try onRead(folder, cancelled)
                 return .init(data: .obj([("fresh_query", .str(query)), ("documents", .bool(documents)), ("intake", .bool(intake))]),
@@ -86,7 +92,8 @@ import Testing
         await #expect(throws: ClaudeConversationRuntime.Refused.self) { try await f.send(id, "Different words") }
         let next = UUID(); _ = try await f.send(next, "Use the newer current To-do state."); _ = try await f.completed(next)
         #expect(f.engine.lock.withLock { f.engine.lines.count } == 4)
-        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, true, false, true])
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 4)
         #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("newer current To-do state") } == true)
         let reply = try JSONParser.parse(try #require(done["reply"]?.stringValue)).value
         #expect(reply["citations"]?.arrayValue?.first?["path"] == .str("documents/bylaw.txt"))
@@ -109,7 +116,8 @@ import Testing
         f.engine.lock.withLock { f.engine.hash = "updated-fixture-hash" }
         let next = UUID(); _ = try await f.send(next, "Continue after the Claude update.")
         #expect(try await f.completed(next)["phase"] == .str("replied"))
-        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, true, false, true])
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 4)
     }
     @Test func disablingAndClearingDoNotReuseNativeContextOrEraseAnUnrelatedThread() async throws {
         let f = try Fixture(); try await f.connect(); let id = UUID()

@@ -374,7 +374,7 @@ struct ShelfView: View {
                     }
                     .tag(inboxSelection)
                     Label("Backup", systemImage: "externaldrive").tag(backupSelection)
-                    Label("Brains", systemImage: "brain").tag(brainsSelection)
+                    Label("Assistant", systemImage: "bubble.left.and.bubble.right").tag(brainsSelection)
                 }
                 Section("Shelf") {
                     ForEach(model.rows, id: \.folder) { row in
