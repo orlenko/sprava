@@ -351,6 +351,7 @@ struct ShelfView: View {
     @StateObject private var backup = BackupModel()
     @StateObject private var binderNote = BinderNote()
     @StateObject private var binderConversation = ClaudeBinderConversation()
+    @StateObject private var binderWorkspace = BinderWorkspaceSelection()
     @StateObject private var binderActions = BinderActions()
     @StateObject private var drafts = DraftRegistry()
     /// Every window uses the Shelf's editor, so none can remove another window's open draft.
@@ -422,7 +423,7 @@ struct ShelfView: View {
                             page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
                             reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation,
                             openBrains: { model.selection = brainsSelection }, actions: binderActions,
-                            documents: model.documents.model(for: row.folder))
+                            documents: model.documents.model(for: row.folder), workspace: binderWorkspace)
                 } else {
                     ContentUnavailableView {
                         Label("No binders yet", systemImage: "books.vertical")

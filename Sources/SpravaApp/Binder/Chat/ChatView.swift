@@ -1,13 +1,22 @@
+import AppKit
 import Services
 import SwiftUI
 
 /// The conversation drawn on a binder's page: the thread, then the composer (conversation.md §3.1). Every text is
 /// shown as plain text, never as Markdown or a link, so a reply or a saved line cannot load anything.
 struct ChatView: View {
+    private struct Geometry: Equatable {
+        let atBottom: Bool
+        let viewport: CGSize
+        let contentHeight: CGFloat
+        let offset: CGFloat
+    }
     @ObservedObject var chat: BinderChat
     /// False while the binder is not connected: its saved turns stay in view, but there is nothing to send to, so
     /// there is no second input on the page, unless an unsent line is kept there, which stays in sight.
     var connected = true
+    var suggestion: (UUID) -> AnyView = { _ in AnyView(EmptyView()) }
+    @StateObject private var viewport = ConversationViewport()
 
     static let emptyHint = "Ask about this binder's to-dos and documents, or ask for a draft."
     /// Over a line kept in the composer of a binder that is not connected, so it is not taken for the to-do box.
@@ -30,14 +39,20 @@ struct ChatView: View {
         let parts = Self.parts(turns: chat.entries.count, draft: chat.draft, connected: connected)
         VStack(alignment: .leading, spacing: 8) {
             if let note = chat.historyNote { Text(note).font(.caption).foregroundStyle(.secondary) }
-            if parts.hint { Text(Self.emptyHint).font(.callout).foregroundStyle(.secondary) }
-            if parts.transcript { transcript }
+            if parts.transcript {
+                transcript
+            } else {
+                Text(connected ? Self.emptyHint : "Connect Claude to start this binder's conversation.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             if let message = chat.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
             if parts.composer {
                 if !connected { Text(Self.unsentNote).font(.caption).foregroundStyle(.secondary) }
-                Composer(chat: chat)
+                Composer(chat: chat).frame(maxWidth: 820).frame(maxWidth: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     var transcript: some View {
@@ -45,17 +60,53 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(chat.entries) { entry in
-                            EntryView(entry: entry, chat: chat).id(entry.id)
+                            VStack(alignment: .leading, spacing: 8) {
+                                EntryView(entry: entry, chat: chat)
+                                suggestion(entry.id)
+                            }
+                            .frame(maxWidth: 820).frame(maxWidth: .infinity)
+                            .id(entry.id)
                         }
+                        Color.clear.frame(height: 1).id("latest")
                     }
-                    .padding(.vertical, 4)
+                    .padding(12)
                 }
-                .onChange(of: chat.entries.last?.id) { _, last in
-                    if let last { withAnimation { scroller.scrollTo(last, anchor: .bottom) } }
+                .onScrollPhaseChange { _, phase in
+                    viewport.scrolling(phase == .interacting || phase == .decelerating)
+                }
+                .onScrollGeometryChange(for: Geometry.self) { geometry in
+                    Geometry(atBottom: geometry.visibleRect.maxY >= geometry.contentSize.height - 24,
+                             viewport: geometry.containerSize, contentHeight: geometry.contentSize.height,
+                             offset: geometry.visibleRect.minY)
+                } action: { previous, current in
+                    viewport.measured(atBottom: current.atBottom,
+                        movedEarlier: current.viewport == previous.viewport && current.offset < previous.offset - 1)
+                    if viewport.followsLatest,
+                       previous.viewport != current.viewport || previous.contentHeight != current.contentHeight {
+                        scroller.scrollTo("latest", anchor: .bottom)
+                    }
+                }
+                .onAppear { viewport.jumpToLatest(); scroller.scrollTo("latest", anchor: .bottom) }
+                .onChange(of: chat.folder) { _, _ in
+                    viewport.jumpToLatest()
+                    scroller.scrollTo("latest", anchor: .bottom)
+                }
+                .onChange(of: chat.entries.last) { previous, last in
+                    if last?.speaker == .person, previous?.id != last?.id { viewport.jumpToLatest() }
+                    if viewport.followsLatest { scroller.scrollTo("latest", anchor: .bottom) }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !viewport.followsLatest {
+                        Button("Jump to latest") {
+                            viewport.jumpToLatest()
+                            scroller.scrollTo("latest", anchor: .bottom)
+                        }
+                        .buttonStyle(.borderedProminent).padding(12)
+                    }
                 }
             }
-            // The turns take the room; the composer keeps the height of what is typed in it.
-            .frame(minHeight: 160, idealHeight: 340, maxHeight: 460)
+            .id(chat.folder)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -65,8 +116,11 @@ private struct EntryView: View {
 
     var body: some View {
         VStack(alignment: entry.speaker == .person ? .trailing : .leading, spacing: 4) {
+            Text(entry.speaker == .person ? "You" : "Claude")
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if !entry.text.isEmpty {
                 Text(verbatim: entry.text)
+                    .font(.system(size: 14))
                     .textSelection(.enabled)
                     .padding(8)
                     .background(entry.speaker == .person ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
@@ -117,10 +171,13 @@ private struct EntryView: View {
 
 private struct Composer: View {
     @ObservedObject var chat: BinderChat
+    @StateObject private var measure = ComposerMeasure()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             DraftEditor(text: Binding(get: { chat.draft }, set: { chat.draft = $0 }))
+                .frame(height: measure.height(chat.draft))
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { measure.width = $0 }
                 .disabled(!chat.isAvailable)
             HStack {
                 if !chat.isAvailable {
@@ -137,5 +194,19 @@ private struct Composer: View {
                     .disabled(!chat.canSend)
             }
         }
+    }
+}
+
+/// Measure only enough text to fill the bounded composer; the editor retains and scrolls the whole draft.
+@MainActor
+private final class ComposerMeasure: ObservableObject {
+    @Published var width: CGFloat = 600
+    func height(_ text: String) -> CGFloat {
+        let measured = String(text.prefix(8_000)) + "\n"
+        let size = (measured as NSString).boundingRect(
+            with: NSSize(width: max(60, width - 24), height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: NSFont.preferredFont(forTextStyle: .body)])
+        return min(160, max(DraftEditor.minHeight, ceil(size.height) + 20))
     }
 }
