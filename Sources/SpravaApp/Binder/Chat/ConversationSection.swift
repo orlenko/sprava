@@ -11,7 +11,39 @@ struct ConversationSection: View {
     /// Shows the Brains page, where Claude is set up for Sprava.
     var openBrains: () -> Void = {}
     var body: some View {
-        Section("Talk to this binder") {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Talk to this binder").font(.headline)
+            if model.folder == row.folder, model.chat.folder == row.folder {
+                DisclosureGroup(model.connected ? "Sharing and connection" : "Claude is not connected — connection setup") {
+                    controls
+                }
+                ChatView(chat: model.chat, connected: model.connected, suggestion: suggestion)
+                if let message = model.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
+            } else {
+                ProgressView("Loading conversation…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: row.folder) { model.changed = reload; await model.show(row.folder) }
+        .onReceive(NotificationCenter.default.publisher(for: .init("Sprava.ClaudeConnectionChanged"))) { _ in Task { await model.show(row.folder) } }
+        .confirmationDialog("Clear this binder's saved app conversation and native Claude context?", isPresented: $model.askToClear) {
+            Button("Clear conversation", role: .destructive) { Task { await model.clear() } }
+        } message: { Text("Stops any active reply first. Tasks already saved remain. Information already sent to Anthropic cannot be recalled.") }
+    }
+
+    private func suggestion(_ id: UUID) -> AnyView {
+        guard let card = model.cards[id], card.taskTitle != nil || card.to != nil || !card.citations.isEmpty else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(VStack(alignment: .leading, spacing: 4) {
+            Text("Suggestions and sources for this reply").font(.caption).foregroundStyle(.secondary)
+            ConversationCard(model: model, id: id)
+        })
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 8) {
             if model.connected {
                 HStack {
                     Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : "."))
@@ -38,18 +70,8 @@ struct ConversationSection: View {
             }
             if model.hasSavedScope {
                 if !model.connected { Button("Clear saved conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy) }
-                ConversationThread(chat: model.chat, connected: model.connected)
-                ForEach(model.chat.entries.compactMap { model.cards[$0.id] }.filter { $0.taskTitle != nil || $0.to != nil || !$0.citations.isEmpty }) { card in
-                    ConversationCard(model: model, id: card.id)
-                }
             }
-            if let message = model.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
         }
-        .task(id: row.folder) { model.changed = reload; await model.show(row.folder) }
-        .onReceive(NotificationCenter.default.publisher(for: .init("Sprava.ClaudeConnectionChanged"))) { _ in Task { await model.show(row.folder) } }
-        .confirmationDialog("Clear this binder's saved app conversation and native Claude context?", isPresented: $model.askToClear) {
-            Button("Clear conversation", role: .destructive) { Task { await model.clear() } }
-        } message: { Text("Stops any active reply first. Tasks already saved remain. Information already sent to Anthropic cannot be recalled.") }
     }
 }
 
@@ -109,15 +131,5 @@ private struct ConversationCard: View {
             try AtomicFile.write(Data("To: \(card.to ?? "")\nSubject: \(card.subject)\n\n\(card.body)".utf8), to: url)
             model.cards[id]?.message = "Draft text saved. No email was sent."
         } catch { model.cards[id]?.message = "The draft could not be saved. Its text is still here." }
-    }
-}
-
-/// The thread, observed on its own, so saved turns that load after the page appears are shown when they arrive.
-private struct ConversationThread: View {
-    @ObservedObject var chat: BinderChat
-    let connected: Bool
-
-    var body: some View {
-        if connected || ChatView.showsWhileDisconnected(chat) { ChatView(chat: chat, connected: connected) }
     }
 }
