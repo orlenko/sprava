@@ -34,22 +34,20 @@ import Testing
     }
 
     @Test func aMalformedYearSendsNothingAndSaysWhy() async throws {
-        for typed in ["", "25", "abcd", "20255", "1899", String(current + 2), "\u{FF12}\u{FF10}\u{FF12}\u{FF14}", "2O24"] {
+        for typed in ["", "25", "abcd", "20255", "0000", "0999", "\u{FF12}\u{FF10}\u{FF12}\u{FF14}", "2O24"] {
             let runtime = StandInRuntime()
             let model = try model(runtime)
             model.askForBinder = { _, _, _, _ in ("tax-year", "tax", typed) }
             await model.startNewBinder()
             #expect(runtime.sent.isEmpty, "year \(typed)")
-            #expect(model.note == "The binder was not created: the year is a four-digit year from 1900 to \(current + 1).")
+            #expect(model.note == "The binder was not created: enter a four-digit year from 1000 to 9999.")
         }
     }
 
     @Test func theYearsAtTheBoundsAreTaken() throws {
-        #expect(ShelfModel.projectYear("1900", current: 2026) == 1900)
-        #expect(ShelfModel.projectYear(" 2027 ", current: 2026) == 2027)
-        #expect(ShelfModel.projectYear("2028", current: 2026) == nil)
-        // An era year, as a non-Gregorian calendar gives, refuses every year instead of trapping on a reversed range.
-        #expect(ShelfModel.projectYear("2025", current: 7) == nil)
+        #expect(ShelfModel.projectYear("1000") == 1000)
+        #expect(ShelfModel.projectYear(" 2035 ") == 2035)
+        #expect(ShelfModel.projectYear("9999") == 9999)
     }
 
     /// The year is the Gregorian one whatever the system calendar is, as create_binder counts it.
@@ -93,7 +91,7 @@ import Testing
         model.askForBinder = { _, _, _, _ in ("tax-year", "household-taxes", "23") }
         await model.add([empty])
         #expect(runtime.sent.count == 1)
-        #expect(model.note?.contains("\(empty.lastPathComponent) did not become a binder: the year is a four-digit year") == true)
+        #expect(model.note?.contains("\(empty.lastPathComponent) did not become a binder: enter a four-digit year") == true)
     }
 
     @Test func theNameFollowsTheSuggestionUntilThePersonTypesOne() throws {

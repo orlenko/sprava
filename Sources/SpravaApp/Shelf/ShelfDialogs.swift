@@ -38,12 +38,11 @@ extension ShelfModel {
         return (alert, fields)
     }
 
-    /// The year typed for a tax year: four digits, from 1900 to the year after `current`; nil for anything else. Compared,
-    /// never made a range, so a `current` below 1900 refuses every year instead of trapping.
-    static func projectYear(_ typed: String, current: Int) -> Int? {
+    /// A template's optional year: four digits, independent of the project category or current date.
+    static func projectYear(_ typed: String) -> Int? {
         let text = typed.trimmingCharacters(in: .whitespaces)
         guard text.count == 4, text.allSatisfy(\.isASCII), text.allSatisfy(\.isNumber), let year = Int(text),
-              year >= 1900, year <= current + 1 else { return nil }
+              year >= 1000 else { return nil }
         return year
     }
 
@@ -149,8 +148,8 @@ final class NewBinderFields: NSObject, NSTextFieldDelegate {
 
     private func validate() {
         create.isEnabled = !name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (template.yearLabel == nil || ShelfModel.projectYear(year.stringValue, current: current) != nil)
-        let chosen = ShelfModel.projectYear(year.stringValue, current: current) ?? current
+            && (template.yearLabel == nil || ShelfModel.projectYear(year.stringValue) != nil)
+        let chosen = ShelfModel.projectYear(year.stringValue) ?? current
         preview.string = template.description(chosen) + "\n\nFolders\n" + template.folders.joined(separator: ", ")
             + "\n\nStarter checklist\n" + (template.checklist.isEmpty ? "No checklist." : template.checklist.map { "• " + $0 }.joined(separator: "\n"))
             + "\n\nProject guide\n" + template.projectGuide(chosen)
@@ -165,7 +164,7 @@ final class NewBinderFields: NSObject, NSTextFieldDelegate {
 
     /// A year still being typed leaves the name as it is.
     private func suggest() {
-        let chosen = template.yearLabel != nil ? ShelfModel.projectYear(year.stringValue, current: current) : current
+        let chosen = template.yearLabel != nil ? ShelfModel.projectYear(year.stringValue) : current
         guard let chosen else { return }
         let next = ShelfModel.suggestedName(template: template, year: chosen, empty: empty)
         name.stringValue = ShelfModel.followSuggestion(name: name.stringValue, last: last, next: next)

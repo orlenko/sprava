@@ -16,6 +16,11 @@ extension Commands {
         "undo": { c, _, r, now, today in try c.undo(r, now: now, today: today) },
         "switch_dashboard": { c, _, r, now, today in try c.switchDashboard(r, now: now, today: today) },
         "create_binder": { c, _, r, now, today in try c.createBinder(r, now: now, today: today) },
+        "history": { c, _, r, now, today in try c.history(r, now: now, today: today) },
+    ]
+
+    /// The template library belongs to the app, so these requests have no binder or binder expunge guard.
+    static let templateCommands: [String: Handler] = [
         "binder_templates": { c, _, _, _, _ in
             let library = TemplateLibrary(support: c.support)
             return JSONObject([(key: "folder", value: .str(library.folder.path)),
@@ -24,7 +29,6 @@ extension Commands {
         "binder_template_folder": { c, _, _, _, _ in
             JSONObject([(key: "folder", value: .str(try TemplateLibrary(support: c.support).prepareFolder().path))])
         },
-        "history": { c, _, r, now, today in try c.history(r, now: now, today: today) },
     ]
 
     /// The longest answer the person may give about how a document reached them (`obtained.said`).

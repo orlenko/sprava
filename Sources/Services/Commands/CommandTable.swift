@@ -21,6 +21,7 @@ extension Commands {
     /// Every command, by name.
     static let table: [String: Handler] = pingCommand
         .merging(binderCommands) { a, _ in a }
+        .merging(templateCommands) { a, _ in a }
         .merging(captureCommands) { a, _ in a }
         .merging(brainCommands) { a, _ in a }
         .merging(backupCommands) { a, _ in a }

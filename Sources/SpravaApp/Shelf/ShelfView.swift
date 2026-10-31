@@ -189,7 +189,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
             guard let answer = askForBinder(url, current, url.deletingLastPathComponent(), templates) else { continue }
             guard let template = templates.first(where: { $0.key == answer.template }),
                   let year = Self.year(answer, current: current, template: template) else {
-                failed.append("\(url.lastPathComponent) did not become a binder: \(Self.yearRefusal(current))")
+                failed.append("\(url.lastPathComponent) did not become a binder: \(Self.yearRefusal())")
                 continue
             }
             if let failure = await create(parent: url.deletingLastPathComponent(), name: Self.binderName(answer, year: year, template: template, existing: url),
@@ -256,7 +256,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
         }
         guard let template = templates.first(where: { $0.key == answer.template }),
               let year = Self.year(answer, current: current, template: template) else {
-            operationNote = "The binder was not created: \(Self.yearRefusal(current))"
+            operationNote = "The binder was not created: \(Self.yearRefusal())"
             return
         }
         operationNote = await create(parent: parent, name: Self.binderName(answer, year: year, template: template),
@@ -269,13 +269,13 @@ final class ShelfModel: ObservableObject, DraftOwner {
         return try values.map(BinderTemplate.init(json:))
     }
 
-    /// The year a new binder is for: the one typed for a tax year, checked, or the current one for any other template.
+    /// Use the template's optional year field, or the current year when it has none.
     static func year(_ answer: NewBinderAnswer, current: Int, template: BinderTemplate) -> Int? {
-        template.yearLabel != nil ? projectYear(answer.year, current: current) : current
+        template.yearLabel != nil ? projectYear(answer.year) : current
     }
 
-    static func yearRefusal(_ current: Int) -> String {
-        "the year is a four-digit year from 1900 to \(current + 1)."
+    static func yearRefusal() -> String {
+        "enter a four-digit year from 1000 to 9999."
     }
 
     /// The name typed in the alert, made a valid binder name: "Maple Street" becomes `maple-street`, never a refusal after the

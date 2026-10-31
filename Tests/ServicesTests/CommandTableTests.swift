@@ -21,6 +21,18 @@ import Testing
         try JSONParser.parse(c.handle(JSONWriter.compact(.obj(fields)), now: now, today: today)).value
     }
 
+    @Test func templateLibraryRequestsNeedNoBinderThroughThePublicCommandEntry() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-library-command-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: support) }
+        let commands = Commands(support: support, deviceID: "invented-device")
+        let listed = try call(commands, [("command", .str("binder_templates"))])
+        #expect(listed["ok"] == .bool(true))
+        #expect(listed["templates"]?.arrayValue?.isEmpty == false)
+        let opened = try call(commands, [("command", .str("binder_template_folder"))])
+        #expect(opened["ok"] == .bool(true))
+        #expect(opened["folder"] == .str(TemplateLibrary(support: support).folder.path))
+    }
+
     @Test func adoptListApproveThroughCommands() throws {
         let (c, folder) = try setup()
         let adopted = try call(c, [("command", .str("adopt")), ("binder", .string(folder.path))])
