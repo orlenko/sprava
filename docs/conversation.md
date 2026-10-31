@@ -9,6 +9,9 @@ A4). Section 13 lists what it replaces. It builds on open PR #347 (Sprava owns i
 keeps each binder's `AGENTS.md` and `CLAUDE.md`, decisions.md F14 there). Every example is invented: binders
 such as `condo-example`, `rental-elm-street` and `tax-2026`, people such as "the property manager".
 
+**Revised 2026-10-30:** section 18 puts the agent at the front door, gives it reach inside its binder and
+the web, and replaces approval taps with per-turn Undo; it names the parts of sections 4, 6 and 11 it supersedes.
+
 ## 1. Why
 
 The author, on 2026-10-14, comparing Sprava with the terminal workflow it replaces:
@@ -977,3 +980,162 @@ validation and a clean rendering do not prove a line is true. A rebuilt brief ke
 
 *Fixture:* a valid catalog, a new source that supersedes an old one, and a brief refresh interrupted half-way.
 The next job sees the current revision, or lines marked stale or unknown, never the old claim as current.
+
+## 18. Revision of 2026-10-30: Claude at the front door
+
+Status: direction decided by the author on 2026-10-30 (decisions.md D22 to D29); details are design to confirm
+in the PRs of 18.9. It supersedes the parts of this document that 18.8 names. Every example is invented.
+
+### 18.1 Why
+
+The author, describing the workflow Sprava replaces: one long-lived agent session per binder, plus one that
+keeps the overall to-do list and briefs; work in a binder is a conversation with that session; intake arrives
+by mail scripts, integrations and files copied into `intake/`; each binder has rules for filing and for what
+matters in it. That setup works, but it is "manual, engineer-like", and cannot be shared with friends. Sprava is
+to be the same thing as a product: a conversation with each binder, backed by the most capable model the person
+has, plus a to-do list that is plain to use.
+
+The first design made a local model the front desk and kept Claude confined, with no file tools, no shell and no
+web (D4, D5, D17). Its cost was a binder whose conversation cannot do the work: it cannot fetch the rules a
+renovation must follow, file what it found, or add the to-dos it implies. The author: "I'd rather have a usable
+tool from the start, rather than struggle through multiple attempts at less-capable models."
+
+### 18.2 The shape
+
+- **Claude is the front door.** Every message typed in a binder goes to that binder's agent session when an
+  engine is connected (D22). Sonnet drives the conversation; a turn that reads a document, or asks for hard
+  reasoning or writing, runs on Opus (proposed: the driver hands it to an Opus subagent; the rule is measured,
+  18.7). Codex and Antigravity follow as engines behind the same contract, so the person's work goes to
+  whichever engine has capacity (D28).
+- **Plain controls stay plain.** Marking a to-do done or cancelled, changing its deadline, priority or
+  description, and adding one, are buttons and fields in the to-do list, applied by code with no model (D25). The
+  conversation is first-class; it is not the only surface.
+- **The agent has hands inside its binder.** It reads and writes the binder's files and runs tools there, in a
+  sandbox (18.3), and it has Sprava's own tools for the common verbs (18.5).
+- **Every turn can be undone.** Sprava records the binder's files before and after each turn in a version
+  history outside the folder (18.4). That replaces approval taps for changes inside the binder.
+- **No agent for the overall view.** The cross-binder to-do list, the briefs and their sync are code, with the
+  on-device model where wording is needed; a built-in General binder takes what fits nowhere else (D26). The
+  author's old overall-list session needed no intelligence of its own.
+- **The local model shadows** the agent's structured actions and takes a verb over only when measured (18.6).
+
+### 18.3 Reach: inside the binder, and the web
+
+The agent may read and write anywhere in its binder folder and in its own agent home (11.1), and run tools there.
+It may not read or write outside them: no other binder, no part of the person's home folder, no credential file.
+It may search and fetch from the web: binders need current law, prices and rules, not training data.
+
+What cannot be undone is what leaves the binder: sent mail, a post to another service, and above all data placed
+in a request. A model that read untrusted text (an intake document, an email, a fetched page) can be steered by it,
+whatever its size. So:
+
+- **Outward actions stay drafts** (D13): mail, filings and payments land in `drafts/` for the person to send.
+- **Every outbound request is listed** in the turn's summary (18.4): domain, method, and the bytes sent.
+- **A new domain after untrusted text waits for a tap.** Once a turn has read untrusted text, a request to a
+  domain this binder has not used before is held, and the conversation shows "Claude wants to reach
+  example-supplier.test. Allow once / Always for this binder / Deny". Domains allowed always are listed per
+  binder in the app. Before untrusted text is read, requests run without asking.
+- **Confinement is the operating system's, not the model's.** The sandbox (Claude Code's own on macOS, or
+  Sprava's) enforces the file walls and routes every request through a proxy that Sprava controls. A model's
+  promise is never the wall. Which sandbox, and how the proxy sees requests, is spike S6 (18.9).
+
+The start-up check of 11.1 stays: the person's own hooks, memory files, plugins and settings are never loaded
+into a binder's session.
+
+### 18.4 Undo by version history
+
+Each binder gets a version history kept outside the folder, in Sprava's support folder (proposed: a git
+repository whose work tree is the binder and whose git directory is `brains/<binder id>/history.git`), so the
+binder stays a plain folder. Sprava commits:
+
+- before a turn starts, anything changed since the last commit (the person's own edits, Sprava's writes), as
+  its own entry;
+- after the turn ends, the turn's changes, as one entry carrying the turn's id.
+
+Undo on a turn reverts that turn's entry alone. A later change to the same lines makes it a conflict, shown
+with both versions, never a silent overwrite. Each turn ends with one line in the conversation: what it changed
+("filed 3 documents, added 2 to-dos, edited the brief, reached 2 sites") and Undo. Sprava's own structured
+writes (to-dos, filings) also go through the op log as today (D15), so an Undo of a turn undoes its ops too.
+
+restic keeps its job: encrypted backups and offload. Large binaries and the history's size are spike S7.
+
+This replaces D3's class B taps for changes inside the binder. Class C stays in the app's own controls:
+disclosure, privacy markers, engine and backup settings, and anything outward.
+
+### 18.5 Sprava's tools
+
+The agent gets Sprava's tools through Sprava's own MCP server, with a token per session that Sprava creates
+and revokes (11.1; the person never handles it): add, complete, cancel and edit a to-do; file, move and unfile a
+document; update the brief; write a draft; search the binder's index; read a document through the safe reader
+with page images. These are the actions Sprava can measure, undo by op, and hand down (18.6). Anything else it
+does with files and tools is recorded only as the turn's file changes.
+
+- **Sprava's own files are written only through the tools.** The catalog, the to-do list, the brief and Sprava's
+  dot folders are read-only inside the sandbox. If the agent could also change a to-do through the shell, it
+  would use the shell for the awkward cases, the tool calls would hold only the easy ones, and a shadow trained on
+  them would look readier than it is. It also keeps the runtime the single writer of the catalog (D15).
+- **A tool can decline.** Each tool returns a reason code when it refuses (a stale revision, an item that does not
+  exist, a class C target), and the agent can decline a request with a reason, so a refusal is data, not a
+  failure.
+- **Verbs are fine-grained.** Two cases with different rules are two verbs: completing a to-do (done), cancelling
+  it (won't do) and closing it as superseded are three; filing is counted per document kind.
+- **The long tail is mined.** File changes made outside the tools are attributed to their turn by the history
+  (18.4), never shown as edits from outside Sprava. Their counts and kinds (never content) are clustered, and a
+  frequent kind becomes a new tool.
+
+### 18.6 Shadowing
+
+The agent does the work; a local model or a script earns the right to take a verb over, the ladder of Steve
+Yegge's essay "The Counting House" (off, shadow, then acting) applied per verb. For each structured call the
+agent makes, the shadow is given the same input (compared by its hash) and decides alone; nothing it decides is
+applied or shown.
+
+- **The reference is the person's outcome, not the agent.** Agreement with the agent measures imitation. A case
+  counts only once the person has accepted the agent's action: left it unchanged past a settling time, rather
+  than undone or edited it. The shadow is scored against those cases; an undone or edited case scores the agent
+  too.
+- **The bar is a lower bound, per verb, by what an error costs.** Graduation uses the lower bound of a 95%
+  confidence interval (Wilson), not the raw rate, counted per engine (D18) across the person's binders (D20). A
+  verb that is cheap to undo hands down first; drafts and cancellations last; verbs whose misses go unseen (D19)
+  never.
+- **After handover, sampling continues.** A fixed share of the verb's cases (proposed: 1 in 10) still goes to the
+  agent in shadow, forever. The verb returns to the agent when agreement on that sample drops, or when the
+  person's Undo or edit rate on it rises: that rate is the cheapest signal after handover.
+- **Code only for lookups.** A verb moves to deterministic code only when its decision is a lookup on structured
+  facts; anything that needs judgement about meaning stays with a model.
+- **Why hand down at all.** At one person's volume the money saved is small. Verbs are ranked by volume times the
+  cost of an agent call, and the real reasons to hand down are speed, privacy and working offline.
+
+### 18.7 Measuring
+
+Every turn and every tool call is logged, in Sprava's state, as counts and identifiers only, never content
+(3.7): engine, model, prompt version and tool-schema version, input, output and cached tokens, list-price cost,
+latency, tools called with their reason codes, domains reached, the files changed by count, the input's hash, the
+shadow's decision and its normalized difference from the agent's arguments, and the person's outcome with its
+delay (accepted, edited, undone). The scored cases themselves hold content, so they live in the binder, under
+its encryption and backup, and only their ids reach the log. A measures page shows per binder and per verb: cost per day, Opus share, agreement, and Undo
+rate. The Sonnet-to-Opus rule and the shadow thresholds are set from these numbers, not guessed.
+
+### 18.8 What this supersedes
+
+- D4's back office and front desk, and 4.1 and 4.2: the agent is the front door; the local model shadows.
+- D5's front desk model as the primary voice: it becomes the shadow and the no-engine fallback.
+- D4's and D17's "no file tools, no shell, no web", and 11.1's confinement bullets: replaced by 18.3.
+- D3's class B taps inside the binder: replaced by 18.4.
+- 11.1's process that ends after each reply: one warm process per binder, so the cached prefix is reused.
+- The Brains page's registration of Sprava in the person's own Claude Code ("your own Claude Code sessions"):
+  removed (D29). The person's own sessions can open the binder folder directly.
+
+### 18.9 Spikes and order
+
+- S6, the sandbox: Claude Code's built-in sandbox on macOS against a fixture binder: writes outside the folder
+  refused, reads of another binder refused, every request through Sprava's proxy, and what the agent sees when
+  a request is held.
+- S7, the history: a binder of a few gigabytes of PDFs; commit time per turn, repository size, and Undo of one
+  turn under a later edit.
+- S8, the Opus rule: on invented binders, which turns need Opus, measured by the person's Undo and edits.
+
+Order of code PRs, each one target where it can be: the version history with per-turn Undo and the summary
+line; the agent's reach with the sandbox and the domain prompt; Sprava's tools for the agent; the to-do list's
+plain controls; the General binder; removal of the external Claude Code registration; the measures log and
+page; the shadow.
