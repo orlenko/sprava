@@ -11,7 +11,7 @@ struct ConversationSection: View {
     /// Shows the Brains page, where Claude is set up for Sprava.
     var openBrains: () -> Void = {}
     var body: some View {
-        Section("Conversation with Claude") {
+        Section("Talk to this binder") {
             if model.connected {
                 HStack {
                     Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : "."))
@@ -25,13 +25,13 @@ struct ConversationSection: View {
                 if model.accountReady == false {
                     // The sharing choices come after the one-time setup, so the first thing asked is the thing missing.
                     HStack {
-                        Text("First set up Claude in Sprava, once, in Brains.").font(.callout)
-                        Button("Open Brains") { openBrains() }
+                        Text("Set up Claude once to start this binder’s conversation.").font(.callout)
+                        Button("Set Up Assistant") { openBrains() }
                     }
                 } else {
                     Toggle("Share filed documents, including private ones", isOn: $model.documents)
                     Toggle("Share intake mail and attachments", isOn: $model.intake)
-                    Button("Connect this binder to Claude") { Task { await model.connect() } }.disabled(model.busy || !row.teka.isAdopted)
+                    Button("Connect to Claude") { Task { await model.connect() } }.disabled(model.busy || !row.teka.isAdopted)
                     Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude cannot send mail or save tasks itself.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
