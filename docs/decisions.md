@@ -13,15 +13,15 @@
   the person's own Claude (later Codex or Antigravity) subscription and which is the front door when connected
   (D22). Without an engine, Tiers 0 and 1 still work. Apple's Private Cloud Compute is not a tier: it is only for
   App Store apps in the Small Business Program with a managed entitlement.
-- **P2 recommended.** macOS 27 only, Apple silicon only. The clerk is designed for a **4,096-token** budget and
-  reads `SystemLanguageModel.contextSize` at runtime (8,192 on M3-or-later Macs with 12 GB, which run the
-  20B-sparse "Core Advanced" model; 4,096 on M1/M2, which run the 3B "Core" model).
+- **P2 recommended.** macOS 27 only, Apple silicon only. The clerk is designed for a **4,096-token**
+  budget and reads `SystemLanguageModel.contextSize` at runtime (8,192 on M3-or-later Macs with 12 GB,
+  which run the 20B-sparse "Core Advanced" model; 4,096 on M1/M2, which run the 3B "Core" model).
 - **P3 recommended.** The clerk uses the Swift `FoundationModels` framework directly. The `fm` CLI and Apple's
   Python SDK are developer tools only (`fm` needs a one-time `sudo fm license`, cannot drive tool calls through
   `fm serve`, and its legal notice forbids programmatic use beyond what is expressly permitted; the Python SDK
   needs full Xcode). The local open model is D5's.
-- **P4 recommended.** Distribution: a Developer ID notarized DMG first (hardened runtime, not sandboxed, the
-  holos precedent). The Mac App Store later, only once the licence route is settled.
+- **P4 recommended.** Distribution: a Developer ID notarized DMG first (hardened runtime, not
+  sandboxed, the holos precedent). The Mac App Store later, only once the licence route is settled.
 - **P5 recommended.** The clerk's scope (Tier 1): one capture or one short document at a time. Normalize, split
   into items, extract dates, amounts and people, pick a binder from a closed list (or "not sure"), check
   duplicates against a handful of retrieved candidates, title and date a short document, draft a one-line nudge.
@@ -48,8 +48,8 @@
   files arrive from downloads, from an email monitor, or because the person dropped them. A file there is read
   in full at once (OCR, the deterministic steps that simplify classification, then a model that understands it)
   and filed with Undo (D2, D24). A file that is very unusual, or looks like an error, is held for the person.
-- **P14 decided (2026-10-07, by the author).** Input types are text, images, office documents and PDFs. Audio and
-  video are not part of Sprava.
+- **P14 decided (2026-10-07, by the author).** Input types are text, images, office documents and PDFs. Audio
+  and video are not part of Sprava.
 - **P15 decided (2026-10-07, by the author).** Intake accepts files, not only text, from the person and from
   outside programs alike.
 - **P16 decided (2026-10-07, by the author).** Sprava always records how a piece of information was obtained: by
@@ -129,8 +129,8 @@
 - **F9 recommended.** Not part of the format: `AGENTS.md` and `CLAUDE.md`, `.claude/`, `.agents/`,
   `catalog_check.py`, `scripts/`, `.git/`. Sprava itself never executes hooks or scripts found inside a binder.
   In a binder Sprava owns, `AGENTS.md` and `CLAUDE.md` are Sprava's own files (F14).
-- **F10 recommended.** JSON conventions: UTF-8 unescaped, two-space indent, trailing newline, key order preserved
-  on rewrite, canonical form (RFC 8785) only for hashing; JSON Schema 2020-12.
+- **F10 recommended.** JSON conventions: UTF-8 unescaped, two-space indent, trailing newline, key
+  order preserved on rewrite, canonical form (RFC 8785) only for hashing; JSON Schema 2020-12.
 - **F11 open.** A structure-only survey of the author's live binders (keys, types, counts; never values) would
   confirm the `documents[]` and `processing_log[]` shapes. A script is ready; only the author should run it.
 - **F12 open.** A binder's own `.git/` is tolerated and ignored. Whether its history counts as a provenance
@@ -192,9 +192,9 @@
   deadline sentinel, nudge and recurrence, roll-up, backup, index maintenance, the clerk's digest, the binder
   agents' processes, and the MCP server for them. Silence is an alarm: the app shows the age of the last
   heartbeat. The runtime is a user agent (Foundation Models from a root daemon is unknown).
-- **A2 recommended.** The op log and transaction guard live in the runtime; every op is validated against the
-  spec before it is applied; undo appends a compensating op; external edits are detected on every read of the
-  catalog.
+- **A2 recommended.** The op log and transaction guard live in the runtime; every op is validated
+  against the spec before it is applied; undo appends a compensating op; external edits are detected
+  on every read of the catalog.
 - **A3 recommended.** The clerk is Swift on `FoundationModels`: one small task per call, guided generation into
   the interpretation schema, greedy sampling for classification, relative dates resolved by code. Retrieval
   comes from a per-binder, rebuildable SQLite FTS5 index in `.sprava/index.sqlite` (scope: D7); embeddings later.
@@ -213,8 +213,8 @@
   provider, per binder and opt-in (D4, D22); the agent's web requests, each listed in its turn (D23); and,
   until the hub lane ends, the hub's Google Tasks mirror (A17). Sprava ignores `.claude/settings.json` and the
   lifeproj routing hooks and never calls TypeSafe itself.
-- **A9 recommended.** Mechanical docs are generated from a capability manifest; a `doctor` command checks binders
-  and docs against reality; every hook and job is timed with a circuit breaker.
+- **A9 recommended.** Mechanical docs are generated from a capability manifest; a `doctor` command
+  checks binders and docs against reality; every hook and job is timed with a circuit breaker.
 - **A10 decided (at implementation).** The MCP server is hand-rolled dual-era JSON-RPC in Swift (the official
   Swift SDK covers 2025-11-25 only), not a bundled Python or Node sidecar.
 - **A11 decided (2026-10-07, by the author).** Backup is a setting, not a plugin. Binders always live in a local
@@ -249,15 +249,15 @@
   that the runtime is running and starts it without asking if it is not; an action that finds it not running
   does the same and goes on. There is no Turn Off. Only the Login Items approval is left to the person, shown as
   one line with a button, never opened by itself. Each start is bounded (architecture 3.1).
-- **A20 decided (2026-10-27).** Subscription tokens and email passwords survive background restarts in Sprava's
-  own non-synchronized Keychain items. A provisioned runtime uses the data-protection Keychain; only a
-  missing-entitlement refusal selects the Mac login Keychain for an ad-hoc build (Apple TN3137). Locked or damaged
-  Keychains fail visibly. Only an explicit credential save may ask macOS to authorize access. No plaintext file or
-  memory-only success substitutes for a credential that could not be saved. The backup key follows the same rule
-  for its local items (2026-10-28): the login Keychain does not enforce ThisDeviceOnly; an ad-hoc runtime cannot
-  reach iCloud Keychain, so opting in is refused and, with opt-out, "not checked" is recorded in the backup
-  settings and shown until a store reaches it; a key re-entered after an update must open the mirror before it is
-  saved (`docs/backup.md` §4).
+- **A20 decided (2026-10-27).** Subscription tokens and email passwords survive background restarts in
+  Sprava's own non-synchronized Keychain items. A provisioned runtime uses the data-protection Keychain;
+  only a missing-entitlement refusal selects the Mac login Keychain for an ad-hoc build (Apple TN3137).
+  Locked or damaged Keychains fail visibly. Only an explicit credential save may ask macOS to authorize
+  access. No plaintext file or memory-only success substitutes for a credential that could not be saved.
+  The backup key follows the same rule for its local items (2026-10-28): the login Keychain does not enforce
+  ThisDeviceOnly; an ad-hoc runtime cannot reach iCloud Keychain, so opting in is refused and, with opt-out, "not
+  checked" is recorded in the backup settings and shown until a store reaches it; a key re-entered after an update
+  must open the mirror before it is saved (`docs/backup.md` §4).
 
 ## MVP (`docs/mvp.md`)
 
