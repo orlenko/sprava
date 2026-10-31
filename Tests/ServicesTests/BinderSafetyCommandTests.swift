@@ -50,7 +50,8 @@ import Testing
         #expect(again.ops.compactMap { $0["op"]?.stringValue } == ["file_document", "add_item"])
         #expect(again.ops[0]["args"]?["from"] == nil)
         try TekaStore(folder: folder).approve(again, now: now)
-        #expect(Teka.read(folder).catalog?["documents"]?.arrayValue?.count == 1)
+        let priorDocuments = try #require(try JSONParser.parse(before).value["documents"]?.arrayValue)
+        #expect(Teka.read(folder).catalog?["documents"]?.arrayValue?.count == priorDocuments.count + 1)
         // An op that cannot be rebuilt makes a card for a repair by hand, never a part of the batch.
         let lost = [body("set_disclosure", .obj([("disclosure", .str("title"))]))]
         let manual = try #require(TekaStore.reapplyCard(lost, client: "sprava/0.1", now: now))

@@ -8,6 +8,7 @@ import Foundation
 final class BinderLocationSettings: ObservableObject {
     static let key = "newBinderParent"
     @Published private(set) var folder: URL?
+    @Published private(set) var templateMessage: String?
     private let defaults: UserDefaults
     var chooseFolder: @MainActor (URL?) -> URL? = BinderLocationSettings.folderPanel
 
@@ -23,6 +24,15 @@ final class BinderLocationSettings: ObservableObject {
         let normalized = selected.standardizedFileURL
         defaults.set(normalized.path, forKey: Self.key)
         folder = normalized
+    }
+
+    func openTemplates() async {
+        do {
+            let result = try await RuntimeClient().global("binder_template_folder")
+            guard let path = result["folder"]?.stringValue, path.hasPrefix("/") else { return }
+            templateMessage = NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+                ? nil : "The templates folder could not be opened."
+        } catch { templateMessage = "Project templates could not be opened: \(error)" }
     }
 
     static func folderPanel(current: URL?) -> URL? {

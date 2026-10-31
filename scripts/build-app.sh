@@ -81,6 +81,7 @@ if count=$(git rev-list --count HEAD 2>/dev/null) && commit=$(git rev-parse --sh
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $count" -c "Add :SpravaCommit string $commit" "$work/Contents/Info.plist"
 fi
 cp LICENSE "$work/Contents/Resources/LICENSE.txt"
+cp -R "$bin_dir/Sprava_BinderStore.bundle" "$work/Contents/Resources/"
 # The app icon: Assets.car (CFBundleIconName, with its dark and tinted looks) and AppIcon.icns (CFBundleIconFile),
 # both committed by scripts/make-app-icon.sh, so the build needs no Xcode.
 cp Resources/AppIcon/Assets.car "$work/Contents/Resources/Assets.car"

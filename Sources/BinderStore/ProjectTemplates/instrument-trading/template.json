@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "key": "instrument-trading",
+  "title": "Instrument purchase and resale",
+  "summary": "Research, purchases, restoration costs and resale of musical instruments",
+  "name": "",
+  "folders": [
+    "research",
+    "purchases",
+    "condition",
+    "costs",
+    "sales",
+    "correspondence"
+  ],
+  "checklist": [
+    "Record purchase evidence and condition",
+    "Keep repair and restoration records",
+    "Record sale evidence and costs"
+  ]
+}

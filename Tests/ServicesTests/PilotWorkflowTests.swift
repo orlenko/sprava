@@ -98,7 +98,7 @@ private let pilotHasRestic = Restic.locate() != nil
         #expect(settings["description"]?.stringValue?.hasPrefix("Tax year \(year)") == true)
         try approveAll(folder)
         let checklist = Teka.read(folder).items
-        #expect(checklist.count == BinderTemplate.taxYear.checklist.count && checklist.allSatisfy(\.hasNoDeadline))
+        #expect(checklist.count == (try TemplateLibrary.bundled("tax-year")).checklist.count && checklist.allSatisfy(\.hasNoDeadline))
 
         // A date the person chose, never a statutory one.
         let due = today.adding(days: 30)
@@ -124,7 +124,7 @@ private let pilotHasRestic = Restic.locate() != nil
         let folder = try create("condo-board", year: gregorianYear())
         #expect(folder.lastPathComponent == "condo-board")
         try approveAll(folder)
-        #expect(Teka.read(folder).items.count == BinderTemplate.condoBoard.checklist.count)
+        #expect(Teka.read(folder).items.count == (try TemplateLibrary.bundled("condo-board")).checklist.count)
 
         // Dropped on the binder as the app does: through the runtime's drop command, then the intake job.
         let name = "Invented board minutes.txt"

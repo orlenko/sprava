@@ -18,6 +18,12 @@ sent in your mail client.
   key must open your existing backup; a wrong one changes nothing. If macOS asks to let Sprava use the key, **Always
   Allow** lets backups read it unattended. See `docs/backup.md` §4.
 
+## Project templates
+
+In **Settings › Project templates › Open Templates Folder**, copy or edit a template for any project.
+Each has a `template.json` manifest and a `PROJECT.md` guide. New Binder previews its contents and keeps
+a copy with the new binder; later template edits affect future binders. See `docs/project-templates.md`.
+
 ## A tax year
 
 Choose the folder for new binders once in **Sprava › Settings › Binders › Choose Folder…**.

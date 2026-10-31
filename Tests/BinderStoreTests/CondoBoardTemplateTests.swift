@@ -21,7 +21,7 @@ import Testing
     }
 
     @Test func aCondoBoardBinderIsAdoptedPrivateAndFoldered() throws {
-        let created = try create(.condoBoard, name: BinderCreator.name(for: "", template: .condoBoard, year: 2026))
+        let created = try create(try TemplateLibrary.bundled("condo-board"), name: BinderCreator.name(for: "", template: try TemplateLibrary.bundled("condo-board"), year: 2026))
         #expect(created.folder.lastPathComponent == "condo-board")
         let teka = Teka.read(created.folder)
         #expect(teka.isAdopted)
@@ -31,18 +31,18 @@ import Testing
             #expect(FileManager.default.fileExists(atPath: created.folder.appendingPathComponent(sub).path, isDirectory: &isFolder)
                     && isFolder.boolValue, "\(sub)")
         }
-        #expect(!BinderTemplate.condoBoard.description(2026).isEmpty)
+        #expect(!(try TemplateLibrary.bundled("condo-board")).description(2026).isEmpty)
     }
 
     /// The checklist waits as one card for the person, with every item undated: no due, follow-up or expected date.
     @Test func itsChecklistIsOneUndatedCard() throws {
-        let created = try create(.condoBoard, name: "condo-board")
+        let created = try create(try TemplateLibrary.bundled("condo-board"), name: "condo-board")
         let id = try #require(created.checklistCard)
         let card = try ProposalStore.load(id, in: created.folder, expectedDigest: nil)
         #expect(card.state == "proposed")
         let items = card.ops.compactMap { $0["args"]?["item"]?.objectValue }
         #expect(card.ops.allSatisfy { $0["op"]?.stringValue == "add_item" })
-        #expect(items.compactMap { $0["title"]?.stringValue } == BinderTemplate.condoBoard.checklist)
+        #expect(items.compactMap { $0["title"]?.stringValue } == (try TemplateLibrary.bundled("condo-board")).checklist)
         for item in items {
             #expect(item["no_deadline"] == .bool(true))
             for field in ["due", "follow_up_at", "expected_by", "recurrence"] { #expect(item[field] == nil, "\(field)") }
@@ -52,10 +52,10 @@ import Testing
     }
 
     @Test func theOtherTemplatesStillWork() throws {
-        #expect(BinderTemplate.all.map(\.key) == ["blank", "tax-year", "condo-board"])
-        #expect(try create(.blank, name: "new-binder").checklistCard == nil)
-        let tax = try create(.taxYear, name: "tax-2026")
+        #expect(try TemplateLibrary(support: parent()).read().map(\.key).sorted() == ["blank", "condo-board", "instrument-trading", "tax-year"])
+        #expect(try create(try TemplateLibrary.bundled("blank"), name: "new-binder").checklistCard == nil)
+        let tax = try create(try TemplateLibrary.bundled("tax-year"), name: "tax-2026")
         let card = try ProposalStore.load(try #require(tax.checklistCard), in: tax.folder, expectedDigest: nil)
-        #expect(card.ops.count == BinderTemplate.taxYear.checklist.count)
+        #expect(card.ops.count == (try TemplateLibrary.bundled("tax-year")).checklist.count)
     }
 }
