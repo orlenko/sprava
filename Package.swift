@@ -26,7 +26,7 @@ let package = Package(
         .testTarget(name: "CompanionTests", dependencies: ["Companion", "SpravaKit"]),
 
         // Layer 2: writing a binder.
-        .target(name: "BinderStore", dependencies: ["BinderFormat", "SpravaKit"]),
+        .target(name: "BinderStore", dependencies: ["BinderFormat", "SpravaKit"], resources: [.copy("ProjectTemplates")]),
         .testTarget(name: "BinderStoreTests", dependencies: ["BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Layer 3: which binders exist here; reading files; the clerk.

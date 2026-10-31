@@ -82,9 +82,10 @@
 - **P8 recommended.** Languages in v1: English and French (Apple's on-device model supports 24
   locales including en-CA and fr-CA). Ukrainian is not supported by Apple's model; it needs the
   open-model fallback. **Open:** does Ukrainian matter for v1?
-- **P9 open.** First templates. Recommended: a rental property with tenancies as chapters, a
-  condo-board seat, a tax year (the ones the author lives), estate executor third. v1 templates carry
-  undated checklists only; no statutory deadline rules.
+- **P9 decided (2026-10-31, by the author).** Sprava supports any personal project. Templates are editable files
+  outside source code, containing folder structure, an undated checklist and a project guide for filing, search
+  and preparation. The app discovers and previews them; each created binder retains its own copy. Shipped
+  examples do not define a fixed set of project types. No inferred statutory deadline rules.
 - **P10 decided (2026-10-07, at implementation).** SwiftUI with AppKit where needed, using
   `ObservableObject` rather than the `@Observable` and `@State` macros: the Command Line Tools ship no
   SwiftUI macro plugin, so macro-based SwiftUI does not compile here. A hidden `--snapshot` option

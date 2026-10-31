@@ -1,4 +1,5 @@
 import AppKit
+import BinderStore
 import Foundation
 @testable import SpravaApp
 import Testing
@@ -21,7 +22,7 @@ import Testing
         var opened = 0
         var asked = false
         model.openSettings = { opened += 1 }
-        model.askForBinder = { _, _, _ in asked = true; return ("blank", "garden-shed", "") }
+        model.askForBinder = { _, _, _, _ in asked = true; return ("blank", "garden-shed", "") }
         await model.startNewBinder()
         #expect(opened == 1 && !asked && runtime.sent.isEmpty)
         #expect(model.note == "Choose your binders folder in Settings, then create a binder.")
@@ -44,7 +45,7 @@ import Testing
         model.binderParent = { relaunched.folder }
         var shown: [URL] = []
         var names = ["Garden Shed", "Kitchen Reno"]
-        model.askForBinder = { _, _, destination in
+        model.askForBinder = { _, _, destination, _ in
             shown.append(destination)
             return ("blank", names.removeFirst(), "")
         }
@@ -88,14 +89,14 @@ import Testing
         let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
         let parent = try temporaryFolder()
         model.binderParent = { parent }
-        model.askForBinder = { _, _, _ in ("blank", typed, "") }
+        model.askForBinder = { _, _, _, _ in ("blank", typed, "") }
         await model.startNewBinder()
         #expect(runtime.sent.isEmpty && model.note == "The binder was not created: enter a name.")
     }
 
-    @Test func createIsExplicitAndDisabledUntilTheNameAndYearAreReady() {
+    @Test func createIsExplicitAndDisabledUntilTheNameAndYearAreReady() throws {
         let parent = URL(fileURLWithPath: "/Invented/Binders")
-        let (alert, fields) = ShelfModel.binderDialog(empty: nil, year: 2026, parent: parent)
+        let (alert, fields) = ShelfModel.binderDialog(empty: nil, year: 2026, parent: parent, templates: [try TemplateLibrary.bundled("blank"), try TemplateLibrary.bundled("tax-year")])
         let create = alert.buttons[0]
         #expect(create.title == "Create Binder" && !create.isEnabled)
         #expect(fields.name.stringValue.isEmpty)

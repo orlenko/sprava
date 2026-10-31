@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "key": "blank",
+  "title": "An empty binder",
+  "summary": "A personal project, with a place for its documents.",
+  "name": "",
+  "folders": [
+    "documents"
+  ],
+  "checklist": [],
+  "isDefault": true
+}
