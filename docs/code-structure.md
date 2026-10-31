@@ -76,8 +76,8 @@ Moves that broke the earlier cycles:
    or the binder readers of `BinderFormat`, because it must show everything while the runtime is down
    (architecture 2.1). It writes only through `RuntimeClient`. Four exceptions: removing `runtime/background-off` (decisions.md A19) and the
    app's own capture events, because the runtime may be down; the Shelf's recent order (`recent.json`,
-   through Shelf's `RecentBinders`); and the appearance chosen in Settings (the app's own defaults). The last two are
-   state of the windows that changes nothing a binder or the runtime reads.
+   through Shelf's `RecentBinders`); and app preferences in Settings (appearance and the folder for future new binders,
+   in the app's own defaults). These preferences are read only by the app; creation still uses a runtime command.
    Adding or removing a Shelf folder is a command: `shelf.json` is the runtime's to write (architecture 2.3).
 6. Files stay under about 400 lines; a file that grows past that is split by responsibility, not by length.
 7. Tests mirror targets: one test target per library target. A change runs its own target's suite in

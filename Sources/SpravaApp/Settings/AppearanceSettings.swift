@@ -52,15 +52,32 @@ final class AppearanceSettings: ObservableObject {
 /// The Settings window (⌘,).
 struct SettingsView: View {
     @ObservedObject var appearance: AppearanceSettings
+    @ObservedObject var binderLocation: BinderLocationSettings
 
     var body: some View {
-        Form {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Binders").font(.headline)
+                if let folder = binderLocation.folder {
+                    Text(folder.path).textSelection(.enabled)
+                        .lineLimit(2).truncationMode(.middle).help(folder.path)
+                } else {
+                    Text("Choose a folder for your binders.")
+                }
+                Button(binderLocation.folder == nil ? "Choose Folder…" : "Change Folder…") {
+                    binderLocation.choose()
+                }
+                Text("New binders are created here. Changing this folder leaves existing binders where they are.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
             Picker("Appearance", selection: $appearance.choice) {
                 ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.radioGroup)
         }
         .padding(20)
-        .frame(width: 360)
+        .frame(width: 480, alignment: .leading)
     }
 }

@@ -11,22 +11,30 @@ extension ShelfModel {
     /// and the folder is renamed to it when they differ. The name follows the template and the year until the person
     /// types one of their own. Any name and year are returned as typed; the model checks the year (`taxYear`) and turns
     /// the name into a valid one (`binderName`).
-    static func binderAlert(empty: URL?, year: Int) -> NewBinderAnswer? {
+    static func binderAlert(empty: URL?, year: Int, parent: URL) -> NewBinderAnswer? {
+        let (alert, fields) = binderDialog(empty: empty, year: year, parent: parent)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        alert.window.makeFirstResponder(nil)
+        return (fields.template.key, fields.name.stringValue, fields.year.stringValue)
+    }
+
+    /// Built separately so the confirmation and field validation can be checked without opening a modal.
+    static func binderDialog(empty: URL?, year: Int, parent: URL) -> (NSAlert, NewBinderFields) {
         let alert = NSAlert()
-        let shape = "The folder is named in lowercase with hyphens: Maple Street becomes maple-street. A template's checklist arrives as one card to approve."
+        let shape = "Folder names use lowercase and hyphens. Template checklists arrive as one card to approve."
         if let empty {
             alert.messageText = "Make \u{201C}\(empty.lastPathComponent)\u{201D} a new binder?"
             alert.informativeText = "The folder is empty. Pick a starting point and a name. \(shape)"
         } else {
             alert.messageText = "New binder"
-            alert.informativeText = "Pick a starting point and a name. \(shape)"
+            alert.informativeText = "\(shape)\n\nLocation: \(parent.path)\nChange this in Settings."
         }
-        let fields = NewBinderFields(empty: empty, year: year)
+        let create = alert.addButton(withTitle: "Create Binder")
+        let fields = NewBinderFields(empty: empty, year: year, create: create)
         alert.accessoryView = fields.box
-        alert.addButton(withTitle: empty == nil ? "Choose Where…" : "Make Binder")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return (fields.template.key, fields.name.stringValue, fields.year.stringValue)
+        alert.window.initialFirstResponder = fields.name
+        return (alert, fields)
     }
 
     /// Whether a template's binder is for one year, which the person picks.
@@ -60,18 +68,6 @@ extension ShelfModel {
         name == last || name.trimmingCharacters(in: .whitespaces).isEmpty ? next : name
     }
 
-    /// The folder that will hold a new binder.
-    static func parentPanel() -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Create Here"
-        panel.message = "Choose the folder that will hold the new binder."
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
-    }
-
     /// The folders to add to the Shelf; empty when the person cancels.
     static func addPanel() -> [URL] {
         let panel = NSOpenPanel()
@@ -88,23 +84,25 @@ extension ShelfModel {
 /// The new-binder alert's fields: the template picker, the year (shown for a tax year only) and the name, which follows
 /// the other two until the person types their own.
 @MainActor
-private final class NewBinderFields: NSObject, NSTextFieldDelegate {
-    let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 88))
-    let picker = NSPopUpButton(frame: NSRect(x: 0, y: 60, width: 260, height: 26))
+final class NewBinderFields: NSObject, NSTextFieldDelegate {
+    let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 88))
+    let picker = NSPopUpButton(frame: NSRect(x: 0, y: 60, width: 320, height: 26))
     let yearLabel = NSTextField(labelWithString: "Tax year")
     let year = NSTextField(frame: NSRect(x: 70, y: 30, width: 70, height: 24))
-    let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+    let name = NSTextField(frame: NSRect(x: 55, y: 0, width: 265, height: 24))
     private let templates = BinderTemplate.all
     private let empty: URL?
     private let current: Int
     private var last: String
+    private let create: NSButton
 
     var template: BinderTemplate { templates[max(0, picker.indexOfSelectedItem)] }
 
-    init(empty: URL?, year current: Int) {
+    init(empty: URL?, year current: Int, create: NSButton) {
         self.empty = empty
         self.current = current
-        last = ShelfModel.suggestedName(template: templates[0], year: current, empty: empty)
+        self.create = create
+        last = empty == nil ? "" : ShelfModel.suggestedName(template: templates[0], year: current, empty: empty)
         super.init()
         picker.addItems(withTitles: templates.map(\.title))
         picker.target = self
@@ -113,17 +111,31 @@ private final class NewBinderFields: NSObject, NSTextFieldDelegate {
         year.stringValue = String(current)
         year.delegate = self
         name.stringValue = last
-        for view in [picker, yearLabel, year, name] { box.addSubview(view) }
+        name.placeholderString = "e.g. Garden Shed"
+        name.delegate = self
+        name.setAccessibilityLabel("Binder name")
+        picker.setAccessibilityLabel("Starting point")
+        let nameLabel = NSTextField(labelWithString: "Name")
+        nameLabel.frame = NSRect(x: 0, y: 3, width: 50, height: 18)
+        for view in [picker, yearLabel, year, nameLabel, name] { box.addSubview(view) }
         showYear()
+        validate()
     }
 
     @objc func templateChanged() {
         showYear()
         suggest()
+        validate()
     }
 
     func controlTextDidChange(_ note: Notification) {
         if note.object as? NSTextField === year { suggest() }
+        validate()
+    }
+
+    private func validate() {
+        create.isEnabled = !name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!ShelfModel.asksYear(template.key) || ShelfModel.taxYear(year.stringValue, current: current) != nil)
     }
 
     private func showYear() {
@@ -136,7 +148,8 @@ private final class NewBinderFields: NSObject, NSTextFieldDelegate {
     private func suggest() {
         let chosen = ShelfModel.asksYear(template.key) ? ShelfModel.taxYear(year.stringValue, current: current) : current
         guard let chosen else { return }
-        let next = ShelfModel.suggestedName(template: template, year: chosen, empty: empty)
+        let next = template.key == BinderTemplate.blank.key && empty == nil ? ""
+            : ShelfModel.suggestedName(template: template, year: chosen, empty: empty)
         name.stringValue = ShelfModel.followSuggestion(name: name.stringValue, last: last, next: next)
         last = next
     }
