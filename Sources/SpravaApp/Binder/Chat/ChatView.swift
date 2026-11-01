@@ -41,10 +41,13 @@ struct ChatView: View {
             if let note = chat.historyNote { Text(note).font(.caption).foregroundStyle(.secondary) }
             if parts.transcript {
                 transcript
-            } else {
-                Text(connected ? Self.emptyHint : "Connect Claude to start this binder's conversation.")
+            } else if parts.hint {
+                Text(Self.emptyHint)
                     .font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                // The connection panel above says what to do.
+                Spacer(minLength: 0)
             }
             if let message = chat.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
             if parts.composer {
