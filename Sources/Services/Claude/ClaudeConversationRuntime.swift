@@ -140,10 +140,14 @@ public actor ClaudeConversationRuntime {
         if command == "claude_binder" {
             let id = try connections.savedID(for: folder)
             let current: ClaudeReadConnections.Connection?
+            var moved = false
             do { current = try connections.connection(for: folder) }
-            catch ClaudeReadConnections.Refused.changed { current = nil }
+            catch ClaudeReadConnections.Refused.changed { current = nil; moved = true }
             if let current, try state.account() != nil, try secrets.read() != nil, try available(folder) { return scopeJSON(current) }
-            return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null)])
+            // A fixed word for the app to explain the state with. Whether Claude is set up is claude_status's answer.
+            let reason = (try? available(folder)) != true ? "unavailable" : moved ? "moved" : id != nil ? "disconnected" : "new"
+            return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null),
+                          (key: "reason", value: .str(reason))])
         }
         if command == "chat_export" {
             guard let id = try connections.savedID(for: folder) else { throw Refused.notConnected }
