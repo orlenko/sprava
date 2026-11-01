@@ -50,7 +50,8 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
    **Waiting** to name who it is **Waiting on** and **Add follow-up date**, then **Save**. **Mark Done**, in the
    same menu, closes it.
 4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
-   selects its file.
+   selects its file. **Open Binder Folder** opens the whole folder, including files nobody has filed, which this list
+   does not show.
    If it was filed in the wrong folder or under the wrong name, choose **Move / rename…**, type its **New path inside
    this binder** (such as `finances/annual-budget.pdf`) and choose **Move**: the file and its catalog record move
    together. **Undo** under **Recent changes** moves it back, for seven days and while it is still where the move

@@ -26,6 +26,18 @@ import Testing
         #expect(model.matches.isEmpty)
     }
 
+    @Test func openBinderFolderOpensThatFolderEvenWithNothingFiled() throws {
+        let folder = try temporaryFolder()
+        var opened: [URL] = [], revealed: [URL] = []
+        let model = FiledDocuments(reveal: { revealed.append($0) }, openFolder: { opened.append($0) })
+        model.show(catalog([]), in: folder)
+        #expect(model.records.isEmpty)
+        model.open(folder)
+        #expect(opened == [folder] && revealed.isEmpty)
+        // The empty list says it lists only what was filed, so it is not read as an empty binder.
+        #expect(FiledDocumentsSection.emptyNote.contains("not listed here until they are filed"))
+    }
+
     @Test func finderGetsOnlyARegularFileInsideTheSelectedBinder() async throws {
         let folder = try temporaryFolder()
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("meetings"), withIntermediateDirectories: false)
