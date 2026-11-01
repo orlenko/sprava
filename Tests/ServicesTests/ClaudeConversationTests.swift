@@ -40,7 +40,8 @@ import Testing
         let folder: URL
         let runtime: ClaudeConversationRuntime
         let engine: Engine
-        init(onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in }) throws {
+        init(onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in },
+             available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-claude-runtime-\(UUID())")
             try AtomicFile.makePrivateFolder(root)
             folder = root.appendingPathComponent("workshop")
@@ -55,7 +56,7 @@ import Testing
                 try onRead(folder, cancelled)
                 return .init(data: .obj([("fresh_query", .str(query)), ("documents", .bool(documents)), ("intake", .bool(intake))]),
                       sources: [.init(id: "S1", path: "documents/bylaw.txt", page: 2, revision: "invented-r1", text: "Pets require written permission.")])
-            })
+            }, available: available)
         }
         func configure() async throws {
             _ = try await runtime.handle(.init([(key: "command", value: .str("claude_configure")), (key: "program", value: .str("/invented/claude")), (key: "credential", value: .str("invented-token"))]))
@@ -184,6 +185,29 @@ import Testing
         proof.lock.withLock { proof.scope = scope }
         _ = try await f.send(request, text); _ = try await f.completed(request)
         #expect(proof.lock.withLock { proof.sawReceipt })
+    }
+
+    @Test func aBinderThatIsNotConnectedSaysWhy() async throws {
+        let f = try Fixture(); try await f.configure()
+        #expect(try await f.request("claude_binder")["reason"] == .str("new"))
+        _ = try await f.request("claude_enable")
+        #expect(try await f.request("claude_binder")["enabled"] == .bool(true))
+        #expect(try await f.request("claude_binder")["reason"] == nil)
+        _ = try await f.request("claude_disable")
+        #expect(try await f.request("claude_binder")["reason"] == .str("disconnected"))
+        _ = try await f.request("claude_enable")
+        let moved = f.root.appendingPathComponent("workshop-moved")
+        try FileManager.default.moveItem(at: f.folder, to: moved)
+        let state = try await f.runtime.handle(.init([(key: "command", value: .str("claude_binder")), (key: "binder", value: .str(moved.path))]))
+        #expect(state["enabled"] == .bool(false) && state["reason"] == .str("moved"))
+    }
+
+    @Test func aBinderBeingOffloadedOrOffTheShelfIsNotOfferedAConnection() async throws {
+        let f = try Fixture(available: { _ in false }); try await f.configure()
+        #expect(try await f.request("claude_binder")["reason"] == .str("unavailable"))
+        struct Damaged: Error {}
+        let g = try Fixture(available: { _ in throw Damaged() }); try await g.configure()
+        #expect(try await g.request("claude_binder")["reason"] == .str("unavailable"))
     }
 
     @Test func disconnectedConversationStaysReadableAndClearableWithoutModelConsent() async throws {

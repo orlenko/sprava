@@ -18,8 +18,18 @@ struct ConversationSection: View {
                 ConversationSharingControls(model: model, sharing: model.sharing, folder: row.folder)
             }
             if model.folder == row.folder, model.chat.folder == row.folder {
-                DisclosureGroup(model.connected ? "Sharing and connection" : "Claude is not connected — connection setup") {
-                    controls
+                // No DisclosureGroup: it fixes its content's height, and SwiftUI measures the window's minimum with almost
+                // no width, so opening one raised that minimum to thousands of points and pushed the page, sidebar and
+                // all, above the window's top. Its label also did nothing when clicked; only its small chevron did.
+                if model.connected {
+                    Button { model.connectionOpen.toggle() } label: {
+                        Label("Sharing and connection", systemImage: model.connectionOpen ? "chevron.down" : "chevron.right")
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if model.connectionOpen { sharingControls }
+                } else {
+                    ConnectionPanel(model: model, adopted: row.teka.isAdopted, folder: row.folder, openBrains: openBrains)
                 }
                 ChatView(chat: model.chat, connected: model.connected, suggestion: suggestion)
                 if let message = model.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
@@ -46,35 +56,13 @@ struct ConversationSection: View {
         })
     }
 
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if model.connected {
-                HStack {
-                    Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : "."))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Disconnect / change sharing") { Task { await model.disconnect() } }.disabled(model.busy)
-                    Button("Clear conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy)
-                }
-            } else {
-                Text("Connect this binder to Claude, then ask about priorities, find a source, draft an email, or suggest a To-do.")
-                if model.accountReady == false {
-                    // The sharing choices come after the one-time setup, so the first thing asked is the thing missing.
-                    HStack {
-                        Text("Set up Claude once to start this binder’s conversation.").font(.callout)
-                        Button("Set Up Assistant") { openBrains() }
-                    }
-                } else {
-                    Toggle("Share filed documents, including private ones", isOn: $model.documents)
-                    Toggle("Share intake mail and attachments", isOn: $model.intake)
-                    Button("Connect to Claude") { Task { await model.connect() } }.disabled(model.busy || !row.teka.isAdopted)
-                    Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude cannot send mail or save tasks itself.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if model.hasSavedScope {
-                if !model.connected { Button("Clear saved conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy) }
-            }
+    private var sharingControls: some View {
+        HStack {
+            Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : "."))
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("Disconnect / change sharing") { Task { await model.disconnect() } }.disabled(model.busy)
+            Button("Clear conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy)
         }
     }
 }
