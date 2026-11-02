@@ -416,6 +416,13 @@ Each line names what replaced the entry; its old text is in git history.
   click opens only `http`, `https` and `mailto`, or shows a file inside this binder in Finder, never running it; any other
   link stays plain words. A web link that shows other words also shows its host, because a reply can repeat what a
   document told the model to write. The person's own lines, drafts and previews stay plain text.
+- **D31 decided (2026-11-02, by the author).** To-dos are one list on both pages: a row at the top to add, then rows in their
+  groups, with dates, priority and binder lined up in columns, and no form. The author first asked for a spreadsheet; an
+  adversarial review and renders of both at both widths showed why not: most cells would be empty, a grid has no place for
+  who a task waits on, a date set in a sorted grid moves the row under the cursor, and five columns do not fit a third of the
+  window. Return adds; clicking away keeps a draft, so a stray click files nothing. An open row saves on Return or on moving
+  away, and moves to its group only then. Items do not move between binders yet: no op does that. The note box leaves the
+  binder's page; pasted lines add a task each, directly.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.

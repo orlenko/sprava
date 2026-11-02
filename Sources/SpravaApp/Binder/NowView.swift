@@ -28,6 +28,7 @@ struct NowView: View {
     @ObservedObject var documents = FiledDocuments()
     @ObservedObject var todoAdd = TodoModel()
     @ObservedObject var workspace = BinderWorkspaceSelection()
+    @State private var wideTodos = false
 
     private var showsSettings: Bool { row.teka.isAdopted && workspace.showsSettings(row.folder) }
 
@@ -129,12 +130,13 @@ struct NowView: View {
                 if teka.isAdopted, !teka.writesBlocked {
                     DirectTodoSection(model: todoAdd, target: .init(folder: row.folder, label: row.name), reload: { refresh() })
                 }
-                if let local = inputs.note { local }
+                // The box for lines to review is gone from this page, which adds to-dos in its top row; a draft already typed
+                // into it stays in sight until it is sent or cleared.
+                if !note.text.isEmpty, let local = inputs.note { local }
                 if teka.isAdopted, !teka.writesBlocked {
                     EmailIntakeAttention(folder: row.folder) { if !workspace.showsSettings(row.folder) { workspace.toggleSettings(row.folder) } }
                 }
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
-                FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
                 ForEach(Bucket.allCases, id: \.self) { bucket in
                     if bucket == .recentlyClosed {
@@ -157,16 +159,18 @@ struct NowView: View {
                             // start at 0 would show one section's row in the other.
                             ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
                                 ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
-                                        editable: teka.isAdopted && !teka.writesBlocked, reload: refresh)
+                                        editable: teka.isAdopted && !teka.writesBlocked, today: today, reload: refresh)
                             }
                         }
                     }
                 }
+                FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 if page.hiddenCount > 0 {
                     Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
                 }
                 HistorySection(actions: actions, folder: row.folder, reload: refresh)
             }
+            .measuringTodoWidth($wideTodos)
         }
     }
 }
@@ -180,5 +184,5 @@ private struct NowTask: Hashable {
 struct BucketHeader: View {
     let bucket: Bucket
     let count: Int
-    var body: some View { Text("\(bucket.title) (\(count))").font(.headline) }
+    var body: some View { TodoGroupHeading(title: bucket.title, count: count, bucket: bucket) }
 }
