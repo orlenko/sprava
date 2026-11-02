@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "key": "condo-board",
+  "title": "A condo board",
+  "summary": "Condo board: governing documents, meetings and minutes, finances, maintenance and correspondence",
+  "name": "condo-board",
+  "folders": [
+    "governing",
+    "meetings",
+    "finances",
+    "maintenance",
+    "correspondence"
+  ],
+  "checklist": [
+    "Gather the governing documents and rules in one place",
+    "Draft the agenda for the next board meeting",
+    "Review the last meeting's minutes and open action items",
+    "Track quotes for pending maintenance work",
+    "Review the latest financial statements and budget"
+  ]
+}

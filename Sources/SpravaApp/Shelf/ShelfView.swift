@@ -47,10 +47,10 @@ final class ShelfModel: ObservableObject, DraftOwner {
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
     private var refreshTask: Task<Void, Never>?
     let client: RuntimeClient
-    /// Asks for a new binder's template, name and year as typed, for an empty folder the person picked or (nil) a folder
-    /// still to choose; `year` is the current one.
-    var askForBinder: @MainActor (_ empty: URL?, _ year: Int) -> NewBinderAnswer? = ShelfModel.binderAlert
-    var chooseParent: @MainActor () -> URL? = ShelfModel.parentPanel
+    /// The template, name and year, with the destination shown before the explicit Create Binder action.
+    var askForBinder: @MainActor (_ empty: URL?, _ year: Int, _ parent: URL, _ templates: [BinderTemplate]) -> NewBinderAnswer? = ShelfModel.binderAlert
+    var binderParent: @MainActor () -> URL? = { nil }
+    var openSettings: @MainActor () -> Void = {}
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
     let health: HealthModel
@@ -177,14 +177,23 @@ final class ShelfModel: ObservableObject, DraftOwner {
         }
         await refreshAndWait(afterChanges: true)
         let current = Self.currentYear()
+        let templates: [BinderTemplate]
+        do { templates = empty.isEmpty ? [] : try await availableTemplates() }
+        catch { operationNote = "Project templates could not be loaded: \(error)"; return }
+        if !empty.isEmpty, templates.isEmpty {
+            operationNote = "Add a project template in Settings before creating a binder."
+            openSettings()
+            return
+        }
         for url in empty {
-            guard let answer = askForBinder(url, current) else { continue }
-            guard let year = Self.year(answer, current: current) else {
-                failed.append("\(url.lastPathComponent) did not become a binder: \(Self.yearRefusal(current))")
+            guard let answer = askForBinder(url, current, url.deletingLastPathComponent(), templates) else { continue }
+            guard let template = templates.first(where: { $0.key == answer.template }),
+                  let year = Self.year(answer, current: current, template: template) else {
+                failed.append("\(url.lastPathComponent) did not become a binder: \(Self.yearRefusal())")
                 continue
             }
-            if let failure = await create(parent: url.deletingLastPathComponent(), name: Self.binderName(answer, year: year, existing: url),
-                                          template: answer.template,
+            if let failure = await create(parent: url.deletingLastPathComponent(), name: Self.binderName(answer, year: year, template: template, existing: url),
+                                          template: answer.template, fingerprint: template.fingerprint,
                                           year: year, existing: url) {
                 failed.append("\(url.lastPathComponent) did not become a binder: \(failure)")
             }
@@ -230,30 +239,48 @@ final class ShelfModel: ObservableObject, DraftOwner {
         defer { creatingBinder = false }
         operationNote = nil
         guard await runtimeReady() else { return }
-        let current = Self.currentYear()
-        guard let answer = askForBinder(nil, current) else { return }
-        // A malformed year is refused before the folder is asked for, so nothing is sent.
-        guard let year = Self.year(answer, current: current) else {
-            operationNote = "The binder was not created: \(Self.yearRefusal(current))"
+        guard let parent = binderParent() else {
+            operationNote = "Choose your binders folder in Settings, then create a binder."
+            openSettings()
             return
         }
-        guard let parent = chooseParent() else { return }
-        await createBinder(parent: parent, name: Self.binderName(answer, year: year), template: answer.template, year: year)
+        let current = Self.currentYear()
+        let templates: [BinderTemplate]
+        do { templates = try await availableTemplates() }
+        catch { operationNote = "Project templates could not be loaded: \(error)"; return }
+        guard !templates.isEmpty else { operationNote = "Add a project template in Settings before creating a binder."; openSettings(); return }
+        guard let answer = askForBinder(nil, current, parent, templates) else { return }
+        guard !answer.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            operationNote = "The binder was not created: enter a name."
+            return
+        }
+        guard let template = templates.first(where: { $0.key == answer.template }),
+              let year = Self.year(answer, current: current, template: template) else {
+            operationNote = "The binder was not created: \(Self.yearRefusal())"
+            return
+        }
+        operationNote = await create(parent: parent, name: Self.binderName(answer, year: year, template: template),
+                                     template: template.key, fingerprint: template.fingerprint, year: year)
     }
 
-    /// The year a new binder is for: the one typed for a tax year, checked, or the current one for any other template.
-    static func year(_ answer: NewBinderAnswer, current: Int) -> Int? {
-        asksYear(answer.template) ? taxYear(answer.year, current: current) : current
+    private func availableTemplates() async throws -> [BinderTemplate] {
+        let result = try await client.global("binder_templates")
+        guard let values = result["templates"]?.arrayValue else { throw BinderTemplate.Invalid() }
+        return try values.map(BinderTemplate.init(json:))
     }
 
-    static func yearRefusal(_ current: Int) -> String {
-        "the tax year is a four-digit year from 1900 to \(current + 1)."
+    /// Use the template's optional year field, or the current year when it has none.
+    static func year(_ answer: NewBinderAnswer, current: Int, template: BinderTemplate) -> Int? {
+        template.yearLabel != nil ? projectYear(answer.year) : current
+    }
+
+    static func yearRefusal() -> String {
+        "enter a four-digit year from 1000 to 9999."
     }
 
     /// The name typed in the alert, made a valid binder name: "Maple Street" becomes `maple-street`, never a refusal after the
     /// dialogs. The runtime does the same and adds `-2` when the name is taken.
-    static func binderName(_ answer: NewBinderAnswer, year: Int, existing: URL? = nil) -> String {
-        let template = BinderTemplate.all.first { $0.key == answer.template } ?? .taxYear
+    static func binderName(_ answer: NewBinderAnswer, year: Int, template: BinderTemplate, existing: URL? = nil) -> String {
         return BinderCreator.name(for: answer.name, template: template, year: year, existing: existing)
     }
 
@@ -287,10 +314,11 @@ final class ShelfModel: ObservableObject, DraftOwner {
     }
 
     /// Asks the runtime for the binder and selects it; returns what went wrong, if anything.
-    private func create(parent: URL, name: String, template: String, year: Int, existing: URL? = nil) async -> String? {
+    private func create(parent: URL, name: String, template: String, fingerprint: String? = nil, year: Int, existing: URL? = nil) async -> String? {
         var fields: [(String, JSONValue)] = [("parent", .string(parent.path)), ("name", .string(name)),
                                             ("template", .string(template)), ("year", .int(year))]
         if let existing { fields.append(("folder", .string(existing.path))) }
+        if let fingerprint { fields.append(("template_fingerprint", .str(fingerprint))) }
         do {
             let r = try await client.global("create_binder", fields)
             snapshotGeneration &+= 1
@@ -316,12 +344,14 @@ let brainsSelection = URL(string: "sprava:brains")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
+    @Environment(\.openSettings) private var openSettings
     @StateObject private var inbox = InboxModel()
     @StateObject private var todo = TodoModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
     @StateObject private var binderNote = BinderNote()
     @StateObject private var binderConversation = ClaudeBinderConversation()
+    @StateObject private var binderWorkspace = BinderWorkspaceSelection()
     @StateObject private var binderActions = BinderActions()
     @StateObject private var drafts = DraftRegistry()
     /// Every window uses the Shelf's editor, so none can remove another window's open draft.
@@ -345,7 +375,7 @@ struct ShelfView: View {
                     }
                     .tag(inboxSelection)
                     Label("Backup", systemImage: "externaldrive").tag(backupSelection)
-                    Label("Brains", systemImage: "brain").tag(brainsSelection)
+                    Label("Assistant", systemImage: "bubble.left.and.bubble.right").tag(brainsSelection)
                 }
                 Section("Shelf") {
                     ForEach(model.rows, id: \.folder) { row in
@@ -393,7 +423,7 @@ struct ShelfView: View {
                             page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
                             reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation,
                             openBrains: { model.selection = brainsSelection }, actions: binderActions,
-                            documents: model.documents.model(for: row.folder))
+                            documents: model.documents.model(for: row.folder), workspace: binderWorkspace)
                 } else {
                     ContentUnavailableView {
                         Label("No binders yet", systemImage: "books.vertical")
@@ -414,6 +444,7 @@ struct ShelfView: View {
         }
         .background(WindowCloseGuard(registry: drafts).allowsHitTesting(false))
         .onAppear {
+            model.openSettings = { [openSettings] in openSettings() }
             drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
             drafts.track(binderActions); drafts.track(binderConversation)
         }

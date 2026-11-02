@@ -36,6 +36,8 @@ struct ClaudeReadOnlyFrames {
             guard initialized, acknowledged, !receivedResult, safeBlocks(value["message"]?["content"]) else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
+            if value["is_api_error_message"] == .bool(true), value["error"] == .str("authentication_failed"),
+               value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
         case "stream_event":
             guard initialized, acknowledged, !receivedResult, let event = value["event"]?.objectValue,
                   event["type"]?.stringValue != nil else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
@@ -53,12 +55,16 @@ struct ClaudeReadOnlyFrames {
                   let failed = value["is_error"]?.boolValue, let subtype = value["subtype"]?.stringValue else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
+            if failed, value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
+            // Current native versions can use subtype=success for an API failure. is_error is decisive;
+            // no error body becomes a reply, and a network/provider refusal is not a protocol mismatch.
+            if failed { receivedResult = true; return }
             if subtype == "success", !failed {
                 if let result = value["result"]?.stringValue {
                     guard result.utf8.count <= Self.maximumReplyBytes else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
                     reply = result
                 } else if interruptID == nil { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
-            } else if !failed || !subtype.hasPrefix("error_") {
+            } else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
             receivedResult = true
@@ -88,6 +94,8 @@ struct ClaudeReadOnlyFrames {
                   ["tools", "mcp_servers", "permissionMode"].allSatisfy({ value[$0] == nil }) else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
+            if initialized, subtype == "api_retry", value["error"] == .str("authentication_failed"),
+               value["error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
         }
     }
 

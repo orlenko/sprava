@@ -50,6 +50,21 @@ struct ClaudeBinderContext: Sendable {
             return !Self.isIntakePath(path)
         }
         let documentIDs = Set(records.compactMap { ItemID($0["id"])?.description })
+        var guideID: String?
+        var guideTruncated = false
+        // The visible project guide is ordinary shared document data, always discoverable regardless
+        // of the person's query. It never bypasses document consent or grants an operation capability.
+        if documents, let record = records.first(where: { $0["path"] == .str("PROJECT.md") }),
+           let id = ItemID(record["id"]) {
+            let guide = scoped.read(DocumentRecord(id: id, path: "PROJECT.md"))
+            let body = guide.pages.compactMap { if case .read(let text, _) = $0.page { return text }; return nil }.joined(separator: "\n")
+            if !body.isEmpty {
+                guideID = "S1"
+                guideTruncated = body.unicodeScalars.count > 8_000
+                sources.append(Source(id: "S1", path: "PROJECT.md", page: nil, revision: guide.revision,
+                    text: String(String.UnicodeScalarView(body.unicodeScalars.prefix(8_000)))))
+            }
+        }
         for hit in result.hits {
             let p = hit.original ?? hit.passage
             let path: String
@@ -64,6 +79,7 @@ struct ClaudeBinderContext: Sendable {
             case .log: continue
             case .personLine: continue // Imported person lines are never authenticated app history.
             }
+            if guideID != nil, path == "PROJECT.md" { continue }
             let key = path + ":" + String(p.id)
             guard seen.insert(key).inserted else { continue }
             sources.append(Source(id: "S\(sources.count + 1)", path: path, page: p.page, revision: p.revision, text: p.text))
@@ -111,6 +127,8 @@ struct ClaudeBinderContext: Sendable {
             ("current_items", .array(items)), ("recent_closed_items", .array(within(closed, bytes: 16 * 1024))), ("items_truncated", .bool(teka.items.count > items.count)),
             ("document_inventory", .array(inventory)), ("document_inventory_truncated", .bool(documents && records.count > inventory.count)), ("filed_documents_allowed", .bool(documents)),
             ("intake_allowed", .bool(intake)), ("search_query", .str(query)),
+            ("project_guide_source", guideID.map(JSONValue.str) ?? .null),
+            ("project_guide_truncated", .bool(guideTruncated)),
             ("sources", .array(sources.map(\.json))), ("incomplete_sources", .array(gaps)),
             ("search_is_exhaustive", .bool(false))
         ])

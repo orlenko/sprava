@@ -19,6 +19,18 @@ extension Commands {
         "history": { c, _, r, now, today in try c.history(r, now: now, today: today) },
     ]
 
+    /// The template library belongs to the app, so these requests have no binder or binder expunge guard.
+    static let templateCommands: [String: Handler] = [
+        "binder_templates": { c, _, _, _, _ in
+            let library = TemplateLibrary(support: c.support)
+            return JSONObject([(key: "folder", value: .str(library.folder.path)),
+                               (key: "templates", value: .array(try library.read().map(\.json)))])
+        },
+        "binder_template_folder": { c, _, _, _, _ in
+            JSONObject([(key: "folder", value: .str(try TemplateLibrary(support: c.support).prepareFolder().path))])
+        },
+    ]
+
     /// The longest answer the person may give about how a document reached them (`obtained.said`).
     static let maxSaid = 500
     /// A legacy dashboard is copied at adoption; a larger one is refused before any binder write.
@@ -270,7 +282,13 @@ extension Commands {
               parentPath.hasPrefix("/"), case .string(let typed)? = r["name"] else {
             throw Failure(message: "create_binder needs parent and name")
         }
-        let template = BinderTemplate.all.first { $0.key == (r["template"]?.stringValue ?? "tax-year") } ?? .taxYear
+        let templates = try TemplateLibrary(support: support).read()
+        guard let key = r["template"]?.stringValue, let template = templates.first(where: { $0.key == key }) else {
+            throw Failure(message: "Choose an available project template before creating a binder.")
+        }
+        if let shown = r["template_fingerprint"]?.stringValue, shown != template.fingerprint {
+            throw Failure(message: "The project template changed. Open New Binder to review it again.")
+        }
         let url = LifeprojRegistry.defaultPath()
         let registry = FileManager.default.fileExists(atPath: url.path) ? try? LifeprojRegistry.load(from: url) : nil
         let store = ShelfStore(supportDirectory: support)

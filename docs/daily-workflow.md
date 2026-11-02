@@ -18,10 +18,19 @@ sent in your mail client.
   key must open your existing backup; a wrong one changes nothing. If macOS asks to let Sprava use the key, **Always
   Allow** lets backups read it unattended. See `docs/backup.md` §4.
 
+## Project templates
+
+In **Settings › Project templates › Open Templates Folder**, copy or edit a template for any project.
+Each has a `template.json` manifest and a `PROJECT.md` guide. New Binder previews its contents and keeps
+a copy with the new binder; later template edits affect future binders. See `docs/project-templates.md`.
+
 ## A tax year
 
+Choose the folder for new binders once in **Sprava › Settings › Binders › Choose Folder…**.
+New Binder opens Settings first if no folder has been chosen. Changing the location later affects only new binders.
+
 1. **New Binder…**, pick **A tax year**, and set **Tax year** to the year it is for. The name follows the year
-   (`tax-2027`) unless you type your own. **Choose Where…** picks the folder that holds it.
+   (`tax-2027`) unless you type your own. Check the name and location, then choose **Create Binder**.
 2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Edit** it to
    leave lines out or to give a date of your own, then **Approve**. No item carries a filing deadline; any date on
    it is one you chose, and you can add one later by double-clicking the item and choosing **Add date**.
@@ -41,7 +50,8 @@ sent in your mail client.
    **Waiting** to name who it is **Waiting on** and **Add follow-up date**, then **Save**. **Mark Done**, in the
    same menu, closes it.
 4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
-   selects its file.
+   selects its file. **Open Binder Folder** opens the whole folder, including files nobody has filed, which this list
+   does not show.
    If it was filed in the wrong folder or under the wrong name, choose **Move / rename…**, type its **New path inside
    this binder** (such as `finances/annual-budget.pdf`) and choose **Move**: the file and its catalog record move
    together. **Undo** under **Recent changes** moves it back, for seven days and while it is still where the move
@@ -55,9 +65,9 @@ it cannot send email, execute tools or save a task without the person's button c
 
 1. Build/install Sprava using the normal app scripts. Open Health and wait for the background connection
    to answer before creating or adopting a binder. A running heartbeat alone is not an XPC connection.
-2. Install Claude Code. In Brains, select its executable, privately obtain a subscription token
-   with `claude setup-token`, paste into the secure field, and select **Verify and Enable Claude**.
-   Sprava verifies the Anthropic signature and two harmless fixed turns across a CLI restart before enabling the account. Ordinary Claude updates are accepted; the signature is checked on each launch. Its own local Keychain item keeps the token across background restarts, including development builds. macOS may ask you to authorize Keychain access when enabling a rebuilt app.
+2. Install Claude Code. In Assistant, use **Copy Command** to obtain a subscription token with the selected native
+   Claude executable, paste it into the secure field, and select **Connect Claude**.
+   Sprava verifies the Anthropic signature and two harmless fixed turns in fresh private sessions before enabling the account. Ordinary Claude updates are accepted; the signature is checked on each launch. Its own local Keychain item keeps the token across background restarts, including development builds. macOS may ask you to authorize Keychain access when enabling a rebuilt app.
 3. Open the binder. Expand **Email intake (IMAP)**, which is built into Sprava. Homebrew Python 3 must be
    installed (`brew install python`). Sprava runs a bundled stdlib-only worker, not the older imap-extract
    converter, which can overwrite attachments with duplicate names. Disable any pre-existing watcher for the
@@ -91,7 +101,7 @@ it cannot send email, execute tools or save a task without the person's button c
    `.eml`, and attachments or files from Finder arrive as they are. Outlook on the web (also when installed as an
    app) hands over no email when a message is dragged: select its text and drag the selection, or save it as `.eml`
    or PDF and drop the file.
-6. In **Conversation with Claude**, choose document/intake sharing and connect the binder. Selected
+6. In **Talk to this binder**, choose document/intake sharing and connect the binder. Selected
    information, including private material when shared, goes to Anthropic. Imported mail is reference data,
    never instructions. Ask which bylaw covers pet regulations: the answer can cite current source paths
    and page numbers. Coverage is bounded and not claimed exhaustive; missing evidence must stay visible.

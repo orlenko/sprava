@@ -1,58 +1,6 @@
 import Foundation
 import SpravaKit
 
-/// A starter for a new binder (mvp.md feature 6; decisions.md P9): a one-line description for the clerk,
-/// suggested document folders, and an undated checklist. No template carries a statutory deadline rule.
-public struct BinderTemplate: Sendable {
-    public let key: String
-    public let title: String
-    public let suggestedName: @Sendable (Int) -> String
-    public let description: @Sendable (Int) -> String
-    public let folders: [String]
-    public let checklist: [String]
-
-    /// A tax year: it needs no chapters, so it fits v0 as it is (mvp.md question 2).
-    public static let taxYear = BinderTemplate(
-        key: "tax-year", title: "A tax year",
-        suggestedName: { "tax-\($0)" },
-        description: { "Tax year \($0): income slips, receipts for deductions, the return and the notice of assessment" },
-        folders: ["slips", "receipts", "return"],
-        checklist: [
-            "Collect every income slip",
-            "Collect receipts for deductions and credits",
-            "Gather donation and medical receipts",
-            "Review last year's return and notice of assessment",
-            "Prepare the return",
-            "File the return",
-            "Keep the notice of assessment once it arrives",
-        ])
-
-    /// An empty binder: the person names it and writes its description; nothing arrives as a card.
-    public static let blank = BinderTemplate(
-        key: "blank", title: "An empty binder",
-        suggestedName: { _ in "new-binder" },
-        description: { _ in "" },
-        folders: ["documents"],
-        checklist: [])
-
-    /// A seat on a condominium board: the papers and recurring work of the role. It names no law, place or date, since
-    /// those differ by jurisdiction and building.
-    public static let condoBoard = BinderTemplate(
-        key: "condo-board", title: "A condo board",
-        suggestedName: { _ in "condo-board" },
-        description: { _ in "Condo board: governing documents, meetings and minutes, finances, maintenance and correspondence" },
-        folders: ["governing", "meetings", "finances", "maintenance", "correspondence"],
-        checklist: [
-            "Gather the governing documents and rules in one place",
-            "Draft the agenda for the next board meeting",
-            "Review the last meeting's minutes and open action items",
-            "Track quotes for pending maintenance work",
-            "Review the latest financial statements and budget",
-        ])
-
-    public static let all = [blank, taxYear, condoBoard]
-}
-
 /// Creates a binder from a template: a ready binder-v0 folder at disclosure `none`, adopted at once, whose checklist
 /// arrives as one card (mvp.md feature 6; binder-v0 §3.1, §6.9).
 public enum BinderCreator {
@@ -164,7 +112,10 @@ public enum BinderCreator {
                 throw TekaStore.Refused(reason: errno == EEXIST ? "a folder with that name already exists" : "the folder could not be created")
             }
         }
-        for sub in template.folders + ["intake"] { _ = mkdir(folder.appendingPathComponent(sub).path, 0o755) }
+        for sub in template.folders + ["intake"] {
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent(sub), withIntermediateDirectories: true)
+        }
+        try AtomicFile.write(Data(template.projectGuide(year).utf8), to: folder.appendingPathComponent("PROJECT.md"), mode: 0o644)
 
         var meta = JSONObject()
         meta.set("schema_version", .int(2))
@@ -176,9 +127,11 @@ public enum BinderCreator {
         meta.set("created", .string(today.description))
         meta.set("id_scheme", .str("teka-year-seq"))
         meta.set("modules", .array([]))
+        meta.set("template", .obj([("key", .str(template.key)), ("fingerprint", .str(template.fingerprint))]))
         var catalog = JSONObject()
         catalog.set("meta", .object(meta))
-        catalog.set("documents", .array([]))
+        catalog.set("documents", .array([.obj([("id", .str("project-guide")), ("title", .str("Project guide")),
+                                              ("path", .str("PROJECT.md")), ("source", .str("template"))])]))
         catalog.set("open_items", .array([]))
         catalog.set("processing_log", .array([]))
         try AtomicFile.write(Data(JSONWriter.pretty(.object(catalog)).utf8), to: folder.appendingPathComponent("catalog.json"), mode: 0o644)
@@ -189,6 +142,8 @@ public enum BinderCreator {
         owner.set("adopted_at", .string(ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)))
         try TekaStore(folder: folder, client: client).adopt(survey: JSONObject([(key: "created_from", value: .string(template.key))]),
                                                             owner: owner, now: now)
+        guard let state = try StateDirectory.open(folder.appendingPathComponent(".sprava")) else { throw BinderTemplate.Invalid() }
+        try state.write(Data(JSONWriter.pretty(template.json).utf8), to: "template.json")
 
         let ops: [JSONObject] = template.checklist.enumerated().map { n, title in
             var item = JSONObject()
@@ -197,7 +152,7 @@ public enum BinderCreator {
             item.set("status", .str("open"))
             item.set("priority", .str("normal"))
             item.set("no_deadline", .bool(true))
-            item.set("kind", .str(title.hasPrefix("File") ? "filing" : "other"))
+            item.set("kind", .str("other"))
             return JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .object(item))]))])
         }
         // The checklist is the person's choice of template, so it arrives as the person's own card.

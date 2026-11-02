@@ -21,30 +21,30 @@ import Testing
                       ("  --Tax 2026!! ", "tax-2026"), ("kitchen-reno", "kitchen-reno"), ("\u{65E5}\u{672C}", "new-binder"),
                       ("", "new-binder"), ("?!", "new-binder")])
     func aTypedNameBecomesAValidBinderThatIsCreated(typed: String, expected: String) throws {
-        let name = BinderCreator.name(for: typed, template: .blank, year: 2026)
+        let name = BinderCreator.name(for: typed, template: try TemplateLibrary.bundled("blank"), year: 2026)
         #expect(name == expected)
         let parent = try parent()
-        let created = try BinderCreator.create(parent: parent, name: name, template: .blank, deviceID: "dev", knownNames: [],
+        let created = try BinderCreator.create(parent: parent, name: name, template: try TemplateLibrary.bundled("blank"), deviceID: "dev", knownNames: [],
                                                year: 2026, today: today)
         #expect(created.folder.lastPathComponent == expected)
         #expect(Teka.read(created.folder).catalog?["meta"]?["name"] == .string(expected))
     }
 
     @Test func aLongNameIsCutToSixtyFourCharactersWithNoTrailingHyphen() throws {
-        let name = BinderCreator.name(for: Self.long, template: .blank, year: 2026)
+        let name = BinderCreator.name(for: Self.long, template: try TemplateLibrary.bundled("blank"), year: 2026)
         #expect(name.count <= 64 && !name.hasSuffix("-") && name.hasPrefix("garden-shed-garden-shed"))
         #expect(name.wholeMatch(of: /[a-z0-9][a-z0-9-]*/) != nil)
-        let created = try BinderCreator.create(parent: try parent(), name: name, template: .blank, deviceID: "dev", knownNames: [],
+        let created = try BinderCreator.create(parent: try parent(), name: name, template: try TemplateLibrary.bundled("blank"), deviceID: "dev", knownNames: [],
                                                year: 2026, today: today)
         #expect(created.folder.lastPathComponent == name)
     }
 
-    @Test func aNameWithNothingLeftFallsBackToTheFolderThenTheTemplate() {
+    @Test func aNameWithNothingLeftFallsBackToTheFolderThenTheTemplate() throws {
         let folder = URL(fileURLWithPath: "/invented/Garden Shed", isDirectory: true)
-        #expect(BinderCreator.name(for: "\u{65E5}\u{672C}", template: .taxYear, year: 2026, existing: folder) == "garden-shed")
+        #expect(BinderCreator.name(for: "\u{65E5}\u{672C}", template: try TemplateLibrary.bundled("tax-year"), year: 2026, existing: folder) == "garden-shed")
         let other = URL(fileURLWithPath: "/invented/\u{65E5}\u{672C}", isDirectory: true)
-        #expect(BinderCreator.name(for: "!!", template: .taxYear, year: 2026, existing: other) == "tax-2026")
-        #expect(BinderCreator.name(for: "", template: .taxYear, year: 2026) == "tax-2026")
+        #expect(BinderCreator.name(for: "!!", template: try TemplateLibrary.bundled("tax-year"), year: 2026, existing: other) == "tax-2026")
+        #expect(BinderCreator.name(for: "", template: try TemplateLibrary.bundled("tax-year"), year: 2026) == "tax-2026")
     }
 
     @Test func aTakenNameGetsTheNextFreeNumber() throws {
@@ -58,7 +58,7 @@ import Testing
         }
         let free = BinderCreator.freeName("tax-2026", parent: parent, knownNames: [])
         #expect(free == "tax-2026-3")
-        _ = try BinderCreator.create(parent: parent, name: free, template: .blank, deviceID: "dev", knownNames: [], year: 2026, today: today)
+        _ = try BinderCreator.create(parent: parent, name: free, template: try TemplateLibrary.bundled("blank"), deviceID: "dev", knownNames: [], year: 2026, today: today)
         // A long name leaves room for the number.
         let long = String(repeating: "a", count: 64)
         #expect(BinderCreator.freeName(long, parent: parent, knownNames: [long]) == String(repeating: "a", count: 62) + "-2")
@@ -77,7 +77,7 @@ import Testing
     func createStillRefusesAnInvalidName(name: String) throws {
         let parent = try parent()
         #expect(throws: TekaStore.Refused.self) {
-            try BinderCreator.create(parent: parent, name: name, template: .blank, deviceID: "dev", knownNames: [], year: 2026, today: today)
+            try BinderCreator.create(parent: parent, name: name, template: try TemplateLibrary.bundled("blank"), deviceID: "dev", knownNames: [], year: 2026, today: today)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
     }

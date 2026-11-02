@@ -146,7 +146,7 @@ struct NoteBox: View {
 
     var caption: String {
         talking ? "Each line becomes a to-do card here for your OK, without Claude."
-            : "Each line becomes a to-do card here for your OK. To ask this binder questions, connect it to Claude below."
+            : "Each line becomes a to-do card here for your OK. To ask questions, connect it to Claude in Conversation."
     }
 
     var body: some View {

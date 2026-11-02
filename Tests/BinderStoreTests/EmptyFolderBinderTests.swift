@@ -21,7 +21,7 @@ import Testing
         // Stands in for an iCloud Desktop folder in a home folder that is not synced.
         let synced: (URL) -> Bool = { $0.standardizedFileURL.path == picked.standardizedFileURL.path }
         #expect(throws: TekaStore.Refused.self) {
-            try BinderCreator.create(parent: parent, name: "desk", template: .blank, deviceID: "dev", knownNames: [],
+            try BinderCreator.create(parent: parent, name: "desk", template: try TemplateLibrary.bundled("blank"), deviceID: "dev", knownNames: [],
                                      year: 2026, today: today, existing: picked, synced: synced)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path) == ["Desktop"])

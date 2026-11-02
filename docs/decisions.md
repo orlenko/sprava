@@ -28,8 +28,10 @@
   Reconciling a binder, cross-referencing documents and drafting letters are the agent's (D22).
 - **P8 recommended.** Languages: the clerk covers what Apple's on-device model supports (24 locales, including
   en-CA and fr-CA; not Ukrainian). Other languages go through the agent (D22) and translation at filing (D8).
-- **P9 open.** First templates. Recommended: a rental property with tenancies as chapters, a condo-board seat, a
-  tax year, an estate executor third. Templates carry undated checklists only; no statutory deadline rules.
+- **P9 decided (2026-10-31, by the author).** Sprava supports any personal project. Templates are editable files
+  outside source code, containing folder structure, an undated checklist and a project guide for filing, search
+  and preparation. The app discovers and previews them; each created binder retains its own copy. Shipped
+  examples do not define a fixed set of project types. No inferred statutory deadline rules.
 - **P10 decided (2026-10-07, at implementation).** SwiftUI with AppKit where needed, using `ObservableObject`
   rather than the `@Observable` and `@State` macros: the Command Line Tools ship no SwiftUI macro plugin. A
   hidden `--snapshot` option renders the window offscreen with invented binders for layout checks.

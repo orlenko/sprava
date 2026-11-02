@@ -24,7 +24,7 @@ import Testing
 
     @Test func aNewTaxYearBinderIsReadyAndItsChecklistIsOneCard() throws {
         let (c, parent) = try setup()
-        let r = try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .str("tax-2026")), ("year", .int(2026))])
+        let r = try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .str("tax-2026")), ("template", .str("tax-year")), ("year", .int(2026))])
         #expect(r["ok"] == .bool(true), "\(r)")
         let folder = URL(fileURLWithPath: try #require(r["binder"]?.stringValue))
         let teka = Teka.read(folder)
@@ -40,7 +40,7 @@ import Testing
         let approved = try call(c, [("command", .str("approve")), ("binder", .string(folder.path)), ("proposal", card["id"]!), ("digest", card["digest"]!)])
         #expect(approved["ok"] == .bool(true), "\(approved)")
         let items = Teka.read(folder).items
-        #expect(items.count == BinderTemplate.taxYear.checklist.count)
+        #expect(items.count == (try TemplateLibrary.bundled("tax-year")).checklist.count)
         #expect(items.allSatisfy { $0.hasNoDeadline && $0.idText.hasPrefix("tax-2026-2026-") })
         #expect(Teka.read(folder).state == .ready)
         _ = try Replay.run(try TekaStore(folder: folder).readOpLog().ops)
@@ -122,12 +122,12 @@ import Testing
         let full = parent.appendingPathComponent("notes")
         try FileManager.default.createDirectory(at: full, withIntermediateDirectories: true)
         try Data("invented".utf8).write(to: full.appendingPathComponent("a.txt"))
-        #expect(try call(c, [("command", .str("create_binder")), ("folder", .string(full.path)), ("name", .str("notes"))])["ok"] == .bool(false))
+        #expect(try call(c, [("command", .str("create_binder")), ("folder", .string(full.path)), ("name", .str("notes")), ("template", .str("blank"))])["ok"] == .bool(false))
         #expect(try FileManager.default.contentsOfDirectory(atPath: full.path) == ["a.txt"])
         let empty = parent.appendingPathComponent("Empty")
         try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: parent.appendingPathComponent("taken"), withIntermediateDirectories: true)
-        let r = try call(c, [("command", .str("create_binder")), ("folder", .string(empty.path)), ("name", .str("taken"))])
+        let r = try call(c, [("command", .str("create_binder")), ("folder", .string(empty.path)), ("name", .str("taken")), ("template", .str("blank"))])
         #expect(r["ok"] == .bool(true), "\(r)")
         #expect(r["binder"]?.stringValue.map { URL(fileURLWithPath: $0).lastPathComponent } == "taken-2")
         #expect(!FileManager.default.fileExists(atPath: empty.path))

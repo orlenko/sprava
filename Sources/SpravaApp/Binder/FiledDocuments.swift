@@ -30,13 +30,19 @@ final class FiledDocuments: ObservableObject, DraftOwner {
     private var generation = 0
     private let disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.document-location", qos: .utility))
     private let reveal: @MainActor (URL) -> Void
+    private let openFolder: @MainActor (URL) -> Void
     private let client: RuntimeClient
 
     init(client: RuntimeClient = RuntimeClient(),
-         reveal: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }) {
+         reveal: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
+         openFolder: @escaping @MainActor (URL) -> Void = { _ = NSWorkspace.shared.open($0) }) {
         self.client = client
         self.reveal = reveal
+        self.openFolder = openFolder
     }
+
+    /// Opens the binder's folder in Finder. Reads nothing in it, and files nothing.
+    func open(_ folder: URL) { openFolder(folder) }
 
     var matches: [Record] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -132,13 +138,27 @@ struct FiledDocumentsSection: View {
         let modified: Date?
     }
 
+    /// A binder can hold files nobody filed yet, such as a copied project's; this list shows only filed ones, so an
+    /// empty list must not read as an empty binder.
+    static let emptyNote = "No filed documents yet. Files already in this binder's folder are not listed here until they are filed; drop them above to file them."
+
+    private var openFolder: some View {
+        Button("Open Binder Folder") { model.open(row.folder) }
+    }
+
     var body: some View {
         Section("Filed documents") {
             if model.records.isEmpty {
-                Text("No filed documents yet. Drop files above to add them to this binder.")
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(Self.emptyNote).foregroundStyle(.secondary)
+                    Spacer()
+                    openFolder
+                }
             } else {
-                TextField("Find a document by title or path", text: $model.query)
+                HStack {
+                    TextField("Find a document by title or path", text: $model.query)
+                    openFolder
+                }
                 let matches = model.matches
                 if matches.isEmpty { Text("No matching documents.").foregroundStyle(.secondary) }
                 ForEach(Array(matches.prefix(100))) { record in

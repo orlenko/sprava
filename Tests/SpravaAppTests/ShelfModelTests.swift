@@ -1,4 +1,5 @@
 import BinderFormat
+import BinderStore
 import Foundation
 import Shelf
 import Services
@@ -17,6 +18,7 @@ import Testing
 final class StandInRuntime {
     var answers: [String: @MainActor (JSONValue) async -> String] = [:]
     var sent: [JSONValue] = []
+    private let templateSupport = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-template-fixture-" + UUID().uuidString)
     var pings = 0
     var running = true
 
@@ -24,6 +26,10 @@ final class StandInRuntime {
     lazy var client = RuntimeClient(answer: { [self] text in
         let request = try JSONParser.parse(text).value
         let name = request["command"]?.stringValue
+        if name == "binder_templates", answers["binder_templates"] == nil {
+            let library = TemplateLibrary(support: templateSupport)
+            return JSONWriter.compact(.obj([("ok", .bool(true)), ("folder", .str(library.folder.path)), ("templates", .array(try library.read().map(\.json)))]))
+        }
         if name == "ping" { pings += 1 } else { sent.append(request) }
         guard running else {
             throw RuntimeClient.Failure.notRunning(NSError(domain: NSCocoaErrorDomain, code: 4099,
@@ -326,7 +332,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
         let model = ShelfModel(support: support, client: runtime.client)
         var asked: [URL?] = []
-        model.askForBinder = { folder, _ in asked.append(folder); return ("blank", "garden-shed", "") }
+        model.askForBinder = { folder, _, _, _ in asked.append(folder); return ("blank", "garden-shed", "") }
         await model.add([empty])
         #expect(asked == [empty])
         let sent = try #require(runtime.sent.first)
@@ -335,7 +341,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         #expect(sent["parent"]?.stringValue == empty.deletingLastPathComponent().path)
         #expect(model.note == nil)
         // Declining leaves the folder alone and sends nothing.
-        model.askForBinder = { _, _ in nil }
+        model.askForBinder = { _, _, _, _ in nil }
         await model.add([empty])
         #expect(runtime.sent.count == 1 && model.note == nil)
     }
@@ -348,8 +354,8 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         runtime.answers["create_binder"] = { _ in #"{"ok":true,"binder":null,"proposal":null}"# }
         let model = ShelfModel(support: try temporaryFolder(), client: runtime.client)
         let parent = try temporaryFolder()
-        model.askForBinder = { _, _ in ("blank", typed, "") }
-        model.chooseParent = { parent }
+        model.askForBinder = { _, _, _, _ in ("blank", typed, "") }
+        model.binderParent = { parent }
         await model.startNewBinder()
         #expect(runtime.sent.first?["name"]?.stringValue == sent)
         #expect(model.note == nil)
@@ -364,7 +370,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         let shed = base.appendingPathComponent("Garden Shed")
         let other = base.appendingPathComponent("\u{65E5}\u{672C}")
         for folder in [shed, other] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        model.askForBinder = { _, current in ("tax-year", "!!", String(current)) }
+        model.askForBinder = { _, current, _, _ in ("tax-year", "!!", String(current)) }
         await model.add([shed])
         await model.add([other])
         let year = ShelfModel.currentYear()

@@ -13,17 +13,23 @@ import Testing
         var resumes: [Bool] = []
         var lines: [String] = []
         var policies: [String] = []
+        var sessions: [UUID] = []
+        var originalPolicies: [UUID: String] = [:]
         var hold = false
         var stopped = false
         var running = false
         var hash = "fixture-hash"
         var reply = #"{"answer":"The invented bylaw permits pets with permission.","citations":["S1"],"task":{"title":"Ask the board","details":"Request written permission."},"draft":null}"#
-        func driver(policy: String) -> ClaudeConversationRuntime.Driver {
-            let hash = lock.withLock { policies.append(policy); return self.hash }
+        func driver(policy: String, session: UUID = UUID()) -> ClaudeConversationRuntime.Driver {
+            let hash = lock.withLock { policies.append(policy); sessions.append(session); return self.hash }
+            let originalPolicy = lock.withLock {
+                if originalPolicies[session] == nil { originalPolicies[session] = policy }
+                return originalPolicies[session]!
+            }
             return .init(run: { [self] line, resume in
                 lock.withLock { lines.append(line); resumes.append(resume); running = true; stopped = false }
                 defer { lock.withLock { running = false } }
-                if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return policy.hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
+                if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return (resume ? originalPolicy : policy).hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
             }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash)
@@ -34,7 +40,8 @@ import Testing
         let folder: URL
         let runtime: ClaudeConversationRuntime
         let engine: Engine
-        init(onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in }) throws {
+        init(onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in },
+             available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-claude-runtime-\(UUID())")
             try AtomicFile.makePrivateFolder(root)
             folder = root.appendingPathComponent("workshop")
@@ -43,13 +50,13 @@ import Testing
             let engine = Engine(); self.engine = engine
             runtime = try ClaudeConversationRuntime(support: root.appendingPathComponent("support"), secrets: .init(read: {
                 engine.lock.withLock { engine.token }
-            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, _, policy, _ in
-                engine.driver(policy: policy)
+            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, session, policy, _ in
+                engine.driver(policy: policy, session: session)
             }, context: { folder, documents, intake, query, cancelled in
                 try onRead(folder, cancelled)
                 return .init(data: .obj([("fresh_query", .str(query)), ("documents", .bool(documents)), ("intake", .bool(intake))]),
                       sources: [.init(id: "S1", path: "documents/bylaw.txt", page: 2, revision: "invented-r1", text: "Pets require written permission.")])
-            })
+            }, available: available)
         }
         func configure() async throws {
             _ = try await runtime.handle(.init([(key: "command", value: .str("claude_configure")), (key: "program", value: .str("/invented/claude")), (key: "credential", value: .str("invented-token"))]))
@@ -86,7 +93,8 @@ import Testing
         await #expect(throws: ClaudeConversationRuntime.Refused.self) { try await f.send(id, "Different words") }
         let next = UUID(); _ = try await f.send(next, "Use the newer current To-do state."); _ = try await f.completed(next)
         #expect(f.engine.lock.withLock { f.engine.lines.count } == 4)
-        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, true, false, true])
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 4)
         #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("newer current To-do state") } == true)
         let reply = try JSONParser.parse(try #require(done["reply"]?.stringValue)).value
         #expect(reply["citations"]?.arrayValue?.first?["path"] == .str("documents/bylaw.txt"))
@@ -109,7 +117,8 @@ import Testing
         f.engine.lock.withLock { f.engine.hash = "updated-fixture-hash" }
         let next = UUID(); _ = try await f.send(next, "Continue after the Claude update.")
         #expect(try await f.completed(next)["phase"] == .str("replied"))
-        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, true, false, true])
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 4)
     }
     @Test func disablingAndClearingDoNotReuseNativeContextOrEraseAnUnrelatedThread() async throws {
         let f = try Fixture(); try await f.connect(); let id = UUID()
@@ -176,6 +185,29 @@ import Testing
         proof.lock.withLock { proof.scope = scope }
         _ = try await f.send(request, text); _ = try await f.completed(request)
         #expect(proof.lock.withLock { proof.sawReceipt })
+    }
+
+    @Test func aBinderThatIsNotConnectedSaysWhy() async throws {
+        let f = try Fixture(); try await f.configure()
+        #expect(try await f.request("claude_binder")["reason"] == .str("new"))
+        _ = try await f.request("claude_enable")
+        #expect(try await f.request("claude_binder")["enabled"] == .bool(true))
+        #expect(try await f.request("claude_binder")["reason"] == nil)
+        _ = try await f.request("claude_disable")
+        #expect(try await f.request("claude_binder")["reason"] == .str("disconnected"))
+        _ = try await f.request("claude_enable")
+        let moved = f.root.appendingPathComponent("workshop-moved")
+        try FileManager.default.moveItem(at: f.folder, to: moved)
+        let state = try await f.runtime.handle(.init([(key: "command", value: .str("claude_binder")), (key: "binder", value: .str(moved.path))]))
+        #expect(state["enabled"] == .bool(false) && state["reason"] == .str("moved"))
+    }
+
+    @Test func aBinderBeingOffloadedOrOffTheShelfIsNotOfferedAConnection() async throws {
+        let f = try Fixture(available: { _ in false }); try await f.configure()
+        #expect(try await f.request("claude_binder")["reason"] == .str("unavailable"))
+        struct Damaged: Error {}
+        let g = try Fixture(available: { _ in throw Damaged() }); try await g.configure()
+        #expect(try await g.request("claude_binder")["reason"] == .str("unavailable"))
     }
 
     @Test func disconnectedConversationStaysReadableAndClearableWithoutModelConsent() async throws {

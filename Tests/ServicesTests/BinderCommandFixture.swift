@@ -28,7 +28,7 @@ extension BinderCommandFixture {
     func createdBinder(_ c: Commands, name: String = "estate-sample") throws -> (URL, URL) {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-bugbot-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        let r = try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .string(name))])
+        let r = try call(c, [("command", .str("create_binder")), ("parent", .string(parent.path)), ("name", .string(name)), ("template", .str("tax-year"))])
         let folder = URL(fileURLWithPath: try #require(r["binder"]?.stringValue, "\(r)"), isDirectory: true)
         let spool = parent.appendingPathComponent("spool")
         try FileManager.default.createDirectory(at: spool, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

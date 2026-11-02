@@ -7,7 +7,7 @@ import SpravaKit
 /// already authenticate the app and resolve the current binder connection before every operation.
 public final class ConversationTurnStore: Sendable {
     public enum Phase: String, Sendable { case accepted, running, replied, interrupted, failed }
-    public enum Refused: Error, Equatable { case invalidLine, requestConflict, missingTurn, invalidTransition, historyFull, damagedState }
+    public enum Refused: Error, Equatable { case invalidLine, requestConflict, missingTurn, invalidTransition, historyFull, damagedState, snapshotChanged }
 
     public struct Record: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
         public let conversationID: UUID
@@ -110,6 +110,68 @@ public final class ConversationTurnStore: Sendable {
             try Self.checkRoom(t, conversationID, adding: 0)
             return try t.rows("SELECT \(Self.columns) FROM conversation_turns WHERE conversation_id = ? ORDER BY ordinal",
                               .text(conversationID.uuidString)).map(Self.decode)
+        }
+    }
+
+    /// A stable export boundary, including phases of unfinished turns (chat-room-and-sharing.md).
+    /// It retains metadata only; each page reads a bounded amount of canonical text.
+    public struct Snapshot: Sendable {
+        fileprivate let conversation: UUID
+        fileprivate let upper: Int64
+        fileprivate let lastTurn: String?
+        fileprivate let pending: [UUID: Phase]
+        public let count: Int
+    }
+    public struct Page: Sendable {
+        public let records: [Record]
+        public let after: Int64
+        public let done: Bool
+    }
+    public func snapshot(conversationID: UUID) throws -> Snapshot {
+        try state.read { t in
+            try Self.checkRoom(t, conversationID, adding: 0)
+            let rows = try t.rows("SELECT ordinal, turn_id, phase FROM conversation_turns WHERE conversation_id = ? ORDER BY ordinal",
+                                  .text(conversationID.uuidString))
+            var pending: [UUID: Phase] = [:]
+            for row in rows {
+                guard let ordinal = row[0].integer, ordinal > 0,
+                      let turn = row[1].text.flatMap(UUID.init(uuidString:)),
+                      let phase = row[2].text.flatMap(Phase.init(rawValue:)) else { throw Refused.damagedState }
+                if phase == .accepted || phase == .running { pending[turn] = phase }
+            }
+            return Snapshot(conversation: conversationID, upper: rows.last?[0].integer ?? 0,
+                            lastTurn: rows.last?[1].text, pending: pending, count: rows.count)
+        }
+    }
+    /// Ascending pages exclude later appends. Clear/replacement refuses instead of a partial success.
+    /// A single record may exceed the 1 MiB page budget, but never the store's per-line bound.
+    public func page(_ snapshot: Snapshot, after: Int64 = 0) throws -> Page {
+        guard after >= 0, after <= snapshot.upper else { throw Refused.snapshotChanged }
+        return try state.read { t in
+            let id = StateValue.text(snapshot.conversation.uuidString), upper = StateValue.integer(snapshot.upper)
+            let count = try t.rows("SELECT count(*) FROM conversation_turns WHERE conversation_id = ? AND ordinal <= ?", id, upper).first?.first?.integer
+            let last = try t.rows("SELECT turn_id FROM conversation_turns WHERE conversation_id = ? AND ordinal = ?", id, upper).first?.first?.text
+            guard count == Int64(snapshot.count), last == snapshot.lastTurn else { throw Refused.snapshotChanged }
+            let sizes = try t.rows("""
+                SELECT ordinal, length(CAST(text AS BLOB)) + coalesce(length(CAST(reply AS BLOB)), 0)
+                FROM conversation_turns WHERE conversation_id = ? AND ordinal > ? AND ordinal <= ? ORDER BY ordinal LIMIT 100
+                """, id, .integer(after), upper)
+            var end = after, bytes: Int64 = 0
+            for row in sizes {
+                guard let ordinal = row[0].integer, let size = row[1].integer, size >= 0,
+                      size <= Int64(Self.maximumLineBytes * 2) else { throw Refused.damagedState }
+                if end != after, bytes + size > 1024 * 1024 { break }
+                end = ordinal; bytes += size
+            }
+            let records = try t.rows("SELECT \(Self.columns) FROM conversation_turns WHERE conversation_id = ? AND ordinal > ? AND ordinal <= ? ORDER BY ordinal",
+                                     id, .integer(after), .integer(end)).map { row in
+                let record = try Self.decode(row)
+                guard let phase = snapshot.pending[record.turnID] else { return record }
+                return Record(conversationID: record.conversationID, requestID: record.requestID, turnID: record.turnID,
+                              text: record.text, reply: nil, phase: phase, createdAt: record.createdAt)
+            }
+            guard end > after || after == snapshot.upper else { throw Refused.snapshotChanged }
+            return Page(records: records, after: end, done: end == snapshot.upper)
         }
     }
 

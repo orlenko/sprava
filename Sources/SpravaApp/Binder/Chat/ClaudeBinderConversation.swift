@@ -38,6 +38,12 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         var taskDraft: TaskDraft { TaskDraft(title: taskTitle, details: taskDetails, due: due, priority: priority) }
     }
     @Published var askToClear = false
+    /// Whether a connected binder's sharing details are showing.
+    @Published var connectionOpen = false
+    @Published private(set) var checking = false
+    /// Why the binder shown is not connected, as the runtime said. Nil when the runtime did not answer.
+    @Published private(set) var notConnectedReason: String?
+    @Published private(set) var runtimeAnswered = true
     @Published private(set) var connected = false
     /// Whether Claude is set up in Sprava (Brains): true or false as the runtime said, nil when it could not be asked,
     /// which is no evidence either way.
@@ -74,21 +80,28 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         guard let self else { return ([], "Saved conversation is unavailable.") }
         return await self.history(folder)
     })
+    lazy var sharing = ConversationSharing(client: client)
+    var scopeID: String? { folder.flatMap { scopes[$0] } }
     var hasSavedScope: Bool { folder.flatMap { scopes[$0] } != nil }
     init(client: RuntimeClient = RuntimeClient(), authenticate: @escaping () async throws -> Void = {
         guard try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Share this binder's selected information with Claude.") else { throw CancellationError() }
     }) { self.client = client; self.authenticate = authenticate }
 
     func show(_ folder: URL) async {
-        let folder = folder.standardizedFileURL; self.folder = folder
+        let folder = folder.standardizedFileURL
+        if self.folder != folder { connectionOpen = false }
+        self.folder = folder
+        checking = true; defer { if self.folder == folder { checking = false } }
         do {
             let state = try await client.command("claude_binder", binder: folder)
             guard self.folder == folder else { return }
             connected = state["enabled"] == .bool(true)
             scopes[folder] = state["binder_id"]?.stringValue
+            notConnectedReason = state["reason"]?.stringValue
+            runtimeAnswered = true
             if connected { documents = state["documents"] == .bool(true); intake = state["intake"] == .bool(true) }
             message = nil
-        } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; message = "Sprava could not check this binder's Claude connection. Open Health to check the background part." }
+        } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; notConnectedReason = nil; runtimeAnswered = false; message = nil }
         // A connected binder needs Claude set up; only an unconnected one asks, for what to offer next. Another binder
         // shown meanwhile owns the page from then on, its conversation included.
         let ready = connected ? true : await accountStatus()
@@ -99,6 +112,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
            chat.needsResume(requestID: turn.requestID, in: folder) {
             chat.resume(observe(turn, in: folder), in: folder)
         }
+    }
+    var connectionState: ConnectionState {
+        ConnectionState(runtimeAnswered: runtimeAnswered, accountReady: accountReady, reason: notConnectedReason)
     }
     /// Asks the runtime whether Claude is set up in Sprava; nil when it could not be asked.
     func accountStatus() async -> Bool? {
@@ -133,7 +149,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             return "The binder was not connected: Sprava's background part did not answer. Open Health, then try again."
         }
         switch accountReady {
-        case false?: return "The binder was not connected: Claude is not set up in Sprava yet. Open Brains and follow its steps, then connect here."
+        case false?: return "The binder was not connected: Claude is not set up in Sprava yet. Open Assistant and follow its steps, then connect here."
         case nil: return "The binder was not connected, and Sprava could not check Claude's setup. Open Health, then try again."
         case true?: return "The binder was not connected. Claude is set up; check that this binder is adopted and ready, then try again."
         }

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "tax-year",
+  "title": "A tax year",
+  "summary": "Tax year {year}: income slips, receipts for deductions, the return and the notice of assessment",
+  "name": "tax-{year}",
+  "folders": [
+    "income",
+    "expenses",
+    "medical",
+    "previous-year",
+    "slips",
+    "receipts",
+    "return"
+  ],
+  "checklist": [
+    "Collect every income slip",
+    "Collect receipts for deductions and credits",
+    "Gather donation and medical receipts",
+    "Review last year's return and notice of assessment",
+    "Prepare the return",
+    "File the return",
+    "Keep the notice of assessment once it arrives"
+  ],
+  "yearLabel": "Tax year"
+}

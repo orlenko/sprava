@@ -48,6 +48,7 @@ final class RuntimeClient {
         enum Kind: Sendable { case refused, notRunning, timedOut }
         let message: String
         var kind = Kind.refused
+        var code: String? = nil
         var description: String { message }
 
         /// What a page says when the runtime cannot be reached.
@@ -144,7 +145,7 @@ final class RuntimeClient {
     private func object(_ reply: String) throws -> JSONObject {
         for run in answered { run() }
         guard case .object(let o) = try JSONParser.parse(reply).value else { throw Failure(message: "bad reply") }
-        guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused") }
+        guard o["ok"] == .bool(true) else { throw Failure(message: o["error"]?.stringValue ?? "refused", code: o["code"]?.stringValue) }
         return o
     }
 

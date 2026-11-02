@@ -26,6 +26,7 @@ struct NowView: View {
     var openBrains: () -> Void = {}
     @ObservedObject var actions = BinderActions()
     @ObservedObject var documents = FiledDocuments()
+    @ObservedObject var workspace = BinderWorkspaceSelection()
 
     var sharesName: Bool {
         rows.filter { $0.teka.isAdopted && InboxView.fold($0.name) == InboxView.fold(row.name) }.count > 1
@@ -55,33 +56,57 @@ struct NowView: View {
     var body: some View {
         let teka = row.teka
         VStack(spacing: 0) {
+            header.padding(.horizontal, 16).padding(.top, 10)
+            if let conversation, let surface = inputs.conversation {
+                BinderWorkspace(model: conversation, selection: workspace, row: row,
+                                conversation: surface, project: project)
+            } else {
+                project
+            }
+        }
+        .task(id: NowTask(folder: row.folder, adopted: teka.isAdopted)) {
+            note.show(row.folder)
+            await actions.load(row.folder, adopted: teka.isAdopted)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if Task.isCancelled { break }
+                if teka.isAdopted { await actions.loadReview(row.folder) }
+            }
+        }
+    }
+
+    private var header: some View {
+        let teka = row.teka
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(teka.name).font(.title2.bold())
+                Spacer()
+                if !teka.isAdopted, teka.state >= .needsMigration {
+                    Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
+                        .disabled(actions.busy)
+                }
+            }
+            if let message = actions.message { Text(message).foregroundStyle(.orange) }
+            Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
+                .foregroundStyle(.secondary)
+            if teka.state < .needsMigration {
+                ForEach(DisplayLine.rows(teka.reasons)) { Text("• \($0.text)").foregroundStyle(.orange) }
+            }
+            if !teka.findings.isEmpty {
+                Text("\(teka.findings.count) rule finding(s); run `sprava check` for the list.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var project: some View {
+        let teka = row.teka
+        return VStack(spacing: 0) {
             if teka.isAdopted, !teka.writesBlocked { IntakeDropBar(folder: row.folder) }
             List {
-                Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(teka.name).font(.title2.bold())
-                            Spacer()
-                            if !teka.isAdopted, teka.state >= .needsMigration {
-                                Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
-                                    .disabled(actions.busy)
-                            }
-                        }
-                        if let message = actions.message { Text(message).foregroundStyle(.orange) }
-                        Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
-                            .foregroundStyle(.secondary)
-                        if teka.state < .needsMigration {
-                            ForEach(DisplayLine.rows(teka.reasons)) { Text("• \($0.text)").foregroundStyle(.orange) }
-                        }
-                        if !teka.findings.isEmpty {
-                            Text("\(teka.findings.count) rule finding(s); run `sprava check` for the list.")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
+                if let local = inputs.note { local }
                 if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
-                inputs
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
                 FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
@@ -118,17 +143,6 @@ struct NowView: View {
                 if teka.isAdopted {
                     AboutSection(actions: actions, folder: row.folder, today: today, reload: refresh)
                 }
-            }
-        }
-        .task(id: NowTask(folder: row.folder, adopted: teka.isAdopted)) {
-            note.show(row.folder)
-            await actions.load(row.folder, adopted: teka.isAdopted)
-            // Cards that capture, intake, the clerk or a brain add show up while the binder stays open (mvp.md:
-            // "within a minute the review queue shows a card").
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
-                if Task.isCancelled { break }
-                if teka.isAdopted { await actions.loadReview(row.folder) }
             }
         }
     }

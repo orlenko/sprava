@@ -14,7 +14,7 @@ import Testing
     final class Person {
         var starts = 0
         var binderQuestions: [URL?] = []
-        var parentQuestions = 0
+        var parentReads = 0
         var folderQuestions = 0
     }
 
@@ -22,8 +22,8 @@ import Testing
                starting: @escaping @MainActor () -> RuntimeKeeper.Outcome = { .running }) -> ShelfModel {
         let model = ShelfModel(support: support, client: runtime.client)
         model.startRuntime = { person.starts += 1; return starting() }
-        model.askForBinder = { folder, _ in person.binderQuestions.append(folder); return ("blank", "garden-shed", "") }
-        model.chooseParent = { person.parentQuestions += 1; return parent }
+        model.askForBinder = { folder, _, _, _ in person.binderQuestions.append(folder); return ("blank", "garden-shed", "") }
+        model.binderParent = { person.parentReads += 1; return parent }
         model.chooseFolders = { person.folderQuestions += 1; return [] }
         model.startWait = .milliseconds(200)
         return model
@@ -39,7 +39,7 @@ import Testing
                           starting: { runtime.running = true; return .running })
         await model.startNewBinder()
         #expect(person.starts == 1)
-        #expect(person.binderQuestions == [nil] && person.parentQuestions == 1)
+        #expect(person.binderQuestions == [nil] && person.parentReads == 1)
         #expect(runtime.sent.map { $0["command"]?.stringValue } == ["create_binder"])
         #expect(runtime.sent.first?["parent"]?.stringValue == parent.path && model.note == nil)
     }
@@ -56,7 +56,7 @@ import Testing
         let person = Person()
         let model = model(runtime, person, support: try temporaryFolder(), parent: try temporaryFolder(), starting: { outcome })
         await model.startNewBinder()
-        #expect(person.starts == 1 && person.binderQuestions.isEmpty && person.parentQuestions == 0)
+        #expect(person.starts == 1 && person.binderQuestions.isEmpty && person.parentReads == 0)
         #expect(runtime.sent.isEmpty)
         #expect(model.note?.contains(said) == true)
     }
@@ -112,13 +112,13 @@ import Testing
         })
         let model = ShelfModel(support: try temporaryFolder(), client: client)
         let parent = try temporaryFolder()
-        model.askForBinder = { _, _ in person.binderQuestions.append(nil); return ("blank", "garden-shed", "") }
-        model.chooseParent = { person.parentQuestions += 1; return parent }
+        model.askForBinder = { _, _, _, _ in person.binderQuestions.append(nil); return ("blank", "garden-shed", "") }
+        model.binderParent = { person.parentReads += 1; return parent }
         model.startRuntime = { person.starts += 1; return startReportsRunning ? .running : .failed(RuntimeKeeper.noBeat) }
         model.startWait = .zero
         await model.startNewBinder()
         #expect(person.starts == 1)
-        #expect(person.binderQuestions.isEmpty && person.parentQuestions == 0)
+        #expect(person.binderQuestions.isEmpty && person.parentReads == 0)
         #expect(commands.allSatisfy { $0 == "ping" })
         #expect(model.note != nil)
     }
@@ -142,7 +142,7 @@ import Testing
         start?.resume(returning: .running)
         await first.value
         #expect(!model.creatingBinder && person.starts == 1)
-        #expect(person.binderQuestions.count == 1 && person.parentQuestions == 1)
+        #expect(person.binderQuestions.count == 1 && person.parentReads == 1)
         #expect(runtime.sent.count == 1)
     }
 

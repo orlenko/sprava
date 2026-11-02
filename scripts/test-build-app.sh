@@ -35,6 +35,8 @@ class BuildAppTests(unittest.TestCase):
         llm.chmod(0o755)
         self.products = self.root / "products"
         self.products.mkdir()
+        (self.products / "Sprava_BinderStore.bundle").mkdir()
+        (self.products / "Sprava_BinderStore.bundle" / "template-fixture").write_text("template resources\n")
         for name in PRODUCTS:
             (self.products / name).write_text(name + "\n")
         self.restic = self.root / "restic" / "bin" / "restic"
@@ -143,6 +145,8 @@ sys.exit(0)
             self.assertTrue((contents / "MacOS" / name).is_file(), name)
         self.assertEqual((contents / "Resources/llama.cpp-LICENSES.txt").read_text(), "notices\n")
         seal = (contents / "_CodeSignature/CodeResources").read_text()
+        self.assertEqual((contents / "Resources/Sprava_BinderStore.bundle/template-fixture").read_text(), "template resources\n")
+        self.assertIn("<key>Resources/Sprava_BinderStore.bundle</key>", seal)
         for plist in (self.repo / "Resources/LaunchAgents").iterdir():
             self.assertTrue((contents / "Library/LaunchAgents" / plist.name).is_file())
             self.assertIn(f"<key>Library/LaunchAgents/{plist.name}</key>", seal)

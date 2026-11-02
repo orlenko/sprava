@@ -26,6 +26,7 @@ public actor ClaudeConversationRuntime {
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
     private let support: URL
     private let connections: ClaudeReadConnections
+    private var exports = ConversationExport()
     private let receipts: ConversationTurnStore
     private let state: ClaudeConversationState
     private let secrets: Secrets
@@ -83,7 +84,7 @@ public actor ClaudeConversationRuntime {
         })
     }
 
-    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_stop", "chat_clear"]
+    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_stop", "chat_clear"]
 
     public func respond(_ text: String) async -> String {
         guard text.utf8.count <= 5 * 1024 * 1024,
@@ -94,13 +95,14 @@ public actor ClaudeConversationRuntime {
             var envelope = JSONObject([(key: "ok", value: .bool(true))])
             for entry in result.entries where entry.key != "ok" && entry.key != "error" { envelope.set(entry.key, entry.value) }
             return JSONWriter.compact(.object(envelope))
-        } catch Refused.notConnected { return Self.failure("Enable Claude in Brains, then connect this binder.") }
+        } catch let issue as ClaudeSetupFailure { return Self.failure(issue.message, code: issue.rawValue) }
+        catch Refused.notConnected { return Self.failure("Set up Claude in Assistant, then connect this binder.") }
         catch Refused.busy { return Self.failure("Claude is busy. Keep this draft and try again when it finishes.") }
         catch Refused.invalidRequest { return Self.failure("The conversation request is invalid.") }
         catch { return Self.failure("Claude could not complete this request. Check the connection and saved conversation before retrying.") }
     }
-    private static func failure(_ message: String) -> String {
-        JSONWriter.compact(.obj([("ok", .bool(false)), ("error", .str(message))]))
+    private static func failure(_ message: String, code: String? = nil) -> String {
+        JSONWriter.compact(.obj([("ok", .bool(false)), ("error", .str(message)), ("code", code.map(JSONValue.str) ?? .null)]))
     }
 
     /// The XPC listener routes these only after verifying Sprava's app signature. MCP/CLI never get
@@ -138,10 +140,18 @@ public actor ClaudeConversationRuntime {
         if command == "claude_binder" {
             let id = try connections.savedID(for: folder)
             let current: ClaudeReadConnections.Connection?
+            var moved = false
             do { current = try connections.connection(for: folder) }
-            catch ClaudeReadConnections.Refused.changed { current = nil }
+            catch ClaudeReadConnections.Refused.changed { current = nil; moved = true }
             if let current, try state.account() != nil, try secrets.read() != nil, try available(folder) { return scopeJSON(current) }
-            return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null)])
+            // A fixed word for the app to explain the state with. Whether Claude is set up is claude_status's answer.
+            let reason = (try? available(folder)) != true ? "unavailable" : moved ? "moved" : id != nil ? "disconnected" : "new"
+            return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null),
+                          (key: "reason", value: .str(reason))])
+        }
+        if command == "chat_export" {
+            guard let id = try connections.savedID(for: folder) else { throw Refused.notConnected }
+            return try exports.page(request, binder: id, store: receipts)
         }
         if command == "chat_history" || command == "chat_clear" {
             guard let id = try connections.savedID(for: folder) else { return .init([(key: "turns", value: .array([]))]) }
@@ -191,33 +201,44 @@ public actor ClaudeConversationRuntime {
     }
 
     private func configure(program: URL, credential: String) async throws {
-        guard !configuring, active.isEmpty, preparing.isEmpty, !credential.isEmpty, credential.utf8.count <= 16_384 else { throw Refused.busy }
+        guard !configuring, active.isEmpty, preparing.isEmpty else { throw Refused.busy }
+        let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !credential.isEmpty, credential.utf8.count <= 16_384,
+              !credential.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }) else { throw ClaudeSetupFailure.tokenFormat }
         configuring = true; defer { configuring = false }
         let id = UUID()
-        let session = try state.session(connection: id, generation: UUID(), hash: "setup")
+        let firstSession = try state.session(connection: id, generation: UUID(), hash: "setup")
+        var recorded = firstSession
         var driver: Driver?
         let question = Self.setupQuestion
+        var stage = ClaudeSetupFailure.firstReply
         do {
-            let first = try await makeDriver(program, credential, id, session.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", { [state] pid in try state.spawned(session, pid: pid) })
+            let first = try await makeDriver(program, credential, id, firstSession.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", { [state] pid in try state.spawned(firstSession, pid: pid) })
             driver = first
             let answer = try await first.run(question, false)
-            guard first.exited(), answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw Refused.unavailable }
-            try state.exited(session, succeeded: true)
-            let second = try await makeDriver(program, credential, id, session.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", { [state] pid in try state.spawned(session, pid: pid) })
+            guard first.exited(), answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw ClaudeSetupFailure.firstReply }
+            try state.exited(firstSession, succeeded: false)
+            try state.forget(connection: id)
+            let secondSession = try state.session(connection: id, generation: UUID(), hash: "setup")
+            recorded = secondSession
+            stage = .resume
+            let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", { [state] pid in try state.spawned(secondSession, pid: pid) })
             driver = second
             guard first.hash == second.hash else { throw Refused.unavailable }
-            let fresh = try await second.run(question, true)
-            guard second.exited(), fresh?.trimmingCharacters(in: .whitespacesAndNewlines) == "SECOND" else { throw Refused.unavailable }
-            try state.exited(session, succeeded: false)
+            let fresh = try await second.run(question, false)
+            guard second.exited(), fresh?.trimmingCharacters(in: .whitespacesAndNewlines) == "SECOND" else { throw ClaudeSetupFailure.resume }
+            try state.exited(secondSession, succeeded: false)
             let home = support.appendingPathComponent("brains/read-homes/" + id.uuidString)
             if FileManager.default.fileExists(atPath: home.path) { try FileManager.default.removeItem(at: home) }
             try state.setAccount(nil); try connections.disableAll()
+            stage = .keychain
             try secrets.replace(credential)
+            stage = .unavailable
             try state.setAccount(.init(program: program, hash: second.hash))
         } catch {
             driver?.stop()
-            if driver?.exited() != false { try? state.exited(session, succeeded: false) }
-            throw Refused.unavailable
+            if driver?.exited() != false { try? state.exited(recorded, succeeded: false) }
+            throw ClaudeSetupFailure.classify(error, stage: stage)
         }
     }
 
@@ -228,6 +249,9 @@ public actor ClaudeConversationRuntime {
         guard active[scope.id] == nil, preparing.isEmpty, !configuring else { throw Refused.busy }
         guard let account = try state.account(), let credential = try secrets.read() else { throw Refused.notConnected }
         _ = try currentFolder(scope)
+        // Native resume retains the old appended system prompt. Rebuild each turn from the durable app
+        // history and current scoped source pack, so native cache can never freeze prior binder state.
+        try await fence(scope.id)
         preparing.insert(scope.id); defer { preparing.remove(scope.id) }
         let session = try state.session(connection: scope.id, generation: scope.generation, hash: account.hash)
         guard case .reserved(let lease) = await admission.reserve(sessionID: session.native, kind: .conversation) else { throw Refused.busy }
@@ -274,7 +298,7 @@ public actor ClaudeConversationRuntime {
             // change its binary hash without disconnecting the person's enabled account.
             _ = try currentFolder(scope)
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
-            let result = try await made.run(record.text, session.resumed)
+            let result = try await made.run(record.text, false)
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
