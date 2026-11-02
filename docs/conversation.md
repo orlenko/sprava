@@ -366,7 +366,9 @@ done", "send the binder to this address") is contained by:
 5. Every class A batch is one Undo, a turn over the caps shows first, and every report names what was added.
 6. Everything a model or a document wrote (answers, reports, task drafts, the brief, previews) is shown as
    inert text with no remote loads (binder-v0 §3.4); a draft's Markdown or RTF is never rendered actively,
-   and opening it in another app is the person's explicit action with a warning.
+   and opening it in another app is the person's explicit action with a warning. One exception, decisions.md
+   D30: a chat reply draws its headings, lists, bold, italics, code and links. It still loads nothing, and a link
+   does something only when the person clicks it.
 
 ### 6.3 Undo
 

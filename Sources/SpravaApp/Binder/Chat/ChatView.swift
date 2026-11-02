@@ -2,8 +2,8 @@ import AppKit
 import Services
 import SwiftUI
 
-/// The conversation drawn on a binder's page: the thread, then the composer (conversation.md §3.1). Every text is
-/// shown as plain text, never as Markdown or a link, so a reply or a saved line cannot load anything.
+/// The conversation drawn on a binder's page: the thread, then the composer (conversation.md §3.1). The person's lines are
+/// plain text; Claude's are drawn by `ReplyText`, which loads nothing by itself.
 struct ChatView: View {
     private struct Geometry: Equatable {
         let atBottom: Bool
@@ -122,12 +122,24 @@ private struct EntryView: View {
             Text(entry.speaker == .person ? "You" : "Claude")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if !entry.text.isEmpty {
-                Text(verbatim: entry.text)
-                    .font(.system(size: 14))
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .background(entry.speaker == .person ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
-                                in: RoundedRectangle(cornerRadius: 8))
+                Group {
+                    if entry.speaker == .person {
+                        Text(verbatim: entry.text).font(.system(size: 14)).textSelection(.enabled)
+                    } else {
+                        ReplyText(text: entry.text, folder: chat.folder)
+                    }
+                }
+                .padding(8)
+                .background(entry.speaker == .person ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: 8))
+                if entry.speaker != .person, entry.state != .replying {
+                    // Selecting stops at the end of each block, so a whole reply is copied here.
+                    Button("Copy reply") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(entry.text, forType: .string)
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
             }
             if let activity = entry.activity {
                 Label { Text(verbatim: activity) } icon: { ProgressView().controlSize(.small) }

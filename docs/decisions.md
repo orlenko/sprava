@@ -410,6 +410,12 @@
 
 Each line names what replaced the entry; its old text is in git history.
 
+- **D30 decided (2026-11-02, by the author).** A chat reply is drawn from a small subset of Markdown, by Sprava's own
+  parser and Foundation's inline Markdown, with no outside package: headings, bullet and numbered lists, code, bold,
+  italics and links. The author asked that links be clickable. Nothing loads by itself: an image stays its alt text. A
+  click opens only `http`, `https` and `mailto`, or shows a file inside this binder in Finder, never running it; any other
+  link stays plain words. A web link that shows other words also shows its host, because a reply can repeat what a
+  document told the model to write. The person's own lines, drafts and previews stay plain text.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
