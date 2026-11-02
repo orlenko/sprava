@@ -17,7 +17,7 @@ may hold only the docs, and the commands under "Build and test" need the code la
    summary, plus the outside watcher (docs/manual-checks.md lists the checks that need a person).
 3. Adoption in place, the op log with the transaction guard, review cards, undo, the hub lane, the
    DASHBOARD.md switch, the manual addendum and the doctor.
-4. Claude Code over MCP, proposing only, and the Brains screen.
+4. MCP server and proposal tools; external-client registration is retired (D29). Assistant connects Claude inside Sprava.
 5. The capture inbox: notes, however their text was produced, become code-built cards within a minute;
    files in a binder's `intake/` become filing cards.
 6. The clerk: Apple's on-device model splits, dates and files notes, checked by code.

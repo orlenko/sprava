@@ -58,29 +58,3 @@ import Testing
         #expect(state["result"]?["structuredContent"]?["state"] == .str("applied"))
     }
 }
-
-@Suite struct ClientRegistrationTests {
-    @Test func registerListRevokeThroughCommands() throws {
-        let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-reg-\(UUID().uuidString)")
-        let c = Commands(support: support, deviceID: "t")
-        func call(_ f: [(String, JSONValue)]) throws -> JSONValue { try JSONParser.parse(c.handle(JSONWriter.compact(.obj(f)))).value }
-        let r = try call([("command", .str("register_client")), ("client_id", .str("claude-code-1")),
-                          ("binders", .obj([("/tmp/x/estate-example", .str("propose"))]))])
-        let token = try #require(r["token"]?.stringValue)
-        #expect(!(try String(contentsOf: MCPClients.url(support), encoding: .utf8)).contains(token))   // only the hash is kept
-        #expect(try call([("command", .str("list_clients"))])["clients"]?.arrayValue?.count == 1)
-        // Registering the same client again renews it with the new scope instead of failing.
-        let renewed = try call([("command", .str("register_client")), ("client_id", .str("claude-code-1")),
-                                ("binders", .obj([("/tmp/x/acme-example", .str("propose"))]))])
-        let newToken = try #require(renewed["token"]?.stringValue)
-        let listed = try #require(try call([("command", .str("list_clients"))])["clients"]?.arrayValue)
-        #expect(listed.count == 1)
-        #expect(listed.first?["binders"] == .obj([("/tmp/x/acme-example", .str("propose"))]))
-        #expect(try MCPClients.load(support).authenticate(clientID: "claude-code-1", token: token) == nil)
-        #expect(try MCPClients.load(support).authenticate(clientID: "claude-code-1", token: newToken) != nil)
-        #expect(try call([("command", .str("register_client")), ("client_id", .str("x")), ("binders", .obj([("relative", .str("propose"))]))])["ok"] == .bool(false))
-        _ = try call([("command", .str("revoke_client")), ("client_id", .str("claude-code-1"))])
-        #expect(try call([("command", .str("list_clients"))])["clients"]?.arrayValue?.isEmpty == true)
-        #expect(try MCPClients.load(support).authenticate(clientID: "claude-code-1", token: token) == nil)
-    }
-}

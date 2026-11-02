@@ -138,3 +138,8 @@ restart. Disconnecting stops future sharing but cannot recall information alread
 Removing/offloading a binder fences its Claude and importer before the app acknowledges that change.
 These paths have invented-data fixture coverage; real server credentials, the final installed app launch
 and each machine's subscription/account verification are exercised by the person, not unattended tests.
+
+Older builds could register Sprava in personal Claude Code sessions. That setup is retired (D29): opening
+Assistant revokes its old access and explains how to identify a leftover entry for manual removal. Sprava
+leaves personal profile files untouched. The Claude setup described above connects only the assistant inside
+Sprava; your own Claude Code sessions can open a binder folder directly.
