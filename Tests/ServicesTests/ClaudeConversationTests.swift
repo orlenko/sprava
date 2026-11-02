@@ -142,6 +142,24 @@ import Testing
         #expect(result["task"] == .null && result["draft"] == .null)
         #expect(ClaudeBinderContext.searchTerms("which by law talks about pet regulations").contains("pets"))
     }
+    @Test func anObjectAfterProseIsTheAnswerAndKeepsItsTaskAndCitations() throws {
+        let source = ClaudeBinderContext.Source(id: "S1", path: "documents/bylaw.txt", page: 2, revision: "r1", text: "Pets.")
+        let object = #"{"answer":"Invented short answer","citations":["S1"],"task":{"title":"Book the invented inspection","details":"","due":"2031-02-03","priority":"high"},"draft":null}"#
+        for raw in ["**Invented** long answer\n\n- one\n\n" + object, "Prose first.\n```json\n" + object + "\n```",
+                    #"A quoted {"answer":"not this one"} and then: "# + object] {
+            let result = try JSONParser.parse(ClaudeBinderReply.normalize(raw, sources: [source])).value
+            #expect(result["answer"]?.stringValue == "Invented short answer")
+            #expect(result["citations"]?.arrayValue?.count == 1)
+            #expect(result["task"]?["title"]?.stringValue == "Book the invented inspection")
+        }
+        // An object inside the answer's own text stays text.
+        let inner = #"{"answer":"It said {\"answer\":\"quoted\"} once","citations":[],"task":null,"draft":null}"#
+        #expect(try JSONParser.parse(ClaudeBinderReply.normalize(inner, sources: [])).value["answer"]?.stringValue == #"It said {"answer":"quoted"} once"#)
+        // Prose with no whole object at its end is shown as it is, never lost.
+        for raw in ["Only prose.", #"Cut off: {"answer":"half"#, #"Object first {"answer":"x"} and more words"#] {
+            #expect(try JSONParser.parse(ClaudeBinderReply.normalize(raw, sources: [])).value["answer"]?.stringValue == raw)
+        }
+    }
     final class SourceReader: DocumentReader, @unchecked Sendable {
         let lock = NSLock()
         private var seen: [String] = []

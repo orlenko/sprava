@@ -5,10 +5,8 @@ import SpravaKit
 /// runtime may become citation paths. The app separately confirms any editable task suggestion.
 enum ClaudeBinderReply {
     static func normalize(_ raw: String, sources: [ClaudeBinderContext.Source]) -> String {
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("```json\n"), text.hasSuffix("```") { text = String(text.dropFirst(8).dropLast(3)) }
-        guard let parsed = try? JSONParser.parse(text), parsed.safety.isSafe,
-              let object = parsed.value.objectValue, let answer = object["answer"]?.stringValue, !answer.isEmpty else {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let object = answerObject(text) ?? answerObjectAfterProse(text), let answer = object["answer"]?.stringValue else {
             return JSONWriter.compact(.obj([("answer", .str(raw)), ("citations", .array([])), ("task", .null), ("draft", .null)]))
         }
         let ids = object["citations"]?.arrayValue?.compactMap(\.stringValue) ?? []
@@ -38,6 +36,27 @@ enum ClaudeBinderReply {
             draft = .obj([("to", .str(to)), ("subject", .str(subject)), ("body", .str(body)), ("recipient_in_sources", .bool(grounded))])
         } else { draft = .null }
         return JSONWriter.compact(.obj([("answer", .str(answer)), ("citations", .array(citations)), ("task", task), ("draft", draft)]))
+    }
+    private static func answerObject(_ text: String) -> JSONObject? {
+        var text = text
+        if text.hasPrefix("```json\n"), text.hasSuffix("```") { text = String(text.dropFirst(8).dropLast(3)) }
+        guard let parsed = try? JSONParser.parse(text), parsed.safety.isSafe, let object = parsed.value.objectValue,
+              object["answer"]?.stringValue?.isEmpty == false else { return nil }
+        return object
+    }
+    /// A model that has used tools can write its answer as prose and end with the object it was asked for. The object is the
+    /// answer: it alone carries the citations, task and draft. A nearer `{"answer"` inside a string would be escaped, so
+    /// the first one, from the end, that parses through to the end of the text is the object. Only a few are tried.
+    private static func answerObjectAfterProse(_ text: String) -> JSONObject? {
+        var end = text.endIndex
+        for _ in 0..<8 {
+            guard let start = text.range(of: #"{"answer""#, options: .backwards, range: text.startIndex..<end) else { return nil }
+            var tail = String(text[start.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if tail.hasSuffix("```") { tail = String(tail.dropLast(3)) }
+            if let object = answerObject(tail) { return object }
+            end = start.lowerBound
+        }
+        return nil
     }
     private static func valid(_ text: String, limit: Int, oneLine: Bool, empty: Bool = false) -> Bool {
         guard text.utf8.count <= limit, empty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
