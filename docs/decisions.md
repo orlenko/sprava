@@ -399,7 +399,10 @@
   own Claude Code with their own token is to be settled before Sprava is offered to others.
 - **D29 decided (2026-10-30).** The Brains page no longer registers Sprava in the person's own Claude Code. A
   person's own session can open a binder folder directly; the registration added a token to manage per Claude
-  profile and nothing a folder does not give.
+  profile and nothing a folder does not give. App and CLI registration/grant paths are removed. Opening
+  Assistant revokes the old fixed client capability. Personal Claude config files stay untouched because
+  the old installer recorded no profile or entry provenance; Assistant explains manual entry identification.
+  The private in-app Claude setup and the MCP server/runtime sessions for agent tools remain.
 
 ## Retired
 

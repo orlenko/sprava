@@ -1,6 +1,5 @@
 import BinderFormat
 import BinderStore
-import Brains
 import Capture
 import Foundation
 import Hub
@@ -28,18 +27,6 @@ func dev(_ args: [String]) {
             let at = args.count == 3 ? (Timestamp.parse(args[2]) ?? Date()) : Date()
             let (slice, _) = try HubLane.project(catalog: catalog, folderName: folder.lastPathComponent, closedOnce: [], key: key, now: at)
             print(JSONWriter.pretty(slice), terminator: "")
-        } catch {
-            fail("\(error)", code: 1)
-        }
-        return
-    case "brain":
-        // Register a brain client with propose access to this one binder; prints the token once.
-        guard args.count == 3 else { fail(usage) }
-        do {
-            var clients = try MCPClients.load(support)
-            let token = try clients.register(id: args[2], name: args[2], binders: [folder.path: "propose"])
-            try clients.save(support)
-            print(token)
         } catch {
             fail("\(error)", code: 1)
         }

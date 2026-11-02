@@ -32,9 +32,9 @@ import Testing
         let c = commands()
         let (a, _) = try readyBinder(c)
         let (b, _) = try createdBinder(c)
-        _ = try call(c, [("command", .str("register_client")), ("client_id", .str("c1")), ("binders", .obj([(a.path, .str("propose"))]))])
+        _ = try legacyClient(c, id: "c1", binders: [a.path: "propose"])
         _ = try call(c, [("command", .str("revoke_client")), ("client_id", .str("c1"))])
-        _ = try call(c, [("command", .str("register_client")), ("client_id", .str("c1")), ("binders", .obj([(b.path, .str("propose"))]))])
+        _ = try legacyClient(c, id: "c1", binders: [b.path: "propose"])
         let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("sprava/0.1")), (key: "model", value: .str("c1"))])
         let card = Proposal.make(title: "x", actor: brain, ops: [body("add_log_entry", .obj([("entry", .obj([("action", .str("noted"))]))]))], now: now)
         try ProposalStore.save(card, in: b)
@@ -46,8 +46,7 @@ import Testing
     @Test func anOversizedProposalCollectionDoesNotPreventRevocationOrReportWithdrawal() throws {
         let c = commands()
         let (folder, _) = try readyBinder(c)
-        _ = try call(c, [("command", .str("register_client")), ("client_id", .str("invented-client")),
-                         ("binders", .obj([(folder.path, .str("propose"))]))])
+        _ = try legacyClient(c, id: "invented-client", binders: [folder.path: "propose"])
         let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "model", value: .str("invented-client"))])
         let card = Proposal.make(title: "Invented card", actor: brain, ops: [], now: now)
         try ProposalStore.save(card, in: folder)
@@ -68,8 +67,7 @@ import Testing
     @Test func aWithdrawalThatCannotBeSavedIsReportedAndCanBeRetried() throws {
         let c = commands()
         let (folder, _) = try readyBinder(c)
-        _ = try call(c, [("command", .str("register_client")), ("client_id", .str("invented-client")),
-                         ("binders", .obj([(folder.path, .str("propose"))]))])
+        _ = try legacyClient(c, id: "invented-client", binders: [folder.path: "propose"])
         let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "model", value: .str("invented-client"))])
         let card = Proposal.make(title: "Invented card", actor: brain, ops: [], now: now)
         try ProposalStore.save(card, in: folder)
@@ -93,8 +91,7 @@ import Testing
         let foreign = try makeTeka(fixture: "sprava-v0")
         _ = try TekaStore(folder: foreign).adopt(survey: JSONObject(),
             owner: JSONObject([(key: "device", value: .str("invented-other-device"))]), now: now)
-        _ = try call(c, [("command", .str("register_client")), ("client_id", .str("invented-client")),
-                         ("binders", .obj([(owned.path, .str("propose")), (foreign.path, .str("propose"))]))])
+        _ = try legacyClient(c, id: "invented-client", binders: [owned.path: "propose", foreign.path: "propose"])
         let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "model", value: .str("invented-client"))])
         let ownCard = Proposal.make(title: "Invented local card", actor: brain, ops: [], now: now)
         let foreignCard = Proposal.make(title: "Invented foreign card", actor: brain, ops: [], now: now)
