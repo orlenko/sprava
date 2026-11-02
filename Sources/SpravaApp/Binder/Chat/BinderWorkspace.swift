@@ -17,6 +17,14 @@ final class BinderWorkspaceSelection: ObservableObject {
     func choose(_ surface: Surface, for folder: URL) {
         choices[folder.standardizedFileURL] = surface
     }
+
+    /// Which binders are showing their settings instead of their working page.
+    @Published private var settings: Set<URL> = []
+    func showsSettings(_ folder: URL) -> Bool { settings.contains(folder.standardizedFileURL) }
+    func toggleSettings(_ folder: URL) {
+        let key = folder.standardizedFileURL
+        if settings.remove(key) == nil { settings.insert(key) }
+    }
 }
 
 /// Conversation and Project side by side, Project in about a third of the width; one at a time, with a switch between

@@ -138,28 +138,6 @@ struct HistorySection: View {
 
 /// The bottom of the page, closed until opened: what the binder is about, which helps Sprava route notes from
 /// the Inbox and the phone (the filing list, mvp.md feature 1), and the files Sprava keeps in its folder.
-struct AboutSection: View {
-    @ObservedObject var actions: BinderActions
-    let folder: URL
-    let today: CalendarDate
-    let reload: () -> Void
-
-    var body: some View {
-        Section {
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 10) {
-                    RoutingRows(actions: actions, folder: folder)
-                    Divider()
-                    KeepingRows(actions: actions, folder: folder, today: today, reload: reload)
-                }
-                .padding(.vertical, 4)
-            } label: {
-                Text("About this binder").font(.headline)
-            }
-        }
-    }
-}
-
 /// The binder's line and whether notes from elsewhere may be filed here; both stay in Sprava's own settings.
 struct RoutingRows: View {
     @ObservedObject var actions: BinderActions
