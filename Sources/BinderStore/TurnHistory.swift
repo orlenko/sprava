@@ -96,6 +96,8 @@ public struct TurnHistory: Sendable {
     /// New bytes one record may copy and hash; past it the record is refused, and the turn runs with no tools.
     static let maximumRecordBytes: Int64 = 20 << 30
     static let maximumCatalogBytes = 64 << 20
+    /// Above this, in all, a file's attributes put it with the very large files: a resource fork can be any size.
+    static let maximumAttributeBytes = 64 << 20
     let root: URL
     var blobs: URL { root.appendingPathComponent("blobs", isDirectory: true) }
     var entries: URL { root.appendingPathComponent("entries", isDirectory: true) }
@@ -167,8 +169,9 @@ public struct TurnHistory: Sendable {
         guard let bytes = safeCatalog(folder) else { return false }
         guard !bytes.isEmpty else { return true }
         guard let text = String(data: bytes, encoding: .utf8), let parsed = try? JSONParser.parse(text), parsed.safety.isSafe else { return false }
-        let filed = Set((parsed.value["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue })
-        return !entry.changes.contains { $0.before == nil && filed.contains($0.path) }
+        // Folded, as the writer compares them: on most volumes Report.txt and report.txt are one file.
+        let filed = Set((parsed.value["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue }.map(DocumentPaths.fold))
+        return !entry.changes.contains { $0.before == nil && filed.contains(DocumentPaths.fold($0.path)) }
     }
 
     /// The catalog's bytes, empty when there is none, nil when what is there cannot be read as an ordinary bounded file: a
@@ -288,7 +291,7 @@ public struct TurnHistory: Sendable {
             return item
         }
         if DocumentPaths.isKeyFile(path) { item.kind = .key; return item }
-        if item.size > Self.maximumFileBytes { item.kind = .large; return item }
+        if item.size > Self.maximumFileBytes || Self.attributeBytes(of: url) > Self.maximumAttributeBytes { item.kind = .large; return item }
         // Same size, time and inode: the bytes were kept when this file was last read.
         if let known, known.kind == .file, known.size == item.size, known.modified == modified, known.changed == changed, known.inode == item.inode,
            let sha = known.sha256, FileManager.default.fileExists(atPath: blob(sha).path) {
@@ -309,11 +312,14 @@ public struct TurnHistory: Sendable {
         do { try manager.copyItem(at: url, to: staged) } catch { throw Refused.unreadable(path) }
         guard chmod(staged.path, 0o600) == 0, let handle = try? FileHandle(forReadingFrom: staged) else { throw Refused.unreadable(path) }
         defer { try? handle.close() }
-        var hash = SHA256()
+        var data = SHA256()
         while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
             guard !cancelled() else { throw Refused.cancelled }
-            hash.update(data: chunk)
+            data.update(data: chunk)
         }
+        // The bytes' hash and each attribute's lengths come first, so no file and attributes can read as another's.
+        var hash = SHA256()
+        hash.update(data: Data(data.finalize()))
         Self.hashAttributes(of: staged, into: &hash)
         let sha = hash.finalize().map { String(format: "%02x", $0) }.joined()
         let target = blob(sha)
@@ -322,25 +328,34 @@ public struct TurnHistory: Sendable {
         return sha
     }
 
-    /// A file's identity includes what the person keeps in its extended attributes: Skim's annotations live there, as do
-    /// resource forks and Finder tags, and the clone keeps them. macOS's own bookkeeping, such as when a file was last opened
-    /// or where it was downloaded from, is not a change.
+    /// A file's identity includes what is kept in its extended attributes: Skim's annotations live there, as do resource
+    /// forks, Finder tags and comments, and the clone keeps them. Only attributes known to be macOS's own bookkeeping are left
+    /// out, so that opening or downloading a file is not a change.
     static func countsAsContent(_ attribute: String) -> Bool {
-        !attribute.hasPrefix("com.apple.") || attribute == "com.apple.ResourceFork" || attribute == "com.apple.metadata:_kMDItemUserTags"
+        !["com.apple.lastuseddate#PS", "com.apple.quarantine", "com.apple.provenance", "com.apple.macl",
+          "com.apple.metadata:kMDItemDownloadedDate", "com.apple.metadata:kMDItemWhereFroms"].contains(attribute)
+    }
+
+    private static func attributeNames(of url: URL) -> [String] {
+        let size = listxattr(url.path, nil, 0, XATTR_NOFOLLOW)
+        guard size > 0 else { return [] }
+        var names = [CChar](repeating: 0, count: size)
+        guard listxattr(url.path, &names, size, XATTR_NOFOLLOW) == size else { return [] }
+        return names.split(separator: 0).map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }.filter(countsAsContent).sorted()
+    }
+
+    private static func attributeBytes(of url: URL) -> Int {
+        attributeNames(of: url).reduce(0) { $0 + max(0, getxattr(url.path, $1, nil, 0, 0, XATTR_NOFOLLOW)) }
     }
 
     private static func hashAttributes(of url: URL, into hash: inout SHA256) {
-        let size = listxattr(url.path, nil, 0, XATTR_NOFOLLOW)
-        guard size > 0 else { return }
-        var names = [CChar](repeating: 0, count: size)
-        guard listxattr(url.path, &names, size, XATTR_NOFOLLOW) == size else { return }
-        let all = names.split(separator: 0).map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
-        for name in all.filter(countsAsContent).sorted() {
+        func add(_ bytes: Data) { hash.update(data: withUnsafeBytes(of: UInt64(bytes.count).littleEndian) { Data($0) }); hash.update(data: bytes) }
+        for name in attributeNames(of: url) {
             let length = getxattr(url.path, name, nil, 0, 0, XATTR_NOFOLLOW)
-            guard length >= 0 else { continue }
+            guard length >= 0, length <= maximumAttributeBytes else { continue }
             var value = [UInt8](repeating: 0, count: length)
             guard getxattr(url.path, name, &value, length, 0, XATTR_NOFOLLOW) == length else { continue }
-            hash.update(data: Data(name.utf8)); hash.update(data: [0]); hash.update(data: value)
+            add(Data(name.utf8)); add(Data(value))
         }
     }
 

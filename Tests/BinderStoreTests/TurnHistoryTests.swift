@@ -162,6 +162,43 @@ private func temporaryFolder() throws -> URL {
         return got < 0 ? nil : String(decoding: buffer.prefix(got), as: UTF8.self)
     }
 
+    @Test func aFileAndAttributesCannotReadAsAnotherFile() throws {
+        let f = try Fixture()
+        try f.write("plain", "a.txt"); set("saved note", attribute: "user.note", on: "a.txt", in: f)
+        try f.write("plainuser.note\u{0}saved note", "b.txt")
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.remove("a.txt"); try f.remove("b.txt")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(f.read("a.txt") == "plain" && attribute("user.note", on: "a.txt", in: f) == "saved note")
+        #expect(f.read("b.txt") == "plainuser.note\u{0}saved note" && attribute("user.note", on: "b.txt", in: f) == nil)
+    }
+
+    @Test func aFiledPathInAnotherSpellingIsStillFiled() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[]}", "catalog.json"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("Invented report", "documents/Report.txt")
+        try f.history.record(f.folder, turn: turn)
+        try f.write("{\"documents\":[{\"path\":\"documents/report.txt\"}]}", "catalog.json")
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(f.read("documents/Report.txt") == "Invented report")
+    }
+
+    @Test func aHugeAttributeIsTrackedByNameNotRead() throws {
+        let f = try Fixture()
+        try f.write("small", "fork.bin")
+        let size = TurnHistory.maximumAttributeBytes + 1
+        let value = [UInt8](repeating: 7, count: size), url = f.folder.appendingPathComponent("fork.bin")
+        let wrote = setxattr(url.path, "com.apple.ResourceFork", value, size, 0, 0)
+        try #require(wrote == 0 || errno == E2BIG || errno == ENOTSUP) // Not every volume holds one this size.
+        try f.history.record(f.folder)
+        if wrote == 0 {
+            #expect(try FileManager.default.subpathsOfDirectory(atPath: f.history.blobs.path).filter { $0.contains("/") }.isEmpty)
+        }
+    }
+
     @Test func anAnnotationAddedAfterATurnIsAConflictNotErased() throws {
         let f = try Fixture()
         try f.history.record(f.folder)
@@ -191,6 +228,7 @@ private func temporaryFolder() throws -> URL {
         set("opened", attribute: "com.apple.lastuseddate#PS", on: "notes.md", in: f)
         #expect(try f.history.record(f.folder, turn: UUID()) == nil)
         #expect(TurnHistory.countsAsContent("com.apple.ResourceFork") && TurnHistory.countsAsContent("com.apple.metadata:_kMDItemUserTags"))
+        #expect(TurnHistory.countsAsContent("com.apple.metadata:kMDItemFinderComment"))
         #expect(!TurnHistory.countsAsContent("com.apple.quarantine"))
     }
 
