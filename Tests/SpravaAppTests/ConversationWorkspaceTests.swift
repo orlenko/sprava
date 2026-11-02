@@ -98,6 +98,13 @@ import Testing
         (root as? T).map { [$0] } ?? root.subviews.flatMap { descendants($0, of: type) }
     }
 
+    @Test func copyingAndSavingTakeOnlyOneSmallControlInTheHeader() async throws {
+        let model = try await fixture()
+        let host = NSHostingView(rootView: ConversationSharingControls(model: model, sharing: model.sharing, folder: folder))
+        host.layoutSubtreeIfNeeded()
+        #expect(host.fittingSize.width <= 44)
+    }
+
     @Test func nativeTranscriptGrowsWithTheWindowAndTheComposerStaysReachable() async throws {
         let model = try await fixture()
         let selection = BinderWorkspaceSelection()

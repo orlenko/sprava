@@ -127,16 +127,22 @@ private struct ConversationCard: View {
     }
 }
 
-private struct ConversationSharingControls: View {
+struct ConversationSharingControls: View {
     @ObservedObject var model: ClaudeBinderConversation
     @ObservedObject var sharing: ConversationSharing
     let folder: URL
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            HStack {
+            Menu {
                 Button("Copy conversation") { share(.clipboard) }
                 Button("Save transcript…") { share(.file) }
-            }.disabled(sharing.busy || model.folder != folder || model.chat.folder != folder)
+            } label: {
+                Image(systemName: "ellipsis").foregroundStyle(.secondary).frame(width: 24, height: 24).contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .help("Copy or save this conversation")
+            .accessibilityLabel("Copy or save this conversation")
+            .disabled(sharing.busy || model.folder != folder || model.chat.folder != folder)
             if sharing.busy { ProgressView().controlSize(.small) }
             if let message = sharing.message { Text(verbatim: message).font(.caption).foregroundStyle(.secondary) }
         }
