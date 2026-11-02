@@ -154,7 +154,14 @@ final class ItemEditor: ObservableObject, DraftOwner {
 
     func setDetails(_ value: String, in folder: URL) { edit(in: folder) { $0.details = value } }
     func setPriority(_ value: Priority, in folder: URL) { edit(in: folder) { $0.priority = value } }
-    func setStatus(_ value: ItemStatus, in folder: URL) { edit(in: folder) { $0.status = value; $0.dateTyped = nil; $0.unreadDate = false } }
+    func setStatus(_ value: ItemStatus, in folder: URL) {
+        // Text it cannot read stays until a date replaces it. Text it could read is the row's date already, and a change of
+        // status can change which date the field shows.
+        edit(in: folder) { row in
+            row.status = value
+            if !row.unreadDate { row.dateTyped = nil }
+        }
+    }
     func setWaitingOn(_ value: String, in folder: URL) { edit(in: folder) { $0.waitingOn = value } }
     func setFollowUp(_ value: CalendarDate?, in folder: URL) {
         edit(in: folder) { $0.followUp = value; $0.dateTyped = nil; $0.unreadDate = false }

@@ -74,9 +74,11 @@ import Testing
     @Test func whatChangesWhileTheRuntimeWritesStaysForTheNextToDo() async throws {
         let runtime = StandInRuntime()
         let model = TodoModel(client: runtime.client), target = TodoModel.Target(folder: folder, label: "acme")
+        let other = URL(fileURLWithPath: "/invented/other")
         runtime.answers["apply"] = { _ in
             model.dueText = "fri"
             model.priority = .low
+            model.binder = other
             return #"{"ok":true,"op":"0199ffff-0000-7000-8000-000000000001"}"#
         }
         model.draft = "Call the plumber\nBook the van"; model.dueText = "tomorrow"; model.priority = .high
@@ -86,7 +88,7 @@ import Testing
             #expect(sent["args"]?["item"]?["due"] == .str("2031-02-05") && sent["args"]?["item"]?["priority"] == .str("high"))
         }
         #expect(runtime.sent.count == 2)
-        #expect(model.draft.isEmpty && model.dueText == "fri" && model.priority == .low)
+        #expect(model.draft.isEmpty && model.dueText == "fri" && model.priority == .low && model.binder == other)
     }
 
     @Test func aDateItCannotReadAddsNothingAndKeepsWhatWasTyped() async {
@@ -173,6 +175,16 @@ import Testing
 
         // What was typed outlasts the field: a redraw reads it back, and it still stops a save.
         #expect(editor.dateFieldText(in: folder, today: today) == "tomorrowx")
+        // A change of status does not clear it either; only a date does.
+        editor.setStatus(.waiting, in: folder)
+        editor.setWaitingOn("Invented office", in: folder)
+        editor.setFollowUp(today.adding(days: 3), in: folder)
+        #expect(editor.row(in: folder)?.unreadDate == false)
+        editor.setStatus(.open, in: folder)
+        editor.setDateText("tomorrowx", today: today, in: folder)
+        editor.setStatus(.waiting, in: folder)
+        #expect(editor.row(in: folder)?.unreadDate == true && editor.row(in: folder)?.validation != nil)
+        editor.setStatus(.open, in: folder)
 
         editor.setDateText("", today: today, in: folder)
         #expect(editor.row(in: folder)?.due == nil && editor.row(in: folder)?.validation == nil)
