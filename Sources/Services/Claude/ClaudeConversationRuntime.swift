@@ -336,9 +336,13 @@ public actor ClaudeConversationRuntime {
     /// What the turn changed, whether or not it finished. Runs before the turn's phase is reported, so the reply and its
     /// summary line arrive together. A second call for one turn finds nothing more and leaves the first entry.
     private func recordTurn(_ record: ConversationTurnStore.Record, scope: ClaudeReadConnections.Connection, history: TurnHistory) async {
-        guard let folder = try? connections.currentFolder(scope), (try? history.entry(forTurn: record.turnID)) == nil else { return }
+        guard (try? history.entry(forTurn: record.turnID)) == nil else { return }
         let turn = record.turnID
-        await Task.detached(priority: .userInitiated) { _ = try? history.record(folder, turn: turn) }.value
+        // A folder that cannot be found now is one more way to have no record, and the conversation says so.
+        guard let folder = try? connections.currentFolder(scope) else { try? history.noteUnrecorded(turn: turn); return }
+        await Task.detached(priority: .userInitiated) {
+            do { try history.record(folder, turn: turn) } catch { try? history.noteUnrecorded(turn: turn) }
+        }.value
     }
 
     private func fence(_ id: UUID) async throws {
@@ -381,7 +385,7 @@ public actor ClaudeConversationRuntime {
         var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
               ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
         if let entry = try? TurnHistory(support: support, binder: r.conversationID).entry(forTurn: r.turnID) {
-            fields.append(("changes", .obj([("summary", .str(entry.summary)), ("undone", .bool(entry.undone))])))
+            fields.append(("changes", .obj([("summary", .str(entry.summary)), ("undone", .bool(entry.undone)), ("undoable", .bool(!entry.unrecorded))])))
         }
         return .obj(fields)
     }
