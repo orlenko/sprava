@@ -19,6 +19,13 @@ final class BinderLocationSettings: ObservableObject {
         }
     }
 
+    /// General establishes the fresh-install default only after the runtime has created it.
+    func useIfUnset(_ parent: URL) {
+        guard folder == nil else { return }
+        defaults.set(parent.path, forKey: Self.key)
+        folder = parent
+    }
+
     func choose() {
         guard let selected = chooseFolder(folder), selected.isFileURL else { return }
         let normalized = selected.standardizedFileURL
