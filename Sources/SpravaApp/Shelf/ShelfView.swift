@@ -346,6 +346,7 @@ struct ShelfView: View {
     @ObservedObject var model: ShelfModel
     @Environment(\.openSettings) private var openSettings
     @StateObject private var inbox = InboxModel()
+    @StateObject private var binderTodos = BinderTodoModels()
     @StateObject private var todo = TodoModel()
     @StateObject private var brains = BrainsModel()
     @StateObject private var backup = BackupModel()
@@ -410,7 +411,7 @@ struct ShelfView: View {
                 if model.selection == healthSelection {
                     HealthView(model: model.health)
                 } else if model.selection == todosSelection {
-                    TodosView(model: todo, board: model.todos, rows: model.rows, open: { model.selection = $0 },
+                    TodosView(model: todo, editor: itemEditor, board: model.todos, rows: model.rows, open: { model.selection = $0 },
                               reload: { await model.refreshAndWait(afterChanges: true) })
                 } else if model.selection == inboxSelection {
                     InboxView(model: inbox, rows: model.rows)
@@ -423,7 +424,7 @@ struct ShelfView: View {
                             page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
                             reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation,
                             openBrains: { model.selection = brainsSelection }, actions: binderActions,
-                            documents: model.documents.model(for: row.folder), workspace: binderWorkspace)
+                            documents: model.documents.model(for: row.folder), todoAdd: binderTodos.model(for: row.folder), workspace: binderWorkspace)
                 } else {
                     ContentUnavailableView {
                         Label("No binders yet", systemImage: "books.vertical")
@@ -446,7 +447,7 @@ struct ShelfView: View {
         .onAppear {
             model.openSettings = { [openSettings] in openSettings() }
             drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
-            drafts.track(binderActions); drafts.track(binderConversation)
+            drafts.track(binderTodos); drafts.track(binderActions); drafts.track(binderConversation)
         }
         .task {
             while !Task.isCancelled {
