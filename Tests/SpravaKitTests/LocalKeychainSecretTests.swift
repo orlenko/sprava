@@ -12,6 +12,8 @@ import Testing
         var values: [String: Data] = [:]
         var calls: [(protected: Bool, interactive: Bool, account: String)] = []
         var duplicateOnAdd = false
+        /// As the real data-protection Keychain answers a process without the entitlement: a change is refused, a read finds nothing.
+        var readFindsNothing = false
 
         private func status(_ query: [String: Any]) -> OSStatus {
             let protected = query[kSecUseDataProtectionKeychain as String] as? Bool == true
@@ -27,6 +29,7 @@ import Testing
             .init(read: { query in
                 self.lock.withLock {
                     let status = self.status(query)
+                    if self.readFindsNothing, query[kSecUseDataProtectionKeychain as String] as? Bool == true { return (errSecItemNotFound, nil) }
                     guard status == errSecSuccess else { return (status, nil) }
                     #expect(query[kSecMatchLimit as String] as? String == kSecMatchLimitOne as String)
                     let key = query[kSecAttrAccount as String] as! String
@@ -73,6 +76,15 @@ import Testing
         #expect(keychain.storage().write(nil, account: "account") == errSecSuccess)
         #expect(keychain.storage().read(account: "account").0 == errSecItemNotFound)
         #expect(keychain.calls.contains { !$0.protected })
+        #expect(keychain.calls.allSatisfy { !$0.interactive })
+    }
+
+    @Test func aRestartedAppWithoutTheEntitlementStillFindsItsCredential() {
+        let keychain = Keychain(); keychain.protectedStatus = errSecMissingEntitlement; keychain.readFindsNothing = true
+        let original = Data("invented-token".utf8)
+        #expect(keychain.storage().write(original, account: "account") == errSecSuccess)
+        #expect(keychain.storage().read(account: "account").1 == original)
+        #expect(keychain.storage().read(account: "another-account").0 == errSecItemNotFound)
         #expect(keychain.calls.allSatisfy { !$0.interactive })
     }
 
