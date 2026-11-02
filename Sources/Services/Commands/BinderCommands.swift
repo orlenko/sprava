@@ -153,7 +153,11 @@ extension Commands {
         let proposal = try ProposalStore.load(id, in: f, expectedDigest: recorded)
         let store = TekaStore(folder: f, client: client)
         if command == "approve" {
-            guard proposal.ops.count + (proposal.raw["expect"]?.objectValue?.entries.count ?? 0) <= 500 else {
+            // Applying checks and hashes the whole catalog for each op, so what one approval costs is bounded here.
+            let work = proposal.ops.count + (proposal.raw["expect"]?.objectValue?.entries.count ?? 0)
+            let catalog = Teka.read(f).catalog
+            let rows = (catalog?["open_items"]?.arrayValue?.count ?? 0) + (catalog?["documents"]?.arrayValue?.count ?? 0)
+            guard work <= 500, rows <= 500_000 / max(1, work) else {
                 throw Failure(message: "this card is too large to review safely; nothing was changed")
             }
             // A change the person made on the card that cannot be read refuses the approval: approving the card

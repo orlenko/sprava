@@ -141,6 +141,27 @@ import Testing
         #expect(rejected["ok"] == .bool(true))
     }
 
+    /// Showing a card costs little; applying one goes over the whole catalog for each op, so that stays bounded.
+    @Test func approvingACardStaysBoundedByTheSizeOfTheCatalog() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        let file = folder.appendingPathComponent("catalog.json")
+        var catalog = try #require(try JSONParser.parse(try Data(contentsOf: file)).value.objectValue)
+        let item = try #require(catalog["open_items"]?.arrayValue?.first?.objectValue)
+        catalog.set("open_items", .array((0..<1001).map { n in
+            var copy = item; copy.set("id", .str("invented-\(n)")); return .object(copy)
+        }))
+        try Data(JSONWriter.compact(.object(catalog)).utf8).write(to: file)
+        let id = try invented(c, folder, ops: 500, state: "proposed")
+        let listed = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        let shown = try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .str(id) })
+        let approval = try call(c, [("command", .str("approve")), ("binder", .str(folder.path)), ("proposal", .str(id)),
+                                    ("digest", .str(try #require(shown["digest"]?.stringValue)))])
+        #expect(approval["ok"] == .bool(false) && approval["error"]?.stringValue?.contains("too large") == true)
+        #expect(try ProposalStore.list(in: folder).first { $0.0.id == id }?.0.state == "proposed")
+    }
+
     /// A repair card offers an item's current values, and offers nothing for an item that is gone.
     @Test func aRepairCardOffersTheCurrentValuesOfItsItemsOnly() throws {
         let (c, folder) = try setup()
