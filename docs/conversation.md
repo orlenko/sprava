@@ -1042,6 +1042,15 @@ whatever its size. So:
 The start-up check of 11.1 stays: the person's own hooks, memory files, plugins and settings are never loaded
 into a binder's session.
 
+As built (`ClaudeReadLaunch.sandbox`, `AgentEgressProxy`): the agent has Read, Write, Edit, Glob, Grep and Bash in its
+binder, under a `sandbox-exec` profile, once the person ticks "Let Claude change and delete files" when connecting, which
+needs both sharing choices since the tools can read the whole folder; no earlier connection has this consent, and only a
+binder with it keeps a history. It may read but not write `.sprava`, `catalog.json` and `DASHBOARD.md`. Outbound
+connections are allowed to one loopback port only, Sprava's proxy, which so far passes `api.anthropic.com` and refuses
+every other host, so web access and its domain prompt are still to come. Tools that reach the person's other apps,
+clipboard or Keychain will not run. A key file cannot be read by name but can be deleted, which the summary says Undo
+cannot reverse; renaming one first gets past that name rule. A turn whose changes could not be recorded runs with no tools.
+
 ### 18.4 Undo by version history
 
 Each binder gets a version history kept outside the folder, in Sprava's support folder

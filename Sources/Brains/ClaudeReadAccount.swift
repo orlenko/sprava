@@ -45,7 +45,7 @@ package enum ClaudeReadAccount {
         }
         guard child.finish() else { throw ClaudeReadOnlyTurn.Failure.exitUnconfirmed }
         guard child.successfulExit else { throw Refused.firstPartySubscriptionRequired }
-        try validate(output, expectedConfig: source.directory.appendingPathComponent("config").path)
+        try validate(output, expectedConfig: source.environment["CLAUDE_CONFIG_DIR"] ?? "")
     }
     static func validate(_ data: Data, expectedConfig: String) throws {
         guard data.count <= 64 * 1024, let text = String(data: data, encoding: .utf8),

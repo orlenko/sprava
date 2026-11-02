@@ -22,6 +22,8 @@ import Testing
         var reply = #"{"answer":"The invented bylaw permits pets with permission.","citations":["S1"],"task":{"title":"Ask the board","details":"Request written permission."},"draft":null}"#
         /// What a turn does to the binder while it runs, as the agent's file tools will.
         var act: (@Sendable () -> Void)?
+        /// The folder each launch was given tools in; nil for a tool-free one.
+        var reaches: [URL?] = []
         func driver(policy: String, session: UUID = UUID()) -> ClaudeConversationRuntime.Driver {
             let hash = lock.withLock { policies.append(policy); sessions.append(session); return self.hash }
             let originalPolicy = lock.withLock {
@@ -53,8 +55,9 @@ import Testing
             let engine = Engine(); self.engine = engine
             runtime = try ClaudeConversationRuntime(support: root.appendingPathComponent("support"), secrets: .init(read: {
                 engine.lock.withLock { engine.token }
-            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, session, policy, _ in
-                engine.driver(policy: policy, session: session)
+            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, session, policy, reach, _ in
+                engine.lock.withLock { engine.reaches.append(reach) }
+                return engine.driver(policy: policy, session: session)
             }, context: { folder, documents, intake, query, cancelled in
                 try onRead(folder, cancelled)
                 return .init(data: .obj([("fresh_query", .str(query)), ("documents", .bool(documents)), ("intake", .bool(intake))]),
@@ -76,7 +79,7 @@ import Testing
             }
             throw ClaudeConversationRuntime.Refused.unavailable
         }
-        func connect() async throws { try await configure(); _ = try await request("claude_enable", [("documents", .bool(true)), ("intake", .bool(true))]) }
+        func connect(files: Bool = true) async throws { try await configure(); _ = try await request("claude_enable", [("documents", .bool(true)), ("intake", .bool(true)), ("files", .bool(files))]) }
     }
 
     @Test func enableDoesNotInventAccountOrScopeAndOnlyUsesTheFixedSetupCanary() async throws {
@@ -215,6 +218,48 @@ import Testing
         #expect(try Data(contentsOf: notes) == Data("first".utf8))
         #expect(try Data(contentsOf: old) == Data("unneeded".utf8))
         #expect(try await f.request("chat_poll", [("request_id", .str(id.uuidString))])["changes"]?["undone"] == .bool(true))
+    }
+
+    @Test func aTurnGetsToolsInItsBinderButTheSetupCheckNever() async throws {
+        let f = try Fixture(); try await f.connect()
+        let id = UUID(); _ = try await f.send(id, "Tidy up."); _ = try await f.completed(id)
+        let reaches = f.engine.lock.withLock { f.engine.reaches }
+        #expect(reaches.dropLast().allSatisfy { $0 == nil })
+        #expect(reaches.last??.path == f.folder.path)
+        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("file and shell tools inside this binder") } == true)
+        #expect(f.engine.lock.withLock { f.engine.policies.first?.contains("file and shell tools") } == false)
+    }
+
+    @Test func toolsNeedTheirOwnConsentAndAWithoutToolsTurnKeepsNoCopies() async throws {
+        let f = try Fixture(); try await f.connect(files: false)
+        #expect(try await f.request("claude_binder")["files"] == .bool(false))
+        let id = UUID(); _ = try await f.send(id, "Delete the old notes."); _ = try await f.completed(id)
+        #expect(f.engine.lock.withLock { f.engine.reaches.last } == .some(nil))
+        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("You have no tools") } == true)
+        let binder = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("support/binder-store/history/\(binder)").path))
+    }
+
+    @Test func toolsNeedBothSharingChoicesAndConsentEndsWithTheConnection() async throws {
+        let f = try Fixture(); try await f.configure()
+        _ = try await f.request("claude_enable", [("documents", .bool(false)), ("intake", .bool(true)), ("files", .bool(true))])
+        #expect(try await f.request("claude_binder")["files"] == .bool(false))
+        _ = try await f.request("claude_enable", [("documents", .bool(true)), ("intake", .bool(true)), ("files", .bool(true))])
+        #expect(try await f.request("claude_binder")["files"] == .bool(true))
+        _ = try await f.request("claude_disable")
+        _ = try await f.request("claude_enable", [("documents", .bool(true)), ("intake", .bool(true))])
+        #expect(try await f.request("claude_binder")["files"] == .bool(false))
+    }
+
+    @Test func aTurnThatCannotBeRecordedForUndoRunsWithoutTools() async throws {
+        let f = try Fixture(); try await f.connect()
+        let binder = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue)
+        let history = f.root.appendingPathComponent("support/binder-store/history/\(binder)")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: history.appendingPathComponent("head.json"))
+        let id = UUID(); _ = try await f.send(id, "Tidy up."); _ = try await f.completed(id)
+        #expect(f.engine.lock.withLock { f.engine.reaches.last } == .some(nil))
+        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("You have no tools") } == true)
     }
 
     @Test func aTurnThatChangesNothingHasNoLineAndTheBadUndosAreRefused() async throws {

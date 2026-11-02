@@ -3,10 +3,19 @@ import Foundation
 import Security
 import SpravaKit
 
-/// The supported tool-free installed-CLI launch, not permission to send binder data. The runtime
+/// The supported installed-CLI launch, not permission to send binder data. The runtime
 /// still authenticates/consents the read connection and verifies its effective account/setup first.
 /// No personal Claude profile is read and no surrounding process environment is inherited.
+/// With `Reach` it has file and shell tools inside one binder, walled by the operating system (`sandbox`), never by
+/// asking the model; without, it has no tools at all, as the setup check needs.
 package enum ClaudeReadLaunch {
+    /// What a binder's agent may touch: the folder, and the one loopback port that leads out.
+    package struct Reach: Sendable {
+        package let folder: URL
+        package let proxyPort: UInt16
+        package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
+    }
+    static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
@@ -18,24 +27,30 @@ package enum ClaudeReadLaunch {
     /// Verify the vendor signature on every preparation. Connection setup checks the installed
     /// CLI's protocol instead of requiring a particular release or executable filename.
     package static func prepare(program: URL, support: URL, connectionID: UUID, sessionID: UUID, credential: String,
-                                policy: String, onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
+                                policy: String, reach: Reach? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
         let program = program.resolvingSymlinksInPath()
         let hash = try installationHash(program)
         try refuseManagedPolicy()
         let home = support.appendingPathComponent("brains/read-homes/\(connectionID.uuidString)/\(sessionID.uuidString)", isDirectory: true)
         let launch = try plan(program: program, home: home, sessionID: sessionID,
-                              credential: credential, policy: policy, onSpawn: onSpawn)
+                              credential: credential, policy: policy, reach: reach, onSpawn: onSpawn)
         return Prepared(launch: launch, programHash: hash)
     }
 
     /// Also used by deterministic fixture tests. Production callers cannot bypass prepare's signature
     /// and managed-source checks: this plan builder is internal to Brains, not a package API.
-    static func plan(program: URL, home: URL, sessionID: UUID, credential: String, policy: String,
+    static func plan(program: URL, home: URL, sessionID: UUID, credential: String, policy: String, reach: Reach? = nil,
                      onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) throws -> ClaudeReadOnlyTurn.Launch {
+        // The real path, which is what the sandbox compares: resolvingSymlinksInPath would strip /private from /private/var.
+        let reach = try reach.map { reach -> Reach in
+            guard let real = realpath(reach.folder.path, nil) else { throw Refused.invalidInput }
+            defer { free(real) }
+            return Reach(folder: URL(fileURLWithPath: String(cString: real), isDirectory: true), proxyPort: reach.proxyPort)
+        }
         guard program.isFileURL, home.isFileURL, !credential.isEmpty, credential.utf8.count <= 16_384,
               !credential.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }),
               policy.utf8.count <= 1024 * 1024,
-              [program.path, home.path].allSatisfy({ !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }) else {
+              [program.path, home.path, reach?.folder.path ?? ""].allSatisfy({ !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }) else {
             throw Refused.invalidInput
         }
         try AtomicFile.makePrivateFolder(home)
@@ -55,8 +70,8 @@ package enum ClaudeReadLaunch {
             if lstat(home.appendingPathComponent("config/" + name).path, &info) == 0 || errno != ENOENT { throw Refused.unsafeHome }
         }
         try directory.write(Data(policy.utf8), to: "app-policy.txt")
-        try directory.write(Data(sandbox(home: home, program: program).utf8), to: "app-sandbox.sb")
-        let environment = [
+        try directory.write(Data((reach.map { sandbox(home: home, program: program, reach: $0) } ?? sandbox(home: home, program: program)).utf8), to: "app-sandbox.sb")
+        var environment = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
             "HOME": home.path, "CLAUDE_CONFIG_DIR": home.appendingPathComponent("config").path,
             "CLAUDE_CODE_TMPDIR": home.appendingPathComponent("tmp").path, "TMPDIR": home.appendingPathComponent("tmp").path,
@@ -64,14 +79,56 @@ package enum ClaudeReadLaunch {
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
             "DISABLE_TELEMETRY": "1"
         ]
+        let toolList = tools.joined(separator: ",")
+        let toolArguments = reach == nil ? ["--tools", "", "--disallowedTools", "*"] : ["--tools", toolList, "--allowedTools", toolList]
+        if let reach {
+            let proxy = "http://127.0.0.1:\(reach.proxyPort)"
+            environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
+        }
         let args = ["-f", home.appendingPathComponent("app-sandbox.sb").path, program.path,
                     "--safe-mode", "--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-                    "--verbose", "--replay-user-messages", "--tools", "", "--disallowedTools", "*",
+                    "--verbose", "--replay-user-messages"] + toolArguments + [
                     "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
-                    "--settings", "{\"disableAllHooks\":true}", "--model", "sonnet", "--max-budget-usd", "2",
+                    "--settings", "{\"disableAllHooks\":true}", "--model", "sonnet", "--max-budget-usd", reach == nil ? "2" : "5",
                     "--append-system-prompt-file", home.appendingPathComponent("app-policy.txt").path]
         return ClaudeReadOnlyTurn.Launch(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"), arguments: args,
-                                        environment: environment, directory: home, sessionID: sessionID, onSpawn: onSpawn)
+                                        environment: environment, directory: reach?.folder ?? home, sessionID: sessionID,
+                                        tools: reach == nil ? [] : Set(tools), onSpawn: onSpawn)
+    }
+
+    /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
+    /// else of the person's; `.sprava`, the catalog and the dashboard have one writer, Sprava, and it may only read them. It runs tools, but not the
+    /// ones that reach the person's other apps, clipboard or Keychain. Its only way out is the proxy's port: name lookups and
+    /// direct connections fail whatever a command tries, so nothing read can leave except to the model. A key file can be
+    /// deleted without being read. Renaming one first would get past that name rule: it stops an accidental read, it is not
+    /// a wall.
+    static func sandbox(home: URL, program: URL, reach: Reach) -> String {
+        func q(_ value: String) -> String { JSONWriter.compact(.str(value)) }
+        let binder = reach.folder.path
+        var ancestors: [String] = [], at = reach.folder.deletingLastPathComponent()
+        while at.path != "/" && !at.path.isEmpty { ancestors.append(at.path); at.deleteLastPathComponent() }
+        var escaped = ""
+        for character in binder { if "\\^$.|?*+()[]{}".contains(character) { escaped.append("\\") }; escaped.append(character) }
+        let keyFiles = "^" + escaped + "/(.*/)?(\\.env(\\..*)?|\\.netrc|id_rsa[^/]*|id_ecdsa[^/]*|id_ed25519[^/]*|age-identity[^/]*|[^/]*credentials[^/]*|[^/]*\\.keychain[^/]*|token[^/]*\\.json|[^/]*\\.(pem|key|p12|pfx|age))$"
+        let denied = ["open", "osascript", "osacompile", "pbcopy", "pbpaste", "security", "defaults", "automator", "shortcuts", "sudo"].map { "/usr/bin/" + $0 } + ["/bin/launchctl"]
+        return """
+        (version 1)
+        (allow default)
+        (deny file-read* (require-all (subpath "/Users") (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder)))) (require-not (literal \(q(program.path))))))
+        (deny file-read* (require-all (subpath "/Volumes") (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder))))))
+        (deny file-read* (subpath "/Library/Keychains"))
+        (allow file-read-metadata \(ancestors.map { "(literal \(q($0)))" }.joined(separator: " ")))
+        (deny file-read-data (regex \(q(keyFiles))))
+        (deny file-write* (require-all (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder)))) (require-not (subpath "/dev/fd")) (require-not (literal "/dev/null")) (require-not (literal "/dev/tty"))))
+        (deny file-write* (subpath \(q(binder + "/.sprava"))) (literal \(q(binder + "/catalog.json"))) (literal \(q(binder + "/DASHBOARD.md"))))
+        (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
+        (deny appleevent-send)
+        (deny process-exec \(denied.map { "(literal \(q($0)))" }.joined(separator: " ")))
+        (deny signal)
+        (allow signal (target same-sandbox))
+        (deny network-outbound)
+        (allow network-outbound (remote ip \(q("localhost:\(reach.proxyPort)"))))
+        """
     }
 
     static func sandbox(home: URL, program: URL) -> String {

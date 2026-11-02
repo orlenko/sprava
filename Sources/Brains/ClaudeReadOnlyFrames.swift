@@ -1,12 +1,14 @@
 import Foundation
 import SpravaKit
 
-/// The tool-free pilot's installed-CLI contract, checked by the invented-binder proof on Claude 2.1.304.
+/// The installed CLI's contract, checked on invented binders (Claude 2.1.304; with tools, 2.1.316).
 /// A genuine result, the original input acknowledgment, and the same verified session are all required.
-/// This does not authorize a launch, authenticate app history, or grant any binder/tool capability.
+/// `tools` is what the launch offered: a frame naming any other tool fails the turn, and with none it is the tool-free
+/// contract of the setup check. This does not authorize a launch or grant any capability.
 struct ClaudeReadOnlyFrames {
     let sessionID: UUID
     let original: String
+    var tools: Set<String> = []
     private(set) var initialized = false
     private(set) var acknowledged = false
     private(set) var reply: String?
@@ -27,6 +29,9 @@ struct ClaudeReadOnlyFrames {
         case "user":
             // Native interruption markers belong to discarded engine context, never app/person history.
             if acknowledged && interruptID != nil { return }
+            // A tool's result: data for the model, never a reply, an acknowledgment or a permission.
+            if acknowledged, !tools.isEmpty, !receivedResult, value["parent_tool_use_id"] == nil || value["parent_tool_use_id"] == .null,
+               let blocks = value["message"]?["content"]?.arrayValue, blocks.allSatisfy({ $0["type"] == .str("tool_result") }) { return }
             guard initialized, !acknowledged, value["session_id"] != nil,
                   value["message"]?["role"] == .str("user"),
                   value["parent_tool_use_id"] == nil || value["parent_tool_use_id"] == .null,
@@ -46,7 +51,7 @@ struct ClaudeReadOnlyFrames {
             if let delta = event["delta"] {
                 guard delta.objectValue != nil else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
                 let kind = delta["type"]?.stringValue ?? ""
-                guard kind != "input_json_delta", !kind.hasPrefix("tool_"), !kind.hasPrefix("mcp_") else {
+                guard !tools.isEmpty || (kind != "input_json_delta" && !kind.hasPrefix("tool_")), !kind.hasPrefix("mcp_") else {
                     throw ClaudeReadOnlyTurn.Failure.protocolMismatch
                 }
             } // Partial data never becomes a final reply, acknowledgment, or permission.
@@ -84,13 +89,13 @@ struct ClaudeReadOnlyFrames {
         guard let subtype = value["subtype"]?.stringValue, subtype.utf8.count <= 128 else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
         if subtype == "init" {
             guard !initialized, value["session_id"] == .str(sessionID.uuidString.lowercased()),
-                  value["tools"] == .array([]), value["mcp_servers"] == .array([]),
+                  Set(value["tools"]?.arrayValue?.compactMap(\.stringValue) ?? ["(none)"]) == tools, value["mcp_servers"] == .array([]),
                   value["permissionMode"] == .str("dontAsk") else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
             initialized = true
         } else {
             // CLI 2.1.304 emits ui_invalidate/status and further system telemetry. None establishes
             // readiness or turn success. Unexpected capability activity/scope changes still fail closed.
-            guard !["hook_", "tool_", "mcp_", "permission_"].contains(where: subtype.hasPrefix),
+            guard !(tools.isEmpty ? ["hook_", "tool_", "mcp_", "permission_"] : ["hook_", "mcp_"]).contains(where: subtype.hasPrefix),
                   ["tools", "mcp_servers", "permissionMode"].allSatisfy({ value[$0] == nil }) else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
@@ -101,7 +106,10 @@ struct ClaudeReadOnlyFrames {
 
     private func safeBlocks(_ value: JSONValue?) -> Bool {
         guard let blocks = value?.arrayValue else { return false }
-        return blocks.allSatisfy { ["text", "thinking", "redacted_thinking"].contains($0["type"]?.stringValue ?? "") }
+        return blocks.allSatisfy { block in
+            if block["type"] == .str("tool_use") { return block["name"]?.stringValue.map(tools.contains) == true }
+            return ["text", "thinking", "redacted_thinking"].contains(block["type"]?.stringValue ?? "")
+        }
     }
 
     private func text(_ value: JSONValue?) -> String? {
