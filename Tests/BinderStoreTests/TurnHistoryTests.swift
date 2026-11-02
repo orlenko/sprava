@@ -151,6 +151,49 @@ private func temporaryFolder() throws -> URL {
         #expect(entry.summary == "Changed 1 file: notes.md")
     }
 
+    func set(_ value: String, attribute: String, on path: String, in f: Fixture) {
+        let url = f.folder.appendingPathComponent(path)
+        #expect(setxattr(url.path, attribute, value, value.utf8.count, 0, 0) == 0)
+    }
+    func attribute(_ name: String, on path: String, in f: Fixture) -> String? {
+        let url = f.folder.appendingPathComponent(path)
+        var buffer = [UInt8](repeating: 0, count: 256)
+        let got = getxattr(url.path, name, &buffer, 256, 0, 0)
+        return got < 0 ? nil : String(decoding: buffer.prefix(got), as: UTF8.self)
+    }
+
+    @Test func anAnnotationAddedAfterATurnIsAConflictNotErased() throws {
+        let f = try Fixture()
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("Invented PDF bytes", "paper.pdf")
+        try f.history.record(f.folder, turn: turn)
+        set("the person's note", attribute: "net_sourceforge_skim-app_notes", on: "paper.pdf", in: f)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .conflict(["paper.pdf"]))
+        #expect(attribute("net_sourceforge_skim-app_notes", on: "paper.pdf", in: f) == "the person's note")
+    }
+
+    @Test func identicalBytesWithDifferentAnnotationsRestoreTheirOwn() throws {
+        let f = try Fixture()
+        try f.write("Invented PDF bytes", "paper.pdf")
+        set("first note", attribute: "net_sourceforge_skim-app_notes", on: "paper.pdf", in: f)
+        try f.history.record(f.folder)
+        let turn = UUID()
+        set("second note", attribute: "net_sourceforge_skim-app_notes", on: "paper.pdf", in: f)
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(attribute("net_sourceforge_skim-app_notes", on: "paper.pdf", in: f) == "first note")
+    }
+
+    @Test func macOSsOwnBookkeepingIsNotAChange() throws {
+        let f = try Fixture()
+        try f.write("plain", "notes.md"); try f.history.record(f.folder)
+        set("opened", attribute: "com.apple.lastuseddate#PS", on: "notes.md", in: f)
+        #expect(try f.history.record(f.folder, turn: UUID()) == nil)
+        #expect(TurnHistory.countsAsContent("com.apple.ResourceFork") && TurnHistory.countsAsContent("com.apple.metadata:_kMDItemUserTags"))
+        #expect(!TurnHistory.countsAsContent("com.apple.quarantine"))
+    }
+
     @Test func aLaterEditIsAConflictAndNothingMoves() throws {
         let f = try Fixture()
         try f.write("first", "notes.md"); try f.write("keep", "other.md")

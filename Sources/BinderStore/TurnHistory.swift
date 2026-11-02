@@ -25,6 +25,8 @@ public struct TurnHistory: Sendable {
         var target: String?
         var size: Int64
         var modified: Int64
+        /// Moves when extended attributes do, which the modification time does not.
+        var changed: Int64 = 0
         var inode: UInt64
         var mode: UInt16
 
@@ -278,7 +280,8 @@ public struct TurnHistory: Sendable {
 
     private func item(_ url: URL, path: String, info: stat, known: Item?, budget: inout Int64, cancelled: @Sendable () -> Bool) throws -> Item {
         let modified = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
-        var item = Item(kind: .file, size: Int64(info.st_size), modified: modified, inode: UInt64(info.st_ino), mode: UInt16(info.st_mode & 0o777))
+        let changed = Int64(info.st_ctimespec.tv_sec) * 1_000_000_000 + Int64(info.st_ctimespec.tv_nsec)
+        var item = Item(kind: .file, size: Int64(info.st_size), modified: modified, changed: changed, inode: UInt64(info.st_ino), mode: UInt16(info.st_mode & 0o777))
         if info.st_mode & S_IFMT == S_IFLNK {
             guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { throw Refused.unreadable(path) }
             item.kind = .link; item.target = target
@@ -287,7 +290,7 @@ public struct TurnHistory: Sendable {
         if DocumentPaths.isKeyFile(path) { item.kind = .key; return item }
         if item.size > Self.maximumFileBytes { item.kind = .large; return item }
         // Same size, time and inode: the bytes were kept when this file was last read.
-        if let known, known.kind == .file, known.size == item.size, known.modified == modified, known.inode == item.inode,
+        if let known, known.kind == .file, known.size == item.size, known.modified == modified, known.changed == changed, known.inode == item.inode,
            let sha = known.sha256, FileManager.default.fileExists(atPath: blob(sha).path) {
             item.sha256 = sha
             return item
@@ -311,11 +314,34 @@ public struct TurnHistory: Sendable {
             guard !cancelled() else { throw Refused.cancelled }
             hash.update(data: chunk)
         }
+        Self.hashAttributes(of: staged, into: &hash)
         let sha = hash.finalize().map { String(format: "%02x", $0) }.joined()
         let target = blob(sha)
         try AtomicFile.makePrivateFolder(target.deletingLastPathComponent())
         if !manager.fileExists(atPath: target.path) { try manager.moveItem(at: staged, to: target) }
         return sha
+    }
+
+    /// A file's identity includes what the person keeps in its extended attributes: Skim's annotations live there, as do
+    /// resource forks and Finder tags, and the clone keeps them. macOS's own bookkeeping, such as when a file was last opened
+    /// or where it was downloaded from, is not a change.
+    static func countsAsContent(_ attribute: String) -> Bool {
+        !attribute.hasPrefix("com.apple.") || attribute == "com.apple.ResourceFork" || attribute == "com.apple.metadata:_kMDItemUserTags"
+    }
+
+    private static func hashAttributes(of url: URL, into hash: inout SHA256) {
+        let size = listxattr(url.path, nil, 0, XATTR_NOFOLLOW)
+        guard size > 0 else { return }
+        var names = [CChar](repeating: 0, count: size)
+        guard listxattr(url.path, &names, size, XATTR_NOFOLLOW) == size else { return }
+        let all = names.split(separator: 0).map { String(decoding: $0.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
+        for name in all.filter(countsAsContent).sorted() {
+            let length = getxattr(url.path, name, nil, 0, 0, XATTR_NOFOLLOW)
+            guard length >= 0 else { continue }
+            var value = [UInt8](repeating: 0, count: length)
+            guard getxattr(url.path, name, &value, length, 0, XATTR_NOFOLLOW) == length else { continue }
+            hash.update(data: Data(name.utf8)); hash.update(data: [0]); hash.update(data: value)
+        }
     }
 
     /// The catalog's bytes, by hash: enough to tell whether something was filed or approved between two records.
