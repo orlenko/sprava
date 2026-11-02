@@ -86,13 +86,18 @@ import Testing
         model.draft = "Call"
         #expect(runtime.sent.isEmpty && model.draftState.hasChanges)
     }
+}
 
+@MainActor
+@Suite(.serialized) struct TodoLineEditingTests {
     func descendants<T: NSView>(_ root: NSView, of type: T.Type) -> [T] {
         (root as? T).map { [$0] } ?? root.subviews.flatMap { descendants($0, of: type) }
     }
     func settle(_ host: NSView) async {
         for _ in 0..<8 { host.layoutSubtreeIfNeeded(); try? await Task.sleep(for: .milliseconds(25)) }
     }
+    let folder = URL(fileURLWithPath: "/invented/acme")
+    let today = CalendarDate(year: 2031, month: 2, day: 4)!
 
     /// The one thing the design rests on (2026-11-02 review): after Return, the cursor is back in the row for the next to-do.
     @Test func returnAddsTheToDoAndLeavesTheCursorInTheRow() async throws {
@@ -120,5 +125,114 @@ import Testing
         }
         #expect(runtime.sent.compactMap { $0["args"]?["item"]?["title"]?.stringValue } == ["Call the plumber", "Book the van"])
         window.orderOut(nil)
+    }
+
+    @Test func aDateTypedBackToTheOriginalRestoresItAndOneItCannotReadStopsEverySave() async throws {
+        let f = ItemEditingTests(), (actions, _, folder) = try await f.binder()
+        let items = await f.page(folder).items.values.joined().filter { $0.object?["id"] != nil && !$0.hasRecurrence }
+        let item = try #require(items.first { $0.due != nil }), other = try #require(items.first { $0.idText != item.idText })
+        let editor = ItemEditor()
+        await actions.load(folder, adopted: true)
+        #expect(editor.begin(item, in: folder, actions, reload: {}))
+        let original = editor.dateLabel(in: folder, today: today)
+
+        // Another date, then back: nothing is left to save, and the year is the item's own.
+        editor.setDateText("tomorrow", today: today, in: folder)
+        #expect(editor.row(in: folder)?.due == today.adding(days: 1))
+        editor.setDateText(original, today: today, in: folder)
+        #expect(editor.row(in: folder)?.due == item.due && editor.row(in: folder)?.change == nil)
+
+        // A date read, then spoiled: no way of saving takes the earlier one.
+        editor.setDateText("tomorrow", today: today, in: folder)
+        editor.setDateText("tomorrowx", today: today, in: folder)
+        #expect(editor.row(in: folder)?.validation != nil && editor.draftState.hasChanges)
+        #expect(editor.save(in: folder, actions, reload: {}) == nil)
+        #expect(!editor.begin(other, in: folder, actions, reload: {}))
+        #expect(editor.close(as: "complete", in: folder, actions, reload: {}) == nil)
+        #expect(editor.isEditing(item, in: folder))
+        #expect(actions.message != nil)
+        #expect(try await f.openItem(item.idText, in: folder).due == item.due)
+
+        editor.setDateText("", today: today, in: folder)
+        #expect(editor.row(in: folder)?.due == nil && editor.row(in: folder)?.validation == nil)
+    }
+
+    /// Real field editors in a real window: Return saves, moving away saves, Esc puts it back, and a date it cannot read holds
+    /// the row open.
+    @Test func theKeysDoWhatTheRowSays() async throws {
+        let f = ItemEditingTests(), (actions, _, folder) = try await f.binder()
+        let item = try #require(await f.page(folder).items.values.joined().first { $0.object?["id"] != nil && !$0.hasRecurrence })
+        let id = item.idText
+        let editor = ItemEditor()
+        await actions.load(folder, adopted: true)
+        final class Current: ObservableObject { @Published var item: Item; init(_ item: Item) { self.item = item } }
+        let current = Current(item)
+        struct Page: View {
+            @ObservedObject var current: Current
+            let actions: BinderActions, editor: ItemEditor, folder: URL, today: CalendarDate
+            var body: some View {
+                ItemRow(item: current.item, bucket: .later, actions: actions, editor: editor, folder: folder, editable: true, today: today, reload: {})
+                    .frame(width: 440)
+            }
+        }
+        let host = NSHostingView(rootView: Page(current: current, actions: actions, editor: editor, folder: folder, today: today))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        func open() async throws -> (title: NSTextField, date: NSTextField, editor: NSTextView) {
+            current.item = try await f.openItem(id, in: folder)
+            #expect(editor.begin(current.item, in: folder, actions, reload: {}))
+            await settle(host)
+            let fields = descendants(host, of: NSTextField.self).filter(\.isEditable)
+            #expect(fields.count >= 2)
+            let title = try #require(fields.first), date = try #require(fields.dropFirst().first)
+            #expect(window.makeFirstResponder(title))
+            await settle(host)
+            return (title, date, try #require(title.currentEditor() as? NSTextView))
+        }
+        func type(_ text: String, into view: NSTextView) async {
+            view.selectAll(nil)
+            view.insertText(text, replacementRange: view.selectedRange())
+            await settle(host)
+        }
+        func closed() async {
+            for _ in 0..<40 where editor.row(in: folder) != nil || actions.busy { await settle(host) }
+        }
+
+        // Return saves.
+        var row = try await open()
+        await type("Invented title by Return", into: row.editor)
+        row.editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        await closed()
+        #expect(editor.row(in: folder) == nil)
+        #expect(try await f.openItem(id, in: folder).title == "Invented title by Return")
+
+        // Esc puts it back.
+        row = try await open()
+        await type("Invented title to discard", into: row.editor)
+        row.editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        await settle(host)
+        #expect(editor.row(in: folder) == nil)
+        #expect(try await f.openItem(id, in: folder).title == "Invented title by Return")
+
+        // Moving away saves.
+        row = try await open()
+        await type("Invented title by leaving", into: row.editor)
+        #expect(window.makeFirstResponder(nil))
+        await closed()
+        #expect(editor.row(in: folder) == nil)
+        #expect(try await f.openItem(id, in: folder).title == "Invented title by leaving")
+
+        // A date it cannot read keeps the row open, with what was typed.
+        row = try await open()
+        #expect(window.makeFirstResponder(row.date))
+        await settle(host)
+        await type("someday", into: try #require(row.date.currentEditor() as? NSTextView))
+        try #require(row.date.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        await settle(host)
+        #expect(editor.row(in: folder)?.unreadDate == true)
+        #expect(row.date.stringValue == "someday")
     }
 }

@@ -226,7 +226,11 @@ struct TodoLineEditor: View {
                 Text("Sprava could not read that date. Try tomorrow, fri, nov 12 or 2031-02-03.").font(.caption).foregroundStyle(.orange)
             }
             HStack(spacing: 12) {
-                Button("More\u{2026}", action: more).buttonStyle(.link).font(.caption)
+                Button("More\u{2026}") {
+                    // More has no field for text it could not read, so that is fixed here first.
+                    if editor.row(in: folder)?.unreadDate == true { dateRefused = true } else { more() }
+                }
+                .buttonStyle(.link).font(.caption)
                 Text("Return saves, Esc puts it back").font(.caption).foregroundStyle(.tertiary)
             }
         }
@@ -238,7 +242,7 @@ struct TodoLineEditor: View {
         .onChange(of: focus) { _, now in if now == nil { commit() } }
         .onChange(of: dateText) { _, typed in
             dateRefused = false
-            apply(typed)
+            editor.setDateText(typed, today: today, in: folder)
         }
         .onSubmit(commit)
         .onExitCommand { editor.cancel(in: folder) }
@@ -250,27 +254,10 @@ struct TodoLineEditor: View {
         return TodoDates.label(day, today: today)
     }
 
-    /// The date when the row opened, as its field first showed it.
-    private var initialDate: String {
-        guard let row = editor.row(in: folder), let day = row.item.status != .open ? row.item.followUpAt : row.item.due else { return "" }
-        return TodoDates.label(day, today: today)
-    }
-
-    /// Puts a date as soon as it can be read into the open row, so it goes wherever the row's other changes go: saved when
-    /// another row is opened, kept when More opens.
-    private func apply(_ typed: String) {
-        let text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text != initialDate else { return }
-        let day = text.isEmpty ? nil : TodoDates.parse(text, today: today)
-        guard text.isEmpty || day != nil else { return }
-        if editsFollowUp { editor.setFollowUp(day, in: folder) } else { editor.setDue(day, in: folder) }
-    }
-
     /// Saves unless the date cannot be read, which stays open to be fixed. An unchanged row just closes.
     private func commit() {
         guard !locked, editor.row(in: folder) != nil else { return }
-        let typed = dateText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !typed.isEmpty, typed != initialDate, TodoDates.parse(typed, today: today) == nil {
+        if editor.row(in: folder)?.unreadDate == true {
             dateRefused = true
             return
         }
