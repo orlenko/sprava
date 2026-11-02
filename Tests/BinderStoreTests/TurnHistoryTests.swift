@@ -104,6 +104,53 @@ private func temporaryFolder() throws -> URL {
         #expect(!f.exists("intake/notice.txt"))
     }
 
+    @Test func aFileMadeInATurnAndFiledSinceIsNotDeletedByItsUndo() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[]}", "catalog.json"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("Invented bylaw", "documents/bylaw.txt")
+        try f.history.record(f.folder, turn: turn)
+        try f.write("{\"documents\":[{\"path\":\"documents/bylaw.txt\"}]}", "catalog.json")
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(f.read("documents/bylaw.txt") == "Invented bylaw")
+    }
+
+    @Test func aPipeOrLinkAtTheCatalogIsRefusedRatherThanRead() throws {
+        let f = try Fixture()
+        try f.write("plain", "notes.md"); try f.history.record(f.folder)
+        #expect(mkfifo(f.folder.appendingPathComponent("catalog.json").path, 0o600) == 0)
+        #expect(throws: TurnHistory.Refused.unreadable("catalog.json")) { try f.history.record(f.folder) }
+        try f.remove("catalog.json")
+        try FileManager.default.createSymbolicLink(atPath: f.folder.appendingPathComponent("catalog.json").path, withDestinationPath: "/etc/hosts")
+        #expect(throws: TurnHistory.Refused.unreadable("catalog.json")) { try f.history.record(f.folder) }
+    }
+
+    @Test func aHugeSparseFileIsTrackedByNameAndNotReadAndSaysUndoCannotReturnIt() throws {
+        let f = try Fixture()
+        let url = f.folder.appendingPathComponent("intake/huge.bin")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #expect(FileManager.default.createFile(atPath: url.path, contents: nil))
+        #expect(truncate(url.path, 1 << 40) == 0)
+        let started = Date()
+        try f.history.record(f.folder)
+        #expect(Date().timeIntervalSince(started) < 10)
+        #expect(try FileManager.default.subpathsOfDirectory(atPath: f.history.blobs.path).filter { $0.contains("/") }.isEmpty)
+        let turn = UUID()
+        try f.remove("intake/huge.bin")
+        let entry = try #require(try f.history.record(f.folder, turn: turn))
+        #expect(entry.notRestorable == ["intake/huge.bin"])
+    }
+
+    @Test func stoppingEndsARecordWithoutLeavingItHalfDone() throws {
+        let f = try Fixture()
+        try f.write("plain", "notes.md"); try f.history.record(f.folder)
+        try f.write("changed", "notes.md")
+        #expect(throws: TurnHistory.Refused.cancelled) { try f.history.record(f.folder, cancelled: { true }) }
+        // The change is still seen by the next record: nothing was taken as recorded.
+        let entry = try #require(try f.history.record(f.folder, turn: UUID()))
+        #expect(entry.summary == "Changed 1 file: notes.md")
+    }
+
     @Test func aLaterEditIsAConflictAndNothingMoves() throws {
         let f = try Fixture()
         try f.write("first", "notes.md"); try f.write("keep", "other.md")

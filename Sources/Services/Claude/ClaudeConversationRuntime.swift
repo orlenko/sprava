@@ -297,7 +297,8 @@ public actor ClaudeConversationRuntime {
                 // edits since the last record, so they are not taken for this turn's. Without that record the turn could not
                 // be undone, so it runs with no tools rather than fail.
                 var tools = (try? connections.allowsFileChanges(scope)) == true
-                if tools { do { try versions.record(folder) } catch { tools = false } }
+                if tools { do { try versions.record(folder, cancelled: { signal.stopped }) } catch { tools = false } }
+                guard !signal.stopped else { throw Refused.stopped }
                 return (try read(folder, scope.documents, scope.intake, record.text, { signal.stopped }), tools ? folder : nil)
             }.value
             guard !signal.stopped else { throw Refused.stopped }
