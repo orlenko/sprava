@@ -7,7 +7,7 @@ import Testing
 /// invented folders; no model is involved.
 @Suite struct ClaudeBinderToolsTests {
     struct Fixture {
-        let root: URL, binder: URL, other: URL, home: URL, profile: URL
+        let root: URL, binder: URL, other: URL, home: URL, profile: URL, session = UUID()
         func clean() { try? FileManager.default.removeItem(at: root) }
         init(proxyPort: UInt16 = 9) throws {
             // Under the checkout's build folder: on /Users or /Volumes, where a person's folders are and the walls apply. Invented.
@@ -24,7 +24,7 @@ import Testing
             }
             try Data("private".utf8).write(to: other.appendingPathComponent("private.md"))
             let text = ClaudeReadLaunch.sandbox(home: home, program: URL(fileURLWithPath: "/opt/invented/claude"),
-                                                reach: .init(folder: binder, proxyPort: proxyPort))
+                                                reach: .init(folder: binder, proxyPort: proxyPort), session: session)
             try Data(text.utf8).write(to: profile)
         }
         /// Whether the command succeeded inside the walls.
@@ -78,6 +78,40 @@ import Testing
         #expect(try !f.allowed("echo x > /private/tmp/sprava-wall-probe-\(UUID().uuidString)"))
         #expect(try !f.allowed("ln -s \"$O/private.md\" link.md && cat link.md"))
         #expect(try !f.allowed("ls /Users/*/.ssh"))
+        // Reads are closed everywhere else too, temporary folders included.
+        let stray = URL(fileURLWithPath: "/private/tmp/sprava-wall-\(UUID().uuidString).txt")
+        try Data("invented".utf8).write(to: stray); defer { try? FileManager.default.removeItem(at: stray) }
+        #expect(try !f.allowed("cat \(stray.path)"))
+        #expect(try !f.allowed("ls /private/var/folders"))
+        // What commands need still reads: the system's own files, and looking up a path.
+        #expect(try f.allowed("cat /etc/hosts >/dev/null && /usr/bin/sw_vers >/dev/null && pwd && test -d /private/tmp"))
+    }
+
+    @Test func aDetachedCommandEndsWithTheTurnAndAnotherSessionsIsLeftAlone() async throws {
+        let f = try Fixture(); defer { f.clean() }
+        let other = try Fixture(); defer { other.clean() }
+        // Double fork, a new session, closed streams and a clean environment: the shape that outlives a process group.
+        let daemon = #"exec /usr/bin/env -i /usr/bin/perl -e 'use POSIX; fork and exit; POSIX::setsid(); fork and exit; close STDIN; close STDOUT; close STDERR; sleep 30'"#
+        #expect(try f.allowed(daemon))
+        #expect(try other.allowed(daemon))
+        for _ in 0..<50 where AgentContainment.running(session: f.session).isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        let left = AgentContainment.running(session: f.session)
+        #expect(left.count == 1)
+        #expect(AgentContainment.running(session: other.session).count == 1)
+        #expect(!AgentContainment.running(session: UUID()).contains(where: left.contains))
+        #expect(AgentContainment.sweep(session: f.session))
+        #expect(AgentContainment.running(session: f.session).isEmpty)
+        #expect(AgentContainment.running(session: other.session).count == 1)
+        #expect(AgentContainment.sweep(session: other.session))
+    }
+
+    @Test func sweepingANeverUsedSessionFindsNothingAndTouchesNoOrdinaryProcess() throws {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep"); sleeper.arguments = ["10"]
+        try sleeper.run(); defer { sleeper.terminate() }
+        #expect(AgentContainment.running(session: UUID()).isEmpty)
+        #expect(AgentContainment.sweep(session: UUID()))
+        #expect(sleeper.isRunning)
     }
 
     @Test func theOnlyWayOutIsTheProxysPort() throws {

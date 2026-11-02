@@ -70,7 +70,7 @@ package enum ClaudeReadLaunch {
             if lstat(home.appendingPathComponent("config/" + name).path, &info) == 0 || errno != ENOENT { throw Refused.unsafeHome }
         }
         try directory.write(Data(policy.utf8), to: "app-policy.txt")
-        try directory.write(Data((reach.map { sandbox(home: home, program: program, reach: $0) } ?? sandbox(home: home, program: program)).utf8), to: "app-sandbox.sb")
+        try directory.write(Data((reach.map { sandbox(home: home, program: program, reach: $0, session: sessionID) } ?? sandbox(home: home, program: program)).utf8), to: "app-sandbox.sb")
         var environment = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
             "HOME": home.path, "CLAUDE_CONFIG_DIR": home.appendingPathComponent("config").path,
@@ -97,16 +97,15 @@ package enum ClaudeReadLaunch {
     }
 
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
-    /// else of the person's; `.sprava`, the catalog and the dashboard have one writer, Sprava, and it may only read them. It runs tools, but not the
+    /// else of the person's: reads are closed except for those and the system's own folders. `.sprava`, the catalog and the
+    /// dashboard have one writer, Sprava, and it may only read them. It runs tools, but not the
     /// ones that reach the person's other apps, clipboard or Keychain. Its only way out is the proxy's port: name lookups and
     /// direct connections fail whatever a command tries, so nothing read can leave except to the model. A key file can be
     /// deleted without being read. Renaming one first would get past that name rule: it stops an accidental read, it is not
     /// a wall.
-    static func sandbox(home: URL, program: URL, reach: Reach) -> String {
+    static func sandbox(home: URL, program: URL, reach: Reach, session: UUID) -> String {
         func q(_ value: String) -> String { JSONWriter.compact(.str(value)) }
         let binder = reach.folder.path
-        var ancestors: [String] = [], at = reach.folder.deletingLastPathComponent()
-        while at.path != "/" && !at.path.isEmpty { ancestors.append(at.path); at.deleteLastPathComponent() }
         var escaped = ""
         for character in binder { if "\\^$.|?*+()[]{}".contains(character) { escaped.append("\\") }; escaped.append(character) }
         let keyFiles = "^" + escaped + "/(.*/)?(\\.env(\\..*)?|\\.netrc|id_rsa[^/]*|id_ecdsa[^/]*|id_ed25519[^/]*|age-identity[^/]*|[^/]*credentials[^/]*|[^/]*\\.keychain[^/]*|token[^/]*\\.json|[^/]*\\.(pem|key|p12|pfx|age))$"
@@ -114,10 +113,11 @@ package enum ClaudeReadLaunch {
         return """
         (version 1)
         (allow default)
-        (deny file-read* (require-all (subpath "/Users") (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder)))) (require-not (literal \(q(program.path))))))
-        (deny file-read* (require-all (subpath "/Volumes") (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder))))))
+        (deny file-read*)
+        (allow file-read-metadata)
+        (allow file-read* (literal "/") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library") (subpath "/private/etc") (subpath "/dev") (subpath "/opt/homebrew") (subpath "/private/var/db/timezone"))
+        (allow file-read* (subpath \(q(home.path))) (subpath \(q(binder))) (literal \(q(program.path))))
         (deny file-read* (subpath "/Library/Keychains"))
-        (allow file-read-metadata \(ancestors.map { "(literal \(q($0)))" }.joined(separator: " ")))
         (deny file-read-data (regex \(q(keyFiles))))
         (deny file-write* (require-all (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder)))) (require-not (subpath "/dev/fd")) (require-not (literal "/dev/null")) (require-not (literal "/dev/tty"))))
         (deny file-write* (subpath \(q(binder + "/.sprava"))) (literal \(q(binder + "/catalog.json"))) (literal \(q(binder + "/DASHBOARD.md"))))
@@ -128,6 +128,7 @@ package enum ClaudeReadLaunch {
         (allow signal (target same-sandbox))
         (deny network-outbound)
         (allow network-outbound (remote ip \(q("localhost:\(reach.proxyPort)"))))
+        \(AgentContainment.rule(session: session))
         """
     }
 

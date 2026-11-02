@@ -367,6 +367,8 @@ public actor ClaudeConversationRuntime {
                 for _ in 0..<100 where kill(pid, 0) == 0 { usleep(10_000) }
                 guard kill(pid, 0) != 0, errno == ESRCH else { throw Refused.unavailable }
             }
+            // Whatever an agent's commands left running when the runtime stopped.
+            guard AgentContainment.sweep(session: session.native) else { throw Refused.unavailable }
             try receipts.recoverInterrupted(conversationID: session.connection)
             for record in try receipts.history(conversationID: session.connection) where record.phase == .accepted {
                 _ = try receipts.finish(conversationID: session.connection, requestID: record.requestID, phase: .interrupted)

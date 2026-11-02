@@ -91,6 +91,8 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         let child = try ClaudeTurnProcess(launch, resume: resume)
         defer {
             if !child.finish() { lock.withLock { quarantined = true } }
+            // Before the turn counts as over: nothing it started may go on changing the binder afterwards.
+            if !launch.tools.isEmpty, !AgentContainment.sweep(session: launch.sessionID) { lock.withLock { quarantined = true } }
         }
         // Persist the worker identity BEFORE any person line can enter its stdin. A failed journal
         // callback reaps this child without submitting the line; it must never become an untracked turn.
