@@ -84,7 +84,7 @@ public actor ClaudeConversationRuntime {
         })
     }
 
-    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_stop", "chat_clear"]
+    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
 
     public func respond(_ text: String) async -> String {
         guard text.utf8.count <= 5 * 1024 * 1024,
@@ -152,6 +152,17 @@ public actor ClaudeConversationRuntime {
         if command == "chat_export" {
             guard let id = try connections.savedID(for: folder) else { throw Refused.notConnected }
             return try exports.page(request, binder: id, store: receipts)
+        }
+        if command == "chat_undo" {
+            guard let id = try connections.savedID(for: folder), let turn = request["turn_id"]?.stringValue.flatMap(UUID.init(uuidString:)) else { throw Refused.invalidRequest }
+            guard active[id] == nil, !preparing.contains(id), try available(folder) else { throw Refused.busy }
+            preparing.insert(id); defer { preparing.remove(id) }
+            let history = TurnHistory(support: support, binder: id)
+            switch try await Task.detached(priority: .userInitiated, operation: { try history.undo(turn: turn, in: folder) }).value {
+            case .undone: return .init([(key: "undone", value: .bool(true))])
+            case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))])
+            case .recordsChanged: return .init([(key: "undone", value: .bool(false)), (key: "records_changed", value: .bool(true))])
+            }
         }
         if command == "chat_history" || command == "chat_clear" {
             guard let id = try connections.savedID(for: folder) else { return .init([(key: "turns", value: .array([]))]) }
@@ -275,12 +286,15 @@ public actor ClaudeConversationRuntime {
                      account: ClaudeConversationState.Account, credential: String, signal: StopSignal) async {
         var succeeded = false, driver: Driver?
         var mayRelease = true
+        let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
-            let connections = self.connections, read = self.readContext, available = self.available
+            let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
             let context = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
                 guard try available(folder) else { throw Refused.notConnected }
+                // The person's own edits since the last record, so they are not taken for this turn's.
+                try? versions.record(folder, cancelled: { signal.stopped })
                 return try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
             }.value
             guard !signal.stopped else { throw Refused.stopped }
@@ -299,6 +313,7 @@ public actor ClaudeConversationRuntime {
             _ = try currentFolder(scope)
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
             let result = try await made.run(record.text, false)
+            await recordTurn(record, scope: scope, history: turnHistory)
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
@@ -307,6 +322,7 @@ public actor ClaudeConversationRuntime {
             } else { _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .interrupted) }
         } catch {
             if error as? ClaudeReadOnlyTurn.Failure == .exitUnconfirmed { mayRelease = false }
+            await recordTurn(record, scope: scope, history: turnHistory)
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
         }
@@ -315,6 +331,14 @@ public actor ClaudeConversationRuntime {
             _ = await admission.confirmedExit(lease)
             active.removeValue(forKey: scope.id)
         } // Otherwise the active entry and slot stay quarantined; no silent retry.
+    }
+
+    /// What the turn changed, whether or not it finished. Runs before the turn's phase is reported, so the reply and its
+    /// summary line arrive together. A second call for one turn finds nothing more and leaves the first entry.
+    private func recordTurn(_ record: ConversationTurnStore.Record, scope: ClaudeReadConnections.Connection, history: TurnHistory) async {
+        guard let folder = try? connections.currentFolder(scope), (try? history.entry(forTurn: record.turnID)) == nil else { return }
+        let turn = record.turnID
+        await Task.detached(priority: .userInitiated) { _ = try? history.record(folder, turn: turn) }.value
     }
 
     private func fence(_ id: UUID) async throws {
@@ -354,8 +378,12 @@ public actor ClaudeConversationRuntime {
                (key: "documents", value: .bool(scope.documents)), (key: "intake", value: .bool(scope.intake))])
     }
     private func recordJSON(_ r: ConversationTurnStore.Record) -> JSONValue {
-        .obj([("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
-              ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)])
+        var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
+              ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
+        if let entry = try? TurnHistory(support: support, binder: r.conversationID).entry(forTurn: r.turnID) {
+            fields.append(("changes", .obj([("summary", .str(entry.summary)), ("undone", .bool(entry.undone))])))
+        }
+        return .obj(fields)
     }
     private static let setupQuestion = "Read CURRENT_CHECK in the app's current policy and return only its exact value."
     private static let setupPolicy = "Sprava connection check only. No binder data or tools. On every turn the newest CURRENT_CHECK overrides any earlier value."
@@ -373,6 +401,8 @@ public actor ClaudeConversationRuntime {
             if let id = try connections.savedID(for: folder) {
                 try await fence(id)
                 if let scope = try connections.activeConnections().first(where: { $0.id == id }) { try connections.disable(scope) }
+                // Its copies of the binder's files must not outlive a binder being removed or offloaded.
+                try TurnHistory(support: support, binder: id).forget()
             }
             let ticket = UUID(); lifecycleTicket = ticket; return ticket
         } catch { configuring = false; throw error }

@@ -76,7 +76,10 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         guard let self else { throw ChatCommandFailure.unavailable }
         try await self.interrupt(binder: binder, turn: turn)
     })
-    lazy var chat = BinderChat(commands: adapter, binderID: { [weak self] folder in self?.scopes[folder.standardizedFileURL] }, ready: { [weak self] folder in self?.connected == true && self?.folder == folder }, readHistory: { [weak self] folder in
+    lazy var chat = BinderChat(commands: adapter, binderID: { [weak self] folder in self?.scopes[folder.standardizedFileURL] }, ready: { [weak self] folder in self?.connected == true && self?.folder == folder }, undo: { [weak self] reference, folder in
+        guard let self else { throw ChatCommandFailure.unavailable }
+        try await self.undoTurn(reference, in: folder)
+    }, readHistory: { [weak self] folder in
         guard let self else { return ([], "Saved conversation is unavailable.") }
         return await self.history(folder)
     })
@@ -196,9 +199,17 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                         case "replied":
                             self.forgetPending(turn, in: folder)
                             let body = try self.displayReply(value, turn: turn.turnID, folder: folder, historical: false)
-                            continuation.yield(.textDelta(body)); continuation.yield(.finished(.replied)); return
-                        case "interrupted": self.forgetPending(turn, in: folder); continuation.yield(.finished(.interrupted)); return
-                        case "failed": self.forgetPending(turn, in: folder); continuation.yield(.failed(.unavailable)); return
+                            continuation.yield(.textDelta(body))
+                            if let change = Self.change(value, turn: turn.turnID) { continuation.yield(.binderChanged(change)); self.changed() }
+                            continuation.yield(.finished(.replied)); return
+                        case "interrupted":
+                            self.forgetPending(turn, in: folder)
+                            if let change = Self.change(value, turn: turn.turnID) { continuation.yield(.binderChanged(change)); self.changed() }
+                            continuation.yield(.finished(.interrupted)); return
+                        case "failed":
+                            self.forgetPending(turn, in: folder)
+                            if let change = Self.change(value, turn: turn.turnID) { continuation.yield(.binderChanged(change)); self.changed() }
+                            continuation.yield(.failed(.unavailable)); return
                         case "accepted", "running": break
                         default: throw ChatCommandFailure.unavailable
                         }
@@ -218,6 +229,30 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         guard let folder = scopes.first(where: { $0.value == binder })?.key, let request = requests[turn] else { throw ChatCommandFailure.unavailable }
         _ = try await client.command("chat_stop", binder: folder, [("request_id", .str(request.uuidString)), ("turn_id", .str(turn.uuidString))], timeout: 30)
     }
+    /// The line a turn left, with its Undo; one already undone says so and offers nothing more.
+    static func change(_ value: JSONObject, turn: UUID) -> ChatBinderChange? {
+        guard let summary = value["changes"]?["summary"]?.stringValue else { return nil }
+        if value["changes"]?["undone"] == .bool(true) { return ChatBinderChange(operationIDs: [], summary: summary + " (undone)", undo: nil) }
+        return ChatBinderChange(operationIDs: [], summary: summary, undo: ChatUndoReference(batchID: turn.uuidString))
+    }
+
+    struct UndoRefused: Error, CustomStringConvertible { let description: String }
+
+    private func undoTurn(_ reference: ChatUndoReference, in folder: URL) async throws {
+        guard let turn = UUID(uuidString: reference.batchID) else { throw UndoRefused(description: "This change can no longer be undone.") }
+        let value: JSONObject
+        do { value = try await client.command("chat_undo", binder: folder, [("turn_id", .str(turn.uuidString))], timeout: 120) }
+        catch { throw UndoRefused(description: "Undo did not complete. Nothing is reported as undone; check the binder's folder.") }
+        guard value["undone"] == .bool(true) else {
+            if value["records_changed"] == .bool(true) {
+                throw UndoRefused(description: "Nothing was undone: something was filed or approved during that turn. Use Undo under Recent changes for that, and change the files by hand.")
+            }
+            let names = (value["conflicts"]?.arrayValue ?? []).compactMap(\.stringValue).prefix(5).joined(separator: ", ")
+            throw UndoRefused(description: "Nothing was undone: \(names.isEmpty ? "these files" : names) changed after that turn.")
+        }
+        changed()
+    }
+
     private func history(_ folder: URL) async -> (entries: [BinderChat.Entry], note: String?) {
         do {
             let value = try await client.command("chat_history", binder: folder)
@@ -233,6 +268,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                     entries.append(.init(id: turn, speaker: .binder, text: try displayReply(object, turn: turn, folder: folder, historical: true), state: .earlier))
                 } else if ["failed", "interrupted"].contains(row["phase"]?.stringValue ?? "") {
                     entries.append(.init(id: turn, speaker: .binder, text: "This earlier request did not complete. It was not retried automatically.", state: .earlier))
+                }
+                if entries.last?.id == turn, let object = row.objectValue, let change = Self.change(object, turn: turn) {
+                    entries[entries.count - 1].changes = [change]
                 }
             }
             return (entries, value["more"] == .bool(true) ? "Showing the latest saved messages." : nil)

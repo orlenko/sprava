@@ -370,10 +370,11 @@
   search and fetch are allowed: every request goes through Sprava's proxy and is listed in the turn's summary,
   and once a turn has read untrusted text a request to a domain new to the binder waits for the person's tap
   (allow once, always for this binder, deny). Outward actions stay drafts (D13) (conversation.md §18.3).
-- **D24 decided (2026-10-30).** Undo by version history: a history per binder kept outside the folder (proposed:
-  git, its directory in Sprava's support folder), an entry before each turn for changes since the last one and an
-  entry after it for the turn's changes; Undo reverts one turn alone and shows a conflict instead of overwriting a
-  later edit; each turn ends with a one-line summary and Undo. restic stays the backup (conversation.md §18.4).
+- **D24 decided (2026-10-30; the store settled 2026-11-01).** Undo by version history: a history per binder kept outside
+  the folder, in Sprava's own store of bytes by hash rather than git (a copied project's `.git` would hide its files, and
+  a friend's Mac may have no git), an entry before each turn for changes since the last one and an entry after it for the
+  turn's changes; Undo reverts one turn alone and names a conflict instead of overwriting a later edit; each turn ends
+  with a one-line summary and Undo. Key files are never copied into it. restic stays the backup (conversation.md §18.4).
 - **D25 decided (2026-10-30).** Plain controls for plain actions: done, cancel, deadline, priority, description and
   adding a to-do are controls in the to-do list, applied by code with no model. A shopping list is to-dos with a
   tag, not a separate kind (conversation.md §18.2).
