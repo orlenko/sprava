@@ -53,7 +53,7 @@ package final class ClaudeReadConnections: Sendable {
 
     /// The window's explicit consent to share this binder's conversation/tasks and optional documents/intake.
     /// It grants reads/drafts, plus changes to the binder's files with `files`, which needs both sharing choices since the
-    /// tools can read everything in the folder. A task suggestion still needs the person's existing app action.
+    /// tools can read everything in the folder. Every connected binder's turn also has its to-do tools (`ClaudeTodoTools`).
     package func enable(folder: URL, documents: Bool, intake: Bool, files: Bool = false) throws -> Connection {
         let folder = folder.standardizedFileURL.resolvingSymlinksInPath()
         let instance = try Self.instance(folder)

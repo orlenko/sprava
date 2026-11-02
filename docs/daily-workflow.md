@@ -82,8 +82,8 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
 ## Optional: Claude and email intake
 
 This pilot uses one isolated Claude conversation per physical binder. Local models are optional; they do
-not route or replace this conversation. Claude reads explicitly shared sources and suggests drafts/tasks;
-it cannot send email, execute tools or save a task without the person's button click.
+not route or replace this conversation. Claude reads explicitly shared sources, drafts replies, and adds, changes
+and closes this binder's to-dos when you ask, with Undo for each turn. It cannot send email.
 
 1. Build/install Sprava using the normal app scripts. Open Health and wait for the background connection
    to answer before creating or adopting a binder. A running heartbeat alone is not an XPC connection.
@@ -129,9 +129,10 @@ it cannot send email, execute tools or save a task without the person's button c
    and page numbers. Coverage is bounded and not claimed exhaustive; missing evidence must stay visible.
 7. Ask for a reply to an intake email. Review its recipient, source citations and facts; copy privately or
    save the draft as text. Sending and reply threading remain in your mail client.
-8. Ask for a To-do. Edit its title, details, due date and priority, then click **Add privately to To-dos**.
-   This is an ordinary authenticated app write, and the task appears on the global To-dos page. An older
-   conversation suggestion creates a *new* task only after a separate confirmation; it is not auto-replayed.
+8. Ask Claude to add, change, finish or remove To-dos, as many as you like. It does so at once; they are private, and they
+   appear in this binder and on the global To-dos page. The reply ends with a line naming what changed, with **Undo**
+   for the whole turn. A to-do you changed since keeps your change, and Undo names it. An older reply may still carry a
+   suggestion to save, which creates a *new* task only when you click it.
 
 Stop interrupts the active turn; reopening a window resumes an accepted turn without sending it again. Saved app dialogue survives a
 restart. Disconnecting stops future sharing but cannot recall information already sent to Anthropic.

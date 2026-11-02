@@ -7,8 +7,8 @@ import Foundation
 import Retrieval
 import SpravaKit
 
-/// One app-authenticated, explicitly consented read/draft conversation per physical binder. Models
-/// receive no operation capability; their file tools stop at the binder's folder. Suggested tasks are data for a separate app confirmation.
+/// One app-authenticated, explicitly consented conversation per physical binder. Its file tools stop at the binder's
+/// folder, and the only operations it can reach are the to-do tools of a person's own turn (`ClaudeTodoTools`).
 public actor ClaudeConversationRuntime {
     public enum Refused: Error, Sendable { case notConnected, busy, unavailable, invalidRequest, stopped }
     struct Driver: Sendable {
@@ -22,8 +22,10 @@ public actor ClaudeConversationRuntime {
         let replace: @Sendable (String?) throws -> Void
         var persistent: @Sendable () -> Bool = { true }
     }
-    typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, URL?, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
+    typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, URL?, ClaudeAppTools?, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
+    /// The binder writer the to-do tools go through. The runtime attaches it at start.
+    public nonisolated let todoWriter = ClaudeTodoWriter()
     private let support: URL
     private let connections: ClaudeReadConnections
     private var exports = ConversationExport()
@@ -63,9 +65,9 @@ public actor ClaudeConversationRuntime {
     /// state; it does not read Keychain, launch a model, discover binders or enable a backend by itself.
     public static func production(support: URL) throws -> ClaudeConversationRuntime {
         try Self(support: support, secrets: ClaudeSubscriptionSecrets.keychain,
-                 makeDriver: { program, credential, connection, session, policy, binder, onSpawn in
+                 makeDriver: { program, credential, connection, session, policy, binder, appTools, onSpawn in
             try await ClaudeNativeConversation.driver(program: program, support: support, credential: credential, connection: connection,
-                                                      session: session, policy: policy, binder: binder, onSpawn: onSpawn)
+                                                      session: session, policy: policy, binder: binder, appTools: appTools, onSpawn: onSpawn)
         }, context: { folder, documents, intake, query, cancelled in
             try ClaudeBinderContext.build(folder: folder, support: support, documents: documents, intake: intake,
                                           query: query, reader: HelperDocumentReader(binder: folder, reader: .located()), cancelled: cancelled)
@@ -157,12 +159,22 @@ public actor ClaudeConversationRuntime {
             guard let id = try connections.savedID(for: folder), let turn = request["turn_id"]?.stringValue.flatMap(UUID.init(uuidString:)) else { throw Refused.invalidRequest }
             guard active[id] == nil, !preparing.contains(id), try available(folder) else { throw Refused.busy }
             preparing.insert(id); defer { preparing.remove(id) }
-            let history = TurnHistory(support: support, binder: id)
-            switch try await Task.detached(priority: .userInitiated, operation: { try history.undo(turn: turn, in: folder) }).value {
-            case .undone: return .init([(key: "undone", value: .bool(true))])
-            case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))])
-            case .recordsChanged: return .init([(key: "undone", value: .bool(false)), (key: "records_changed", value: .bool(true))])
-            }
+            let history = TurnHistory(support: support, binder: id), writer = todoWriter
+            return try await Task.detached(priority: .userInitiated) { () throws -> JSONObject in
+                // Files first, whole or not at all. Only then the to-dos, each on its own: one changed since stays as it is, and is named.
+                let todos = try history.todoChanges(forTurn: turn)
+                let files = try history.entry(forTurn: turn)
+                if todos == nil || files?.unrecorded == false {
+                    switch try history.undo(turn: turn, in: folder) {
+                    case .undone: break
+                    case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))])
+                    case .recordsChanged: return .init([(key: "undone", value: .bool(false)), (key: "records_changed", value: .bool(true))])
+                    }
+                }
+                let left = todos == nil ? [] : try ClaudeTodoTools.undo(turn: turn, folder: folder, history: history, writer: writer)
+                return left.isEmpty ? .init([(key: "undone", value: .bool(true))])
+                    : .init([(key: "undone", value: .bool(false)), (key: "todos_left", value: .array(left.prefix(20).map { .str($0) }))])
+            }.value
         }
         if command == "chat_history" || command == "chat_clear" {
             guard let id = try connections.savedID(for: folder) else { return .init([(key: "turns", value: .array([]))]) }
@@ -224,7 +236,7 @@ public actor ClaudeConversationRuntime {
         let question = Self.setupQuestion
         var stage = ClaudeSetupFailure.firstReply
         do {
-            let first = try await makeDriver(program, credential, id, firstSession.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", nil, { [state] pid in try state.spawned(firstSession, pid: pid) })
+            let first = try await makeDriver(program, credential, id, firstSession.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", nil, nil, { [state] pid in try state.spawned(firstSession, pid: pid) })
             driver = first
             let answer = try await first.run(question, false)
             guard first.exited(), answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw ClaudeSetupFailure.firstReply }
@@ -233,7 +245,7 @@ public actor ClaudeConversationRuntime {
             let secondSession = try state.session(connection: id, generation: UUID(), hash: "setup")
             recorded = secondSession
             stage = .resume
-            let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", nil, { [state] pid in try state.spawned(secondSession, pid: pid) })
+            let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", nil, nil, { [state] pid in try state.spawned(secondSession, pid: pid) })
             driver = second
             guard first.hash == second.hash else { throw Refused.unavailable }
             let fresh = try await second.run(question, false)
@@ -289,7 +301,8 @@ public actor ClaudeConversationRuntime {
         let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
-            let (context, reach) = try await Task.detached(priority: .userInitiated) {
+            let writer = todoWriter
+            let (context, reach, todos) = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
                 guard try available(folder) else { throw Refused.notConnected }
@@ -299,14 +312,16 @@ public actor ClaudeConversationRuntime {
                 var tools = (try? connections.allowsFileChanges(scope)) == true
                 if tools { do { try versions.record(folder, cancelled: { signal.stopped }) } catch { tools = false } }
                 guard !signal.stopped else { throw Refused.stopped }
-                return (try read(folder, scope.documents, scope.intake, record.text, { signal.stopped }), tools ? folder : nil)
+                // Read before the source pack, so a to-do changed after the agent could have seen it counts as changed.
+                let todos = ClaudeTodoTools(folder: folder, record: record, history: versions, writer: writer)
+                return (try read(folder, scope.documents, scope.intake, record.text, { signal.stopped }), tools ? folder : nil, todos)
             }.value
             guard !signal.stopped else { throw Refused.stopped }
             _ = try currentFolder(scope)
             let history = try receipts.history(conversationID: scope.id).filter { $0.requestID != record.requestID }
-            let policy = try ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history, tools: reach != nil)
+            let policy = try ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history, tools: reach != nil, todos: todos != nil)
             active[scope.id]?.indexing = false
-            let made = try await makeDriver(account.program, credential, scope.id, session.native, policy, reach, { [state] pid in
+            let made = try await makeDriver(account.program, credential, scope.id, session.native, policy, reach, todos?.appTools, { [state] pid in
                 guard !signal.stopped else { throw Refused.stopped }
                 try state.spawned(session, pid: pid)
             })
@@ -391,8 +406,12 @@ public actor ClaudeConversationRuntime {
     private func recordJSON(_ r: ConversationTurnStore.Record) -> JSONValue {
         var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
               ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
-        if let entry = try? TurnHistory(support: support, binder: r.conversationID).entry(forTurn: r.turnID) {
-            fields.append(("changes", .obj([("summary", .str(entry.summary)), ("undone", .bool(entry.undone)), ("undoable", .bool(!entry.unrecorded))])))
+        let history = TurnHistory(support: support, binder: r.conversationID)
+        let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID)
+        if entry != nil || todos != nil {
+            let summary = [entry?.summary, todos?.summary].compactMap { $0 }.joined(separator: ". ")
+            fields.append(("changes", .obj([("summary", .str(summary)), ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true)),
+                                            ("undoable", .bool(todos != nil || entry?.unrecorded == false))])))
         }
         return .obj(fields)
     }

@@ -33,6 +33,15 @@ public enum ClaudeInputFrames {
         ])))
     }
 
+    /// The answer to a `mcp_message` control request from the agent (`ClaudeAppTools`).
+    static func toolResponse(requestID: String, response: JSONValue) throws -> Data {
+        try frame(.object(JSONObject([
+            ("type", .string("control_response")),
+            ("response", .object(JSONObject([("subtype", .string("success")), ("request_id", .string(requestID)),
+                                             ("response", .object(JSONObject([("mcp_response", response)])))])))
+        ])))
+    }
+
     private static func frame(_ value: JSONValue) throws -> Data {
         let bytes = Data((JSONWriter.compact(value) + "\n").utf8)
         guard bytes.count <= maximumFrameBytes else { throw Failure.lineTooLarge }

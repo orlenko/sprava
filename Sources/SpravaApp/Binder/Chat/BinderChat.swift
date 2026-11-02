@@ -2,6 +2,7 @@ import BinderFormat
 import Combine
 import Foundation
 import Services
+import SpravaKit
 
 /// One binder's conversation on its page (conversation.md §3): the person's lines, the binder's replies as they
 /// stream, the changes each turn made with their Undo, and Stop. It talks only to `ChatCommands`, so the page works
@@ -193,7 +194,8 @@ final class BinderChat: ObservableObject {
             return
         }
         let line = draft
-        let requestID = UUID()
+        // Time-ordered, as binder-v0 §6.2 asks of the message id an op records.
+        let requestID = UUID(uuidString: UUIDv7.make()) ?? UUID()
         let entry = Entry(id: requestID, speaker: .person, text: line, state: .sending, requestID: requestID)
         threads[key]?.draft = ""
         threads[key]?.message = nil

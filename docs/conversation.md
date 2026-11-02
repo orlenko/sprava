@@ -1099,6 +1099,16 @@ document; update the brief; write a draft; search the binder's index; read a doc
 with page images. These are the actions Sprava can measure, undo by op, and hand down (18.6). Anything else it
 does with files and tools is recorded only as the turn's file changes.
 
+As built (`ClaudeTodoTools`, `ClaudeAppTools`, decisions.md D32): add, edit, complete and remove a to-do, in every connected
+binder's conversation, with or without file changes allowed. They apply at once, one op per call, each naming its turn and
+the person's message (binder-v0 §6.5), and the turn's line says what changed, with titles, beside its Undo. Undo reverses
+the turn's files first, whole or not at all, and then its to-dos one by one; a to-do changed since stays as it is and is
+named. A change applies only to a to-do as the turn found it, so one the person edited meanwhile is refused, not overwritten;
+one turn makes at most 50 changes. A to-do changed during a turn no longer stops the Undo of the turn's files: only a change
+to the catalog's documents does. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
+MCP server (type `sdk`, checked on 2.1.316 under `--safe-mode --restricted`), so no program, socket or token joins the
+sandbox, and a command the agent runs cannot call them. The other tools of this section are still to come.
+
 - **Sprava's own files are written only through the tools.** The catalog, the to-do list, the brief and Sprava's
   dot folders are read-only inside the sandbox. If the agent could also change a to-do through the shell, it
   would use the shell for the awkward cases, the tool calls would hold only the easy ones, and a shadow trained on

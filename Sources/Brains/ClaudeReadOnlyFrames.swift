@@ -9,6 +9,11 @@ struct ClaudeReadOnlyFrames {
     let sessionID: UUID
     let original: String
     var tools: Set<String> = []
+    /// Whether the launch offered Sprava's own tools, so the agent may send their requests on this pipe.
+    var appTools = false
+    /// Requests from the agent for Sprava's tools, oldest first, to be answered on the same pipe.
+    private(set) var toolRequests: [(id: String, message: JSONObject)] = []
+    private var answeredRequests = Set<String>()
     private(set) var initialized = false
     private(set) var acknowledged = false
     private(set) var reply: String?
@@ -73,7 +78,15 @@ struct ClaudeReadOnlyFrames {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
             receivedResult = true
+        case "control_request":
+            // These come before the init frame as well: the agent asks what the tools are while starting.
+            guard appTools, !receivedResult, let id = value["request_id"]?.stringValue, id.utf8.count <= 128,
+                  value["request"]?["subtype"] == .str("mcp_message"), value["request"]?["server_name"] == .str(ClaudeAppTools.server),
+                  let message = value["request"]?["message"]?.objectValue else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
+            toolRequests.append((id, message))
         case "control_response":
+            // The agent repeats an answer it was sent.
+            if appTools, let id = value["response"]?["request_id"]?.stringValue, answeredRequests.remove(id) != nil { return }
             guard initialized, let interruptID,
                   value["response"]?["request_id"] == .str(interruptID.uuidString.lowercased()),
                   value["response"]?["subtype"] == .str("success") else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
@@ -85,13 +98,31 @@ struct ClaudeReadOnlyFrames {
         }
     }
 
+    /// The requests waiting for an answer; each is expected back once, as `control_response`, when the agent repeats it.
+    mutating func takeToolRequests() -> [(id: String, message: JSONObject)] {
+        defer { toolRequests = [] }
+        for request in toolRequests { answeredRequests.insert(request.id) }
+        return toolRequests
+    }
+    /// Whether a tool may run now: the person's line has arrived, the turn has no result yet and no Stop was sent.
+    var turnOpen: Bool { acknowledged && !receivedResult && interruptID == nil }
+
+    private var serversAsExpected: (JSONValue?) -> Bool {
+        let expected = appTools
+        return { value in
+            guard let servers = value?.arrayValue else { return false }
+            guard expected else { return servers.isEmpty }
+            return servers.count == 1 && servers[0]["name"] == .str(ClaudeAppTools.server) && servers[0]["status"] == .str("connected")
+        }
+    }
+
     private mutating func system(_ value: JSONObject) throws {
         guard let subtype = value["subtype"]?.stringValue, subtype.utf8.count <= 128 else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
         if subtype == "init" {
             // The CLI turns dontAsk into default when it strips the token from commands' environments (CLI 2.1.316). With no
             // person to ask, a tool not on the launch's list is still refused.
             guard !initialized, value["session_id"] == .str(sessionID.uuidString.lowercased()),
-                  Set(value["tools"]?.arrayValue?.compactMap(\.stringValue) ?? ["(none)"]) == tools, value["mcp_servers"] == .array([]),
+                  Set(value["tools"]?.arrayValue?.compactMap(\.stringValue) ?? ["(none)"]) == tools, serversAsExpected(value["mcp_servers"]),
                   value["permissionMode"] == .str("dontAsk") || (!tools.isEmpty && value["permissionMode"] == .str("default")) else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }

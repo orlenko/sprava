@@ -36,19 +36,19 @@ package enum ClaudeReadLaunch {
     /// Verify the vendor signature on every preparation. Connection setup checks the installed
     /// CLI's protocol instead of requiring a particular release or executable filename.
     package static func prepare(program: URL, support: URL, connectionID: UUID, sessionID: UUID, credential: String,
-                                policy: String, reach: Reach? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
+                                policy: String, reach: Reach? = nil, appTools: ClaudeAppTools? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
         let program = program.resolvingSymlinksInPath()
         let hash = try installationHash(program)
         try refuseManagedPolicy()
         let home = support.appendingPathComponent("brains/read-homes/\(connectionID.uuidString)/\(sessionID.uuidString)", isDirectory: true)
         let launch = try plan(program: program, home: home, sessionID: sessionID,
-                              credential: credential, policy: policy, reach: reach, onSpawn: onSpawn)
+                              credential: credential, policy: policy, reach: reach, appTools: appTools, onSpawn: onSpawn)
         return Prepared(launch: launch, programHash: hash)
     }
 
     /// Also used by deterministic fixture tests. Production callers cannot bypass prepare's signature
     /// and managed-source checks: this plan builder is internal to Brains, not a package API.
-    static func plan(program: URL, home: URL, sessionID: UUID, credential: String, policy: String, reach: Reach? = nil,
+    static func plan(program: URL, home: URL, sessionID: UUID, credential: String, policy: String, reach: Reach? = nil, appTools: ClaudeAppTools? = nil,
                      onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) throws -> ClaudeReadOnlyTurn.Launch {
         // The real path, which is what the sandbox compares: resolvingSymlinksInPath would strip /private from /private/var.
         let reach = try reach.map { reach -> Reach in
@@ -89,8 +89,11 @@ package enum ClaudeReadLaunch {
             "DISABLE_TELEMETRY": "1"
         ]
         let toolList = tools.joined(separator: ",")
-        let toolArguments = reach == nil ? ["--tools", "", "--disallowedTools", "*"]
-            : ["--tools", toolList, "--allowedTools", allowedTools.joined(separator: ",")]
+        let appNames = appTools?.names ?? []
+        let toolArguments = reach == nil
+            ? (appNames.isEmpty ? ["--tools", "", "--disallowedTools", "*"] : ["--tools", "", "--allowedTools", appNames.joined(separator: ",")])
+            : ["--tools", toolList, "--allowedTools", (allowedTools + appNames).joined(separator: ",")]
+        let servers = appTools == nil ? "{\"mcpServers\":{}}" : JSONWriter.compact(.obj([("mcpServers", .obj([(ClaudeAppTools.server, .obj([("type", .str("sdk")), ("name", .str(ClaudeAppTools.server))]))]))]))
         if let reach {
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
             environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
@@ -104,12 +107,13 @@ package enum ClaudeReadLaunch {
         let args = ["-f", home.appendingPathComponent("app-sandbox.sb").path, program.path,
                     "--safe-mode", "--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--verbose", "--replay-user-messages"] + toolArguments + [
-                    "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+                    "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", servers,
                     "--settings", "{\"disableAllHooks\":true}", "--model", "sonnet", "--max-budget-usd", reach == nil ? "2" : "5",
                     "--append-system-prompt-file", home.appendingPathComponent("app-policy.txt").path]
         return ClaudeReadOnlyTurn.Launch(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"), arguments: args,
                                         environment: environment, directory: reach?.folder ?? home, sessionID: sessionID,
-                                        tools: reach == nil ? [] : Set(tools), secret: reach == nil ? nil : credential, onSpawn: onSpawn)
+                                        tools: Set((reach == nil ? [] : tools) + appNames), secret: reach == nil ? nil : credential,
+                                        appTools: appTools, onSpawn: onSpawn)
     }
 
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing

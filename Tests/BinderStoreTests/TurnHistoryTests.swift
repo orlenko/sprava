@@ -116,6 +116,17 @@ private func temporaryFolder() throws -> URL {
         #expect(f.read("documents/bylaw.txt") == "Invented bylaw")
     }
 
+    @Test func aToDoChangedDuringATurnDoesNotStopItsUndo() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[],\"open_items\":[]}", "catalog.json"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("Invented notes", "notes.md")
+        try f.write("{\"documents\":[],\"open_items\":[{\"id\":\"t-1\"}]}", "catalog.json")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(!f.exists("notes.md"))
+    }
+
     func sha(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
 
     @Test func aFileChangedInATurnAndFiledSinceIsNotRevertedUnderItsRecord() throws {
