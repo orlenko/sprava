@@ -151,6 +151,100 @@ private func temporaryFolder() throws -> URL {
         #expect(entry.summary == "Changed 1 file: notes.md")
     }
 
+    func set(_ value: String, attribute: String, on path: String, in f: Fixture) {
+        let url = f.folder.appendingPathComponent(path)
+        #expect(setxattr(url.path, attribute, value, value.utf8.count, 0, 0) == 0)
+    }
+    func attribute(_ name: String, on path: String, in f: Fixture) -> String? {
+        let url = f.folder.appendingPathComponent(path)
+        var buffer = [UInt8](repeating: 0, count: 256)
+        let got = getxattr(url.path, name, &buffer, 256, 0, 0)
+        return got < 0 ? nil : String(decoding: buffer.prefix(got), as: UTF8.self)
+    }
+
+    @Test func theBindersOwnFoldersCountInAnySpelling() throws {
+        #expect(TurnHistory.excluded(".SPRAVA/ops.jsonl") && TurnHistory.excluded("Catalog.JSON") && TurnHistory.excluded("dashboard.md"))
+        #expect(!TurnHistory.excluded("documents/catalog.json"))
+        let f = try Fixture()
+        try f.write("first", "notes.md"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("second", "notes.md"); try f.write("Invented drop", "Intake/report.pdf")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(f.read("notes.md") == "first")
+        #expect(f.read("Intake/report.pdf") == "Invented drop")
+    }
+
+    @Test func aFileAndAttributesCannotReadAsAnotherFile() throws {
+        let f = try Fixture()
+        try f.write("plain", "a.txt"); set("saved note", attribute: "user.note", on: "a.txt", in: f)
+        try f.write("plainuser.note\u{0}saved note", "b.txt")
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.remove("a.txt"); try f.remove("b.txt")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(f.read("a.txt") == "plain" && attribute("user.note", on: "a.txt", in: f) == "saved note")
+        #expect(f.read("b.txt") == "plainuser.note\u{0}saved note" && attribute("user.note", on: "b.txt", in: f) == nil)
+    }
+
+    @Test func aFiledPathInAnotherSpellingIsStillFiled() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[]}", "catalog.json"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("Invented report", "documents/Report.txt")
+        try f.history.record(f.folder, turn: turn)
+        try f.write("{\"documents\":[{\"path\":\"documents/report.txt\"}]}", "catalog.json")
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(f.read("documents/Report.txt") == "Invented report")
+    }
+
+    @Test func aHugeAttributeIsTrackedByNameNotRead() throws {
+        let f = try Fixture()
+        try f.write("small", "fork.bin")
+        let size = TurnHistory.maximumAttributeBytes + 1
+        let value = [UInt8](repeating: 7, count: size), url = f.folder.appendingPathComponent("fork.bin")
+        let wrote = setxattr(url.path, "com.apple.ResourceFork", value, size, 0, 0)
+        try #require(wrote == 0 || errno == E2BIG || errno == ENOTSUP) // Not every volume holds one this size.
+        try f.history.record(f.folder)
+        if wrote == 0 {
+            #expect(try FileManager.default.subpathsOfDirectory(atPath: f.history.blobs.path).filter { $0.contains("/") }.isEmpty)
+        }
+    }
+
+    @Test func anAnnotationAddedAfterATurnIsAConflictNotErased() throws {
+        let f = try Fixture()
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("Invented PDF bytes", "paper.pdf")
+        try f.history.record(f.folder, turn: turn)
+        set("the person's note", attribute: "net_sourceforge_skim-app_notes", on: "paper.pdf", in: f)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .conflict(["paper.pdf"]))
+        #expect(attribute("net_sourceforge_skim-app_notes", on: "paper.pdf", in: f) == "the person's note")
+    }
+
+    @Test func identicalBytesWithDifferentAnnotationsRestoreTheirOwn() throws {
+        let f = try Fixture()
+        try f.write("Invented PDF bytes", "paper.pdf")
+        set("first note", attribute: "net_sourceforge_skim-app_notes", on: "paper.pdf", in: f)
+        try f.history.record(f.folder)
+        let turn = UUID()
+        set("second note", attribute: "net_sourceforge_skim-app_notes", on: "paper.pdf", in: f)
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(attribute("net_sourceforge_skim-app_notes", on: "paper.pdf", in: f) == "first note")
+    }
+
+    @Test func macOSsOwnBookkeepingIsNotAChange() throws {
+        let f = try Fixture()
+        try f.write("plain", "notes.md"); try f.history.record(f.folder)
+        set("opened", attribute: "com.apple.lastuseddate#PS", on: "notes.md", in: f)
+        #expect(try f.history.record(f.folder, turn: UUID()) == nil)
+        #expect(TurnHistory.countsAsContent("com.apple.ResourceFork") && TurnHistory.countsAsContent("com.apple.metadata:_kMDItemUserTags"))
+        #expect(TurnHistory.countsAsContent("com.apple.metadata:kMDItemFinderComment"))
+        #expect(!TurnHistory.countsAsContent("com.apple.quarantine"))
+    }
+
     @Test func aLaterEditIsAConflictAndNothingMoves() throws {
         let f = try Fixture()
         try f.write("first", "notes.md"); try f.write("keep", "other.md")
