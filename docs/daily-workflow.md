@@ -33,7 +33,7 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
    (`tax-2027`) unless you type your own. Check the name and location, then choose **Create Binder**.
 2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Edit** it to
    leave lines out or to give a date of your own, then **Approve**. No item carries a filing deadline; any date on
-   it is one you chose, and you can add one later by double-clicking the item and choosing **Add date**.
+   it is one you chose, and you can add one later with the item's visible **Edit** button and **Add date**.
 3. Add slips and receipts by dropping them on **Drop emails or files here**, at the top of the binder's page. Each
    becomes a card within a minute. Check its **Folder** (`slips`, `receipts` or `return`) and **How did it reach
    you?**, change the folder if it is wrong, then **Approve** to file it.
@@ -44,11 +44,15 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
    and `correspondence`, and an undated starter checklist to approve as above.
 2. Keep the records by dropping minutes, statements, quotes and letters on the binder, and choosing the folder on
    each card before **Approve**.
-3. Track action items. Type one per line in **Tell this binder…** (it comes back as a card for your OK), or use
-   **Add a to-do** on the To-dos page with this binder chosen. On the binder's page, double-click an item (or
-   choose **Edit** from its right-click menu) to set its **Details** and **Priority**; set **Status** to
-   **Waiting** to name who it is **Waiting on** and **Add follow-up date**, then **Save**. **Mark Done**, in the
-   same menu, closes it.
+3. Track action items in the binder's **Project** view or on **To-dos** across binders. Use **Add a to-do**
+   (**Add a to-do directly** in Project), choose the binder, and fill in an optional description, due date,
+   priority and context, then **Add**. This writes the task immediately, without a model or a review card.
+   Each row has **Edit** and **Cancel to-do**, plus a circle to mark it done. **Edit** exposes the deadline
+   (**Add date** or **No date**), **Details** and **Priority**; set **Status** to **Waiting** to name who it is
+   **Waiting on** and set a follow-up date, then **Save**. **Discard edits** leaves the saved task unchanged.
+   **Cancel to-do** closes it as dropped. Use **Undo** beside the last change on To-dos, in its edit panel,
+   or under **Recent changes** in Project to reverse an addition, edit, completion or cancellation.
+   Notes that need review can still be entered in Project's separate note box.
 4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
    selects its file. **Open Binder Folder** opens the whole folder, including files nobody has filed, which this list
    does not show.
