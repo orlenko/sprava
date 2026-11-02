@@ -83,6 +83,10 @@ import Testing
         try Data("invented".utf8).write(to: stray); defer { try? FileManager.default.removeItem(at: stray) }
         #expect(try !f.allowed("cat \(stray.path)"))
         #expect(try !f.allowed("ls /private/var/folders"))
+        // Homebrew's and the system's application data, as opposed to their programs.
+        #expect(try !f.allowed("ls /opt/homebrew/var"))
+        #expect(try !f.allowed("ls '/Library/Application Support'"))
+        #expect(try !f.allowed("ls /Library/Keychains"))
         // What commands need still reads: the system's own files, and looking up a path.
         #expect(try f.allowed("cat /etc/hosts >/dev/null && /usr/bin/sw_vers >/dev/null && pwd && test -d /private/tmp"))
     }
@@ -120,6 +124,12 @@ import Testing
         #expect(try !f.allowed("/bin/bash -c 'exec 3<>/dev/tcp/93.184.216.34/443'"))
         #expect(try !f.allowed("curl -sS -m 4 --noproxy '*' https://example.invalid -o /dev/null"))
         #expect(try f.allowed("/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/\(proxy.port)'"))
+    }
+
+    @Test func aCommandCannotListenForAConnection() throws {
+        let f = try Fixture(); defer { f.clean() }
+        // A listening port would hand a document to whatever connects, past the proxy.
+        #expect(try !f.allowed(#"/usr/bin/perl -e 'use Socket; socket(S, PF_INET, SOCK_STREAM, 6) or exit 3; bind(S, pack_sockaddr_in(0, INADDR_ANY)) or exit 4; listen(S, 1) or exit 5; exit 0'"#))
     }
 
     @Test func toolsThatReachOtherAppsWillNotRun() throws {

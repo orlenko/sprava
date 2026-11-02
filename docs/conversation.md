@@ -1050,7 +1050,8 @@ connections are allowed to one loopback port only, Sprava's proxy, which so far 
 every other host, so web access and its domain prompt are still to come. Tools that reach the person's other apps,
 clipboard or Keychain will not run. A key file cannot be read by name but can be deleted, which the summary says Undo
 cannot reverse; renaming one first gets past that name rule. A turn whose changes could not be recorded runs with no tools.
-Reads outside the binder and the agent's home are closed except for the system's own folders. Before a turn counts as
+Reads outside the binder and the agent's home are closed except for the folders of system files, programs and libraries,
+and listening on a port is closed. If a turn's changes cannot be recorded, its line says so and it has no Undo. Before a turn counts as
 over, `AgentContainment` kills every process still in that session's sandbox, detached ones included, so nothing goes on
 changing the binder after its turn is recorded.
 
