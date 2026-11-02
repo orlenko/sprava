@@ -177,8 +177,17 @@ public struct TurnHistory: Sendable {
         guard !bytes.isEmpty else { return true }
         guard let text = String(data: bytes, encoding: .utf8), let parsed = try? JSONParser.parse(text), parsed.safety.isSafe else { return false }
         // Folded, as the writer compares them: on most volumes Report.txt and report.txt are one file.
-        let filed = Set((parsed.value["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue }.map(DocumentPaths.fold))
-        return !entry.changes.contains { $0.before == nil && filed.contains(DocumentPaths.fold($0.path)) }
+        var filed: [String: String?] = [:]
+        for document in parsed.value["documents"]?.arrayValue ?? [] {
+            if let path = document["path"]?.stringValue { filed[DocumentPaths.fold(path)] = document["sha256"]?.stringValue }
+        }
+        return !entry.changes.contains { change in
+            guard change.after != nil, let recorded = filed[DocumentPaths.fold(change.path)] else { return false }
+            // A file this turn made is gone after Undo. A file it changed goes back, which breaks the record only if the
+            // record describes the changed version: one that still holds the earlier version comes out true again.
+            guard change.before != nil, let recorded else { return true }
+            return DocumentPaths.sha256(of: folder.appendingPathComponent(change.path)) == recorded
+        }
     }
 
     /// The catalog's bytes, empty when there is none, nil when what is there cannot be read as an ordinary bounded file: a
