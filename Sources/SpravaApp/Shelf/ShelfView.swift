@@ -28,21 +28,21 @@ final class ShelfModel: ObservableObject, DraftOwner {
         }
     }
     @Published private var snapshotNote: String?
-    @Published private var operationNote: String?
+    @Published var operationNote: String?
     var note: String? {
         let parts = [operationNote, snapshotNote].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
     @Published var lastRefresh: Date?
     @Published private(set) var creatingBinder = false
-    var draftState: DraftState { DraftState(saving: creatingBinder).merging(documents.draftState) }
+    var draftState: DraftState { DraftState(saving: creatingBinder || openingGeneral).merging(documents.draftState) }
 
     private let support: URL
     private let workQueue = DispatchQueue(label: "sprava.shelf.reads", qos: .utility)
     private lazy var disk = ShelfDiskWorker(queue: workQueue, deadline: deadline)
     private let readTimeout: TimeInterval
     private let deadline: DiskDeadline
-    private var snapshotGeneration: UInt64 = 0
+    var snapshotGeneration: UInt64 = 0
     private let readSnapshot: @Sendable (URL) -> ShelfSnapshot.Snapshot
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
     private var refreshTask: Task<Void, Never>?
@@ -50,6 +50,9 @@ final class ShelfModel: ObservableObject, DraftOwner {
     /// The template, name and year, with the destination shown before the explicit Create Binder action.
     var askForBinder: @MainActor (_ empty: URL?, _ year: Int, _ parent: URL, _ templates: [BinderTemplate]) -> NewBinderAnswer? = ShelfModel.binderAlert
     var binderParent: @MainActor () -> URL? = { nil }
+    var generalParentUsed: @MainActor (URL) -> Void = { _ in }
+    var generalRequest: Task<URL, Error>?
+    @Published var openingGeneral = false
     var openSettings: @MainActor () -> Void = {}
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
@@ -395,6 +398,8 @@ struct ShelfView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 280)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
+                    Button("General") { model.openGeneral() }
+                        .buttonStyle(.borderless).disabled(model.openingGeneral)
                     Button { model.newBinder() } label: { Label("New Binder…", systemImage: "plus") }
                         .buttonStyle(.borderless)
                         .disabled(model.creatingBinder)
@@ -414,7 +419,7 @@ struct ShelfView: View {
                     TodosView(model: todo, editor: itemEditor, board: model.todos, rows: model.rows, open: { model.selection = $0 },
                               reload: { await model.refreshAndWait(afterChanges: true) })
                 } else if model.selection == inboxSelection {
-                    InboxView(model: inbox, rows: model.rows)
+                    InboxView(model: inbox, rows: model.rows, general: { try await model.ensureGeneral() })
                 } else if model.selection == backupSelection {
                     BackupView(model: backup, rows: model.rows)
                 } else if model.selection == brainsSelection {
@@ -445,6 +450,10 @@ struct ShelfView: View {
         }
         .background(WindowCloseGuard(registry: drafts).allowsHitTesting(false))
         .onAppear {
+            todo.generalTarget = {
+                let folder = try await model.ensureGeneral()
+                return TodoModel.Target(folder: folder, label: "General")
+            }
             model.openSettings = { [openSettings] in openSettings() }
             drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
             drafts.track(binderTodos); drafts.track(binderActions); drafts.track(binderConversation)

@@ -27,7 +27,7 @@ struct TodosView: View {
             Section {
                 Text("To-dos").font(.title2.bold())
                 counts
-                QuickAdd(model: model, targets: targets, contexts: board.contexts, reload: reload)
+                QuickAdd(model: model, targets: targets, contexts: board.contexts, offersGeneral: true, reload: reload)
                 filters
                 if let change = model.lastChange {
                     HStack {
@@ -120,13 +120,14 @@ struct QuickAdd: View {
     @ObservedObject var model: TodoModel
     let targets: [TodoModel.Target]
     let contexts: [String]
+    var offersGeneral = false
     let reload: () async -> Void
 
     /// The page's contexts, and the common ones of binder-v0 §5.9.
     var offered: [String] { Array(Set(contexts + ["@calls", "@computer", "@errands", "@online"])).sorted() }
 
     var target: TodoModel.Target? {
-        let folder = model.defaultBinder(targets)
+        let folder = offersGeneral ? model.binder : model.defaultBinder(targets)
         return targets.first { $0.folder == folder }
     }
 
@@ -137,7 +138,7 @@ struct QuickAdd: View {
             HStack {
                 TextField("Add a to-do", text: $model.draft).textFieldStyle(.roundedBorder).onSubmit(add)
                 Button("Add", action: add)
-                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || targets.isEmpty)
+                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!offersGeneral && targets.isEmpty))
             }
             TextField("Description (optional)", text: $model.details, axis: .vertical)
                 .textFieldStyle(.roundedBorder).lineLimit(1...3)
@@ -154,9 +155,10 @@ struct QuickAdd: View {
                     Text("No context").tag(String?.none)
                     ForEach(offered, id: \.self) { Text($0).tag(String?.some($0)) }
                 }
-                Picker("Binder", selection: Binding(get: { model.defaultBinder(targets) }, set: { model.binder = $0 })) {
+                Picker("Binder", selection: Binding(get: { offersGeneral ? target?.folder : model.defaultBinder(targets) }, set: { model.binder = $0 })) {
+                    if offersGeneral { Text("General").tag(URL?.none) }
                     ForEach(targets) { Text($0.label).tag(URL?.some($0.folder)) }
-                }.disabled(targets.isEmpty)
+                }.disabled(!offersGeneral && targets.isEmpty)
             }
         }
         .disabled(model.adding)

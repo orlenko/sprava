@@ -149,9 +149,8 @@ Use an invented binder adopted in the installed app, with invented documents onl
 5. **The channel answer.** Approve a card with "on paper, scanned" picked: the document in `catalog.json` has
    `provenance.obtained.channel: paper`.
 6. **A careful reading.** An invented by-law appears under Inbox › "Worth a careful reading". No brain gets
-   intake documents until the person can mark one as not private (issue #283): with a brain connected to that
-   binder, "May read documents" on and the binder's disclosure at full, ask it to look at the documents
-   waiting. `list_readings` lists none, and the by-law stays in the Inbox for the person. With "May read
+   intake documents until the person can mark one as not private (issue #283). With an invented legacy client
+   fixture that has document access and a binder at full disclosure, ask it to look at the documents waiting. `list_readings` lists none, and the by-law stays in the Inbox for the person. With "May read
    documents" off, `read_document` is refused for that reason.
 7. **Logs.** `runtime/jobs.log` has `intake carded=… held=…` and `clerk document outcome=… class=…` lines
    with counts only: no names, titles or text.
@@ -174,3 +173,18 @@ the binder's instruction line, the conversation composer and an edited task sugg
 2. **Stopped.** Add `{"drill_exit_at_start": true}` to `developer.json` in Sprava's folder and press Restart on
    Health: the runtime exits at every start before its lease, launchd keeps restarting it, and within five
    minutes Health shows red with a rising restart count. Remove the setting afterwards.
+
+## Retired external Claude Code setup (D29)
+
+Use invented support state only; never test this against a personal Claude profile. The automated fixtures are
+`BrainsModelTests` and `ExternalRegistrationRetirementTests`.
+
+1. A fresh Assistant page offers private Claude setup and no external-client registration or document grant.
+2. An invented legacy `claude-code-1` record is revoked when Assistant opens. Its token stops working; another
+   invented client remains unchanged and has only Disconnect. Reopen Assistant: the profile-cleanup explanation
+   remains. A failed withdrawal is shown even after access has ended.
+3. Personal config files are never opened or changed. The old installer recorded no profile destination,
+   so remove a leftover entry manually only after checking its command points into Sprava's `sprava-mcp`
+   helper and its arguments are `--client claude-code-1`. A shared entry name is insufficient evidence.
+4. Claude setup and binder connections inside Sprava still work. The retired `claude-mcp-probe.sh`, which
+   launched personal Claude sessions, is gone; it is not a test of the in-app agent's attested MCP tools.

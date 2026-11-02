@@ -380,7 +380,11 @@
   tag, not a separate kind (conversation.md §18.2).
 - **D26 decided (2026-10-30).** No agent for the overall view. The cross-binder to-do list, the briefs and their
   sync are code, with the on-device model where wording is needed; a built-in General binder holds what fits no
-  other. Remote access comes from the companion (P19) (conversation.md §18.2).
+  other. General is an ordinary private binder, created only when opened or first used for a note or to-do,
+  beside future new binders (fresh default `~/Sprava`). A location change affects future binders, not General.
+  It stays on this Mac's Shelf: removal, transfer and offload are refused before session cleanup; backups still
+  work. A missing or replaced folder requires restoring the original, never silently starting an empty one.
+  Remote access comes from the companion (P19) (conversation.md §18.2).
 - **D27 decided (2026-10-30; method from Consultant's reading of Steve Yegge's "The Counting House").**
   Shadowing: the agent acts; for each of Sprava's structured tool calls a local model decides the same input in
   shadow, unapplied and unshown. It is scored against the person's outcome on the agent's action (accepted,
@@ -395,7 +399,10 @@
   own Claude Code with their own token is to be settled before Sprava is offered to others.
 - **D29 decided (2026-10-30).** The Brains page no longer registers Sprava in the person's own Claude Code. A
   person's own session can open a binder folder directly; the registration added a token to manage per Claude
-  profile and nothing a folder does not give.
+  profile and nothing a folder does not give. App and CLI registration/grant paths are removed. Opening
+  Assistant revokes the old fixed client capability. Personal Claude config files stay untouched because
+  the old installer recorded no profile or entry provenance; Assistant explains manual entry identification.
+  The private in-app Claude setup and the MCP server/runtime sessions for agent tools remain.
 
 ## Retired
 

@@ -137,8 +137,7 @@ import Testing
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let garbage = Data("{\"clients\": [ not json".utf8)
         try garbage.write(to: url)
-        let r = try JSONParser.parse(c.handle(JSONWriter.compact(.obj([("command", .str("register_client")), ("client_id", .str("claude-code-2")),
-                                                                         ("binders", .obj([("/Invented/estate-example", .str("read"))]))])))).value
+        let r = try JSONParser.parse(c.handle(JSONWriter.compact(.obj([("command", .str("list_clients"))])))).value
         #expect(r["ok"] == .bool(false))
         #expect(try Data(contentsOf: url) == garbage)
         #expect(throws: MCPClients.Unreadable.self) { _ = try MCPClients.load(support) }
@@ -153,9 +152,7 @@ import Testing
         let folder = try adopted()
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-bugbot-sock-\(UUID().uuidString)")
         let c = Commands(support: support, deviceID: "t")
-        func command(_ f: [(String, JSONValue)]) throws -> JSONValue { try JSONParser.parse(c.handle(JSONWriter.compact(.obj(f)))).value }
-        let token = try #require(try command([("command", .str("register_client")), ("client_id", .str("claude-code-3")), ("documents", .bool(true)),
-                                              ("binders", .obj([(folder.standardizedFileURL.path, .str("read"))]))])["token"]?.stringValue)
+        let token = try legacyClient(c, id: "claude-code-3", binders: [folder.standardizedFileURL.path: "read"], documents: true)
         let listener = MCPListener(support: support, commands: c, queue: DispatchQueue(label: "test.mcp"),
                                    shelf: { Shelf.rows(registry: nil, picked: [folder]) }, log: { _ in })
         var fds: [Int32] = [0, 0]
@@ -174,7 +171,9 @@ import Testing
         guard case .line(let reply) = reader.next(limit: MCPListener.lineLimit) else { Issue.record("an unchanged client got no reply"); return }
         #expect(reply.contains("list_binders"))
 
-        _ = try command([("command", .str("client_documents")), ("client_id", .str("claude-code-3")), ("documents", .bool(false))])
+        var changed = try MCPClients.load(support)
+        changed.clients[0].documents = false
+        try changed.save(support)
         #expect(writeLine(client, list))
         guard case .end = reader.next(limit: MCPListener.lineLimit) else { Issue.record("the connection stayed open"); return }
     }
@@ -212,8 +211,7 @@ import Testing
         _ = try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("dev"))]), now: now)
         let support = temp("sock")
         let c = Commands(support: support, deviceID: "dev")
-        let token = try #require(try call(c, [("command", .str("register_client")), ("client_id", .str("brain-7")),
-                                              ("binders", .obj([(folder.standardizedFileURL.path, .str("propose"))]))])["token"]?.stringValue)
+        let token = try legacyClient(c, id: "brain-7", binders: [folder.standardizedFileURL.path: "propose"])
         let queue = DispatchQueue(label: "test.mcp.commands")
         let listener = MCPListener(support: support, commands: c, queue: queue,
                                    shelf: { Shelf.rows(registry: nil, picked: [folder]) }, log: { _ in })

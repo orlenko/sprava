@@ -779,7 +779,7 @@ session history; shown in the engine settings, deleted whole as 11.1 says; the d
   judgement (F13 in PR #347), unknown-binder captures and the back office's disagreements.
 - **The careful-reading queue** becomes the back office's review.
 - **The Brains page** becomes the engine settings (back office, sign-in, costs, the front desk's model,
-  scores, rules); registering Sprava in the person's own Claude Code moves to "Advanced", unchanged.
+  scores, rules). External Claude Code registration is removed by D29 and 18.8.
 - **Tiers.** The clerk keeps its scope (P5); the front desk is a small brain on the Mac; the back office is
   Tier 2 that Sprava runs. mvp.md 1.1's "nothing changes until the person approves it" becomes 6.1.
 
@@ -1015,7 +1015,10 @@ tool from the start, rather than struggle through multiple attempts at less-capa
 - **Every turn can be undone.** Sprava records the binder's files before and after each turn in a version
   history outside the folder (18.4). That replaces approval taps for changes inside the binder.
 - **No agent for the overall view.** The cross-binder to-do list, the briefs and their sync are code, with the
-  on-device model where wording is needed; a built-in General binder takes what fits nowhere else (D26). The
+  on-device model where wording is needed; a built-in General binder takes what fits nowhere else (D26).
+  It is created on first use as an ordinary private folder beside new binders (fresh default `~/Sprava`),
+  stays on this Mac's Shelf, and supports ordinary backups but no removal, transfer or offload.
+  A missing folder must be restored, never replaced silently. The
   author's old overall-list session needed no intelligence of its own.
 - **The local model shadows** the agent's structured actions and takes a verb over only when measured (18.6).
 
@@ -1143,7 +1146,9 @@ rate. The Sonnet-to-Opus rule and the shadow thresholds are set from these numbe
 - D3's class B taps inside the binder: replaced by 18.4.
 - 11.1's process that ends after each reply: one warm process per binder, so the cached prefix is reused.
 - The Brains page's registration of Sprava in the person's own Claude Code ("your own Claude Code sessions"):
-  removed (D29). The person's own sessions can open the binder folder directly.
+  removed (D29). The person's own sessions can open the binder folder directly. Assistant retires the old
+  fixed client capability, but leaves profile files untouched because the installer recorded no destination.
+  MCP and the runtime's attested tool sessions remain for 18.5.
 
 ### 18.9 Spikes and order
 

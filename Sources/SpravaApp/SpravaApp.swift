@@ -24,6 +24,7 @@ struct SpravaApp: App {
         let model = ShelfModel(refreshRegistration: args.contains(RuntimeStart.refreshArgument))
         let binderLocation = BinderLocationSettings()
         model.binderParent = { binderLocation.folder }
+        model.generalParentUsed = { binderLocation.useIfUnset($0) }
         _binderLocation = StateObject(wrappedValue: binderLocation)
         _model = StateObject(wrappedValue: model)
         // Before the first window, so none opens in the wrong look.

@@ -64,6 +64,7 @@ extension Commands {
     static let ownerRecordLimit = 64 * 1024
 
     func run(_ command: String, _ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
+        try checkGeneralRetirement(r)
         // An interrupted expunge (binder-v0 §6.11): the cards and the op log may still hold the text being forgotten,
         // so nothing in the binder is read or changed until the expunge is repeated.
         if Self.binderCommands[command] != nil && command != "create_binder" || command == "binder_settings",
