@@ -2,9 +2,8 @@ import BinderFormat
 import SpravaKit
 import SwiftUI
 
-/// One item on the binder's page. On an adopted binder the circle marks it done, a click on the title (or a double
-/// click on the row) edits it in place, and the context menu offers Edit, Mark Done and Delete; the open row has
-/// Delete beside Save and Cancel. Each is one op through the runtime; a closing is undone from Recent changes.
+/// Visible deterministic controls for a binder's task (conversation.md §18.2): the circle completes it,
+/// Edit opens ordinary fields, and Cancel to-do drops it. All writes use the runtime and op-log Undo.
 struct ItemRow: View {
     let item: Item
     let bucket: Bucket
@@ -49,13 +48,18 @@ struct ItemRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title)
                         .onTapGesture { begin() }
+                    if !dateText.isEmpty { Text(dateText).font(.caption).monospacedDigit().foregroundStyle(.secondary) }
                     if !details.isEmpty {
                         Text(details.joined(separator: "   ")).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                // After the title, so an item without a date does not push its title right of the others.
-                if !dateText.isEmpty { Text(dateText).monospacedDigit().foregroundStyle(.secondary) }
+                if changeable {
+                    Button("Edit") { begin() }.disabled(actions.busy || editor.saving.contains(folder.standardizedFileURL))
+                    Button("Cancel to-do") { close("drop") }
+                        .disabled(actions.busy || editor.saving.contains(folder.standardizedFileURL))
+                        .help("Cancel this to-do; Undo in Recent changes brings it back")
+                }
             }
         }
         .contentShape(Rectangle())
@@ -76,6 +80,7 @@ struct ItemRow: View {
             Button { close("complete") } label: { image }
                 .buttonStyle(.plain)
                 .disabled(actions.busy || editor.saving.contains(folder.standardizedFileURL))
+                .accessibilityLabel(editing ? "Save and mark done" : "Mark done")
                 .help(editing ? "Save and mark done" : "Mark done")
         } else {
             image
@@ -130,6 +135,12 @@ struct ItemEditFields: View {
     var body: some View {
         let row = editor.row(in: folder)
         VStack(alignment: .leading, spacing: 8) {
+          HStack {
+            TextField("Title", text: Binding(get: { editor.row(in: folder)?.title ?? "" },
+                                             set: { editor.setTitle($0, in: folder) }))
+                .textFieldStyle(.roundedBorder)
+                .focused($titleFocused)
+          }
           HStack(alignment: .firstTextBaseline) {
             if let due = row?.due {
                 DatePicker("Due", selection: Binding(get: { ItemEditor.date(editor.row(in: folder)?.due ?? due) },
@@ -141,16 +152,14 @@ struct ItemEditFields: View {
             } else {
                 Button("Add date") { editor.setDue(CalendarDate.today(), in: folder) }.font(.caption)
             }
-            TextField("Title", text: Binding(get: { editor.row(in: folder)?.title ?? "" },
-                                             set: { editor.setTitle($0, in: folder) }))
-                .textFieldStyle(.roundedBorder)
-                .focused($titleFocused)
+          }
+          HStack {
             Button("Save") { save() }.disabled(actions.busy || row?.validation != nil)
-            Button("Cancel") { editor.cancel(in: folder) }.keyboardShortcut(.cancelAction)
+            Button("Discard edits") { editor.cancel(in: folder) }.keyboardShortcut(.cancelAction)
             if deletable {
-                Button("Delete", role: .destructive) { editor.close(as: "drop", in: folder, actions, reload: reload) }
-                    .disabled(actions.busy)
-                    .help("Delete this item; Undo in Recent changes brings it back")
+                Button("Done") { editor.close(as: "complete", in: folder, actions, reload: reload) }
+                Button("Cancel to-do") { editor.close(as: "drop", in: folder, actions, reload: reload) }
+                    .help("Cancel this to-do; Undo in Recent changes brings it back")
             }
           }
           TextField("Details", text: Binding(get: { editor.row(in: folder)?.details ?? "" },
@@ -184,7 +193,7 @@ struct ItemEditFields: View {
           }
         }
         // Locked while its change is on its way: the request already holds what was typed.
-        .disabled(editor.saving.contains(folder.standardizedFileURL))
+        .disabled(actions.busy || editor.saving.contains(folder.standardizedFileURL))
         .onSubmit { save() }
         .onExitCommand { editor.cancel(in: folder) }
         .onAppear { titleFocused = true }
