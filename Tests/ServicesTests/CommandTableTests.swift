@@ -112,6 +112,46 @@ import Testing
         #expect(try ProposalStore.load(card.id, in: folder, expectedDigest: digest).state == "proposed")
     }
 
+    func invented(_ c: Commands, _ folder: URL, ops count: Int, state: String) throws -> String {
+        let op = JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .obj([("title", .str("Invented"))]))]))])
+        var raw = Proposal.make(title: "Invented card", actor: .init([(key: "kind", value: .str("clerk"))]),
+                                ops: Array(repeating: op, count: count), now: now).raw
+        raw.set("state", .str(state))
+        let card = Proposal(raw: raw)
+        try ProposalStore.save(card, in: folder)
+        try c.recordDigests([card.id], in: folder)
+        return card.id
+    }
+
+    /// Decided cards stay in the folder for good: filing for long enough must not stop a binder's cards being reviewed.
+    @Test func decidedCardsNeverCountAgainstReviewingTheOpenOnes() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        for n in 0..<150 { _ = try invented(c, folder, ops: 10, state: n % 2 == 0 ? "applied" : "rejected") }
+        let open = try invented(c, folder, ops: 3, state: "proposed")
+        let reply = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        #expect(reply["ok"] == .bool(true))
+        let cards = try #require(reply["proposals"]?.arrayValue)
+        #expect(cards.contains { $0["id"] == .str(open) })
+        #expect(cards.allSatisfy { $0["state"] == .str("proposed") })
+        let shown = try #require(cards.first { $0["id"] == .str(open) })
+        let rejected = try call(c, [("command", .str("reject")), ("binder", .str(folder.path)),
+                                    ("proposal", .str(open)), ("digest", .str(try #require(shown["digest"]?.stringValue)))])
+        #expect(rejected["ok"] == .bool(true))
+    }
+
+    /// A folder of documents dropped in at once makes many ordinary cards; none of them is too large.
+    @Test func manyOrdinaryOpenCardsCanAllBeReviewed() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        for _ in 0..<80 { _ = try invented(c, folder, ops: 9, state: "proposed") }
+        let reply = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        #expect(reply["ok"] == .bool(true))
+        #expect((reply["proposals"]?.arrayValue?.count ?? 0) >= 80)
+    }
+
     @Test func anUnverifiedStampCannotRunFingerprintScansBeforeTheWorkLimit() throws {
         let (c, folder) = try setup()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -134,7 +174,7 @@ import Testing
         _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
         let card = try #require(ProposalStore.list(in: folder).first)
         let catalog = try Data(contentsOf: folder.appendingPathComponent("catalog.json"))
-        for n in 0..<101 {
+        for n in 0...ProposalStore.maximumEntries {
             try Data().write(to: folder.appendingPathComponent(".sprava/proposals/invented-\(n).txt"))
         }
         for fields in [[("command", JSONValue.str("proposals")), ("binder", .str(folder.path))],

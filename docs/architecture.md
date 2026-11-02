@@ -462,6 +462,8 @@ Files are not trusted. Proposal files sit in a folder that any program running a
 - The guard applies only when the recorded digest, the file's current digest and the approved digest all match (4.2 step 4). On a mismatch the card says "proposal changed outside Sprava" and nothing is applied.
 - A proposal file the runtime did not write is ignored and listed on the Health page as "unknown proposal file". A proposal file's `state` never approves anything; approval arrives only over XPC from the app (2.1).
 
+Decided cards stay in the folder. Listing cards reads at most 4,096 entries and 32 MiB, and only open cards count toward what can be shown at once: 500 ops and expectations on one card, 5,000 across all of them, and a limit on how many catalog rows their expectations compare. A binder past a limit shows that and changes nothing.
+
 A brain's document stays inside its proposal. Its body is held in `.sprava/proposals/<id>/` until approval, and nothing reaches the binder's visible folders before then (7.3).
 
 Each proposal also carries `expect`: the values it assumed about the existing items it touches, for example `{"kitchen-reno-2026-014": {"status": "open", "due": "2026-10-20"}}`. At approval the guard compares them with the current items. Any mismatch marks the card "needs a look" with a short diff, and nothing is applied until the person looks. holos uses the same rule for its speaker edits: each edit carries an `expected` fingerprint of the prior value, and a mismatch makes the edit stale (holos-formats). This is item-level staleness. A change elsewhere in the binder does not disturb a proposal that does not depend on it.
