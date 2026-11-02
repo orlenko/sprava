@@ -18,15 +18,15 @@ final class TodoModel: ObservableObject, DraftOwner {
     struct Change: Equatable {
         let line: String
         let folder: URL
-        let opID: String
+        let opIDs: [String]
     }
 
     @Published var filter = TodoBoard.Filter()
     @Published var collapsed: Set<TodoBoard.Group> = []
     @Published var draft = ""
     @Published var details = ""
-    @Published var hasDue = false
-    @Published var due = Date()
+    /// The due date as typed (`TodoDates`); empty for none.
+    @Published var dueText = ""
     @Published var priority = Priority.normal
     @Published var context: String?
     /// The binder the next item goes to; the one used last until the person picks another.
@@ -37,7 +37,7 @@ final class TodoModel: ObservableObject, DraftOwner {
     /// Items being closed: hidden until the refresh that no longer lists them.
     @Published private(set) var closing: Set<String> = []
     @Published private(set) var undoing = false
-    var draftState: DraftState { DraftState(hasChanges: !draft.isEmpty || !details.isEmpty, saving: adding || !closing.isEmpty || undoing || itemActions.values.contains { $0.busy }) }
+    var draftState: DraftState { DraftState(hasChanges: !draft.isEmpty || !details.isEmpty || !dueText.isEmpty, saving: adding || !closing.isEmpty || undoing || itemActions.values.contains { $0.busy }) }
     @Published private(set) var editingTargets: [Target] = []
     private var itemActions: [URL: BinderActions] = [:]
     private var opening = Set<URL>()
@@ -68,29 +68,61 @@ final class TodoModel: ObservableObject, DraftOwner {
         return .obj(fields)
     }
 
-    /// Files the typed line straight into the chosen binder as the person's own item. The line stays in the field
-    /// until the runtime has written it, and is cleared only if it is still the text sent.
-    func add(to target: Target?, reload: @escaping () async -> Void) async {
-        let typed = draft, submittedDetails = details
-        let title = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !adding, !title.isEmpty else { return }
+    /// The to-dos in what was typed: one per line, so a pasted list adds them all.
+    static func lines(_ typed: String) -> [String] {
+        typed.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+    static let mostLinesAtOnce = 200
+
+    /// Files the typed lines straight into the chosen binder as the person's own items. What was typed stays in the field until
+    /// the runtime has written it, and is cleared only if it is still the text sent. If a line is refused, the lines not yet
+    /// added stay in the field, and Undo takes back those that were.
+    func add(to target: Target?, today: CalendarDate = .today(), reload: @escaping () async -> Void) async {
+        let typed = draft, submittedDetails = details, submittedDue = dueText, submittedPriority = priority, submittedContext = context, submittedBinder = binder
+        let lines = Self.lines(typed)
+        guard !adding, !lines.isEmpty else { return }
+        guard lines.count <= Self.mostLinesAtOnce else {
+            message = "That is \(lines.count) lines. Sprava adds up to \(Self.mostLinesAtOnce) at once."
+            return
+        }
+        let dueTyped = dueText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let day = dueTyped.isEmpty ? nil : TodoDates.parse(dueTyped, today: today)
+        guard dueTyped.isEmpty || day != nil else {
+            message = "Sprava could not read that date. Try tomorrow, fri, nov 12 or 2031-02-03."
+            return
+        }
         adding = true
         defer { adding = false }
-        let day = hasDue ? CalendarDate(due, in: .current) : nil
-        let item = Self.newItem(title: title, due: day, priority: priority, context: context, details: submittedDetails)
+        var done: [String] = [], failure: Error?
+        var destination: Target?
         do {
-            let destination: Target
             if let target { destination = target }
             else if let generalTarget { destination = try await generalTarget() }
             else { throw GeneralDestinationUnavailable() }
-            let target = destination
-            let r = try await client.command("apply", binder: target.folder, [("op", .str("add_item")), ("args", .obj([("item", item)]))])
-            binder = target.folder
-            if draft == typed, details == submittedDetails { draft = ""; details = ""; hasDue = false; priority = .normal; context = nil }
+            for line in lines {
+                let item = Self.newItem(title: line, due: day, priority: submittedPriority, context: submittedContext, details: submittedDetails)
+                let r = try await client.command("apply", binder: destination!.folder, [("op", .str("add_item")), ("args", .obj([("item", item)]))])
+                if let op = r["op"]?.stringValue { done.append(op) }
+            }
+        } catch { failure = error }
+        if let destination, !done.isEmpty {
+            // The binder used is offered next, unless the person has already chosen another.
+            if binder == submittedBinder { binder = destination.folder }
+            lastChange = Change(line: done.count == 1 ? "Added to \(destination.label)." : "Added \(done.count) to \(destination.label).",
+                                folder: destination.folder, opIDs: done)
+        }
+        if let failure {
+            let left = lines.dropFirst(done.count)
+            if !done.isEmpty, draft == typed { draft = left.joined(separator: "\n") }
+            message = done.isEmpty ? "The item was not added: \(failure)" : "Added \(done.count) of \(lines.count). The rest were not added: \(failure)"
+        } else {
+            // Only what is still as it was sent: anything changed while the runtime wrote is for the next to-do.
+            if draft == typed { draft = "" }
+            if details == submittedDetails { details = "" }
+            if dueText == submittedDue { dueText = "" }
+            if priority == submittedPriority { priority = .normal }
+            if context == submittedContext { context = nil }
             message = nil
-            lastChange = r["op"]?.stringValue.map { Change(line: "Added to \(target.label).", folder: target.folder, opID: $0) }
-        } catch {
-            message = "The item was not added: \(error)"
         }
         await reload()
     }
@@ -153,7 +185,7 @@ final class TodoModel: ObservableObject, DraftOwner {
                 ("op", .str(operation)), ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))])),
             ])
             message = nil
-            lastChange = r["op"]?.stringValue.map { Change(line: (operation == "complete" ? "Done: " : "Cancelled: ") + entry.item.title, folder: entry.folder, opID: $0) }
+            lastChange = r["op"]?.stringValue.map { Change(line: (operation == "complete" ? "Done: " : "Cancelled: ") + entry.item.title, folder: entry.folder, opIDs: [$0]) }
         } catch {
             message = "The to-do was not closed: \(error)"
         }
@@ -165,11 +197,16 @@ final class TodoModel: ObservableObject, DraftOwner {
         undoing = true
         defer { undoing = false }
         lastChange = nil
+        var left = change.opIDs
         do {
-            _ = try await client.command("undo", binder: change.folder, [("op_id", .string(change.opID))])
+            // The newest first, as they were made.
+            while let id = left.last {
+                _ = try await client.command("undo", binder: change.folder, [("op_id", .string(id))])
+                left.removeLast()
+            }
             message = nil
         } catch {
-            if lastChange == nil { lastChange = change }
+            if lastChange == nil { lastChange = Change(line: change.line, folder: change.folder, opIDs: left) }
             message = "Could not undo: \(error)"
         }
         await reload()

@@ -123,7 +123,7 @@ import Testing
         let sent = try #require(runtime.sent.last)
         #expect(sent["command"] == .str("apply") && sent["op"] == .str("complete") && sent["binder"] == .string(acme.path))
         #expect(sent["args"]?["id"] == .str("acme-2026-002") && sent["args"]?["source"] == .str("user"))
-        #expect(model.lastChange?.opID == "0199ffff-0000-7000-8000-000000000001")
+        #expect(model.lastChange?.opIDs.first == "0199ffff-0000-7000-8000-000000000001")
         #expect(model.closing.isEmpty && reloads == 1)
         await model.undo(reload: { reloads += 1 })
         #expect(runtime.sent.last?["command"] == .str("undo"))
@@ -138,8 +138,7 @@ import Testing
         let targets = [TodoModel.Target(folder: acme, label: "acme"), TodoModel.Target(folder: harbor, label: "harbor")]
         #expect(model.defaultBinder(targets) == acme)
         model.draft = "  Book the Harbor slip  "
-        model.hasDue = true
-        model.due = try #require(Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 20, hour: 12)))
+        model.dueText = "2026-10-20"
         model.priority = .high
         model.context = "@calls"
         await model.add(to: targets[1], reload: {})
@@ -150,7 +149,7 @@ import Testing
                                           priority: .high, context: "@calls"))
         #expect(item["id"] == .str("$new:1") && item["due"] == .str("2026-10-20") && item["no_deadline"] == nil)
         // The field clears, and the binder used is offered next.
-        #expect(model.draft.isEmpty && !model.hasDue && model.priority == .normal && model.context == nil)
+        #expect(model.draft.isEmpty && model.dueText.isEmpty && model.priority == .normal && model.context == nil)
         #expect(model.defaultBinder(targets) == harbor)
         #expect(model.lastChange?.line == "Added to harbor.")
     }

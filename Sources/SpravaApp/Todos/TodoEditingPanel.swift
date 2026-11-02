@@ -1,15 +1,17 @@
 import SwiftUI
 
-/// Editing stays reachable even if a new date/filter removes the original row from its group (D25).
+/// What the row itself cannot show: why a change was refused, its Undo, and the fields of an open row that has left the page
+/// because a new date or a filter moved it (D25).
 struct TodoEditingPanel: View {
     @ObservedObject var actions: BinderActions
     @ObservedObject var editor: ItemEditor
     let target: TodoModel.Target
+    var stranded = true
     let reload: () async -> Void
 
     var body: some View {
-        Section("Edit to-do · " + target.label) {
-            if editor.row(in: target.folder) != nil {
+        Section(stranded ? "Edit to-do \u{00b7} " + target.label : target.label) {
+            if stranded, editor.row(in: target.folder) != nil {
                 ItemEditFields(actions: actions, editor: editor, folder: target.folder, reload: refresh)
             }
             if let message = actions.message { Text(message).foregroundStyle(.orange) }
@@ -50,7 +52,7 @@ struct DirectTodoSection: View {
     let target: TodoModel.Target
     let reload: () async -> Void
     var body: some View {
-        Section("Add a to-do directly") {
+        Section {
             QuickAdd(model: model, targets: [target], contexts: [], reload: reload)
             if let message = model.message { Text(message).foregroundStyle(.orange) }
             if let change = model.lastChange {

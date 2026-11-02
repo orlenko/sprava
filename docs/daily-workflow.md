@@ -62,15 +62,15 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
    and `correspondence`, and an undated starter checklist to approve as above.
 2. Keep the records by dropping minutes, statements, quotes and letters on the binder, and choosing the folder on
    each card before **Approve**.
-3. Track action items in the binder's **Project** view or on **To-dos** across binders. Use **Add a to-do**
-   (**Add a to-do directly** in Project), choose the binder, and fill in an optional description, due date,
-   priority and context, then **Add**. This writes the task immediately, without a model or a review card.
-   Each row has **Edit** and **Cancel to-do**, plus a circle to mark it done. **Edit** exposes the deadline
-   (**Add date** or **No date**), **Details** and **Priority**; set **Status** to **Waiting** to name who it is
-   **Waiting on** and set a follow-up date, then **Save**. **Discard edits** leaves the saved task unchanged.
-   **Cancel to-do** closes it as dropped. Use **Undo** beside the last change on To-dos, in its edit panel,
-   or under **Recent changes** in Project to reverse an addition, edit, completion or cancellation.
-   Notes that need review can still be entered in Project's separate note box.
+3. Track action items in the binder's **Project** view or on **To-dos** across binders. Type in the top row and press
+   Return: it writes the task at once, without a model or a review card, and leaves the cursor there for the next.
+   **Due** takes `today`, `tomorrow`, `fri`, `+3`, `nov 12`, `11/12` or `2031-02-03`. With the width for them, the row
+   also has **Priority** and, on To-dos, **Binder**; it adds to the binder you are in, or to General on To-dos. Paste
+   several lines to add one task for each. Clicking away keeps what you typed as a draft.
+   Click a task's title or date to change it in place: Return or moving away saves, and Esc puts it back. **More…**, on
+   the open row or the row's menu, has **Status**, who it is **Waiting on** and the follow-up date. The ring marks a task
+   done; the menu has **Cancel to-do**. A task moves to its new group once it has saved. Use **Undo** beside the last
+   change on To-dos, or under **Recent changes** in Project, to reverse an addition, edit, completion or cancellation.
 4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
    selects its file. **Open Binder Folder** opens the whole folder, including files nobody has filed, which this list
    does not show.
