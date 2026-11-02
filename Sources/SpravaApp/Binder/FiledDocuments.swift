@@ -140,7 +140,7 @@ struct FiledDocumentsSection: View {
 
     /// A binder can hold files nobody filed yet, such as a copied project's; this list shows only filed ones, so an
     /// empty list must not read as an empty binder.
-    static let emptyNote = "No filed documents yet. Files already in this binder's folder are not listed here until they are filed; drop them above to file them."
+    static let emptyNote = "No filed documents yet. Files already in this binder's folder are not listed here until they are filed; drop them anywhere on this page to file them."
 
     private var openFolder: some View {
         Button("Open Binder Folder") { model.open(row.folder) }

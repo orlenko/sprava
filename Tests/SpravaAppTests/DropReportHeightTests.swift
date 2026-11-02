@@ -11,10 +11,11 @@ import Testing
 @Suite struct DropReportHeightTests {
     @Test func aReportDoesNotRaiseTheWindowsMinimumHeight() {
         let model = IntakeDropModel(send: { _, _, _ in JSONObject([]) })
-        let bar = IntakeDropBar(folder: URL(fileURLWithPath: "/Invented/kitchen-reno"), model: model)
-        // The binder page's shape: the bar above a List, in the Shelf's split view and its minimum frame.
+        // The binder page's shape: the surface around a List, in the Shelf's split view and its minimum frame.
         let page = NavigationSplitView { List { Text("Inbox") } } detail: {
-            VStack(spacing: 0) { bar; List { ForEach(0..<30, id: \.self) { Text("item \($0)") } } }
+            IntakeDropSurface(folder: URL(fileURLWithPath: "/Invented/kitchen-reno"), enabled: true, model: model) {
+                List { ForEach(0..<30, id: \.self) { Text("item \($0)") } }
+            }
         }.frame(minWidth: 760, minHeight: 480)
         let host = NSHostingView(rootView: page)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 640), styleMask: [.titled, .resizable],
@@ -29,5 +30,17 @@ import Testing
         settle()
         #expect(model.report != nil)
         #expect(host.fittingSize.height == before)
+    }
+
+    @Test func clicksPassThroughAndATextDragGoesToATextBeingEdited() {
+        let overlay = DropTargetView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        #expect(overlay.hitTest(NSPoint(x: 10, y: 10)) == nil)
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let editable = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        let reading = NSTextView(frame: NSRect(x: 200, y: 0, width: 200, height: 100)); reading.isEditable = false
+        for view in [editable, reading, overlay] { content.addSubview(view) }
+        #expect(DropTargetView.editor(in: content, atWindowPoint: NSPoint(x: 50, y: 50)) === editable)
+        #expect(DropTargetView.editor(in: content, atWindowPoint: NSPoint(x: 250, y: 50)) == nil)
+        #expect(DropTargetView.editor(in: content, atWindowPoint: NSPoint(x: 50, y: 200)) == nil)
     }
 }
