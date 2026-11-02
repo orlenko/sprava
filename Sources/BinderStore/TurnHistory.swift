@@ -185,7 +185,8 @@ public struct TurnHistory: Sendable {
             guard change.after != nil, let recorded = filed[DocumentPaths.fold(change.path)] else { return false }
             // A file this turn made is gone after Undo. A file it changed goes back, which breaks the record only if the
             // record describes the changed version: one that still holds the earlier version comes out true again.
-            guard change.before != nil, let recorded else { return true }
+            // Only an ordinary file is hashed here, whose size the record bounded; anything else stays as it is.
+            guard change.before != nil, change.after?.kind == .file, let recorded else { return true }
             return DocumentPaths.sha256(of: folder.appendingPathComponent(change.path)) == recorded
         }
     }

@@ -138,6 +138,18 @@ private func temporaryFolder() throws -> URL {
         #expect(f.read("report.txt") == "version A")
     }
 
+    @Test func aFiledDocumentGrownHugeIsRefusedWithoutHashingIt() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[{\"path\":\"report.txt\",\"sha256\":\"\(sha("version A"))\"}]}", "catalog.json")
+        try f.write("version A", "report.txt"); try f.history.record(f.folder)
+        let turn = UUID()
+        #expect(truncate(f.folder.appendingPathComponent("report.txt").path, 1 << 40) == 0)
+        try f.history.record(f.folder, turn: turn)
+        let started = Date()
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(Date().timeIntervalSince(started) < 10)
+    }
+
     @Test func aPipeOrLinkAtTheCatalogIsRefusedRatherThanRead() throws {
         let f = try Fixture()
         try f.write("plain", "notes.md"); try f.history.record(f.folder)

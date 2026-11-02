@@ -66,6 +66,10 @@ import Testing
         #expect(try !f.allowed("echo x > catalog.json"))
         #expect(try !f.allowed("mv catalog.json c.json"))
         #expect(try !f.allowed("echo x > DASHBOARD.md"))
+        // Closing the binder itself would stop Sprava recording the turn.
+        #expect(try !f.allowed("chmod 000 ."))
+        #expect(try !f.allowed("chflags uchg ."))
+        #expect(try f.allowed("mkdir -p sub && chmod 700 sub"))
         // On a case-insensitive volume, the same files by another spelling.
         #expect(try !f.allowed("echo x > CATALOG.JSON"))
         #expect(try !f.allowed("echo x >> .SPRAVA/ops.jsonl"))

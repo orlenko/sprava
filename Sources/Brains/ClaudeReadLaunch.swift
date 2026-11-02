@@ -122,6 +122,8 @@ package enum ClaudeReadLaunch {
         (deny file-read-data (regex \(q(keyFiles))))
         (deny file-write* (require-all (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder)))) (require-not (subpath "/dev/fd")) (require-not (literal "/dev/null")) (require-not (literal "/dev/tty"))))
         (deny file-write* (subpath \(q(binder + "/.sprava"))) (literal \(q(binder + "/catalog.json"))) (literal \(q(binder + "/DASHBOARD.md"))))
+        (deny file-write-mode (literal \(q(binder))))
+        (deny file-write-flags (literal \(q(binder))))
         (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
         (deny appleevent-send)
         (deny process-exec \(denied.map { "(literal \(q($0)))" }.joined(separator: " ")))
