@@ -18,7 +18,7 @@ package enum ClaudeReadAccount {
         let launch = ClaudeReadOnlyTurn.Launch(executable: source.executable,
             arguments: Array(source.arguments.prefix(3)) + ["--safe-mode", "--restricted", "--setting-sources", "",
                 "--settings", "{\"disableAllHooks\":true}", "auth", "status"],
-            environment: source.environment, directory: source.directory, sessionID: source.sessionID)
+            environment: source.environment, directory: source.directory, sessionID: source.sessionID, secret: source.secret)
         let child = try ClaudeTurnProcess(launch, resume: false, sessionArgument: false)
         defer { _ = child.finish() }
         if child.input >= 0 { close(child.input); child.input = -1 }
@@ -45,7 +45,7 @@ package enum ClaudeReadAccount {
         }
         guard child.finish() else { throw ClaudeReadOnlyTurn.Failure.exitUnconfirmed }
         guard child.successfulExit else { throw Refused.firstPartySubscriptionRequired }
-        try validate(output, expectedConfig: source.directory.appendingPathComponent("config").path)
+        try validate(output, expectedConfig: source.environment["CLAUDE_CONFIG_DIR"] ?? "")
     }
     static func validate(_ data: Data, expectedConfig: String) throws {
         guard data.count <= 64 * 1024, let text = String(data: data, encoding: .utf8),

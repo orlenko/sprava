@@ -34,11 +34,27 @@ package final class ClaudeReadConnections: Sendable {
         """
     ])
 
-    package init(at url: URL) throws { state = try StateStore.open(url, schema: Self.schema) }
+    package init(at url: URL) throws {
+        state = try StateStore.open(url, schema: Self.schema)
+        // Beside the connections, so one made before this table is simply one that never allowed file changes.
+        try state.write { t in
+            try t.execute("CREATE TABLE IF NOT EXISTS claude_file_consents (id TEXT PRIMARY KEY NOT NULL, generation TEXT NOT NULL) STRICT")
+        }
+    }
+
+    /// Whether this exact connection was made with consent to change the binder's files. A new generation, from connecting
+    /// or disconnecting, ends it, and no earlier connection has it.
+    package func allowsFileChanges(_ connection: Connection) throws -> Bool {
+        try state.read { t in
+            try !t.rows("SELECT 1 FROM claude_file_consents WHERE id = ? AND generation = ?",
+                        .text(connection.id.uuidString), .text(connection.generation.uuidString)).isEmpty
+        }
+    }
 
     /// The window's explicit consent to share this binder's conversation/tasks and optional documents/intake.
-    /// It grants reads/drafts only; a task suggestion still needs the person's existing app action.
-    package func enable(folder: URL, documents: Bool, intake: Bool) throws -> Connection {
+    /// It grants reads/drafts, plus changes to the binder's files with `files`, which needs both sharing choices since the
+    /// tools can read everything in the folder. A task suggestion still needs the person's existing app action.
+    package func enable(folder: URL, documents: Bool, intake: Bool, files: Bool = false) throws -> Connection {
         let folder = folder.standardizedFileURL.resolvingSymlinksInPath()
         let instance = try Self.instance(folder)
         guard Teka.read(folder).catalog != nil, !Teka.expungePending(in: folder) else { throw Refused.notABinder }
@@ -57,6 +73,10 @@ package final class ClaudeReadConnections: Sendable {
                     documents = excluded.documents, intake = excluded.intake, enabled = 1
                 """, .text(id.uuidString), .text(generation.uuidString), .text(instance), .text(folder.path),
                 .integer(documents ? 1 : 0), .integer(intake ? 1 : 0))
+            try t.execute("DELETE FROM claude_file_consents WHERE id = ?", .text(id.uuidString))
+            if files && documents && intake {
+                try t.execute("INSERT INTO claude_file_consents VALUES (?, ?)", .text(id.uuidString), .text(generation.uuidString))
+            }
             return Connection(id: id, generation: generation, documents: documents, intake: intake,
                               folder: folder, instance: instance)
         }

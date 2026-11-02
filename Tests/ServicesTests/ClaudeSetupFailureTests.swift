@@ -10,7 +10,7 @@ import Testing
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-setup-fixture-" + UUID().uuidString)
         return try ClaudeConversationRuntime(support: root, secrets: .init(read: { nil }, replace: { _ in
             if mode == .keychain { throw NSError(domain: "invented-private-provider-message", code: 1) }
-        }), makeDriver: { _, _, _, _, policy, _ in
+        }), makeDriver: { _, _, _, _, policy, _, _ in
             switch mode {
             case .installation: throw ClaudeReadLaunch.Refused.unsupportedInstallation
             case .account: throw ClaudeReadAccount.Refused.firstPartySubscriptionRequired

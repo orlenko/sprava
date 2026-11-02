@@ -33,10 +33,14 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         let directory: URL
         let sessionID: UUID
         let onSpawn: @Sendable (pid_t) throws -> Void
+        /// The tools this launch offers; empty for a tool-free one, whose frames may then name no tool at all.
+        let tools: Set<String>
+        /// Handed to the child on `ClaudeTurnProcess.secretDescriptor`, never through its environment.
+        let secret: String?
         package init(executable: URL, arguments: [String], environment: [String: String], directory: URL, sessionID: UUID,
-                     onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
+                     tools: Set<String> = [], secret: String? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
             self.executable = executable; self.arguments = arguments; self.environment = environment
-            self.directory = directory; self.sessionID = sessionID
+            self.directory = directory; self.sessionID = sessionID; self.tools = tools; self.secret = secret
             self.onSpawn = onSpawn
         }
         package var description: String { "<Claude read-only launch>" }
@@ -89,12 +93,14 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         let child = try ClaudeTurnProcess(launch, resume: resume)
         defer {
             if !child.finish() { lock.withLock { quarantined = true } }
+            // Before the turn counts as over: nothing it started may go on changing the binder afterwards.
+            if !launch.tools.isEmpty, !AgentContainment.sweep(session: launch.sessionID) { lock.withLock { quarantined = true } }
         }
         // Persist the worker identity BEFORE any person line can enter its stdin. A failed journal
         // callback reaps this child without submitting the line; it must never become an untracked turn.
         do { try launch.onSpawn(child.pid) } catch { throw Failure.startFailed }
         var decoder = try AgentJSONLines(maximumLineBytes: 2 * 1024 * 1024)
-        var frames = ClaudeReadOnlyFrames(sessionID: launch.sessionID, original: text)
+        var frames = ClaudeReadOnlyFrames(sessionID: launch.sessionID, original: text, tools: launch.tools)
         var supervisor = TurnSupervisorPolicy(limits: limits)
         let clock = ContinuousClock(), started = ContinuousClock.now
         var outgoing = frame, offset = 0, outputBytes = 0
@@ -136,7 +142,8 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
                 let count = buffer.withUnsafeMutableBytes { Darwin.read(polls[index].fd, $0.baseAddress, $0.count) }
                 if count > 0 {
                     outputBytes += count
-                    guard outputBytes <= 8 * 1024 * 1024 else { throw Failure.outputLimit }
+                    // Tool results flow through here too, so a working turn may say far more than a reply.
+                    guard outputBytes <= (launch.tools.isEmpty ? 8 : 64) * 1024 * 1024 else { throw Failure.outputLimit }
                     if index == 0 {
                         do {
                             try decoder.append(Data(buffer.prefix(count))) { value in

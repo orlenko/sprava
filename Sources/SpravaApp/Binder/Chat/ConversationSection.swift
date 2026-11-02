@@ -58,7 +58,7 @@ struct ConversationSection: View {
 
     private var sharingControls: some View {
         HStack {
-            Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : "."))
+            Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : ".") + (model.files ? " Claude can change and delete files here; each turn has Undo." : " Claude cannot change files."))
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             Button("Disconnect / change sharing") { Task { await model.disconnect() } }.disabled(model.busy)

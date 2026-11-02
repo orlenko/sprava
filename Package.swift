@@ -14,6 +14,7 @@ let package = Package(
         .testTarget(name: "SpravaKitTests", dependencies: ["SpravaKit", "SpravaTestSupport"]),
         // Layer 0: the one SQLite setting Swift cannot reach (sqlite3_db_config is a variadic C call).
         .target(name: "SQLiteDefensive", linkerSettings: [.linkedLibrary("sqlite3")]),
+        .target(name: "AgentSandboxProbe"),
         // The invented fixtures and helpers several test targets share.
         .target(name: "SpravaTestSupport", dependencies: ["SpravaKit"],
                 path: "Tests/SpravaTestSupport", resources: [.copy("Fixtures")]),
@@ -57,7 +58,7 @@ let package = Package(
         .testTarget(name: "BackupTests", dependencies: ["Backup", "BinderStore", "BinderFormat", "SpravaTestSupport", "SpravaKit"]),
 
         // Registered brain clients, before the MCP transport and tools are added.
-        .target(name: "Brains", dependencies: ["Capture", "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .target(name: "Brains", dependencies: ["AgentSandboxProbe", "Capture", "Extract", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "BrainsTests", dependencies: ["Brains", "CaptureTestSupport", "Capture", "Extract", "Shelf", "BinderStore", "BinderFormat",
                                                         "SpravaTestSupport", "SpravaKit"]),
 

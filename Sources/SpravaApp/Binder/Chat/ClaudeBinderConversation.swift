@@ -51,6 +51,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     @Published private(set) var busy = false
     @Published var documents = true
     @Published var intake = true
+    /// Lets Claude change and delete this binder's files. Its tools can read the whole folder, so it needs both sharing choices.
+    @Published var files = true
+    var allowsFiles: Bool { files && documents && intake }
     @Published private(set) var message: String?
     @Published var cards: [UUID: Card] = [:]
     private var scopes: [URL: String] = [:]
@@ -102,7 +105,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             scopes[folder] = state["binder_id"]?.stringValue
             notConnectedReason = state["reason"]?.stringValue
             runtimeAnswered = true
-            if connected { documents = state["documents"] == .bool(true); intake = state["intake"] == .bool(true) }
+            if connected { documents = state["documents"] == .bool(true); intake = state["intake"] == .bool(true); files = state["files"] == .bool(true) }
             message = nil
         } catch { guard self.folder == folder else { return }; connected = false; scopes[folder] = nil; notConnectedReason = nil; runtimeAnswered = false; message = nil }
         // A connected binder needs Claude set up; only an unconnected one asks, for what to offer next. Another binder
@@ -135,7 +138,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             return
         }
         do {
-            _ = try await client.command("claude_enable", binder: folder, [("documents", .bool(documents)), ("intake", .bool(intake))], timeout: 30)
+            _ = try await client.command("claude_enable", binder: folder, [("documents", .bool(documents)), ("intake", .bool(intake)), ("files", .bool(allowsFiles))], timeout: 30)
             if self.folder == folder { await show(folder) }
         } catch {
             let ready = await accountStatus()

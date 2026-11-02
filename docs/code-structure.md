@@ -28,6 +28,7 @@ the compiler refuses an undeclared import, so the boundaries are enforced rather
 |---|---|---|---|
 | 0 | `SpravaKit` | JSON (value, parser, writer, edit), `AtomicFile`, `StateStore` and `StateFile` (section 4), `SafeFile`, dates and timestamps, `UUIDv7`, `SpravaPaths`, `ProcessCheck` | nothing |
 | 0 | `SQLiteDefensive` | the one SQLite setting Swift cannot reach, `SQLITE_DBCONFIG_DEFENSIVE` (a variadic C call), in C | nothing |
+| 0 | `AgentSandboxProbe` | the one sandbox check Swift cannot reach, `sandbox_check` (a variadic C call), in C | nothing |
 | 1 | `BinderFormat` | reading a binder: `Teka`, items, buckets, rules, catalog levels, the dashboard text, document path rules, the hub's naming rules | SpravaKit |
 | 1 | `Companion` | companion wire encodings, sealed objects and pairing cryptography; binder access through interfaces and higher-layer adapters | SpravaKit |
 | 2 | `BinderStore` | writing a binder: op log, transaction guard, op applier, proposals and their store, the record of trusted cards, ids, the privacy ratchet, undo, owner record, adoption, templates, the dashboard keeper | BinderFormat |

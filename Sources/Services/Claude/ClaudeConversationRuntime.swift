@@ -8,7 +8,7 @@ import Retrieval
 import SpravaKit
 
 /// One app-authenticated, explicitly consented read/draft conversation per physical binder. Models
-/// receive no tools or operation capability. Suggested tasks are data for a separate app confirmation.
+/// receive no operation capability; their file tools stop at the binder's folder. Suggested tasks are data for a separate app confirmation.
 public actor ClaudeConversationRuntime {
     public enum Refused: Error, Sendable { case notConnected, busy, unavailable, invalidRequest, stopped }
     struct Driver: Sendable {
@@ -22,7 +22,7 @@ public actor ClaudeConversationRuntime {
         let replace: @Sendable (String?) throws -> Void
         var persistent: @Sendable () -> Bool = { true }
     }
-    typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
+    typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, URL?, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
     private let support: URL
     private let connections: ClaudeReadConnections
@@ -63,9 +63,9 @@ public actor ClaudeConversationRuntime {
     /// state; it does not read Keychain, launch a model, discover binders or enable a backend by itself.
     public static func production(support: URL) throws -> ClaudeConversationRuntime {
         try Self(support: support, secrets: ClaudeSubscriptionSecrets.keychain,
-                 makeDriver: { program, credential, connection, session, policy, onSpawn in
-            try await ClaudeNativeConversation.driver(program: program, support: support, credential: credential,
-                                                      connection: connection, session: session, policy: policy, onSpawn: onSpawn)
+                 makeDriver: { program, credential, connection, session, policy, binder, onSpawn in
+            try await ClaudeNativeConversation.driver(program: program, support: support, credential: credential, connection: connection,
+                                                      session: session, policy: policy, binder: binder, onSpawn: onSpawn)
         }, context: { folder, documents, intake, query, cancelled in
             try ClaudeBinderContext.build(folder: folder, support: support, documents: documents, intake: intake,
                                           query: query, reader: HelperDocumentReader(binder: folder, reader: .located()), cancelled: cancelled)
@@ -133,7 +133,7 @@ public actor ClaudeConversationRuntime {
             guard preparing.isEmpty else { throw Refused.busy }
             configuring = true; defer { configuring = false }
             try await stopAll()
-            let scope = try connections.enable(folder: folder, documents: request["documents"] == .bool(true), intake: request["intake"] == .bool(true))
+            let scope = try connections.enable(folder: folder, documents: request["documents"] == .bool(true), intake: request["intake"] == .bool(true), files: request["files"] == .bool(true))
             try await fence(scope.id)
             return scopeJSON(scope)
         }
@@ -224,7 +224,7 @@ public actor ClaudeConversationRuntime {
         let question = Self.setupQuestion
         var stage = ClaudeSetupFailure.firstReply
         do {
-            let first = try await makeDriver(program, credential, id, firstSession.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", { [state] pid in try state.spawned(firstSession, pid: pid) })
+            let first = try await makeDriver(program, credential, id, firstSession.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", nil, { [state] pid in try state.spawned(firstSession, pid: pid) })
             driver = first
             let answer = try await first.run(question, false)
             guard first.exited(), answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw ClaudeSetupFailure.firstReply }
@@ -233,7 +233,7 @@ public actor ClaudeConversationRuntime {
             let secondSession = try state.session(connection: id, generation: UUID(), hash: "setup")
             recorded = secondSession
             stage = .resume
-            let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", { [state] pid in try state.spawned(secondSession, pid: pid) })
+            let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", nil, { [state] pid in try state.spawned(secondSession, pid: pid) })
             driver = second
             guard first.hash == second.hash else { throw Refused.unavailable }
             let fresh = try await second.run(question, false)
@@ -289,20 +289,24 @@ public actor ClaudeConversationRuntime {
         let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
-            let context = try await Task.detached(priority: .userInitiated) {
+            let (context, reach) = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
                 guard try available(folder) else { throw Refused.notConnected }
-                // The person's own edits since the last record, so they are not taken for this turn's.
-                try? versions.record(folder, cancelled: { signal.stopped })
-                return try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
+                // Only a binder that allowed file changes has a history, and its copies of the files. First the person's own
+                // edits since the last record, so they are not taken for this turn's. Without that record the turn could not
+                // be undone, so it runs with no tools rather than fail.
+                var tools = (try? connections.allowsFileChanges(scope)) == true
+                if tools { do { try versions.record(folder, cancelled: { signal.stopped }) } catch { tools = false } }
+                guard !signal.stopped else { throw Refused.stopped }
+                return (try read(folder, scope.documents, scope.intake, record.text, { signal.stopped }), tools ? folder : nil)
             }.value
             guard !signal.stopped else { throw Refused.stopped }
             _ = try currentFolder(scope)
             let history = try receipts.history(conversationID: scope.id).filter { $0.requestID != record.requestID }
-            let policy = try ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history)
+            let policy = try ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history, tools: reach != nil)
             active[scope.id]?.indexing = false
-            let made = try await makeDriver(account.program, credential, scope.id, session.native, policy, { [state] pid in
+            let made = try await makeDriver(account.program, credential, scope.id, session.native, policy, reach, { [state] pid in
                 guard !signal.stopped else { throw Refused.stopped }
                 try state.spawned(session, pid: pid)
             })
@@ -313,7 +317,7 @@ public actor ClaudeConversationRuntime {
             _ = try currentFolder(scope)
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
             let result = try await made.run(record.text, false)
-            await recordTurn(record, scope: scope, history: turnHistory)
+            if reach != nil { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
@@ -322,7 +326,7 @@ public actor ClaudeConversationRuntime {
             } else { _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .interrupted) }
         } catch {
             if error as? ClaudeReadOnlyTurn.Failure == .exitUnconfirmed { mayRelease = false }
-            await recordTurn(record, scope: scope, history: turnHistory)
+            if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
         }
@@ -368,6 +372,8 @@ public actor ClaudeConversationRuntime {
                 for _ in 0..<100 where kill(pid, 0) == 0 { usleep(10_000) }
                 guard kill(pid, 0) != 0, errno == ESRCH else { throw Refused.unavailable }
             }
+            // Whatever an agent's commands left running when the runtime stopped.
+            guard AgentContainment.sweep(session: session.native) else { throw Refused.unavailable }
             try receipts.recoverInterrupted(conversationID: session.connection)
             for record in try receipts.history(conversationID: session.connection) where record.phase == .accepted {
                 _ = try receipts.finish(conversationID: session.connection, requestID: record.requestID, phase: .interrupted)
@@ -379,7 +385,8 @@ public actor ClaudeConversationRuntime {
 
     private func scopeJSON(_ scope: ClaudeReadConnections.Connection) -> JSONObject {
         .init([(key: "enabled", value: .bool(true)), (key: "binder_id", value: .str(scope.id.uuidString)),
-               (key: "documents", value: .bool(scope.documents)), (key: "intake", value: .bool(scope.intake))])
+               (key: "documents", value: .bool(scope.documents)), (key: "intake", value: .bool(scope.intake)),
+               (key: "files", value: .bool((try? connections.allowsFileChanges(scope)) == true))])
     }
     private func recordJSON(_ r: ConversationTurnStore.Record) -> JSONValue {
         var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
