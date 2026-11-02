@@ -39,7 +39,6 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     }
     @Published var askToClear = false
     /// Whether a connected binder's sharing details are showing.
-    @Published var connectionOpen = false
     @Published private(set) var checking = false
     /// Why the binder shown is not connected, as the runtime said. Nil when the runtime did not answer.
     @Published private(set) var notConnectedReason: String?
@@ -95,7 +94,6 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
 
     func show(_ folder: URL) async {
         let folder = folder.standardizedFileURL
-        if self.folder != folder { connectionOpen = false }
         self.folder = folder
         checking = true; defer { if self.folder == folder { checking = false } }
         do {

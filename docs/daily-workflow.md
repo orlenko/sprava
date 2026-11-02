@@ -90,7 +90,7 @@ it cannot send email, execute tools or save a task without the person's button c
 2. Install Claude Code. In Assistant, use **Copy Command** to obtain a subscription token with the selected native
    Claude executable, paste it into the secure field, and select **Connect Claude**.
    Sprava verifies the Anthropic signature and two harmless fixed turns in fresh private sessions before enabling the account. Ordinary Claude updates are accepted; the signature is checked on each launch. Its own local Keychain item keeps the token across background restarts, including development builds. macOS may ask you to authorize Keychain access when enabling a rebuilt app.
-3. Open the binder. Expand **Email intake (IMAP)**, which is built into Sprava. Homebrew Python 3 must be
+3. Open the binder's settings, the gear beside its name. **Email intake (IMAP)**, there, is built into Sprava. Homebrew Python 3 must be
    installed (`brew install python`). Sprava runs a bundled stdlib-only worker, not the older imap-extract
    converter, which can overwrite attachments with duplicate names. Disable any pre-existing watcher for the
    same mailbox to avoid two independent cursors importing twice.

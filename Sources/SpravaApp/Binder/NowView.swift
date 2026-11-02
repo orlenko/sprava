@@ -29,6 +29,8 @@ struct NowView: View {
     @ObservedObject var todoAdd = TodoModel()
     @ObservedObject var workspace = BinderWorkspaceSelection()
 
+    private var showsSettings: Bool { row.teka.isAdopted && workspace.showsSettings(row.folder) }
+
     var sharesName: Bool {
         rows.filter { $0.teka.isAdopted && InboxView.fold($0.name) == InboxView.fold(row.name) }.count > 1
     }
@@ -59,11 +61,18 @@ struct NowView: View {
         IntakeDropSurface(folder: row.folder, enabled: teka.isAdopted && !teka.writesBlocked) {
             VStack(spacing: 0) {
                 header.padding(.horizontal, 16).padding(.top, 10)
-                if let conversation, let surface = inputs.conversation {
-                    BinderWorkspace(model: conversation, selection: workspace, row: row,
-                                    conversation: surface, project: project)
-                } else {
-                    project
+                BinderPageLayers(settingsShown: showsSettings) {
+                    if let conversation, let surface = inputs.conversation {
+                        BinderWorkspace(model: conversation, selection: workspace, row: row,
+                                        conversation: surface, project: project)
+                    } else {
+                        project
+                    }
+                } settings: {
+                    if teka.isAdopted {
+                        BinderSettingsPage(actions: actions, folder: row.folder, today: today, writable: !teka.writesBlocked,
+                                           conversation: conversation, reload: refresh)
+                    }
                 }
             }
         }
@@ -84,6 +93,16 @@ struct NowView: View {
             HStack {
                 Text(teka.name).font(.title2.bold())
                 Spacer()
+                if teka.isAdopted {
+                    if showsSettings {
+                        Button("Done") { workspace.toggleSettings(row.folder) }.keyboardShortcut(.cancelAction)
+                    } else {
+                        Button { workspace.toggleSettings(row.folder) } label: { Image(systemName: "gearshape") }
+                            .buttonStyle(.borderless)
+                            .help("This binder's settings")
+                            .accessibilityLabel("This binder's settings")
+                    }
+                }
                 if !teka.isAdopted, teka.state >= .needsMigration {
                     Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
                         .disabled(actions.busy)
@@ -111,7 +130,9 @@ struct NowView: View {
                     DirectTodoSection(model: todoAdd, target: .init(folder: row.folder, label: row.name), reload: { refresh() })
                 }
                 if let local = inputs.note { local }
-                if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
+                if teka.isAdopted, !teka.writesBlocked {
+                    EmailIntakeAttention(folder: row.folder) { if !workspace.showsSettings(row.folder) { workspace.toggleSettings(row.folder) } }
+                }
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
                 FiledDocumentsSection(row: row, model: documents, reload: refresh)
                 StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
@@ -145,9 +166,6 @@ struct NowView: View {
                     Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
                 }
                 HistorySection(actions: actions, folder: row.folder, reload: refresh)
-                if teka.isAdopted {
-                    AboutSection(actions: actions, folder: row.folder, today: today, reload: refresh)
-                }
             }
         }
     }

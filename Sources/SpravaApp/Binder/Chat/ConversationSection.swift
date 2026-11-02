@@ -18,17 +18,9 @@ struct ConversationSection: View {
                 ConversationSharingControls(model: model, sharing: model.sharing, folder: row.folder)
             }
             if model.folder == row.folder, model.chat.folder == row.folder {
-                // No DisclosureGroup: it fixes its content's height, and SwiftUI measures the window's minimum with almost
-                // no width, so opening one raised that minimum to thousands of points and pushed the page, sidebar and
-                // all, above the window's top. Its label also did nothing when clicked; only its small chevron did.
-                if model.connected {
-                    Button { model.connectionOpen.toggle() } label: {
-                        Label("Sharing and connection", systemImage: model.connectionOpen ? "chevron.down" : "chevron.right")
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if model.connectionOpen { sharingControls }
-                } else {
+                // A connected binder's sharing is in its settings. No DisclosureGroup here: it fixes its content's height, and
+                // SwiftUI measures the window's minimum with almost no width, so opening one pushed the page above the window's top.
+                if !model.connected {
                     ConnectionPanel(model: model, adopted: row.teka.isAdopted, folder: row.folder, openBrains: openBrains)
                 }
                 ChatView(chat: model.chat, connected: model.connected, suggestion: suggestion)
@@ -55,14 +47,23 @@ struct ConversationSection: View {
             ConversationCard(model: model, id: id)
         })
     }
+}
 
-    private var sharingControls: some View {
-        HStack {
-            Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake mail/attachments." : ".") + (model.files ? " Claude can change and delete files here; each turn has Undo." : " Claude cannot change files."))
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button("Disconnect / change sharing") { Task { await model.disconnect() } }.disabled(model.busy)
-            Button("Clear conversation…", role: .destructive) { model.askToClear = true }.disabled(model.busy)
+/// A binder's connection to Claude, in its settings: what is shared, and the ways to change it.
+struct ConversationSettings: View {
+    @ObservedObject var model: ClaudeBinderConversation
+    var body: some View {
+        if model.connected {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Shares this binder's tasks and saved app conversation" + (model.documents ? ", filed documents" : "") + (model.intake ? ", and intake" : "") + ".")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Disconnect / change sharing") { Task { await model.disconnect() } }.disabled(model.busy)
+                    Button("Clear conversation\u{2026}", role: .destructive) { model.askToClear = true }.disabled(model.busy)
+                }
+            }
+        } else {
+            Text("Not connected. Connect it from this binder's conversation.").foregroundStyle(.secondary)
         }
     }
 }

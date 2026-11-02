@@ -87,20 +87,6 @@ import Testing
         try #require(bitmap.representation(using: .png, properties: [:])).write(to: destination.appendingPathComponent(name + ".png"))
     }
 
-    @Test func openingConnectedSharingDetailsDoesNotRaiseTheWindowsMinimumHeight() async throws {
-        let model = await model(enabled: true)
-        let (window, host) = window(model)
-        await settle(host)
-        #expect(host.fittingSize.height <= 480)
-        for open in [true, false, true] {
-            model.connectionOpen = open
-            await settle(host)
-            #expect(host.fittingSize.height <= 480)
-        }
-        try artifact(host, "connection-connected-open")
-        #expect(window.contentView === host)
-    }
-
     @Test(arguments: ["disconnected", "moved", "unavailable", "new"])
     func aDisconnectedBinderKeepsThePageInTheWindowWithItsThreadVisible(reason: String) async throws {
         let model = await model(enabled: false, reason: reason)
@@ -176,14 +162,5 @@ import Testing
         #expect(descendants(host, of: NSTextView.self).contains { $0.string == "Keep this unsent invented question." })
         #expect(host.fittingSize.height <= 480)
         #expect(window.contentView === host)
-    }
-
-    @Test func anotherBinderStartsWithItsSharingDetailsClosed() async {
-        let model = await model(enabled: true)
-        model.connectionOpen = true
-        await model.show(folder)
-        #expect(model.connectionOpen)
-        await model.show(URL(fileURLWithPath: "/invented/garden"))
-        #expect(!model.connectionOpen)
     }
 }
