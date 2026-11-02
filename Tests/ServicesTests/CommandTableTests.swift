@@ -141,6 +141,30 @@ import Testing
         #expect(rejected["ok"] == .bool(true))
     }
 
+    /// A repair card offers an item's current values, and offers nothing for an item that is gone.
+    @Test func aRepairCardOffersTheCurrentValuesOfItsItemsOnly() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        let catalog = try #require(try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue)
+        let item = try #require(catalog["open_items"]?.arrayValue?.first)
+        let id = try #require(item["id"])
+        func update(_ id: JSONValue) -> JSONObject {
+            JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", id)]))])
+        }
+        var raw = Proposal.make(title: "Invented repair", actor: .init([(key: "kind", value: .str("user"))]),
+                                ops: [update(.str("invented-gone")), update(id)], now: now).raw
+        raw.set("provenance", .obj([("repair", .str("invented"))]))
+        let card = Proposal(raw: raw)
+        try ProposalStore.save(card, in: folder)
+        try c.recordDigests([card.id], in: folder)
+        let reply = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        let shown = try #require(reply["proposals"]?.arrayValue?.first { $0["id"] == .str(card.id) })
+        let editable = try #require(shown["editable"]?.arrayValue)
+        #expect(editable.count == 1 && editable.first?["index"] == .int(1))
+        #expect(editable.first?["title"] == item["title"])
+    }
+
     /// A folder of documents dropped in at once makes many ordinary cards; none of them is too large.
     @Test func manyOrdinaryOpenCardsCanAllBeReviewed() throws {
         let (c, folder) = try setup()

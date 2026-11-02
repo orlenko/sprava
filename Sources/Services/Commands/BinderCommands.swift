@@ -106,7 +106,7 @@ extension Commands {
                 }
                 // An adoption repair card: the item's current values, for the person to complete (binder-v0 §9.4).
                 guard op["op"] == .str("update_item"), p.raw["provenance"]?["repair"] != nil, let id = op["args"]?["id"],
-                      let item = catalog?["open_items"]?.arrayValue?.first(where: { $0["id"] == id }) else { return nil }
+                      let item = items[id] else { return nil }
                 func text(_ key: String, _ fallback: String) -> JSONValue { .string(item[key]?.stringValue ?? fallback) }
                 return .obj([("index", .int(i)), ("title", text("title", "")), ("due", text("due", "")),
                              ("priority", text("priority", "normal")), ("waiting_on", text("waiting_on", ""))])
@@ -123,7 +123,7 @@ extension Commands {
     /// Bound loading and every catalog scan before display or helpers inspect unverified cards (architecture 4.6).
     /// Only open cards count: a decided card stays in the folder for good, and is neither shown nor compared with
     /// the catalog, so a binder in steady use never grows into this limit. Each `expect` entry scans the catalog;
-    /// an op is only described.
+    /// an op only looks its item up in the one dictionary `proposals` builds.
     func reviewableCards(in folder: URL, catalog: JSONObject?) throws -> [(Proposal, String)] {
         let listed = try ProposalStore.boundedList(in: folder)
         let refusal = Failure(message: "the cards waiting here are too large to review safely; nothing was changed")
