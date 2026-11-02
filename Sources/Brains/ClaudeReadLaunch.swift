@@ -114,7 +114,7 @@ package enum ClaudeReadLaunch {
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
     /// else of the person's: reads are closed except for those and the folders of system files, programs and libraries. `.sprava`, the catalog and the
     /// dashboard have one writer, Sprava, and it may only read them. It runs only `commandPrograms`, none of
-    /// which reach the person's other apps, clipboard or Keychain. Its only way out is the proxy's port: name lookups,
+    /// which reach the person's other apps, clipboard or Keychain, and no library from a writable folder can load into them. Its only way out is the proxy's port: name lookups,
     /// direct connections and listening on a port fail whatever a command tries, so nothing read can leave except to the model. A key file can be
     /// deleted without being read. Renaming one first would get past that name rule: it stops an accidental read, it is not
     /// a wall.
@@ -142,6 +142,7 @@ package enum ClaudeReadLaunch {
         (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
         (deny appleevent-send)
         (deny job-creation)
+        (deny file-map-executable (subpath \(q(binder))) (subpath \(q(home.path))))
         (deny process-exec*)
         (allow process-exec \(programs.map { "(literal \(q($0)))" }.joined(separator: " ")))
         (deny signal)

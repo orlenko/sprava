@@ -159,6 +159,32 @@ import Testing
         #expect(try !f.allowed("printf '#!/bin/sh\\nexit 0\\n' > run.sh && chmod +x run.sh && ./run.sh"))
     }
 
+    @Test func aShellCannotLoadALibraryFromTheBinder() throws {
+        let f = try Fixture(); defer { f.clean() }
+        // A library whose constructor leaves a mark, as an intake attachment could carry one.
+        let source = f.binder.appendingPathComponent("payload.c"), mark = f.binder.appendingPathComponent("loaded")
+        try Data("#include <stdio.h>\n__attribute__((constructor)) static void run(void) { FILE *f = fopen(\"loaded\", \"w\"); if (f) fclose(f); }\n".utf8).write(to: source)
+        let build = Process()
+        build.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        build.arguments = ["-shared", source.path, "-o", f.binder.appendingPathComponent("payload.dylib").path]
+        build.standardOutput = FileHandle.nullDevice; build.standardError = FileHandle.nullDevice
+        try build.run(); build.waitUntilExit()
+        try #require(build.terminationStatus == 0)
+        let command = #"enable -f "$B/payload.dylib" payload"#
+        // Outside the walls it does load, so its refusal below means something.
+        let plain = Process()
+        plain.executableURL = URL(fileURLWithPath: "/bin/bash"); plain.arguments = ["-c", command]; plain.currentDirectoryURL = f.binder
+        plain.environment = ["B": f.binder.path]
+        plain.standardOutput = FileHandle.nullDevice; plain.standardError = FileHandle.nullDevice
+        try plain.run(); plain.waitUntilExit()
+        try #require(FileManager.default.fileExists(atPath: mark.path))
+        try FileManager.default.removeItem(at: mark)
+        _ = try f.allowed("/bin/bash -c '\(command)'")
+        #expect(!FileManager.default.fileExists(atPath: mark.path))
+        _ = try f.allowed(#"DYLD_INSERT_LIBRARIES="$B/payload.dylib" /bin/ls"#)
+        #expect(!FileManager.default.fileExists(atPath: mark.path))
+    }
+
     @Test func aFileCommandCannotReachAnotherProcesssEnvironment() throws {
         let f = try Fixture(); defer { f.clean() }
         #expect(try !f.allowed("/bin/ps eww -A | grep -q PATH"))

@@ -1053,7 +1053,7 @@ connections are allowed to one loopback port only, Sprava's proxy, which so far 
 every other host, so web access and its domain prompt are still to come. Only the agent process itself may use the proxy,
 checked with the kernel for each connection, so a command cannot upload to another account on that host, and commands
 cannot read the person's token: it reaches the agent by pipe, in no process's environment. Its shell runs only a short list of file commands (`commandPrograms`): no scripting language,
-compiler or anything written in the binder, because a program that can make arbitrary system calls can read the environment
+compiler, or anything written in the binder, whether run or loaded as a library, because a program that can make arbitrary system calls can read the environment
 of the person's other programs and no sandbox rule stops that. Richer tools wait for a stronger boundary. A key file cannot be read by name but can be deleted, which the summary says Undo
 cannot reverse; renaming one first gets past that name rule. A turn whose changes could not be recorded runs with no tools.
 Reads outside the binder and the agent's home are closed except for the folders of system files, programs and libraries,
