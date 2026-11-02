@@ -52,7 +52,7 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
 2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Edit** it to
    leave lines out or to give a date of your own, then **Approve**. No item carries a filing deadline; any date on
    it is one you chose, and you can add one later with the item's visible **Edit** button and **Add date**.
-3. Add slips and receipts by dropping them on **Drop emails or files here**, at the top of the binder's page. Each
+3. Add slips and receipts by dropping them anywhere on the binder's page. Each
    becomes a card within a minute. Check its **Folder** (`slips`, `receipts` or `return`) and **How did it reach
    you?**, change the folder if it is wrong, then **Approve** to file it.
 

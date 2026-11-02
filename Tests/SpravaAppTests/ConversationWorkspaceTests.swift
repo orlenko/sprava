@@ -24,6 +24,16 @@ import Testing
         #expect(selection.surface(for: folder, hasConversation: false) == .project)
     }
 
+    @Test func theTwoSurfacesShareTheWidthWhenBothHaveRoomAndProjectTakesAboutAThird() {
+        typealias Columns = BinderColumns
+        #expect(!Columns(width: 510).sideBySide)
+        #expect(Columns(width: 510).conversation == 510 && Columns(width: 510).project == 510)
+        let tight = Columns(width: Columns.narrowestProject + Columns.narrowestConversation)
+        #expect(tight.sideBySide && tight.project == Columns.narrowestProject && tight.conversation == Columns.narrowestConversation)
+        let wide = Columns(width: 1650)
+        #expect(wide.sideBySide && wide.project == 550 && wide.conversation == 1100)
+    }
+
     @Test func growingRepliesDoNotPullAReaderAwayFromEarlierMessages() {
         let viewport = ConversationViewport()
         viewport.measured(atBottom: false) // Content grew before the view could follow it.

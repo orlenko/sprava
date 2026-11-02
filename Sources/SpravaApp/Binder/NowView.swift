@@ -56,13 +56,15 @@ struct NowView: View {
 
     var body: some View {
         let teka = row.teka
-        VStack(spacing: 0) {
-            header.padding(.horizontal, 16).padding(.top, 10)
-            if let conversation, let surface = inputs.conversation {
-                BinderWorkspace(model: conversation, selection: workspace, row: row,
-                                conversation: surface, project: project)
-            } else {
-                project
+        IntakeDropSurface(folder: row.folder, enabled: teka.isAdopted && !teka.writesBlocked) {
+            VStack(spacing: 0) {
+                header.padding(.horizontal, 16).padding(.top, 10)
+                if let conversation, let surface = inputs.conversation {
+                    BinderWorkspace(model: conversation, selection: workspace, row: row,
+                                    conversation: surface, project: project)
+                } else {
+                    project
+                }
             }
         }
         .task(id: NowTask(folder: row.folder, adopted: teka.isAdopted)) {
@@ -104,7 +106,6 @@ struct NowView: View {
     private var project: some View {
         let teka = row.teka
         return VStack(spacing: 0) {
-            if teka.isAdopted, !teka.writesBlocked { IntakeDropBar(folder: row.folder) }
             List {
                 if teka.isAdopted, !teka.writesBlocked {
                     DirectTodoSection(model: todoAdd, target: .init(folder: row.folder, label: row.name), reload: { refresh() })
