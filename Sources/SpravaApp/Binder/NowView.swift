@@ -26,6 +26,7 @@ struct NowView: View {
     var openBrains: () -> Void = {}
     @ObservedObject var actions = BinderActions()
     @ObservedObject var documents = FiledDocuments()
+    @ObservedObject var todoAdd = TodoModel()
     @ObservedObject var workspace = BinderWorkspaceSelection()
 
     var sharesName: Bool {
@@ -105,6 +106,9 @@ struct NowView: View {
         return VStack(spacing: 0) {
             if teka.isAdopted, !teka.writesBlocked { IntakeDropBar(folder: row.folder) }
             List {
+                if teka.isAdopted, !teka.writesBlocked {
+                    DirectTodoSection(model: todoAdd, target: .init(folder: row.folder, label: row.name), reload: { refresh() })
+                }
                 if let local = inputs.note { local }
                 if teka.isAdopted, !teka.writesBlocked { EmailIntakeSection(folder: row.folder) }
                 ReviewSection(actions: actions, folder: row.folder, reload: refresh)
@@ -131,7 +135,7 @@ struct NowView: View {
                             // start at 0 would show one section's row in the other.
                             ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
                                 ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
-                                        editable: teka.isAdopted, reload: refresh)
+                                        editable: teka.isAdopted && !teka.writesBlocked, reload: refresh)
                             }
                         }
                     }

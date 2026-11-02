@@ -7,6 +7,7 @@ import SwiftUI
 /// and the groups of binder-v0 §5.2. A row opens its binder's page; its circle marks it done.
 struct TodosView: View {
     @ObservedObject var model: TodoModel
+    @ObservedObject var editor = ItemEditor()
     let board: TodoBoard
     let rows: [ShelfRow]
     let open: (URL) -> Void
@@ -22,8 +23,8 @@ struct TodosView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
+        List {
+            Section {
                 Text("To-dos").font(.title2.bold())
                 counts
                 QuickAdd(model: model, targets: targets, contexts: board.contexts, reload: reload)
@@ -36,28 +37,34 @@ struct TodosView: View {
                 }
                 if let message = model.message { Text(message).foregroundStyle(.orange) }
             }
-            .padding()
-            Divider()
+            ForEach(model.editingTargets) { target in
+                TodoEditingPanel(actions: model.actions(for: target.folder), editor: editor, target: target, reload: reload)
+            }
             list
         }
     }
 
     var counts: some View {
-        HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 14) {
             Text("\(board.openCount) open")
             if board.count(.overdue) > 0 { Text("\(board.count(.overdue)) overdue").foregroundStyle(.red) }
             Text("\(board.count(.today)) today")
+          }
+          HStack(spacing: 14) {
             Text("\(board.count(.next7)) in the next 7 days")
             Text("\(board.count(.waiting)) waiting")
+          }
         }
         .foregroundStyle(.secondary)
     }
 
     var filters: some View {
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             TextField("Search title, tag, binder or id", text: $model.filter.query)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 320)
+          HStack(spacing: 12) {
             Toggle("High only", isOn: $model.filter.highOnly)
             if !board.contexts.isEmpty {
                 Picker("Where am I", selection: $model.filter.context) {
@@ -71,24 +78,25 @@ struct TodosView: View {
                 model.collapsed = model.collapsed.isEmpty ? Set(TodoBoard.Group.allCases) : []
             }
             .buttonStyle(.link)
+          }
         }
     }
 
     @ViewBuilder var list: some View {
         let shown = TodoBoard.Group.allCases.map { ($0, board.entries($0, model.filter).filter { !model.closing.contains($0.id) }) }
         if board.openCount == 0 {
-            ContentUnavailableView("Nothing open", systemImage: "checkmark.circle",
-                                   description: Text("Items from every binder on the Shelf show here."))
+            Text("Nothing open. Items from every binder on the Shelf show here.").foregroundStyle(.secondary)
         } else if shown.allSatisfy({ $0.1.isEmpty }) {
-            ContentUnavailableView.search(text: model.filter.query)
+            Text("No matching to-dos.").foregroundStyle(.secondary)
         } else {
-            List {
                 ForEach(shown.filter { !$0.1.isEmpty }, id: \.0) { group, entries in
                     Section {
                         if !model.collapsed.contains(group) {
                             ForEach(entries) { entry in
                                 TodoRow(entry: entry, today: board.today,
-                                        complete: { Task { await model.complete(entry, reload: reload) } },
+                                        complete: { Task { await model.complete(entry, editor: editor, reload: reload) } },
+                                        cancel: { Task { await model.cancel(entry, editor: editor, reload: reload) } },
+                                        edit: { Task { await model.edit(entry, editor: editor, reload: reload) } },
                                         open: { open(entry.folder) })
                             }
                         }
@@ -104,7 +112,6 @@ struct TodosView: View {
                         .buttonStyle(.plain)
                     }
                 }
-            }
         }
     }
 }
@@ -126,33 +133,33 @@ struct QuickAdd: View {
     func add() { Task { await model.add(to: target, reload: reload) } }
 
     var body: some View {
-        HStack(spacing: 8) {
-            TextField("Add a to-do", text: $model.draft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(add)
-                .disabled(model.adding)
-            Toggle("Due", isOn: $model.hasDue)
-            DatePicker("Due", selection: $model.due, displayedComponents: .date)
-                .labelsHidden()
-                .disabled(!model.hasDue)
-                .fixedSize()
-            Picker("Priority", selection: $model.priority) {
-                ForEach(Priority.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Add a to-do", text: $model.draft).textFieldStyle(.roundedBorder).onSubmit(add)
+                Button("Add", action: add)
+                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || targets.isEmpty)
             }
-            .labelsHidden().fixedSize()
-            Picker("Context", selection: $model.context) {
-                Text("No context").tag(String?.none)
-                ForEach(offered, id: \.self) { Text($0).tag(String?.some($0)) }
+            TextField("Description (optional)", text: $model.details, axis: .vertical)
+                .textFieldStyle(.roundedBorder).lineLimit(1...3)
+            HStack {
+                Toggle("Due", isOn: $model.hasDue).fixedSize()
+                DatePicker("Due", selection: $model.due, displayedComponents: .date)
+                    .labelsHidden().datePickerStyle(.field).disabled(!model.hasDue)
+                Picker("Priority", selection: $model.priority) {
+                    ForEach(Priority.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
             }
-            .labelsHidden().fixedSize()
-            Picker("Binder", selection: Binding(get: { model.defaultBinder(targets) }, set: { model.binder = $0 })) {
-                ForEach(targets) { Text($0.label).tag(URL?.some($0.folder)) }
+            HStack {
+                Picker("Context", selection: $model.context) {
+                    Text("No context").tag(String?.none)
+                    ForEach(offered, id: \.self) { Text($0).tag(String?.some($0)) }
+                }
+                Picker("Binder", selection: Binding(get: { model.defaultBinder(targets) }, set: { model.binder = $0 })) {
+                    ForEach(targets) { Text($0.label).tag(URL?.some($0.folder)) }
+                }.disabled(targets.isEmpty)
             }
-            .labelsHidden().fixedSize()
-            .disabled(targets.isEmpty)
-            Button("Add", action: add)
-                .disabled(model.adding || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || targets.isEmpty)
         }
+        .disabled(model.adding)
     }
 }
 
@@ -160,6 +167,8 @@ struct TodoRow: View {
     let entry: TodoBoard.Entry
     let today: CalendarDate
     let complete: () -> Void
+    var cancel: () -> Void = {}
+    var edit: () -> Void = {}
     let open: () -> Void
 
     var item: Item { entry.item }
@@ -186,21 +195,27 @@ struct TodoRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!entry.closable)
+            .accessibilityLabel("Mark done")
             .help(entry.closable ? "Mark done" : item.hasRecurrence ? "Repeats; the hub manages it for now" : "Open the binder to change it")
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title).lineLimit(2)
-                    if let party = item.waitingOn {
-                        Text("waiting on \(party)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title).lineLimit(2)
+                if let party = item.waitingOn {
+                    Text("waiting on \(party)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                ForEach(item.contexts.prefix(3), id: \.self) { TodoChip(text: $0) }
-                Spacer(minLength: 8)
-                Text(date.text).monospacedDigit().foregroundStyle(date.color)
-                TodoChip(text: chip).help("Open \(entry.binder)")
+                HStack(spacing: 6) {
+                    ForEach(item.contexts.prefix(3), id: \.self) { TodoChip(text: $0) }
+                    Text(date.text).font(.caption).monospacedDigit().foregroundStyle(date.color)
+                    Spacer(minLength: 0)
+                    TodoChip(text: chip).help("Open \(entry.binder)")
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
+            VStack(alignment: .trailing, spacing: 4) {
+                Button("Edit", action: edit)
+                Button("Cancel to-do", action: cancel)
+            }.disabled(!entry.closable)
         }
         .padding(.vertical, 1)
     }
