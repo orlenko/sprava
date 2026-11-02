@@ -18,7 +18,7 @@ package enum ClaudeReadAccount {
         let launch = ClaudeReadOnlyTurn.Launch(executable: source.executable,
             arguments: Array(source.arguments.prefix(3)) + ["--safe-mode", "--restricted", "--setting-sources", "",
                 "--settings", "{\"disableAllHooks\":true}", "auth", "status"],
-            environment: source.environment, directory: source.directory, sessionID: source.sessionID)
+            environment: source.environment, directory: source.directory, sessionID: source.sessionID, secret: source.secret)
         let child = try ClaudeTurnProcess(launch, resume: false, sessionArgument: false)
         defer { _ = child.finish() }
         if child.input >= 0 { close(child.input); child.input = -1 }

@@ -3,6 +3,8 @@ import Foundation
 
 /// Dedicated standard pipes and process group; only these descriptors and the supplied environment survive exec.
 final class ClaudeTurnProcess {
+    /// Where a launch's secret arrives: a pipe holding it and nothing else, already at its end for the writer.
+    static let secretDescriptor: Int32 = 3
     let pid: pid_t
     var input: Int32
     let output: Int32
@@ -39,6 +41,18 @@ final class ClaudeTurnProcess {
               posix_spawn_file_actions_adddup2(&actions, diagnostic[1], STDERR_FILENO) == 0,
               posix_spawn_file_actions_addchdir(&actions, launch.directory.path) == 0 else {
             throw ClaudeReadOnlyTurn.Failure.startFailed
+        }
+        if let secret = launch.secret {
+            // A process's environment can be read by others of the same user, whatever its sandbox; a pipe cannot.
+            let carrier = try channel(); descriptors += carrier
+            let bytes = Array(secret.utf8)
+            let flags = fcntl(carrier[1], F_GETFL)
+            guard flags >= 0, fcntl(carrier[1], F_SETFL, flags | O_NONBLOCK) == 0, fcntl(carrier[1], F_SETNOSIGPIPE, 1) == 0,
+                  write(carrier[1], bytes, bytes.count) == bytes.count,
+                  posix_spawn_file_actions_adddup2(&actions, carrier[0], Self.secretDescriptor) == 0 else {
+                throw ClaudeReadOnlyTurn.Failure.startFailed
+            }
+            close(carrier[1]); descriptors.removeAll { $0 == carrier[1] }
         }
         var all = sigset_t(), none = sigset_t(); sigfillset(&all); sigemptyset(&none)
         guard posix_spawnattr_setsigdefault(&attributes, &all) == 0,

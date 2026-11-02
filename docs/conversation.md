@@ -1052,7 +1052,7 @@ binder with it keeps a history. It may read but not write `.sprava`, `catalog.js
 connections are allowed to one loopback port only, Sprava's proxy, which so far passes `api.anthropic.com` and refuses
 every other host, so web access and its domain prompt are still to come. Only the agent process itself may use the proxy,
 checked with the kernel for each connection, so a command cannot upload to another account on that host, and commands
-do not get the person's token in their environment. Tools that reach the person's other apps,
+cannot read the person's token: it reaches the agent by pipe, in no process's environment. Tools that reach the person's other apps,
 clipboard or Keychain will not run. A key file cannot be read by name but can be deleted, which the summary says Undo
 cannot reverse; renaming one first gets past that name rule. A turn whose changes could not be recorded runs with no tools.
 Reads outside the binder and the agent's home are closed except for the folders of system files, programs and libraries,

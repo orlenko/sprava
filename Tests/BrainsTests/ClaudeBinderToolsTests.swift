@@ -233,6 +233,38 @@ import Testing
         #expect(!AgentEgressProxy.holdsConnection(1, fromPort: port))
     }
 
+    @Test func aLaunchWithToolsHasTheTokenInNoEnvironment() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let credential = "invented-private-credential"
+        let plan = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.316"), home: f.root.appendingPathComponent("tools"),
+                                             sessionID: UUID(), credential: credential, policy: "p", reach: .init(folder: f.binder, proxyPort: 4242))
+        // Another process of the same user can read a process's environment, sandboxed or not (kern.procargs2, seen 2026-11-02).
+        #expect(plan.environment.values.allSatisfy { !$0.contains(credential) })
+        #expect(!plan.arguments.contains { $0.contains(credential) })
+        #expect(plan.environment["CLAUDE_CODE_OAUTH_TOKEN"] == nil)
+        #expect(plan.environment["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] == "3")
+        #expect(plan.secret == credential)
+        #expect(!String(reflecting: plan).contains(credential))
+    }
+
+    @Test func theSecretArrivesOnItsDescriptorAndNowhereElse() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let launch = ClaudeReadOnlyTurn.Launch(executable: URL(fileURLWithPath: "/bin/sh"),
+                                               arguments: ["-c", "echo \"[$(cat <&3)][$(env | grep -c invented-secret)]\"; exit"],
+                                               environment: ["PATH": "/usr/bin:/bin"], directory: f.binder, sessionID: UUID(), secret: "invented-secret")
+        let child = try ClaudeTurnProcess(launch, resume: false, sessionArgument: false)
+        defer { _ = child.finish() }
+        close(child.input); child.input = -1
+        var collected = Data(), buffer = [UInt8](repeating: 0, count: 256)
+        let flags = fcntl(child.output, F_GETFL); _ = fcntl(child.output, F_SETFL, flags & ~O_NONBLOCK)
+        while true {
+            let got = read(child.output, &buffer, 256)
+            if got <= 0 { break }
+            collected.append(contentsOf: buffer.prefix(got))
+        }
+        #expect(String(decoding: collected, as: UTF8.self) == "[invented-secret][0]\n")
+    }
+
     @Test func aCopiedLaunchctlCannotStartAJobOutsideTheSandbox() throws {
         let f = try Fixture(); defer { f.clean() }
         let label = "ca.orlenko.sprava.invented-wall-\(UUID().uuidString.lowercased())"
@@ -253,6 +285,7 @@ import Testing
         #expect(!tools.arguments.contains("*") && !tools.arguments.contains("WebFetch") && !tools.arguments.contains("Task"))
         #expect(tools.arguments.contains("dontAsk") && tools.arguments.contains("--restricted"))
         #expect(tools.environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1")
+        #expect(free.environment["CLAUDE_CODE_OAUTH_TOKEN"] == credential && free.secret == nil)
         #expect(tools.environment["CLAUDE_CONFIG_DIR"]?.hasPrefix(f.root.path) == true)
     }
 

@@ -35,10 +35,12 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         let onSpawn: @Sendable (pid_t) throws -> Void
         /// The tools this launch offers; empty for a tool-free one, whose frames may then name no tool at all.
         let tools: Set<String>
+        /// Handed to the child on `ClaudeTurnProcess.secretDescriptor`, never through its environment.
+        let secret: String?
         package init(executable: URL, arguments: [String], environment: [String: String], directory: URL, sessionID: UUID,
-                     tools: Set<String> = [], onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
+                     tools: Set<String> = [], secret: String? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
             self.executable = executable; self.arguments = arguments; self.environment = environment
-            self.directory = directory; self.sessionID = sessionID; self.tools = tools
+            self.directory = directory; self.sessionID = sessionID; self.tools = tools; self.secret = secret
             self.onSpawn = onSpawn
         }
         package var description: String { "<Claude read-only launch>" }

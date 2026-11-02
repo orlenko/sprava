@@ -84,7 +84,11 @@ package enum ClaudeReadLaunch {
         if let reach {
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
             environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
-            // The person's token stays with the agent process: its commands, and so the model, never see it.
+            // The person's token stays with the agent process. A process's environment can be read by another of the same user
+            // whatever the sandbox says, so with commands running it arrives by pipe and is in no environment; the CLI also
+            // strips such names from what its commands inherit.
+            environment["CLAUDE_CODE_OAUTH_TOKEN"] = nil
+            environment["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] = String(ClaudeTurnProcess.secretDescriptor)
             environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
         }
         let args = ["-f", home.appendingPathComponent("app-sandbox.sb").path, program.path,
@@ -95,7 +99,7 @@ package enum ClaudeReadLaunch {
                     "--append-system-prompt-file", home.appendingPathComponent("app-policy.txt").path]
         return ClaudeReadOnlyTurn.Launch(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"), arguments: args,
                                         environment: environment, directory: reach?.folder ?? home, sessionID: sessionID,
-                                        tools: reach == nil ? [] : Set(tools), onSpawn: onSpawn)
+                                        tools: reach == nil ? [] : Set(tools), secret: reach == nil ? nil : credential, onSpawn: onSpawn)
     }
 
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
