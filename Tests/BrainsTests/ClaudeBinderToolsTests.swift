@@ -1,4 +1,6 @@
+import Darwin
 import Foundation
+import Network
 import SpravaKit
 import Testing
 @testable import Brains
@@ -167,12 +169,75 @@ import Testing
 
     @Test func theProxyRefusesAnOtherHostOnTheWire() async throws {
         let proxy = try AgentEgressProxy(allowed: []); defer { proxy.stop() }
+        #expect(try connectStatus(proxy: proxy, host: "example.invalid") == "403")
+    }
+
+    /// `curl`'s view of a CONNECT through the proxy: its own process, which is not the agent unless authorized.
+    func connectStatus(proxy: AgentEgressProxy, host: String, authorizeCurl: Bool = false) throws -> String {
         let task = Process(), output = Pipe()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        task.arguments = ["-sS", "-m", "5", "--proxy", "http://127.0.0.1:\(proxy.port)", "https://example.invalid/", "-o", "/dev/null", "-w", "%{http_connect}"]
+        task.arguments = ["-sS", "-m", "5", "--proxy", "http://127.0.0.1:\(proxy.port)", "https://\(host)/", "-o", "/dev/null", "-w", "%{http_connect}"]
         task.standardOutput = output; task.standardError = FileHandle.nullDevice
-        try task.run(); task.waitUntilExit()
-        #expect(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "403")
+        try task.run()
+        if authorizeCurl { proxy.authorize(task.processIdentifier) }
+        task.waitUntilExit()
+        return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    }
+
+    /// The status line of a CONNECT sent from this process.
+    func connectFromHere(proxy: AgentEgressProxy, host: String) throws -> String {
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0); defer { close(socket) }
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var address = sockaddr_in(); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_port = proxy.port.bigEndian
+        let joined = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        try #require(joined == 0)
+        let request = "CONNECT \(host):443 HTTP/1.1\r\nHost: \(host)\r\n\r\n"
+        _ = request.withCString { write(socket, $0, strlen($0)) }
+        var buffer = [UInt8](repeating: 0, count: 256)
+        let got = read(socket, &buffer, 256)
+        return got > 0 ? String(decoding: buffer.prefix(got), as: UTF8.self).components(separatedBy: "\r\n")[0] : ""
+    }
+
+    @Test func onlyTheAgentProcessCanUseTheProxy() throws {
+        // A plain local listener stands in for the model's host.
+        let listener = try NWListener(using: .tcp)
+        listener.newConnectionHandler = { $0.start(queue: .global()) }
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+        listener.start(queue: .global()); defer { listener.cancel() }
+        #expect(ready.wait(timeout: .now() + 5) == .success)
+        let port = try #require(listener.port?.rawValue)
+        let proxy = try AgentEgressProxy(allowed: ["localhost"], upstreamPort: port); defer { proxy.stop() }
+        // Nobody authorized, then someone else authorized: a command holding a good host and any key still gets nowhere.
+        #expect(try connectStatus(proxy: proxy, host: "localhost") == "403")
+        proxy.authorize(getpid())
+        #expect(try connectStatus(proxy: proxy, host: "localhost") == "403")
+        // The authorized process itself gets through, to an allowed host only.
+        #expect(try connectFromHere(proxy: proxy, host: "localhost").contains("200"))
+        #expect(try connectFromHere(proxy: proxy, host: "example.invalid").contains("403"))
+    }
+
+    @Test func theKernelSaysWhichProcessHoldsAConnection() throws {
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0); defer { close(socket) }
+        var address = sockaddr_in(); address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        try #require(bound == 0)
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(socket, $0, &length) } }
+        let port = UInt16(bigEndian: address.sin_port)
+        #expect(AgentEgressProxy.holdsConnection(getpid(), fromPort: port))
+        #expect(!AgentEgressProxy.holdsConnection(getpid(), fromPort: port &+ 1))
+        #expect(!AgentEgressProxy.holdsConnection(1, fromPort: port))
+    }
+
+    @Test func aCopiedLaunchctlCannotStartAJobOutsideTheSandbox() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let label = "ca.orlenko.sprava.invented-wall-\(UUID().uuidString.lowercased())"
+        defer { let remove = Process(); remove.executableURL = URL(fileURLWithPath: "/bin/launchctl"); remove.arguments = ["remove", label]; try? remove.run(); remove.waitUntilExit() }
+        #expect(try !f.allowed("cp /bin/launchctl \"$HOME/lc\" && \"$HOME/lc\" submit -l \(label) -- /usr/bin/true"))
     }
 
     @Test func aLaunchWithReachOffersTheToolsInTheBinderAndOneWithoutOffersNone() throws {
@@ -187,6 +252,7 @@ import Testing
         #expect(tools.environment["HTTPS_PROXY"] == "http://127.0.0.1:4242")
         #expect(!tools.arguments.contains("*") && !tools.arguments.contains("WebFetch") && !tools.arguments.contains("Task"))
         #expect(tools.arguments.contains("dontAsk") && tools.arguments.contains("--restricted"))
+        #expect(tools.environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1")
         #expect(tools.environment["CLAUDE_CONFIG_DIR"]?.hasPrefix(f.root.path) == true)
     }
 
@@ -211,6 +277,16 @@ import Testing
         try frames.receive(frame(#"{"type":"assistant","session_id":"\#(id)","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}"#))
         try frames.receive(frame(#"{"type":"result","subtype":"success","is_error":false,"session_id":"\#(id)","result":"the reply"}"#))
         #expect(frames.reply == "the reply" && frames.ended)
+    }
+
+    @Test func theModeTheCLIForcesWhenItScrubsIsAcceptedOnlyWithTools() throws {
+        let id = session.uuidString.lowercased()
+        let forced = #"{"type":"system","subtype":"init","session_id":"\#(id)","tools":[%TOOLS%],"mcp_servers":[],"permissionMode":"default"}"#
+        var tools = ClaudeReadOnlyFrames(sessionID: session, original: "Tidy", tools: ["Read"])
+        try tools.receive(frame(forced.replacingOccurrences(of: "%TOOLS%", with: "\"Read\"")))
+        #expect(tools.initialized)
+        var free = ClaudeReadOnlyFrames(sessionID: session, original: "Tidy")
+        #expect(throws: ClaudeReadOnlyTurn.Failure.protocolMismatch) { try free.receive(frame(forced.replacingOccurrences(of: "%TOOLS%", with: ""))) }
     }
 
     @Test func aToolThatWasNotOfferedFailsTheTurn() throws {

@@ -88,9 +88,13 @@ struct ClaudeReadOnlyFrames {
     private mutating func system(_ value: JSONObject) throws {
         guard let subtype = value["subtype"]?.stringValue, subtype.utf8.count <= 128 else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
         if subtype == "init" {
+            // The CLI turns dontAsk into default when it strips the token from commands' environments (CLI 2.1.316). With no
+            // person to ask, a tool not on the launch's list is still refused.
             guard !initialized, value["session_id"] == .str(sessionID.uuidString.lowercased()),
                   Set(value["tools"]?.arrayValue?.compactMap(\.stringValue) ?? ["(none)"]) == tools, value["mcp_servers"] == .array([]),
-                  value["permissionMode"] == .str("dontAsk") else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
+                  value["permissionMode"] == .str("dontAsk") || (!tools.isEmpty && value["permissionMode"] == .str("default")) else {
+                throw ClaudeReadOnlyTurn.Failure.protocolMismatch
+            }
             initialized = true
         } else {
             // CLI 2.1.304 emits ui_invalidate/status and further system telemetry. None establishes

@@ -84,6 +84,8 @@ package enum ClaudeReadLaunch {
         if let reach {
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
             environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
+            // The person's token stays with the agent process: its commands, and so the model, never see it.
+            environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
         }
         let args = ["-f", home.appendingPathComponent("app-sandbox.sb").path, program.path,
                     "--safe-mode", "--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -126,6 +128,7 @@ package enum ClaudeReadLaunch {
         (deny file-write-flags (literal \(q(binder))))
         (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
         (deny appleevent-send)
+        (deny job-creation)
         (deny process-exec \(denied.map { "(literal \(q($0)))" }.joined(separator: " ")))
         (deny signal)
         (allow signal (target same-sandbox))

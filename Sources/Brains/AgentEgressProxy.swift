@@ -1,19 +1,28 @@
+import Darwin
 import Foundation
 import Network
 
 /// The only way out of a binder agent's sandbox: its profile allows outbound connections to this loopback port alone, so
 /// a shell command, a script or a steered model reaches only the hosts named here (conversation.md 18.3). Requests are
 /// HTTPS `CONNECT`s; the bytes pass through unread. Web access with its per-domain prompt comes later on this same wall.
+///
+/// A host alone is not enough: with someone else's API key, a command could upload a binder's document to that person's
+/// account on the model's own host. So only the agent process itself may use the proxy. The kernel says which process
+/// holds the other end of each connection, and the agent's commands, its children, are refused. It offers no tool that
+/// makes a request of its own.
 package final class AgentEgressProxy: @unchecked Sendable {
     package static let modelHosts: Set<String> = ["api.anthropic.com"]
     private let allowed: Set<String>
+    private let upstreamPort: UInt16
+    private let lock = NSLock()
+    private var agent: pid_t?
     private let queue = DispatchQueue(label: "sprava.agent-egress")
     private let listener: NWListener
     package private(set) var port: UInt16 = 0
 
     /// Starts listening on a free loopback port, and returns once it has one.
-    package init(allowed: Set<String> = AgentEgressProxy.modelHosts) throws {
-        self.allowed = allowed
+    package init(allowed: Set<String> = AgentEgressProxy.modelHosts, upstreamPort: UInt16 = 443) throws {
+        self.allowed = allowed; self.upstreamPort = upstreamPort
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         listener = try NWListener(using: parameters)
@@ -37,6 +46,31 @@ package final class AgentEgressProxy: @unchecked Sendable {
     }
 
     package func stop() { listener.cancel() }
+
+    /// The one process that may use the proxy from now on; the runtime runs one agent at a time.
+    package func authorize(_ pid: pid_t) { lock.withLock { agent = pid } }
+
+    /// Whether `pid` holds the local end of a TCP connection from `port`.
+    static func holdsConnection(_ pid: pid_t, fromPort port: UInt16) -> Bool {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return false }
+        var files = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / MemoryLayout<proc_fdinfo>.stride + 16)
+        let got = files.withUnsafeMutableBytes { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count)) }
+        guard got > 0 else { return false }
+        for file in files.prefix(Int(got) / MemoryLayout<proc_fdinfo>.stride) where file.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let wanted = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, file.proc_fd, PROC_PIDFDSOCKETINFO, &info, wanted) == wanted,
+                  info.psi.soi_kind == Int32(SOCKINFO_TCP) else { continue }
+            if UInt16(bigEndian: UInt16(truncatingIfNeeded: info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport)) == port { return true }
+        }
+        return false
+    }
+
+    private func isAgent(_ client: NWConnection) -> Bool {
+        guard case .hostPort(_, let port) = client.endpoint, let agent = lock.withLock({ agent }) else { return false }
+        return Self.holdsConnection(agent, fromPort: port.rawValue)
+    }
 
     /// One per runtime: every binder's agent shares the same wall.
     package static func shared() throws -> AgentEgressProxy { try sharedResult.get() }
@@ -74,11 +108,12 @@ package final class AgentEgressProxy: @unchecked Sendable {
     }
 
     private func answer(_ client: NWConnection, head: Data) {
-        guard let host = Self.target(of: head, allowed: allowed) else {
+        guard isAgent(client), let host = Self.target(of: head, allowed: allowed) else {
             client.send(content: Data("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8), completion: .contentProcessed { _ in client.cancel() })
             return
         }
-        let server = NWConnection(host: .init(host), port: 443, using: .tcp)
+        guard let port = NWEndpoint.Port(rawValue: upstreamPort) else { client.cancel(); return }
+        let server = NWConnection(host: .init(host), port: port, using: .tcp)
         server.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
