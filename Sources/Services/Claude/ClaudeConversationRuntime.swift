@@ -294,7 +294,7 @@ public actor ClaudeConversationRuntime {
                 let folder = try connections.currentFolder(scope)
                 guard try available(folder) else { throw Refused.notConnected }
                 // The person's own edits since the last record, so they are not taken for this turn's.
-                try? versions.record(folder)
+                try? versions.record(folder, cancelled: { signal.stopped })
                 return try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
             }.value
             guard !signal.stopped else { throw Refused.stopped }

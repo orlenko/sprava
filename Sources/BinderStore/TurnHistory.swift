@@ -10,15 +10,16 @@ import SpravaKit
 ///
 /// Sprava records what changed before a turn (the person's own edits) and after it (the turn's). Undo reverts one turn's
 /// entry, and refuses, changing nothing, when any of its paths has changed since, or when the catalog changed while the
-/// turn ran. Key files (`DocumentPaths.isKeyFile`) are
+/// turn ran or now files what the turn made. Very large files are tracked as key files are. Key files (`DocumentPaths.isKeyFile`) are
 /// tracked by name only and never copied here, so deleting a secret really deletes it, and Undo says it cannot return.
 ///
 /// One caller at a time per binder: the runtime holds the binder's turn slot around every call.
 public struct TurnHistory: Sendable {
-    public enum Refused: Error, Equatable { case tooManyFiles, unreadable(String), unknownEntry, damaged }
+    public enum Refused: Error, Equatable { case tooManyFiles, tooMuchData, unreadable(String), unknownEntry, damaged, cancelled }
 
     struct Item: Codable, Equatable {
-        enum Kind: String, Codable { case file, link, key }
+        /// `key` and `large` are tracked by name, size and time only: their bytes are never kept.
+        enum Kind: String, Codable { case file, link, key, large }
         var kind: Kind
         var sha256: String?
         var target: String?
@@ -33,7 +34,7 @@ public struct TurnHistory: Sendable {
             switch kind {
             case .file: return sha256 == other.sha256
             case .link: return target == other.target
-            case .key: return size == other.size && modified == other.modified
+            case .key, .large: return size == other.size && modified == other.modified
             }
         }
     }
@@ -65,16 +66,16 @@ public struct TurnHistory: Sendable {
                 : line + ". Not kept, so Undo cannot bring back: " + notRestorable.prefix(3).joined(separator: ", ")
         }
 
-        /// Key files this entry changed or deleted: their earlier bytes were never kept.
-        public var notRestorable: [String] { changes.filter { $0.before?.kind == .key }.map(\.path) }
+        /// Key files and very large ones this entry changed or deleted: their earlier bytes were never kept.
+        public var notRestorable: [String] { changes.filter { $0.before?.kind == .key || $0.before?.kind == .large }.map(\.path) }
     }
 
     public enum UndoResult: Equatable, Sendable {
         case undone
         /// Nothing was changed: these paths are no longer as the turn left them.
         case conflict([String])
-        /// Nothing was changed: the catalog moved during the turn, and reverting files alone would leave it pointing at
-        /// documents that are gone. Those changes have their own Undo under Recent changes.
+        /// Nothing was changed: the catalog moved during the turn, or now files one of its results, and reverting files alone
+        /// would leave it pointing at documents that are gone. Those changes have their own Undo under Recent changes.
         case recordsChanged
     }
 
@@ -88,6 +89,11 @@ public struct TurnHistory: Sendable {
 
     public static let keepDays = 30
     static let maximumFiles = 200_000
+    /// Above this a file is tracked by name only. A sparse file can claim terabytes on a healthy volume.
+    static let maximumFileBytes: Int64 = 1 << 30
+    /// New bytes one record may copy and hash; past it the record is refused, and the turn runs with no tools.
+    static let maximumRecordBytes: Int64 = 20 << 30
+    static let maximumCatalogBytes = 64 << 20
     let root: URL
     var blobs: URL { root.appendingPathComponent("blobs", isDirectory: true) }
     var entries: URL { root.appendingPathComponent("entries", isDirectory: true) }
@@ -102,11 +108,11 @@ public struct TurnHistory: Sendable {
     /// Records what differs from the last record. The first call stores the baseline and returns nil, as does a call that
     /// finds nothing changed.
     @discardableResult
-    public func record(_ folder: URL, turn: UUID? = nil, now: Date = Date()) throws -> Entry? {
+    public func record(_ folder: URL, turn: UUID? = nil, now: Date = Date(), cancelled: @Sendable () -> Bool = { false }) throws -> Entry? {
         try AtomicFile.makePrivateFolder(root); try AtomicFile.makePrivateFolder(blobs); try AtomicFile.makePrivateFolder(entries)
         let known = try readHead()
-        let current = try scan(folder, known: known ?? [:])
-        let stamp = Self.stamp(folder), recordsChanged = (try? Data(contentsOf: catalogStamp)) != stamp
+        let current = try scan(folder, known: known ?? [:], cancelled: cancelled)
+        let stamp = try Self.stamp(folder), recordsChanged = (try? Data(contentsOf: catalogStamp)) != stamp
         try writeHead(current)
         try AtomicFile.write(stamp, to: catalogStamp)
         guard let known else { return nil }
@@ -146,7 +152,7 @@ public struct TurnHistory: Sendable {
             if !unchanged || !Self.safeToWrite(change.path, in: folder) { conflicts.append(change.path) }
         }
         guard conflicts.isEmpty else { return .conflict(conflicts) }
-        guard !entry.recordsChanged else { return .recordsChanged }
+        guard !entry.recordsChanged, Self.keepsCatalogTrue(entry, in: folder) else { return .recordsChanged }
         if let occupied = try apply(entry, in: folder) { return .conflict([occupied]) }
         entry.undone = true
         try write(entry)
@@ -154,11 +160,30 @@ public struct TurnHistory: Sendable {
         return .undone
     }
 
+    /// Whether reverting leaves every filed document where the catalog says: a file this turn made may have been filed since.
+    private static func keepsCatalogTrue(_ entry: Entry, in folder: URL) -> Bool {
+        guard let bytes = safeCatalog(folder) else { return false }
+        guard !bytes.isEmpty else { return true }
+        guard let text = String(data: bytes, encoding: .utf8), let parsed = try? JSONParser.parse(text), parsed.safety.isSafe else { return false }
+        let filed = Set((parsed.value["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue })
+        return !entry.changes.contains { $0.before == nil && filed.contains($0.path) }
+    }
+
+    /// The catalog's bytes, empty when there is none, nil when what is there cannot be read as an ordinary bounded file: a
+    /// pipe there must not hang a conversation, nor a link or a huge file stand in for it.
+    private static func safeCatalog(_ folder: URL) -> Data? {
+        switch SafeFile.read(folder.appendingPathComponent("catalog.json"), limit: maximumCatalogBytes) {
+        case .ok(let bytes): return bytes
+        case .missing: return Data()
+        default: return nil
+        }
+    }
+
     /// Whether Undo leaves this change as it is: mail and files arrive in intake on their own, during a turn too, so it must
     /// not delete what it never saw made; and a key file's earlier bytes were never kept.
     private static func left(_ change: Change) -> Bool {
         if change.before == nil { return change.path.hasPrefix("intake/") }
-        return change.before?.kind == .key
+        return change.before?.kind == .key || change.before?.kind == .large
     }
 
     /// Stages every restored file first, then moves the current ones aside, then moves the staged ones in. All of it is
@@ -225,9 +250,10 @@ public struct TurnHistory: Sendable {
         return true
     }
 
-    private func scan(_ folder: URL, known: [String: Item]) throws -> [String: Item] {
-        var found: [String: Item] = [:]
+    private func scan(_ folder: URL, known: [String: Item], cancelled: @Sendable () -> Bool) throws -> [String: Item] {
+        var found: [String: Item] = [:], budget = Self.maximumRecordBytes
         func walk(_ directory: URL, _ prefix: String) throws {
+            guard !cancelled() else { throw Refused.cancelled }
             let names: [String]
             do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
             catch { throw Refused.unreadable(prefix) }
@@ -241,7 +267,7 @@ public struct TurnHistory: Sendable {
                 case S_IFDIR: try walk(url, path)
                 case S_IFREG, S_IFLNK:
                     guard found.count < Self.maximumFiles else { throw Refused.tooManyFiles }
-                    found[path] = try item(url, path: path, info: info, known: known[path])
+                    found[path] = try item(url, path: path, info: info, known: known[path], budget: &budget, cancelled: cancelled)
                 default: continue // A pipe or socket holds nothing to keep, and reading one could hang.
                 }
             }
@@ -250,7 +276,7 @@ public struct TurnHistory: Sendable {
         return found
     }
 
-    private func item(_ url: URL, path: String, info: stat, known: Item?) throws -> Item {
+    private func item(_ url: URL, path: String, info: stat, known: Item?, budget: inout Int64, cancelled: @Sendable () -> Bool) throws -> Item {
         let modified = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
         var item = Item(kind: .file, size: Int64(info.st_size), modified: modified, inode: UInt64(info.st_ino), mode: UInt16(info.st_mode & 0o777))
         if info.st_mode & S_IFMT == S_IFLNK {
@@ -259,18 +285,21 @@ public struct TurnHistory: Sendable {
             return item
         }
         if DocumentPaths.isKeyFile(path) { item.kind = .key; return item }
+        if item.size > Self.maximumFileBytes { item.kind = .large; return item }
         // Same size, time and inode: the bytes were kept when this file was last read.
         if let known, known.kind == .file, known.size == item.size, known.modified == modified, known.inode == item.inode,
            let sha = known.sha256, FileManager.default.fileExists(atPath: blob(sha).path) {
             item.sha256 = sha
             return item
         }
-        item.sha256 = try keep(url, path: path)
+        budget -= item.size
+        guard budget >= 0 else { throw Refused.tooMuchData }
+        item.sha256 = try keep(url, path: path, cancelled: cancelled)
         return item
     }
 
     /// Clones the file, then hashes the clone, so a blob's name is always the hash of what it holds.
-    private func keep(_ url: URL, path: String) throws -> String {
+    private func keep(_ url: URL, path: String, cancelled: @Sendable () -> Bool) throws -> String {
         let manager = FileManager.default
         let staged = blobs.appendingPathComponent("staged-\(UUID().uuidString)")
         defer { try? manager.removeItem(at: staged) }
@@ -278,7 +307,10 @@ public struct TurnHistory: Sendable {
         guard chmod(staged.path, 0o600) == 0, let handle = try? FileHandle(forReadingFrom: staged) else { throw Refused.unreadable(path) }
         defer { try? handle.close() }
         var hash = SHA256()
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            guard !cancelled() else { throw Refused.cancelled }
+            hash.update(data: chunk)
+        }
         let sha = hash.finalize().map { String(format: "%02x", $0) }.joined()
         let target = blob(sha)
         try AtomicFile.makePrivateFolder(target.deletingLastPathComponent())
@@ -287,8 +319,8 @@ public struct TurnHistory: Sendable {
     }
 
     /// The catalog's bytes, by hash: enough to tell whether something was filed or approved between two records.
-    private static func stamp(_ folder: URL) -> Data {
-        let bytes = (try? Data(contentsOf: folder.appendingPathComponent("catalog.json"))) ?? Data()
+    private static func stamp(_ folder: URL) throws -> Data {
+        guard let bytes = safeCatalog(folder) else { throw Refused.unreadable("catalog.json") }
         return Data(SHA256.hash(data: bytes))
     }
 
