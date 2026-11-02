@@ -196,6 +196,7 @@ struct Shown {
 struct InboxView: View {
     @ObservedObject var model: InboxModel
     let rows: [ShelfRow]
+    var general: (() async throws -> URL)?
 
     var adopted: [ShelfRow] { rows.filter { $0.teka.isAdopted && !$0.teka.writesBlocked } }
 
@@ -247,6 +248,14 @@ struct InboxView: View {
                             }
                             .frame(maxWidth: 320)
                             Spacer()
+                            if let general {
+                                Button("Save to General") {
+                                    Task {
+                                        if await model.saveGeneral(resolve: general) { await model.load() }
+                                    }
+                                }
+                                .disabled(model.saving || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
                             Button("Save Note") { saveNote() }
                             .keyboardShortcut(.return, modifiers: .command)
                             .disabled(model.saving || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

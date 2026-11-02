@@ -380,7 +380,11 @@
   tag, not a separate kind (conversation.md §18.2).
 - **D26 decided (2026-10-30).** No agent for the overall view. The cross-binder to-do list, the briefs and their
   sync are code, with the on-device model where wording is needed; a built-in General binder holds what fits no
-  other. Remote access comes from the companion (P19) (conversation.md §18.2).
+  other. General is an ordinary private binder, created only when opened or first used for a note or to-do,
+  beside future new binders (fresh default `~/Sprava`). A location change affects future binders, not General.
+  It stays on this Mac's Shelf: removal, transfer and offload are refused before session cleanup; backups still
+  work. A missing or replaced folder requires restoring the original, never silently starting an empty one.
+  Remote access comes from the companion (P19) (conversation.md §18.2).
 - **D27 decided (2026-10-30; method from Consultant's reading of Steve Yegge's "The Counting House").**
   Shadowing: the agent acts; for each of Sprava's structured tool calls a local model decides the same input in
   shadow, unapplied and unshown. It is scored against the person's outcome on the agent's action (accepted,

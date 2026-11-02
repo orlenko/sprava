@@ -5,6 +5,24 @@ filed documents work on their own; Claude and email intake, further down, are op
 in Sprava; bringing in an existing lifeproj binder is not covered here. Sprava sends no email: mail is opened and
 sent in your mail client.
 
+## General: things with no other binder
+
+Click **General** at the bottom of the sidebar to open its ordinary binder page: Project, To-dos and
+Conversation work as in any binder. It is created only when first opened or used. On a fresh setup it lives
+in `~/Sprava`; if you chose a folder for new binders in Settings, it starts there instead. General then
+stays in that location even if you change the folder for future binders. An existing folder named `general`
+is left alone; the new binder takes the next free name, such as `general-2`.
+
+On **To-dos**, leave **Binder** on **General** and click **Add**. This works before any binder exists,
+uses no model and offers Undo. In **Inbox**, **Save to General** sends a private note to General for review;
+**Save Note** with **Not sure** still leaves a card waiting in Inbox. A destination the runtime could not
+confirm is reported and waits in Inbox rather than being guessed.
+
+General appears on the Shelf, and its open items join the cross-binder To-dos page. It can be backed up,
+but cannot be removed from the Shelf, transferred or offloaded. If its folder is moved, deleted or replaced
+outside Sprava, restore the original folder to its original location. Sprava refuses to create an empty
+replacement that would hide the old items.
+
 ## Before you rely on it
 
 - **Health:** the background part answers. No "Starting Sprava's background part…" or Login Items line remains.

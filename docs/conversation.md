@@ -1015,7 +1015,10 @@ tool from the start, rather than struggle through multiple attempts at less-capa
 - **Every turn can be undone.** Sprava records the binder's files before and after each turn in a version
   history outside the folder (18.4). That replaces approval taps for changes inside the binder.
 - **No agent for the overall view.** The cross-binder to-do list, the briefs and their sync are code, with the
-  on-device model where wording is needed; a built-in General binder takes what fits nowhere else (D26). The
+  on-device model where wording is needed; a built-in General binder takes what fits nowhere else (D26).
+  It is created on first use as an ordinary private folder beside new binders (fresh default `~/Sprava`),
+  stays on this Mac's Shelf, and supports ordinary backups but no removal, transfer or offload.
+  A missing folder must be restored, never replaced silently. The
   author's old overall-list session needed no intelligence of its own.
 - **The local model shadows** the agent's structured actions and takes a verb over only when measured (18.6).
 

@@ -62,6 +62,7 @@ final class XPCService: NSObject, NSXPCListenerDelegate, SpravaRuntimeXPC, @unch
         nonisolated(unsafe) let reply = reply
         let queues = self.queues, companion = self.companion, claude = self.claude, imap = self.imap
         Task {
+            if let refusal = commands.generalRetirementRefusal(request) { reply(refusal); return }
             let write: @Sendable (String) async -> String = { body in
                 await withCheckedContinuation { continuation in
                     queues.submit(body, handle: { commands.handle($0) }, companion: companion?.requests) { answer, command, ms in

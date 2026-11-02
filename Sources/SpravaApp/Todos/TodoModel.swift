@@ -41,6 +41,7 @@ final class TodoModel: ObservableObject, DraftOwner {
     @Published private(set) var editingTargets: [Target] = []
     private var itemActions: [URL: BinderActions] = [:]
     private var opening = Set<URL>()
+    var generalTarget: (() async throws -> Target)?
     let client: RuntimeClient
 
     init(client: RuntimeClient = RuntimeClient()) {
@@ -73,15 +74,16 @@ final class TodoModel: ObservableObject, DraftOwner {
         let typed = draft, submittedDetails = details
         let title = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !adding, !title.isEmpty else { return }
-        guard let target else {
-            message = "No binder can take a new item yet. Adopt a binder on its page first."
-            return
-        }
         adding = true
         defer { adding = false }
         let day = hasDue ? CalendarDate(due, in: .current) : nil
         let item = Self.newItem(title: title, due: day, priority: priority, context: context, details: submittedDetails)
         do {
+            let destination: Target
+            if let target { destination = target }
+            else if let generalTarget { destination = try await generalTarget() }
+            else { throw GeneralDestinationUnavailable() }
+            let target = destination
             let r = try await client.command("apply", binder: target.folder, [("op", .str("add_item")), ("args", .obj([("item", item)]))])
             binder = target.folder
             if draft == typed, details == submittedDetails { draft = ""; details = ""; hasDue = false; priority = .normal; context = nil }
@@ -172,4 +174,8 @@ final class TodoModel: ObservableObject, DraftOwner {
         }
         await reload()
     }
+}
+
+struct GeneralDestinationUnavailable: Error, CustomStringConvertible {
+    var description: String { "No binder can take this yet. Try General from the Shelf." }
 }
