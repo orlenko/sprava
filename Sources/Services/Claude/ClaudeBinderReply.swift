@@ -2,7 +2,8 @@ import Foundation
 import SpravaKit
 
 /// Model output is display data, never an operation or mail send. Only source ids selected by the
-/// runtime may become citation paths. The app separately confirms any editable task suggestion.
+/// runtime may become citation paths. To-dos change through the turn's tools (`ClaudeTodoTools`), not here; a `task` is
+/// what earlier replies carried, and what a reply may still suggest for the app's own Add button.
 enum ClaudeBinderReply {
     static func normalize(_ raw: String, sources: [ClaudeBinderContext.Source]) -> String {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)

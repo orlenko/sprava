@@ -112,6 +112,7 @@ final class Runtime: @unchecked Sendable {
             do { imap = development ? nil : try BinderIMAPRuntime(support: support) }
             catch { imap = nil; log("imap_state_unavailable") }
             let service = XPCService(commands: commands, watch: watch, companion: companion, claude: claude, imap: imap) { [weak self] line in self?.log(line) }
+            claude?.todoWriter.attach(commands: commands, queue: service.queue)
             service.start()
             xpc = service
             // Brains share the command queue with the app: one writer.

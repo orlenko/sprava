@@ -423,6 +423,14 @@ Each line names what replaced the entry; its old text is in git history.
   window. Return adds; clicking away keeps a draft, so a stray click files nothing. An open row saves on Return or on moving
   away, and moves to its group only then. Items do not move between binders yet: no op does that. The note box leaves the
   binder's page; pasted lines add a task each, directly.
+- **D32 decided (2026-11-02, the author).** Claude changes to-dos itself. "The Claude, the concierge that I'm talking to, should
+  be able to add to-dos, mark them done or remove them. Most of the workflow is the conversation." So add, edit, complete
+  and remove are tools of the person's turn that apply at once with the turn's Undo (conversation.md §18.5), and the proposal
+  and its Add To-do button are gone from new replies; earlier replies keep theirs. This takes class B's tap off closing an
+  item (§6.1), as §18.4 had planned for the binder's own changes. What holds a document that tries to steer it: the policy
+  (only what the person asks), the turn's line naming each title, Undo, and a limit of 50 changes a turn; a model's promise
+  is not a wall, so a hostile document can still get a to-do added or closed until the person reads that line. Those are
+  reversible. Disclosure, deletion of a binder and anything outward stay out of reach, as before.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.

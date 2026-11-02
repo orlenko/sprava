@@ -53,7 +53,7 @@ public struct TurnHistory: Sendable {
         public let at: Date
         var changes: [Change]
         public internal(set) var undone: Bool
-        /// The catalog changed between the records around this entry: something was filed or approved while it ran.
+        /// The catalog's documents changed between the records around this entry: something was filed while it ran.
         var recordsChanged = false
         /// The turn's changes could not be recorded, so this entry has none and no Undo.
         public internal(set) var unrecorded = false
@@ -397,9 +397,14 @@ public struct TurnHistory: Sendable {
         }
     }
 
-    /// The catalog's bytes, by hash: enough to tell whether something was filed or approved between two records.
+    /// The catalog's documents, by hash: enough to tell whether something was filed between two records. To-dos are left
+    /// out: a to-do changed during a turn, by the person or by the agent's own tools, says nothing about the turn's files,
+    /// and has its own Undo.
     private static func stamp(_ folder: URL) throws -> Data {
         guard let bytes = safeCatalog(folder) else { throw Refused.unreadable("catalog.json") }
+        if let text = String(data: bytes, encoding: .utf8), let parsed = try? JSONParser.parse(text), parsed.safety.isSafe {
+            return Data(SHA256.hash(data: Data(JSONWriter.compact(parsed.value["documents"] ?? .null).utf8)))
+        }
         return Data(SHA256.hash(data: bytes))
     }
 
@@ -431,6 +436,7 @@ public struct TurnHistory: Sendable {
                 if let sha = change.after?.sha256 { kept.insert(sha) }
             }
         }
+        pruneTodos(now: now)
         for shard in try manager.contentsOfDirectory(atPath: blobs.path) where shard.count == 2 {
             let folder = blobs.appendingPathComponent(shard)
             for name in try manager.contentsOfDirectory(atPath: folder.path) where !kept.contains(name) {

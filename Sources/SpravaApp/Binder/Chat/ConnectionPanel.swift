@@ -24,7 +24,7 @@ enum ConnectionState: Equatable {
         case .unavailable: "Claude cannot use this binder now: it is being offloaded, or it is no longer on the shelf."
         case .moved: "This binder's folder moved since it was connected to Claude. Connect it again to continue."
         case .disconnected: "This binder is not connected to Claude. Connect it again to continue."
-        case .new: "Connect this binder to Claude, then ask about priorities, find a source, draft an email, or suggest a To-do."
+        case .new: "Connect this binder to Claude, then ask about priorities, find a source, draft an email, or add and close its To-dos."
         }
     }
 
@@ -48,7 +48,7 @@ struct ConnectionPanel: View {
                 Toggle("Let Claude change and delete files in this binder; you can undo each turn",
                        isOn: Binding(get: { model.allowsFiles }, set: { model.files = $0 }))
                     .disabled(!model.documents || !model.intake)
-                Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude cannot send mail or save tasks itself. With file changes allowed, it can read the whole folder and run tools inside it, and nothing else on this Mac.")
+                Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude can add, change and close this binder's to-dos when you ask, and you can undo each turn. It cannot send mail. With file changes allowed, it can read the whole folder and run tools inside it, and nothing else on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {

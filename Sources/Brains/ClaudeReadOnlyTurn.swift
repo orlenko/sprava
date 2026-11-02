@@ -37,10 +37,12 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         let tools: Set<String>
         /// Handed to the child on `ClaudeTurnProcess.secretDescriptor`, never through its environment.
         let secret: String?
+        /// Sprava's own tools, which it answers on this launch's pipe.
+        let appTools: ClaudeAppTools?
         package init(executable: URL, arguments: [String], environment: [String: String], directory: URL, sessionID: UUID,
-                     tools: Set<String> = [], secret: String? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
+                     tools: Set<String> = [], secret: String? = nil, appTools: ClaudeAppTools? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) {
             self.executable = executable; self.arguments = arguments; self.environment = environment
-            self.directory = directory; self.sessionID = sessionID; self.tools = tools; self.secret = secret
+            self.directory = directory; self.sessionID = sessionID; self.tools = tools; self.secret = secret; self.appTools = appTools
             self.onSpawn = onSpawn
         }
         package var description: String { "<Claude read-only launch>" }
@@ -100,7 +102,7 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         // callback reaps this child without submitting the line; it must never become an untracked turn.
         do { try launch.onSpawn(child.pid) } catch { throw Failure.startFailed }
         var decoder = try AgentJSONLines(maximumLineBytes: 2 * 1024 * 1024)
-        var frames = ClaudeReadOnlyFrames(sessionID: launch.sessionID, original: text, tools: launch.tools)
+        var frames = ClaudeReadOnlyFrames(sessionID: launch.sessionID, original: text, tools: launch.tools, appTools: launch.appTools != nil)
         var supervisor = TurnSupervisorPolicy(limits: limits)
         let clock = ContinuousClock(), started = ContinuousClock.now
         var outgoing = frame, offset = 0, outputBytes = 0
@@ -153,6 +155,12 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
                             }
                         } catch let failure as Failure { throw failure }
                         catch { throw Failure.protocolMismatch }
+                        // Each is answered before the next read. A tool does a short write on the binder's command queue.
+                        let open = frames.turnOpen && !isStopped(id)
+                        for request in frames.takeToolRequests() {
+                            guard let response = launch.appTools?.answer(request.message, open: open) else { throw Failure.protocolMismatch }
+                            outgoing.append(try ClaudeInputFrames.toolResponse(requestID: request.id, response: response))
+                        }
                     } // stderr is counted, discarded, and never turned into an error/log message.
                 } else if count == 0, index == 0, !frames.ended {
                     if supervisor.stopCause != nil { return try completeStoppedProcess() }

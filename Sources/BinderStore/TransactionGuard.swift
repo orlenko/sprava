@@ -140,7 +140,8 @@ public enum TransactionGuard {
         if !["user", "clerk", "brain", "import", "external"].contains(kind ?? "") { problems.append("\(type): bad actor kind") }
         if kind == "clerk" || kind == "brain" {
             if (op["approved_by"]?.stringValue ?? "").isEmpty { problems.append("\(type): a \(kind!)'s op needs approved_by") }
-            if op["proposal"] == nil { problems.append("\(type): a \(kind!)'s op needs its proposal") }
+            // Within a person's conversation turn it has no proposal: the turn is its authority, recorded in `conversation` (§6.5).
+            if op["proposal"] == nil, op["conversation"] == nil { problems.append("\(type): a \(kind!)'s op needs its proposal") }
         }
         if ["set_disclosure", "rename_teka", "expunge"].contains(type), kind != "user" {
             problems.append("\(type) is applied only by the user")

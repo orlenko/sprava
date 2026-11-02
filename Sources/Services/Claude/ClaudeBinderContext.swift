@@ -100,7 +100,7 @@ struct ClaudeBinderContext: Sendable {
                 }
             }
         }
-        let itemFields = ["id", "title", "description", "status", "priority", "due", "deadline", "bucket", "sensitivity", "notes", "note", "waiting_on", "contexts", "tags"]
+        let itemFields = ["id", "title", "details", "description", "status", "priority", "due", "deadline", "bucket", "sensitivity", "notes", "note", "waiting_on", "contexts", "tags"]
         let allItems = teka.items.prefix(500).map { item in
             JSONValue.obj(itemFields.compactMap { key in item.raw[key].map { (key, bounded($0)) } })
         }
