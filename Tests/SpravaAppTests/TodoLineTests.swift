@@ -71,6 +71,20 @@ import Testing
         #expect(model.message?.hasPrefix("Added 1 of 3.") == true)
     }
 
+    @Test func whatChangesWhileTheRuntimeWritesStaysForTheNextToDo() async throws {
+        let runtime = StandInRuntime()
+        let model = TodoModel(client: runtime.client), target = TodoModel.Target(folder: folder, label: "acme")
+        runtime.answers["apply"] = { _ in
+            model.dueText = "fri"
+            model.priority = .low
+            return #"{"ok":true,"op":"0199ffff-0000-7000-8000-000000000001"}"#
+        }
+        model.draft = "Call the plumber"; model.dueText = "tomorrow"; model.priority = .high
+        await model.add(to: target, today: today, reload: {})
+        #expect(runtime.sent.last?["args"]?["item"]?["due"] == .str("2031-02-05"))
+        #expect(model.draft.isEmpty && model.dueText == "fri" && model.priority == .low)
+    }
+
     @Test func aDateItCannotReadAddsNothingAndKeepsWhatWasTyped() async {
         let runtime = StandInRuntime()
         let model = TodoModel(client: runtime.client)
@@ -153,8 +167,21 @@ import Testing
         #expect(actions.message != nil)
         #expect(try await f.openItem(item.idText, in: folder).due == item.due)
 
+        // What was typed outlasts the field: a redraw reads it back, and it still stops a save.
+        #expect(editor.dateFieldText(in: folder, today: today) == "tomorrowx")
+
         editor.setDateText("", today: today, in: folder)
         #expect(editor.row(in: folder)?.due == nil && editor.row(in: folder)?.validation == nil)
+        #expect(editor.dateFieldText(in: folder, today: today).isEmpty)
+
+        // A row with no date: typing one and clearing it leaves nothing to save.
+        editor.cancel(in: folder)
+        let undated = try #require(items.first { $0.due == nil })
+        #expect(editor.begin(undated, in: folder, actions, reload: {}))
+        editor.setDateText("tomorrow", today: today, in: folder)
+        #expect(editor.row(in: folder)?.change != nil)
+        editor.setDateText("", today: today, in: folder)
+        #expect(editor.row(in: folder)?.change == nil)
     }
 
     /// Real field editors in a real window: Return saves, moving away saves, Esc puts it back, and a date it cannot read holds

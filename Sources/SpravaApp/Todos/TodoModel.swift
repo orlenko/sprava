@@ -78,7 +78,7 @@ final class TodoModel: ObservableObject, DraftOwner {
     /// the runtime has written it, and is cleared only if it is still the text sent. If a line is refused, the lines not yet
     /// added stay in the field, and Undo takes back those that were.
     func add(to target: Target?, today: CalendarDate = .today(), reload: @escaping () async -> Void) async {
-        let typed = draft, submittedDetails = details
+        let typed = draft, submittedDetails = details, submittedDue = dueText, submittedPriority = priority, submittedContext = context
         let lines = Self.lines(typed)
         guard !adding, !lines.isEmpty else { return }
         guard lines.count <= Self.mostLinesAtOnce else {
@@ -115,7 +115,12 @@ final class TodoModel: ObservableObject, DraftOwner {
             if !done.isEmpty, draft == typed { draft = left.joined(separator: "\n") }
             message = done.isEmpty ? "The item was not added: \(failure)" : "Added \(done.count) of \(lines.count). The rest were not added: \(failure)"
         } else {
-            if draft == typed, details == submittedDetails { draft = ""; details = ""; dueText = ""; priority = .normal; context = nil }
+            // Only what is still as it was sent: anything changed while the runtime wrote is for the next to-do.
+            if draft == typed { draft = "" }
+            if details == submittedDetails { details = "" }
+            if dueText == submittedDue { dueText = "" }
+            if priority == submittedPriority { priority = .normal }
+            if context == submittedContext { context = nil }
             message = nil
         }
         await reload()

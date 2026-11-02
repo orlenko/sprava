@@ -183,7 +183,6 @@ struct TodoLineEditor: View {
 
     @Environment(\.todoListIsWide) private var wide
     @FocusState private var focus: Field?
-    @State private var dateText = ""
     @State private var dateRefused = false
 
     private var locked: Bool { actions.busy || editor.saving.contains(folder.standardizedFileURL) }
@@ -195,7 +194,8 @@ struct TodoLineEditor: View {
                 TextField("Title", text: Binding(get: { editor.row(in: folder)?.title ?? "" }, set: { editor.setTitle($0, in: folder) }))
                     .textFieldStyle(.roundedBorder)
                     .focused($focus, equals: .title)
-                TextField(editsFollowUp ? "Chase" : "Due", text: $dateText)
+                TextField(editsFollowUp ? "Chase" : "Due", text: Binding(get: { editor.dateFieldText(in: folder, today: today) },
+                                                                         set: { dateRefused = false; editor.setDateText($0, today: today, in: folder) }))
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: TodoColumns.date)
@@ -235,23 +235,10 @@ struct TodoLineEditor: View {
             }
         }
         .disabled(locked)
-        .onAppear {
-            dateText = shownDate
-            focus = first
-        }
+        .onAppear { focus = first }
         .onChange(of: focus) { _, now in if now == nil { commit() } }
-        .onChange(of: dateText) { _, typed in
-            dateRefused = false
-            editor.setDateText(typed, today: today, in: folder)
-        }
         .onSubmit(commit)
         .onExitCommand { editor.cancel(in: folder) }
-    }
-
-    /// The date in the open row, which may already differ from the item's after a visit to More.
-    private var shownDate: String {
-        guard let row = editor.row(in: folder), let day = row.waiting ? row.followUp : row.due else { return "" }
-        return TodoDates.label(day, today: today)
     }
 
     /// Saves unless the date cannot be read, which stays open to be fixed. An unchanged row just closes.

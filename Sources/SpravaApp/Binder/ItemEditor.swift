@@ -24,6 +24,8 @@ final class ItemEditor: ObservableObject, DraftOwner {
         /// True while the date typed into the row's date field cannot be read. Every way of saving refuses it, so a date the
         /// person is still fixing is never replaced by an earlier one.
         var unreadDate = false
+        /// The date field's text, once typed into; before that, the field shows the row's date.
+        var dateTyped: String?
         var waiting: Bool { status == .waiting || status == .blocked }
         var validation: String? {
             if unreadDate { return "Sprava could not read that date. Try tomorrow, fri, nov 12 or 2031-02-03." }
@@ -145,18 +147,30 @@ final class ItemEditor: ObservableObject, DraftOwner {
         let folder = folder.standardizedFileURL
         guard !saving.contains(folder), rows[folder] != nil else { return false }
         rows[folder]?.due = value
+        rows[folder]?.dateTyped = nil
+        rows[folder]?.unreadDate = false
         return true
     }
 
     func setDetails(_ value: String, in folder: URL) { edit(in: folder) { $0.details = value } }
     func setPriority(_ value: Priority, in folder: URL) { edit(in: folder) { $0.priority = value } }
-    func setStatus(_ value: ItemStatus, in folder: URL) { edit(in: folder) { $0.status = value } }
+    func setStatus(_ value: ItemStatus, in folder: URL) { edit(in: folder) { $0.status = value; $0.dateTyped = nil; $0.unreadDate = false } }
     func setWaitingOn(_ value: String, in folder: URL) { edit(in: folder) { $0.waitingOn = value } }
-    func setFollowUp(_ value: CalendarDate?, in folder: URL) { edit(in: folder) { $0.followUp = value } }
+    func setFollowUp(_ value: CalendarDate?, in folder: URL) {
+        edit(in: folder) { $0.followUp = value; $0.dateTyped = nil; $0.unreadDate = false }
+    }
 
     /// The open row's date as it was when the row opened, as its field first shows it: the follow-up for what is waiting.
     func dateLabel(in folder: URL, today: CalendarDate) -> String {
         guard let row = rows[folder.standardizedFileURL], let day = row.waiting ? row.item.followUpAt : row.item.due else { return "" }
+        return TodoDates.label(day, today: today)
+    }
+
+    /// What the row's date field shows: what was typed, kept however the row is redrawn, or else the row's date.
+    func dateFieldText(in folder: URL, today: CalendarDate) -> String {
+        guard let row = rows[folder.standardizedFileURL] else { return "" }
+        if let typed = row.dateTyped { return typed }
+        guard let day = row.waiting ? row.followUp : row.due else { return "" }
         return TodoDates.label(day, today: today)
     }
 
@@ -166,6 +180,7 @@ final class ItemEditor: ObservableObject, DraftOwner {
         let text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         let original = dateLabel(in: folder, today: today)
         edit(in: folder) { row in
+            row.dateTyped = typed
             let day: CalendarDate?
             if text == original { day = row.waiting ? row.item.followUpAt : row.item.due }
             else if text.isEmpty { day = nil }
