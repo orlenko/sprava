@@ -20,6 +20,8 @@ import Testing
         var running = false
         var hash = "fixture-hash"
         var reply = #"{"answer":"The invented bylaw permits pets with permission.","citations":["S1"],"task":{"title":"Ask the board","details":"Request written permission."},"draft":null}"#
+        /// What a turn does to the binder while it runs, as the agent's file tools will.
+        var act: (@Sendable () -> Void)?
         func driver(policy: String, session: UUID = UUID()) -> ClaudeConversationRuntime.Driver {
             let hash = lock.withLock { policies.append(policy); sessions.append(session); return self.hash }
             let originalPolicy = lock.withLock {
@@ -30,6 +32,7 @@ import Testing
                 lock.withLock { lines.append(line); resumes.append(resume); running = true; stopped = false }
                 defer { lock.withLock { running = false } }
                 if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return (resume ? originalPolicy : policy).hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
+                lock.withLock { act }?()
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
             }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash)
@@ -185,6 +188,62 @@ import Testing
         proof.lock.withLock { proof.scope = scope }
         _ = try await f.send(request, text); _ = try await f.completed(request)
         #expect(proof.lock.withLock { proof.sawReceipt })
+    }
+
+    @Test func aTurnsFileChangesComeWithItsReplyAndCanBeUndone() async throws {
+        let f = try Fixture(); try await f.connect()
+        let notes = f.folder.appendingPathComponent("notes.md"), old = f.folder.appendingPathComponent("old.md")
+        try Data("first".utf8).write(to: notes); try Data("unneeded".utf8).write(to: old)
+        f.engine.lock.withLock { f.engine.act = {
+            try? Data("second".utf8).write(to: notes); try? FileManager.default.removeItem(at: old)
+        } }
+        let id = UUID()
+        let turn = try #require(try await f.send(id, "Tidy this invented binder.")["turn_id"]?.stringValue)
+        let done = try await f.completed(id)
+        #expect(done["phase"] == .str("replied"))
+        #expect(done["changes"]?["summary"] == .str("Changed 1 file, deleted 1 file: notes.md, old.md"))
+        #expect(done["changes"]?["undone"] == .bool(false))
+        // The saved conversation shows the same line after a restart.
+        #expect(try await f.request("chat_history")["turns"]?.arrayValue?.first?["changes"]?["summary"] == done["changes"]?["summary"])
+        // A later edit refuses, leaving everything as it is.
+        try Data("the person's words".utf8).write(to: notes)
+        let refused = try await f.request("chat_undo", [("turn_id", .str(turn))])
+        #expect(refused["undone"] == .bool(false) && refused["conflicts"] == .array([.str("notes.md")]))
+        #expect(!FileManager.default.fileExists(atPath: old.path))
+        try Data("second".utf8).write(to: notes)
+        #expect(try await f.request("chat_undo", [("turn_id", .str(turn))])["undone"] == .bool(true))
+        #expect(try Data(contentsOf: notes) == Data("first".utf8))
+        #expect(try Data(contentsOf: old) == Data("unneeded".utf8))
+        #expect(try await f.request("chat_poll", [("request_id", .str(id.uuidString))])["changes"]?["undone"] == .bool(true))
+    }
+
+    @Test func aTurnThatChangesNothingHasNoLineAndTheBadUndosAreRefused() async throws {
+        let f = try Fixture(); try await f.connect()
+        let id = UUID(); _ = try await f.send(id, "Only a question."); let done = try await f.completed(id)
+        #expect(done["changes"] == nil)
+        await #expect(throws: (any Error).self) { try await f.request("chat_undo", [("turn_id", .str("not-a-turn"))]) }
+        await #expect(throws: (any Error).self) { try await f.request("chat_undo", [("turn_id", .str(UUID().uuidString))]) }
+    }
+
+    @Test func anUndoWaitsForARunningTurn() async throws {
+        let f = try Fixture(); try await f.connect()
+        let id = UUID(); let first = try #require(try await f.send(id, "First.")["turn_id"]?.stringValue); _ = try await f.completed(id)
+        f.engine.lock.withLock { f.engine.hold = true }
+        let next = UUID(); _ = try await f.send(next, "Second.")
+        await #expect(throws: ClaudeConversationRuntime.Refused.busy) { try await f.request("chat_undo", [("turn_id", .str(first))]) }
+        f.engine.lock.withLock { f.engine.hold = false }
+        _ = try await f.completed(next)
+    }
+
+    @Test func removingABinderForgetsItsHistoryCopies() async throws {
+        let f = try Fixture(); try await f.connect()
+        let id = UUID(); _ = try await f.send(id, "Keep a baseline."); _ = try await f.completed(id)
+        let binder = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue.flatMap(UUID.init(uuidString:)))
+        let history = f.root.appendingPathComponent("support/binder-store/history/\(binder.uuidString)")
+        #expect(FileManager.default.fileExists(atPath: history.path))
+        let ticket = try await f.runtime.beginLifecycle(folder: f.folder)
+        await f.runtime.finishLifecycle(ticket)
+        #expect(!FileManager.default.fileExists(atPath: history.path))
     }
 
     @Test func aBinderThatIsNotConnectedSaysWhy() async throws {

@@ -1044,20 +1044,24 @@ into a binder's session.
 
 ### 18.4 Undo by version history
 
-Each binder gets a version history kept outside the folder, in Sprava's support folder (proposed: a git
-repository whose work tree is the binder and whose git directory is `brains/<binder id>/history.git`), so the
-binder stays a plain folder. Sprava commits:
+Each binder gets a version history kept outside the folder, in Sprava's support folder
+(`binder-store/history/<binder id>`, `TurnHistory`), so the binder stays a plain folder. It is Sprava's own store of
+file bytes by hash, cloned where the volume allows, not git: a copied project's own `.git` folder would hide its files
+from a git history, and a friend's Mac may have no git. Sprava records:
 
 - before a turn starts, anything changed since the last commit (the person's own edits, Sprava's writes), as
   its own entry;
 - after the turn ends, the turn's changes, as one entry carrying the turn's id.
 
-Undo on a turn reverts that turn's entry alone. A later change to the same lines makes it a conflict, shown
-with both versions, never a silent overwrite. Each turn ends with one line in the conversation: what it changed
+Undo on a turn reverts that turn's entry alone, whole or not at all. A later change to one of its files makes it a
+conflict that names the file and changes nothing, never a silent overwrite. Undo leaves anything that arrived in
+`intake/` during the turn. Key files (`DocumentPaths.isKeyFile`) are tracked by name only and never copied, so deleting a
+secret really deletes it and the summary says Undo cannot bring it back. Entries and their bytes are kept 30 days, and go
+when the binder is removed or offloaded. Each turn ends with one line in the conversation: what it changed
 ("filed 3 documents, added 2 to-dos, edited the brief, reached 2 sites") and Undo. Sprava's own structured
 writes (to-dos, filings) also go through the op log as today (D15), so an Undo of a turn undoes its ops too.
 
-restic keeps its job: encrypted backups and offload. Large binaries and the history's size are spike S7.
+restic keeps its job: encrypted backups and offload. The history's size on a volume without clones is spike S7.
 
 This replaces D3's class B taps for changes inside the binder. Class C stays in the app's own controls:
 disclosure, privacy markers, engine and backup settings, and anything outward.
