@@ -100,7 +100,7 @@ final class TodoModel: ObservableObject, DraftOwner {
             else if let generalTarget { destination = try await generalTarget() }
             else { throw GeneralDestinationUnavailable() }
             for line in lines {
-                let item = Self.newItem(title: line, due: day, priority: priority, context: context, details: submittedDetails)
+                let item = Self.newItem(title: line, due: day, priority: submittedPriority, context: submittedContext, details: submittedDetails)
                 let r = try await client.command("apply", binder: destination!.folder, [("op", .str("add_item")), ("args", .obj([("item", item)]))])
                 if let op = r["op"]?.stringValue { done.append(op) }
             }

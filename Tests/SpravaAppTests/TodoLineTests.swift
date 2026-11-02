@@ -79,9 +79,13 @@ import Testing
             model.priority = .low
             return #"{"ok":true,"op":"0199ffff-0000-7000-8000-000000000001"}"#
         }
-        model.draft = "Call the plumber"; model.dueText = "tomorrow"; model.priority = .high
+        model.draft = "Call the plumber\nBook the van"; model.dueText = "tomorrow"; model.priority = .high
         await model.add(to: target, today: today, reload: {})
-        #expect(runtime.sent.last?["args"]?["item"]?["due"] == .str("2031-02-05"))
+        // Every line of the batch has what was on the row at Return.
+        for sent in runtime.sent {
+            #expect(sent["args"]?["item"]?["due"] == .str("2031-02-05") && sent["args"]?["item"]?["priority"] == .str("high"))
+        }
+        #expect(runtime.sent.count == 2)
         #expect(model.draft.isEmpty && model.dueText == "fri" && model.priority == .low)
     }
 
