@@ -217,6 +217,35 @@ import Testing
         #expect(try await f.request("chat_poll", [("request_id", .str(id.uuidString))])["changes"]?["undone"] == .bool(true))
     }
 
+    @Test func aFolderACommandClosedIsReopenedSoItsTurnIsStillRecorded() async throws {
+        let f = try Fixture(); try await f.connect()
+        let closed = f.folder.appendingPathComponent("closed"), notes = f.folder.appendingPathComponent("notes.md")
+        try FileManager.default.createDirectory(at: closed, withIntermediateDirectories: false)
+        try Data("first".utf8).write(to: notes)
+        f.engine.lock.withLock { f.engine.act = {
+            try? FileManager.default.removeItem(at: notes)
+            _ = chmod(closed.path, 0)
+        } }
+        let id = UUID(); let turn = try #require(try await f.send(id, "Tidy.")["turn_id"]?.stringValue)
+        let done = try await f.completed(id)
+        #expect(done["changes"]?["summary"] == .str("Deleted 1 file: notes.md"))
+        #expect(try await f.request("chat_undo", [("turn_id", .str(turn))])["undone"] == .bool(true))
+        #expect(try Data(contentsOf: notes) == Data("first".utf8))
+    }
+
+    @Test func aTurnThatCouldNotBeRecordedSaysSoAndOffersNoUndo() async throws {
+        let f = try Fixture(); try await f.connect()
+        let binder = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue)
+        let head = f.root.appendingPathComponent("support/binder-store/history/\(binder)/head.json")
+        f.engine.lock.withLock { f.engine.act = { try? Data("not json".utf8).write(to: head) } }
+        let id = UUID(); let turn = try #require(try await f.send(id, "Tidy.")["turn_id"]?.stringValue)
+        let done = try await f.completed(id)
+        #expect(done["phase"] == .str("replied"))
+        #expect(done["changes"]?["undoable"] == .bool(false))
+        #expect(done["changes"]?["summary"]?.stringValue?.contains("could not record") == true)
+        await #expect(throws: (any Error).self) { try await f.request("chat_undo", [("turn_id", .str(turn))]) }
+    }
+
     @Test func aTurnThatChangesNothingHasNoLineAndTheBadUndosAreRefused() async throws {
         let f = try Fixture(); try await f.connect()
         let id = UUID(); _ = try await f.send(id, "Only a question."); let done = try await f.completed(id)

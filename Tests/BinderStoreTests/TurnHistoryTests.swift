@@ -1,4 +1,5 @@
 @testable import BinderStore
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -113,6 +114,40 @@ private func temporaryFolder() throws -> URL {
         try f.write("{\"documents\":[{\"path\":\"documents/bylaw.txt\"}]}", "catalog.json")
         #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
         #expect(f.read("documents/bylaw.txt") == "Invented bylaw")
+    }
+
+    func sha(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+
+    @Test func aFileChangedInATurnAndFiledSinceIsNotRevertedUnderItsRecord() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[]}", "catalog.json"); try f.write("version A", "report.txt"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("version B", "report.txt"); try f.history.record(f.folder, turn: turn)
+        try f.write("{\"documents\":[{\"path\":\"report.txt\",\"sha256\":\"\(sha("version B"))\"}]}", "catalog.json")
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(f.read("report.txt") == "version B")
+    }
+
+    @Test func aFiledDocumentATurnEditedComesBackToMatchItsRecord() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[{\"path\":\"report.txt\",\"sha256\":\"\(sha("version A"))\"}]}", "catalog.json")
+        try f.write("version A", "report.txt"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("version B", "report.txt"); try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(f.read("report.txt") == "version A")
+    }
+
+    @Test func aFiledDocumentGrownHugeIsRefusedWithoutHashingIt() throws {
+        let f = try Fixture()
+        try f.write("{\"documents\":[{\"path\":\"report.txt\",\"sha256\":\"\(sha("version A"))\"}]}", "catalog.json")
+        try f.write("version A", "report.txt"); try f.history.record(f.folder)
+        let turn = UUID()
+        #expect(truncate(f.folder.appendingPathComponent("report.txt").path, 1 << 40) == 0)
+        try f.history.record(f.folder, turn: turn)
+        let started = Date()
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(Date().timeIntervalSince(started) < 10)
     }
 
     @Test func aPipeOrLinkAtTheCatalogIsRefusedRatherThanRead() throws {

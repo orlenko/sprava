@@ -55,9 +55,12 @@ public struct TurnHistory: Sendable {
         public internal(set) var undone: Bool
         /// The catalog changed between the records around this entry: something was filed or approved while it ran.
         var recordsChanged = false
+        /// The turn's changes could not be recorded, so this entry has none and no Undo.
+        public internal(set) var unrecorded = false
 
         /// One line for the conversation: counts, up to three paths, and any file Undo cannot bring back.
         public var summary: String {
+            if unrecorded { return "Sprava could not record what this turn changed, so it has no Undo. Check this binder's folder." }
             let added = changes.filter { $0.before == nil }.count, removed = changes.filter { $0.after == nil }.count
             let changed = changes.count - added - removed
             let counts = [(added, "added"), (changed, "changed"), (removed, "deleted")].filter { $0.0 > 0 }
@@ -117,7 +120,8 @@ public struct TurnHistory: Sendable {
     public func record(_ folder: URL, turn: UUID? = nil, now: Date = Date(), cancelled: @Sendable () -> Bool = { false }) throws -> Entry? {
         try AtomicFile.makePrivateFolder(root); try AtomicFile.makePrivateFolder(blobs); try AtomicFile.makePrivateFolder(entries)
         let known = try readHead()
-        let current = try scan(folder, known: known ?? [:], cancelled: cancelled)
+        // After a turn, a command may have closed a folder or file to reading; its record comes first.
+        let current = try scan(folder, known: known ?? [:], repairing: turn != nil, cancelled: cancelled)
         let stamp = try Self.stamp(folder), recordsChanged = (try? Data(contentsOf: catalogStamp)) != stamp
         try writeHead(current)
         try AtomicFile.write(stamp, to: catalogStamp)
@@ -145,6 +149,7 @@ public struct TurnHistory: Sendable {
     public func undo(turn: UUID, in folder: URL, now: Date = Date()) throws -> UndoResult {
         guard var entry = try entry(forTurn: turn) else { throw Refused.unknownEntry }
         guard !entry.undone else { return .undone }
+        guard !entry.unrecorded else { throw Refused.unknownEntry }
         try record(folder, now: now) // The person's edits since, so a later change shows as one.
         let current = try readHead() ?? [:]
         var conflicts: [String] = []
@@ -172,8 +177,18 @@ public struct TurnHistory: Sendable {
         guard !bytes.isEmpty else { return true }
         guard let text = String(data: bytes, encoding: .utf8), let parsed = try? JSONParser.parse(text), parsed.safety.isSafe else { return false }
         // Folded, as the writer compares them: on most volumes Report.txt and report.txt are one file.
-        let filed = Set((parsed.value["documents"]?.arrayValue ?? []).compactMap { $0["path"]?.stringValue }.map(DocumentPaths.fold))
-        return !entry.changes.contains { $0.before == nil && filed.contains(DocumentPaths.fold($0.path)) }
+        var filed: [String: String?] = [:]
+        for document in parsed.value["documents"]?.arrayValue ?? [] {
+            if let path = document["path"]?.stringValue { filed[DocumentPaths.fold(path)] = document["sha256"]?.stringValue }
+        }
+        return !entry.changes.contains { change in
+            guard change.after != nil, let recorded = filed[DocumentPaths.fold(change.path)] else { return false }
+            // A file this turn made is gone after Undo. A file it changed goes back, which breaks the record only if the
+            // record describes the changed version: one that still holds the earlier version comes out true again.
+            // Only an ordinary file is hashed here, whose size the record bounded; anything else stays as it is.
+            guard change.before != nil, change.after?.kind == .file, let recorded else { return true }
+            return DocumentPaths.sha256(of: folder.appendingPathComponent(change.path)) == recorded
+        }
     }
 
     /// The catalog's bytes, empty when there is none, nil when what is there cannot be read as an ordinary bounded file: a
@@ -242,6 +257,22 @@ public struct TurnHistory: Sendable {
         return nil
     }
 
+    /// Gives the owner back what a command took. Only permission bits, on what lstat says is a real file or folder.
+    private static func openToOwner(_ url: URL, adding bits: mode_t) {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & bits != bits else { return }
+        _ = chmod(url.path, (info.st_mode & 0o7777) | bits)
+    }
+
+    /// Says in the conversation that a turn's changes could not be recorded, rather than leaving it looking like one that
+    /// changed nothing.
+    public func noteUnrecorded(turn: UUID, now: Date = Date()) throws {
+        try AtomicFile.makePrivateFolder(root); try AtomicFile.makePrivateFolder(entries)
+        var entry = Entry(id: UUID(), turn: turn, at: now, changes: [], undone: false)
+        entry.unrecorded = true
+        try write(entry)
+    }
+
     /// Whether every folder above the path is a real folder or absent: a link swapped in by a later turn must not carry a
     /// restored file out of the binder.
     static func safeToWrite(_ path: String, in folder: URL) -> Bool {
@@ -257,10 +288,11 @@ public struct TurnHistory: Sendable {
         return true
     }
 
-    private func scan(_ folder: URL, known: [String: Item], cancelled: @Sendable () -> Bool) throws -> [String: Item] {
+    private func scan(_ folder: URL, known: [String: Item], repairing: Bool, cancelled: @Sendable () -> Bool) throws -> [String: Item] {
         var found: [String: Item] = [:], budget = Self.maximumRecordBytes
         func walk(_ directory: URL, _ prefix: String) throws {
             guard !cancelled() else { throw Refused.cancelled }
+            if repairing { Self.openToOwner(directory, adding: 0o700) }
             let names: [String]
             do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
             catch { throw Refused.unreadable(prefix) }
@@ -273,6 +305,10 @@ public struct TurnHistory: Sendable {
                 switch info.st_mode & S_IFMT {
                 case S_IFDIR: try walk(url, path)
                 case S_IFREG, S_IFLNK:
+                    if repairing, info.st_mode & S_IFMT == S_IFREG {
+                        Self.openToOwner(url, adding: 0o400)
+                        guard lstat(url.path, &info) == 0 else { throw Refused.unreadable(path) }
+                    }
                     guard found.count < Self.maximumFiles else { throw Refused.tooManyFiles }
                     found[path] = try item(url, path: path, info: info, known: known[path], budget: &budget, cancelled: cancelled)
                 default: continue // A pipe or socket holds nothing to keep, and reading one could hang.

@@ -233,6 +233,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     static func change(_ value: JSONObject, turn: UUID) -> ChatBinderChange? {
         guard let summary = value["changes"]?["summary"]?.stringValue else { return nil }
         if value["changes"]?["undone"] == .bool(true) { return ChatBinderChange(operationIDs: [], summary: summary + " (undone)", undo: nil) }
+        if value["changes"]?["undoable"] == .bool(false) { return ChatBinderChange(operationIDs: [], summary: summary, undo: nil) }
         return ChatBinderChange(operationIDs: [], summary: summary, undo: ChatUndoReference(batchID: turn.uuidString))
     }
 

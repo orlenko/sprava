@@ -70,6 +70,12 @@ import Testing
         #expect(model.chat.message?.contains("something was filed or approved during that turn") == true)
     }
 
+    @Test func aTurnThatCouldNotBeRecordedShowsItsLineWithNoUndo() {
+        let value = JSONObject([(key: "changes", value: .obj([("summary", .str("Sprava could not record what this turn changed")), ("undone", .bool(false)), ("undoable", .bool(false))]))])
+        let change = ClaudeBinderConversation.change(value, turn: UUID())
+        #expect(change?.undo == nil && change?.summary.contains("could not record") == true)
+    }
+
     @Test func aTurnAlreadyUndoneOffersNoSecondUndo() async throws {
         let server = Server(), model = model(server)
         server.undone = true
