@@ -16,15 +16,15 @@ package enum ClaudeReadLaunch {
         package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
     }
     static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
-    /// All the agent's commands may run: file tools. No scripting language, compiler or anything from a writable folder, because
-    /// a program that can make arbitrary system calls can read another process's environment, and so any credential one of the
-    /// person's programs holds there; no sandbox rule stops that read (kern.procargs2, seen 2026-11-02). None of these can.
-    static let commandPrograms: [String] =
-        ["sh", "bash", "zsh", "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "pwd", "echo", "date", "test", "expr", "sleep", "realpath"].map { "/bin/" + $0 }
-        + ["find", "grep", "egrep", "fgrep", "sed", "awk", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "diff", "cmp", "file", "stat", "touch", "basename", "dirname",
-           "xargs", "env", "tar", "bsdtar", "gzip", "gunzip", "zip", "unzip", "tee", "which", "true", "false", "du", "fold", "paste", "comm", "nl", "rev", "readlink",
-           "mktemp", "iconv", "textutil", "uname", "id", "whoami"].map { "/usr/bin/" + $0 }
-        + ["/usr/libexec/path_helper"]
+    /// What the agent's shell may do: move and remove files, all it needs that the other tools do not do. Two walls hold this.
+    /// The CLI refuses any other command, and any compound, substitution or prefix that reaches one (`shellVerbs`, checked
+    /// against the real CLI 2.1.316). The operating system runs nothing else (`commandPrograms`), but must leave the CLI itself
+    /// runnable, and it is a JavaScript runtime that takes a preload from its environment, so the first wall is what stops
+    /// that. A program able to make arbitrary system calls can read the environment of the person's other programs, and no
+    /// sandbox rule stops that read (kern.procargs2, seen 2026-11-02), so nothing richer runs here until a stronger boundary exists.
+    static let shellVerbs = ["rm", "rmdir", "mv", "cp", "mkdir", "ls"]
+    static let allowedTools = ["Read", "Write", "Edit", "Glob", "Grep"] + shellVerbs.map { "Bash(\($0):*)" }
+    static let commandPrograms: [String] = (["sh", "bash", "zsh"] + shellVerbs).map { "/bin/" + $0 } + ["/usr/libexec/path_helper"]
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
@@ -89,7 +89,8 @@ package enum ClaudeReadLaunch {
             "DISABLE_TELEMETRY": "1"
         ]
         let toolList = tools.joined(separator: ",")
-        let toolArguments = reach == nil ? ["--tools", "", "--disallowedTools", "*"] : ["--tools", toolList, "--allowedTools", toolList]
+        let toolArguments = reach == nil ? ["--tools", "", "--disallowedTools", "*"]
+            : ["--tools", toolList, "--allowedTools", allowedTools.joined(separator: ",")]
         if let reach {
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
             environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy

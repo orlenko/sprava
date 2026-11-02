@@ -255,8 +255,8 @@ import Testing
         let reaches = f.engine.lock.withLock { f.engine.reaches }
         #expect(reaches.dropLast().allSatisfy { $0 == nil })
         #expect(reaches.last??.path == f.folder.path)
-        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("file and shell tools inside this binder") } == true)
-        #expect(f.engine.lock.withLock { f.engine.policies.first?.contains("file and shell tools") } == false)
+        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("file tools and a small shell inside this binder") } == true)
+        #expect(f.engine.lock.withLock { f.engine.policies.first?.contains("file tools and a small shell") } == false)
     }
 
     @Test func toolsNeedTheirOwnConsentAndAWithoutToolsTurnKeepsNoCopies() async throws {

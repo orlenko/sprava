@@ -1045,16 +1045,18 @@ whatever its size. So:
 The start-up check of 11.1 stays: the person's own hooks, memory files, plugins and settings are never loaded
 into a binder's session.
 
-As built (`ClaudeReadLaunch.sandbox`, `AgentEgressProxy`): the agent has Read, Write, Edit, Glob, Grep and Bash in its
+As built (`ClaudeReadLaunch.sandbox`, `AgentEgressProxy`): the agent has Read, Write, Edit, Glob, Grep and a small shell in its
 binder, under a `sandbox-exec` profile, once the person ticks "Let Claude change and delete files" when connecting, which
 needs both sharing choices since the tools can read the whole folder; no earlier connection has this consent, and only a
 binder with it keeps a history. It may read but not write `.sprava`, `catalog.json` and `DASHBOARD.md`. Outbound
 connections are allowed to one loopback port only, Sprava's proxy, which so far passes `api.anthropic.com` and refuses
 every other host, so web access and its domain prompt are still to come. Only the agent process itself may use the proxy,
 checked with the kernel for each connection, so a command cannot upload to another account on that host, and commands
-cannot read the person's token: it reaches the agent by pipe, in no process's environment. Its shell runs only a short list of file commands (`commandPrograms`): no scripting language,
-compiler, or anything written in the binder, whether run or loaded as a library, because a program that can make arbitrary system calls can read the environment
-of the person's other programs and no sandbox rule stops that. Richer tools wait for a stronger boundary. A key file cannot be read by name but can be deleted, which the summary says Undo
+cannot read the person's token: it reaches the agent by pipe, in no process's environment. Its shell runs only `rm`, `rmdir`, `mv`, `cp`, `mkdir` and `ls`, held by two walls: the CLI refuses anything else,
+including a compound or substitution that reaches anything else, and the operating system runs nothing else but the CLI
+itself. No scripting language, compiler or anything written in the binder runs or loads as a library, because a program that
+can make arbitrary system calls can read the environment of the person's other programs and no sandbox rule stops that.
+Richer tools wait for a stronger boundary. A key file cannot be read by name but can be deleted, which the summary says Undo
 cannot reverse; renaming one first gets past that name rule. A turn whose changes could not be recorded runs with no tools.
 Reads outside the binder and the agent's home are closed except for the folders of system files, programs and libraries,
 and listening on a port is closed. If a turn's changes cannot be recorded, its line says so and it has no Undo. Before a turn counts as

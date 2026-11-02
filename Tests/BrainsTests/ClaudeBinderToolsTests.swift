@@ -46,8 +46,7 @@ import Testing
 
     @Test func insideTheBinderItCanDoTheWork() throws {
         let f = try Fixture(); defer { f.clean() }
-        #expect(try f.allowed("cat notes.md && ls && find . -name 'n*' && grep notes notes.md"))
-        #expect(try f.allowed("echo new > new.md && mkdir -p d/e && mv new.md d/e/new.md"))
+        #expect(try f.allowed("ls && echo new > new.md && mkdir -p d/e && mv new.md d/e/new.md"))
         #expect(try f.allowed("rm old.md"))
         #expect(!FileManager.default.fileExists(atPath: f.binder.appendingPathComponent("old.md").path))
         #expect(try f.allowed("echo own > \"$HOME/own.txt\""))
@@ -55,24 +54,26 @@ import Testing
 
     @Test func keyFilesCanBeDeletedButNotRead() throws {
         let f = try Fixture(); defer { f.clean() }
-        #expect(try !f.allowed("cat scripts/.env"))
-        #expect(try !f.allowed("grep INVENTED scripts/deploy.pem"))
+        // Through the shell's own redirection, since cat and grep are off the list too.
+        #expect(try !f.allowed(": < scripts/.env"))
+        #expect(try !f.allowed(": < scripts/deploy.pem"))
         #expect(try f.allowed("rm scripts/.env"))
         #expect(!FileManager.default.fileExists(atPath: f.binder.appendingPathComponent("scripts/.env").path))
     }
 
     @Test func sprawasOwnFilesAreClosed() throws {
         let f = try Fixture(); defer { f.clean() }
-        #expect(try f.allowed("cat .sprava/ops.jsonl && find . >/dev/null"))
+        #expect(try f.allowed(": < .sprava/ops.jsonl && ls .sprava >/dev/null"))
         #expect(try !f.allowed("echo x >> .sprava/ops.jsonl"))
         #expect(try !f.allowed("rm .sprava/ops.jsonl"))
         #expect(try !f.allowed("mv .sprava elsewhere"))
         #expect(try !f.allowed("echo x > catalog.json"))
         #expect(try !f.allowed("mv catalog.json c.json"))
         #expect(try !f.allowed("echo x > DASHBOARD.md"))
-        // Closing the binder itself would stop Sprava recording the turn.
-        #expect(try !f.allowed("chmod 000 ."))
-        #expect(try f.allowed("mkdir -p sub && chmod 700 sub"))
+        // Closing the binder itself would stop Sprava recording the turn, even if a chmod ever ran.
+        let chmod = try Fixture(allowing: ["/bin/chmod"]); defer { chmod.clean() }
+        #expect(try !chmod.allowed("/bin/chmod 000 ."))
+        #expect(try chmod.allowed("mkdir -p sub && /bin/chmod 700 sub"))
         // On a case-insensitive volume, the same files by another spelling.
         #expect(try !f.allowed("echo x > CATALOG.JSON"))
         #expect(try !f.allowed("echo x >> .SPRAVA/ops.jsonl"))
@@ -80,27 +81,26 @@ import Testing
 
     @Test func nothingOutsideTheBinderIsReachable() throws {
         let f = try Fixture(); defer { f.clean() }
-        #expect(try !f.allowed("cat \"$O/private.md\""))
+        #expect(try !f.allowed(": < \"$O/private.md\""))
         #expect(try !f.allowed("echo x > \"$O/x\""))
         #expect(try !f.allowed("echo x > /private/tmp/sprava-wall-probe-\(UUID().uuidString)"))
-        #expect(try !f.allowed("ln -s \"$O/private.md\" link.md && cat link.md"))
         #expect(try !f.allowed("ls /Users/*/.ssh"))
         // Reads are closed everywhere else too, temporary folders included.
         let stray = URL(fileURLWithPath: "/private/tmp/sprava-wall-\(UUID().uuidString).txt")
         try Data("invented".utf8).write(to: stray); defer { try? FileManager.default.removeItem(at: stray) }
-        #expect(try !f.allowed("cat \(stray.path)"))
+        #expect(try !f.allowed(": < \(stray.path)"))
         #expect(try !f.allowed("ls /private/var/folders"))
         // Homebrew's and the system's application data, as opposed to their programs.
         #expect(try !f.allowed("ls /opt/homebrew/var"))
         #expect(try !f.allowed("ls '/Library/Application Support'"))
         #expect(try !f.allowed("ls /Library/Keychains"))
         // What commands need still reads: the system's own files, and looking up a path.
-        #expect(try f.allowed("cat /etc/hosts >/dev/null && pwd && test -d /private/tmp"))
+        #expect(try f.allowed(": < /etc/hosts && pwd && test -d /private/tmp"))
     }
 
     @Test func aDetachedCommandEndsWithTheTurnAndAnotherSessionsIsLeftAlone() async throws {
-        let f = try Fixture(allowing: ["/usr/bin/perl"]); defer { f.clean() }
-        let other = try Fixture(allowing: ["/usr/bin/perl"]); defer { other.clean() }
+        let f = try Fixture(allowing: ["/usr/bin/perl", "/usr/bin/env"]); defer { f.clean() }
+        let other = try Fixture(allowing: ["/usr/bin/perl", "/usr/bin/env"]); defer { other.clean() }
         // Double fork, a new session, closed streams and a clean environment: the shape that outlives a process group.
         let daemon = #"exec /usr/bin/env -i /usr/bin/perl -e 'use POSIX; fork and exit; POSIX::setsid(); fork and exit; close STDIN; close STDOUT; close STDERR; sleep 30'"#
         #expect(try f.allowed(daemon))
@@ -146,10 +146,22 @@ import Testing
                         "/usr/sbin/sysctl -a", "/usr/bin/nc -h", "/usr/bin/ssh -V", "/usr/bin/git --version"] {
             #expect(try !f.allowed(command), "\(command)")
         }
-        for command in ["mkdir -p a/b", "cp notes.md a/b/c.md", "mv a/b/c.md a/d.md", "find . -name 'd.md'", "find . -name 'd.md' | xargs grep -l notes",
-                        "sed -n 1p notes.md | awk '{print $1}'", "sort notes.md | uniq | wc -l", "tar cf a/x.tar notes.md", "textutil -convert txt -stdout notes.md", "rm -r a"] {
+        for command in ["mkdir -p a/b", "cp notes.md a/b/c.md", "mv a/b/c.md a/d.md", "ls a", "rm a/d.md", "rmdir a/b"] {
             #expect(try f.allowed(command), "\(command)")
         }
+        for command in ["find . -name n", "grep notes notes.md", "sed -n 1p notes.md", "awk 1 notes.md", "tar cf a/x.tar notes.md", "/usr/bin/env ls"] {
+            #expect(try !f.allowed(command), "\(command)")
+        }
+    }
+
+    @Test func theCLIIsToldTheSameShortListAsTheSandbox() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let plan = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.316"), home: f.root.appendingPathComponent("tools"),
+                                             sessionID: UUID(), credential: "invented", policy: "p", reach: .init(folder: f.binder, proxyPort: 4242))
+        let allowed = try #require(plan.arguments.firstIndex(of: "--allowedTools")).advanced(by: 1)
+        #expect(plan.arguments[allowed] == "Read,Write,Edit,Glob,Grep,Bash(rm:*),Bash(rmdir:*),Bash(mv:*),Bash(cp:*),Bash(mkdir:*),Bash(ls:*)")
+        // Never a bare Bash, which would let the model run the CLI itself with a preload.
+        #expect(!plan.arguments[allowed].split(separator: ",").contains("Bash"))
     }
 
     @Test func nothingWrittenOrCopiedCanRun() throws {
@@ -194,8 +206,8 @@ import Testing
         try #require(replica >= 0)
         // As a person typing into that terminal.
         _ = "invented typed line\n".withCString { write(master, $0, strlen($0)) }
-        #expect(try !f.allowed("/usr/bin/head -n 1 \(name)"))
-        #expect(try f.allowed("cat /dev/null && head -c 1 /dev/urandom >/dev/null"))
+        #expect(try !f.allowed(": < \(name)"))
+        #expect(try f.allowed(": < /dev/null && : < /dev/urandom"))
     }
 
     @Test func aFileCommandCannotReachAnotherProcesssEnvironment() throws {
