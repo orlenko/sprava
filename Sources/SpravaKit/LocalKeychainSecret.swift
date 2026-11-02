@@ -2,8 +2,8 @@ import Foundation
 import LocalAuthentication
 import Security
 
-/// Local credentials only. Provisioned apps use the data-protection Keychain; an ad-hoc app uses
-/// the Mac login Keychain only when the former reports a missing entitlement (Apple TN3137).
+/// Local credentials only. Provisioned apps use the data-protection Keychain; an app without the entitlement, ad-hoc or
+/// Developer ID, uses the Mac login Keychain only when the former reports a missing entitlement (Apple TN3137).
 /// The login Keychain's default ACL trusts the creating app, never every application.
 package struct LocalKeychainSecret: Sendable {
     private let service: String
@@ -27,7 +27,11 @@ package struct LocalKeychainSecret: Sendable {
             return operations.read(query)
         }
         let result = read(protected: true)
-        return result.0 == errSecMissingEntitlement ? read(protected: false) : result
+        if result.0 == errSecMissingEntitlement { return read(protected: false) }
+        // Without the entitlement a read says only "not found" (macOS 27); a change to the item it just did not find says why.
+        guard result.0 == errSecItemNotFound else { return result }
+        let probe = query(account: account, protected: true, allowInteraction: false)
+        return operations.update(probe, [kSecAttrLabel as String: label]) == errSecMissingEntitlement ? read(protected: false) : result
     }
 
     /// Only an explicit credential-save action may allow macOS to ask for Keychain authorization.

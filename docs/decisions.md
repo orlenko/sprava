@@ -253,7 +253,9 @@
   one line with a button, never opened by itself. Each start is bounded (architecture 3.1).
 - **A20 decided (2026-10-27).** Subscription tokens and email passwords survive background restarts in
   Sprava's own non-synchronized Keychain items. A provisioned runtime uses the data-protection Keychain;
-  only a missing-entitlement refusal selects the Mac login Keychain for an ad-hoc build (Apple TN3137).
+  only a missing-entitlement refusal selects the Mac login Keychain for a build without the entitlement, ad-hoc or
+  Developer ID (Apple TN3137). A read there says only "not found" (macOS 27, 2026-11-02), so a not-found read is
+  followed by a change to the same absent item, whose refusal is the one that names the entitlement.
   Locked or damaged Keychains fail visibly. Only an explicit credential save may ask macOS to authorize
   access. No plaintext file or memory-only success substitutes for a credential that could not be saved.
   The backup key follows the same rule for its local items (2026-10-28): the login Keychain does not enforce

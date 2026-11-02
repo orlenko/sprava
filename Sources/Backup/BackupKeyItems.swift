@@ -65,7 +65,13 @@ extension BackupKey {
             guard let data else { return (errSecDecode, nil) }
             return (status, String(decoding: data, as: UTF8.self))
         }
-        let protected = copy(query(account: acct, synchronizable: synchronizable))
+        let protectedQuery = query(account: acct, synchronizable: synchronizable)
+        var protected = copy(protectedQuery)
+        // Without the entitlement a read says only "not found" (macOS 27); a change to the item it just did not find says why.
+        if protected.0 == errSecItemNotFound,
+           calls.update(protectedQuery, [kSecAttrLabel as String: "Sprava backup key"]) == errSecMissingEntitlement {
+            protected = (errSecMissingEntitlement, nil)
+        }
         guard protected.0 == errSecMissingEntitlement, !synchronizable else { return protected }
         return copy(loginQuery(account: acct, interactive: interactive))
     }

@@ -22,6 +22,9 @@ import Testing
 
         init(entitled: Bool) { self.entitled = entitled }
 
+        /// As the real data-protection Keychain answers a process without the entitlement: a change is refused, a read finds nothing.
+        var readFindsNothing = false
+
         static func key(_ q: [String: Any]) -> String {
             "\(q[kSecAttrAccount as String] as? String ?? "")|\(q[kSecAttrSynchronizable as String] as? Bool ?? false)"
         }
@@ -40,6 +43,7 @@ import Testing
 
         var calls: BackupKey.Calls {
             BackupKey.Calls(copy: { [self] q in
+                if readFindsNothing, !entitled, q[kSecUseDataProtectionKeychain as String] as? Bool == true { return (errSecItemNotFound, nil) }
                 let (status, path) = store(q, writing: false)
                 guard let path else { return (status, nil) }
                 guard let data = self[keyPath: path][Self.key(q)] else { return (errSecItemNotFound, nil) }
@@ -95,6 +99,15 @@ import Testing
         }
         try BackupKey.clearPending(environment: [:], keychain: keychain.keychain(interactive: true, lock: lock))
         #expect(BackupKey.loadPending(environment: [:], keychain: keychain.keychain(lock: lock)) == nil)
+    }
+
+    /// A runtime signed without the entitlement, whose data-protection reads say "not found" rather than naming it.
+    @Test func aRestartedRuntimeWithoutTheEntitlementStillFindsItsKeyAndKnowsICloudIsOutOfReach() throws {
+        let keychain = StandIn(entitled: false); keychain.readFindsNothing = true
+        try keychain.keychain(interactive: true, lock: lock).put("INVNT-LOCAL", BackupKey.account, false)
+        #expect(BackupKey.load(keychain: keychain.keychain(lock: lock)) == "INVNT-LOCAL")
+        #expect(!BackupKey.iCloudKeychainAvailable(keychain: keychain.keychain(lock: lock)))
+        #expect(keychain.protected.isEmpty)
     }
 
     @Test func aProvisionedRuntimeStaysInTheDataProtectionKeychainThisDeviceOnly() throws {
