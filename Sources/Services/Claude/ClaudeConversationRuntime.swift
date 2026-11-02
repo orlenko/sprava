@@ -161,6 +161,7 @@ public actor ClaudeConversationRuntime {
             switch try await Task.detached(priority: .userInitiated, operation: { try history.undo(turn: turn, in: folder) }).value {
             case .undone: return .init([(key: "undone", value: .bool(true))])
             case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))])
+            case .recordsChanged: return .init([(key: "undone", value: .bool(false)), (key: "records_changed", value: .bool(true))])
             }
         }
         if command == "chat_history" || command == "chat_clear" {

@@ -1055,7 +1055,8 @@ from a git history, and a friend's Mac may have no git. Sprava records:
 
 Undo on a turn reverts that turn's entry alone, whole or not at all. A later change to one of its files makes it a
 conflict that names the file and changes nothing, never a silent overwrite. Undo leaves anything that arrived in
-`intake/` during the turn. Key files (`DocumentPaths.isKeyFile`) are tracked by name only and never copied, so deleting a
+`intake/` during the turn, and refuses a turn during which the catalog changed, since reverting files alone would leave it
+pointing at documents that are gone. Key files (`DocumentPaths.isKeyFile`) are tracked by name only and never copied, so deleting a
 secret really deletes it and the summary says Undo cannot bring it back. Entries and their bytes are kept 30 days, and go
 when the binder is removed or offloaded. Each turn ends with one line in the conversation: what it changed
 ("filed 3 documents, added 2 to-dos, edited the brief, reached 2 sites") and Undo. Sprava's own structured

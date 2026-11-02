@@ -244,6 +244,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         do { value = try await client.command("chat_undo", binder: folder, [("turn_id", .str(turn.uuidString))], timeout: 120) }
         catch { throw UndoRefused(description: "Undo did not complete. Nothing is reported as undone; check the binder's folder.") }
         guard value["undone"] == .bool(true) else {
+            if value["records_changed"] == .bool(true) {
+                throw UndoRefused(description: "Nothing was undone: something was filed or approved during that turn. Use Undo under Recent changes for that, and change the files by hand.")
+            }
             let names = (value["conflicts"]?.arrayValue ?? []).compactMap(\.stringValue).prefix(5).joined(separator: ", ")
             throw UndoRefused(description: "Nothing was undone: \(names.isEmpty ? "these files" : names) changed after that turn.")
         }

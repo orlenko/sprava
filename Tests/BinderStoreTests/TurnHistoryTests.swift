@@ -64,6 +64,46 @@ private func temporaryFolder() throws -> URL {
         #expect(f.read("intake/mail/notice.md") == "Invented mail")
     }
 
+    @Test func aCaseOnlyRenameUndoesWithoutLosingTheFile() throws {
+        let f = try Fixture()
+        try f.write("Invented report", "Report.txt")
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.remove("Report.txt"); try f.write("Invented report", "report.txt")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.folder.path) == ["Report.txt"])
+        #expect(f.read("Report.txt") == "Invented report")
+    }
+
+    @Test func somethingNowWhereAFileGoesIsAConflictAndEverythingMovesBack() throws {
+        let f = try Fixture()
+        try f.write("Invented notes", "z.txt")
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.remove("z.txt"); try f.write("Invented notes", "a.txt")
+        try f.history.record(f.folder, turn: turn)
+        try f.write("a person's file", "z.txt/inside.txt")
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .conflict(["z.txt"]))
+        #expect(f.read("a.txt") == "Invented notes")
+        #expect(f.read("z.txt/inside.txt") == "a person's file")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.folder.path).sorted() == ["a.txt", "z.txt"])
+        #expect(try f.history.entry(forTurn: turn)?.undone == false)
+    }
+
+    @Test func aFilingDuringTheTurnRefusesUndoSoTheCatalogStaysTrue() throws {
+        let f = try Fixture()
+        try f.write("{}", "catalog.json"); try f.write("Invented notice", "intake/notice.txt")
+        try f.history.record(f.folder)
+        let turn = UUID()
+        try f.remove("intake/notice.txt"); try f.write("Invented notice", "documents/notice.txt")
+        try f.write("{\"documents\":[{\"path\":\"documents/notice.txt\"}]}", "catalog.json")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .recordsChanged)
+        #expect(f.read("documents/notice.txt") == "Invented notice")
+        #expect(!f.exists("intake/notice.txt"))
+    }
+
     @Test func aLaterEditIsAConflictAndNothingMoves() throws {
         let f = try Fixture()
         try f.write("first", "notes.md"); try f.write("keep", "other.md")

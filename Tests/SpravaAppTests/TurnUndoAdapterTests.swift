@@ -13,6 +13,7 @@ import Testing
         let scope = UUID().uuidString, request = UUID(), turn = UUID()
         var undone = false
         var conflicts: [String] = []
+        var recordsChanged = false
         var undos: [JSONObject] = []
         func answer(_ text: String) throws -> String {
             let value = try JSONParser.parse(text).value
@@ -26,7 +27,8 @@ import Testing
                     ("changes", .obj([("summary", .str("Deleted 1 file: old.md")), ("undone", .bool(undone))]))])])))
             case "chat_undo":
                 undos.append(value.objectValue ?? .init([]))
-                fields.append(("undone", .bool(conflicts.isEmpty)))
+                fields.append(("undone", .bool(conflicts.isEmpty && !recordsChanged)))
+                if recordsChanged { fields.append(("records_changed", .bool(true))) }
                 if !conflicts.isEmpty { fields.append(("conflicts", .array(conflicts.map { .str($0) }))) }
             default: throw ChatCommandFailure.invalidRequest
             }
@@ -56,6 +58,16 @@ import Testing
         await model.chat.undo(change)
         #expect(!model.chat.isUndone(change))
         #expect(model.chat.message == "Nothing was undone: notes.md changed after that turn.")
+    }
+
+    @Test func aFilingDuringTheTurnIsExplainedAndNotReportedAsUndone() async throws {
+        let server = Server(), model = model(server)
+        server.recordsChanged = true
+        await model.show(folder)
+        let change = try #require(model.chat.entries.last?.changes.first)
+        await model.chat.undo(change)
+        #expect(!model.chat.isUndone(change))
+        #expect(model.chat.message?.contains("something was filed or approved during that turn") == true)
     }
 
     @Test func aTurnAlreadyUndoneOffersNoSecondUndo() async throws {

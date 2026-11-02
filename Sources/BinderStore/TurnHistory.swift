@@ -9,7 +9,8 @@ import SpravaKit
 /// by hash, as an APFS clone where the volume allows it.
 ///
 /// Sprava records what changed before a turn (the person's own edits) and after it (the turn's). Undo reverts one turn's
-/// entry, and refuses, changing nothing, when any of its paths has changed since. Key files (`DocumentPaths.isKeyFile`) are
+/// entry, and refuses, changing nothing, when any of its paths has changed since, or when the catalog changed while the
+/// turn ran. Key files (`DocumentPaths.isKeyFile`) are
 /// tracked by name only and never copied here, so deleting a secret really deletes it, and Undo says it cannot return.
 ///
 /// One caller at a time per binder: the runtime holds the binder's turn slot around every call.
@@ -49,6 +50,8 @@ public struct TurnHistory: Sendable {
         public let at: Date
         var changes: [Change]
         public internal(set) var undone: Bool
+        /// The catalog changed between the records around this entry: something was filed or approved while it ran.
+        var recordsChanged = false
 
         /// One line for the conversation: counts, up to three paths, and any file Undo cannot bring back.
         public var summary: String {
@@ -70,6 +73,9 @@ public struct TurnHistory: Sendable {
         case undone
         /// Nothing was changed: these paths are no longer as the turn left them.
         case conflict([String])
+        /// Nothing was changed: the catalog moved during the turn, and reverting files alone would leave it pointing at
+        /// documents that are gone. Those changes have their own Undo under Recent changes.
+        case recordsChanged
     }
 
     /// The folder's own state and the files one writer owns are not the conversation's to version; `.sprava` holds the
@@ -86,6 +92,7 @@ public struct TurnHistory: Sendable {
     var blobs: URL { root.appendingPathComponent("blobs", isDirectory: true) }
     var entries: URL { root.appendingPathComponent("entries", isDirectory: true) }
     var head: URL { root.appendingPathComponent("head.json") }
+    var catalogStamp: URL { root.appendingPathComponent("catalog-stamp") }
 
     /// Production: `binder-store/history/<binder id>` in the support folder.
     public init(support: URL, binder: UUID) {
@@ -99,7 +106,9 @@ public struct TurnHistory: Sendable {
         try AtomicFile.makePrivateFolder(root); try AtomicFile.makePrivateFolder(blobs); try AtomicFile.makePrivateFolder(entries)
         let known = try readHead()
         let current = try scan(folder, known: known ?? [:])
+        let stamp = Self.stamp(folder), recordsChanged = (try? Data(contentsOf: catalogStamp)) != stamp
         try writeHead(current)
+        try AtomicFile.write(stamp, to: catalogStamp)
         guard let known else { return nil }
         var changes: [Change] = []
         for path in Set(known.keys).union(current.keys).sorted() where known[path].flatMap({ old in current[path].map { old.sameContent(as: $0) } }) != true {
@@ -107,7 +116,7 @@ public struct TurnHistory: Sendable {
         }
         defer { try? prune(now: now) }
         guard !changes.isEmpty else { return nil }
-        let entry = Entry(id: UUID(), turn: turn, at: now, changes: changes, undone: false)
+        let entry = Entry(id: UUID(), turn: turn, at: now, changes: changes, undone: false, recordsChanged: recordsChanged)
         try write(entry)
         return entry
     }
@@ -137,15 +146,68 @@ public struct TurnHistory: Sendable {
             if !unchanged || !Self.safeToWrite(change.path, in: folder) { conflicts.append(change.path) }
         }
         guard conflicts.isEmpty else { return .conflict(conflicts) }
-        // Bytes first: a missing blob must refuse the whole Undo before anything moved.
-        for change in entry.changes where change.before?.kind == .file {
-            guard let sha = change.before?.sha256, FileManager.default.fileExists(atPath: blob(sha).path) else { throw Refused.damaged }
-        }
-        for change in entry.changes { try restore(change, in: folder) }
+        guard !entry.recordsChanged else { return .recordsChanged }
+        if let occupied = try apply(entry, in: folder) { return .conflict([occupied]) }
         entry.undone = true
         try write(entry)
         try record(folder, now: now)
         return .undone
+    }
+
+    /// Whether Undo leaves this change as it is: mail and files arrive in intake on their own, during a turn too, so it must
+    /// not delete what it never saw made; and a key file's earlier bytes were never kept.
+    private static func left(_ change: Change) -> Bool {
+        if change.before == nil { return change.path.hasPrefix("intake/") }
+        return change.before?.kind == .key
+    }
+
+    /// Stages every restored file first, then moves the current ones aside, then moves the staged ones in. All of it is
+    /// renames inside the binder, so any failure moves everything back. Moving aside comes first because on a
+    /// case-insensitive volume `Report.txt` and `report.txt` are one file. Returns a path that stopped it, if one did.
+    private func apply(_ entry: Entry, in folder: URL) throws -> String? {
+        let manager = FileManager.default
+        let work = folder.appendingPathComponent(".sprava-undo-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: work, withIntermediateDirectories: false)
+        defer { try? manager.removeItem(at: work) }
+        let changes = entry.changes.filter { !Self.left($0) }
+        var staged: [(URL, URL)] = []
+        for (index, change) in changes.enumerated() {
+            guard let before = change.before else { continue }
+            let file = work.appendingPathComponent("new-\(index)")
+            if before.kind == .link, let target = before.target {
+                try manager.createSymbolicLink(atPath: file.path, withDestinationPath: target)
+            } else if let sha = before.sha256 {
+                guard manager.fileExists(atPath: blob(sha).path) else { throw Refused.damaged }
+                try manager.copyItem(at: blob(sha), to: file)
+                guard chmod(file.path, mode_t(before.mode)) == 0 else { throw Refused.unreadable(change.path) }
+            } else { throw Refused.damaged }
+            staged.append((file, folder.appendingPathComponent(change.path)))
+        }
+        var aside: [(URL, URL)] = [], placed: [(URL, URL)] = []
+        func undoMoves() {
+            for (from, to) in placed.reversed() { _ = rename(to.path, from.path) }
+            for (from, to) in aside.reversed() { _ = rename(to.path, from.path) }
+        }
+        for (index, change) in changes.enumerated() where change.after != nil {
+            let from = folder.appendingPathComponent(change.path), to = work.appendingPathComponent("old-\(index)")
+            guard rename(from.path, to.path) == 0 else { undoMoves(); return change.path }
+            aside.append((from, to))
+        }
+        for (from, to) in staged {
+            let path = String(to.path.dropFirst(folder.path.count + 1))
+            var info = stat()
+            // A folder or a new file now sits where this one goes: never overwrite it.
+            guard lstat(to.path, &info) != 0, errno == ENOENT,
+                  (try? manager.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)) != nil,
+                  rename(from.path, to.path) == 0 else { undoMoves(); return path }
+            placed.append((from, to))
+        }
+        // Folders the turn's files leave empty go too, never the binder itself.
+        for change in changes where change.before == nil {
+            var parent = folder.appendingPathComponent(change.path).deletingLastPathComponent()
+            while parent.path.count > folder.path.count, rmdir(parent.path) == 0 { parent.deleteLastPathComponent() }
+        }
+        return nil
     }
 
     /// Whether every folder above the path is a real folder or absent: a link swapped in by a later turn must not carry a
@@ -161,31 +223,6 @@ public struct TurnHistory: Sendable {
             if info.st_mode & S_IFMT != S_IFDIR { return false }
         }
         return true
-    }
-
-    private func restore(_ change: Change, in folder: URL) throws {
-        let url = folder.appendingPathComponent(change.path)
-        let manager = FileManager.default
-        guard let before = change.before else {
-            // Mail and files arrive in intake on their own, during a turn too; Undo must not delete what it never saw made.
-            if change.path.hasPrefix("intake/") { return }
-            try manager.removeItem(at: url)
-            // Folders the turn's files leave empty go too, never the binder itself.
-            var parent = url.deletingLastPathComponent()
-            while parent.path.count > folder.path.count, rmdir(parent.path) == 0 { parent.deleteLastPathComponent() }
-            return
-        }
-        guard before.kind != .key else { return } // Its bytes were never kept; the entry's summary says so.
-        try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let staged = url.deletingLastPathComponent().appendingPathComponent(".sprava-undo-\(UUID().uuidString)")
-        defer { try? manager.removeItem(at: staged) }
-        if before.kind == .link, let target = before.target {
-            try manager.createSymbolicLink(atPath: staged.path, withDestinationPath: target)
-        } else if let sha = before.sha256 {
-            try manager.copyItem(at: blob(sha), to: staged)
-            guard chmod(staged.path, mode_t(before.mode)) == 0 else { throw Refused.unreadable(change.path) }
-        }
-        guard rename(staged.path, url.path) == 0 else { throw Refused.unreadable(change.path) }
     }
 
     private func scan(_ folder: URL, known: [String: Item]) throws -> [String: Item] {
@@ -247,6 +284,12 @@ public struct TurnHistory: Sendable {
         try AtomicFile.makePrivateFolder(target.deletingLastPathComponent())
         if !manager.fileExists(atPath: target.path) { try manager.moveItem(at: staged, to: target) }
         return sha
+    }
+
+    /// The catalog's bytes, by hash: enough to tell whether something was filed or approved between two records.
+    private static func stamp(_ folder: URL) -> Data {
+        let bytes = (try? Data(contentsOf: folder.appendingPathComponent("catalog.json"))) ?? Data()
+        return Data(SHA256.hash(data: bytes))
     }
 
     private func blob(_ sha: String) -> URL { blobs.appendingPathComponent(String(sha.prefix(2))).appendingPathComponent(sha) }
