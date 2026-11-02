@@ -61,19 +61,15 @@ struct NowView: View {
         IntakeDropSurface(folder: row.folder, enabled: teka.isAdopted && !teka.writesBlocked) {
             VStack(spacing: 0) {
                 header.padding(.horizontal, 16).padding(.top, 10)
-                // The working page stays mounted under its settings: a visit there cancels no reply and loses no draft.
-                ZStack {
-                    Group {
-                        if let conversation, let surface = inputs.conversation {
-                            BinderWorkspace(model: conversation, selection: workspace, row: row,
-                                            conversation: surface, project: project)
-                        } else {
-                            project
-                        }
+                BinderPageLayers(settingsShown: showsSettings) {
+                    if let conversation, let surface = inputs.conversation {
+                        BinderWorkspace(model: conversation, selection: workspace, row: row,
+                                        conversation: surface, project: project)
+                    } else {
+                        project
                     }
-                    .opacity(showsSettings ? 0 : 1)
-                    .disabled(showsSettings).allowsHitTesting(!showsSettings).accessibilityHidden(showsSettings)
-                    if showsSettings {
+                } settings: {
+                    if teka.isAdopted {
                         BinderSettingsPage(actions: actions, folder: row.folder, today: today, writable: !teka.writesBlocked,
                                            conversation: conversation, reload: refresh)
                     }

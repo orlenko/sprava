@@ -1,6 +1,25 @@
 import SpravaKit
 import SwiftUI
 
+/// A binder's working page and its settings, both always mounted: going between them cancels no reply and loses no draft, on
+/// either side, such as an email setup half filled in.
+struct BinderPageLayers<Working: View, Settings: View>: View {
+    let settingsShown: Bool
+    @ViewBuilder let working: Working
+    @ViewBuilder let settings: Settings
+
+    var body: some View {
+        ZStack {
+            layer(working, shown: !settingsShown)
+            layer(settings, shown: settingsShown)
+        }
+    }
+
+    private func layer(_ view: some View, shown: Bool) -> some View {
+        view.opacity(shown ? 1 : 0).disabled(!shown).allowsHitTesting(shown).accessibilityHidden(!shown)
+    }
+}
+
 /// What is set up once and then left alone, apart from the page a binder is worked on: its connection to Claude, its email
 /// intake, and the rows about the binder itself.
 struct BinderSettingsPage: View {
