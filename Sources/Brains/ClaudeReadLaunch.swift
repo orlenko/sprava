@@ -130,7 +130,7 @@ package enum ClaudeReadLaunch {
         (allow default)
         (deny file-read*)
         (allow file-read-metadata)
-        (allow file-read* (literal "/") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library/Apple") (subpath "/Library/Developer/CommandLineTools") (subpath "/private/etc") (subpath "/dev") (subpath "/private/var/db/timezone"))
+        (allow file-read* (literal "/") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System") (subpath "/Library/Apple") (subpath "/Library/Developer/CommandLineTools") (subpath "/private/etc") (subpath "/private/var/db/timezone") (subpath "/dev/fd") (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random") (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper"))
         (allow file-read* (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/sbin") (subpath "/opt/homebrew/lib") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/share"))
         (deny file-read* (subpath "/usr/local/var") (subpath "/usr/local/etc") (subpath "/private/etc/ssh"))
         (allow file-read* (subpath \(q(home.path))) (subpath \(q(binder))) (literal \(q(program.path))))

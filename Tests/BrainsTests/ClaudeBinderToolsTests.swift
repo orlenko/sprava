@@ -185,6 +185,19 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: mark.path))
     }
 
+    @Test func anotherTerminalsInputCannotBeRead() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let master = posix_openpt(O_RDWR | O_NOCTTY); defer { close(master) }
+        try #require(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0)
+        let name = String(cString: ptsname(master))
+        let replica = open(name, O_RDWR | O_NOCTTY); defer { close(replica) }
+        try #require(replica >= 0)
+        // As a person typing into that terminal.
+        _ = "invented typed line\n".withCString { write(master, $0, strlen($0)) }
+        #expect(try !f.allowed("/usr/bin/head -n 1 \(name)"))
+        #expect(try f.allowed("cat /dev/null && head -c 1 /dev/urandom >/dev/null"))
+    }
+
     @Test func aFileCommandCannotReachAnotherProcesssEnvironment() throws {
         let f = try Fixture(); defer { f.clean() }
         #expect(try !f.allowed("/bin/ps eww -A | grep -q PATH"))
