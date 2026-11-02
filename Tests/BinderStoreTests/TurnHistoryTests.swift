@@ -162,6 +162,19 @@ private func temporaryFolder() throws -> URL {
         return got < 0 ? nil : String(decoding: buffer.prefix(got), as: UTF8.self)
     }
 
+    @Test func theBindersOwnFoldersCountInAnySpelling() throws {
+        #expect(TurnHistory.excluded(".SPRAVA/ops.jsonl") && TurnHistory.excluded("Catalog.JSON") && TurnHistory.excluded("dashboard.md"))
+        #expect(!TurnHistory.excluded("documents/catalog.json"))
+        let f = try Fixture()
+        try f.write("first", "notes.md"); try f.history.record(f.folder)
+        let turn = UUID()
+        try f.write("second", "notes.md"); try f.write("Invented drop", "Intake/report.pdf")
+        try f.history.record(f.folder, turn: turn)
+        #expect(try f.history.undo(turn: turn, in: f.folder) == .undone)
+        #expect(f.read("notes.md") == "first")
+        #expect(f.read("Intake/report.pdf") == "Invented drop")
+    }
+
     @Test func aFileAndAttributesCannotReadAsAnotherFile() throws {
         let f = try Fixture()
         try f.write("plain", "a.txt"); set("saved note", attribute: "user.note", on: "a.txt", in: f)

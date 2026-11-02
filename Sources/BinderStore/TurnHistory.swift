@@ -83,10 +83,12 @@ public struct TurnHistory: Sendable {
 
     /// The folder's own state and the files one writer owns are not the conversation's to version; `.sprava` holds the
     /// op log, whose Undo already covers them. `.DS_Store` is noise that Finder rewrites.
+    private static func firstFolder(_ folded: String) -> String { folded.split(separator: "/", maxSplits: 1).first.map(String.init) ?? folded }
+
     static func excluded(_ path: String) -> Bool {
-        let first = path.split(separator: "/", maxSplits: 1).first.map(String.init) ?? path
-        if first == ".sprava" || path == "catalog.json" || path == "DASHBOARD.md" { return true }
-        return (path as NSString).lastPathComponent == ".DS_Store"
+        let folded = DocumentPaths.fold(path)
+        if firstFolder(folded) == ".sprava" || folded == "catalog.json" || folded == "dashboard.md" { return true }
+        return (folded as NSString).lastPathComponent == ".ds_store"
     }
 
     public static let keepDays = 30
@@ -187,7 +189,7 @@ public struct TurnHistory: Sendable {
     /// Whether Undo leaves this change as it is: mail and files arrive in intake on their own, during a turn too, so it must
     /// not delete what it never saw made; and a key file's earlier bytes were never kept.
     private static func left(_ change: Change) -> Bool {
-        if change.before == nil { return change.path.hasPrefix("intake/") }
+        if change.before == nil { return firstFolder(DocumentPaths.fold(change.path)) == "intake" && change.path.contains("/") }
         return change.before?.kind == .key || change.before?.kind == .large
     }
 
