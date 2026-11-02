@@ -54,7 +54,7 @@ Do not scroll on every streamed update regardless of what the person is reading.
 
 ## Sharing
 
-Add visible Copy conversation and Save transcript… actions to the conversation header. They work on the selected
+Add Copy conversation and Save transcript… actions to a "…" menu in the conversation header. They work on the selected
 binder's conversation, including messages outside the viewport, without sending another model request.
 
 - Export readable UTF-8 plain text with You / Claude speaker labels and original line breaks/code indentation.
