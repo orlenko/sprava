@@ -16,6 +16,15 @@ package enum ClaudeReadLaunch {
         package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
     }
     static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    /// All the agent's commands may run: file tools. No scripting language, compiler or anything from a writable folder, because
+    /// a program that can make arbitrary system calls can read another process's environment, and so any credential one of the
+    /// person's programs holds there; no sandbox rule stops that read (kern.procargs2, seen 2026-11-02). None of these can.
+    static let commandPrograms: [String] =
+        ["sh", "bash", "zsh", "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "pwd", "echo", "date", "test", "expr", "sleep", "realpath"].map { "/bin/" + $0 }
+        + ["find", "grep", "egrep", "fgrep", "sed", "awk", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "diff", "cmp", "file", "stat", "touch", "basename", "dirname",
+           "xargs", "env", "tar", "bsdtar", "gzip", "gunzip", "zip", "unzip", "tee", "which", "true", "false", "du", "fold", "paste", "comm", "nl", "rev", "readlink",
+           "mktemp", "iconv", "textutil", "uname", "id", "whoami"].map { "/usr/bin/" + $0 }
+        + ["/usr/libexec/path_helper"]
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
@@ -104,8 +113,8 @@ package enum ClaudeReadLaunch {
 
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
     /// else of the person's: reads are closed except for those and the folders of system files, programs and libraries. `.sprava`, the catalog and the
-    /// dashboard have one writer, Sprava, and it may only read them. It runs tools, but not the
-    /// ones that reach the person's other apps, clipboard or Keychain. Its only way out is the proxy's port: name lookups,
+    /// dashboard have one writer, Sprava, and it may only read them. It runs only `commandPrograms`, none of
+    /// which reach the person's other apps, clipboard or Keychain. Its only way out is the proxy's port: name lookups,
     /// direct connections and listening on a port fail whatever a command tries, so nothing read can leave except to the model. A key file can be
     /// deleted without being read. Renaming one first would get past that name rule: it stops an accidental read, it is not
     /// a wall.
@@ -115,7 +124,7 @@ package enum ClaudeReadLaunch {
         var escaped = ""
         for character in binder { if "\\^$.|?*+()[]{}".contains(character) { escaped.append("\\") }; escaped.append(character) }
         let keyFiles = "^" + escaped + "/(.*/)?(\\.env(\\..*)?|\\.netrc|id_rsa[^/]*|id_ecdsa[^/]*|id_ed25519[^/]*|age-identity[^/]*|[^/]*credentials[^/]*|[^/]*\\.keychain[^/]*|token[^/]*\\.json|[^/]*\\.(pem|key|p12|pfx|age))$"
-        let denied = ["open", "osascript", "osacompile", "pbcopy", "pbpaste", "security", "defaults", "automator", "shortcuts", "sudo"].map { "/usr/bin/" + $0 } + ["/bin/launchctl"]
+        let programs = commandPrograms + [program.path]
         return """
         (version 1)
         (allow default)
@@ -133,7 +142,8 @@ package enum ClaudeReadLaunch {
         (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
         (deny appleevent-send)
         (deny job-creation)
-        (deny process-exec \(denied.map { "(literal \(q($0)))" }.joined(separator: " ")))
+        (deny process-exec*)
+        (allow process-exec \(programs.map { "(literal \(q($0)))" }.joined(separator: " ")))
         (deny signal)
         (allow signal (target same-sandbox))
         (deny network-outbound)

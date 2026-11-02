@@ -11,7 +11,8 @@ import Testing
     struct Fixture {
         let root: URL, binder: URL, other: URL, home: URL, profile: URL, session = UUID()
         func clean() { try? FileManager.default.removeItem(at: root) }
-        init(proxyPort: UInt16 = 9) throws {
+        /// `allowing`: programs a test needs in order to probe a wall behind the command list; the real profile has none of them.
+        init(proxyPort: UInt16 = 9, allowing: [String] = []) throws {
             // Under the checkout's build folder: on /Users or /Volumes, where a person's folders are and the walls apply. Invented.
             let build = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build")
             root = URL(fileURLWithPath: String(cString: realpath(build.path, nil))).appendingPathComponent("sprava-walls-\(UUID().uuidString)")
@@ -25,8 +26,9 @@ import Testing
                 try Data(text.utf8).write(to: binder.appendingPathComponent(path))
             }
             try Data("private".utf8).write(to: other.appendingPathComponent("private.md"))
-            let text = ClaudeReadLaunch.sandbox(home: home, program: URL(fileURLWithPath: "/opt/invented/claude"),
+            var text = ClaudeReadLaunch.sandbox(home: home, program: URL(fileURLWithPath: "/opt/invented/claude"),
                                                 reach: .init(folder: binder, proxyPort: proxyPort), session: session)
+            for program in allowing { text += "\n(allow process-exec (literal \"\(program)\"))" }
             try Data(text.utf8).write(to: profile)
         }
         /// Whether the command succeeded inside the walls.
@@ -70,7 +72,6 @@ import Testing
         #expect(try !f.allowed("echo x > DASHBOARD.md"))
         // Closing the binder itself would stop Sprava recording the turn.
         #expect(try !f.allowed("chmod 000 ."))
-        #expect(try !f.allowed("chflags uchg ."))
         #expect(try f.allowed("mkdir -p sub && chmod 700 sub"))
         // On a case-insensitive volume, the same files by another spelling.
         #expect(try !f.allowed("echo x > CATALOG.JSON"))
@@ -94,12 +95,12 @@ import Testing
         #expect(try !f.allowed("ls '/Library/Application Support'"))
         #expect(try !f.allowed("ls /Library/Keychains"))
         // What commands need still reads: the system's own files, and looking up a path.
-        #expect(try f.allowed("cat /etc/hosts >/dev/null && /usr/bin/sw_vers >/dev/null && pwd && test -d /private/tmp"))
+        #expect(try f.allowed("cat /etc/hosts >/dev/null && pwd && test -d /private/tmp"))
     }
 
     @Test func aDetachedCommandEndsWithTheTurnAndAnotherSessionsIsLeftAlone() async throws {
-        let f = try Fixture(); defer { f.clean() }
-        let other = try Fixture(); defer { other.clean() }
+        let f = try Fixture(allowing: ["/usr/bin/perl"]); defer { f.clean() }
+        let other = try Fixture(allowing: ["/usr/bin/perl"]); defer { other.clean() }
         // Double fork, a new session, closed streams and a clean environment: the shape that outlives a process group.
         let daemon = #"exec /usr/bin/env -i /usr/bin/perl -e 'use POSIX; fork and exit; POSIX::setsid(); fork and exit; close STDIN; close STDOUT; close STDERR; sleep 30'"#
         #expect(try f.allowed(daemon))
@@ -126,23 +127,42 @@ import Testing
 
     @Test func theOnlyWayOutIsTheProxysPort() throws {
         let proxy = try AgentEgressProxy(allowed: []); defer { proxy.stop() }
-        let f = try Fixture(proxyPort: proxy.port); defer { f.clean() }
+        let f = try Fixture(proxyPort: proxy.port, allowing: ["/usr/bin/curl"]); defer { f.clean() }
         #expect(try !f.allowed("/bin/bash -c 'exec 3<>/dev/tcp/93.184.216.34/443'"))
         #expect(try !f.allowed("curl -sS -m 4 --noproxy '*' https://example.invalid -o /dev/null"))
         #expect(try f.allowed("/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/\(proxy.port)'"))
     }
 
     @Test func aCommandCannotListenForAConnection() throws {
-        let f = try Fixture(); defer { f.clean() }
+        let f = try Fixture(allowing: ["/usr/bin/perl"]); defer { f.clean() }
         // A listening port would hand a document to whatever connects, past the proxy.
         #expect(try !f.allowed(#"/usr/bin/perl -e 'use Socket; socket(S, PF_INET, SOCK_STREAM, 6) or exit 3; bind(S, pack_sockaddr_in(0, INADDR_ANY)) or exit 4; listen(S, 1) or exit 5; exit 0'"#))
     }
 
-    @Test func toolsThatReachOtherAppsWillNotRun() throws {
+    @Test func onlyFileCommandsRun() throws {
         let f = try Fixture(); defer { f.clean() }
-        for command in ["/usr/bin/open .", "echo x | /usr/bin/pbcopy", "/usr/bin/security list-keychains", "/usr/bin/osascript -e 1", "/bin/launchctl list"] {
-            #expect(try !f.allowed(command))
+        for command in ["/usr/bin/open .", "echo x | /usr/bin/pbcopy", "/usr/bin/security list-keychains", "/usr/bin/osascript -e 1", "/bin/launchctl list",
+                        "/usr/bin/perl -e 1", "/usr/bin/python3 -c 1", "/usr/bin/ruby -e 1", "/usr/bin/cc --version", "/usr/bin/curl -V", "/bin/ps -A",
+                        "/usr/sbin/sysctl -a", "/usr/bin/nc -h", "/usr/bin/ssh -V", "/usr/bin/git --version"] {
+            #expect(try !f.allowed(command), "\(command)")
         }
+        for command in ["mkdir -p a/b", "cp notes.md a/b/c.md", "mv a/b/c.md a/d.md", "find . -name 'd.md'", "find . -name 'd.md' | xargs grep -l notes",
+                        "sed -n 1p notes.md | awk '{print $1}'", "sort notes.md | uniq | wc -l", "tar cf a/x.tar notes.md", "textutil -convert txt -stdout notes.md", "rm -r a"] {
+            #expect(try f.allowed(command), "\(command)")
+        }
+    }
+
+    @Test func nothingWrittenOrCopiedCanRun() throws {
+        let f = try Fixture(); defer { f.clean() }
+        #expect(try !f.allowed("cp /bin/ls ./ls && ./ls"))
+        #expect(try !f.allowed("cp /bin/ls \"$HOME/ls\" && \"$HOME/ls\""))
+        #expect(try !f.allowed("printf '#!/bin/sh\\nexit 0\\n' > run.sh && chmod +x run.sh && ./run.sh"))
+    }
+
+    @Test func aFileCommandCannotReachAnotherProcesssEnvironment() throws {
+        let f = try Fixture(); defer { f.clean() }
+        #expect(try !f.allowed("/bin/ps eww -A | grep -q PATH"))
+        #expect(try !f.allowed("/usr/bin/perl -e 'syscall(202)'"))
     }
 
     @Test func aRealCommandCannotSignalAnotherProcess() throws {
