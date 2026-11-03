@@ -41,7 +41,7 @@ import Testing
         let sharing = ConversationSharing(client: RuntimeClient(answer: { try await server.answer($0) }), copy: { copied = $0; return true })
         await sharing.share(.clipboard, folder: folder, scope: server.binder, entries: [], cards: [:], stillSelected: { true })
         #expect(copied.components(separatedBy: "\nYou\n").count == 205)
-        #expect(copied.contains("You\nWorkshop question 0\nKeep this line.\n\nClaude\nWorkshop answer 0\n```swift\n  let note = \"café 🎵\"\n```"))
+        #expect(copied.contains("You\nWorkshop question 0\nKeep this line.\n\nSprava\nWorkshop answer 0\n```swift\n  let note = \"café 🎵\"\n```"))
         #expect(copied.contains("Workshop answer 204") && !copied.contains("EXCLUDED"))
         #expect(server.calls.count == 3 && server.calls.allSatisfy { $0["command"] == .str("chat_export") && $0["binder"] == .str(folder.path) })
         #expect(sharing.message == "Conversation copied privately for 60 seconds.")

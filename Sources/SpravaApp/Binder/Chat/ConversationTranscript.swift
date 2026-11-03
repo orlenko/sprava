@@ -20,7 +20,7 @@ enum ConversationTranscript {
             if phase == "replied" {
                 guard let raw = row["reply"]?.stringValue, let parsed = try? JSONParser.parse(raw), parsed.safety.isSafe,
                       let answer = parsed.value["answer"]?.stringValue else { throw ConversationSharing.Failure.incomplete }
-                try add("Claude", answer + suggestions(parsed.value, card: cards[turn]))
+                try add("Sprava", answer + suggestions(parsed.value, card: cards[turn]))
             } else {
                 let status: String
                 switch phase {
@@ -30,7 +30,7 @@ enum ConversationTranscript {
                 default: throw ConversationSharing.Failure.incomplete
                 }
                 let partial = entries.first { $0.id == turn && $0.speaker == .binder }?.text ?? ""
-                try add("Claude", partial + (partial.isEmpty ? "" : "\n\n") + status)
+                try add("Sprava", partial + (partial.isEmpty ? "" : "\n\n") + status)
             }
         }
         // On-screen requests not yet accepted have no durable receipt. The composer itself is never read.
@@ -41,7 +41,7 @@ enum ConversationTranscript {
             if index + 1 < entries.count, entries[index + 1].speaker == .binder {
                 let reply = entries[index + 1]
                 let status = reply.state == .replied ? "" : "\n[Reply incomplete at export snapshot.]"
-                try add("Claude", reply.text + suggestions(.null, card: cards[reply.id]) + status)
+                try add("Sprava", reply.text + suggestions(.null, card: cards[reply.id]) + status)
             }
         }
         return chunks.isEmpty ? "No messages in this conversation.\n" : chunks.joined(separator: "\n\n") + "\n"

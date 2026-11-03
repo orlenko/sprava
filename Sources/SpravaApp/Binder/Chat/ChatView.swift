@@ -20,7 +20,7 @@ struct ChatView: View {
 
     static let emptyHint = "Ask about this binder's to-dos and documents, or ask for a draft."
     /// Over a line kept in the composer of a binder that is not connected, so it is not taken for the to-do box.
-    static let unsentNote = "Unsent message to Claude, kept here until this binder is connected again."
+    static let unsentNote = "Unsent message, kept here until this binder is connected again."
 
     /// What the conversation shows. A transcript only with turns in it, so an empty one takes no room; the hint only
     /// where there is someone to ask.
@@ -119,7 +119,7 @@ private struct EntryView: View {
 
     var body: some View {
         VStack(alignment: entry.speaker == .person ? .trailing : .leading, spacing: 4) {
-            Text(entry.speaker == .person ? "You" : "Claude")
+            Text(entry.speaker == .person ? "You" : "Sprava")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if !entry.text.isEmpty {
                 Group {
