@@ -187,6 +187,23 @@ final class BackupModel: ObservableObject, RuntimePage {
         }
     }
 
+    /// A folder as a person knows it: iCloud Drive by that name, and the home folder as `~`.
+    static func shown(path: String, home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
+        let root = home.hasSuffix("/") ? String(home.dropLast()) : home
+        let iCloud = root + "/Library/Mobile Documents/com~apple~CloudDocs"
+        if path == iCloud { return "iCloud Drive" }
+        if path.hasPrefix(iCloud + "/") { return "iCloud Drive/" + path.dropFirst(iCloud.count + 1) }
+        if path == root { return "~" }
+        return path.hasPrefix(root + "/") ? "~/" + path.dropFirst(root.count + 1) : path
+    }
+
+    /// A recorded time in the person's own format; one that cannot be read is shown as it was recorded.
+    static func shown(time: String?) -> String? {
+        guard let time else { return nil }
+        guard let date = ISOTime.date(time) else { return String(time.prefix(16)) }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
     static func chooseFolder(prompt: String) -> String? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -205,7 +222,9 @@ struct BackupView: View {
     var drillable: [ShelfRow] { rows.filter { !$0.archived && $0.teka.isAdopted && !$0.teka.writesBlocked } }
 
     var body: some View {
-        List {
+        // A plain column: rows size to what they hold, and lines stay a readable length in a wide window.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
             if let message = model.message { Text(message).foregroundStyle(.orange) }
             if let error = model.stateError { Text("Backup records cannot be read: \(error)").foregroundStyle(.red) }
             switch model.configured {
@@ -216,7 +235,7 @@ struct BackupView: View {
             case true?: status
             }
             if !model.requests.isEmpty {
-                Section("In progress and recent") {
+                BackupGroup("In progress and recent") {
                     ForEach(model.requests) { r in
                         HStack(alignment: .top) {
                             Text(r.kind.replacingOccurrences(of: "_", with: " ")).frame(width: 90, alignment: .leading)
@@ -228,6 +247,10 @@ struct BackupView: View {
                 }
             }
         }
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
         .disabled(model.working)
         .task {
             while !Task.isCancelled {
@@ -238,33 +261,39 @@ struct BackupView: View {
     }
 
     @ViewBuilder var setup: some View {
-        Section("Set up backup") {
+        BackupGroup("Set up backup") {
             Text("Sprava keeps an encrypted copy of every binder in a folder of your iCloud Drive. Only your key opens it.")
-            HStack {
-                Text(model.primary).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Button("Choose…") { if let p = BackupModel.chooseFolder(prompt: "Use for Backup") { model.primary = p } }
+                .fixedSize(horizontal: false, vertical: true)
+            BackupRow("Backup folder") {
+                HStack {
+                    Text(BackupModel.shown(path: model.primary)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .help(model.primary)
+                    Button("Choose…") { if let p = BackupModel.chooseFolder(prompt: "Use for Backup") { model.primary = p } }
+                }
             }
-            Toggle("Also keep the key in iCloud Keychain (recovery on a new Mac without typing it; less private)",
-                   isOn: $model.iCloudKeychain)
+        }
+        BackupGroup("Your key") {
             if let key = model.newKey {
-                Text("Your backup key. Save it where you keep such things, such as a password manager. Without it the backup cannot be opened.")
+                Text("Save this key where you keep such things, such as a password manager. Without it the backup cannot be opened.")
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text(key).font(.title3.monospaced()).textSelection(.enabled)
                     Button("Copy") { _ = ProtectedClipboard.copy(key, lifetime: .seconds(120)) }
                 }
+                keychainChoice
                 TextField("Type the key back to confirm you saved it", text: $model.typedKey).textFieldStyle(.roundedBorder)
                 Button("Set Up Backup") { Task { await model.setUp() } }.disabled(model.typedKey.isEmpty)
             } else {
                 if model.pendingKey {
                     Text("A key was made earlier and not yet confirmed. Type that key below, or create a new one.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
+                Button("Create a Key") { Task { await model.createKey() } }
+                keychainChoice
+                Divider()
+                Text(model.pendingKey ? "The key shown earlier" : "Have a key from an earlier setup?").foregroundStyle(.secondary)
                 HStack {
-                    Button("Create a Key") { Task { await model.createKey() } }
-                    Text(model.pendingKey ? "or type the key shown earlier:" : "or, with a key from an earlier setup:")
-                        .foregroundStyle(.secondary)
-                    TextField("paste it here", text: $model.typedKey).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                    TextField("Paste it here", text: $model.typedKey).textFieldStyle(.roundedBorder)
                     Button("Use It") { Task { await model.setUp() } }.disabled(model.typedKey.isEmpty)
                 }
             }
@@ -272,26 +301,36 @@ struct BackupView: View {
         }
     }
 
+    var keychainChoice: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle("Also keep the key in iCloud Keychain", isOn: $model.iCloudKeychain)
+            Text("Lets you recover on a new Mac without typing it. Less private.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     /// Restores one binder from the mirror into a temporary folder and compares it (docs/backup.md §8).
     @ViewBuilder var drill: some View {
         let chosen = model.drillBinder ?? drillable.first?.folder
-        HStack {
-            Picker("Restore drill", selection: Binding(get: { chosen }, set: { model.drillBinder = $0 })) {
-                ForEach(drillable, id: \.folder) { Text($0.name).tag(Optional($0.folder)) }
+        BackupRow("Restore drill") {
+            if drillable.isEmpty {
+                Text("No binder here to restore yet.").foregroundStyle(.secondary)
+            } else {
+                Picker("Binder", selection: Binding(get: { chosen }, set: { model.drillBinder = $0 })) {
+                    ForEach(drillable, id: \.folder) { Text($0.name).tag(Optional($0.folder)) }
+                }
+                .labelsHidden().fixedSize()
+                Button("Run") { if let chosen { Task { await model.runDrill(chosen) } } }
+                    .disabled(!model.canRunDrill(chosen))
             }
-            .disabled(drillable.isEmpty)
-            Button("Run Restore Drill") { if let chosen { Task { await model.runDrill(chosen) } } }
-                .disabled(!model.canRunDrill(chosen))
         }
-        if drillable.isEmpty { Text("No binder here to restore yet.").font(.caption).foregroundStyle(.secondary) }
         if let status = model.drillStatus {
-            Text(status).font(.caption)
+            Text(status).font(.caption).fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(status.hasPrefix("Restore drill failed") ? .red : .secondary)
         }
     }
 
     @ViewBuilder var keyAgain: some View {
-        Section("Backup key") {
+        BackupGroup("Backup key") {
             Text("Sprava's background part cannot read the backup key, so backups have stopped. This happens after an update of this development build, or while the Keychain is locked. Type the backup key to use it again; if macOS asks to let Sprava use it, choose Always Allow so backups run unattended.")
                 .foregroundStyle(.orange)
             Toggle("Also keep the key in iCloud Keychain", isOn: $model.iCloudKeychain)
@@ -307,34 +346,66 @@ struct BackupView: View {
             Text("iCloud Keychain is unavailable in this development build, so Sprava could not check it for a backup key an earlier Sprava build kept there. Only that build can remove such a copy.")
                 .font(.caption).foregroundStyle(.orange)
         }
-        Section("Backup") {
-            LabeledContent("Mirror", value: model.primary)
-            LabeledContent("iCloud", value: model.upload ?? "not checked yet")
-            LabeledContent("Last check", value: model.lastCheck.map { String($0.prefix(16)) } ?? "not yet")
-            LabeledContent("Last restore drill", value: model.lastDrill.map { String($0.prefix(16)) } ?? "never")
-            drill
-            HStack {
-                Text("Second backup").frame(width: 120, alignment: .leading)
-                Text(model.secondPath ?? "not set; offloading needs one")
-                    .foregroundStyle(model.secondPath == nil ? .orange : .secondary)
-                Spacer()
-                Button(model.secondPath == nil ? "Choose…" : "Change…") {
-                    if let p = BackupModel.chooseFolder(prompt: "Use for the Second Backup") { Task { await model.setSecond(p) } }
+        BackupGroup("Backup") {
+            BackupRow("Backup folder") {
+                Text(BackupModel.shown(path: model.primary)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(model.primary)
+            }
+            BackupRow("iCloud") { Text(model.upload ?? "not checked yet").foregroundStyle(.secondary) }
+            BackupRow("Last check") { Text(BackupModel.shown(time: model.lastCheck) ?? "not yet").foregroundStyle(.secondary) }
+            BackupRow("Last restore drill") { Text(BackupModel.shown(time: model.lastDrill) ?? "never").foregroundStyle(.secondary) }
+            BackupRow("Second backup") {
+                HStack {
+                    Text(model.secondPath.map { BackupModel.shown(path: $0) } ?? "not set; offloading needs one")
+                        .foregroundStyle(model.secondPath == nil ? .orange : .secondary).lineLimit(1).truncationMode(.middle)
+                        .help(model.secondPath ?? "")
+                    Button(model.secondPath == nil ? "Choose…" : "Change…") {
+                        if let p = BackupModel.chooseFolder(prompt: "Use for the Second Backup") { Task { await model.setSecond(p) } }
+                    }
                 }
             }
+            drill
             if model.working { ProgressView().controlSize(.small) }
         }
-        Section("Binders") {
+        BackupGroup("Binders") {
             if model.lines.isEmpty { Text("No backups yet; they start within the hour.").foregroundStyle(.secondary) }
             ForEach(model.lines) { l in
-                HStack {
+                HStack(alignment: .firstTextBaseline) {
                     Circle().fill(l.error != nil ? Color.red : l.at == nil ? Color.orange : Color.green).frame(width: 8, height: 8)
                     Text(l.name)
                     Spacer()
-                    Text(l.error ?? l.at.map { "last backup \(String($0.prefix(16)))" } ?? "not yet")
-                        .foregroundStyle(.secondary).lineLimit(1)
+                    Text(l.error ?? BackupModel.shown(time: l.at).map { "last backup \($0)" } ?? "not yet")
+                        .foregroundStyle(.secondary).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+    }
+}
+
+/// A label and what it describes, so a page's values line up in one column.
+private struct BackupRow<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: Content
+    init(_ label: String, @ViewBuilder content: () -> Content) { self.label = label; self.content = content() }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).frame(width: 130, alignment: .leading)
+            HStack(alignment: .firstTextBaseline) { content }
+        }
+    }
+}
+
+/// One titled part of the Backup page.
+private struct BackupGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
