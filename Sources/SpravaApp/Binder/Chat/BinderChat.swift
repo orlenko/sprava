@@ -281,13 +281,16 @@ final class BinderChat: ObservableObject {
         }
     }
 
-    /// What this reply's Notice offers now. Only the last entry of a thread with nothing running offers anything, so an old
-    /// failure cannot act on a conversation that has moved on, and words are found by request id, never by position.
+    /// What this reply's Notice offers now. A later reply means the conversation has moved on, and nothing is offered. A
+    /// later line alone leaves the ways out of the trouble: a line refused as busy must not remove Restart or Check Reply,
+    /// which are what clears it. Words are found by request id, never by position.
     func actions(for entry: Entry) -> [ReplyProblem.Action] {
-        guard let problem = entry.problem, shown.entries.last?.id == entry.id, shown.turn == nil else { return [] }
+        let entries = shown.entries
+        guard let problem = entry.problem, shown.turn == nil, let index = entries.firstIndex(where: { $0.id == entry.id }),
+              !entries[(index + 1)...].contains(where: { $0.speaker == .binder }) else { return [] }
         return problem.actions.filter { action in
             switch action {
-            case .editAndSend: line(answeredBy: entry) != nil
+            case .editAndSend: index == entries.count - 1 && line(answeredBy: entry) != nil
             case .checkReply: reattach != nil && line(answeredBy: entry) != nil
             case .openAssistant, .restart: true
             }
@@ -307,6 +310,8 @@ final class BinderChat: ObservableObject {
             return
         }
         threads[shownKey]?.draft = line.text
+        // These words are not a line waiting to be retried, which is what `restored` says of the box's contents.
+        threads[shownKey]?.restored = nil
         threads[shownKey]?.message = nil
     }
 

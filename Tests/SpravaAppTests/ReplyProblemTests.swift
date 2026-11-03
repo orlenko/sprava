@@ -5,6 +5,15 @@ import Services
 import SwiftUI
 import Testing
 
+private final class Holding: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held = false
+    var value: Bool {
+        get { lock.withLock { held } }
+        set { lock.withLock { held = newValue } }
+    }
+}
+
 /// A reply that did not finish says so in a Notice, and nothing it offers sends the person's words again: a lost contact
 /// does not prove a turn stopped, and its changes reach the page only with its result. Invented binders.
 @MainActor
@@ -138,6 +147,63 @@ extension BinderChatTests {
         standIn.emit(.finished(.replied), to: nil)
         chat.putBack(old)
         #expect(chat.draft.isEmpty)
+    }
+
+    /// A line refused as busy comes after the reply, and must not take away what clears the trouble.
+    @Test func aRefusedLineKeepsTheWayOutOfTheTrouble() async throws {
+        for (failure, offer) in [(ChatCommandFailure.turnFailed("exit_unconfirmed"), ReplyProblem.Action.restart), (.unavailable, .checkReply)] {
+            let (standIn, chat) = await failedReply(failure)
+            chat.reattach = { binder, request, turn, _ in
+                ChatTurn(binderID: binder, requestID: request, turnID: turn, events: AsyncStream { $0.finish() })
+            }
+            let reply = try #require(chat.entries.last)
+            standIn.refuse = .busy
+            chat.draft = "Another invented line"
+            await chat.send()
+            #expect(chat.entries.last?.isNotSent == true)
+            #expect(chat.actions(for: reply) == [offer])
+        }
+    }
+
+    /// Words put back are what the box shows. They are not the line being retried, whose acceptance would clear the box and
+    /// whose refusal would turn the next Send into that line's retry.
+    @Test func wordsPutBackWhileAnOlderLineIsRetriedStayAndAreWhatIsSent() async throws {
+        let standIn = StandIn()
+        let (entered, arrived) = AsyncStream<Void>.makeStream()
+        let (release, released) = AsyncStream<Void>.makeStream()
+        let holding = Holding()
+        let commands = ChatCommands(send: { request in
+            if holding.value { arrived.yield(); for await _ in release { break } }
+            return try standIn.send(request)
+        }, interrupt: { _, _ in })
+        let chat = BinderChat(commands: commands, binderID: { _ in "acme-binder" }, readHistory: { _ in ([], nil) })
+        await chat.show(Self.folder)
+        standIn.refuse = .unavailable
+        chat.draft = "Older invented line"
+        await chat.send()
+        standIn.refuse = nil
+        chat.draft = "Newer invented line"
+        await chat.send()
+        await until { chat.isReplying }
+        standIn.emit(.failed(.turnFailed("engine")))
+        await until { !chat.isReplying }
+        let reply = try #require(chat.entries.last)
+        let older = try #require(chat.entries.first { $0.text == "Older invented line" })
+        // The older line's Retry is refused, so its words return to the box; Send then retries it and empties the box.
+        standIn.refuse = .unavailable
+        await chat.retry(older)
+        #expect(chat.draft == "Older invented line")
+        standIn.refuse = nil
+        holding.value = true
+        let retrying = Task { await chat.send() }
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(chat.draft.isEmpty)
+        chat.putBack(reply)
+        #expect(chat.draft == "Newer invented line")
+        released.yield()
+        await retrying.value
+        #expect(chat.draft == "Newer invented line")
     }
 
     /// Nothing may promise an Undo a change may not have.
