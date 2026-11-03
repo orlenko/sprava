@@ -205,11 +205,8 @@ struct HealthView: View {
                 else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                 ForEach(HealthLine.rows("backup", model.backups)) { line in
                     let b = line.value
-                    let age = b.at.map { model.now.timeIntervalSince($0) } ?? .infinity
                     HStack {
-                        // Amber after 48 hours without a backup, red after 7 days (architecture 3.4).
-                        Circle().fill(b.error != nil || age > 7 * 86_400 ? Color.red : age > 48 * 3600 ? Color.orange : Color.green)
-                            .frame(width: 8, height: 8)
+                        Circle().fill(model.grade(b).color).frame(width: 8, height: 8)
                         Text(b.name)
                         Spacer()
                         Text(b.error ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
@@ -332,14 +329,43 @@ struct HealthView: View {
     }
 }
 
-/// The sidebar's Health row, its dot kept current whichever page is open.
-struct HealthLabel: View {
+/// The sidebar's status line, kept current whichever page is open. Red with a symbol when something breaks.
+struct HealthStatusLine: View {
     @ObservedObject var health: HealthModel
+    let selected: Bool
+    let updated: String
+    let open: () -> Void
 
     var body: some View {
-        HStack {
-            Circle().fill(health.statusGrade.color).frame(width: 9, height: 9)
-            Text("Health").font(.headline)
+        let summary = health.summary
+        Button(action: open) {
+            HStack(spacing: 6) {
+                if summary.level == .trouble {
+                    Image(systemName: NoticeLevel.broken.symbol).foregroundStyle(NoticeLevel.broken.color)
+                } else {
+                    Circle().fill(Self.color(summary.level)).frame(width: 8, height: 8)
+                }
+                Text("Health").fontWeight(selected ? .semibold : .regular)
+                Text(verbatim: summary.word)
+                    .foregroundStyle(summary.level == .trouble ? NoticeLevel.broken.color
+                        : summary.level == .needsYou ? NoticeLevel.needsYou.color : .secondary)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help("Open Health. Binders updated \(updated).")
+        .accessibilityLabel("Health: \(summary.word)")
+        .accessibilityHint("Opens Health. Binders updated \(updated).")
+    }
+
+    private static func color(_ level: HealthSummary.Level) -> Color {
+        switch level {
+        case .running: .green
+        case .waking: .blue
+        case .starting: .gray
+        case .needsYou: NoticeLevel.needsYou.color
+        case .trouble: NoticeLevel.broken.color
         }
     }
 }
@@ -366,6 +392,12 @@ struct RuntimeBanner: View {
         } else if let failure = health.connectionProblem ?? health.startFailure {
             Notice(level: .broken, title: failure) {
                 Button("Restart") { health.restart() }.disabled(health.starting)
+                if let openHealth { Button("Open Health", action: openHealth) }
+            }
+            .padding([.horizontal, .top], 16)
+        } else if health.summary.level == .trouble, let sentence = health.summary.sentence {
+            Notice(level: .broken, title: sentence, detail: health.summary.detail) {
+                if health.summary.restartHelps { Button("Restart") { health.restart() } }
                 if let openHealth { Button("Open Health", action: openHealth) }
             }
             .padding([.horizontal, .top], 16)

@@ -52,7 +52,7 @@ final class RuntimeClient {
         var description: String { message }
 
         /// What a page says when the runtime cannot be reached.
-        static let notRunningLine = "Sprava's background part is not running. Sprava is starting it; Health, at the top of the sidebar, says if it cannot."
+        static let notRunningLine = "Sprava's background part is not running. Sprava is starting it; Health, at the bottom of the sidebar, says if it cannot."
         /// What a page says when a read had no answer in time: nothing was changed, so trying again is safe.
         static let readTimedOutLine = "Sprava's background part did not answer in time. Reload to try again."
         /// What a page says when a change had no answer in time. The runtime may have taken it.

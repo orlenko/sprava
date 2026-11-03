@@ -25,9 +25,12 @@ struct ShelfPresentation: Sendable {
     let counts: [URL: ShelfCounts]
     /// The To-dos page's board, merged from the rows' Now pages on the same worker.
     let todos: TodoBoard
+    /// The row that is General, found through its binding: it can be called general-2, or anything after a rename.
+    let general: URL?
 
-    init(snapshot: ShelfSnapshot.Snapshot, today: CalendarDate, counts: [URL: ShelfCounts]) {
+    init(snapshot: ShelfSnapshot.Snapshot, today: CalendarDate, counts: [URL: ShelfCounts], general: URL? = nil) {
         self.snapshot = snapshot
+        self.general = general
         self.today = today
         self.counts = counts
         todos = TodoBoard(snapshot.rows.compactMap { row in

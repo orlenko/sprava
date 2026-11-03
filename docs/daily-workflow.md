@@ -7,7 +7,7 @@ sent in your mail client.
 
 ## General: things with no other binder
 
-Click **General** at the bottom of the sidebar to open its ordinary binder page: Project, To-dos and
+Click **General**, the last row of the Shelf, to open its ordinary binder page: Project, To-dos and
 Conversation work as in any binder. It is created only when first opened or used. On a fresh setup it lives
 in `~/Sprava`; if you chose a folder for new binders in Settings, it starts there instead. General then
 stays in that location even if you change the folder for future binders. An existing folder named `general`
