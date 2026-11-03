@@ -238,9 +238,40 @@ import Testing
         await model.load(); model.program = "/invented/claude"; model.token = "invented-token"
         model.tokenName = "two words"
         #expect(model.enableBlocker?.contains("letters, digits") == true)
+        #expect(model.setupProblem == nil)
         model.tokenName = "invented/account"
         #expect(model.enableBlocker == nil)
         await model.enable()
         #expect(server.calls.first { $0["command"] == .str("claude_configure") }?["name"] == .str("invented/account"))
+    }
+
+    /// Check Again only rereads status, so it is not offered as the way to retry a connection that failed.
+    @MainActor @Test func aFailedConnectionDoesNotOfferCheckAgain() async throws {
+        let server = Server(), client = RuntimeClient(answer: { try server.answer($0) })
+        let model = ClaudeAccountModel(client: client, authenticate: {})
+        await model.load()
+        #expect(model.available && !model.offersCheckAgain)
+    }
+
+    @MainActor @Test func aBackgroundPartThatDoesNotAnswerSaysSoOnce() async throws {
+        let model = ClaudeAccountModel(client: RuntimeClient(answer: { _ in throw RuntimeClient.Failure(message: "invented", kind: .notRunning) }), authenticate: {})
+        await model.load()
+        #expect(model.offersCheckAgain)
+        #expect(model.message == nil)
+        #expect(model.setupProblem?.contains("did not answer") == true)
+    }
+
+    /// "Connected" in green would contradict the warning that Claude cannot answer.
+    @MainActor @Test func anAccountAtItsLimitIsAWarningWithNoGreenLine() async throws {
+        let client = RuntimeClient(answer: { text in
+            text.contains("claude_configure") ? #"{"ok":true,"at_limit":true}"# : #"{"ok":true,"enabled":true,"credential_persistent":true}"#
+        })
+        let model = ClaudeAccountModel(client: client, authenticate: {})
+        await model.load(); #expect(model.showsConnectedLine)
+        model.program = "/invented/claude"; model.token = "invented-token"
+        await model.enable()
+        #expect(model.messageKind == .warning && model.messagePlace == .account)
+        #expect(model.message?.contains("usage limit") == true)
+        #expect(!model.showsConnectedLine)
     }
 }
