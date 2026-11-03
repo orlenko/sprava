@@ -572,7 +572,8 @@ private subscription connection in Brains, then explicitly shares each physical 
 and optionally its documents and intake. A copy or replacement gets no inherited consent or native context.
 The account check verifies the pinned signed CLI, the effective first-party subscription/private config,
 and two harmless acknowledged turns in fresh native sessions, each receiving the current app context. Failure never enables the new account; no binder data is sent by that check.
-Each native turn starts fresh with the current scoped source pack and bounded authenticated app history.
+A binder with file changes allowed continues one native session and reads what it needs itself (decisions.md D33). Without that consent,
+each native turn starts fresh with the current scoped source pack and bounded authenticated app history.
 The saved app conversation persists; native session memory is never its authority. Failed/interrupted context
 is rebuilt from that same app history, never an imported/Terminal transcript. Stop during indexing prevents the model
 from starting; its already-admitted sandboxed document read may finish before another turn can start.
@@ -1047,10 +1048,10 @@ whatever its size. So:
 The start-up check of 11.1 stays: the person's own hooks, memory files, plugins and settings are never loaded
 into a binder's session.
 
-As built (`ClaudeReadLaunch.sandbox`, `AgentEgressProxy`): the agent has Read, Write, Edit, Glob, Grep and a small shell in its
+As built (`ClaudeReadLaunch.sandbox`, `AgentEgressProxy`): the agent has Read, Write, Edit, Glob, Grep and a shell limited to file and text programs (D33) in its
 binder, under a `sandbox-exec` profile, once the person ticks "Let Claude change and delete files" when connecting, which
 needs both sharing choices since the tools can read the whole folder; no earlier connection has this consent, and only a
-binder with it keeps a history. It may read but not write `.sprava`, `catalog.json` and `DASHBOARD.md`. Outbound
+binder with it keeps a history. It may read but not write `.sprava`, `catalog.json`, `DASHBOARD.md`, `AGENTS.md` and `CLAUDE.md`. Outbound
 connections are allowed to one loopback port only, Sprava's proxy, which so far passes `api.anthropic.com` and refuses
 every other host, so web access and its domain prompt are still to come. Only the agent process itself may use the proxy,
 checked with the kernel for each connection, so a command cannot upload to another account on that host, and commands

@@ -74,8 +74,25 @@ final class ClaudeTodoTools: @unchecked Sendable {
         }
     }
 
+    /// The open to-dos with what the changing tools need, read at the moment of asking. It changes nothing, so the turn's limit is not touched.
+    private func list() throws -> JSONValue {
+        guard let items = Self.openItems(folder) else { throw Refusal.refused }
+        // What the agent reads here is what it has seen, so a later change to one of these still counts as changed.
+        for item in items {
+            if let id = ItemID(item["id"])?.description, let hash = try? Canonical.hash(.object(item)) { known[id] = hash }
+        }
+        let fields = ["id", "title", "details", "status", "priority", "due", "waiting_on"]
+        return .obj([("todos", .array(items.prefix(500).map { item in
+            .obj(fields.compactMap { field in
+                guard let value = item[field] else { return nil }
+                return (field, value.stringValue.map { .str(String($0.prefix(2_000))) } ?? value)
+            })
+        })), ("more", .bool(items.count > 500))])
+    }
+
     private func handle(_ name: String, _ args: JSONObject) throws -> JSONValue {
-        try lock.withLock {
+        if name == "list_todos" { return try lock.withLock { try list() } }
+        return try lock.withLock {
             guard changes < Self.maximumChanges else { throw Refusal.tooMany }
             let result: JSONValue
             switch name {
@@ -215,7 +232,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
     private static func schema(_ properties: [(String, JSONValue)], required: [String]) -> JSONValue {
         .obj([("type", .str("object")), ("properties", .obj(properties)), ("required", .array(required.map(JSONValue.string))), ("additionalProperties", .bool(false))])
     }
-    private static let id: (String, JSONValue) = ("id", .obj([("type", .array([.str("string"), .str("integer")])), ("description", .str("The to-do's id, from current_items or add_todo."))]))
+    private static let id: (String, JSONValue) = ("id", .obj([("type", .array([.str("string"), .str("integer")])), ("description", .str("The to-do's id, from list_todos or add_todo."))]))
     private static let fields: [(String, JSONValue)] = [
         ("title", .obj([("type", .str("string")), ("description", .str("One line."))])),
         ("details", .obj([("type", .str("string"))])),
@@ -223,6 +240,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
         ("priority", .obj([("type", .str("string")), ("enum", .array([.str("high"), .str("normal"), .str("low")]))])),
     ]
     static let tools: [ClaudeAppTools.Tool] = [
+        .init(name: "list_todos", description: "Lists this binder's open to-dos with their ids, as they are now.", schema: schema([], required: [])),
         .init(name: "add_todo", description: "Adds one to-do to this binder at once. Returns its id.", schema: schema(fields, required: ["title"])),
         .init(name: "edit_todo", description: "Changes the named fields of one open to-do at once.", schema: schema([id] + fields, required: ["id"])),
         .init(name: "complete_todo", description: "Marks one open to-do done at once.", schema: schema([id], required: ["id"])),

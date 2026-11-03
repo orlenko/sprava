@@ -66,10 +66,10 @@ final class ClaudeConversationState: Sendable {
                                 .text(session.generation.uuidString), .text(session.native.uuidString)) == 1 else { throw Refused.damaged }
         }
     }
-    /// Only called after the process owner confirmed exit. Failed/interrupted native context is discarded.
-    func exited(_ session: Session, succeeded: Bool) throws {
+    /// Only called after the process owner confirmed exit. `keep` says the native session can carry on; otherwise it is discarded.
+    func exited(_ session: Session, keep: Bool) throws {
         try store.write { t in
-            if succeeded {
+            if keep {
                 guard try t.execute("UPDATE sessions SET worker = NULL, started = NULL, resumed = 1 WHERE connection = ? AND native = ?",
                                     .text(session.connection.uuidString), .text(session.native.uuidString)) == 1 else { throw Refused.damaged }
             } else {

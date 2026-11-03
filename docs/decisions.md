@@ -157,7 +157,7 @@
 - **F14 decided (2026-10-13, by the author).** `AGENTS.md`, with a one-line `CLAUDE.md` that points at it, and
   `DASHBOARD.md` are Sprava's own files in every binder it owns, written at creation or import with no prompt.
   Sprava keeps its own section of `AGENTS.md` between two marker lines and rewrites only that section; the rest
-  of the file is free for the person or an agent. `DASHBOARD.md` is rendered as binder-v0 §7.1 says, and an
+  of the file is free for the person (amended by D33: not for the binder's Claude). `DASHBOARD.md` is rendered as binder-v0 §7.1 says, and an
   imported binder's hand-kept dashboard text moves into its Notes section. The files are not part of the format;
   nothing in them is executed by Sprava, and their text is data, never instructions, for the clerk (binder-v0
   §3.4). Recommended with it: Sprava's section says to propose through Sprava, never to edit `catalog.json` by
@@ -431,6 +431,24 @@ Each line names what replaced the entry; its old text is in git history.
   (only what the person asks), the turn's line naming each title, Undo, and a limit of 50 changes a turn; a model's promise
   is not a wall, so a hostile document can still get a to-do added or closed until the person reads that line. Those are
   reversible. Disclosure, deletion of a binder and anything outward stay out of reach, as before.
+- **D33 decided (2026-11-02, the author).** A binder that allowed file changes keeps one continuing Claude session, on Opus,
+  and Claude finds what it needs itself. "I would rather have a continuous claude session running in the background, and have
+  *it* decide what file fragments to upload." Each message used to start fresh with up to 1 MiB of history and binder text; now
+  the instructions never change between turns, nothing of the binder is sent ahead, and the prompt cache carries the rest. A message
+  carries today's date and `DASHBOARD.md`'s revision, and only a session's first message carries earlier dialogue (the last 10
+  exchanges, at most 64 KiB). A binder without that consent keeps the old way: fresh each turn, with a source pack. A turn cut short by a
+  limit, a sign-in failure or a Stop leaves the session to continue; any other failure, or one in a session's first turn, starts
+  the next turn fresh. The session's scope is its binder, as it was for its tools.
+  The author also chose no permission prompts, leaning to the skip-permissions flag. That flag cannot be used: the CLI's restricted
+  mode refuses it, and scrubbing the token from commands' environments turns it off (CLI 2.1.317). The launch keeps both and names a
+  longer list of commands instead, which ask nothing of the person: file and text programs, `sed -i` and pipes included, and `find` without `-exec`.
+  Nothing on the list can start another program, so `awk`, `xargs`, `env`, `sort` and shell `rg` stay off it; the agent's Grep and Glob are its `rg` and `find`. Loops, substitutions
+  and redirects are refused. Allowing the whole shell also worked on an invented binder, and it would let a steered command run the CLI binary with a preload and read
+  what other programs show in their environment, which the author was told and accepted for this design. The review guidelines count that as outside a brain's scope, so it
+  stays off unless the author changes those guidelines. It would then be one line in `allowedTools`.
+  This amends F14: `AGENTS.md` and `CLAUDE.md` are now the person's to write, closed to Claude's writes, and the session is told to
+  read `AGENTS.md` as how the person works in this binder. Project settings stay off (`--setting-sources ""`), so a binder's
+  `.claude` folder adds no hooks.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.

@@ -97,7 +97,7 @@ import Testing
         #expect(f.engine.lock.withLock { f.engine.policies }.allSatisfy { !$0.contains("workshop") })
     }
     @Test func exactAcceptanceSurvivesLostRepliesWithoutASecondRunAndUsesFreshCurrentContext() async throws {
-        let f = try Fixture(); try await f.connect()
+        let f = try Fixture(); try await f.connect(files: false)
         let id = UUID(), original = " Which bylaw covers pets?\n Keep the exact words. "
         let receipt = try await f.send(id, original), done = try await f.completed(id)
         #expect(done["phase"] == .str("replied") && done["text"] == .str(original))
@@ -129,8 +129,8 @@ import Testing
         f.engine.lock.withLock { f.engine.hash = "updated-fixture-hash" }
         let next = UUID(); _ = try await f.send(next, "Continue after the Claude update.")
         #expect(try await f.completed(next)["phase"] == .str("replied"))
-        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
-        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 4)
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, true])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 3)
     }
     @Test func disablingAndClearingDoNotReuseNativeContextOrEraseAnUnrelatedThread() async throws {
         let f = try Fixture(); try await f.connect(); let id = UUID()
@@ -210,7 +210,7 @@ import Testing
             let accepted = try ledger.record(conversationID: scope, requestID: request)
             proof.lock.withLock { proof.sawReceipt = accepted?.text == text }
         })
-        try await f.connect()
+        try await f.connect(files: false)
         let scope = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue.flatMap(UUID.init(uuidString:)))
         proof.lock.withLock { proof.scope = scope }
         _ = try await f.send(request, text); _ = try await f.completed(request)
@@ -273,14 +273,88 @@ import Testing
         await #expect(throws: (any Error).self) { try await f.request("chat_undo", [("turn_id", .str(turn))]) }
     }
 
+    @Test func aBinderWithFileToolsContinuesOneSessionAndSendsNoneOfItsFilesAhead() async throws {
+        let f = try Fixture(); try await f.connect()
+        let first = UUID(); _ = try await f.send(first, "Which bylaw covers pets?"); #expect(try await f.completed(first)["phase"] == .str("replied"))
+        let next = UUID(); _ = try await f.send(next, "And parking?"); #expect(try await f.completed(next)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, true])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 3)
+        let policies = f.engine.lock.withLock { f.engine.policies }, lines = f.engine.lock.withLock { f.engine.lines }
+        // The same instructions each turn, so they stay in the prompt cache, and nothing from the binder in them.
+        #expect(policies[2] == policies[3])
+        #expect(policies[3].contains("read AGENTS.md") && !policies[3].contains("BINDER_SOURCE_DATA") && !policies[3].contains("workshop"))
+        #expect(lines[2].hasPrefix("[Sprava: today is ") && lines[2].contains("DASHBOARD.md revision") && lines[2].hasSuffix("\nWhich bylaw covers pets?"))
+        #expect(lines[3].hasSuffix("\nAnd parking?") && !lines[3].contains("Which bylaw"))
+    }
+
+    @Test func aBinderWithoutFileToolsStillStartsFreshEachTurn() async throws {
+        let f = try Fixture(); try await f.connect(files: false)
+        let first = UUID(); _ = try await f.send(first, "Which bylaw covers pets?"); _ = try await f.completed(first)
+        let next = UUID(); _ = try await f.send(next, "And parking?"); _ = try await f.completed(next)
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
+        #expect(f.engine.lock.withLock { f.engine.lines.last } == "And parking?")
+        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("Which bylaw covers pets?") } == true)
+    }
+
+    @Test func aFailedFirstTurnStartsOverWithTheSavedConversation() async throws {
+        let f = try Fixture(); try await f.connect()
+        let first = UUID(); _ = try await f.send(first, "Which bylaw covers pets?"); #expect(try await f.completed(first)["phase"] == .str("replied"))
+        // Clearing the native session leaves the saved conversation, as a failed resume does.
+        f.engine.lock.withLock { f.engine.failure = ClaudeReadOnlyTurn.Failure.protocolMismatch }
+        let failed = UUID(); _ = try await f.send(failed, "And parking?"); #expect(try await f.completed(failed)["phase"] == .str("failed"))
+        f.engine.lock.withLock { f.engine.failure = nil }
+        let next = UUID(); _ = try await f.send(next, "And the fence?"); #expect(try await f.completed(next)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, true, false])
+        let line = f.engine.lock.withLock { f.engine.lines.last } ?? ""
+        #expect(line.contains("earlier in this conversation") && line.contains("Which bylaw covers pets?") && line.hasSuffix("\nAnd the fence?"))
+    }
+
+    @Test func aRefusedTurnLeavesTheSessionToContinue() async throws {
+        let f = try Fixture(); try await f.connect()
+        let first = UUID(); _ = try await f.send(first, "Which bylaw covers pets?"); #expect(try await f.completed(first)["phase"] == .str("replied"))
+        for failure in [ClaudeReadOnlyTurn.Failure.usageLimit, .authentication, .deadline] {
+            f.engine.lock.withLock { f.engine.failure = failure }
+            let failed = UUID(); _ = try await f.send(failed, "And parking?"); #expect(try await f.completed(failed)["phase"] == .str("failed"))
+        }
+        f.engine.lock.withLock { f.engine.failure = nil }
+        let next = UUID(); _ = try await f.send(next, "And the fence?"); #expect(try await f.completed(next)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, true, true, true, true])
+        #expect(f.engine.lock.withLock { Set(f.engine.sessions).count } == 3)
+    }
+
+    @Test func clearingEndsTheSessionSoTheNextTurnStartsFresh() async throws {
+        let f = try Fixture(); try await f.connect()
+        let first = UUID(); _ = try await f.send(first, "Which bylaw covers pets?"); _ = try await f.completed(first)
+        let scope = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue)
+        let session = try #require(f.engine.lock.withLock { f.engine.sessions.last })
+        let home = f.root.appendingPathComponent("support/brains/read-homes/\(scope)/\(session.uuidString)")
+        try AtomicFile.makePrivateFolder(home)
+        let next = UUID(); _ = try await f.send(next, "And parking?"); _ = try await f.completed(next)
+        #expect(FileManager.default.fileExists(atPath: home.path)) // A continuing session keeps its native transcript.
+        _ = try await f.request("chat_clear")
+        #expect(!FileManager.default.fileExists(atPath: home.path))
+        let after = UUID(); _ = try await f.send(after, "Start over."); _ = try await f.completed(after)
+        #expect(f.engine.lock.withLock { f.engine.resumes.last } == false)
+        #expect(f.engine.lock.withLock { f.engine.lines.last?.contains("earlier in this conversation") } == false)
+    }
+
+    @Test func theFirstLineOfASessionCarriesABoundedPartOfTheConversation() throws {
+        let long = String(repeating: "x", count: 40_000)
+        let records = (0..<14).map { i in (text: "person \(i) " + (i % 2 == 0 ? long : ""), reply: Optional("reply \(i)")) }
+        let line = ClaudeConversationPolicy.message("Now.", revision: "abc", history: records, now: Date(timeIntervalSince1970: 0))
+        #expect(line.hasPrefix("[Sprava: today is \(CalendarDate.today(now: Date(timeIntervalSince1970: 0))); DASHBOARD.md revision abc]\n") && line.hasSuffix("\nNow."))
+        #expect(line.contains("person 13") && !line.contains("person 3 "))
+        #expect(line.utf8.count < 70 * 1024)
+    }
+
     @Test func aTurnGetsToolsInItsBinderButTheSetupCheckNever() async throws {
         let f = try Fixture(); try await f.connect()
         let id = UUID(); _ = try await f.send(id, "Tidy up."); _ = try await f.completed(id)
         let reaches = f.engine.lock.withLock { f.engine.reaches }
         #expect(reaches.dropLast().allSatisfy { $0 == nil })
         #expect(reaches.last??.path == f.folder.path)
-        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("file tools and a small shell inside this binder") } == true)
-        #expect(f.engine.lock.withLock { f.engine.policies.first?.contains("file tools and a small shell") } == false)
+        #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("file tools and a shell inside this binder") } == true)
+        #expect(f.engine.lock.withLock { f.engine.policies.first?.contains("file tools and a shell") } == false)
     }
 
     @Test func toolsNeedTheirOwnConsentAndAWithoutToolsTurnKeepsNoCopies() async throws {
@@ -385,7 +459,7 @@ import Testing
             gate.lock.withLock { gate.started = true }
             _ = gate.semaphore.wait(timeout: .now() + 2)
         })
-        try await f.connect(); let id = UUID(), record = try await f.send(id, "Find the invented source.")
+        try await f.connect(files: false); let id = UUID(), record = try await f.send(id, "Find the invented source.")
         for _ in 0..<100 where !gate.lock.withLock({ gate.started }) { try await Task.sleep(for: .milliseconds(5)) }
         _ = try await f.request("chat_stop", [("request_id", .str(id.uuidString)), ("turn_id", try #require(record["turn_id"]))])
         #expect(try await f.completed(id)["phase"] == .str("interrupted"))
@@ -416,7 +490,7 @@ import Testing
             read.lock.withLock { read.began = true }
             for _ in 0..<100 where !cancelled() { usleep(5_000) }
         })
-        try await f.connect(); let id = UUID()
+        try await f.connect(files: false); let id = UUID()
         let scope = try #require(try await f.request("claude_binder")["binder_id"]?.stringValue)
         let home = f.root.appendingPathComponent("support/brains/read-homes/" + scope)
         try AtomicFile.makePrivateFolder(home)
