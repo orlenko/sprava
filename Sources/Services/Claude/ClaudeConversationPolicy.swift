@@ -43,7 +43,7 @@ enum ClaudeConversationPolicy {
             if bytes + count > 512 * 1024 { continue }; bytes += count; prior.insert(value, at: 0)
         }
         let result = instructions + "\nAPP_HISTORY_IS_PARTIAL=" + String(prior.count < history.count) + "\nAPP_HISTORY=" + JSONWriter.compact(.array(prior)) + "\nBINDER_SOURCE_DATA=" + JSONWriter.compact(context.data)
-        guard result.utf8.count <= 1024 * 1024 else { throw ClaudeConversationRuntime.Refused.unavailable }
+        guard result.utf8.count <= 1024 * 1024 else { throw ClaudeConversationRuntime.Refused.tooLarge }
         return result
     }
 }

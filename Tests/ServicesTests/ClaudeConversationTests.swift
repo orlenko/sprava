@@ -23,6 +23,8 @@ import Testing
         var reply = #"{"answer":"The invented bylaw permits pets with permission.","citations":["S1"],"task":{"title":"Ask the board","details":"Request written permission."},"draft":null}"#
         /// What a turn does to the binder while it runs, as the agent's file tools will.
         var act: (@Sendable () -> Void)?
+        /// What a turn fails with after it acts, if anything.
+        var failure: (any Error)?
         /// The folder each launch was given tools in; nil for a tool-free one.
         var reaches: [URL?] = []
         /// The to-do tools the latest launch was given.
@@ -38,6 +40,7 @@ import Testing
                 defer { lock.withLock { running = false } }
                 if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return (resume ? originalPolicy : policy).hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
                 lock.withLock { act }?()
+                if let failure = lock.withLock({ failure }) { throw failure }
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
             }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash)

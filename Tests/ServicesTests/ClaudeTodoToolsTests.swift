@@ -186,6 +186,28 @@ import Testing
         }
     }
 
+    /// The app can say why a turn failed; the log gets the reason and none of the turn's words.
+    @Test func aFailedTurnGivesItsReasonAndLogsNoWords() async throws {
+        let c = try await Conversation()
+        let engine = c.engine
+        engine.lock.withLock { engine.failure = ClaudeReadOnlyTurn.Failure.deadline }
+        let (_, done) = try await c.turn("Invented words for the log") { _ in }
+        #expect(done["phase"] == .str("failed"))
+        #expect(done["reason"] == .str("deadline"))
+        let log = try String(contentsOf: c.s.support.appendingPathComponent("runtime/jobs.log"), encoding: .utf8)
+        #expect(log.contains("claude turn outcome=failed reason=deadline"))
+        #expect(!log.contains("Invented words"))
+    }
+
+    @Test func everyFailureHasACode() {
+        typealias F = ClaudeReadOnlyTurn.Failure
+        #expect(ClaudeConversationRuntime.failureCode(F.protocolMismatch) == "protocol")
+        #expect(ClaudeConversationRuntime.failureCode(F.engineFailed) == "engine")
+        #expect(ClaudeConversationRuntime.failureCode(ClaudeConversationRuntime.Refused.unavailable) == "binder_unavailable")
+        #expect(ClaudeConversationRuntime.failureCode(ClaudeConversationRuntime.Refused.tooLarge) == "too_large")
+        #expect(ClaudeConversationRuntime.failureCode(CocoaError(.fileNoSuchFile)) == "other")
+    }
+
     @Test func aTurnsToDosGetTheTurnsLineAndItsUndo() async throws {
         let c = try await Conversation()
         let (turn, done) = try await c.turn { tools in

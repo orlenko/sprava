@@ -343,4 +343,15 @@ import Testing
         #expect(entries.map(\.state) == [.earlier])
         #expect(note != nil)
     }
+
+    /// A failed turn says what happened; only a binder that truly could not be reached says that.
+    @Test func aFailedTurnSaysWhyAndDoesNotBlameTheBinder() {
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("deadline")).contains("ran out of time"))
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("usage_limit")).contains("Connect another account"))
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("binder_unavailable")).contains("could not be reached"))
+        for failure in [ChatCommandFailure.turnFailed(nil), .turnFailed("engine"), .turnFailed("invented-code"), .unavailable] {
+            #expect(!BinderChat.words(failure).contains("could not be reached"))
+        }
+        #expect(!BinderChat.words(ChatCommandFailure.turnFailed("invented-code")).contains("invented-code"))
+    }
 }

@@ -19,6 +19,7 @@ struct ClaudeReadOnlyFrames {
     private(set) var reply: String?
     private var receivedResult = false
     private var interruptAcknowledged = false
+    private var limitReached = false
     var ended: Bool { receivedResult && (interruptID == nil || interruptAcknowledged) }
     var interruptID: UUID?
     static let maximumReplyBytes = 1024 * 1024
@@ -66,6 +67,7 @@ struct ClaudeReadOnlyFrames {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
             if failed, value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
+            if failed, limitReached || value["api_error_status"] == .int(429) { throw ClaudeReadOnlyTurn.Failure.usageLimit }
             // Current native versions can use subtype=success for an API failure. is_error is decisive;
             // no error body becomes a reply, and a network/provider refusal is not a protocol mismatch.
             if failed { receivedResult = true; return }
@@ -93,6 +95,8 @@ struct ClaudeReadOnlyFrames {
             interruptAcknowledged = true
         case "rate_limit_event":
             guard initialized else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
+            // Only a turn that then fails is put down to it: an allowance can be refused and a fallback still answer.
+            if value["rate_limit_info"]?["status"] == .str("rejected") { limitReached = true }
         default:
             throw ClaudeReadOnlyTurn.Failure.protocolMismatch
         }
