@@ -89,6 +89,11 @@ Do not report:
   section 1) does not defend against them; they are collected in issue #227;
 - missing migrations or backward compatibility for Sprava's own state in the support folder: there is no
   installed base (decisions.md A14). Binders do keep compatibility (binder-v0, lifeproj);
+- what a binder's Claude session can do with the whole shell the person gives it by allowing file changes, while
+  the walls of its sandbox hold: starting any program the system or Homebrew installed, running scripts with them,
+  or reading what other programs show in their environment, which no sandbox rule stops. The author accepted this
+  (decisions.md D36). A way past those walls still counts: reading outside the binder, writing outside it, the
+  network beyond the proxy, the person's other apps, clipboard or Keychain, or running a program from a writable folder;
 - a hang or delay from a slow, stalled, network or removable volume: binders are ordinary local folders, offloaded
   when not in use and restored when needed (decisions.md A15);
 - wording in a doc that differs from the code, unless the code breaks a rule the doc states;
