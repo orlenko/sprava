@@ -13,12 +13,12 @@ in `~/Sprava`; if you chose a folder for new binders in Settings, it starts ther
 stays in that location even if you change the folder for future binders. An existing folder named `general`
 is left alone; the new binder takes the next free name, such as `general-2`.
 
-On **To-dos**, leave **Binder** on **General** and click **Add**. This works before any binder exists,
+On **Today**, leave **Binder** on **General** and click **Add**. This works before any binder exists,
 uses no model and offers Undo. In **Inbox**, **Save to General** sends a private note to General for review;
 **Save Note** with **Not sure** still leaves a card waiting in Inbox. A destination the runtime could not
 confirm is reported and waits in Inbox rather than being guessed.
 
-General appears on the Shelf, and its open items join the cross-binder To-dos page. It can be backed up,
+General appears on the Shelf, and its open items join the **Today** page. It can be backed up,
 but cannot be removed from the Shelf, transferred or offloaded. If its folder is moved, deleted or replaced
 outside Sprava, restore the original folder to its original location. Sprava refuses to create an empty
 replacement that would hide the old items.
@@ -62,15 +62,15 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
    and `correspondence`, and an undated starter checklist to approve as above.
 2. Keep the records by dropping minutes, statements, quotes and letters on the binder, and choosing the folder on
    each card before **Approve**.
-3. Track action items in the binder's **Project** view or on **To-dos** across binders. Type in the top row and press
+3. Track action items in the binder's **Project** view or on **Today** across binders. Type in the top row and press
    Return: it writes the task at once, without a model or a review card, and leaves the cursor there for the next.
    **Due** takes `today`, `tomorrow`, `fri`, `+3`, `nov 12`, `11/12` or `2031-02-03`. With the width for them, the row
-   also has **Priority** and, on To-dos, **Binder**; it adds to the binder you are in, or to General on To-dos. Paste
+   also has **Priority** and, on Today, **Binder**; it adds to the binder you are in, or to General on Today. Paste
    several lines to add one task for each. Clicking away keeps what you typed as a draft.
    Click a task's title or date to change it in place: Return or moving away saves, and Esc puts it back. **More…**, on
    the open row or the row's menu, has **Status**, who it is **Waiting on** and the follow-up date. The ring marks a task
    done; the menu has **Cancel to-do**. A task moves to its new group once it has saved. Use **Undo** beside the last
-   change on To-dos, or under **Recent changes** in Project, to reverse an addition, edit, completion or cancellation.
+   change on Today, or under **Recent changes** in Project, to reverse an addition, edit, completion or cancellation.
 4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
    selects its file. **Open Binder Folder** opens the whole folder, including files nobody has filed, which this list
    does not show.
@@ -130,7 +130,7 @@ and closes this binder's to-dos when you ask, with Undo for each turn. It cannot
 7. Ask for a reply to an intake email. Review its recipient, source citations and facts; copy privately or
    save the draft as text. Sending and reply threading remain in your mail client.
 8. Ask Claude to add, change, finish or remove To-dos, as many as you like. It does so at once; they are private, and they
-   appear in this binder and on the global To-dos page. The reply ends with a line naming what changed, with **Undo**
+   appear in this binder and on the **Today** page. The reply ends with a line naming what changed, with **Undo**
    for the whole turn. A to-do you changed since keeps your change, and Undo names it. An older reply may still carry a
    suggestion to save, which creates a *new* task only when you click it.
 

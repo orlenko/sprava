@@ -18,6 +18,12 @@ final class BinderWorkspaceSelection: ObservableObject {
         choices[folder.standardizedFileURL] = surface
     }
 
+    /// Opens where a binder's cards are: Project, not its settings. In a narrow window Conversation would otherwise cover them.
+    func showCards(in folder: URL) {
+        choose(.project, for: folder)
+        settings.remove(folder.standardizedFileURL)
+    }
+
     /// Binders with no conversation yet where the person asked to talk, so the conversation shows beside Project.
     @Published private var opened: Set<URL> = []
     func opensConversation(_ folder: URL) -> Bool { opened.contains(folder.standardizedFileURL) }

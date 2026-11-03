@@ -384,7 +384,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             guard let op = result["op"]?.stringValue, !op.isEmpty else {
                 cards[id]?.uncertain = true; cards[id]?.message = "The save returned no confirmation. Check To-dos before adding another copy."; changed(); return
             }
-            cards[id]?.saved = true; cards[id]?.message = "Added privately to this binder and the global To-dos list."
+            cards[id]?.saved = true; cards[id]?.message = "Added privately to this binder and to Today."
         } catch let failure as RuntimeClient.Failure where failure.kind == .timedOut || failure.kind == .notRunning {
             cards[id]?.uncertain = true; cards[id]?.message = "The save could not be confirmed. Check To-dos before adding another copy; this action will not retry automatically."
         } catch { cards[id]?.message = "The task could not be added. Its text is kept here." }

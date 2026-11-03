@@ -22,7 +22,8 @@ final class TodoModel: ObservableObject, DraftOwner {
     }
 
     @Published var filter = TodoBoard.Filter()
-    @Published var collapsed: Set<TodoBoard.Group> = []
+    /// Later starts folded: Today is about what is near (decisions.md D37). Held in memory, so each launch starts the same.
+    @Published var collapsed: Set<TodoBoard.Group> = [.later]
     @Published var draft = ""
     @Published var details = ""
     /// The due date as typed (`TodoDates`); empty for none.
@@ -52,6 +53,12 @@ final class TodoModel: ObservableObject, DraftOwner {
     func defaultBinder(_ targets: [Target]) -> URL? {
         if let binder, targets.contains(where: { $0.folder == binder }) { return binder }
         return targets.first?.folder
+    }
+
+    /// A search or filter shows every match, folded or not, and folding waits until it ends.
+    var filtering: Bool { filter != TodoBoard.Filter() }
+    func isCollapsed(_ group: TodoBoard.Group) -> Bool {
+        collapsed.contains(group) && !filtering
     }
 
     func toggle(_ group: TodoBoard.Group) {
@@ -108,6 +115,8 @@ final class TodoModel: ObservableObject, DraftOwner {
         if let destination, !done.isEmpty {
             // The binder used is offered next, unless the person has already chosen another.
             if binder == submittedBinder { binder = destination.folder }
+            // What was just added stays in sight.
+            if let day, TodoBoard.Group.isLater(day, today: today) { collapsed.remove(.later) }
             lastChange = Change(line: done.count == 1 ? "Added to \(destination.label)." : "Added \(done.count) to \(destination.label).",
                                 folder: destination.folder, opIDs: done)
         }
