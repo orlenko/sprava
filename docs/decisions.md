@@ -458,6 +458,10 @@ Each line names what replaced the entry; its old text is in git history.
   a switch loses the prompt cache. What it prints is an account's name; nothing printed or exit 75 means none has quota; a name with no token stops the turn and says which;
   a command that fails leaves the account in use. A turn refused for its limit before any tool ran starts again on the next account; after a tool ran it does not, since it may have changed something.
   A token is saved only after one data-free turn shows it works, though an account at its limit is kept. Each shows its saved day and a reminder a month before its year ends.
+- **D35 decided (2026-11-02, the author).** "When we do a 'new conversation', we should archive the previous convo *in the binder*. Export it, file it, it remains available."
+  New conversation is in the conversation's "…" menu, with a quiet line, never blocking, once a session reaches about 100,000 tokens or 70% of its window, whichever comes first; Opus reports a window of a million, so the
+  first figure is what fires. The order: Claude brings the Notes up to date in a last ordinary turn of up to two minutes, skipped if it cannot; the transcript is filed as a private document under `conversations/`;
+  only then the session ends and the screen clears, with a link to the transcript. If filing fails nothing is cleared. The older Clear stays, for a conversation the person does not want kept.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.

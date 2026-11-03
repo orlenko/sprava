@@ -1,3 +1,4 @@
+import CryptoKit
 import BinderStore
 import Backup
 import Shelf
@@ -16,6 +17,7 @@ public actor ClaudeConversationRuntime {
         let stop: @Sendable () -> Void
         let exited: @Sendable () -> Bool
         let hash: String
+        var context: @Sendable () -> (used: Int, window: Int?)? = { nil }
     }
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
@@ -43,6 +45,13 @@ public actor ClaudeConversationRuntime {
     private var failureAccounts: [UUID: String] = [:]
     /// The name a choosing command gave, or a token that was not found, when a turn stops for it.
     private var failedAccountName: String?
+    /// Binders whose session has grown long enough to suggest a new conversation; for as long as this process runs.
+    private var longConversations = Set<UUID>()
+    /// About where a session starts costing noticeably more per message, whatever its window: Opus reports a window of a million tokens.
+    static let longConversationTokens = 100_000
+    /// The line that asks a session to bring the Notes up to date before it ends. It is a turn like any other, kept in the transcript.
+    static let closingLine = "This conversation is ending. Bring the Notes up to date with update_notes so the next conversation can pick up from them, then say in one line what you recorded."
+    static let closingTimeLimit: Duration = .seconds(120)
     private let secrets: Secrets
     private let makeDriver: MakeDriver
     private let readContext: ReadContext
@@ -106,7 +115,7 @@ public actor ClaudeConversationRuntime {
         })
     }
 
-    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_token_save", "claude_token_remove", "claude_chooser_set", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
+    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_token_save", "claude_token_remove", "claude_chooser_set", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_closing_notes", "chat_file_and_clear", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
 
     public func respond(_ text: String) async -> String {
         guard text.utf8.count <= 5 * 1024 * 1024,
@@ -215,6 +224,24 @@ public actor ClaudeConversationRuntime {
                 return .init([(key: "undone", value: .bool(false)), (key: "todos_left", value: .array(left.prefix(20).map { .str($0) })), (key: "notes_left", value: .bool(!notesBack))])
             }.value
         }
+        if command == "chat_file_and_clear" {
+            guard let id = try connections.savedID(for: folder), let text = request["text"]?.stringValue, !text.isEmpty,
+                  let settled = request["settled"]?.stringValue else { throw Refused.invalidRequest }
+            guard active[id] == nil, !preparing.contains(id), try available(folder) else { throw Refused.busy }
+            // The transcript was read after the conversation settled at this state. Anything since then is not in it, and clearing would lose it.
+            guard try settledState(id) == settled else { throw Refused.busy }
+            preparing.insert(id)
+            let writer = todoWriter
+            let path: String
+            do {
+                path = try await Task.detached(priority: .userInitiated) { try writer.perform { try $0.fileConversation(text, folder: folder) } }.value
+                preparing.remove(id)
+            } catch { preparing.remove(id); throw error }
+            // Filed, so the clearing below can lose nothing.
+            configuring = true; defer { configuring = false }
+            try await fence(id); try receipts.clear(conversationID: id)
+            return .init([(key: "path", value: .str(path))])
+        }
         if command == "chat_history" || command == "chat_clear" {
             guard let id = try connections.savedID(for: folder) else { return .init([(key: "turns", value: .array([]))]) }
             if command == "chat_clear" {
@@ -239,6 +266,12 @@ public actor ClaudeConversationRuntime {
         _ = try currentFolder(scope)
         if command == "claude_disable" { configuring = true; defer { configuring = false }; try await fence(scope.id); try connections.disable(scope); return .init() }
         guard let requestID = request["request_id"]?.stringValue.flatMap(UUID.init(uuidString:)) else { throw Refused.invalidRequest }
+        if command == "chat_closing_notes" {
+            guard active[scope.id] == nil, !preparing.contains(scope.id) else { throw Refused.busy }
+            try await closingNotes(scope: scope, requestID: requestID)
+            guard active[scope.id] == nil else { throw Refused.busy }
+            return .init([(key: "settled", value: .str(try settledState(scope.id)))])
+        }
         if command == "chat_send" {
             guard let text = request["text"]?.stringValue, request["attachments"] == nil || request["attachments"] == .array([]) else { throw Refused.invalidRequest }
             return recordJSON(try await send(scope: scope, requestID: requestID, text: text)).objectValue!
@@ -382,6 +415,10 @@ public actor ClaudeConversationRuntime {
             _ = try currentFolder(scope)
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
             let result = try await made.run(line, session.resumed)
+            if let context = made.context() {
+                let limit = min(Self.longConversationTokens, context.window.map { $0 * 7 / 10 } ?? Self.longConversationTokens)
+                if context.used >= limit { longConversations.insert(scope.id) } else { longConversations.remove(scope.id) }
+            }
             if reach != nil { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
@@ -459,6 +496,25 @@ public actor ClaudeConversationRuntime {
 
     /// What the turn changed, whether or not it finished. Runs before the turn's phase is reported, so the reply and its
     /// summary line arrive together. A second call for one turn finds nothing more and leaves the first entry.
+    /// One last turn of a session with something to bring up to date, within a time limit. Whatever becomes of it, the conversation
+    /// can still end: a person out of quota can start anew, and only the Notes go without that update.
+    private func closingNotes(scope: ClaudeReadConnections.Connection, requestID: UUID) async throws {
+        guard try connections.allowsFileChanges(scope), try state.allSessions().contains(where: { $0.connection == scope.id && $0.resumed }) else { return }
+        guard (try? await send(scope: scope, requestID: requestID, text: Self.closingLine)) != nil, let turn = active[scope.id] else { return }
+        let limit = Task { [signal = turn.signal, id = scope.id] in
+            try await Task.sleep(for: Self.closingTimeLimit)
+            signal.stop(); self.stopDriver(id)
+        }
+        await turn.task.value
+        limit.cancel()
+    }
+    private func stopDriver(_ id: UUID) { active[id]?.driver?.stop() }
+    /// Which turns exist and how each ended. A finished turn never changes, so an equal state means nothing has happened in between.
+    private func settledState(_ id: UUID) throws -> String {
+        let rows = try receipts.history(conversationID: id).map { "\($0.turnID.uuidString):\($0.phase.rawValue)" }.joined(separator: ",")
+        return SHA256.hash(data: Data(rows.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     private func recordTurn(_ record: ConversationTurnStore.Record, scope: ClaudeReadConnections.Connection, history: TurnHistory) async {
         guard (try? history.entry(forTurn: record.turnID)) == nil else { return }
         let turn = record.turnID
@@ -570,6 +626,7 @@ public actor ClaudeConversationRuntime {
         }
         try state.forget(connection: id)
         try removeHome(id)
+        longConversations.remove(id)
     }
     /// Directory names are generated by Sprava, never from a binder/model path.
     private func removeHome(_ id: UUID) throws {
@@ -608,6 +665,7 @@ public actor ClaudeConversationRuntime {
         var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
               ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
         if r.phase == .failed, let reason = failureReasons[r.requestID] { fields.append(("reason", .str(reason))) }
+        if longConversations.contains(r.conversationID) { fields.append(("conversation_long", .bool(true))) }
         if r.phase == .failed, let account = failureAccounts[r.requestID] { fields.append(("account", .str(account))) }
         let history = TurnHistory(support: support, binder: r.conversationID)
         let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID), notes = try? history.notesChange(forTurn: r.turnID)

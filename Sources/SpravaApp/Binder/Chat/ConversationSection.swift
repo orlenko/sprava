@@ -23,7 +23,19 @@ struct ConversationSection: View {
                 if !model.connected {
                     ConnectionPanel(model: model, adopted: row.teka.isAdopted, folder: row.folder, openBrains: openBrains)
                 }
-                ChatView(chat: model.chat, connected: model.connected, suggestion: suggestion)
+                ChatView(chat: model.chat, connected: model.connected && !model.startingNew, suggestion: suggestion)
+                if let filed = model.filedTranscript, filed.folder == row.folder {
+                    HStack(spacing: 6) {
+                        Text("The last conversation is filed in this binder.").font(.caption).foregroundStyle(.secondary)
+                        Button("Open it") { model.openFiledTranscript() }.buttonStyle(.link).font(.caption)
+                    }
+                }
+                if model.connected, model.conversationLong.contains(row.folder) {
+                    HStack(spacing: 6) {
+                        Text("This conversation has grown long, and each message costs more.").font(.caption).foregroundStyle(.secondary)
+                        Button("Start a new one") { Task { await model.startNewConversation() } }.buttonStyle(.link).font(.caption).disabled(model.startingNew)
+                    }
+                }
                 if let message = model.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
             } else {
                 ProgressView("Loading conversation…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -44,7 +56,7 @@ struct ConversationSection: View {
         }
         return AnyView(VStack(alignment: .leading, spacing: 4) {
             Text("Suggestions and sources for this reply").font(.caption).foregroundStyle(.secondary)
-            ConversationCard(model: model, id: id)
+            ConversationCard(model: model, id: id).disabled(model.startingNew) // What is filed is what the card says now.
         })
     }
 }
@@ -134,14 +146,17 @@ struct ConversationSharingControls: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             Menu {
+                Button("New conversation") { Task { await model.startNewConversation() } }
+                    .disabled(!model.connected || model.startingNew)
+                Divider()
                 Button("Copy conversation") { share(.clipboard) }
                 Button("Save transcript…") { share(.file) }
             } label: {
                 Image(systemName: "ellipsis").foregroundStyle(.secondary).frame(width: 24, height: 24).contentShape(Rectangle())
             }
             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .help("Copy or save this conversation")
-            .accessibilityLabel("Copy or save this conversation")
+            .help("Start a new conversation, or copy or save this one")
+            .accessibilityLabel("Conversation actions")
             .disabled(sharing.busy || model.folder != folder || model.chat.folder != folder)
             if sharing.busy { ProgressView().controlSize(.small) }
             if let message = sharing.message { Text(verbatim: message).font(.caption).foregroundStyle(.secondary) }

@@ -21,6 +21,9 @@ struct ClaudeReadOnlyFrames {
     private var interruptAcknowledged = false
     private var limitReached = false
     private var toolUsed = false
+    /// How much of the model's context this session's last request used, and how much it can hold.
+    private(set) var contextTokens: Int?
+    private(set) var contextWindow: Int?
     /// A binder's agent, which runs a whole session and is walled by its sandbox.
     private var hasShell: Bool { tools.contains("Bash") }
     var ended: Bool { receivedResult && (interruptID == nil || interruptAcknowledged) }
@@ -53,6 +56,13 @@ struct ClaudeReadOnlyFrames {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
             if value["message"]?["content"]?.arrayValue?.contains(where: { $0["type"] == .str("tool_use") }) == true { toolUsed = true }
+            // The last model request's whole prompt is how full the session is; the result's totals add up every request and every resume.
+            if let usage = value["message"]?["usage"] {
+                let parts: [Int] = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].map { key in
+                    usage[key]?.numberValue?.safeInteger.map { Int(clamping: $0) } ?? 0
+                }
+                if parts.contains(where: { $0 > 0 }) { contextTokens = parts.reduce(0) { $0.addingReportingOverflow($1).partialValue } }
+            }
             if value["is_api_error_message"] == .bool(true), value["error"] == .str("authentication_failed"),
                value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
         case "stream_event":
@@ -72,6 +82,7 @@ struct ClaudeReadOnlyFrames {
                   let failed = value["is_error"]?.boolValue, let subtype = value["subtype"]?.stringValue else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
+            if let window = value["modelUsage"]?.objectValue?.entries.first?.value["contextWindow"]?.numberValue?.safeInteger { contextWindow = Int(clamping: window) }
             if failed, value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
             // Before any tool ran nothing can have changed, so this turn can start again on another account.
             if failed, limitReached || value["api_error_status"] == .int(429) { throw toolUsed ? ClaudeReadOnlyTurn.Failure.usageLimitMidTurn : .usageLimit }

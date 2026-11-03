@@ -1,3 +1,4 @@
+import AppKit
 import BinderFormat
 import Combine
 import Foundation
@@ -38,6 +39,12 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         var taskDraft: TaskDraft { TaskDraft(title: taskTitle, details: taskDetails, due: due, priority: priority) }
     }
     @Published var askToClear = false
+    /// Whether this binder's session has grown long enough to suggest a new conversation.
+    @Published private(set) var conversationLong = Set<URL>()
+    /// The transcript the last New conversation filed, to link to.
+    @Published private(set) var filedTranscript: FiledTranscript?
+    struct FiledTranscript: Equatable { let folder: URL; let path: String }
+    @Published private(set) var startingNew = false
     /// Whether a connected binder's sharing details are showing.
     @Published private(set) var checking = false
     /// Why the binder shown is not connected, as the runtime said. Nil when the runtime did not answer.
@@ -174,6 +181,49 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         } catch { message = "The saved conversation could not be cleared. Nothing was reported as cleared." }
     }
 
+    /// Turns the page: Claude brings the Notes up to date if it can, the transcript is filed in the binder, and only then the session ends
+    /// and the screen clears. If filing fails, nothing is cleared.
+    func startNewConversation() async {
+        guard !busy, !startingNew, let folder, let scope = scopeID else { return }
+        startingNew = true; defer { startingNew = false }
+        do {
+            message = "Bringing the notes up to date…"
+            let settled: String
+            do {
+                let closing = try await client.command("chat_closing_notes", binder: folder, [("request_id", .str(UUID().uuidString))], timeout: 150)
+                guard let state = closing["settled"]?.stringValue else { throw ChatCommandFailure.unavailable }
+                settled = state
+            } catch {
+                message = "Wait for Claude's reply to finish, then try again. Nothing was cleared."
+                return
+            }
+            // The chat holds only the page in view. Another binder's page means this one's unsent lines cannot be read, so nothing goes further.
+            guard Self.canFile(folder, selected: self.folder, inChat: chat.folder) else {
+                message = nil
+                return
+            }
+            message = "Filing this conversation in the binder…"
+            let text = try await sharing.transcript(folder: folder, scope: scope, entries: chat.entries, cards: cards.filter { $0.value.binder == folder })
+            let answer = try await client.command("chat_file_and_clear", binder: folder, [("text", .str(text)), ("settled", .str(settled))], timeout: 60)
+            guard let path = answer["path"]?.stringValue else { throw ChatCommandFailure.unavailable }
+            cards = cards.filter { $0.value.binder != folder }
+            pending[folder] = nil
+            chat.forgetHistory(folder)
+            conversationLong.remove(folder)
+            filedTranscript = FiledTranscript(folder: folder, path: path)
+            message = nil
+            changed()
+            if self.folder == folder { await show(folder) }
+        } catch {
+            message = "This conversation could not be filed, so it stays as it is. Nothing was cleared."
+        }
+    }
+    static func canFile(_ folder: URL, selected: URL?, inChat: URL?) -> Bool { selected == folder && inChat == folder }
+    func openFiledTranscript() {
+        guard let filed = filedTranscript else { return }
+        NSWorkspace.shared.open(filed.folder.appendingPathComponent(filed.path))
+    }
+
     private func send(_ request: ChatSendRequest) async throws -> ChatTurn {
         guard let folder = scopes.first(where: { $0.value == request.binderID })?.key else { throw ChatCommandFailure.unavailable }
         let accepted = try await client.command("chat_send", binder: folder, [("request_id", .str(request.requestID.uuidString)), ("text", .str(request.text))], timeout: 45)
@@ -196,6 +246,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                         let value = try await self.client.command("chat_poll", binder: folder, [("request_id", .str(turn.requestID.uuidString))])
                         guard value["turn_id"] == .str(turn.turnID.uuidString), value["binder_id"] == .str(turn.binderID),
                               value["request_id"] == .str(turn.requestID.uuidString) else { throw ChatCommandFailure.unavailable }
+                        if value["conversation_long"] == .bool(true) { self.conversationLong.insert(folder) }
                         switch value["phase"]?.stringValue {
                         case "replied":
                             self.forgetPending(turn, in: folder)

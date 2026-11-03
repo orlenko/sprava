@@ -35,6 +35,12 @@ final class ConversationSharing: ObservableObject {
             }
         } catch { message = "The complete conversation could not be shared. Its text and draft are still here. Try again when saved history is available." }
     }
+    /// The whole conversation as the transcript words it, read fresh, for filing in the binder.
+    func transcript(folder: URL, scope: String, entries: [BinderChat.Entry], cards: [UUID: ClaudeBinderConversation.Card]) async throws -> String {
+        let rows = try await history(folder: folder, scope: scope)
+        return try ConversationTranscript.text(rows: rows, entries: entries, cards: cards)
+    }
+
     private func history(folder: URL, scope: String) async throws -> [JSONValue] {
         var rows: [JSONValue] = [], token: String?, after: Int64 = 0, expected: Int64?
         for _ in 0...10_000 {
