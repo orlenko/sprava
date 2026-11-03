@@ -54,6 +54,13 @@ Read this first; then `docs/code-structure.md` for which target owns what.
      contain the current main (so the tree tested is the tree merged), then merges.
 5. Commit messages say what changed and why, in plain words.
 
+## Manual review supplement
+
+Use the compatible manual procedure in [docs/manual-review.md](docs/manual-review.md), pinned to shared
+workflow v0.2. It adds design, specialist and separate adjudication records without replacing the gates above.
+Full supplement adoption remains blocked on the review-round deferral conflict documented there; step 4 and
+the review guidelines below are unchanged. This is no runtime policy, permission or review-attestation upgrade.
+
 ## Tools (`scripts/dev/`, for Claude, Codex and the author alike)
 
 - `status.sh`: every open PR, its base, the cloud review's state, unresolved threads, whether it holds main.
