@@ -146,22 +146,40 @@ import Testing
                         "/usr/sbin/sysctl -a", "/usr/bin/nc -h", "/usr/bin/ssh -V", "/usr/bin/git --version"] {
             #expect(try !f.allowed(command), "\(command)")
         }
-        for command in ["mkdir -p a/b", "cp notes.md a/b/c.md", "mv a/b/c.md a/d.md", "ls a", "rm a/d.md", "rmdir a/b"] {
+        for command in ["mkdir -p a/b", "cp notes.md a/b/c.md", "mv a/b/c.md a/d.md", "ls a", "rm a/d.md", "rmdir a/b",
+                        "find . -name notes.md", "grep -c . notes.md", "sed -n 1p notes.md", "wc -l notes.md", "head -1 notes.md | cut -c1-4"] {
             #expect(try f.allowed(command), "\(command)")
         }
-        for command in ["find . -name n", "grep notes notes.md", "sed -n 1p notes.md", "awk 1 notes.md", "tar cf a/x.tar notes.md", "/usr/bin/env ls"] {
+        for command in ["tar cf a/x.tar notes.md", "/usr/bin/awk 1 notes.md", "/usr/bin/xargs -h", "/usr/bin/env /bin/ls", "/usr/bin/sort notes.md"] {
             #expect(try !f.allowed(command), "\(command)")
         }
     }
 
-    @Test func theCLIIsToldTheSameShortListAsTheSandbox() throws {
+    @Test func theInstructionFilesAreThePersonsToWrite() throws {
         let f = try Fixture(); defer { f.clean() }
-        let plan = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.316"), home: f.root.appendingPathComponent("tools"),
+        for name in ["AGENTS.md", "CLAUDE.md"] {
+            try Data("invented".utf8).write(to: f.binder.appendingPathComponent(name))
+            #expect(try f.allowed("cat \(name)"))
+            #expect(try !f.allowed("echo more >> \(name)"))
+            #expect(try !f.allowed("rm \(name)"))
+            #expect(try !f.allowed("mv \(name) moved.md"))
+        }
+    }
+
+    @Test func theCLIIsToldTheListAndNeverABareShell() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let plan = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.317"), home: f.root.appendingPathComponent("tools"),
                                              sessionID: UUID(), credential: "invented", policy: "p", reach: .init(folder: f.binder, proxyPort: 4242))
         let allowed = try #require(plan.arguments.firstIndex(of: "--allowedTools")).advanced(by: 1)
-        #expect(plan.arguments[allowed] == "Read,Write,Edit,Glob,Grep,Bash(rm:*),Bash(rmdir:*),Bash(mv:*),Bash(cp:*),Bash(mkdir:*),Bash(ls:*)")
-        // Never a bare Bash, which would let the model run the CLI itself with a preload.
-        #expect(!plan.arguments[allowed].split(separator: ",").contains("Bash"))
+        let rules = plan.arguments[allowed].split(separator: ",").map(String.init)
+        #expect(Array(rules.prefix(5)) == ["Read", "Write", "Edit", "Glob", "Grep"])
+        // Never a bare Bash, which would let the model run the CLI itself with a preload; nor a program that can start another.
+        #expect(!rules.contains("Bash"))
+        for verb in ["awk", "xargs", "env", "sort", "rg", "find", "sh", "bash", "zsh", "python3", "perl"] { #expect(!rules.contains("Bash(\(verb):*)"), "\(verb)") }
+        #expect(plan.arguments.contains("--restricted") && plan.arguments.contains("dontAsk") && !plan.arguments.contains("--dangerously-skip-permissions"))
+        #expect(plan.environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1")
+        // Every verb the CLI allows can also run, wherever it is installed.
+        for verb in ClaudeReadLaunch.shellVerbs { #expect(ClaudeReadLaunch.commandPrograms.contains { $0.hasSuffix("/" + verb) }, "\(verb)") }
     }
 
     @Test func nothingWrittenOrCopiedCanRun() throws {
@@ -381,6 +399,28 @@ import Testing
         try frames.receive(frame(#"{"type":"assistant","session_id":"\#(id)","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}"#))
         try frames.receive(frame(#"{"type":"result","subtype":"success","is_error":false,"session_id":"\#(id)","result":"the reply"}"#))
         #expect(frames.reply == "the reply" && frames.ended)
+    }
+
+    /// A session runs for a long time, so a kind of frame a newer CLI adds, or a compaction's summary, must not fail its turn.
+    @Test func aBinderAgentsLongTurnSurvivesFramesTheContractDoesNotName() throws {
+        var frames = try started(["Bash", "Read"])
+        let id = session.uuidString.lowercased()
+        try frames.receive(frame(#"{"type":"invented_future_frame","session_id":"\#(id)"}"#))
+        try frames.receive(frame(#"{"type":"user","session_id":"\#(id)","isCompactSummary":true,"message":{"role":"user","content":"Summary of the invented conversation"}}"#))
+        #expect(frames.reply == nil && !frames.ended) // Neither can make a reply; only the result can.
+        try frames.receive(frame(#"{"type":"result","subtype":"success","is_error":false,"session_id":"\#(id)","result":"the reply"}"#))
+        #expect(frames.reply == "the reply")
+        var free = ClaudeReadOnlyFrames(sessionID: session, original: "Tidy")
+        try free.receive(frame(#"{"type":"system","subtype":"init","session_id":"\#(id)","tools":[],"mcp_servers":[],"permissionMode":"dontAsk"}"#))
+        #expect(throws: ClaudeReadOnlyTurn.Failure.protocolMismatch) { try free.receive(frame(#"{"type":"invented_future_frame"}"#)) }
+    }
+
+    @Test func noAgentMayRunWithoutTheCLIsChecks() throws {
+        let id = session.uuidString.lowercased()
+        var withShell = ClaudeReadOnlyFrames(sessionID: session, original: "Tidy", tools: ["Bash"])
+        #expect(throws: ClaudeReadOnlyTurn.Failure.protocolMismatch) {
+            try withShell.receive(frame(#"{"type":"system","subtype":"init","session_id":"\#(id)","tools":["Bash"],"mcp_servers":[],"permissionMode":"bypassPermissions"}"#))
+        }
     }
 
     @Test func theModeTheCLIForcesWhenItScrubsIsAcceptedOnlyWithTools() throws {

@@ -16,15 +16,25 @@ package enum ClaudeReadLaunch {
         package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
     }
     static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
-    /// What the agent's shell may do: move and remove files, all it needs that the other tools do not do. Two walls hold this.
+    /// What the agent's shell may do: move and remove files, and read and edit text. Two walls hold this.
     /// The CLI refuses any other command, and any compound, substitution or prefix that reaches one (`shellVerbs`, checked
-    /// against the real CLI 2.1.316). The operating system runs nothing else (`commandPrograms`), but must leave the CLI itself
+    /// against the real CLI 2.1.317). The operating system runs nothing else (`commandPrograms`), but must leave the CLI itself
     /// runnable, and it is a JavaScript runtime that takes a preload from its environment, so the first wall is what stops
     /// that. A program able to make arbitrary system calls can read the environment of the person's other programs, and no
-    /// sandbox rule stops that read (kern.procargs2, seen 2026-11-02), so nothing richer runs here until a stronger boundary exists.
-    static let shellVerbs = ["rm", "rmdir", "mv", "cp", "mkdir", "ls"]
+    /// sandbox rule stops that read (kern.procargs2, seen 2026-11-02), so nothing on this list may start another program:
+    /// not awk, xargs, env, sort (--compress-program) or rg (--pre), and find runs only because the CLI itself allows it
+    /// without -exec. The agent's Grep and Glob tools are its rg and its find.
+    static let shellVerbs = ["rm", "rmdir", "mv", "cp", "mkdir", "ls", "cat", "date", "echo", "pwd", "test"]
+        + ["grep", "sed", "head", "tail", "wc", "cut", "tr", "uniq", "diff", "comm", "paste", "file", "stat", "basename", "dirname", "touch", "tee", "jq", "true", "false"]
+        + ["pdftotext", "pdfinfo"]
     static let allowedTools = ["Read", "Write", "Edit", "Glob", "Grep"] + shellVerbs.map { "Bash(\($0):*)" }
-    static let commandPrograms: [String] = (["sh", "bash", "zsh"] + shellVerbs).map { "/bin/" + $0 } + ["/usr/libexec/path_helper"]
+    private static let binPrograms = ["sh", "bash", "zsh", "rm", "rmdir", "mv", "cp", "mkdir", "ls", "cat", "date", "echo", "pwd", "test"].map { "/bin/" + $0 }
+    private static let usrBinPrograms = ["grep", "sed", "head", "tail", "wc", "cut", "tr", "uniq", "diff", "comm", "paste", "file", "stat", "basename", "dirname",
+                                         "touch", "tee", "jq", "true", "false", "find"].map { "/usr/bin/" + $0 }
+    private static let installedPrograms = ["pdftotext", "pdfinfo"].flatMap { ["/opt/homebrew/bin/" + $0, "/usr/local/bin/" + $0] }
+    static let commandPrograms: [String] = binPrograms + usrBinPrograms + installedPrograms + ["/usr/libexec/path_helper"]
+    /// Homebrew's programs are links, and the sandbox compares the path they lead to.
+    static let installedFolders = ["/opt/homebrew/Cellar/poppler", "/usr/local/Cellar/poppler"]
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
@@ -95,6 +105,7 @@ package enum ClaudeReadLaunch {
             : ["--tools", toolList, "--allowedTools", (allowedTools + appNames).joined(separator: ",")]
         let servers = appTools == nil ? "{\"mcpServers\":{}}" : JSONWriter.compact(.obj([("mcpServers", .obj([(ClaudeAppTools.server, .obj([("type", .str("sdk")), ("name", .str(ClaudeAppTools.server))]))]))]))
         if let reach {
+            environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
             environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
             // The person's token stays with the agent process. A process's environment can be read by another of the same user
@@ -108,7 +119,7 @@ package enum ClaudeReadLaunch {
                     "--safe-mode", "--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--verbose", "--replay-user-messages"] + toolArguments + [
                     "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", servers,
-                    "--settings", "{\"disableAllHooks\":true}", "--model", "sonnet", "--max-budget-usd", reach == nil ? "2" : "5",
+                    "--settings", "{\"disableAllHooks\":true}", "--model", "opus", "--max-budget-usd", reach == nil ? "2" : "10",
                     "--append-system-prompt-file", home.appendingPathComponent("app-policy.txt").path]
         return ClaudeReadOnlyTurn.Launch(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"), arguments: args,
                                         environment: environment, directory: reach?.folder ?? home, sessionID: sessionID,
@@ -118,7 +129,7 @@ package enum ClaudeReadLaunch {
 
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
     /// else of the person's: reads are closed except for those and the folders of system files, programs and libraries. `.sprava`, the catalog and the
-    /// dashboard have one writer, Sprava, and it may only read them. It runs only `commandPrograms`, none of
+    /// dashboard have one writer, Sprava, and the instruction files one, the person: the agent may only read them. It runs only `commandPrograms`, none of
     /// which reach the person's other apps, clipboard or Keychain, and no library from a writable folder can load into them. Its only way out is the proxy's port: name lookups,
     /// direct connections and listening on a port fail whatever a command tries, so nothing read can leave except to the model. A key file can be
     /// deleted without being read. Renaming one first would get past that name rule: it stops an accidental read, it is not
@@ -141,7 +152,7 @@ package enum ClaudeReadLaunch {
         (allow file-read* (subpath \(q(home.path))) (subpath \(q(binder))) (literal \(q(program.path))))
         (deny file-read-data (regex \(q(keyFiles))))
         (deny file-write* (require-all (require-not (subpath \(q(home.path)))) (require-not (subpath \(q(binder)))) (require-not (subpath "/dev/fd")) (require-not (literal "/dev/null")) (require-not (literal "/dev/tty"))))
-        (deny file-write* (subpath \(q(binder + "/.sprava"))) (literal \(q(binder + "/catalog.json"))) (literal \(q(binder + "/DASHBOARD.md"))))
+        (deny file-write* (subpath \(q(binder + "/.sprava"))) (literal \(q(binder + "/catalog.json"))) (literal \(q(binder + "/DASHBOARD.md"))) (literal \(q(binder + "/AGENTS.md"))) (literal \(q(binder + "/CLAUDE.md"))))
         (deny file-write-mode (literal \(q(binder))))
         (deny file-write-flags (literal \(q(binder))))
         (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
@@ -149,7 +160,7 @@ package enum ClaudeReadLaunch {
         (deny job-creation)
         (deny file-map-executable (subpath \(q(binder))) (subpath \(q(home.path))))
         (deny process-exec*)
-        (allow process-exec \(programs.map { "(literal \(q($0)))" }.joined(separator: " ")))
+        (allow process-exec \(programs.map { "(literal \(q($0)))" }.joined(separator: " ")) \(installedFolders.map { "(subpath \(q($0)))" }.joined(separator: " ")))
         (deny signal)
         (allow signal (target same-sandbox))
         (deny network-outbound)

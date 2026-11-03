@@ -242,7 +242,7 @@ public actor ClaudeConversationRuntime {
             driver = first
             let answer = try await first.run(question, false)
             guard first.exited(), answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw ClaudeSetupFailure.firstReply }
-            try state.exited(firstSession, succeeded: false)
+            try state.exited(firstSession, keep: false)
             try state.forget(connection: id)
             let secondSession = try state.session(connection: id, generation: UUID(), hash: "setup")
             recorded = secondSession
@@ -252,7 +252,7 @@ public actor ClaudeConversationRuntime {
             guard first.hash == second.hash else { throw Refused.unavailable }
             let fresh = try await second.run(question, false)
             guard second.exited(), fresh?.trimmingCharacters(in: .whitespacesAndNewlines) == "SECOND" else { throw ClaudeSetupFailure.resume }
-            try state.exited(secondSession, succeeded: false)
+            try state.exited(secondSession, keep: false)
             let home = support.appendingPathComponent("brains/read-homes/" + id.uuidString)
             if FileManager.default.fileExists(atPath: home.path) { try FileManager.default.removeItem(at: home) }
             try state.setAccount(nil); try connections.disableAll()
@@ -262,7 +262,7 @@ public actor ClaudeConversationRuntime {
             try state.setAccount(.init(program: program, hash: second.hash))
         } catch {
             driver?.stop()
-            if driver?.exited() != false { try? state.exited(recorded, succeeded: false) }
+            if driver?.exited() != false { try? state.exited(recorded, keep: false) }
             throw ClaudeSetupFailure.classify(error, stage: stage)
         }
     }
@@ -274,11 +274,13 @@ public actor ClaudeConversationRuntime {
         guard active[scope.id] == nil, preparing.isEmpty, !configuring else { throw Refused.busy }
         guard let account = try state.account(), let credential = try secrets.read() else { throw Refused.notConnected }
         _ = try currentFolder(scope)
-        // Native resume retains the old appended system prompt. Rebuild each turn from the durable app
-        // history and current scoped source pack, so native cache can never freeze prior binder state.
-        try await fence(scope.id)
+        // A binder with file tools keeps one native session, whose static instructions stay in the prompt cache; it reads
+        // the binder's current state itself. Without tools each turn is rebuilt from the durable app history and the scoped
+        // source pack, so native cache can never freeze prior binder state.
+        if (try? connections.allowsFileChanges(scope)) != true { try await fence(scope.id) }
         preparing.insert(scope.id); defer { preparing.remove(scope.id) }
         let session = try state.session(connection: scope.id, generation: scope.generation, hash: account.hash)
+        if !session.resumed { try removeHome(scope.id) }
         guard case .reserved(let lease) = await admission.reserve(sessionID: session.native, kind: .conversation) else { throw Refused.busy }
         do {
             _ = try currentFolder(scope)
@@ -298,13 +300,13 @@ public actor ClaudeConversationRuntime {
     private func run(scope: ClaudeReadConnections.Connection, record: ConversationTurnStore.Record,
                      session: ClaudeConversationState.Session, lease: AgentSessionAdmission.Lease,
                      account: ClaudeConversationState.Account, credential: String, signal: StopSignal) async {
-        var succeeded = false, driver: Driver?
+        var keep = false, driver: Driver?
         var mayRelease = true
         let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
             let writer = todoWriter
-            let (context, reach, todos) = try await Task.detached(priority: .userInitiated) {
+            let (context, reach, todos, revision) = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
                 guard try available(folder) else { throw Refused.notConnected }
@@ -316,12 +318,16 @@ public actor ClaudeConversationRuntime {
                 guard !signal.stopped else { throw Refused.stopped }
                 // Read before the source pack, so a to-do changed after the agent could have seen it counts as changed.
                 let todos = ClaudeTodoTools(folder: folder, record: record, history: versions, writer: writer)
-                return (try read(folder, scope.documents, scope.intake, record.text, { signal.stopped }), tools ? folder : nil, todos)
+                // An agent with file tools finds what it needs itself; nothing of the binder is sent ahead of it.
+                let context = tools ? ClaudeBinderContext(data: .obj([]), sources: []) : try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
+                return (context, tools ? folder : nil, todos, tools ? ClaudeConversationPolicy.revision(of: folder) : nil)
             }.value
             guard !signal.stopped else { throw Refused.stopped }
             _ = try currentFolder(scope)
             let history = try receipts.history(conversationID: scope.id).filter { $0.requestID != record.requestID }
-            let policy = try ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history, tools: reach != nil, todos: todos != nil)
+            let policy = try reach != nil ? ClaudeConversationPolicy.session(todos: todos != nil)
+                : ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history, tools: false, todos: todos != nil)
+            let line = reach != nil ? ClaudeConversationPolicy.message(record.text, revision: revision, history: session.resumed ? [] : history.map { ($0.text, $0.reply) }) : record.text
             active[scope.id]?.indexing = false
             let made = try await makeDriver(account.program, credential, scope.id, session.native, policy, reach, todos?.appTools, { [state] pid in
                 guard !signal.stopped else { throw Refused.stopped }
@@ -333,23 +339,29 @@ public actor ClaudeConversationRuntime {
             // change its binary hash without disconnecting the person's enabled account.
             _ = try currentFolder(scope)
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
-            let result = try await made.run(record.text, false)
+            let result = try await made.run(line, session.resumed)
             if reach != nil { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
                                         reply: ClaudeBinderReply.normalize(result, sources: context.sources))
-                succeeded = true
-            } else { _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .interrupted) }
+                keep = true
+            } else {
+                keep = session.resumed
+                _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .interrupted)
+            }
         } catch {
             if error as? ClaudeReadOnlyTurn.Failure == .exitUnconfirmed { mayRelease = false }
+            // A session that has answered before stays usable after a turn that a limit or a Stop cut short. Any other failure,
+            // or one in a session's first turn, starts the next turn fresh from the saved conversation.
+            keep = session.resumed && (signal.stopped || [.usageLimit, .authentication, .deadline].contains(error as? ClaudeReadOnlyTurn.Failure))
             if !signal.stopped { noteFailure(of: record.requestID, error) }
             if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
         }
         if mayRelease && driver?.exited() != false {
-            try? state.exited(session, succeeded: succeeded)
+            try? state.exited(session, keep: keep)
             _ = await admission.confirmedExit(lease)
             active.removeValue(forKey: scope.id)
         } // Otherwise the active entry and slot stay quarantined; no silent retry.
@@ -405,7 +417,10 @@ public actor ClaudeConversationRuntime {
             guard current.driver?.exited() != false, active[id] == nil else { throw Refused.unavailable }
         }
         try state.forget(connection: id)
-        // Directory names are generated by Sprava, never from a binder/model path.
+        try removeHome(id)
+    }
+    /// Directory names are generated by Sprava, never from a binder/model path.
+    private func removeHome(_ id: UUID) throws {
         let home = support.appendingPathComponent("brains/read-homes/" + id.uuidString)
         if FileManager.default.fileExists(atPath: home.path) { try FileManager.default.removeItem(at: home) }
     }
@@ -427,7 +442,7 @@ public actor ClaudeConversationRuntime {
             for record in try receipts.history(conversationID: session.connection) where record.phase == .accepted {
                 _ = try receipts.finish(conversationID: session.connection, requestID: record.requestID, phase: .interrupted)
             }
-            if session.worker != nil { try state.exited(session, succeeded: false) }
+            if session.worker != nil { try state.exited(session, keep: false) }
         }
         recovered = true
     }

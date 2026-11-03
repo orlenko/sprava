@@ -20,6 +20,8 @@ struct ClaudeReadOnlyFrames {
     private var receivedResult = false
     private var interruptAcknowledged = false
     private var limitReached = false
+    /// A binder's agent, which runs a whole session and is walled by its sandbox.
+    private var hasShell: Bool { tools.contains("Bash") }
     var ended: Bool { receivedResult && (interruptID == nil || interruptAcknowledged) }
     var interruptID: UUID?
     static let maximumReplyBytes = 1024 * 1024
@@ -35,7 +37,9 @@ struct ClaudeReadOnlyFrames {
         case "user":
             // Native interruption markers belong to discarded engine context, never app/person history.
             if acknowledged && interruptID != nil { return }
-            // A tool's result: data for the model, never a reply, an acknowledgment or a permission.
+            // A tool's result: data for the model, never a reply, an acknowledgment or a permission. An agent with file tools runs a
+            // whole session, so a compaction's summary and whatever else the CLI streams as a user frame pass the same way.
+            if acknowledged, !receivedResult, hasShell { return }
             if acknowledged, !tools.isEmpty, !receivedResult, value["parent_tool_use_id"] == nil || value["parent_tool_use_id"] == .null,
                let blocks = value["message"]?["content"]?.arrayValue, blocks.allSatisfy({ $0["type"] == .str("tool_result") }) { return }
             guard initialized, !acknowledged, value["session_id"] != nil,
@@ -98,7 +102,8 @@ struct ClaudeReadOnlyFrames {
             // Only a turn that then fails is put down to it: an allowance can be refused and a fallback still answer.
             if value["rate_limit_info"]?["status"] == .str("rejected") { limitReached = true }
         default:
-            throw ClaudeReadOnlyTurn.Failure.protocolMismatch
+            // Only the result frame can make a reply, so a kind of frame a newer CLI adds cannot fail an agent's long turn.
+            guard hasShell else { throw ClaudeReadOnlyTurn.Failure.protocolMismatch }
         }
     }
 
