@@ -11,6 +11,8 @@ struct HealthSummary: Equatable {
     struct Facts: Equatable {
         var starting = false
         var needsApproval = false
+        var startFailed = false
+        var misplaced = false
         var runtime = HealthGrade.green
         var jobs: [HealthGrade] = []
         var backupFailed = false
@@ -32,6 +34,10 @@ struct HealthSummary: Equatable {
     static func of(_ facts: Facts) -> HealthSummary {
         if facts.starting { return HealthSummary(level: .starting, word: "Starting…") }
         if facts.needsApproval { return HealthSummary(level: .needsYou, word: "Needs your approval") }
+        if facts.startFailed {
+            return HealthSummary(level: .trouble, word: "Trouble", sentence: "Sprava's background part could not be started.",
+                                 restartHelps: true)
+        }
         switch facts.runtime {
         case .red, .unknown:
             return HealthSummary(level: .trouble, word: facts.runtime == .red ? "Trouble" : "Not running",
@@ -42,7 +48,8 @@ struct HealthSummary: Equatable {
         }
         if let trouble = worst(facts) { return HealthSummary(level: .trouble, word: "Trouble", sentence: trouble) }
         if facts.runtime == .amber { return HealthSummary(level: .needsYou, word: "May be stuck") }
-        if facts.jobs.contains(.amber) || facts.backupOld || facts.alertsOff || facts.otherFindings {
+        if facts.jobs.contains(.amber) || facts.backupOld || facts.alertsOff || facts.otherFindings
+            || facts.misplaced {
             return HealthSummary(level: .needsYou, word: "Needs a look")
         }
         if facts.runtime == .waking { return HealthSummary(level: .waking, word: "Waking up") }
@@ -61,10 +68,24 @@ struct HealthSummary: Equatable {
 }
 
 extension HealthModel {
-    var summary: HealthSummary {
+    /// One binder's backup, for its dot on the Health page and for the status line, so the two always agree: amber after
+    /// 48 hours, red after 7 days (architecture 3.4). A binder not backed up yet has no age: a backup newly set up is not a
+    /// failure. With backup not set up, a record left from an earlier setup says nothing.
+    func grade(_ line: HealthSnapshot.BackupLine) -> HealthGrade {
+        guard backupConfigured else { return .unknown }
+        if line.error != nil { return .red }
+        guard let at = line.at else { return .unknown }
+        let age = now.timeIntervalSince(at)
+        return age > 7 * 86_400 ? .red : age > 48 * 3600 ? .amber : .green
+    }
+
+    var summaryFacts: HealthSummary.Facts {
         var facts = HealthSummary.Facts()
-        facts.starting = starting
+        // At launch nothing has been read yet: the starting screen covers this, and it is not "Not running".
+        facts.starting = starting || keeper.launching
         facts.needsApproval = runtimeStatus == .requiresApproval || keeper.state == .needsApproval
+        facts.startFailed = startFailure != nil
+        facts.misplaced = locationProblem != nil
         facts.runtime = statusGrade
         if case .success(let beat) = heartbeat {
             let started = ISOTime.date(beat.started_at) ?? now
@@ -73,13 +94,16 @@ extension HealthModel {
             facts.alertsOff = beat.alerts?.authorized != true
         }
         facts.backupSettingsUnreadable = backupSettingsError != nil
-        facts.backupFailed = backups.contains { $0.error != nil }
-        // A binder not backed up yet has no age: a backup newly set up is not a failure.
-        let ages = backups.compactMap { $0.at.map { now.timeIntervalSince($0) } }
-        facts.backupVeryOld = ages.contains { $0 > 7 * 86_400 }
-        facts.backupOld = ages.contains { $0 > 48 * 3600 }
-        facts.otherFindings = findings.contains { $0.level == .fix } || deviceIDError != nil
+        facts.backupFailed = backupConfigured && backups.contains { $0.error != nil }
+        let grades = backups.map(grade)
+        facts.backupVeryOld = !facts.backupFailed && grades.contains(.red)
+        facts.backupOld = grades.contains(.amber)
+        // Only what a binder needs. The app reads the checks without the hub folder or lifeproj's registry, so what
+        // that says about the whole Mac would be there for everyone with an adopted binder (#573).
+        facts.otherFindings = findings.contains { $0.level == .fix && $0.binder != nil } || deviceIDError != nil
             || watcherRepairFailure != nil || staleRuntimeBuild != nil
-        return .of(facts)
+        return facts
     }
+
+    var summary: HealthSummary { .of(summaryFacts) }
 }

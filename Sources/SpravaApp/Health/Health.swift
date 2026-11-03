@@ -205,11 +205,8 @@ struct HealthView: View {
                 else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                 ForEach(HealthLine.rows("backup", model.backups)) { line in
                     let b = line.value
-                    let age = b.at.map { model.now.timeIntervalSince($0) } ?? .infinity
                     HStack {
-                        // Amber after 48 hours without a backup, red after 7 days (architecture 3.4).
-                        Circle().fill(b.error != nil || age > 7 * 86_400 ? Color.red : age > 48 * 3600 ? Color.orange : Color.green)
-                            .frame(width: 8, height: 8)
+                        Circle().fill(model.grade(b).color).frame(width: 8, height: 8)
                         Text(b.name)
                         Spacer()
                         Text(b.error ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
