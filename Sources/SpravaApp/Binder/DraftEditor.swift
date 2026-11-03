@@ -6,7 +6,7 @@ struct DraftEditor: View {
     static let minHeight: CGFloat = 60
     static let maxHeight: CGFloat = 240
     @Binding var text: String
-    var placeholder = "Tell this binder\u{2026}"
+    var placeholder = "Tell Sprava\u{2026}"
 
     var body: some View {
         TextEditor(text: $text)

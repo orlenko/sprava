@@ -18,6 +18,13 @@ final class BinderWorkspaceSelection: ObservableObject {
         choices[folder.standardizedFileURL] = surface
     }
 
+    /// Binders with no conversation yet where the person asked to talk, so the conversation shows beside Project.
+    @Published private var opened: Set<URL> = []
+    func opensConversation(_ folder: URL) -> Bool { opened.contains(folder.standardizedFileURL) }
+    func setOpensConversation(_ open: Bool, for folder: URL) {
+        if open { opened.insert(folder.standardizedFileURL) } else { opened.remove(folder.standardizedFileURL) }
+    }
+
     /// Which binders are showing their settings instead of their working page.
     @Published private var settings: Set<URL> = []
     func showsSettings(_ folder: URL) -> Bool { settings.contains(folder.standardizedFileURL) }
@@ -27,17 +34,18 @@ final class BinderWorkspaceSelection: ObservableObject {
     }
 }
 
-/// Conversation and Project side by side, Project in about a third of the width; one at a time, with a switch between
-/// them, where the two would not both have room.
+/// Conversation and Project side by side in equal widths (decisions.md D37), or one at a time where the two would not both
+/// have room. A binder with no conversation gives Project the whole page until the person asks to talk.
 struct BinderColumns: Equatable {
     let sideBySide: Bool
     let conversation: CGFloat
     let project: CGFloat
     static let narrowestProject: CGFloat = 380
     static let narrowestConversation: CGFloat = 480
-    init(width: CGFloat) {
-        sideBySide = width >= Self.narrowestProject + Self.narrowestConversation
-        project = sideBySide ? max(Self.narrowestProject, (width / 3).rounded()) : width
+    static func hasRoom(_ width: CGFloat) -> Bool { width >= narrowestProject + narrowestConversation }
+    init(width: CGFloat, talking: Bool = true) {
+        sideBySide = talking && Self.hasRoom(width)
+        project = sideBySide ? min(width - Self.narrowestConversation, max(Self.narrowestProject, (width / 2).rounded())) : width
         conversation = sideBySide ? width - project : width
     }
 }
@@ -53,12 +61,23 @@ struct BinderWorkspace<Project: View>: View {
         // No VStack of two frames and no `if`: both surfaces stay mounted at every width, since navigation must not cancel
         // polling, recreate editors or move the reader.
         GeometryReader { geometry in
-            let columns = BinderColumns(width: geometry.size.width)
-            let current = selection.surface(for: row.folder, hasConversation:
-                model.folder == row.folder && (model.connected ||
-                    (model.chat.folder == row.folder && ChatView.showsWhileDisconnected(model.chat))))
+            let hasConversation = model.folder == row.folder && (model.connected ||
+                (model.chat.folder == row.folder && ChatView.showsWhileDisconnected(model.chat)))
+            let room = BinderColumns.hasRoom(geometry.size.width)
+            let talking = hasConversation || selection.opensConversation(row.folder)
+            let columns = BinderColumns(width: geometry.size.width, talking: talking)
+            let current = room && !talking ? BinderWorkspaceSelection.Surface.project : selection.surface(for: row.folder, hasConversation: hasConversation)
             VStack(spacing: 0) {
-                if !columns.sideBySide {
+                if room && !talking {
+                    HStack(spacing: 10) {
+                        Button { selection.setOpensConversation(true, for: row.folder) } label: {
+                            Label("Talk to Sprava", systemImage: "bubble.left.and.bubble.right")
+                        }
+                        Text("Ask about this binder, find a source, or draft an email.").font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 4)
+                } else if !room {
                     Picker("Binder view", selection: Binding(get: { current }, set: { selection.choose($0, for: row.folder) })) {
                         ForEach(BinderWorkspaceSelection.Surface.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
@@ -70,7 +89,7 @@ struct BinderWorkspace<Project: View>: View {
                     surface(project, shown: columns.sideBySide || current == .project)
                         .frame(width: columns.project)
                         .offset(x: columns.sideBySide ? columns.conversation : 0)
-                    surface(conversation, shown: columns.sideBySide || current == .conversation)
+                    surface(conversationSurface(hideable: room && !hasConversation), shown: columns.sideBySide || current == .conversation)
                         .frame(width: columns.conversation)
                     if columns.sideBySide {
                         Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1).offset(x: columns.conversation)
@@ -79,6 +98,12 @@ struct BinderWorkspace<Project: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
+    }
+
+    private func conversationSurface(hideable: Bool) -> ConversationSection {
+        var section = conversation
+        if hideable { section.hide = { selection.setOpensConversation(false, for: row.folder) } }
+        return section
     }
 
     private func surface(_ view: some View, shown: Bool) -> some View {

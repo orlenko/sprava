@@ -168,7 +168,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     func disconnect() async {
         guard !busy, let folder else { return }; busy = true; defer { busy = false }
         do { _ = try await client.command("claude_disable", binder: folder, timeout: 30); if self.folder == folder { await show(folder) } }
-        catch { message = "The connection could not be changed. Check whether Claude stopped before trying again." }
+        catch { message = "The connection could not be changed. Check whether the reply stopped before trying again." }
     }
     func clear() async {
         guard !busy, let folder else { return }; busy = true; defer { busy = false }
@@ -194,7 +194,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                 guard let state = closing["settled"]?.stringValue else { throw ChatCommandFailure.unavailable }
                 settled = state
             } catch {
-                message = "Wait for Claude's reply to finish, then try again. Nothing was cleared."
+                message = "Wait for the reply to finish, then try again. Nothing was cleared."
                 return
             }
             // The chat holds only the page in view. Another binder's page means this one's unsent lines cannot be read, so nothing goes further.
@@ -239,7 +239,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         let events = AsyncStream<ChatReplyEvent> { continuation in
             let polling = Task { @MainActor [weak self] in
                 guard let self else { continuation.finish(); return }
-                continuation.yield(.activity("Claude is reading this binder…"))
+                continuation.yield(.activity("Reading this binder…"))
                 defer { continuation.finish() }
                 while !Task.isCancelled {
                     do {

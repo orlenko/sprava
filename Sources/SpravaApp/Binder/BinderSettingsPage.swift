@@ -33,7 +33,7 @@ struct BinderSettingsPage: View {
     var body: some View {
         List {
             if let conversation {
-                Section("Claude") { ConversationSettings(model: conversation) }
+                Section("Assistant") { ConversationSettings(model: conversation) }
             }
             if writable { EmailIntakeSection(folder: folder, expanded: true) }
             Section("About this binder") {

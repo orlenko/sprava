@@ -24,14 +24,28 @@ import Testing
         #expect(selection.surface(for: folder, hasConversation: false) == .project)
     }
 
-    @Test func theTwoSurfacesShareTheWidthWhenBothHaveRoomAndProjectTakesAboutAThird() {
+    @Test func theTwoSurfacesShareTheWidthEquallyWhenBothHaveRoom() {
         typealias Columns = BinderColumns
         #expect(!Columns(width: 510).sideBySide)
         #expect(Columns(width: 510).conversation == 510 && Columns(width: 510).project == 510)
         let tight = Columns(width: Columns.narrowestProject + Columns.narrowestConversation)
         #expect(tight.sideBySide && tight.project == Columns.narrowestProject && tight.conversation == Columns.narrowestConversation)
         let wide = Columns(width: 1650)
-        #expect(wide.sideBySide && wide.project == 550 && wide.conversation == 1100)
+        #expect(wide.sideBySide && wide.project == 825 && wide.conversation == 825)
+        // Just past the tightest fit, half would squeeze the conversation.
+        let close = Columns(width: 880)
+        #expect(close.conversation == Columns.narrowestConversation && close.project == 400)
+    }
+
+    @Test func aBinderWithNoConversationGivesProjectThePageUntilThePersonAsks() throws {
+        let page = BinderColumns(width: 1650, talking: false)
+        #expect(!page.sideBySide && page.project == 1650)
+        let selection = BinderWorkspaceSelection(), folder = URL(fileURLWithPath: "/invented/kitchen")
+        #expect(!selection.opensConversation(folder))
+        selection.setOpensConversation(true, for: folder)
+        #expect(selection.opensConversation(folder) && !selection.opensConversation(URL(fileURLWithPath: "/invented/other")))
+        selection.setOpensConversation(false, for: folder)
+        #expect(!selection.opensConversation(folder))
     }
 
     @Test func growingRepliesDoNotPullAReaderAwayFromEarlierMessages() {

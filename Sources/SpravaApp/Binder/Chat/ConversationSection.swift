@@ -10,11 +10,14 @@ struct ConversationSection: View {
     let reload: () -> Void
     /// Shows the Brains page, where Claude is set up for Sprava.
     var openBrains: () -> Void = {}
+    /// Gives the page back to Project, in a binder with nothing said yet.
+    var hide: (() -> Void)?
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Talk to this binder").font(.headline)
+                Text("Talk to Sprava").font(.headline)
                 Spacer()
+                if let hide { Button("Hide") { hide() } }
                 ConversationSharingControls(model: model, sharing: model.sharing, folder: row.folder)
             }
             if model.folder == row.folder, model.chat.folder == row.folder {
