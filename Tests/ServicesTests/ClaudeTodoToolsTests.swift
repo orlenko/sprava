@@ -19,7 +19,8 @@ import Testing
             record = try store.accept(conversationID: UUID(), requestID: requestID, text: "Invented request")
             history = TurnHistory(support: s.support, binder: UUID())
             writer = ClaudeTodoWriter(); writer.attach(commands: s.commands, queue: DispatchQueue(label: "invented-writer"))
-            tools = try #require(ClaudeTodoTools(folder: s.folder, record: record, history: history, writer: writer))
+            let made = ClaudeTodoTools(folder: s.folder, record: record, history: history, writer: writer, search: { _, _ in .init(sources: [], incomplete: 0) })
+            tools = try #require(made)
         }
         func call(_ name: String, _ fields: [(String, JSONValue)]) -> ClaudeAppTools.Answer {
             tools.appTools.call(name, .init(fields.map { (key: $0.0, value: $0.1) }))
@@ -32,6 +33,110 @@ import Testing
         let answer = turn.call("add_todo", [("title", .str(title))])
         #expect(!answer.refused, "\(answer.content)")
         return try #require(answer.content["id"]?.stringValue)
+    }
+
+    private func keptDashboard(_ s: PSetup) throws -> DashboardKeeper {
+        let keeper = DashboardKeeper(folder: s.folder)
+        if !keeper.isSwitched { try keeper.switchOn(today: CalendarDate.today()) }
+        return keeper
+    }
+    private func notes(_ s: PSetup) throws -> String? {
+        Dashboard.split(try String(contentsOf: s.folder.appendingPathComponent("DASHBOARD.md"), encoding: .utf8)).1
+    }
+
+    @Test func notesChangeAloneAndATurnsUndoPutsThemBack() throws {
+        let s = try pSetup(); _ = try keptDashboard(s)
+        let turn = try Turn(s)
+        let url = s.folder.appendingPathComponent("DASHBOARD.md")
+        let before = try #require(try notes(s)), above = Dashboard.split(try String(contentsOf: url, encoding: .utf8)).0
+        #expect(!turn.call("update_notes", [("text", .str("Waiting on the invented roofer."))]).refused)
+        #expect(!turn.call("update_notes", [("text", .str("Waiting on the invented roofer.\n\n- Quote due Friday"))]).refused)
+        #expect(try notes(s) == "## Notes\n\nWaiting on the invented roofer.\n\n- Quote due Friday\n")
+        #expect(Dashboard.split(try String(contentsOf: url, encoding: .utf8)).0 == above)
+        #expect(!Dashboard.editedOutsideNotes(try String(contentsOf: url, encoding: .utf8)))
+        #expect(try ClaudeTodoTools.undoNotes(turn: turn.record.turnID, folder: s.folder, history: turn.history, writer: turn.writer))
+        #expect(try notes(s) == before) // Through both of the turn's changes.
+        #expect(try turn.history.notesChange(forTurn: turn.record.turnID)?.undone == true)
+    }
+
+    @Test func undoLeavesNotesThePersonChangedSince() throws {
+        let s = try pSetup(); _ = try keptDashboard(s)
+        let turn = try Turn(s)
+        #expect(!turn.call("update_notes", [("text", .str("From the invented turn"))]).refused)
+        let url = s.folder.appendingPathComponent("DASHBOARD.md")
+        let (above, _) = Dashboard.split(try String(contentsOf: url, encoding: .utf8))
+        try Data((above + "## Notes\n\nThe person's own invented line\n").utf8).write(to: url)
+        #expect(try !ClaudeTodoTools.undoNotes(turn: turn.record.turnID, folder: s.folder, history: turn.history, writer: turn.writer))
+        #expect(try notes(s)?.contains("The person's own invented line") == true)
+    }
+
+    @Test func notesRefuseWhatCouldDoHarmAndChangeNothing() throws {
+        let s = try pSetup()
+        let handKept = try Turn(s)
+        if !DashboardKeeper(folder: s.folder).isSwitched { #expect(handKept.call("update_notes", [("text", .str("Invented"))]).refused) }
+        _ = try keptDashboard(s)
+        let turn = try Turn(s), before = try notes(s)
+        #expect(turn.call("update_notes", [("text", .str(String(repeating: "x", count: ClaudeTodoTools.maximumNotesBytes + 1)))]).refused)
+        #expect(turn.call("update_notes", [("text", .str("bell \u{07}"))]).refused)
+        #expect(turn.call("update_notes", []).refused)
+        #expect(try notes(s) == before)
+        #expect(try turn.history.notesChange(forTurn: turn.record.turnID) == nil)
+    }
+
+    @Test func aRecordThatCannotBeKeptMeansNoNotesChange() throws {
+        let s = try pSetup(); _ = try keptDashboard(s)
+        let turn = try Turn(s), before = try notes(s)
+        // A file where the history's folder would go.
+        let keeper = DashboardKeeper(folder: s.folder)
+        struct Blocked: Error {}
+        #expect(throws: Blocked.self) { try keeper.replaceNotes(with: "Invented") { _, _ in throw Blocked() } }
+        #expect(try notes(s) == before)
+        _ = turn
+    }
+
+    @Test func searchReturnsPassagesWithinABound() throws {
+        let s = try pSetup()
+        let store = try ConversationTurnStore(at: s.support.appendingPathComponent("turns-\(UUID()).sqlite"))
+        let record = try store.accept(conversationID: UUID(), requestID: try #require(UUID(uuidString: UUIDv7.make())), text: "Invented request")
+        let writer = ClaudeTodoWriter(); writer.attach(commands: s.commands, queue: DispatchQueue(label: "invented-writer"))
+        let long = String(repeating: "invented passage ", count: 400)
+        let sources = (1...30).map { (i: Int) in ClaudeBinderContext.Source(id: "S\(i)", path: "documents/n\(i).pdf", page: i, revision: "r", text: long) }
+        let made = ClaudeTodoTools(folder: s.folder, record: record, history: TurnHistory(support: s.support, binder: UUID()), writer: writer,
+                                   search: { _, _ in .init(sources: sources, incomplete: 2) })
+        let tools = try #require(made)
+        let answer = tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))]))
+        #expect(!answer.refused)
+        let results = try #require(answer.content["results"]?.arrayValue)
+        #expect(!results.isEmpty)
+        #expect(results.first?["path"]?.stringValue == "documents/n1.pdf", "\(String(describing: results.first?["path"]))")
+        #expect(results.first?["page"]?.numberValue?.safeInteger == 1)
+        #expect(answer.content["sources_not_fully_read"] == .int(2))
+        #expect(JSONWriter.compact(answer.content).utf8.count <= ClaudeTodoTools.maximumSearchBytes + 256)
+        #expect(tools.appTools.call("search_binder", .init([])).refused)
+        for _ in 0..<ClaudeTodoTools.maximumSearches { _ = tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])) }
+        #expect(tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])).refused)
+    }
+
+    /// A connection that shares no documents has the to-do tools and nothing that reaches the rest of the binder.
+    @Test func withoutFileConsentThereIsNoSearchAndNoNotes() throws {
+        let s = try pSetup(); _ = try keptDashboard(s)
+        let store = try ConversationTurnStore(at: s.support.appendingPathComponent("turns-\(UUID()).sqlite"))
+        let record = try store.accept(conversationID: UUID(), requestID: try #require(UUID(uuidString: UUIDv7.make())), text: "Invented request")
+        let writer = ClaudeTodoWriter(); writer.attach(commands: s.commands, queue: DispatchQueue(label: "invented-writer"))
+        let made = ClaudeTodoTools(folder: s.folder, record: record, history: TurnHistory(support: s.support, binder: UUID()), writer: writer)
+        let tools = try #require(made), before = try notes(s)
+        #expect(Set(tools.appTools.tools.map(\.name)) == ["list_todos", "add_todo", "edit_todo", "complete_todo", "remove_todo"])
+        #expect(tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])).refused)
+        #expect(tools.appTools.call("update_notes", .init([(key: "text", value: .str("Invented"))])).refused)
+        #expect(try notes(s) == before)
+    }
+
+    @Test func listingCountsAsHavingSeenTheToDos() throws {
+        let turn = try Turn(pSetup())
+        let id = try added(turn, "Call the invented plumber")
+        let listed = turn.call("list_todos", [])
+        #expect(!listed.refused && listed.content["todos"]?.arrayValue?.contains { $0["title"] == .str("Call the invented plumber") } == true)
+        #expect(!turn.call("complete_todo", [("id", .str(id))]).refused)
     }
 
     @Test func aTurnAddsEditsCompletesAndRemovesAtOnce() throws {

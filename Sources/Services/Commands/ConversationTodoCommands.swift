@@ -39,6 +39,18 @@ extension Commands {
     }
 
     /// What `run` checks of a command that writes: no interrupted expunge, and this Mac owns an adopted binder.
+    /// Replaces the Notes section of the binder's dashboard for a conversation turn; `noting` records the way back first.
+    func replaceTurnNotes(_ body: String, folder f: URL, now: Date = Date(), noting: (String, String) throws -> Void) throws {
+        try refuseUnwritable(f)
+        try DashboardKeeper(folder: f, impl: client).replaceNotes(with: body, now: now, noting: noting)
+    }
+
+    /// Puts a turn's earlier Notes back. False when the person changed them since, and they stay.
+    func restoreTurnNotes(_ before: String, ifStill after: String, folder f: URL, now: Date = Date()) throws -> Bool {
+        try refuseUnwritable(f)
+        return try DashboardKeeper(folder: f, impl: client).restoreNotes(before, ifStill: after, now: now)
+    }
+
     private func refuseUnwritable(_ f: URL) throws {
         if Teka.expungePending(in: f) { throw Failure(message: "an expunge in this binder was interrupted") }
         if FileManager.default.fileExists(atPath: f.appendingPathComponent(".sprava/ops.ndjson").path), ownerDevice(f) != deviceID {

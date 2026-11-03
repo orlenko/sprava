@@ -83,6 +83,38 @@ public struct DashboardKeeper: Sendable {
                                 hasManual: hasManual, notes: notes, impl: impl)
     }
 
+    /// The Notes section a body makes. Everything above it stays as rendered, so its stamp still holds.
+    static func notesSection(_ body: String) -> String {
+        let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "\(Dashboard.notesLine)\n\n" : "\(Dashboard.notesLine)\n\n\(text)\n"
+    }
+
+    /// Replaces the Notes section and nothing else, for a binder whose dashboard Sprava keeps. `noting` runs before the write with
+    /// the section as it was and as it will be, and a throw from it changes nothing. It can run again if the file changed meanwhile.
+    public func replaceNotes(with body: String, now: Date = Date(), noting: (_ before: String, _ after: String) throws -> Void) throws {
+        guard try load()?.switched == true else { throw TekaStore.Refused(reason: "DASHBOARD.md is kept by hand in this binder") }
+        try Self.checkWritable(Teka.read(folder))
+        try rewrite(now: now) { found -> (text: String?, result: Void) in
+            guard let found, case let (above, before?) = Dashboard.split(found) else {
+                throw TekaStore.Refused(reason: "DASHBOARD.md has no Notes section")
+            }
+            let after = Self.notesSection(body)
+            try noting(before, after)
+            return (above + after, ())
+        }
+    }
+
+    /// Puts an earlier Notes section back while the section is still `after`. False, changing nothing, when it is not.
+    public func restoreNotes(_ before: String, ifStill after: String, now: Date = Date()) throws -> Bool {
+        try Self.checkWritable(Teka.read(folder))
+        return try rewrite(now: now) { found -> (text: String?, result: Bool) in
+            guard let found, case let (above, current?) = Dashboard.split(found) else { return (nil, false) }
+            if current == before { return (nil, true) }
+            guard current == after else { return (nil, false) }
+            return (above + before, true)
+        }
+    }
+
     func keepCopy(_ text: String, now: Date) throws {
         let dir = folder.appendingPathComponent(".sprava/adopted", isDirectory: true)
         try AtomicFile.makePrivateFolder(dir)

@@ -1100,6 +1100,7 @@ document; update the brief; write a draft; search the binder's index; read a doc
 with page images. These are the actions Sprava can measure, undo by op, and hand down (18.6). Anything else it
 does with files and tools is recorded only as the turn's file changes.
 
+A session also has `list_todos`, `search_binder` over the binder's index and `update_notes` for the Notes section of `DASHBOARD.md` (decisions.md D33).
 As built (`ClaudeTodoTools`, `ClaudeAppTools`, decisions.md D32): add, edit, complete and remove a to-do, in every connected
 binder's conversation, with or without file changes allowed. They apply at once, one op per call, each naming its turn and
 the person's message (binder-v0 §6.5), and the turn's line says what changed, with titles, beside its Undo. Undo reverses

@@ -446,6 +446,8 @@ Each line names what replaced the entry; its old text is in git history.
   and redirects are refused. Allowing the whole shell also worked on an invented binder, and it would let a steered command run the CLI binary with a preload and read
   what other programs show in their environment, which the author was told and accepted for this design. The review guidelines count that as outside a brain's scope, so it
   stays off unless the author changes those guidelines. It would then be one line in `allowedTools`.
+  The session keeps where things stand under Notes in `DASHBOARD.md` through a tool, `update_notes`, which replaces that section and nothing else
+  and which the turn's Undo reverses unless the person changed the Notes since. `search_binder` searches the binder's index, so it sees inside PDFs where Grep cannot.
   This amends F14: `AGENTS.md` and `CLAUDE.md` are now the person's to write, closed to Claude's writes, and the session is told to
   read `AGENTS.md` as how the person works in this binder. Project settings stay off (`--setting-sources ""`), so a binder's
   `.claude` folder adds no hooks.
