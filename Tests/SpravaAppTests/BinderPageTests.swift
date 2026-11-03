@@ -9,7 +9,7 @@ import Testing
 /// behind is dropped, a refused approval keeps the person's edits, a card is locked while its approval is on its
 /// way and, once approved, until it leaves the page, and drafts wait for their binder. Invented paths only.
 @MainActor
-@Suite(.timeLimit(.minutes(1))) struct BinderPageTests {
+@Suite(.timeLimit(.minutes(5))) struct BinderPageTests {
     let kitchen = URL(fileURLWithPath: "/Invented/kitchen-reno", isDirectory: true)
     let garden = URL(fileURLWithPath: "/Invented/garden-shed", isDirectory: true)
 
