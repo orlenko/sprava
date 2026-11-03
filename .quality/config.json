@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "repository": "orlenko/sprava",
+  "execution": {
+    "trusted_local": false,
+    "isolation": "unavailable",
+    "checks": [
+      {
+        "id": "full-swift",
+        "argv": ["./scripts/test.sh"],
+        "timeout_seconds": 600,
+        "max_log_bytes": 262144,
+        "effects": [
+          "Builds Swift package products and runs test executables and helper processes.",
+          "Creates temporary invented binder, support, registry and backup-key-file fixtures, build products and an uncapped native test log.",
+          "Requires the native Swift toolchain and fixture tools; the runner does not contain network or platform credential-store access."
+        ]
+      }
+    ]
+  },
+  "reviewer": {
+    "protocol": "recorded-v1",
+    "require_distinct_identities": true,
+    "routes": [
+      {
+        "id": "local-astra",
+        "reviewer_id": "codex-local-gpt-6-astra",
+        "boundary": {
+          "read_only": true,
+          "enforced": true,
+          "paths": "tracked-source",
+          "tools": ["source-read", "diff-read"],
+          "network": true,
+          "disclosure": "public-source"
+        }
+      },
+      {
+        "id": "cloud-codex",
+        "reviewer_id": "github-chatgpt-codex-connector",
+        "boundary": {
+          "read_only": true,
+          "enforced": true,
+          "paths": "tracked-source",
+          "tools": ["source-read", "diff-read"],
+          "network": true,
+          "disclosure": "public-source"
+        }
+      }
+    ]
+  },
+  "references": {
+    "instructions": "AGENTS.md",
+    "architecture": "docs/code-structure.md",
+    "threat_model": "docs/architecture.md",
+    "integration": "AGENTS.md"
+  }
+}
