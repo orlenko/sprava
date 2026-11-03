@@ -462,6 +462,9 @@ Each line names what replaced the entry; its old text is in git history.
   New conversation is in the conversation's "…" menu, with a quiet line, never blocking, once a session reaches about 100,000 tokens or 70% of its window, whichever comes first; Opus reports a window of a million, so the
   first figure is what fires. The order: Claude brings the Notes up to date in a last ordinary turn of up to two minutes, skipped if it cannot; the transcript is filed as a private document under `conversations/`;
   only then the session ends and the screen clears, with a link to the transcript. If filing fails nothing is cleared. The older Clear stays, for a conversation the person does not want kept.
+- **D36 decided (2026-11-03, the author; amends D33).** "I accept the whole shell, yes." A binder with file changes allowed gives Claude the whole shell instead of a named list of commands, so
+  redirects, loops, `awk` and `rg` work. The cost, put to the author in those words: a steered command can start other programs, run scripts, and read what other programs show in their environment, which no sandbox rule stops
+  (kern.procargs2). The sandbox still holds reads and writes to the binder and the session's home, the network to the proxy, and programs to those the system or Homebrew installed. The review guidelines record this, so a report of the accepted part is not a finding, and a way past those walls still is.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
