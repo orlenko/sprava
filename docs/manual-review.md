@@ -6,7 +6,9 @@ Sprava adopts the compatible manual procedure of shared workflow v0.2, pinned to
 - [Workflow and record format](https://github.com/orlenko/software-quality/blob/36b0b858b293e14af726e0adf58af476334ccd5d/docs/review-workflow.md).
 - [Central role instructions](https://github.com/orlenko/software-quality/blob/36b0b858b293e14af726e0adf58af476334ccd5d/docs/review-roles.md).
 
-Full supplement adoption is **blocked** on the policy conflict below. This is a
+The author chose **partial adoption** on 2026-11-03: retain Sprava's existing
+third-round deferral rule and the compatible procedure here. The full supplement
+is not adopted; the policy decision below is no longer pending. This is a
 manual source-process supplement, not a runtime-policy version, automatic review
 command or claim of review effectiveness. [AGENTS.md](../AGENTS.md) remains the
 accepted local rubric, threat exclusions and native integration gate. The existing
@@ -87,7 +89,7 @@ The author owns the policy decision below; an implementer or adjudicator cannot
 resolve it by rewriting a finding. Source integration, release, installation and
 observed product acceptance remain separate.
 
-## Unresolved policy conflict
+## Policy decision: retain the local rule
 
 **MR-POLICY-001:** [AGENTS.md](../AGENTS.md), “How a change is made,” item 4,
 first bullet, permits an issue/named-PR deferral from the third local review round
@@ -98,19 +100,25 @@ fix or removal/disablement and affected re-review; deferral or a round budget
 cannot waive it. The two rules conflict when the deferred finding is a valid
 blocker under the accepted rubric. Filing an issue does not reconcile them.
 
-This supplement does **not** replace item 4, change the review guidelines or
-threat exclusions, or invent the author's pending decision. Continue the native
-rules and compatible procedure, retain the conflict as an explicit block on full
-shared-supplement acceptance, and never claim a shared pass by applying the native
+**Decision, 2026-11-03:** the repository author chose to keep the existing local
+rule and compatible partial adoption rather than adopt the shared rule. This
+resolves the pending choice; the incompatibility remains and the full shared
+supplement is not adopted. This supplement does **not** replace item 4 or
+change the review guidelines or threat exclusions. Continue the native rules
+and compatible procedure, and never claim a shared pass by applying the native
 deferral. Native cloud-round limits also remain unchanged; record a specific
 re-review/completeness incompatibility if one actually arises.
 
-Proposed bounded reconciliation, **not adopted**: preserve Sprava's substantive
+Provenance: the product integrator reported this choice from the author's direct
+session on that date. This record preserves that reported decision without
+claiming a separate confirmation in another session.
+
+Alternative considered, **not adopted**: preserve Sprava's substantive
 review rubric and accepted threat exclusions; require valid blockers to be fixed
 or their behavior removed/disabled, with affected re-review, while review budgets
-bound effort and escalation rather than convert a blocker to a pass. This needs
-the repository author's recorded policy decision, not another implementer's
-assumption. Keep the existing pending decision open without backfilling approval.
+bound effort and escalation rather than convert a blocker to a pass. The author
+chose retention instead. No future revisit, policy replacement or wider shared
+acceptance is implied by this record.
 
 ## This adoption's scope and evidence
 
@@ -130,4 +138,5 @@ actual run, conditional skip or cache result. A documentation-only check is not
 a new full-suite pass. Source/document reviews verify this bounded record, not a
 real feature walkthrough, runtime qualification, automated dispatch/adjudication,
 authentic review enforcement or improved live defect detection. Missing evidence
-and MR-POLICY-001 stay explicit; no policy or permission waiver is implied.
+and MR-POLICY-001's retained incompatibility stay explicit; the recorded choice
+adds no policy or permission waiver.
