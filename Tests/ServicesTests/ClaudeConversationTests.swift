@@ -26,6 +26,7 @@ import Testing
         /// What a turn fails with after it acts, if anything.
         var failure: (any Error)?
         var failNext: [any Error] = []
+        var contextUsed: (used: Int, window: Int?)?
         var credentials: [String] = []
         var named: [String: String] = [:]
         /// The folder each launch was given tools in; nil for a tool-free one.
@@ -47,7 +48,7 @@ import Testing
                 if let failure = lock.withLock({ failure }) { throw failure }
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
-            }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash)
+            }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash, context: { [self] in lock.withLock { contextUsed } })
         }
     }
     struct Fixture {
@@ -402,6 +403,62 @@ import Testing
         await #expect(throws: (any Error).self) { // The last one goes with Disconnect.
             _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_token_remove")), (key: "name", value: .str("second"))]))
         }
+    }
+
+    // MARK: - Turning the page
+
+    private func exchange(_ f: Fixture, _ text: String) async throws -> JSONObject {
+        let id = UUID(); _ = try await f.send(id, text); return try await f.completed(id)
+    }
+
+    @Test func aSessionPastAboutAHundredThousandTokensOrSeventyPercentIsLong() async throws {
+        let f = try Fixture(); try await f.connect()
+        f.engine.lock.withLock { f.engine.contextUsed = (40_000, 1_000_000) }
+        #expect(try await exchange(f, "One.")["conversation_long"] == nil)
+        f.engine.lock.withLock { f.engine.contextUsed = (100_000, 1_000_000) }
+        #expect(try await exchange(f, "Two.")["conversation_long"] == .bool(true))
+        f.engine.lock.withLock { f.engine.contextUsed = (70_000, 100_000) }
+        #expect(try await exchange(f, "Three.")["conversation_long"] == .bool(true))
+        f.engine.lock.withLock { f.engine.contextUsed = (10_000, nil) }
+        #expect(try await exchange(f, "Four.")["conversation_long"] == nil)
+    }
+
+    @Test func closingAsksForTheNotesOnlyOfASessionWithSomethingToKeep() async throws {
+        let f = try Fixture(); try await f.connect()
+        let before = f.engine.lock.withLock { f.engine.lines.count }
+        _ = try await f.request("chat_closing_notes", [("request_id", .str(UUID().uuidString))])
+        #expect(f.engine.lock.withLock { f.engine.lines.count } == before) // Nothing said yet, so nothing to record.
+        _ = try await exchange(f, "One.")
+        _ = try await f.request("chat_closing_notes", [("request_id", .str(UUID().uuidString))])
+        #expect(f.engine.lock.withLock { f.engine.lines.last?.hasSuffix(ClaudeConversationRuntime.closingLine) } == true)
+    }
+
+    @Test func aTranscriptReadBeforeAnotherTurnIsNotFiledAndNothingIsCleared() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await exchange(f, "One.")
+        let closing = try await f.request("chat_closing_notes", [("request_id", .str(UUID().uuidString))])
+        let settled = try #require(closing["settled"]?.stringValue)
+        _ = try await exchange(f, "Sent after the transcript was read.")
+        await #expect(throws: (any Error).self) { _ = try await f.request("chat_file_and_clear", [("text", .str("# Invented transcript")), ("settled", .str(settled))]) }
+        #expect(try await f.request("chat_history")["turns"]?.arrayValue?.count == 3)
+    }
+
+    @Test func closingWaitsForNoRunningTurn() async throws {
+        let f = try Fixture(); try await f.connect()
+        f.engine.lock.withLock { f.engine.hold = true }
+        let id = UUID(); _ = try await f.send(id, "Still answering.")
+        await #expect(throws: (any Error).self) { _ = try await f.request("chat_closing_notes", [("request_id", .str(UUID().uuidString))]) }
+        f.engine.lock.withLock { f.engine.hold = false }
+        _ = try await f.completed(id)
+    }
+
+    @Test func aRefusedClosingStillLetsTheConversationEnd() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await exchange(f, "One.")
+        f.engine.lock.withLock { f.engine.failure = ClaudeReadOnlyTurn.Failure.usageLimit }
+        _ = try await f.request("chat_closing_notes", [("request_id", .str(UUID().uuidString))])
+        f.engine.lock.withLock { f.engine.failure = nil }
+        #expect(try await f.request("chat_history")["turns"]?.arrayValue?.count == 2)
     }
 
     @Test func disconnectingForgetsEveryAccountAndTheCommand() async throws {

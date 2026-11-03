@@ -223,4 +223,12 @@ import Testing
         model.showAccounts(status("invented-newer"))
         #expect(model.chooser == "invented-newer")
     }
+
+    /// Only the page in view has its unsent lines in the chat, so a transcript of any other binder would leave them out, and clearing would lose them.
+    @MainActor @Test func aConversationIsFiledOnlyWhileItsPageIsInView() {
+        let a = URL(fileURLWithPath: "/invented/a"), b = URL(fileURLWithPath: "/invented/b")
+        #expect(ClaudeBinderConversation.canFile(a, selected: a, inChat: a))
+        #expect(!ClaudeBinderConversation.canFile(a, selected: b, inChat: b))
+        #expect(!ClaudeBinderConversation.canFile(a, selected: a, inChat: b))
+    }
 }

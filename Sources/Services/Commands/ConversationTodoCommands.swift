@@ -39,6 +39,31 @@ extension Commands {
     }
 
     /// What `run` checks of a command that writes: no interrupted expunge, and this Mac owns an adopted binder.
+    /// Files a finished conversation's transcript as a private document of the binder and returns its path. The person asked for this
+    /// from the app, so it is theirs. A filing that fails may already be recorded, so its file stays: an extra file harms nothing and a
+    /// retry takes a new name, where deleting could leave a record with no document.
+    func fileConversation(_ text: String, folder f: URL, now: Date = Date()) throws -> String {
+        try refuseUnwritable(f)
+        let day = String(ISOTime.string(now).prefix(10))
+        var stamp = ISOTime.string(now).prefix(16).replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "T", with: "-"), path = "conversations/\(stamp).md", n = 1
+        while !DocumentPaths.isFreeDestination(path, in: f) {
+            n += 1
+            guard n <= 100 else { throw Failure(message: "a transcript could not be given a free name") }
+            stamp = "\(ISOTime.string(now).prefix(16).replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "T", with: "-"))-\(n)"; path = "conversations/\(stamp).md"
+        }
+        let url = f.appendingPathComponent(path), data = Data(text.utf8)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard !FileManager.default.fileExists(atPath: url.path) else { throw Failure(message: "a transcript could not be given a free name") }
+        try AtomicFile.write(data, to: url)
+        guard let sha = DocumentPaths.sha256(of: url) else { throw Failure(message: "the transcript could not be read back") }
+        let document = JSONValue.obj([("id", .str("$new:1")), ("title", .str("Conversation of \(day)")), ("path", .str(path)), ("sha256", .str(sha)), ("sensitivity", .str("private"))])
+        let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
+        let store = TekaStore(folder: f, client: client)
+        _ = try store.applyMinting([.init(op: "file_document", args: .init([(key: "document", value: document)]), actor: actor)], now: now)
+        try recordDigests(store.createdProposals, in: f)
+        return path
+    }
+
     /// Replaces the Notes section of the binder's dashboard for a conversation turn; `noting` records the way back first.
     func replaceTurnNotes(_ body: String, folder f: URL, now: Date = Date(), noting: (String, String) throws -> Void) throws {
         try refuseUnwritable(f)

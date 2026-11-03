@@ -90,6 +90,9 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
     package func stop() { lock.withLock { if active != nil { stopped = true } } }
     /// A process reservation is released only after the owner confirms exit, including on failure.
     package var processExitConfirmed: Bool { lock.withLock { active == nil && !quarantined } }
+    /// How full the session was at this turn's last model request, when the CLI said.
+    package var lastContext: (used: Int, window: Int?)? { lock.withLock { context } }
+    private var context: (used: Int, window: Int?)?
     private func requestStop(_ id: UUID) { lock.withLock { if active == id { stopped = true } } }
     private func isStopped(_ id: UUID) -> Bool { lock.withLock { active == id && stopped } }
 
@@ -176,6 +179,7 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
         }
         do { try decoder.finish() } catch { throw Failure.protocolMismatch }
         if isStopped(id) { _ = supervisor.stop(at: started.duration(to: clock.now)) }
+        if let used = frames.contextTokens { lock.withLock { context = (used, frames.contextWindow) } }
         supervisor.turnFinished(at: started.duration(to: clock.now), succeeded: frames.reply != nil)
         guard child.finish() else { lock.withLock { quarantined = true }; throw Failure.exitUnconfirmed }
         if isStopped(id) { return .interrupted }

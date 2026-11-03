@@ -572,7 +572,7 @@ private subscription connection in Brains, then explicitly shares each physical 
 and optionally its documents and intake. A copy or replacement gets no inherited consent or native context.
 The account check verifies the pinned signed CLI, the effective first-party subscription/private config,
 and two harmless acknowledged turns in fresh native sessions, each receiving the current app context. Failure never enables the new account; no binder data is sent by that check.
-The person may keep several named accounts and a command that chooses among them (decisions.md D34). A binder with file changes allowed continues one native session and reads what it needs itself (decisions.md D33). Without that consent,
+The person may keep several named accounts and a command that chooses among them (decisions.md D34). New conversation files the transcript in the binder as a private document before ending the session (decisions.md D35). A binder with file changes allowed continues one native session and reads what it needs itself (decisions.md D33). Without that consent,
 each native turn starts fresh with the current scoped source pack and bounded authenticated app history.
 The saved app conversation persists; native session memory is never its authority. Failed/interrupted context
 is rebuilt from that same app history, never an imported/Terminal transcript. Stop during indexing prevents the model

@@ -388,6 +388,22 @@ import Testing
     }
 }
 
+/// A finished conversation filed in a real adopted binder. Invented text only.
+@Suite struct ConversationFilingTests {
+    @Test func aTranscriptBecomesAPrivateDocumentOfTheBinder() throws {
+        let s = try pSetup()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let path = try s.commands.fileConversation("# Invented transcript\n", folder: s.folder, now: now)
+        #expect(path.hasPrefix("conversations/") && path.hasSuffix(".md"))
+        #expect(try String(contentsOf: s.folder.appendingPathComponent(path), encoding: .utf8) == "# Invented transcript\n")
+        let record = try #require(Teka.read(s.folder).catalog?["documents"]?.arrayValue?.first { $0["path"] == .str(path) })
+        #expect(record["sensitivity"] == .str("private") && record["title"]?.stringValue?.hasPrefix("Conversation of ") == true)
+        let second = try s.commands.fileConversation("# Another invented transcript\n", folder: s.folder, now: now)
+        #expect(second != path) // The same minute never overwrites.
+        #expect(try String(contentsOf: s.folder.appendingPathComponent(path), encoding: .utf8) == "# Invented transcript\n")
+    }
+}
+
 /// The person's own command, on a real shell. Invented text only.
 @Suite struct ClaudeAccountChooserTests {
     @Test func whatItPrintsAndHowItEndsAreRead() {
