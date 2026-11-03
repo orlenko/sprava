@@ -16,25 +16,18 @@ package enum ClaudeReadLaunch {
         package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
     }
     static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
-    /// What the agent's shell may do: move and remove files, and read and edit text. Two walls hold this.
-    /// The CLI refuses any other command, and any compound, substitution or prefix that reaches one (`shellVerbs`, checked
-    /// against the real CLI 2.1.317). The operating system runs nothing else (`commandPrograms`), but must leave the CLI itself
-    /// runnable, and it is a JavaScript runtime that takes a preload from its environment, so the first wall is what stops
-    /// that. A program able to make arbitrary system calls can read the environment of the person's other programs, and no
-    /// sandbox rule stops that read (kern.procargs2, seen 2026-11-02), so nothing on this list may start another program:
-    /// not awk, xargs, env, sort (--compress-program) or rg (--pre), and find runs only because the CLI itself allows it
-    /// without -exec. The agent's Grep and Glob tools are its rg and its find.
-    static let shellVerbs = ["rm", "rmdir", "mv", "cp", "mkdir", "ls", "cat", "date", "echo", "pwd", "test"]
-        + ["grep", "sed", "head", "tail", "wc", "cut", "tr", "uniq", "diff", "comm", "paste", "file", "stat", "basename", "dirname", "touch", "tee", "jq", "true", "false"]
-        + ["pdftotext", "pdfinfo"]
-    static let allowedTools = ["Read", "Write", "Edit", "Glob", "Grep"] + shellVerbs.map { "Bash(\($0):*)" }
-    private static let binPrograms = ["sh", "bash", "zsh", "rm", "rmdir", "mv", "cp", "mkdir", "ls", "cat", "date", "echo", "pwd", "test"].map { "/bin/" + $0 }
-    private static let usrBinPrograms = ["grep", "sed", "head", "tail", "wc", "cut", "tr", "uniq", "diff", "comm", "paste", "file", "stat", "basename", "dirname",
-                                         "touch", "tee", "jq", "true", "false", "find"].map { "/usr/bin/" + $0 }
-    private static let installedPrograms = ["pdftotext", "pdfinfo"].flatMap { ["/opt/homebrew/bin/" + $0, "/usr/local/bin/" + $0] }
-    static let commandPrograms: [String] = binPrograms + usrBinPrograms + installedPrograms + ["/usr/libexec/path_helper"]
-    /// Homebrew's programs are links, and the sandbox compares the path they lead to.
-    static let installedFolders = ["/opt/homebrew/Cellar/poppler", "/usr/local/Cellar/poppler"]
+    /// The agent's shell is a whole one (decisions.md D36): what holds it is the sandbox, not a list of commands. Its programs are those
+    /// the system or Homebrew installed (`programFolders`), and nothing written to the binder or the session's home can run or load. It can
+    /// start other programs, and through a program able to make arbitrary system calls read what the person's other programs show in their
+    /// environment, which no sandbox rule stops (kern.procargs2, seen 2026-11-02). The author accepted that.
+    static let allowedTools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    /// Where a program may run from. Homebrew's links lead into its Cellar, and the sandbox compares the path they lead to.
+    static let programFolders = ["/bin", "/usr/bin", "/usr/sbin", "/sbin", "/usr/libexec", "/Library/Developer/CommandLineTools",
+                                 "/opt/homebrew/bin", "/opt/homebrew/sbin", "/opt/homebrew/Cellar", "/opt/homebrew/opt", "/usr/local/bin", "/usr/local/Cellar", "/usr/local/opt"]
+    /// The only system services the shell can talk to. A system service works outside the sandbox on the caller's behalf, so with a whole
+    /// shell each one is a way out: Launch Services and Apple events reach the person's apps, preferences and Spotlight read and write beyond the binder.
+    /// The system log is closed too: what a command writes there would be binder text outside the binder.
+    static let systemServices = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.notification_center"]
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
@@ -106,6 +99,8 @@ package enum ClaudeReadLaunch {
         let servers = appTools == nil ? "{\"mcpServers\":{}}" : JSONWriter.compact(.obj([("mcpServers", .obj([(ClaudeAppTools.server, .obj([("type", .str("sdk")), ("name", .str(ClaudeAppTools.server))]))]))]))
         if let reach {
             environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            // `git` and `python3` in /usr/bin ask which developer folder to use, and the person's choice may be one the sandbox does not reach.
+            environment["DEVELOPER_DIR"] = "/Library/Developer/CommandLineTools"
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
             environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
             // The person's token stays with the agent process. A process's environment can be read by another of the same user
@@ -129,8 +124,8 @@ package enum ClaudeReadLaunch {
 
     /// The walls of a binder's agent (conversation.md 18.3). It reads and writes its binder and its own home, and nothing
     /// else of the person's: reads are closed except for those and the folders of system files, programs and libraries. `.sprava`, the catalog and the
-    /// dashboard have one writer, Sprava, and the instruction files one, the person: the agent may only read them. It runs only `commandPrograms`, none of
-    /// which reach the person's other apps, clipboard or Keychain, and no library from a writable folder can load into them. Its only way out is the proxy's port: name lookups,
+    /// dashboard have one writer, Sprava, and the instruction files one, the person: the agent may only read them. It runs only what is in `programFolders`, which the rules
+    /// below keep from the person's other apps, clipboard and Keychain, and no program or library from a writable folder can run or load. Its only way out is the proxy's port: name lookups,
     /// direct connections and listening on a port fail whatever a command tries, so nothing read can leave except to the model. A key file can be
     /// deleted without being read. Renaming one first would get past that name rule: it stops an accidental read, it is not
     /// a wall.
@@ -140,7 +135,6 @@ package enum ClaudeReadLaunch {
         var escaped = ""
         for character in binder { if "\\^$.|?*+()[]{}".contains(character) { escaped.append("\\") }; escaped.append(character) }
         let keyFiles = "^" + escaped + "/(.*/)?(\\.env(\\..*)?|\\.netrc|id_rsa[^/]*|id_ecdsa[^/]*|id_ed25519[^/]*|age-identity[^/]*|[^/]*credentials[^/]*|[^/]*\\.keychain[^/]*|token[^/]*\\.json|[^/]*\\.(pem|key|p12|pfx|age))$"
-        let programs = commandPrograms + [program.path]
         return """
         (version 1)
         (allow default)
@@ -155,12 +149,13 @@ package enum ClaudeReadLaunch {
         (deny file-write* (subpath \(q(binder + "/.sprava"))) (literal \(q(binder + "/catalog.json"))) (literal \(q(binder + "/DASHBOARD.md"))) (literal \(q(binder + "/AGENTS.md"))) (literal \(q(binder + "/CLAUDE.md"))))
         (deny file-write-mode (literal \(q(binder))))
         (deny file-write-flags (literal \(q(binder))))
-        (deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.pasteboard.1"))
+        (deny mach-lookup)
+        (allow mach-lookup \(systemServices.map { "(global-name \(q($0)))" }.joined(separator: " ")))
         (deny appleevent-send)
         (deny job-creation)
         (deny file-map-executable (subpath \(q(binder))) (subpath \(q(home.path))))
         (deny process-exec*)
-        (allow process-exec \(programs.map { "(literal \(q($0)))" }.joined(separator: " ")) \(installedFolders.map { "(subpath \(q($0)))" }.joined(separator: " ")))
+        (allow process-exec (literal \(q(program.path))) \(programFolders.map { "(subpath \(q($0)))" }.joined(separator: " ")))
         (deny signal)
         (allow signal (target same-sandbox))
         (deny network-outbound)

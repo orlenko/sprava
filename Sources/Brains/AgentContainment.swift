@@ -10,7 +10,10 @@ package enum AgentContainment {
     static func marker(session: UUID) -> String { "ca.orlenko.sprava.agent.\(session.uuidString.lowercased())" }
 
     /// The sandbox rule that marks a session's processes.
-    static func rule(session: UUID) -> String { "(deny mach-lookup (global-name \"\(marker(session: session)).deny\"))" }
+    static func rule(session: UUID) -> String {
+        let marker = marker(session: session)
+        return "(allow mach-lookup (global-name \"\(marker).allow\"))\n(deny mach-lookup (global-name \"\(marker).deny\"))"
+    }
 
     /// The processes in this session's sandbox. Another sandbox denies names it never heard of too, so the marker's sibling,
     /// which only a deny-by-default sandbox would refuse, must be allowed.
