@@ -28,11 +28,11 @@ replacement that would hide the old items.
 - **Health:** the background part answers. No "Starting Sprava's background part…" or Login Items line remains.
 - **Saving:** a note or a drop is acknowledged ("Added…"). A note that says the background part did not confirm its
   destination means checking the binder and the Inbox before saving it again.
-- **Backup:** set up on the Backup page. Pick a binder and **Run Restore Drill**; once it reports "Restore drill
+- **Backup:** set up in **Settings › Backup**. Pick a binder and **Run Restore Drill**; once it reports "Restore drill
   passed.", "Last restore drill" shows a date rather than "never".
 - **Backup key, in this development build:** the key is kept in the Mac's login Keychain, not synchronized, and iCloud
   Keychain is unavailable, so keep your own copy of the key. If backups stop after an update because Sprava cannot
-  read the key, the Backup page shows a **Backup key** section: type the key there and choose **Use This Key**. The
+  read the key, **Settings › Backup** shows a **Backup key** section: type the key there and choose **Use This Key**. The
   key must open your existing backup; a wrong one changes nothing. If macOS asks to let Sprava use the key, **Always
   Allow** lets backups read it unattended. See `docs/backup.md` §4.
 
@@ -87,7 +87,7 @@ and closes this binder's to-dos when you ask, with Undo for each turn. It cannot
 
 1. Build/install Sprava using the normal app scripts. Open Health and wait for the background connection
    to answer before creating or adopting a binder. A running heartbeat alone is not an XPC connection.
-2. Install Claude Code. In Assistant, use **Copy Command** to obtain a subscription token with the selected native
+2. Install Claude Code. In **Settings › Assistant**, use **Copy Command** to obtain a subscription token with the selected native
    Claude executable, paste it into the secure field, and select **Connect Claude**.
    Sprava verifies the Anthropic signature and two harmless fixed turns in fresh private sessions before enabling the account. Ordinary Claude updates are accepted; the signature is checked on each launch. Its own local Keychain item keeps the token across background restarts, including development builds. macOS may ask you to authorize Keychain access when enabling a rebuilt app.
 3. Open the binder's settings, the gear beside its name. **Email intake (IMAP)**, there, is built into Sprava. Homebrew Python 3 must be

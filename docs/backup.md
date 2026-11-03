@@ -128,7 +128,7 @@ runtime that saved it, but not bound to this device as "this device only" is, si
 Mac carries it. That build cannot use iCloud Keychain at all: opting in is refused, and with it opted out the Backup
 page keeps saying that iCloud Keychain could not be checked for a copy an earlier build kept there, until a build
 that can reach it saves the key again. If, after an update, the rebuilt runtime cannot read the key unattended,
-backups stop and the Backup page asks for the key once; it must open the mirror before it is saved, and macOS may
+backups stop and **Settings › Backup** asks for the key once; it must open the mirror before it is saved, and macOS may
 ask to let Sprava use it then. Background reads never ask. restic
 receives it through a short-lived file, readable by the person's user only, in Sprava's own folder and deleted when
 the command ends; never through an environment variable or a file in a binder.

@@ -186,6 +186,7 @@ extension HealthGrade {
 
 struct HealthView: View {
     @ObservedObject var model: HealthModel
+    var openBackup: () -> Void = {}
 
     var body: some View {
         List {
@@ -200,8 +201,9 @@ struct HealthView: View {
                 Section("Alerts") { alertsLine(beat) }
             }
             Section("Backup") {
+                Button("Open Backup Settings", action: openBackup).buttonStyle(.link)
                 if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(.red) }
-                else if !model.backupConfigured { Text("Backup is not set up. Open Backup in the sidebar.").foregroundStyle(.orange) }
+                else if !model.backupConfigured { Text("Backup is not set up.").foregroundStyle(.orange) }
                 else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                 ForEach(HealthLine.rows("backup", model.backups)) { line in
                     let b = line.value

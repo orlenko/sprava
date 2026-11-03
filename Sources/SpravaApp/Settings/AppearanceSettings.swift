@@ -50,11 +50,37 @@ final class AppearanceSettings: ObservableObject {
 }
 
 /// The Settings window (⌘,).
+enum SettingsTab: Hashable { case general, backup, assistant }
+
+/// The Settings window. Backup and Assistant live here (decisions.md D37): things set up once and rarely looked at again.
+/// Health's status line and notice say when one of them needs a person.
 struct SettingsView: View {
     @ObservedObject var appearance: AppearanceSettings
     @ObservedObject var binderLocation: BinderLocationSettings
+    @ObservedObject var shelf: ShelfModel
+    @ObservedObject var backup: BackupModel
+    @ObservedObject var brains: BrainsModel
+
+    /// Backup and Assistant scroll on their own, so a small screen does not hide their buttons.
+    static let pageSize = CGSize(width: 640, height: 560)
 
     var body: some View {
+        TabView(selection: $shelf.settingsTab) {
+            general
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
+            BackupView(model: backup, rows: shelf.rows)
+                .frame(width: Self.pageSize.width, height: Self.pageSize.height)
+                .tabItem { Label("Backup", systemImage: "externaldrive") }
+                .tag(SettingsTab.backup)
+            BrainsView(model: brains, rows: shelf.rows)
+                .frame(width: Self.pageSize.width, height: Self.pageSize.height)
+                .tabItem { Label("Assistant", systemImage: "bubble.left.and.bubble.right") }
+                .tag(SettingsTab.assistant)
+        }
+    }
+
+    private var general: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Binders").font(.headline)

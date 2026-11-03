@@ -3,13 +3,13 @@ import Foundation
 import SpravaKit
 import Testing
 
-/// The Backup page: reachable from the sidebar (the Health page sends the person there), and setup driven only
+/// The Backup page: reachable from Settings (the Health page sends the person there), and setup driven only
 /// through the runtime's backup commands.
 @MainActor
 @Suite struct BackupModelTests {
-    @Test func theSidebarHasTheBackupPageHealthPointsTo() {
+    @Test func theBackupPageHasLeftTheMainWindow() {
         let model = ShelfModel(support: URL(fileURLWithPath: "/Invented/support"), client: RuntimeClient(answer: { _ in #"{"ok":true}"# }))
-        #expect(model.pages.contains(backupSelection))
+        #expect(!model.pages.contains(URL(string: "sprava:backup")!))
     }
 
     @Test func statusIsReadFromTheRuntime() async {

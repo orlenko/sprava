@@ -65,6 +65,12 @@ final class ShelfModel: ObservableObject, DraftOwner {
     var generalRequest: Task<URL, Error>?
     @Published var openingGeneral = false
     var openSettings: @MainActor () -> Void = {}
+    /// The tab the Settings window shows, also when it is already open.
+    @Published var settingsTab = SettingsTab.general
+    func openSettings(_ tab: SettingsTab) {
+        settingsTab = tab
+        openSettings()
+    }
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
     let health: HealthModel
@@ -209,7 +215,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
         catch { operationNote = "Project templates could not be loaded: \(error)"; return }
         if !empty.isEmpty, templates.isEmpty {
             operationNote = "Add a project template in Settings before creating a binder."
-            openSettings()
+            openSettings(.general)
             return
         }
         for url in empty {
@@ -269,14 +275,14 @@ final class ShelfModel: ObservableObject, DraftOwner {
         guard await runtimeReady() else { return }
         guard let parent = binderParent() else {
             operationNote = "Choose your binders folder in Settings, then create a binder."
-            openSettings()
+            openSettings(.general)
             return
         }
         let current = Self.currentYear()
         let templates: [BinderTemplate]
         do { templates = try await availableTemplates() }
         catch { operationNote = "Project templates could not be loaded: \(error)"; return }
-        guard !templates.isEmpty else { operationNote = "Add a project template in Settings before creating a binder."; openSettings(); return }
+        guard !templates.isEmpty else { operationNote = "Add a project template in Settings before creating a binder."; openSettings(.general); return }
         guard let answer = askForBinder(nil, current, parent, templates) else { return }
         guard !answer.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             operationNote = "The binder was not created: enter a name."
@@ -379,14 +385,12 @@ final class ShelfModel: ObservableObject, DraftOwner {
     }
 
     /// The sidebar's pages above the Shelf.
-    let pages: Set<URL> = [healthSelection, todosSelection, inboxSelection, backupSelection, brainsSelection]
+    let pages: Set<URL> = [healthSelection, todosSelection, inboxSelection]
 }
 
 let healthSelection = URL(string: "sprava:health")!
 let todosSelection = URL(string: "sprava:todos")!
 let inboxSelection = URL(string: "sprava:inbox")!
-let backupSelection = URL(string: "sprava:backup")!
-let brainsSelection = URL(string: "sprava:brains")!
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
@@ -394,8 +398,6 @@ struct ShelfView: View {
     @StateObject private var inbox = InboxModel()
     @StateObject private var binderTodos = BinderTodoModels()
     @StateObject private var todo = TodoModel()
-    @StateObject private var brains = BrainsModel()
-    @StateObject private var backup = BackupModel()
     @StateObject private var binderNote = BinderNote()
     @StateObject private var binderConversation = ClaudeBinderConversation()
     @StateObject private var binderWorkspace = BinderWorkspaceSelection()
@@ -420,8 +422,6 @@ struct ShelfView: View {
                         if inbox.cardCount > 0 { Text("\(inbox.cardCount)").foregroundStyle(.secondary) }
                     }
                     .tag(inboxSelection)
-                    Label("Backup", systemImage: "externaldrive").tag(backupSelection)
-                    Label("Assistant", systemImage: "bubble.left.and.bubble.right").tag(brainsSelection)
                 }
                 Section("Shelf") {
                     ForEach(model.shelfRows, id: \.folder) { row in
@@ -468,22 +468,18 @@ struct ShelfView: View {
             }
             StartingScreen(keeper: model.health.keeper, covers: model.selection != healthSelection) {
                 if model.selection == healthSelection {
-                    HealthView(model: model.health)
+                    HealthView(model: model.health, openBackup: { model.openSettings(.backup) })
                 } else if model.selection == todosSelection {
                     TodosView(model: todo, editor: itemEditor, board: model.todos, rows: model.rows, waiting: model.waiting, open: { model.selection = $0 },
                               openCards: { binderWorkspace.showCards(in: $0); model.selection = $0 },
                               reload: { await model.refreshAndWait(afterChanges: true) })
                 } else if model.selection == inboxSelection {
                     InboxView(model: inbox, rows: model.rows, general: { try await model.ensureGeneral() })
-                } else if model.selection == backupSelection {
-                    BackupView(model: backup, rows: model.rows)
-                } else if model.selection == brainsSelection {
-                    BrainsView(model: brains, rows: model.rows)
                 } else if let row = model.selectedRow {
                     NowView(row: row, today: model.today,
                             page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
                             reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation,
-                            openBrains: { model.selection = brainsSelection }, actions: binderActions,
+                            openBrains: { model.openSettings(.assistant) }, actions: binderActions,
                             documents: model.documents.model(for: row.folder), todoAdd: binderTodos.model(for: row.folder), workspace: binderWorkspace)
                 } else {
                     ContentUnavailableView {

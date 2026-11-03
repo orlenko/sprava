@@ -179,7 +179,7 @@ the binder's instruction line, the conversation composer and an edited task sugg
 Use invented support state only; never test this against a personal Claude profile. The automated fixtures are
 `BrainsModelTests` and `ExternalRegistrationRetirementTests`.
 
-1. A fresh Assistant page offers private Claude setup and no external-client registration or document grant.
+1. A fresh **Settings › Assistant** offers private Claude setup and no external-client registration or document grant.
 2. An invented legacy `claude-code-1` record is revoked when Assistant opens. Its token stops working; another
    invented client remains unchanged and has only Disconnect. Reopen Assistant: the profile-cleanup explanation
    remains. A failed withdrawal is shown even after access has ended.

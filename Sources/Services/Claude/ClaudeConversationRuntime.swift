@@ -127,7 +127,7 @@ public actor ClaudeConversationRuntime {
             for entry in result.entries where entry.key != "ok" && entry.key != "error" { envelope.set(entry.key, entry.value) }
             return JSONWriter.compact(.object(envelope))
         } catch let issue as ClaudeSetupFailure { return Self.failure(issue.message, code: issue.rawValue) }
-        catch Refused.notConnected { return Self.failure("Set up Claude in Assistant, then connect this binder.") }
+        catch Refused.notConnected { return Self.failure("Set up Claude in Settings › Assistant, then connect this binder.") }
         catch Refused.busy { return Self.failure("Claude is busy. Keep this draft and try again when it finishes.") }
         catch Refused.invalidRequest { return Self.failure("The conversation request is invalid.") }
         catch { return Self.failure("Claude could not complete this request. Check the connection and saved conversation before retrying.") }

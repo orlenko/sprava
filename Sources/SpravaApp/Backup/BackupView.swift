@@ -315,10 +315,7 @@ struct BackupView: View {
             if drillable.isEmpty {
                 Text("No binder here to restore yet.").foregroundStyle(.secondary)
             } else {
-                Picker("Binder", selection: Binding(get: { chosen }, set: { model.drillBinder = $0 })) {
-                    ForEach(drillable, id: \.folder) { Text($0.name).tag(Optional($0.folder)) }
-                }
-                .labelsHidden().fixedSize()
+                DrillPicker(rows: drillable, chosen: Binding(get: { chosen }, set: { model.drillBinder = $0 }))
                 Button("Run") { if let chosen { Task { await model.runDrill(chosen) } } }
                     .disabled(!model.canRunDrill(chosen))
             }
@@ -407,5 +404,19 @@ private struct BackupGroup<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Which binder a restore drill restores. A long name shortens rather than pushing Run out of the Settings window.
+struct DrillPicker: View {
+    let rows: [ShelfRow]
+    @Binding var chosen: URL?
+
+    var body: some View {
+        Picker("Binder", selection: $chosen) {
+            ForEach(rows, id: \.folder) { Text($0.name).tag(Optional($0.folder)) }
+        }
+        .labelsHidden()
+        .frame(maxWidth: 280)
     }
 }
