@@ -84,7 +84,7 @@ extension Commands {
                                     (key: "open_items", value: .array(item.map { [$0] } ?? []))])
             return Proposal.describe(op, catalog: small)
         }
-        return JSONObject([(key: "proposals", value: .array(listed.map { p, digest in
+        return JSONObject([(key: "proposals", value: .array(listed.filter { $0.0.state == "proposed" }.map { p, digest in
             var o = JSONObject()
             o.set("id", .string(p.id))
             o.set("state", .string(p.state))
@@ -94,7 +94,7 @@ extension Commands {
             o.set("verified", .bool(digests[key(f, p.id)] == digest))
             o.set("lines", .array(p.ops.map { .string(description($0)) }))
             var notes = p.cardNotes
-            if p.state == "proposed", case let changed = p.changedSince(catalog: catalog), !changed.isEmpty {
+            if case let changed = p.changedSince(catalog: catalog), !changed.isEmpty {
                 notes.insert("needs a look: changed since this card was made: " + changed.joined(separator: ", "), at: 0)
             }
             o.set("notes", .array(notes.map(JSONValue.string)))
@@ -106,7 +106,7 @@ extension Commands {
                 }
                 // An adoption repair card: the item's current values, for the person to complete (binder-v0 §9.4).
                 guard op["op"] == .str("update_item"), p.raw["provenance"]?["repair"] != nil, let id = op["args"]?["id"],
-                      let item = catalog?["open_items"]?.arrayValue?.first(where: { $0["id"] == id }) else { return nil }
+                      let item = items[id] else { return nil }
                 func text(_ key: String, _ fallback: String) -> JSONValue { .string(item[key]?.stringValue ?? fallback) }
                 return .obj([("index", .int(i)), ("title", text("title", "")), ("due", text("due", "")),
                              ("priority", text("priority", "normal")), ("waiting_on", text("waiting_on", ""))])
@@ -121,18 +121,21 @@ extension Commands {
     }
 
     /// Bound loading and every catalog scan before display or helpers inspect unverified cards (architecture 4.6).
+    /// Only open cards count: a decided card stays in the folder for good, and is neither shown nor compared with
+    /// the catalog, so a binder in steady use never grows into this limit. Each `expect` entry scans the catalog;
+    /// an op only looks its item up in the one dictionary `proposals` builds.
     func reviewableCards(in folder: URL, catalog: JSONObject?) throws -> [(Proposal, String)] {
         let listed = try ProposalStore.boundedList(in: folder)
-        var work = 0
-        for (p, _) in listed {
-            let units = p.ops.count + (p.raw["expect"]?.objectValue?.entries.count ?? 0)
-            guard units <= 500 - work else { throw Failure(message: "these cards are too large to review safely; split them into smaller cards before approval") }
-            work += units
+        let refusal = Failure(message: "the cards waiting here are too large to review safely; nothing was changed")
+        var shown = 0, scans = 0
+        for (p, _) in listed where p.state == "proposed" {
+            let expected = p.raw["expect"]?.objectValue?.entries.count ?? 0
+            guard p.ops.count + expected <= 500, p.ops.count + expected <= 5_000 - shown else { throw refusal }
+            shown += p.ops.count + expected
+            scans += expected
         }
         let rows = (catalog?["open_items"]?.arrayValue?.count ?? 0) + (catalog?["documents"]?.arrayValue?.count ?? 0)
-        guard listed.count <= 100, rows <= 500_000 / max(1, work) else {
-            throw Failure(message: "these cards are too large to review safely; split them into smaller cards before approval")
-        }
+        guard rows <= 500_000 / max(1, scans) else { throw refusal }
         return listed
     }
 
@@ -150,8 +153,12 @@ extension Commands {
         let proposal = try ProposalStore.load(id, in: f, expectedDigest: recorded)
         let store = TekaStore(folder: f, client: client)
         if command == "approve" {
-            guard proposal.ops.count + (proposal.raw["expect"]?.objectValue?.entries.count ?? 0) <= 500 else {
-                throw Failure(message: "this card is too large to review safely; split it into smaller cards before approval")
+            // Applying checks and hashes the whole catalog for each op, so what one approval costs is bounded here.
+            let work = proposal.ops.count + (proposal.raw["expect"]?.objectValue?.entries.count ?? 0)
+            let catalog = Teka.read(f).catalog
+            let rows = (catalog?["open_items"]?.arrayValue?.count ?? 0) + (catalog?["documents"]?.arrayValue?.count ?? 0)
+            guard work <= 500, rows <= 500_000 / max(1, work) else {
+                throw Failure(message: "this card is too large to review safely; nothing was changed")
             }
             // A change the person made on the card that cannot be read refuses the approval: approving the card
             // unchanged would apply exactly what they tried to alter.

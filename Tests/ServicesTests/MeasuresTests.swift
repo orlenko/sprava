@@ -58,12 +58,12 @@ import Testing
         try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("dev"))]), now: Date())
         let cards = folder.appendingPathComponent(".sprava/proposals")
         try FileManager.default.createDirectory(at: cards, withIntermediateDirectories: true)
-        for n in 0..<101 { try Data().write(to: cards.appendingPathComponent("invented-\(n)")) }
+        for n in 0...ProposalStore.maximumEntries { try Data().write(to: cards.appendingPathComponent("invented-\(n)")) }
         let day = CalendarDate.today()
         let report = Measures(support: support).compute(rows: Shelf.rows(registry: nil, picked: [folder]), from: day, to: day)
         #expect(report.error != nil)
         #expect(!Measures.text(report).contains("(pass)"))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: cards.path).count == 101)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cards.path).count == ProposalStore.maximumEntries + 1)
     }
 
     @Test func theMinuteAndHandEditsAreCountedFromTheRecords() throws {

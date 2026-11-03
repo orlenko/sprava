@@ -51,14 +51,14 @@ import Testing
         let card = Proposal.make(title: "Invented card", actor: brain, ops: [], now: now)
         try ProposalStore.save(card, in: folder)
         let directory = folder.appendingPathComponent(".sprava/proposals")
-        for i in 0..<120 { try Data().write(to: directory.appendingPathComponent("invented-\(i).txt")) }
+        for i in 0...ProposalStore.maximumEntries { try Data().write(to: directory.appendingPathComponent("invented-\(i).txt")) }
         let result = try call(c, [("command", .str("revoke_client")), ("client_id", .str("invented-client"))])
         #expect(result["ok"] == .bool(false))
         #expect(result["error"]?.stringValue?.contains("client was revoked") == true)
         #expect(try MCPClients.load(c.support).clients.first { $0.id == "invented-client" }?.revoked == true)
         #expect(try ProposalStore.load(card.id, in: folder, expectedDigest: nil).state == "proposed")
         // Removing the excess entries lets the person retry the withdrawal after access has already ended.
-        for i in 0..<120 { try FileManager.default.removeItem(at: directory.appendingPathComponent("invented-\(i).txt")) }
+        for i in 0...ProposalStore.maximumEntries { try FileManager.default.removeItem(at: directory.appendingPathComponent("invented-\(i).txt")) }
         let retried = try call(c, [("command", .str("revoke_client")), ("client_id", .str("invented-client"))])
         #expect(retried["ok"] == .bool(true) && retried["withdrawn"] == .int(1))
         #expect(try ProposalStore.load(card.id, in: folder, expectedDigest: nil).state == "rejected")

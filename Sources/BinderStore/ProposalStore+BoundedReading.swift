@@ -3,9 +3,12 @@ import Foundation
 import SpravaKit
 
 extension ProposalStore {
+    public static let maximumEntries = 4096
+
     /// A display read with a bound on directory entries and on aggregate file bytes, enforced before parsing and
     /// retaining cards (architecture 4.6). Refusal preserves every file and reports that the collection needs care.
-    public static func boundedList(in folder: URL, maxEntries: Int = 100, maxBytes: Int = 8 << 20) throws -> [(Proposal, String)] {
+    /// Decided cards stay in the folder, so the bounds leave room for years of them.
+    public static func boundedList(in folder: URL, maxEntries: Int = maximumEntries, maxBytes: Int = 32 << 20) throws -> [(Proposal, String)] {
         let failure = TekaStore.Refused(reason: "the proposal collection is too large or cannot be read safely; its files were left as they are")
         guard maxEntries >= 0, maxBytes >= 0 else { throw failure }
         var info = stat()

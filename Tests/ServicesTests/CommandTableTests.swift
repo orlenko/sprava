@@ -112,6 +112,91 @@ import Testing
         #expect(try ProposalStore.load(card.id, in: folder, expectedDigest: digest).state == "proposed")
     }
 
+    func invented(_ c: Commands, _ folder: URL, ops count: Int, state: String) throws -> String {
+        let op = JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .obj([("title", .str("Invented"))]))]))])
+        var raw = Proposal.make(title: "Invented card", actor: .init([(key: "kind", value: .str("clerk"))]),
+                                ops: Array(repeating: op, count: count), now: now).raw
+        raw.set("state", .str(state))
+        let card = Proposal(raw: raw)
+        try ProposalStore.save(card, in: folder)
+        try c.recordDigests([card.id], in: folder)
+        return card.id
+    }
+
+    /// Decided cards stay in the folder for good: filing for long enough must not stop a binder's cards being reviewed.
+    @Test func decidedCardsNeverCountAgainstReviewingTheOpenOnes() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        for n in 0..<150 { _ = try invented(c, folder, ops: 10, state: n % 2 == 0 ? "applied" : "rejected") }
+        let open = try invented(c, folder, ops: 3, state: "proposed")
+        let reply = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        #expect(reply["ok"] == .bool(true))
+        let cards = try #require(reply["proposals"]?.arrayValue)
+        #expect(cards.contains { $0["id"] == .str(open) })
+        #expect(cards.allSatisfy { $0["state"] == .str("proposed") })
+        let shown = try #require(cards.first { $0["id"] == .str(open) })
+        let rejected = try call(c, [("command", .str("reject")), ("binder", .str(folder.path)),
+                                    ("proposal", .str(open)), ("digest", .str(try #require(shown["digest"]?.stringValue)))])
+        #expect(rejected["ok"] == .bool(true))
+    }
+
+    /// Showing a card costs little; applying one goes over the whole catalog for each op, so that stays bounded.
+    @Test func approvingACardStaysBoundedByTheSizeOfTheCatalog() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        let file = folder.appendingPathComponent("catalog.json")
+        var catalog = try #require(try JSONParser.parse(try Data(contentsOf: file)).value.objectValue)
+        let item = try #require(catalog["open_items"]?.arrayValue?.first?.objectValue)
+        catalog.set("open_items", .array((0..<1001).map { n in
+            var copy = item; copy.set("id", .str("invented-\(n)")); return .object(copy)
+        }))
+        try Data(JSONWriter.compact(.object(catalog)).utf8).write(to: file)
+        let id = try invented(c, folder, ops: 500, state: "proposed")
+        let listed = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        let shown = try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .str(id) })
+        let approval = try call(c, [("command", .str("approve")), ("binder", .str(folder.path)), ("proposal", .str(id)),
+                                    ("digest", .str(try #require(shown["digest"]?.stringValue)))])
+        #expect(approval["ok"] == .bool(false) && approval["error"]?.stringValue?.contains("too large") == true)
+        #expect(try ProposalStore.list(in: folder).first { $0.0.id == id }?.0.state == "proposed")
+    }
+
+    /// A repair card offers an item's current values, and offers nothing for an item that is gone.
+    @Test func aRepairCardOffersTheCurrentValuesOfItsItemsOnly() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        let catalog = try #require(try JSONParser.parse(try Data(contentsOf: folder.appendingPathComponent("catalog.json"))).value.objectValue)
+        let item = try #require(catalog["open_items"]?.arrayValue?.first)
+        let id = try #require(item["id"])
+        func update(_ id: JSONValue) -> JSONObject {
+            JSONObject([(key: "op", value: .str("update_item")), (key: "args", value: .obj([("id", id)]))])
+        }
+        var raw = Proposal.make(title: "Invented repair", actor: .init([(key: "kind", value: .str("user"))]),
+                                ops: [update(.str("invented-gone")), update(id)], now: now).raw
+        raw.set("provenance", .obj([("repair", .str("invented"))]))
+        let card = Proposal(raw: raw)
+        try ProposalStore.save(card, in: folder)
+        try c.recordDigests([card.id], in: folder)
+        let reply = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        let shown = try #require(reply["proposals"]?.arrayValue?.first { $0["id"] == .str(card.id) })
+        let editable = try #require(shown["editable"]?.arrayValue)
+        #expect(editable.count == 1 && editable.first?["index"] == .int(1))
+        #expect(editable.first?["title"] == item["title"])
+    }
+
+    /// A folder of documents dropped in at once makes many ordinary cards; none of them is too large.
+    @Test func manyOrdinaryOpenCardsCanAllBeReviewed() throws {
+        let (c, folder) = try setup()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
+        for _ in 0..<80 { _ = try invented(c, folder, ops: 9, state: "proposed") }
+        let reply = try call(c, [("command", .str("proposals")), ("binder", .str(folder.path))])
+        #expect(reply["ok"] == .bool(true))
+        #expect((reply["proposals"]?.arrayValue?.count ?? 0) >= 80)
+    }
+
     @Test func anUnverifiedStampCannotRunFingerprintScansBeforeTheWorkLimit() throws {
         let (c, folder) = try setup()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -134,7 +219,7 @@ import Testing
         _ = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
         let card = try #require(ProposalStore.list(in: folder).first)
         let catalog = try Data(contentsOf: folder.appendingPathComponent("catalog.json"))
-        for n in 0..<101 {
+        for n in 0...ProposalStore.maximumEntries {
             try Data().write(to: folder.appendingPathComponent(".sprava/proposals/invented-\(n).txt"))
         }
         for fields in [[("command", JSONValue.str("proposals")), ("binder", .str(folder.path))],
