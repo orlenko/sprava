@@ -35,8 +35,10 @@ final class BinderChat: ObservableObject {
         /// What the binder is doing now, shown while it replies.
         var activity: String?
         var changes: [ChatBinderChange] = []
-        /// A person's line: the request id a retry repeats.
+        /// A person's line: the request id a retry repeats. A reply: the request id of the line it answers.
         var requestID: UUID?
+        /// Why this reply did not finish, and what the person can do about it.
+        var problem: ReplyProblem?
         /// The reply reached its size limit; nothing more is added to it.
         var cutShort = false
         /// More changes came than the page keeps; the rest are in the binder's history.
@@ -81,6 +83,8 @@ final class BinderChat: ObservableObject {
     private let readHistory: @Sendable (URL) async -> (entries: [Entry], note: String?)
     /// Called after a turn changed the binder, so the page reads it again.
     var changed: (URL) -> Void = { _ in }
+    /// Asks the binder again about an accepted turn, from its durable record.
+    var reattach: ((_ binderID: String, _ requestID: UUID, _ turnID: UUID, _ folder: URL) -> ChatTurn)?
 
     /// `binderID` gives the binder owner's opaque identity, never a path or a name; without one the binder cannot
     /// hold a conversation yet.
@@ -170,7 +174,7 @@ final class BinderChat: ObservableObject {
         let folder = folder.standardizedFileURL
         guard binderID(folder) == turn.binderID, needsResume(requestID: turn.requestID, in: folder) else { return }
         let key = key(folder)
-        let reply = Entry(id: turn.turnID, speaker: .binder, text: "", state: .replying)
+        let reply = Entry(id: turn.turnID, speaker: .binder, text: "", state: .replying, requestID: turn.requestID)
         if let index = threads[key]?.entries.firstIndex(where: { $0.id == reply.id }) {
             threads[key]?.entries[index] = reply
         } else { threads[key]?.entries.append(reply) }
@@ -222,7 +226,7 @@ final class BinderChat: ObservableObject {
                 threads[key]?.draft = ""
                 threads[key]?.restored = nil
             }
-            let reply = Entry(id: turn.turnID, speaker: .binder, text: "", state: .replying)
+            let reply = Entry(id: turn.turnID, speaker: .binder, text: "", state: .replying, requestID: requestID)
             threads[key]?.entries.append(reply)
             threads[key]?.turn = turn.turnID
             Task { await self.follow(turn, reply: reply.id, key: key, folder: folder) }
@@ -264,17 +268,58 @@ final class BinderChat: ObservableObject {
                 update(reply, in: key) { $0.state = how == .replied ? .replied : .stopped }
                 ended = true
             case .failed(let failure):
-                update(reply, in: key) { $0.state = .failed(Self.words(failure)) }
+                update(reply, in: key) { $0.state = .failed(Self.words(failure)); $0.problem = ReplyProblem(failure) }
                 ended = true
             }
             if ended { break }
         }
-        if !ended { update(reply, in: key) { $0.state = .incomplete } }
+        if !ended { update(reply, in: key) { $0.state = .incomplete; $0.problem = .lostTouch } }
         update(reply, in: key) { $0.activity = nil }
         if threads[key]?.turn == turn.turnID {
             threads[key]?.turn = nil
             threads[key]?.stopping = false
         }
+    }
+
+    /// What this reply's Notice offers now. A later reply means the conversation has moved on, and nothing is offered. A
+    /// later line alone leaves the ways out of the trouble: a line refused as busy must not remove Restart or Check Reply,
+    /// which are what clears it. Words are found by request id, never by position.
+    func actions(for entry: Entry) -> [ReplyProblem.Action] {
+        let entries = shown.entries
+        guard let problem = entry.problem, shown.turn == nil, let index = entries.firstIndex(where: { $0.id == entry.id }),
+              !entries[(index + 1)...].contains(where: { $0.speaker == .binder }) else { return [] }
+        return problem.actions.filter { action in
+            switch action {
+            case .editAndSend: index == entries.count - 1 && line(answeredBy: entry) != nil
+            case .checkReply: reattach != nil && line(answeredBy: entry) != nil
+            case .openAssistant, .restart: true
+            }
+        }
+    }
+
+    private func line(answeredBy reply: Entry) -> Entry? {
+        guard let requestID = reply.requestID else { return nil }
+        return shown.entries.first { $0.speaker == .person && $0.requestID == requestID }
+    }
+
+    /// Puts the person's words back in the composer, to change or send as a new turn. Never over text already there.
+    func putBack(_ entry: Entry) {
+        guard let shownKey, actions(for: entry).contains(.editAndSend), let line = line(answeredBy: entry) else { return }
+        guard draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            threads[shownKey]?.message = "The box below already holds text. Send or clear it first."
+            return
+        }
+        threads[shownKey]?.draft = line.text
+        // These words are not a line waiting to be retried, which is what `restored` says of the box's contents.
+        threads[shownKey]?.restored = nil
+        threads[shownKey]?.message = nil
+    }
+
+    /// Asks the binder how a reply Sprava lost touch with ended; never sends the line again.
+    func checkReply(_ entry: Entry) {
+        guard let folder, actions(for: entry).contains(.checkReply), let requestID = entry.requestID, let binder = binderID(folder),
+              let turn = reattach?(binder, requestID, entry.id, folder) else { return }
+        resume(turn, in: folder)
     }
 
     /// Asks the binder to stop the turn running on the page shown. Changes already made keep their Undo.
@@ -343,8 +388,9 @@ final class BinderChat: ObservableObject {
         let named = account.map { "“\($0)”" }
         return switch reason {
         case "busy": "Sprava is still busy with another reply. Try again in a moment."
-        case "start_failed", "exit_unconfirmed": "The assistant could not be started. Try again in a moment."
-        case "protocol": "This reply tried something Sprava does not allow, so it was stopped. Try asking another way."
+        case "start_failed": "The assistant could not be started. Try again in a moment."
+        case "exit_unconfirmed": "Sprava could not confirm that the assistant stopped, so new messages in this binder wait. Restarting Sprava's background part may clear this."
+        case "protocol": "The assistant answered in a way Sprava did not expect, so this reply was stopped. Try again, and if it keeps happening, look at the Assistant page."
         case "authentication": named.map { "Claude rejected the token for \($0). Save a new one in Assistant." } ?? "Claude rejected the sign-in. Check the connection in Assistant."
         case "usage_limit": "\(named.map { "The Claude account \($0)" } ?? "This Claude account") has reached a usage limit. Add another account in Assistant, or try again after it resets."
         case "no_quota": "None of your Claude accounts has quota left right now. Try again after one resets."

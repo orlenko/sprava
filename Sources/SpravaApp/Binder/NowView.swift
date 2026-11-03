@@ -53,7 +53,7 @@ struct NowView: View {
                 }
             } : nil
         return BinderInputs(note: local, conversation: conversation.map {
-            ConversationSection(model: $0, row: row, reload: refresh, openBrains: openBrains)
+            ConversationSection(model: $0, row: row, reload: refresh, openBrains: openBrains, restartBackground: { health?.restart() })
         })
     }
 

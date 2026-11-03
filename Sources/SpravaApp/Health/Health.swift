@@ -355,23 +355,20 @@ struct RuntimeBanner: View {
             // The starting screen, or the Health page, shows the launch's start.
             EmptyView()
         } else if health.starting {
-            HStack {
-                ProgressView().controlSize(.small)
-                Text("Starting Sprava's background part… Binder creation waits until it can answer.")
-                    .foregroundStyle(.secondary)
-            }
+            Notice(level: .info, title: "Starting Sprava's background part…", detail: "Binder creation waits until it can answer.")
+                .padding([.horizontal, .top], 16)
         } else if health.runtimeStatus == .requiresApproval || health.keeper.state == .needsApproval {
-            HStack {
-                Text("Sprava's background part is waiting for your approval in System Settings › General › Login Items; changes wait until then.")
-                    .foregroundStyle(.orange)
+            Notice(level: .needsYou, title: "Sprava's background part is waiting for your approval.",
+                   detail: "Approve it in System Settings › General › Login Items. Changes wait until then.") {
                 Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
             }
+            .padding([.horizontal, .top], 16)
         } else if let failure = health.connectionProblem ?? health.startFailure {
-            HStack {
-                Text(failure).foregroundStyle(.orange)
+            Notice(level: .broken, title: failure) {
                 Button("Restart") { health.restart() }.disabled(health.starting)
                 if let openHealth { Button("Open Health", action: openHealth) }
             }
+            .padding([.horizontal, .top], 16)
         }
     }
 }

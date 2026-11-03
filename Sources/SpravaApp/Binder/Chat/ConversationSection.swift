@@ -10,6 +10,7 @@ struct ConversationSection: View {
     let reload: () -> Void
     /// Shows the Brains page, where Claude is set up for Sprava.
     var openBrains: () -> Void = {}
+    var restartBackground: () -> Void = {}
     /// Gives the page back to Project, in a binder with nothing said yet.
     var hide: (() -> Void)?
     var body: some View {
@@ -26,7 +27,8 @@ struct ConversationSection: View {
                 if !model.connected {
                     ConnectionPanel(model: model, adopted: row.teka.isAdopted, folder: row.folder, openBrains: openBrains)
                 }
-                ChatView(chat: model.chat, connected: model.connected && !model.startingNew, suggestion: suggestion)
+                ChatView(chat: model.chat, connected: model.connected && !model.startingNew, openAssistant: openBrains,
+                         restartBackground: restartBackground, suggestion: suggestion)
                 if let filed = model.filedTranscript, filed.folder == row.folder {
                     HStack(spacing: 6) {
                         Text("The last conversation is filed in this binder.").font(.caption).foregroundStyle(.secondary)
