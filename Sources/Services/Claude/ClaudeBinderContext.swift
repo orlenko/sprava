@@ -24,6 +24,58 @@ struct ClaudeBinderContext: Sendable {
     let sources: [Source]
     static let maximumPackBytes = 256 * 1024
 
+    /// What one search of the index found, for an agent that asks: its passages, and how many sources could not be read in full.
+    struct Found: Sendable {
+        let sources: [Source]
+        let incomplete: Int
+    }
+
+    /// One search of the binder's index, PDFs included, for a session whose scope is the whole binder.
+    static func search(folder: URL, support: URL, query: String, limit: Int,
+                       reader: any DocumentReader, cancelled: @escaping @Sendable () -> Bool = { false }) throws -> Found {
+        let teka = Teka.read(folder)
+        guard teka.catalog != nil, !Teka.expungePending(in: folder) else { throw Unavailable() }
+        let scoped = ScopedReader(base: reader, documents: true, intake: true, cancelled: cancelled)
+        let (index, _) = try refreshedIndex(folder: folder, support: support, teka: teka, intake: true, reader: scoped, cancelled: cancelled)
+        let result = try index.search(searchTerms(query), limit: limit, teka: teka, intake: true)
+        let records = teka.catalog?["documents"]?.arrayValue ?? []
+        var sources: [Source] = []
+        for hit in result.hits {
+            let p = hit.original ?? hit.passage
+            guard let path = path(of: p, records: records, documents: true, intake: true) else { continue }
+            sources.append(Source(id: "S\(sources.count + 1)", path: path, page: p.page, revision: p.revision, text: p.text))
+        }
+        return Found(sources: sources, incomplete: result.coverage.notYetIndexed.count + result.coverage.documents.filter { !$0.isComplete || !$0.pagesKnown }.count)
+    }
+
+    private static func refreshedIndex(folder: URL, support: URL, teka: Teka, intake: Bool, reader: ScopedReader,
+                                       cancelled: @Sendable () -> Bool) throws -> (BinderIndex, [String]) {
+        let trust = try IndexTrust.open(supportDirectory: support)
+        let index: BinderIndex
+        if let existing = try BinderIndex.open(binder: folder, trust: trust) {
+            index = existing; try index.refresh(teka: teka, reader: reader)
+        } else { index = try BinderIndex.rebuild(binder: folder, teka: teka, reader: reader, trust: trust) }
+        guard !cancelled() else { throw Unavailable() }
+        let paths = intake ? try intakePaths(folder) : []
+        if intake { try index.refreshIntake(paths: paths, reader: reader) }
+        guard !cancelled() else { throw Unavailable() }
+        return (index, paths)
+    }
+
+    /// Where a passage comes from, as a path the person can open; nil for what the scope does not cover. Imported person lines
+    /// are never authenticated app history.
+    private static func path(of p: Passage, records: [JSONValue], documents: Bool, intake: Bool) -> String? {
+        switch p.source {
+        case .document(let id):
+            guard documents, let record = records.first(where: { ItemID($0["id"]) == id }) else { return nil }
+            return record["path"]?.stringValue
+        case .intake(let value): return intake ? value : nil
+        case .openItem(let id): return "catalog.json#item:" + id.description
+        case .closedItem(let id): return "catalog.json#closed-item:" + id.description
+        case .log, .personLine: return nil
+        }
+    }
+
     /// Called only after resolving the current consent generation. Intake consent never implies filed
     /// document consent. The reader and result filter both enforce that distinction on every refresh.
     static func build(folder: URL, support: URL, documents: Bool, intake: Bool, query: String,
@@ -31,15 +83,7 @@ struct ClaudeBinderContext: Sendable {
         let teka = Teka.read(folder)
         guard teka.catalog != nil, !Teka.expungePending(in: folder) else { throw Unavailable() }
         let scoped = ScopedReader(base: reader, documents: documents, intake: intake, cancelled: cancelled)
-        let trust = try IndexTrust.open(supportDirectory: support)
-        let index: BinderIndex
-        if let existing = try BinderIndex.open(binder: folder, trust: trust) {
-            index = existing; try index.refresh(teka: teka, reader: scoped)
-        } else { index = try BinderIndex.rebuild(binder: folder, teka: teka, reader: scoped, trust: trust) }
-        guard !cancelled() else { throw Unavailable() }
-        let paths = intake ? try intakePaths(folder) : []
-        if intake { try index.refreshIntake(paths: paths, reader: scoped) }
-        guard !cancelled() else { throw Unavailable() }
+        let (index, paths) = try refreshedIndex(folder: folder, support: support, teka: teka, intake: intake, reader: scoped, cancelled: cancelled)
         let result = try index.search(searchTerms(query), limit: 50, teka: teka, intake: intake)
         var sources: [Source] = []
         var seen = Set<String>()
@@ -67,18 +111,7 @@ struct ClaudeBinderContext: Sendable {
         }
         for hit in result.hits {
             let p = hit.original ?? hit.passage
-            let path: String
-            switch p.source {
-            case .document(let id):
-                guard documents, let record = records.first(where: { ItemID($0["id"]) == id }),
-                      let value = record["path"]?.stringValue else { continue }
-                path = value
-            case .intake(let value): guard intake else { continue }; path = value
-            case .openItem(let id): path = "catalog.json#item:" + id.description
-            case .closedItem(let id): path = "catalog.json#closed-item:" + id.description
-            case .log: continue
-            case .personLine: continue // Imported person lines are never authenticated app history.
-            }
+            guard let path = path(of: p, records: records, documents: documents, intake: intake) else { continue }
             if guideID != nil, path == "PROJECT.md" { continue }
             let key = path + ":" + String(p.id)
             guard seen.insert(key).inserted else { continue }

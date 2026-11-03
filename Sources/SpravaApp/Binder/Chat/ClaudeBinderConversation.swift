@@ -252,7 +252,8 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             if let left = value["todos_left"]?.arrayValue {
                 changed() // Everything else was undone.
                 let names = left.compactMap(\.stringValue).prefix(5).joined(separator: ", ")
-                throw UndoRefused(description: "These to-dos changed after that turn, so they stay as they are: \(names). Everything else was undone.")
+                let notes = value["notes_left"] == .bool(true) ? "The notes changed after that turn, so they stay as they are. " : ""
+                throw UndoRefused(description: notes + (names.isEmpty ? "" : "These to-dos changed after that turn, so they stay as they are: \(names). ") + "Everything else was undone.")
             }
             let names = (value["conflicts"]?.arrayValue ?? []).compactMap(\.stringValue).prefix(5).joined(separator: ", ")
             throw UndoRefused(description: "Nothing was undone: \(names.isEmpty ? "these files" : names) changed after that turn.")

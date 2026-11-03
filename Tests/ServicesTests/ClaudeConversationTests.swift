@@ -296,6 +296,13 @@ import Testing
         #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("Which bylaw covers pets?") } == true)
     }
 
+    @Test func onlyAConnectionWithFileConsentIsOfferedTheWholeBinder() async throws {
+        let without = try Fixture(); try await without.connect(files: false)
+        let first = UUID(); _ = try await without.send(first, "Hello"); _ = try await without.completed(first)
+        let offered = without.engine.lock.withLock { without.engine.appTools?.tools.map(\.name) } ?? []
+        #expect(!offered.contains("search_binder") && !offered.contains("update_notes"))
+    }
+
     @Test func aFailedFirstTurnStartsOverWithTheSavedConversation() async throws {
         let f = try Fixture(); try await f.connect()
         let first = UUID(); _ = try await f.send(first, "Which bylaw covers pets?"); #expect(try await f.completed(first)["phase"] == .str("replied"))

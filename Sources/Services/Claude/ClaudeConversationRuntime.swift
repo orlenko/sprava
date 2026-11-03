@@ -24,6 +24,7 @@ public actor ClaudeConversationRuntime {
     }
     typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, URL?, ClaudeAppTools?, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
+    typealias SearchBinder = @Sendable (URL, String, Int, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext.Found
     /// The binder writer the to-do tools go through. The runtime attaches it at start.
     public nonisolated let todoWriter = ClaudeTodoWriter()
     /// Why a turn failed, for as long as this process runs; a failed turn from before a restart has no reason to give.
@@ -36,6 +37,7 @@ public actor ClaudeConversationRuntime {
     private let secrets: Secrets
     private let makeDriver: MakeDriver
     private let readContext: ReadContext
+    private let searchBinder: SearchBinder
     private let admission: AgentSessionAdmission
     private let available: @Sendable (URL) throws -> Bool
     private var lifecycleTicket: UUID?
@@ -55,8 +57,9 @@ public actor ClaudeConversationRuntime {
     private var configuring = false
     private var recovered = false
 
-    init(support: URL, secrets: Secrets, makeDriver: @escaping MakeDriver, context: @escaping ReadContext, available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
-        self.support = support; self.available = available; self.secrets = secrets; self.makeDriver = makeDriver; readContext = context
+    init(support: URL, secrets: Secrets, makeDriver: @escaping MakeDriver, context: @escaping ReadContext,
+         search: @escaping SearchBinder = { _, _, _, _ in .init(sources: [], incomplete: 0) }, available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
+        self.support = support; self.available = available; self.secrets = secrets; self.makeDriver = makeDriver; readContext = context; searchBinder = search
         connections = try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite"))
         receipts = try ConversationTurnStore(at: support.appendingPathComponent("binder-store/conversation.sqlite"))
         state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
@@ -73,6 +76,9 @@ public actor ClaudeConversationRuntime {
         }, context: { folder, documents, intake, query, cancelled in
             try ClaudeBinderContext.build(folder: folder, support: support, documents: documents, intake: intake,
                                           query: query, reader: HelperDocumentReader(binder: folder, reader: .located()), cancelled: cancelled)
+        }, search: { folder, query, limit, cancelled in
+            try ClaudeBinderContext.search(folder: folder, support: support, query: query, limit: limit,
+                                           reader: HelperDocumentReader(binder: folder, reader: .located()), cancelled: cancelled)
         }, available: { folder in
             let path = folder.resolvingSymlinksInPath().path
             let shelf = ShelfStore(supportDirectory: support)
@@ -164,9 +170,9 @@ public actor ClaudeConversationRuntime {
             let history = TurnHistory(support: support, binder: id), writer = todoWriter
             return try await Task.detached(priority: .userInitiated) { () throws -> JSONObject in
                 // Files first, whole or not at all. Only then the to-dos, each on its own: one changed since stays as it is, and is named.
-                let todos = try history.todoChanges(forTurn: turn)
+                let todos = try history.todoChanges(forTurn: turn), notes = try history.notesChange(forTurn: turn)
                 let files = try history.entry(forTurn: turn)
-                if todos == nil || files?.unrecorded == false {
+                if (todos == nil && notes == nil) || files?.unrecorded == false {
                     switch try history.undo(turn: turn, in: folder) {
                     case .undone: break
                     case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))])
@@ -174,8 +180,9 @@ public actor ClaudeConversationRuntime {
                     }
                 }
                 let left = todos == nil ? [] : try ClaudeTodoTools.undo(turn: turn, folder: folder, history: history, writer: writer)
-                return left.isEmpty ? .init([(key: "undone", value: .bool(true))])
-                    : .init([(key: "undone", value: .bool(false)), (key: "todos_left", value: .array(left.prefix(20).map { .str($0) }))])
+                let notesBack = try ClaudeTodoTools.undoNotes(turn: turn, folder: folder, history: history, writer: writer)
+                if left.isEmpty, notesBack { return .init([(key: "undone", value: .bool(true))]) }
+                return .init([(key: "undone", value: .bool(false)), (key: "todos_left", value: .array(left.prefix(20).map { .str($0) })), (key: "notes_left", value: .bool(!notesBack))])
             }.value
         }
         if command == "chat_history" || command == "chat_clear" {
@@ -305,7 +312,7 @@ public actor ClaudeConversationRuntime {
         let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
-            let writer = todoWriter
+            let writer = todoWriter, search = searchBinder
             let (context, reach, todos, revision) = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
@@ -317,7 +324,8 @@ public actor ClaudeConversationRuntime {
                 if tools { do { try versions.record(folder, cancelled: { signal.stopped }) } catch { tools = false } }
                 guard !signal.stopped else { throw Refused.stopped }
                 // Read before the source pack, so a to-do changed after the agent could have seen it counts as changed.
-                let todos = ClaudeTodoTools(folder: folder, record: record, history: versions, writer: writer)
+                let wholeBinder: @Sendable (String, Int) throws -> ClaudeBinderContext.Found = { query, limit in try search(folder, query, limit, { signal.stopped }) }
+                let todos = ClaudeTodoTools(folder: folder, record: record, history: versions, writer: writer, search: tools ? wholeBinder : nil)
                 // An agent with file tools finds what it needs itself; nothing of the binder is sent ahead of it.
                 let context = tools ? ClaudeBinderContext(data: .obj([]), sources: []) : try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
                 return (context, tools ? folder : nil, todos, tools ? ClaudeConversationPolicy.revision(of: folder) : nil)
@@ -457,11 +465,11 @@ public actor ClaudeConversationRuntime {
               ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
         if r.phase == .failed, let reason = failureReasons[r.requestID] { fields.append(("reason", .str(reason))) }
         let history = TurnHistory(support: support, binder: r.conversationID)
-        let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID)
-        if entry != nil || todos != nil {
-            let summary = [entry?.summary, todos?.summary].compactMap { $0 }.joined(separator: ". ")
-            fields.append(("changes", .obj([("summary", .str(summary)), ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true)),
-                                            ("undoable", .bool(todos != nil || entry?.unrecorded == false))])))
+        let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID), notes = try? history.notesChange(forTurn: r.turnID)
+        if entry != nil || todos != nil || notes != nil {
+            let summary = [entry?.summary, todos?.summary, notes == nil ? nil : "Updated the notes"].compactMap { $0 }.joined(separator: ". ")
+            fields.append(("changes", .obj([("summary", .str(summary)), ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true && notes?.undone ?? true)),
+                                            ("undoable", .bool(todos != nil || notes != nil || entry?.unrecorded == false))])))
         }
         return .obj(fields)
     }
