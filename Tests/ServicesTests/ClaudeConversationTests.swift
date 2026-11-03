@@ -461,6 +461,24 @@ import Testing
         #expect(try await f.request("chat_history")["turns"]?.arrayValue?.count == 2)
     }
 
+    /// An account refuses for its limit only after it has accepted the token, so the person is not told the token is at fault.
+    @Test func aFirstTokenAtItsLimitConnectsAndSaysSo() async throws {
+        let f = try Fixture()
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.usageLimit] }
+        let answer = try await f.runtime.handle(.init([(key: "command", value: .str("claude_configure")), (key: "program", value: .str("/invented/claude")), (key: "credential", value: .str("invented-token")), (key: "name", value: .str("invented/account"))]))
+        #expect(answer["at_limit"] == .bool(true))
+        #expect(try await accountNames(f) == ["invented/account"])
+        #expect(f.engine.lock.withLock { f.engine.named["invented/account"] } == "invented-token")
+        #expect(try await f.runtime.handle(.init([(key: "command", value: .str("claude_status"))]))["enabled"] == .bool(true))
+    }
+
+    @Test func aFirstTokenThatFailsAnyOtherWayIsNotSaved() async throws {
+        let f = try Fixture()
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.engineFailed] }
+        await #expect(throws: (any Error).self) { _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_configure")), (key: "program", value: .str("/invented/claude")), (key: "credential", value: .str("invented-token"))])) }
+        #expect(try await f.runtime.handle(.init([(key: "command", value: .str("claude_status"))]))["enabled"] == .bool(false))
+    }
+
     @Test func disconnectingForgetsEveryAccountAndTheCommand() async throws {
         let f = try Fixture(); try await f.connect()
         _ = try await saveToken(f, "second", "invented-second-token")

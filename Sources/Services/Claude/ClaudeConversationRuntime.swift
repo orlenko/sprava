@@ -147,16 +147,18 @@ public actor ClaudeConversationRuntime {
         }
         if command == "claude_configure" {
             guard let path = request["program"]?.stringValue, path.hasPrefix("/"), let credential = request["credential"]?.stringValue else { throw Refused.invalidRequest }
-            try await configure(program: URL(fileURLWithPath: path), credential: credential)
-            return .init()
+            let name = request["name"]?.stringValue ?? ClaudeAccountsState.mainName
+            guard ClaudeAccountName.isValid(name) else { throw Refused.invalidRequest }
+            let limited = try await configure(program: URL(fileURLWithPath: path), credential: credential, name: name)
+            return limited ? .init([(key: "at_limit", value: .bool(true))]) : .init()
         }
         if command == "claude_token_save" {
-            guard let name = request["name"]?.stringValue, ClaudeAccountsState.validName(name), let credential = request["credential"]?.stringValue else { throw Refused.invalidRequest }
+            guard let name = request["name"]?.stringValue, ClaudeAccountName.isValid(name), let credential = request["credential"]?.stringValue else { throw Refused.invalidRequest }
             try await saveToken(name: name, credential: credential)
             return .init()
         }
         if command == "claude_token_remove" {
-            guard let name = request["name"]?.stringValue, ClaudeAccountsState.validName(name), !configuring else { throw Refused.invalidRequest }
+            guard let name = request["name"]?.stringValue, ClaudeAccountName.isValid(name), !configuring else { throw Refused.invalidRequest }
             try removeToken(name)
             return .init()
         }
@@ -295,7 +297,8 @@ public actor ClaudeConversationRuntime {
         return recordJSON(record).objectValue!
     }
 
-    private func configure(program: URL, credential: String) async throws {
+    /// Whether the account was at its usage limit. A refusal for that comes after the token is accepted, so the token is good and is kept.
+    private func configure(program: URL, credential: String, name: String) async throws -> Bool {
         guard !configuring, active.isEmpty, preparing.isEmpty else { throw Refused.busy }
         let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !credential.isEmpty, credential.utf8.count <= 16_384,
@@ -310,27 +313,32 @@ public actor ClaudeConversationRuntime {
         do {
             let first = try await makeDriver(program, credential, id, firstSession.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", nil, nil, { [state] pid in try state.spawned(firstSession, pid: pid) })
             driver = first
-            let answer = try await first.run(question, false)
+            var limited = false, answer: String?
+            do { answer = try await first.run(question, false) }
+            catch ClaudeReadOnlyTurn.Failure.usageLimit { limited = true; answer = "FIRST" }
             guard first.exited(), answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw ClaudeSetupFailure.firstReply }
             try state.exited(firstSession, keep: false)
             try state.forget(connection: id)
-            let secondSession = try state.session(connection: id, generation: UUID(), hash: "setup")
-            recorded = secondSession
-            stage = .resume
-            let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", nil, nil, { [state] pid in try state.spawned(secondSession, pid: pid) })
-            driver = second
-            guard first.hash == second.hash else { throw Refused.unavailable }
-            let fresh = try await second.run(question, false)
-            guard second.exited(), fresh?.trimmingCharacters(in: .whitespacesAndNewlines) == "SECOND" else { throw ClaudeSetupFailure.resume }
-            try state.exited(secondSession, keep: false)
+            if !limited {
+                let secondSession = try state.session(connection: id, generation: UUID(), hash: "setup")
+                recorded = secondSession
+                stage = .resume
+                let second = try await makeDriver(program, credential, id, secondSession.native, Self.setupPolicy + "\nCURRENT_CHECK=SECOND", nil, nil, { [state] pid in try state.spawned(secondSession, pid: pid) })
+                driver = second
+                guard first.hash == second.hash else { throw Refused.unavailable }
+                let fresh = try await second.run(question, false)
+                guard second.exited(), fresh?.trimmingCharacters(in: .whitespacesAndNewlines) == "SECOND" else { throw ClaudeSetupFailure.resume }
+                try state.exited(secondSession, keep: false)
+            }
             let home = support.appendingPathComponent("brains/read-homes/" + id.uuidString)
             if FileManager.default.fileExists(atPath: home.path) { try FileManager.default.removeItem(at: home) }
             try state.setAccount(nil); try connections.disableAll()
             stage = .keychain
-            try secrets.replace(credential)
-            try accounts.saved(ClaudeAccountsState.mainName)
+            if name == ClaudeAccountsState.mainName { try secrets.replace(credential) } else { try secrets.replaceNamed(name, credential) }
+            try accounts.saved(name)
             stage = .unavailable
-            try state.setAccount(.init(program: program, hash: second.hash))
+            try state.setAccount(.init(program: program, hash: first.hash))
+            return limited
         } catch {
             driver?.stop()
             if driver?.exited() != false { try? state.exited(recorded, keep: false) }

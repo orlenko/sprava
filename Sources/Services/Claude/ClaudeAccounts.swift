@@ -2,6 +2,13 @@ import Darwin
 import Foundation
 import SpravaKit
 
+/// A name the person gives a Claude account: short, and plain enough to be what a choosing command prints.
+public enum ClaudeAccountName {
+    public static func isValid(_ name: String) -> Bool {
+        !name.isEmpty && name.utf8.count <= 64 && name.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "._/-".unicodeScalars.contains($0) }
+    }
+}
+
 /// Which Claude accounts Sprava holds a token for, and which it uses now. The tokens themselves are in the Keychain; this holds their
 /// names, the day each was saved, the account in use and the person's choosing command. Sprava knows nothing of what that command runs.
 final class ClaudeAccountsState: @unchecked Sendable {
@@ -17,9 +24,6 @@ final class ClaudeAccountsState: @unchecked Sendable {
     ])
     init(at url: URL) throws { store = try StateStore.open(url, schema: Self.schema) }
 
-    static func validName(_ name: String) -> Bool {
-        !name.isEmpty && name.utf8.count <= 64 && name.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "._/-".unicodeScalars.contains($0) }
-    }
     func tokens() throws -> [Token] {
         try store.read { t in
             try t.rows("SELECT name, saved FROM tokens ORDER BY name").compactMap { row in

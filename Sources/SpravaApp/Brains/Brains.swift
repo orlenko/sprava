@@ -88,15 +88,6 @@ struct BrainsView: View {
     var body: some View {
         List {
             ClaudeAccountView(model: claudeAccount)
-            Text("Your own Claude Code sessions can open a binder folder directly. Sprava no longer installs a connection in those sessions.")
-                .font(.caption).foregroundStyle(.secondary)
-            if model.legacyTerminal {
-                Section("Older Terminal setup") {
-                    Text("The old Sprava connection has been retired. A leftover entry may remain in your Claude Code profile settings.")
-                    Text("Remove an entry only if its command points to Sprava.app/Contents/MacOS/sprava-mcp and its arguments are --client claude-code-1. Sprava did not record which profile it changed, so it leaves those settings untouched.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
             if !model.clients.isEmpty {
                 Section("Older external connections") {
                     ForEach(model.clients) { connection in
