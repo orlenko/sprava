@@ -10,7 +10,7 @@ import SpravaKit
 /// One app-authenticated, explicitly consented conversation per physical binder. Its file tools stop at the binder's
 /// folder, and the only operations it can reach are the to-do tools of a person's own turn (`ClaudeTodoTools`).
 public actor ClaudeConversationRuntime {
-    public enum Refused: Error, Sendable { case notConnected, busy, unavailable, invalidRequest, stopped }
+    public enum Refused: Error, Sendable { case notConnected, busy, unavailable, invalidRequest, stopped, tooLarge }
     struct Driver: Sendable {
         let run: @Sendable (String, Bool) async throws -> String?
         let stop: @Sendable () -> Void
@@ -26,6 +26,8 @@ public actor ClaudeConversationRuntime {
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
     /// The binder writer the to-do tools go through. The runtime attaches it at start.
     public nonisolated let todoWriter = ClaudeTodoWriter()
+    /// Why a turn failed, for as long as this process runs; a failed turn from before a restart has no reason to give.
+    private var failureReasons: [UUID: String] = [:]
     private let support: URL
     private let connections: ClaudeReadConnections
     private var exports = ConversationExport()
@@ -341,6 +343,7 @@ public actor ClaudeConversationRuntime {
             } else { _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .interrupted) }
         } catch {
             if error as? ClaudeReadOnlyTurn.Failure == .exitUnconfirmed { mayRelease = false }
+            if !signal.stopped { noteFailure(of: record.requestID, error) }
             if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
@@ -350,6 +353,37 @@ public actor ClaudeConversationRuntime {
             _ = await admission.confirmedExit(lease)
             active.removeValue(forKey: scope.id)
         } // Otherwise the active entry and slot stay quarantined; no silent retry.
+    }
+
+    /// Keeps why a turn failed for the app to say, and logs it. A closed set of codes: no words of the turn reach the log.
+    private func noteFailure(of request: UUID, _ error: Error) {
+        let reason = Self.failureCode(error)
+        if failureReasons.count >= 64 { failureReasons.removeAll() }
+        failureReasons[request] = reason
+        AtomicFile.appendLine("\(ISOTime.string(Date())) claude turn outcome=failed reason=\(reason)",
+                              to: support.appendingPathComponent("runtime/jobs.log"))
+    }
+
+    static func failureCode(_ error: Error) -> String {
+        if let failure = error as? ClaudeReadOnlyTurn.Failure {
+            switch failure {
+            case .busy: return "busy"
+            case .startFailed: return "start_failed"
+            case .protocolMismatch: return "protocol"
+            case .authentication: return "authentication"
+            case .usageLimit: return "usage_limit"
+            case .engineFailed: return "engine"
+            case .endedWithoutResult: return "ended_early"
+            case .outputLimit: return "output_limit"
+            case .deadline: return "deadline"
+            case .exitUnconfirmed: return "exit_unconfirmed"
+            case .replacementRequired: return "replacement_required"
+            }
+        }
+        if error is ClaudeSetupFailure { return "setup" }
+        if error as? Refused == .unavailable { return "binder_unavailable" }
+        if error as? Refused == .tooLarge { return "too_large" }
+        return "other"
     }
 
     /// What the turn changed, whether or not it finished. Runs before the turn's phase is reported, so the reply and its
@@ -406,6 +440,7 @@ public actor ClaudeConversationRuntime {
     private func recordJSON(_ r: ConversationTurnStore.Record) -> JSONValue {
         var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
               ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
+        if r.phase == .failed, let reason = failureReasons[r.requestID] { fields.append(("reason", .str(reason))) }
         let history = TurnHistory(support: support, binder: r.conversationID)
         let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID)
         if entry != nil || todos != nil {

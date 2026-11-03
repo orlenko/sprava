@@ -132,7 +132,7 @@ struct ClaudeBinderContext: Sendable {
             ("sources", .array(sources.map(\.json))), ("incomplete_sources", .array(gaps)),
             ("search_is_exhaustive", .bool(false))
         ])
-        guard JSONWriter.compact(data).utf8.count <= maximumPackBytes else { throw Unavailable() }
+        guard JSONWriter.compact(data).utf8.count <= maximumPackBytes else { throw ClaudeConversationRuntime.Refused.tooLarge }
         return Self(data: data, sources: sources)
     }
 

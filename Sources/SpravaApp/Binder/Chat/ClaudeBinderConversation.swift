@@ -210,7 +210,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                         case "failed":
                             self.forgetPending(turn, in: folder)
                             if let change = Self.change(value, turn: turn.turnID) { continuation.yield(.binderChanged(change)); self.changed() }
-                            continuation.yield(.failed(.unavailable)); return
+                            continuation.yield(.failed(.turnFailed(value["reason"]?.stringValue))); return
                         case "accepted", "running": break
                         default: throw ChatCommandFailure.unavailable
                         }

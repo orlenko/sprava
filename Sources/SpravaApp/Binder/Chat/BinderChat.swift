@@ -332,9 +332,29 @@ final class BinderChat: ObservableObject {
         switch error as? ChatCommandFailure {
         case .invalidRequest?: "This line cannot be sent as it is."
         case .busy?: "The binder is still busy with another reply. Try again in a moment."
-        case .unavailable?: "The binder could not be reached."
+        case .unavailable?, nil: "Sprava's background part did not answer. Try again in a moment."
         case .cancelled?: "Sending was cancelled."
-        case nil: "The binder could not be reached."
+        case .turnFailed(let reason)?: words(turnFailure: reason)
+        }
+    }
+
+    /// Why Claude's turn did not finish. A code the runtime sends and this build does not know gets the general line.
+    static func words(turnFailure reason: String?) -> String {
+        switch reason {
+        case "busy": "Claude is still busy with another reply. Try again in a moment."
+        case "start_failed", "exit_unconfirmed": "Claude could not be started. Try again in a moment."
+        case "protocol": "Claude did something Sprava does not allow, so this reply was stopped. Try asking another way."
+        case "authentication": "Claude rejected the sign-in. Check the connection in Assistant."
+        case "usage_limit": "This Claude account has reached a usage limit. Connect another account in Assistant, or try again after it resets."
+        case "engine": "Claude could not finish this request, which can mean a service problem or a file too large for it. Try again, or ask for less at once."
+        case "ended_early": "Claude stopped before finishing its reply. Try again."
+        case "output_limit": "Claude's reply was too long to keep. Ask for less at once."
+        case "deadline": "Claude ran out of time on this request. Ask for less at once."
+        case "replacement_required": "This conversation needs a fresh start with Claude. Send your message again."
+        case "setup": "Claude's setup needs a look. Check the connection in Assistant."
+        case "too_large": "This binder and its recent conversation are too much to send Claude in one turn."
+        case "binder_unavailable": "The binder could not be reached: it may be offloaded or off the shelf."
+        default: "Claude could not finish this request. It was not retried."
         }
     }
 
