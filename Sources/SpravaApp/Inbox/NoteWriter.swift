@@ -22,7 +22,7 @@ enum NoteWriter {
         do {
             // The runtime makes this Mac's id at its first start; the app only reads it, never makes one.
             guard let deviceID = try DeviceID.existing(support: support) else {
-                return .refused("The note was not saved: Sprava's background part has not started on this Mac yet. Health, at the top of the sidebar, shows when it runs.")
+                return .refused("The note was not saved: Sprava's background part has not started on this Mac yet. Health, at the bottom of the sidebar, shows when it runs.")
             }
             let producer = CaptureProducer(root: CaptureInbox.defaultRoot(support: support), deviceID: deviceID, support: support)
             let note = try producer.prepareNote(text, binderHint: binderHint, isPrivate: isPrivate, startedAt: startedAt)

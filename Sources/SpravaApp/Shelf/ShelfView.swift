@@ -17,6 +17,13 @@ final class ShelfModel: ObservableObject, DraftOwner {
     @Published var today = CalendarDate.today()
     @Published private(set) var counts: [URL: ShelfCounts] = [:]
     @Published private(set) var todos = TodoBoard(today: CalendarDate.today())
+    /// The row that is General, once it exists.
+    @Published private(set) var general: URL?
+    /// The Shelf as the sidebar lists it: General last, whatever its place among recent binders.
+    var shelfRows: [ShelfRow] { Self.generalLast(rows, general: general) }
+    nonisolated static func generalLast(_ rows: [ShelfRow], general: URL?) -> [ShelfRow] {
+        rows.filter { $0.folder != general } + rows.filter { $0.folder == general }
+    }
     /// The binder opened is recorded at once (the Shelf's own UI state, `recent.json`); the Shelf reorders on its
     /// next refresh, so the row never jumps away under the pointer.
     @Published var selection: URL? {
@@ -93,7 +100,10 @@ final class ShelfModel: ObservableObject, DraftOwner {
                 let today = CalendarDate.today()
                 var counts: [URL: ShelfCounts] = [:]
                 for row in snapshot.rows { counts[row.folder] = summarize(row, today) }
-                return ShelfPresentation(snapshot: snapshot, today: today, counts: counts)
+                // A binding that cannot be read only leaves General where it was; opening it reports the problem.
+                let binding = GeneralBinder(support: support)
+                let general = snapshot.rows.first { (try? binding.protects($0.folder)) == true }?.folder
+                return ShelfPresentation(snapshot: snapshot, today: today, counts: counts, general: general)
             }
             guard let self else { return }
             defer { refreshTask = nil }
@@ -106,6 +116,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
             rows = prepared.snapshot.rows
             counts = prepared.counts
             todos = prepared.todos
+            general = prepared.general
             snapshotNote = prepared.snapshot.note
             if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = rows.first?.folder }
             lastRefresh = Date()
@@ -295,7 +306,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
         operationNote = "Starting Sprava's background part…"
         switch await startRuntime() {
         case .failed(let why):
-            operationNote = why + " Health, at the top of the sidebar, can restart it."
+            operationNote = why + " Health, at the bottom of the sidebar, can restart it."
         case .needsApproval:
             operationNote = "Sprava's background part is waiting for your approval in System Settings › General › Login Items. Approve Sprava there, then try again."
         case .running:
@@ -304,7 +315,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
                 if await client.presence() == .answers { operationNote = nil; return true }
                 try? await Task.sleep(for: .milliseconds(500))
             } while ContinuousClock.now < deadline
-            operationNote = "Sprava's background part has not started yet. Try again in a minute; Health, at the top of the sidebar, shows when it is running."
+            operationNote = "Sprava's background part has not started yet. Try again in a minute; Health, at the bottom of the sidebar, shows when it is running."
         }
         return false
     }
@@ -365,7 +376,6 @@ struct ShelfView: View {
         NavigationSplitView {
             List(selection: $model.selection) {
                 Section {
-                    HealthLabel(health: model.health).tag(healthSelection)
                     HStack {
                         Label("To-dos", systemImage: "checklist")
                         Spacer()
@@ -382,8 +392,8 @@ struct ShelfView: View {
                     Label("Assistant", systemImage: "bubble.left.and.bubble.right").tag(brainsSelection)
                 }
                 Section("Shelf") {
-                    ForEach(model.rows, id: \.folder) { row in
-                        ShelfRowView(row: row, counts: model.counts[row.folder] ?? ShelfCounts())
+                    ForEach(model.shelfRows, id: \.folder) { row in
+                        ShelfRowView(row: row, counts: model.counts[row.folder] ?? ShelfCounts(), isGeneral: row.folder == model.general)
                             .tag(row.folder)
                             .contextMenu {
                                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([row.folder]) }
@@ -392,28 +402,35 @@ struct ShelfView: View {
                                 }
                             }
                     }
+                    // General is created when first opened, so its row is there before its folder is.
+                    if model.general == nil {
+                        Button { model.openGeneral() } label: {
+                            Text("General").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).disabled(model.openingGeneral)
+                    }
                 }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 240, ideal: 280)
             .safeAreaInset(edge: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Button("General") { model.openGeneral() }
-                        .buttonStyle(.borderless).disabled(model.openingGeneral)
+                VStack(alignment: .leading, spacing: 8) {
                     Button { model.newBinder() } label: { Label("New Binder…", systemImage: "plus") }
                         .buttonStyle(.borderless)
                         .disabled(model.creatingBinder)
-                    if let note = model.note {
-                        Text(note).font(.caption).foregroundStyle(.orange)
-                    }
-                    Text("Updated \(model.lastRefresh.map { $0.formatted(date: .omitted, time: .shortened) } ?? "–")")
-                        .font(.caption).foregroundStyle(.secondary)
+                    HealthStatusLine(health: model.health, selected: model.selection == healthSelection,
+                                     updated: model.lastRefresh.map { $0.formatted(date: .omitted, time: .shortened) } ?? "–",
+                                     open: { model.selection = healthSelection })
                 }
-                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 8)
             }
         } detail: {
             VStack(spacing: 0) {
             // Above the page, in its column, so it pushes the page down and cannot cover its title. Health says all this itself.
+            if let note = model.note {
+                Notice(level: .needsYou, title: note).padding([.horizontal, .top], 16)
+            }
             if model.selection != healthSelection {
                 RuntimeBanner(health: model.health, openHealth: { model.selection = healthSelection })
             }
@@ -482,48 +499,59 @@ struct ShelfView: View {
     }
 }
 
+/// A binder's name and the one thing to know about it. Fine is silent: an ordinary binder shows no state and no time.
 struct ShelfRowView: View {
     let row: ShelfRow
     let counts: ShelfCounts
+    var isGeneral = false
+
+    struct Signal: Equatable {
+        enum Tone: Equatable { case trouble, needsYou, quiet }
+        let tone: Tone
+        let words: String
+    }
+
+    /// The line under the name: anything wrong with the binder first, since its counts may not be whole then.
+    static func signal(_ row: ShelfRow, chase: Int) -> Signal? {
+        switch row.teka.state {
+        case .notATeka, .corrupt: return Signal(tone: .trouble, words: row.stateLabel)
+        case .needsAttention, .unknownLevel: return Signal(tone: .needsYou, words: row.stateLabel)
+        default: break
+        }
+        if !row.teka.isAdopted { return Signal(tone: .quiet, words: row.stateLabel) }
+        if row.teka.state != .ready { return Signal(tone: .needsYou, words: row.stateLabel) }
+        return chase > 0 ? Signal(tone: .needsYou, words: "\(chase) to chase") : nil
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(row.name).font(.headline)
-            HStack(spacing: 6) {
-                StateBadge(state: row.teka.state, label: row.stateLabel)
-                if counts.count(.overdue) > 0 {
-                    Text("\(counts.count(.overdue)) overdue").foregroundStyle(.red)
-                }
-                if counts.count(.nudge) > 0 {
-                    Text("\(counts.count(.nudge)) to chase").foregroundStyle(.orange)
-                }
-                if let modified = row.teka.modified {
-                    Text(modified, format: .relative(presentation: .named)).foregroundStyle(.secondary)
-                }
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.name).font(.headline).lineLimit(1).foregroundStyle(isGeneral ? .secondary : .primary)
+                if let signal = Self.signal(row, chase: counts.count(.nudge)) { line(signal) }
             }
-            .font(.caption)
+            Spacer(minLength: 0)
+            if counts.count(.overdue) > 0 {
+                Text("\(counts.count(.overdue))")
+                    .fontWeight(.semibold).monospacedDigit().foregroundStyle(NoticeLevel.broken.color)
+                    .help("\(counts.count(.overdue)) overdue")
+                    .accessibilityLabel("\(counts.count(.overdue)) overdue")
+            }
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
-}
 
-struct StateBadge: View {
-    let state: TekaState
-    let label: String
-
-    var color: Color {
-        switch state {
-        case .ready: .green
-        case .needsMigration: .blue
-        case .needsAttention, .unknownLevel: .orange
-        case .corrupt, .notATeka: .red
+    @ViewBuilder private func line(_ signal: Signal) -> some View {
+        switch signal.tone {
+        case .trouble:
+            // Not a Label: a sidebar list gives a Label's icon its own colour, and red must stay red.
+            HStack(spacing: 4) {
+                Image(systemName: NoticeLevel.broken.symbol).accessibilityHidden(true)
+                Text(verbatim: signal.words)
+            }
+            .font(.caption).foregroundStyle(NoticeLevel.broken.color)
+        case .needsYou: Text(verbatim: signal.words).font(.caption).foregroundStyle(NoticeLevel.needsYou.color)
+        case .quiet: Text(verbatim: signal.words).font(.caption).foregroundStyle(.secondary)
         }
-    }
-
-    var body: some View {
-        Text(label)
-            .padding(.horizontal, 5)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
     }
 }
