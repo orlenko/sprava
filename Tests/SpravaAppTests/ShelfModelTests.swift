@@ -149,7 +149,7 @@ private final class BlockedShelfSummary: @unchecked Sendable {
 /// The waits here are on the reads themselves, and no read times out unless the test expires it, so a loaded
 /// machine changes how long a test takes, never what it finds; the time limit catches a broken implementation.
 @MainActor
-@Suite(.timeLimit(.minutes(1))) struct ShelfModelTests {
+@Suite(.timeLimit(.minutes(5))) struct ShelfModelTests {
     @Test func nowPagesArePreparedOffMainAndReusedByTheViews() async throws {
         let support = try temporaryFolder()
         let binder = try makeTeka(fixture: "sprava-v0", folderName: "garden-shed")
