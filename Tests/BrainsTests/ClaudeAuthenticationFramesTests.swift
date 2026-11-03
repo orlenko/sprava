@@ -88,4 +88,17 @@ import Testing
             ("api_error_status", .int(503)), ("result", .str("invented private provider text"))]))
         #expect(frames.ended && frames.reply == nil)
     }
+
+    /// The same refusal after a tool ran says so, because the turn may have changed something and must not simply start again.
+    @Test func aLimitAfterAToolIsNotTheLimitBeforeOne() throws {
+        let id = UUID(), text = id.uuidString.lowercased()
+        func frame(_ json: String) throws -> JSONObject { try #require(JSONParser.parse(json).value.objectValue) }
+        var frames = ClaudeReadOnlyFrames(sessionID: id, original: "Tidy", tools: ["Bash"])
+        try frames.receive(frame(#"{"type":"system","subtype":"init","session_id":"\#(text)","tools":["Bash"],"mcp_servers":[],"permissionMode":"default"}"#))
+        try frames.receive(frame(#"{"type":"user","session_id":"\#(text)","parent_tool_use_id":null,"message":{"role":"user","content":"Tidy"}}"#))
+        try frames.receive(frame(#"{"type":"assistant","session_id":"\#(text)","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}"#))
+        #expect(throws: ClaudeReadOnlyTurn.Failure.usageLimitMidTurn) {
+            try frames.receive(frame(#"{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"session_id":"\#(text)"}"#))
+        }
+    }
 }

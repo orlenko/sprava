@@ -25,6 +25,9 @@ import Testing
         var act: (@Sendable () -> Void)?
         /// What a turn fails with after it acts, if anything.
         var failure: (any Error)?
+        var failNext: [any Error] = []
+        var credentials: [String] = []
+        var named: [String: String] = [:]
         /// The folder each launch was given tools in; nil for a tool-free one.
         var reaches: [URL?] = []
         /// The to-do tools the latest launch was given.
@@ -38,6 +41,7 @@ import Testing
             return .init(run: { [self] line, resume in
                 lock.withLock { lines.append(line); resumes.append(resume); running = true; stopped = false }
                 defer { lock.withLock { running = false } }
+                if let failure = lock.withLock({ failNext.isEmpty ? nil : failNext.removeFirst() }) { throw failure }
                 if line == "Read CURRENT_CHECK in the app's current policy and return only its exact value." { return (resume ? originalPolicy : policy).hasSuffix("CURRENT_CHECK=SECOND") ? "SECOND" : "FIRST" }
                 lock.withLock { act }?()
                 if let failure = lock.withLock({ failure }) { throw failure }
@@ -51,7 +55,7 @@ import Testing
         let folder: URL
         let runtime: ClaudeConversationRuntime
         let engine: Engine
-        init(onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in },
+        init(chooser: Choice? = nil, onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in },
              available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-claude-runtime-\(UUID())")
             try AtomicFile.makePrivateFolder(root)
@@ -61,14 +65,22 @@ import Testing
             let engine = Engine(); self.engine = engine
             runtime = try ClaudeConversationRuntime(support: root.appendingPathComponent("support"), secrets: .init(read: {
                 engine.lock.withLock { engine.token }
-            }, replace: { token in engine.lock.withLock { engine.token = token } }), makeDriver: { _, _, _, session, policy, reach, appTools, _ in
-                engine.lock.withLock { engine.reaches.append(reach); engine.appTools = appTools }
+            }, replace: { token in engine.lock.withLock { engine.token = token } }, readNamed: { name in engine.lock.withLock { engine.named[name] } },
+               replaceNamed: { name, value in engine.lock.withLock { engine.named[name] = value } }), makeDriver: { _, credential, _, session, policy, reach, appTools, _ in
+                engine.lock.withLock { engine.reaches.append(reach); engine.appTools = appTools; engine.credentials.append(credential) }
                 return engine.driver(policy: policy, session: session)
             }, context: { folder, documents, intake, query, cancelled in
                 try onRead(folder, cancelled)
                 return .init(data: .obj([("fresh_query", .str(query)), ("documents", .bool(documents)), ("intake", .bool(intake))]),
                       sources: [.init(id: "S1", path: "documents/bylaw.txt", page: 2, revision: "invented-r1", text: "Pets require written permission.")])
-            }, available: available)
+            }, chooser: { [chooser] _ in chooser?.next() ?? .failed }, available: available)
+        }
+        final class Choice: @unchecked Sendable {
+            private let lock = NSLock(); private var outcome: ClaudeAccountChooser.Outcome; private var count = 0
+            init(_ outcome: ClaudeAccountChooser.Outcome) { self.outcome = outcome }
+            func set(_ value: ClaudeAccountChooser.Outcome) { lock.withLock { outcome = value } }
+            func next() -> ClaudeAccountChooser.Outcome { lock.withLock { count += 1; return outcome } }
+            var runs: Int { lock.withLock { count } }
         }
         func configure() async throws {
             _ = try await runtime.handle(.init([(key: "command", value: .str("claude_configure")), (key: "program", value: .str("/invented/claude")), (key: "credential", value: .str("invented-token"))]))
@@ -294,6 +306,112 @@ import Testing
         #expect(f.engine.lock.withLock { f.engine.resumes } == [false, false, false, false])
         #expect(f.engine.lock.withLock { f.engine.lines.last } == "And parking?")
         #expect(f.engine.lock.withLock { f.engine.policies.last?.contains("Which bylaw covers pets?") } == true)
+    }
+
+    private func accountNames(_ f: Fixture) async throws -> [String] {
+        (try await f.runtime.handle(.init([(key: "command", value: .str("claude_status"))]))["tokens"]?.arrayValue ?? []).compactMap { $0["name"]?.stringValue }
+    }
+    private func saveToken(_ f: Fixture, _ name: String, _ credential: String) async throws -> JSONObject {
+        try await f.runtime.handle(.init([(key: "command", value: .str("claude_token_save")), (key: "name", value: .str(name)), (key: "credential", value: .str(credential))]))
+    }
+
+    @Test func oneTokenIsAllMostPeopleSee() async throws {
+        let f = try Fixture(); try await f.connect()
+        #expect(try await accountNames(f) == ["main"])
+        let id = UUID(); _ = try await f.send(id, "Hello"); #expect(try await f.completed(id)["phase"] == .str("replied"))
+    }
+
+    @Test func aRefusedAccountHandsTheSameTurnToTheNext() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await saveToken(f, "second", "invented-second-token")
+        #expect(Set(try await accountNames(f)) == ["main", "second"])
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.usageLimit] }
+        let id = UUID(); _ = try await f.send(id, "Which bylaw?")
+        let done = try await f.completed(id)
+        #expect(done["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { Array(f.engine.credentials.suffix(2)) } == ["invented-token", "invented-second-token"])
+    }
+
+    @Test func noRetryOnceAToolHasRun() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await saveToken(f, "second", "invented-second-token")
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.usageLimitMidTurn] }
+        let id = UUID(); _ = try await f.send(id, "Tidy up.")
+        let done = try await f.completed(id)
+        #expect(done["phase"] == .str("failed") && done["reason"] == .str("usage_limit") && done["account"] == .str("main"))
+        #expect(f.engine.lock.withLock { f.engine.credentials.last } == "invented-token")
+    }
+
+    @Test func everyAccountRefusedSaysSoAndNamesTheLast() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await saveToken(f, "second", "invented-second-token")
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.usageLimit, ClaudeReadOnlyTurn.Failure.usageLimit] }
+        let id = UUID(); _ = try await f.send(id, "Which bylaw?")
+        let done = try await f.completed(id)
+        #expect(done["phase"] == .str("failed") && done["reason"] == .str("usage_limit"))
+        // Nothing stays held, so the next turn runs.
+        let next = UUID(); _ = try await f.send(next, "Again."); #expect(try await f.completed(next)["phase"] == .str("replied"))
+    }
+
+    @Test func theChoosingCommandPicksTheAccountOnlyForANewSession() async throws {
+        let box = Fixture.Choice(.account("second"))
+        let f = try Fixture(chooser: box); try await f.connect()
+        _ = try await saveToken(f, "second", "invented-second-token")
+        _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_chooser_set")), (key: "chooser", value: .str("invented-command"))]))
+        let first = UUID(); _ = try await f.send(first, "One."); #expect(try await f.completed(first)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.credentials.last } == "invented-second-token")
+        box.set(.account("main"))
+        let next = UUID(); _ = try await f.send(next, "Two."); #expect(try await f.completed(next)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.credentials.last } == "invented-second-token") // A resumed session stays, keeping its cache.
+        #expect(box.runs == 1)
+    }
+
+    @Test func aChoosingCommandThatSaysNoQuotaOrAnUnknownNameIsNamed() async throws {
+        let box = Fixture.Choice(.noQuota)
+        let f = try Fixture(chooser: box); try await f.connect()
+        _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_chooser_set")), (key: "chooser", value: .str("invented-command"))]))
+        let first = UUID(); _ = try await f.send(first, "One.")
+        #expect(try await f.completed(first)["reason"] == .str("no_quota"))
+        box.set(.account("nobody"))
+        let next = UUID(); _ = try await f.send(next, "Two.")
+        let done = try await f.completed(next)
+        #expect(done["reason"] == .str("token_missing") && done["account"] == .str("nobody"))
+        box.set(.failed)
+        let last = UUID(); _ = try await f.send(last, "Three."); #expect(try await f.completed(last)["phase"] == .str("replied")) // A broken command blocks nothing.
+    }
+
+    @Test func aTokenIsSavedOnlyAfterItWorksThoughALimitedAccountIsKept() async throws {
+        let f = try Fixture(); try await f.connect()
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.authentication] }
+        await #expect(throws: (any Error).self) { _ = try await saveToken(f, "rejected", "invented-bad") }
+        #expect(try await accountNames(f) == ["main"])
+        f.engine.lock.withLock { f.engine.failNext = [ClaudeReadOnlyTurn.Failure.usageLimit] }
+        _ = try await saveToken(f, "limited", "invented-limited")
+        #expect(Set(try await accountNames(f)) == ["main", "limited"])
+        await #expect(throws: (any Error).self) { _ = try await saveToken(f, "two words", "invented") }
+    }
+
+    @Test func aBinderStaysConnectedWhenTheMainTokenIsRemovedAndAnotherRemains() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await saveToken(f, "second", "invented-second-token")
+        _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_token_remove")), (key: "name", value: .str("main"))]))
+        #expect(try await accountNames(f) == ["second"])
+        #expect(try await f.request("claude_binder")["binder_id"]?.stringValue != nil)
+        let id = UUID(); _ = try await f.send(id, "Hello"); #expect(try await f.completed(id)["phase"] == .str("replied"))
+        #expect(f.engine.lock.withLock { f.engine.credentials.last } == "invented-second-token")
+        await #expect(throws: (any Error).self) { // The last one goes with Disconnect.
+            _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_token_remove")), (key: "name", value: .str("second"))]))
+        }
+    }
+
+    @Test func disconnectingForgetsEveryAccountAndTheCommand() async throws {
+        let f = try Fixture(); try await f.connect()
+        _ = try await saveToken(f, "second", "invented-second-token")
+        _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_chooser_set")), (key: "chooser", value: .str("invented-command"))]))
+        _ = try await f.runtime.handle(.init([(key: "command", value: .str("claude_disconnect"))]))
+        #expect(f.engine.lock.withLock { f.engine.named.isEmpty })
+        let status = try await f.runtime.handle(.init([(key: "command", value: .str("claude_status"))]))
+        #expect(status["enabled"] == .bool(false) && status["chooser"] == nil)
     }
 
     @Test func onlyAConnectionWithFileConsentIsOfferedTheWholeBinder() async throws {

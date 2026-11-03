@@ -387,3 +387,20 @@ import Testing
         #expect(c.engine.lock.withLock { c.engine.appTools } == nil)
     }
 }
+
+/// The person's own command, on a real shell. Invented text only.
+@Suite struct ClaudeAccountChooserTests {
+    @Test func whatItPrintsAndHowItEndsAreRead() {
+        #expect(ClaudeAccountChooser.run("echo invented/account", shell: "/bin/sh") == .account("invented/account"))
+        #expect(ClaudeAccountChooser.run("printf ''", shell: "/bin/sh") == .noQuota)
+        #expect(ClaudeAccountChooser.run("exit 75", shell: "/bin/sh") == .noQuota)
+        #expect(ClaudeAccountChooser.run("exit 3", shell: "/bin/sh") == .failed)
+        #expect(ClaudeAccountChooser.run("echo first; echo second", shell: "/bin/sh") == .account("first"))
+    }
+    @Test func aStuckCommandIsStoppedAndABackgroundHelperDoesNotHoldIt() {
+        let start = Date()
+        #expect(ClaudeAccountChooser.run("/bin/sleep 30", shell: "/bin/sh", timeout: 0.3) == .failed)
+        #expect(ClaudeAccountChooser.run("/bin/sleep 5 & echo invented", shell: "/bin/sh") == .account("invented"))
+        #expect(Date().timeIntervalSince(start) < 4)
+    }
+}

@@ -334,18 +334,21 @@ final class BinderChat: ObservableObject {
         case .busy?: "The binder is still busy with another reply. Try again in a moment."
         case .unavailable?, nil: "Sprava's background part did not answer. Try again in a moment."
         case .cancelled?: "Sending was cancelled."
-        case .turnFailed(let reason)?: words(turnFailure: reason)
+        case .turnFailed(let reason, let account)?: words(turnFailure: reason, account: account)
         }
     }
 
     /// Why Claude's turn did not finish. A code the runtime sends and this build does not know gets the general line.
-    static func words(turnFailure reason: String?) -> String {
-        switch reason {
+    static func words(turnFailure reason: String?, account: String? = nil) -> String {
+        let named = account.map { "“\($0)”" }
+        return switch reason {
         case "busy": "Claude is still busy with another reply. Try again in a moment."
         case "start_failed", "exit_unconfirmed": "Claude could not be started. Try again in a moment."
         case "protocol": "Claude did something Sprava does not allow, so this reply was stopped. Try asking another way."
-        case "authentication": "Claude rejected the sign-in. Check the connection in Assistant."
-        case "usage_limit": "This Claude account has reached a usage limit. Connect another account in Assistant, or try again after it resets."
+        case "authentication": named.map { "Claude rejected the token for \($0). Save a new one in Assistant." } ?? "Claude rejected the sign-in. Check the connection in Assistant."
+        case "usage_limit": "\(named.map { "The Claude account \($0)" } ?? "This Claude account") has reached a usage limit. Add another account in Assistant, or try again after it resets."
+        case "no_quota": "None of your Claude accounts has quota left right now. Try again after one resets."
+        case "token_missing": named.map { "Sprava has no token for \($0). Add one in Assistant." } ?? "Sprava has no token for that Claude account. Add one in Assistant."
         case "engine": "Claude could not finish this request, which can mean a service problem or a file too large for it. Try again, or ask for less at once."
         case "ended_early": "Claude stopped before finishing its reply. Try again."
         case "output_limit": "Claude's reply was too long to keep. Ask for less at once."
