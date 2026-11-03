@@ -85,13 +85,21 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         guard let self else { throw ChatCommandFailure.unavailable }
         try await self.interrupt(binder: binder, turn: turn)
     })
-    lazy var chat = BinderChat(commands: adapter, binderID: { [weak self] folder in self?.scopes[folder.standardizedFileURL] }, ready: { [weak self] folder in self?.connected == true && self?.folder == folder }, undo: { [weak self] reference, folder in
+    lazy var chat: BinderChat = makeChat()
+    private func makeChat() -> BinderChat {
+        let chat = BinderChat(commands: adapter, binderID: { [weak self] folder in self?.scopes[folder.standardizedFileURL] }, ready: { [weak self] folder in self?.connected == true && self?.folder == folder }, undo: { [weak self] reference, folder in
         guard let self else { throw ChatCommandFailure.unavailable }
         try await self.undoTurn(reference, in: folder)
     }, readHistory: { [weak self] folder in
         guard let self else { return ([], "Saved conversation is unavailable.") }
         return await self.history(folder)
     })
+        chat.reattach = { [weak self] binderID, requestID, turnID, folder in
+            guard let self else { return ChatTurn(binderID: binderID, requestID: requestID, turnID: turnID, events: AsyncStream { $0.finish() }) }
+            return self.observe(SavedTurn(binderID: binderID, requestID: requestID, turnID: turnID), in: folder)
+        }
+        return chat
+    }
     lazy var sharing = ConversationSharing(client: client)
     var scopeID: String? { folder.flatMap { scopes[$0] } }
     var hasSavedScope: Bool { folder.flatMap { scopes[$0] } != nil }

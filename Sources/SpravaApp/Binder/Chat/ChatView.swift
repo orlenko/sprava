@@ -15,6 +15,8 @@ struct ChatView: View {
     /// False while the binder is not connected: its saved turns stay in view, but there is nothing to send to, so
     /// there is no second input on the page, unless an unsent line is kept there, which stays in sight.
     var connected = true
+    var openAssistant: () -> Void = {}
+    var restartBackground: () -> Void = {}
     var suggestion: (UUID) -> AnyView = { _ in AnyView(EmptyView()) }
     @StateObject private var viewport = ConversationViewport()
 
@@ -64,7 +66,7 @@ struct ChatView: View {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(chat.entries) { entry in
                             VStack(alignment: .leading, spacing: 8) {
-                                EntryView(entry: entry, chat: chat)
+                                EntryView(entry: entry, chat: chat, openAssistant: openAssistant, restartBackground: restartBackground)
                                 suggestion(entry.id)
                             }
                             .frame(maxWidth: 820).frame(maxWidth: .infinity)
@@ -116,6 +118,8 @@ struct ChatView: View {
 private struct EntryView: View {
     let entry: BinderChat.Entry
     @ObservedObject var chat: BinderChat
+    let openAssistant: () -> Void
+    let restartBackground: () -> Void
 
     var body: some View {
         VStack(alignment: entry.speaker == .person ? .trailing : .leading, spacing: 4) {
@@ -177,9 +181,25 @@ private struct EntryView: View {
         case .replying where entry.text.isEmpty && entry.activity == nil:
             ProgressView().controlSize(.small)
         case .stopped: Text("Stopped. Changes made before Stop keep their Undo.").font(.caption).foregroundStyle(.secondary)
-        case .incomplete: Text("This reply stopped before it finished.").font(.caption).foregroundStyle(.secondary)
-        case .failed(let why): Text(verbatim: why).font(.caption).foregroundStyle(.secondary)
+        case .incomplete, .failed:
+            if let problem = entry.problem { notice(problem) }
         default: EmptyView()
+        }
+    }
+}
+
+private extension EntryView {
+    func notice(_ problem: ReplyProblem) -> some View {
+        let words = problem.words(for: entry)
+        return Notice(level: problem.level, title: words.title, detail: words.detail) {
+            ForEach(chat.actions(for: entry), id: \.self) { action in
+                switch action {
+                case .checkReply: Button("Check Reply") { chat.checkReply(entry) }
+                case .editAndSend: Button("Edit and Send") { chat.putBack(entry) }
+                case .openAssistant: Button("Open Assistant", action: openAssistant)
+                case .restart: Button("Restart", action: restartBackground)
+                }
+            }
         }
     }
 }

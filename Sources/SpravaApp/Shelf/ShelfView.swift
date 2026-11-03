@@ -412,6 +412,11 @@ struct ShelfView: View {
                 .padding(8)
             }
         } detail: {
+            VStack(spacing: 0) {
+            // Above the page, in its column, so it pushes the page down and cannot cover its title. Health says all this itself.
+            if model.selection != healthSelection {
+                RuntimeBanner(health: model.health, openHealth: { model.selection = healthSelection })
+            }
             StartingScreen(keeper: model.health.keeper, covers: model.selection != healthSelection) {
                 if model.selection == healthSelection {
                     HealthView(model: model.health)
@@ -443,10 +448,7 @@ struct ShelfView: View {
                     }
                 }
             }
-        }
-        .safeAreaInset(edge: .top) {
-            RuntimeBanner(health: model.health, openHealth: { model.selection = healthSelection })
-                .padding(.horizontal)
+            }
         }
         .background(WindowCloseGuard(registry: drafts).allowsHitTesting(false))
         .onAppear {
