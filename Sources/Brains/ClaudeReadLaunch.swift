@@ -160,8 +160,9 @@ package enum ClaudeReadLaunch {
         (allow signal (target same-sandbox))
         (deny network-outbound)
         (allow network-outbound (remote ip \(q("localhost:\(reach.proxyPort)"))))
-        (deny network-bind (local ip))
-        (deny network-inbound (local ip))
+        (deny network-bind)
+        (deny network-inbound)
+        (deny ipc-sysv*)
         \(AgentContainment.rule(session: session))
         """
     }

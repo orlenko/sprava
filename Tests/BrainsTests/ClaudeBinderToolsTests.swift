@@ -139,6 +139,35 @@ import Testing
         #expect(try !f.allowed(#"/usr/bin/perl -e 'use Socket; socket(S, PF_INET, SOCK_STREAM, 6) or exit 3; bind(S, pack_sockaddr_in(0, INADDR_ANY)) or exit 4; listen(S, 1) or exit 5; exit 0'"#))
     }
 
+    /// Runs a command with the fixture's folders and no walls, so a refusal inside them is known to come from the walls.
+    private func plainly(_ f: Fixture, _ command: String) throws -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh"); task.arguments = ["-c", command]; task.currentDirectoryURL = f.binder
+        task.standardOutput = FileHandle.nullDevice; task.standardError = FileHandle.nullDevice
+        try task.run(); task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    /// A socket in the binder, an IP address or not, hands a document to any program outside the walls that connects.
+    @Test func aCommandCannotOpenAUnixSocket() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let command = #"/usr/bin/perl -e 'use Socket; socket(S, PF_UNIX, SOCK_STREAM, 0) or exit 3; bind(S, pack_sockaddr_un("wall.sock")) or exit 4; listen(S, 1) or exit 5; exit 0'"#
+        #expect(try !f.allowed(command))
+        #expect(!FileManager.default.fileExists(atPath: f.binder.appendingPathComponent("wall.sock").path))
+        #expect(try plainly(f, command))
+    }
+
+    /// Another process's System V memory is reached by a number, with no file or service the other walls would see.
+    @Test func aCommandCannotAttachAnotherProcesssSharedMemory() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let id = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0o600)
+        try #require(id >= 0)
+        defer { shmctl(id, IPC_RMID, nil) }
+        let command = #"/usr/bin/perl -e 'shmread(\#(id), my $bytes, 0, 8) or exit 3; exit 0'"#
+        #expect(try !f.allowed(command))
+        #expect(try plainly(f, command))
+    }
+
     /// The shell is whole (decisions.md D36): the system's programs run, and the walls are what stop them reaching anything.
     @Test func theSystemsProgramsRunAndTheWallsHoldThem() throws {
         let f = try Fixture(); defer { f.clean() }
