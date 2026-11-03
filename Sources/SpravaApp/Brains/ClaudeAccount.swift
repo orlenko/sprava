@@ -17,6 +17,13 @@ final class ClaudeAccountModel: ObservableObject {
     @Published private(set) var persistent = false
     @Published private(set) var busy = false
     @Published private(set) var message: String?
+    struct Token: Identifiable, Equatable { let name: String; let saved: Date?; let renewBy: Date?; let renewSoon: Bool; var id: String { name } }
+    @Published private(set) var tokens: [Token] = []
+    @Published private(set) var activeToken: String?
+    @Published var newTokenName = ""
+    @Published var newToken = ""
+    @Published var chooser = ""
+    private var savedChooser = ""
     let client: RuntimeClient
     let authenticate: () async throws -> Void
     init(client: RuntimeClient = RuntimeClient(), authenticate: @escaping () async throws -> Void = {
@@ -26,9 +33,60 @@ final class ClaudeAccountModel: ObservableObject {
         ClaudeInstallation.locate()?.path ?? ""
     }
     func load() async {
-        do { let status = try await client.global("claude_status", timeout: 5); enabled = status["enabled"] == .bool(true); persistent = status["credential_persistent"] == .bool(true); available = true }
+        do { let status = try await client.global("claude_status", timeout: 5); enabled = status["enabled"] == .bool(true); persistent = status["credential_persistent"] == .bool(true); showAccounts(status); available = true }
         catch { available = false; message = "Sprava could not check Claude. Open Health to check the background connection." }
         checked = true
+    }
+
+    /// The lines of the status read that describe the accounts.
+    func showAccounts(_ status: JSONObject) {
+        tokens = (status["tokens"]?.arrayValue ?? []).compactMap { row in
+            guard let name = row["name"]?.stringValue else { return nil }
+            return Token(name: name, saved: ISOTime.date(row["saved"]?.stringValue), renewBy: ISOTime.date(row["renew_by"]?.stringValue), renewSoon: row["renew_soon"] == .bool(true))
+        }
+        activeToken = status["active"]?.stringValue
+        // What the person has typed and not saved stays; a status read changes the field only when it holds the saved command.
+        let stored = status["chooser"]?.stringValue ?? ""
+        if chooser == savedChooser { chooser = stored }
+        savedChooser = stored
+    }
+
+    func saveToken() async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        message = "Checking the token…"
+        do {
+            try await authenticate()
+            let name = newTokenName.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try await client.global("claude_token_save", [("name", .str(name)), ("credential", .str(newToken.trimmingCharacters(in: .whitespacesAndNewlines)))], timeout: 150)
+            newToken = ""; newTokenName = ""
+            message = "Saved the token for “\(name)”."
+            showAccounts(try await client.global("claude_status", timeout: 5))
+        } catch let failure as RuntimeClient.Failure {
+            message = failure.code.flatMap(ClaudeSetupFailure.init(rawValue:))?.message ?? "That token could not be saved. Names use letters, digits and . _ / - only."
+        } catch { message = "The token was not saved. It is still in the secure field." }
+    }
+
+    func removeToken(_ name: String) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            try await authenticate()
+            _ = try await client.global("claude_token_remove", [("name", .str(name))], timeout: 15)
+            message = "Removed the token for “\(name)”."
+            showAccounts(try await client.global("claude_status", timeout: 5))
+        } catch { message = "“\(name)” was not removed. Wait for any reply to finish; the last token goes with Disconnect." }
+    }
+
+    func saveChooser() async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            try await authenticate()
+            _ = try await client.global("claude_chooser_set", [("chooser", .str(chooser))], timeout: 15)
+            savedChooser = chooser
+            message = chooser.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Removed the command." : "Saved the command. It runs for a new conversation, or when an account refuses."
+        } catch { message = "The command was not saved." }
     }
 
     /// The command that prints a subscription token, run by the person in Terminal.
@@ -86,6 +144,7 @@ struct ClaudeAccountView: View {
             Text("Set up Claude once, then talk with it on each binder's page.")
             if model.enabled {
                 Label("Set up. Connect each binder from its own page, where you choose what Claude may read.", systemImage: "checkmark.circle")
+                ClaudeTokensView(model: model)
                 HStack {
                     Button("Disconnect") { Task { await model.disconnect() } }.disabled(model.busy)
                     Button("Refresh") { Task { await model.load() } }.disabled(model.busy)
@@ -128,5 +187,50 @@ struct ClaudeAccountView: View {
             if let message = model.message { Text(verbatim: message).font(.callout).foregroundStyle(.secondary) }
         }
         .task { await model.load() }
+    }
+}
+
+/// The Claude accounts Sprava holds a token for, each named by the person. Most people have one and never open the second part.
+struct ClaudeTokensView: View {
+    @ObservedObject var model: ClaudeAccountModel
+    private static func day(_ date: Date) -> String { date.formatted(date: .abbreviated, time: .omitted) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Accounts").font(.headline)
+            ForEach(model.tokens) { token in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: token.name + (token.name == model.activeToken ? " (in use)" : ""))
+                        if let renew = token.renewBy {
+                            Text(token.renewSoon ? "Runs out around \(Self.day(renew)). Make a new token." : "Saved \(token.saved.map(Self.day) ?? ""), lasts until about \(Self.day(renew)).")
+                                .font(.caption).foregroundStyle(token.renewSoon ? .orange : .secondary)
+                        }
+                    }
+                    Spacer()
+                    if model.tokens.count > 1 { Button("Remove") { Task { await model.removeToken(token.name) } }.controlSize(.small).disabled(model.busy) }
+                }
+            }
+            DisclosureGroup("Add or replace an account") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("In a browser signed in to that Claude account, run the setup command and paste its token here. The same name replaces its token.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Name", text: $model.newTokenName).textFieldStyle(.roundedBorder).disabled(model.busy)
+                    SecureField("Paste subscription token", text: $model.newToken).textFieldStyle(.roundedBorder).disabled(model.busy)
+                    HStack {
+                        Button("Copy Command") { model.copySetupCommand() }.controlSize(.small)
+                        Button("Save Token") { Task { await model.saveToken() } }.controlSize(.small)
+                            .disabled(model.busy || model.newTokenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.newToken.isEmpty)
+                    }
+                }
+            }
+            DisclosureGroup("Choose the account with a command") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Optional. A command of yours that prints an account's name. It runs on this Mac, outside Claude's sandbox, for up to 10 seconds, when a conversation starts or an account refuses. Printing nothing, or exit code 75, means no account has quota.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    TextField("Command", text: $model.chooser, axis: .vertical).lineLimit(1...4).textFieldStyle(.roundedBorder).font(.system(.caption, design: .monospaced)).disabled(model.busy)
+                    Button("Save Command") { Task { await model.saveChooser() } }.controlSize(.small).disabled(model.busy)
+                }
+            }
+        }
     }
 }

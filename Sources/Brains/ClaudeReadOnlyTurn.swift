@@ -8,7 +8,7 @@ import SpravaKit
 /// No runtime registration here. This read/draft transport cannot authorize or apply an operation.
 package final class ClaudeReadOnlyTurn: @unchecked Sendable {
     package enum Failure: Error, Sendable, Equatable, CustomStringConvertible {
-        case busy, startFailed, protocolMismatch, authentication, usageLimit, engineFailed, endedWithoutResult, outputLimit, deadline, exitUnconfirmed, replacementRequired
+        case busy, startFailed, protocolMismatch, authentication, usageLimit, usageLimitMidTurn, engineFailed, endedWithoutResult, outputLimit, deadline, exitUnconfirmed, replacementRequired
         package var description: String {
             switch self {
             case .busy: "Claude is already answering in this session."
@@ -16,6 +16,7 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
             case .protocolMismatch: "Claude did not match the verified session protocol."
             case .authentication: "Claude rejected the subscription token."
             case .usageLimit: "This Claude account has reached a usage limit."
+            case .usageLimitMidTurn: "This Claude account reached a usage limit part way through."
             case .engineFailed: "Claude could not finish this request."
             case .endedWithoutResult: "Claude stopped before completing its reply."
             case .outputLimit: "Claude's reply exceeded the conversation limit."

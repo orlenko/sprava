@@ -10,7 +10,7 @@ import SpravaKit
 /// One app-authenticated, explicitly consented conversation per physical binder. Its file tools stop at the binder's
 /// folder, and the only operations it can reach are the to-do tools of a person's own turn (`ClaudeTodoTools`).
 public actor ClaudeConversationRuntime {
-    public enum Refused: Error, Sendable { case notConnected, busy, unavailable, invalidRequest, stopped, tooLarge }
+    public enum Refused: Error, Sendable { case notConnected, busy, unavailable, invalidRequest, stopped, tooLarge, noQuota, tokenMissing }
     struct Driver: Sendable {
         let run: @Sendable (String, Bool) async throws -> String?
         let stop: @Sendable () -> Void
@@ -21,6 +21,9 @@ public actor ClaudeConversationRuntime {
         let read: @Sendable () throws -> String?
         let replace: @Sendable (String?) throws -> Void
         var persistent: @Sendable () -> Bool = { true }
+        /// Accounts beyond the main one, by name.
+        var readNamed: @Sendable (String) throws -> String? = { _ in nil }
+        var replaceNamed: @Sendable (String, String?) throws -> Void = { _, _ in }
     }
     typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, URL?, ClaudeAppTools?, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
@@ -34,6 +37,12 @@ public actor ClaudeConversationRuntime {
     private var exports = ConversationExport()
     private let receipts: ConversationTurnStore
     private let state: ClaudeConversationState
+    private let accounts: ClaudeAccountsState
+    private let chooser: @Sendable (String) -> ClaudeAccountChooser.Outcome
+    /// Which account a failed turn used, for the app to name it; for as long as this process runs, like `failureReasons`.
+    private var failureAccounts: [UUID: String] = [:]
+    /// The name a choosing command gave, or a token that was not found, when a turn stops for it.
+    private var failedAccountName: String?
     private let secrets: Secrets
     private let makeDriver: MakeDriver
     private let readContext: ReadContext
@@ -58,11 +67,14 @@ public actor ClaudeConversationRuntime {
     private var recovered = false
 
     init(support: URL, secrets: Secrets, makeDriver: @escaping MakeDriver, context: @escaping ReadContext,
-         search: @escaping SearchBinder = { _, _, _, _ in .init(sources: [], incomplete: 0) }, available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
+         search: @escaping SearchBinder = { _, _, _, _ in .init(sources: [], incomplete: 0) },
+         chooser: @escaping @Sendable (String) -> ClaudeAccountChooser.Outcome = { ClaudeAccountChooser.run($0) }, available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
         self.support = support; self.available = available; self.secrets = secrets; self.makeDriver = makeDriver; readContext = context; searchBinder = search
         connections = try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite"))
         receipts = try ConversationTurnStore(at: support.appendingPathComponent("binder-store/conversation.sqlite"))
         state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
+        accounts = try ClaudeAccountsState(at: support.appendingPathComponent("runtime/claude-accounts.sqlite"))
+        self.chooser = chooser
         admission = try AgentSessionAdmission(conversationLimit: 1, taskLimit: 1)
     }
 
@@ -94,7 +106,7 @@ public actor ClaudeConversationRuntime {
         })
     }
 
-    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
+    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_token_save", "claude_token_remove", "claude_chooser_set", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
 
     public func respond(_ text: String) async -> String {
         guard text.utf8.count <= 5 * 1024 * 1024,
@@ -121,25 +133,43 @@ public actor ClaudeConversationRuntime {
         try await recover()
         guard let command = request["command"]?.stringValue, Self.commands.contains(command) else { throw Refused.invalidRequest }
         if command == "claude_status" {
-            let enabled = try state.account() != nil && secrets.read() != nil
-            return .init([(key: "enabled", value: .bool(enabled)), (key: "credential_persistent", value: .bool(secrets.persistent()))])
+            let enabled = try state.account() != nil && !allTokenNames().isEmpty
+            return .init([(key: "enabled", value: .bool(enabled)), (key: "credential_persistent", value: .bool(secrets.persistent()))] + (enabled ? accountsJSON() : []))
         }
         if command == "claude_configure" {
             guard let path = request["program"]?.stringValue, path.hasPrefix("/"), let credential = request["credential"]?.stringValue else { throw Refused.invalidRequest }
             try await configure(program: URL(fileURLWithPath: path), credential: credential)
             return .init()
         }
+        if command == "claude_token_save" {
+            guard let name = request["name"]?.stringValue, ClaudeAccountsState.validName(name), let credential = request["credential"]?.stringValue else { throw Refused.invalidRequest }
+            try await saveToken(name: name, credential: credential)
+            return .init()
+        }
+        if command == "claude_token_remove" {
+            guard let name = request["name"]?.stringValue, ClaudeAccountsState.validName(name), !configuring else { throw Refused.invalidRequest }
+            try removeToken(name)
+            return .init()
+        }
+        if command == "claude_chooser_set" {
+            guard let text = request["chooser"]?.stringValue, text.utf8.count <= ClaudeAccountChooser.maximumCommandBytes, !text.contains("\0"), !configuring else { throw Refused.invalidRequest }
+            let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            try accounts.set("chooser", command.isEmpty ? nil : command)
+            return .init()
+        }
         if command == "claude_disconnect" {
             guard !configuring, preparing.isEmpty else { throw Refused.busy }
             configuring = true; defer { configuring = false }
             try await stopAll()
+            for token in try accounts.tokens() where token.name != ClaudeAccountsState.mainName { try secrets.replaceNamed(token.name, nil) }
+            try accounts.clear()
             try state.setAccount(nil); try secrets.replace(nil); try connections.disableAll()
             return .init()
         }
         guard !configuring, let path = request["binder"]?.stringValue, path.hasPrefix("/"), !path.contains("\0") else { throw Refused.invalidRequest }
         let folder = URL(fileURLWithPath: path)
         if command == "claude_enable" {
-            guard try state.account() != nil, try secrets.read() != nil, try available(folder) else { throw Refused.notConnected }
+            guard try state.account() != nil, try !allTokenNames().isEmpty, try available(folder) else { throw Refused.notConnected }
             guard preparing.isEmpty else { throw Refused.busy }
             configuring = true; defer { configuring = false }
             try await stopAll()
@@ -153,7 +183,7 @@ public actor ClaudeConversationRuntime {
             var moved = false
             do { current = try connections.connection(for: folder) }
             catch ClaudeReadConnections.Refused.changed { current = nil; moved = true }
-            if let current, try state.account() != nil, try secrets.read() != nil, try available(folder) { return scopeJSON(current) }
+            if let current, try state.account() != nil, try !allTokenNames().isEmpty, try available(folder) { return scopeJSON(current) }
             // A fixed word for the app to explain the state with. Whether Claude is set up is claude_status's answer.
             let reason = (try? available(folder)) != true ? "unavailable" : moved ? "moved" : id != nil ? "disconnected" : "new"
             return .init([(key: "enabled", value: .bool(false)), (key: "binder_id", value: id.map { .str($0.uuidString) } ?? .null),
@@ -265,6 +295,7 @@ public actor ClaudeConversationRuntime {
             try state.setAccount(nil); try connections.disableAll()
             stage = .keychain
             try secrets.replace(credential)
+            try accounts.saved(ClaudeAccountsState.mainName)
             stage = .unavailable
             try state.setAccount(.init(program: program, hash: second.hash))
         } catch {
@@ -279,7 +310,7 @@ public actor ClaudeConversationRuntime {
             guard previous.text.unicodeScalars.elementsEqual(text.unicodeScalars) else { throw Refused.invalidRequest }; return previous
         }
         guard active[scope.id] == nil, preparing.isEmpty, !configuring else { throw Refused.busy }
-        guard let account = try state.account(), let credential = try secrets.read() else { throw Refused.notConnected }
+        guard let account = try state.account(), try !allTokenNames().isEmpty else { throw Refused.notConnected }
         _ = try currentFolder(scope)
         // A binder with file tools keeps one native session, whose static instructions stay in the prompt cache; it reads
         // the binder's current state itself. Without tools each turn is rebuilt from the durable app history and the scoped
@@ -295,7 +326,7 @@ public actor ClaudeConversationRuntime {
             guard try receipts.claim(conversationID: scope.id, requestID: requestID) else { throw Refused.unavailable }
             let signal = StopSignal()
             let task = Task { await self.run(scope: scope, record: record, session: session, lease: lease,
-                                             account: account, credential: credential, signal: signal) }
+                                             account: account, tried: [], signal: signal) }
             active[scope.id] = Active(request: requestID, turn: record.turnID, signal: signal, task: task)
             return record
         } catch {
@@ -306,11 +337,14 @@ public actor ClaudeConversationRuntime {
 
     private func run(scope: ClaudeReadConnections.Connection, record: ConversationTurnStore.Record,
                      session: ClaudeConversationState.Session, lease: AgentSessionAdmission.Lease,
-                     account: ClaudeConversationState.Account, credential: String, signal: StopSignal) async {
-        var keep = false, driver: Driver?
+                     account: ClaudeConversationState.Account, tried: Set<String>, signal: StopSignal) async {
+        var keep = false, driver: Driver?, used: String?
         var mayRelease = true
         let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
+            // A switch loses the prompt cache, so the choosing command runs for a new session or after a refusal, not every turn.
+            let (name, credential) = try await chooseToken(ask: !session.resumed || !tried.isEmpty, tried: tried)
+            used = name
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
             let writer = todoWriter, search = searchBinder
             let (context, reach, todos, revision) = try await Task.detached(priority: .userInitiated) {
@@ -362,8 +396,22 @@ public actor ClaudeConversationRuntime {
             if error as? ClaudeReadOnlyTurn.Failure == .exitUnconfirmed { mayRelease = false }
             // A session that has answered before stays usable after a turn that a limit or a Stop cut short. Any other failure,
             // or one in a session's first turn, starts the next turn fresh from the saved conversation.
-            keep = session.resumed && (signal.stopped || [.usageLimit, .authentication, .deadline].contains(error as? ClaudeReadOnlyTurn.Failure))
-            if !signal.stopped { noteFailure(of: record.requestID, error) }
+            keep = session.resumed && (signal.stopped || [.usageLimit, .usageLimitMidTurn, .authentication, .deadline].contains(error as? ClaudeReadOnlyTurn.Failure))
+            // Refused before any tool ran, so nothing changed: the same turn starts again on another account, if there is one.
+            if !signal.stopped, error as? ClaudeReadOnlyTurn.Failure == .usageLimit, let used, driver?.exited() != false, hasAnotherToken(tried: tried.union([used])) {
+                try? state.exited(session, keep: keep)
+                _ = await admission.confirmedExit(lease)
+                if let next = try? state.session(connection: scope.id, generation: scope.generation, hash: account.hash), next.resumed || (try? removeHome(scope.id)) != nil,
+                   case .reserved(let nextLease) = await admission.reserve(sessionID: next.native, kind: .conversation) {
+                    await run(scope: scope, record: record, session: next, lease: nextLease, account: account, tried: tried.union([used]), signal: signal)
+                    return
+                }
+                noteFailure(of: record.requestID, error, account: used)
+                _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .failed)
+                active.removeValue(forKey: scope.id)
+                return
+            }
+            if !signal.stopped { noteFailure(of: record.requestID, error, account: used ?? failedAccountName); failedAccountName = nil }
             if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
@@ -376,10 +424,11 @@ public actor ClaudeConversationRuntime {
     }
 
     /// Keeps why a turn failed for the app to say, and logs it. A closed set of codes: no words of the turn reach the log.
-    private func noteFailure(of request: UUID, _ error: Error) {
+    private func noteFailure(of request: UUID, _ error: Error, account: String? = nil) {
         let reason = Self.failureCode(error)
-        if failureReasons.count >= 64 { failureReasons.removeAll() }
+        if failureReasons.count >= 64 { failureReasons.removeAll(); failureAccounts.removeAll() }
         failureReasons[request] = reason
+        failureAccounts[request] = account
         AtomicFile.appendLine("\(ISOTime.string(Date())) claude turn outcome=failed reason=\(reason)",
                               to: support.appendingPathComponent("runtime/jobs.log"))
     }
@@ -391,7 +440,7 @@ public actor ClaudeConversationRuntime {
             case .startFailed: return "start_failed"
             case .protocolMismatch: return "protocol"
             case .authentication: return "authentication"
-            case .usageLimit: return "usage_limit"
+            case .usageLimit, .usageLimitMidTurn: return "usage_limit"
             case .engineFailed: return "engine"
             case .endedWithoutResult: return "ended_early"
             case .outputLimit: return "output_limit"
@@ -401,6 +450,8 @@ public actor ClaudeConversationRuntime {
             }
         }
         if error is ClaudeSetupFailure { return "setup" }
+        if error as? Refused == .noQuota { return "no_quota" }
+        if error as? Refused == .tokenMissing { return "token_missing" }
         if error as? Refused == .unavailable { return "binder_unavailable" }
         if error as? Refused == .tooLarge { return "too_large" }
         return "other"
@@ -416,6 +467,99 @@ public actor ClaudeConversationRuntime {
         await Task.detached(priority: .userInitiated) {
             do { try history.record(folder, turn: turn) } catch { try? history.noteUnrecorded(turn: turn) }
         }.value
+    }
+
+    // MARK: - Accounts
+
+    private func allTokenNames() throws -> [String] {
+        // The Keychain says whether the main token is there, whatever the list remembers: a token kept only in memory is gone after a restart.
+        var names = try accounts.tokens().map(\.name).filter { $0 != ClaudeAccountsState.mainName }
+        if try secrets.read() != nil { names.insert(ClaudeAccountsState.mainName, at: 0) }
+        return names
+    }
+    private func credential(named name: String) throws -> String? {
+        name == ClaudeAccountsState.mainName ? try secrets.read() : try secrets.readNamed(name)
+    }
+    private func runChooser() async throws -> ClaudeAccountChooser.Outcome? {
+        guard let command = try accounts.setting("chooser") else { return nil }
+        let chooser = self.chooser
+        let outcome = await Task.detached(priority: .userInitiated) { chooser(command) }.value
+        if outcome == .failed { AtomicFile.appendLine("\(ISOTime.string(Date())) claude chooser outcome=failed", to: support.appendingPathComponent("runtime/jobs.log")) }
+        return outcome
+    }
+    /// The account for this launch. `ask` runs the person's command if there is one; a command that fails leaves the account in use.
+    /// One that says no account has quota, or names an account with no token, stops the turn and the person is told which.
+    private func chooseToken(ask: Bool, tried: Set<String>) async throws -> (String, String) {
+        let names = try allTokenNames()
+        var wanted: String?
+        if ask {
+            switch try await runChooser() {
+            case .account(let name)?:
+                guard names.contains(name) else { failedAccountName = name; throw Refused.tokenMissing }
+                if !tried.contains(name) { wanted = name }
+            case .noQuota?: throw Refused.noQuota
+            case .failed?, nil: break
+            }
+        }
+        let active = try accounts.setting("active")
+        let order = (active.map { [$0] } ?? []) + names
+        guard let name = wanted ?? order.first(where: { names.contains($0) && !tried.contains($0) }) else { throw Refused.noQuota }
+        guard let value = try credential(named: name) else { failedAccountName = name; throw Refused.tokenMissing }
+        if name != active { try accounts.set("active", name) }
+        return (name, value)
+    }
+    /// Whether an account has not refused this turn yet. A choosing command that says none has quota ends the turn in `chooseToken`.
+    private func hasAnotherToken(tried: Set<String>) -> Bool {
+        (try? allTokenNames())?.contains { !tried.contains($0) } == true
+    }
+    private func accountsJSON() -> [(key: String, value: JSONValue)] {
+        let saved = (try? accounts.tokens()) ?? [], active = try? accounts.setting("active")
+        let names = (try? allTokenNames()) ?? []
+        let rows: [JSONValue] = names.map { name in
+            let date = saved.first { $0.name == name }?.saved
+            return .obj([("name", .str(name)), ("saved", date.map { .str(ISOTime.string($0)) } ?? .null),
+                         ("renew_by", date.map { .str(ISOTime.string($0.addingTimeInterval(ClaudeAccountsState.tokenLife))) } ?? .null),
+                         ("renew_soon", .bool(date.map { Date().timeIntervalSince($0) > ClaudeAccountsState.tokenLife - ClaudeAccountsState.reminder } ?? false))])
+        }
+        return [(key: "tokens", value: .array(rows)), (key: "active", value: active.flatMap { $0 }.map(JSONValue.str) ?? .null),
+                (key: "chooser", value: ((try? accounts.setting("chooser")) ?? nil).map(JSONValue.str) ?? .null)]
+    }
+    /// Saves a token under a name once one small data-free turn has shown it works. A token whose account is at its limit is kept:
+    /// that is what several accounts are for.
+    private func saveToken(name: String, credential: String) async throws {
+        guard !configuring, active.isEmpty, preparing.isEmpty else { throw Refused.busy }
+        let credential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !credential.isEmpty, credential.utf8.count <= 16_384,
+              !credential.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }),
+              let account = try state.account() else { throw Refused.invalidRequest }
+        configuring = true; defer { configuring = false }
+        let id = UUID()
+        let session = try state.session(connection: id, generation: UUID(), hash: "setup")
+        var driver: Driver?
+        do {
+            let check = try await makeDriver(account.program, credential, id, session.native, Self.setupPolicy + "\nCURRENT_CHECK=FIRST", nil, nil, { [state] pid in try state.spawned(session, pid: pid) })
+            driver = check
+            do {
+                let answer = try await check.run(Self.setupQuestion, false)
+                guard answer?.trimmingCharacters(in: .whitespacesAndNewlines) == "FIRST" else { throw ClaudeSetupFailure.firstReply }
+            } catch ClaudeReadOnlyTurn.Failure.usageLimit {}
+            guard check.exited() else { throw Refused.unavailable }
+            try state.exited(session, keep: false); try state.forget(connection: id); try removeHome(id)
+        } catch {
+            driver?.stop()
+            if driver?.exited() != false { try? state.exited(session, keep: false) }
+            try? removeHome(id)
+            throw ClaudeSetupFailure.classify(error, stage: .firstReply)
+        }
+        if name == ClaudeAccountsState.mainName { try secrets.replace(credential) } else { try secrets.replaceNamed(name, credential) }
+        try accounts.saved(name)
+    }
+    private func removeToken(_ name: String) throws {
+        guard active.isEmpty, preparing.isEmpty else { throw Refused.busy }
+        // The last one goes with Disconnect, which also closes the binders' connections.
+        guard try allTokenNames().contains(where: { $0 != name }) else { throw Refused.invalidRequest }
+        if name == ClaudeAccountsState.mainName { try secrets.replace(nil) } else { try secrets.replaceNamed(name, nil) }
+        try accounts.removed(name)
     }
 
     private func fence(_ id: UUID) async throws {
@@ -464,6 +608,7 @@ public actor ClaudeConversationRuntime {
         var fields: [(String, JSONValue)] = [("binder_id", .str(r.conversationID.uuidString)), ("request_id", .str(r.requestID.uuidString)),
               ("turn_id", .str(r.turnID.uuidString)), ("text", .str(r.text)), ("phase", .str(r.phase.rawValue)), ("reply", r.reply.map(JSONValue.str) ?? .null)]
         if r.phase == .failed, let reason = failureReasons[r.requestID] { fields.append(("reason", .str(reason))) }
+        if r.phase == .failed, let account = failureAccounts[r.requestID] { fields.append(("account", .str(account))) }
         let history = TurnHistory(support: support, binder: r.conversationID)
         let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID), notes = try? history.notesChange(forTurn: r.turnID)
         if entry != nil || todos != nil || notes != nil {

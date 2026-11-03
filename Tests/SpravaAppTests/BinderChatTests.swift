@@ -347,7 +347,10 @@ import Testing
     /// A failed turn says what happened; only a binder that truly could not be reached says that.
     @Test func aFailedTurnSaysWhyAndDoesNotBlameTheBinder() {
         #expect(BinderChat.words(ChatCommandFailure.turnFailed("deadline")).contains("ran out of time"))
-        #expect(BinderChat.words(ChatCommandFailure.turnFailed("usage_limit")).contains("Connect another account"))
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("usage_limit")).contains("Add another account"))
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("authentication", account: "invented-name")).contains("invented-name"))
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("token_missing", account: "invented-name")).contains("no token for “invented-name”"))
+        #expect(BinderChat.words(ChatCommandFailure.turnFailed("no_quota")).contains("has quota left"))
         #expect(BinderChat.words(ChatCommandFailure.turnFailed("binder_unavailable")).contains("could not be reached"))
         for failure in [ChatCommandFailure.turnFailed(nil), .turnFailed("engine"), .turnFailed("invented-code"), .unavailable] {
             #expect(!BinderChat.words(failure).contains("could not be reached"))

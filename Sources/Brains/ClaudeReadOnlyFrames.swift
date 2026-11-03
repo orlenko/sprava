@@ -20,6 +20,7 @@ struct ClaudeReadOnlyFrames {
     private var receivedResult = false
     private var interruptAcknowledged = false
     private var limitReached = false
+    private var toolUsed = false
     /// A binder's agent, which runs a whole session and is walled by its sandbox.
     private var hasShell: Bool { tools.contains("Bash") }
     var ended: Bool { receivedResult && (interruptID == nil || interruptAcknowledged) }
@@ -51,6 +52,7 @@ struct ClaudeReadOnlyFrames {
             guard initialized, acknowledged, !receivedResult, safeBlocks(value["message"]?["content"]) else {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
+            if value["message"]?["content"]?.arrayValue?.contains(where: { $0["type"] == .str("tool_use") }) == true { toolUsed = true }
             if value["is_api_error_message"] == .bool(true), value["error"] == .str("authentication_failed"),
                value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
         case "stream_event":
@@ -71,7 +73,8 @@ struct ClaudeReadOnlyFrames {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
             if failed, value["api_error_status"] == .int(401) { throw ClaudeReadOnlyTurn.Failure.authentication }
-            if failed, limitReached || value["api_error_status"] == .int(429) { throw ClaudeReadOnlyTurn.Failure.usageLimit }
+            // Before any tool ran nothing can have changed, so this turn can start again on another account.
+            if failed, limitReached || value["api_error_status"] == .int(429) { throw toolUsed ? ClaudeReadOnlyTurn.Failure.usageLimitMidTurn : .usageLimit }
             // Current native versions can use subtype=success for an API failure. is_error is decisive;
             // no error body becomes a reply, and a network/provider refusal is not a protocol mismatch.
             if failed { receivedResult = true; return }

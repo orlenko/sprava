@@ -208,4 +208,19 @@ import Testing
         await connecting.value
         #expect(model.folder == new.standardizedFileURL && model.message == nil)
     }
+
+    @MainActor @Test func aStatusReadKeepsACommandThePersonHasNotSaved() {
+        let model = ClaudeAccountModel()
+        func status(_ command: String?) -> JSONObject {
+            .init([(key: "tokens", value: .array([])), (key: "chooser", value: command.map(JSONValue.str) ?? .null)])
+        }
+        model.showAccounts(status("invented-saved"))
+        #expect(model.chooser == "invented-saved")
+        model.chooser = "invented-still-typing"
+        model.showAccounts(status("invented-saved"))
+        #expect(model.chooser == "invented-still-typing")
+        model.chooser = "invented-saved"
+        model.showAccounts(status("invented-newer"))
+        #expect(model.chooser == "invented-newer")
+    }
 }

@@ -16,7 +16,8 @@ public struct ChatSendRequest: Sendable, Equatable {
 public enum ChatCommandFailure: Error, Sendable, Equatable {
     case invalidRequest, busy, unavailable, cancelled
     /// The turn started and failed; the runtime's reason code, or nil when it no longer knows one.
-    case turnFailed(String?)
+    /// Why a turn failed, and the Claude account it used, which is the person's own name for it.
+    case turnFailed(String?, account: String? = nil)
 }
 public enum ChatTurnCompletion: Sendable, Equatable { case replied, interrupted }
 

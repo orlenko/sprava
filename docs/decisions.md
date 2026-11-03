@@ -451,6 +451,13 @@ Each line names what replaced the entry; its old text is in git history.
   This amends F14: `AGENTS.md` and `CLAUDE.md` are now the person's to write, closed to Claude's writes, and the session is told to
   read `AGENTS.md` as how the person works in this binder. Project settings stay off (`--setting-sources ""`), so a binder's
   `.claude` folder adds no hooks.
+- **D34 decided (2026-11-02, the author).** Sprava can hold a token for each of the person's Claude accounts, by a name they give it, and can ask a
+  command of theirs which to use. "For someone else who uses the tool and does not do the whole aiq story, this simply becomes
+  'claude', with a single token pre-configured." So one token named `main` stays the ordinary case, and Sprava knows nothing of what the command runs. The
+  command is set only from the app's window, runs outside the sandbox with no binder data for up to 10 seconds, and is never logged. It runs when a session starts or an account refuses, since
+  a switch loses the prompt cache. What it prints is an account's name; nothing printed or exit 75 means none has quota; a name with no token stops the turn and says which;
+  a command that fails leaves the account in use. A turn refused for its limit before any tool ran starts again on the next account; after a tool ran it does not, since it may have changed something.
+  A token is saved only after one data-free turn shows it works, though an account at its limit is kept. Each shows its saved day and a reminder a month before its year ends.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.

@@ -18,7 +18,20 @@ enum ClaudeSubscriptionSecrets {
             return item.write(nil, account: "app-account")
         }
     })
-    static let keychain = ClaudeConversationRuntime.Secrets(read: { try storage.read() }, replace: { try storage.replace($0) }, persistent: { storage.persistent })
+    /// Every other named account is its own item in the same service.
+    private static func namedAccount(_ name: String) -> String { "named:" + name }
+    static let keychain = ClaudeConversationRuntime.Secrets(read: { try storage.read() }, replace: { try storage.replace($0) }, persistent: { storage.persistent },
+        readNamed: { name in
+            let (status, data) = item.read(account: namedAccount(name))
+            if status == errSecItemNotFound { return nil }
+            guard status == errSecSuccess, let data, data.count <= 16_384, let value = String(data: data, encoding: .utf8), !value.isEmpty else { throw Refused.unavailable }
+            return value
+        }, replaceNamed: { name, value in
+            let data = value.map { Data($0.utf8) }
+            if let data { guard !data.isEmpty, data.count <= 16_384 else { throw Refused.unavailable } }
+            let status = item.write(data, account: namedAccount(name), allowInteraction: data != nil)
+            guard status == errSecSuccess || (data == nil && status == errSecItemNotFound) else { throw Refused.unavailable }
+        })
 }
 
 /// Cache only credentials that the Keychain accepted. A storage failure is visible and never
