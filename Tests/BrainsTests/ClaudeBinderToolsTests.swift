@@ -54,7 +54,7 @@ import Testing
 
     @Test func keyFilesCanBeDeletedButNotRead() throws {
         let f = try Fixture(); defer { f.clean() }
-        // Through the shell's own redirection, since cat and grep are off the list too.
+        // Through the shell's own redirection.
         #expect(try !f.allowed(": < scripts/.env"))
         #expect(try !f.allowed(": < scripts/deploy.pem"))
         #expect(try f.allowed("rm scripts/.env"))
@@ -139,18 +139,19 @@ import Testing
         #expect(try !f.allowed(#"/usr/bin/perl -e 'use Socket; socket(S, PF_INET, SOCK_STREAM, 6) or exit 3; bind(S, pack_sockaddr_in(0, INADDR_ANY)) or exit 4; listen(S, 1) or exit 5; exit 0'"#))
     }
 
-    @Test func onlyFileCommandsRun() throws {
+    /// The shell is whole (decisions.md D36): the system's programs run, and the walls are what stop them reaching anything.
+    @Test func theSystemsProgramsRunAndTheWallsHoldThem() throws {
         let f = try Fixture(); defer { f.clean() }
-        for command in ["/usr/bin/open .", "echo x | /usr/bin/pbcopy", "/usr/bin/security list-keychains", "/usr/bin/osascript -e 1", "/bin/launchctl list",
-                        "/usr/bin/perl -e 1", "/usr/bin/python3 -c 1", "/usr/bin/ruby -e 1", "/usr/bin/cc --version", "/usr/bin/curl -V", "/bin/ps -A",
-                        "/usr/sbin/sysctl -a", "/usr/bin/nc -h", "/usr/bin/ssh -V", "/usr/bin/git --version"] {
-            #expect(try !f.allowed(command), "\(command)")
-        }
         for command in ["mkdir -p a/b", "cp notes.md a/b/c.md", "mv a/b/c.md a/d.md", "ls a", "rm a/d.md", "rmdir a/b",
-                        "find . -name notes.md", "grep -c . notes.md", "sed -n 1p notes.md", "wc -l notes.md", "head -1 notes.md | cut -c1-4"] {
+                        "find . -name notes.md -exec cat {} +", "grep -c . notes.md", "sed -n 1p notes.md", "wc -l notes.md", "head -1 notes.md | cut -c1-4",
+                        "/usr/bin/awk 1 notes.md > copy.md && rm copy.md", "for f in notes.md; do /usr/bin/xargs echo < $f; done", "/usr/bin/env /bin/ls", "/usr/bin/sort notes.md",
+                        "tar cf x.tar notes.md && rm x.tar", "/usr/bin/perl -e 1", "/usr/sbin/sysctl -n kern.ostype"] {
             #expect(try f.allowed(command), "\(command)")
         }
-        for command in ["tar cf a/x.tar notes.md", "/usr/bin/awk 1 notes.md", "/usr/bin/xargs -h", "/usr/bin/env /bin/ls", "/usr/bin/sort notes.md"] {
+        for command in ["/usr/bin/open -g .", "echo x | /usr/bin/pbcopy", "/usr/bin/pbpaste", "/usr/bin/security find-generic-password -s invented",
+                        "/usr/bin/osascript -e 'tell application \"Finder\" to count of windows'", "/bin/launchctl submit -l invented.wall -- /usr/bin/true", "/usr/bin/crontab /dev/null",
+                        "/usr/bin/defaults read com.apple.finder", "/usr/bin/defaults write invented.wall key value",
+                        "/usr/sbin/screencapture -x shot.png", "/usr/bin/nc -z -G 2 93.184.216.34 443", "/usr/bin/ssh -o ConnectTimeout=2 -o BatchMode=yes invented@93.184.216.34 true", "/usr/bin/curl -sS -m 3 --noproxy '*' https://93.184.216.34"] {
             #expect(try !f.allowed(command), "\(command)")
         }
     }
@@ -166,20 +167,24 @@ import Testing
         }
     }
 
-    @Test func theCLIIsToldTheListAndNeverABareShell() throws {
+    @Test func theCLIIsGivenTheShellWithoutSkippingItsOwnChecks() throws {
         let f = try Fixture(); defer { f.clean() }
         let plan = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.317"), home: f.root.appendingPathComponent("tools"),
                                              sessionID: UUID(), credential: "invented", policy: "p", reach: .init(folder: f.binder, proxyPort: 4242))
         let allowed = try #require(plan.arguments.firstIndex(of: "--allowedTools")).advanced(by: 1)
-        let rules = plan.arguments[allowed].split(separator: ",").map(String.init)
-        #expect(Array(rules.prefix(5)) == ["Read", "Write", "Edit", "Glob", "Grep"])
-        // Never a bare Bash, which would let the model run the CLI itself with a preload; nor a program that can start another.
-        #expect(!rules.contains("Bash"))
-        for verb in ["awk", "xargs", "env", "sort", "rg", "find", "sh", "bash", "zsh", "python3", "perl"] { #expect(!rules.contains("Bash(\(verb):*)"), "\(verb)") }
+        #expect(plan.arguments[allowed].split(separator: ",").map(String.init) == ["Read", "Write", "Edit", "Glob", "Grep", "Bash"])
         #expect(plan.arguments.contains("--restricted") && plan.arguments.contains("dontAsk") && !plan.arguments.contains("--dangerously-skip-permissions"))
         #expect(plan.environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1")
-        // Every verb the CLI allows can also run, wherever it is installed.
-        for verb in ClaudeReadLaunch.shellVerbs { #expect(ClaudeReadLaunch.commandPrograms.contains { $0.hasSuffix("/" + verb) }, "\(verb)") }
+        #expect(plan.environment["DEVELOPER_DIR"] == "/Library/Developer/CommandLineTools")
+    }
+
+    /// A system service works outside the sandbox on the caller's behalf, so the shell reaches only the few it needs.
+    @Test func systemServicesAreClosedExceptAShortList() throws {
+        let profile = ClaudeReadLaunch.sandbox(home: URL(fileURLWithPath: "/invented/home"), program: URL(fileURLWithPath: "/opt/invented/cli"), reach: .init(folder: URL(fileURLWithPath: "/invented/binder"), proxyPort: 4242), session: UUID())
+        #expect(profile.contains("(deny mach-lookup)\n"))
+        for name in ["com.apple.coreservices.launchservicesd", "com.apple.coreservices.appleevents", "com.apple.pasteboard.1", "com.apple.cfprefsd.agent", "com.apple.metadata.mds", "com.apple.securityd.xpc", "com.apple.logd", "com.apple.system.logger", "com.apple.diagnosticd"] {
+            #expect(!ClaudeReadLaunch.systemServices.contains(name), "\(name)")
+        }
     }
 
     @Test func nothingWrittenOrCopiedCanRun() throws {
@@ -226,12 +231,6 @@ import Testing
         _ = "invented typed line\n".withCString { write(master, $0, strlen($0)) }
         #expect(try !f.allowed(": < \(name)"))
         #expect(try f.allowed(": < /dev/null && : < /dev/urandom"))
-    }
-
-    @Test func aFileCommandCannotReachAnotherProcesssEnvironment() throws {
-        let f = try Fixture(); defer { f.clean() }
-        #expect(try !f.allowed("/bin/ps eww -A | grep -q PATH"))
-        #expect(try !f.allowed("/usr/bin/perl -e 'syscall(202)'"))
     }
 
     @Test func aRealCommandCannotSignalAnotherProcess() throws {

@@ -106,7 +106,7 @@ import Testing
 
         let withFiles = try plan(reach: .init(folder: binder, proxyPort: 9), appTools: tools)
         #expect(withFiles.tools == Set(ClaudeReadLaunch.tools + [Self.name]))
-        #expect(argument("--allowedTools", withFiles)?.contains(Self.name) == true && argument("--allowedTools", withFiles)?.contains("Bash(rm:*)") == true)
+        #expect(argument("--allowedTools", withFiles)?.contains(Self.name) == true && argument("--allowedTools", withFiles)?.split(separator: ",").contains("Bash") == true)
     }
 
     @Test func aWholeTurnAnswersItsToolsOnThePipe() async throws {
