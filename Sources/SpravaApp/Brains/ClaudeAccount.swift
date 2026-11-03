@@ -45,7 +45,7 @@ final class ClaudeAccountModel: ObservableObject {
     }
     func load() async {
         do { let status = try await client.global("claude_status", timeout: 5); enabled = status["enabled"] == .bool(true); persistent = status["credential_persistent"] == .bool(true); showAccounts(status); available = true }
-        catch { available = false; say("Sprava could not check Claude. Open Health to check the background connection.", .failure) }
+        catch { available = false; say(nil, .progress) }
         checked = true
     }
 
@@ -115,15 +115,20 @@ final class ClaudeAccountModel: ObservableObject {
     /// What stops setup that the person cannot see from the fields themselves; nil when nothing does.
     var setupProblem: String? {
         if !checked { return "Checking Sprava's background part…" }
-        if !available { return "Sprava's background part did not answer, so the setup cannot be checked. Open Health, then Check Again." }
+        if !available { return "Sprava's background part did not answer, so the setup cannot be checked. See Health in the sidebar, then Check Again." }
         if program.isEmpty { return "Install native Claude Code, or choose its executable under Claude installation." }
-        return nameProblem
+        return nil
     }
     var nameProblem: String? { Self.nameProblem(tokenName) }
     /// Why Connect cannot be pressed yet, naming the step to do; nil when it can.
     var enableBlocker: String? {
-        setupProblem ?? (token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Paste your subscription token above." : nil)
+        setupProblem ?? nameProblem ?? (token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Paste your subscription token above." : nil)
     }
+
+    /// Check Again rereads status, so it answers a background part that did not reply. After a failed connection, trying again is Connect Claude.
+    var offersCheckAgain: Bool { !busy && !available }
+    /// "Connected" in green says all is well, which is not so while the account cannot answer: the warning says it instead.
+    var showsConnectedLine: Bool { !(messagePlace == .account && messageKind == .warning && message != nil) }
 
     func copySetupCommand() {
         NSPasteboard.general.clearContents()
@@ -172,8 +177,10 @@ struct ClaudeAccountView: View {
 
     private var connected: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Connected. Talk with Claude on each binder's page, where you choose what it may read.", systemImage: "checkmark.circle.fill")
-                .labelStyle(ClaudeStatusLabelStyle(color: .green))
+            if model.showsConnectedLine {
+                Label("Connected. Talk with Claude on each binder's page, where you choose what it may read.", systemImage: "checkmark.circle.fill")
+                    .labelStyle(ClaudeStatusLabelStyle(color: .green))
+            }
             ClaudeTokensView(model: model)
             Button("Disconnect") { Task { await model.disconnect() } }.disabled(model.busy)
         }
@@ -203,7 +210,8 @@ struct ClaudeAccountView: View {
                     }
                     GridRow {
                         Color.clear.frame(width: 1, height: 1)
-                        Text("Optional. Worth setting if you will add more than one account.").font(.callout).foregroundStyle(.secondary)
+                        if let problem = model.nameProblem { ClaudeStatusLine(text: problem, kind: .warning) }
+                        else { Text("Optional. Worth setting if you will add more than one account.").font(.callout).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -211,9 +219,7 @@ struct ClaudeAccountView: View {
                 Button("Connect Claude") { Task { await model.enable() } }.disabled(model.busy || model.enableBlocker != nil)
                     .buttonStyle(.borderedProminent)
                 if model.busy { ProgressView().controlSize(.small) }
-                if !model.busy, !model.available || model.messageKind == .failure {
-                    Button("Check Again") { Task { await model.load() } }
-                }
+                if model.offersCheckAgain { Button("Check Again") { Task { await model.load() } } }
             }
             if !model.busy, let why = model.setupProblem { ClaudeStatusLine(text: why, kind: .warning) }
             if let message = model.message, model.messagePlace == .setup { ClaudeStatusLine(text: message, kind: model.messageKind) }
@@ -299,7 +305,7 @@ struct ClaudeTokensView: View {
                     if model.tokens.count > 1 { Button("Remove") { Task { await model.removeToken(token.name) } }.disabled(model.busy) }
                 }
             }
-            if let message = model.message, model.messagePlace == .account { ClaudeStatusLine(text: message, kind: model.messageKind) }
+            if let message = model.message, model.messagePlace == .account, !model.showsAddAccount { ClaudeStatusLine(text: message, kind: model.messageKind) }
             ClaudeExpandingRow(title: "Add or replace an account", open: $model.showsAddAccount)
             if model.showsAddAccount {
                 VStack(alignment: .leading, spacing: 6) {
@@ -311,6 +317,7 @@ struct ClaudeTokensView: View {
                     if let problem = ClaudeAccountModel.nameProblem(model.newTokenName) { ClaudeStatusLine(text: problem, kind: .warning) }
                     Button("Save Token") { Task { await model.saveToken() } }
                         .disabled(model.busy || model.newTokenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.newToken.isEmpty || ClaudeAccountModel.nameProblem(model.newTokenName) != nil)
+                    if let message = model.message, model.messagePlace == .account { ClaudeStatusLine(text: message, kind: model.messageKind) }
                 }
             }
             ClaudeExpandingRow(title: "Choose the account with a command", open: $model.showsChooser)
