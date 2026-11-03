@@ -15,7 +15,7 @@ public enum ClaudeSetupFailure: String, Error, Sendable, CaseIterable {
         case .account: "Claude did not confirm a private subscription connection. Generate a subscription token with the selected native Claude executable, then try again."
         case .protocolMismatch: "The installed Claude Code did not match Sprava's supported conversation protocol. This is a compatibility failure, not evidence that your token is invalid."
         case .timeout: "Claude verification timed out. Refresh to check whether it finished before trying again."
-        case .firstReply: "Claude could not complete the connection check. Check network access and subscription availability, then try again. Your account has not been enabled."
+        case .firstReply: "Claude could not complete the connection check. Check your network connection and try again. Nothing was saved."
         case .resume: "Claude answered, but the second connection check did not receive the current app context. Your token may still be valid."
         case .keychain: "Claude verification passed, but Sprava could not save the token in your Keychain. Unlock the login Keychain and allow Sprava access, then try again."
         case .unavailable: "Sprava could not finish Claude setup. Refresh the background connection before trying again."

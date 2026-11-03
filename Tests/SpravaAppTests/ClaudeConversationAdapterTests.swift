@@ -231,4 +231,16 @@ import Testing
         #expect(!ClaudeBinderConversation.canFile(a, selected: b, inChat: b))
         #expect(!ClaudeBinderConversation.canFile(a, selected: a, inChat: b))
     }
+
+    @MainActor @Test func theFirstTokenCanBeNamedAndABadNameStopsConnecting() async throws {
+        let server = Server(), client = RuntimeClient(answer: { try server.answer($0) })
+        let model = ClaudeAccountModel(client: client, authenticate: {})
+        await model.load(); model.program = "/invented/claude"; model.token = "invented-token"
+        model.tokenName = "two words"
+        #expect(model.enableBlocker?.contains("letters, digits") == true)
+        model.tokenName = "invented/account"
+        #expect(model.enableBlocker == nil)
+        await model.enable()
+        #expect(server.calls.first { $0["command"] == .str("claude_configure") }?["name"] == .str("invented/account"))
+    }
 }
