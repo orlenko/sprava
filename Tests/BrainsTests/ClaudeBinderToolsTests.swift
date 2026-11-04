@@ -453,6 +453,11 @@ import Testing
         #expect(frames.activity.doing == "Writing" && frames.activity.steps == 5)
         let long = ClaudeTurnActivity.words(tool: "Bash", input: .obj([("description", .str(String(repeating: "é", count: 500)))]))
         #expect(long.count == 91)
+        // A name the model made enormous is cut before it is cleaned, so a turn does not stall on it.
+        let dots = ContinuousClock().measure {
+            #expect(ClaudeTurnActivity.words(tool: "Read", input: .obj([("file_path", .str("/" + String(repeating: ".", count: 2_000_000)))])) == "Reading \u{201C}file\u{201D}")
+        }
+        #expect(dots < .seconds(2))
         #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__update_notes", input: nil) == "Updating the notes")
         #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__search_binder", input: nil) == "Searching the documents")
         #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__add_todo", input: nil) == "Updating the to-dos")

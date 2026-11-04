@@ -281,6 +281,7 @@ import Testing
 
     @Test func anUnexplainedFailureNamesItsKindAndNoData() {
         #expect(ClaudeConversationRuntime.errorKind(ClaudeConversationRuntime.Refused.notConnected) == "Refused.notConnected")
+        #expect(ClaudeConversationRuntime.errorKind(ClaudeReadLaunch.Refused.unsafeHome) == "ClaudeReadLaunch.unsafeHome")
         struct InventedError: Error { let path = "/invented/private/name" }
         #expect(ClaudeConversationRuntime.errorKind(InventedError()) == "InventedError")
     }

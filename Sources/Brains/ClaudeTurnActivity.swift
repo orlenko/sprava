@@ -27,7 +27,8 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
     mutating func toolFinished() { doing = "Thinking" }
 
     static func words(tool: String, input: JSONValue?) -> String {
-        let file = (input?["file_path"]?.stringValue).map { (($0 as NSString).lastPathComponent) }.flatMap { $0.isEmpty ? nil : short(DocumentPaths.safeName($0), 60) }
+        // The model picks this path, and its length: the name is cut before anything walks it.
+        let file = (input?["file_path"]?.stringValue).map { String(($0 as NSString).lastPathComponent.prefix(limitBeforeCleaning)) }.flatMap { $0.isEmpty ? nil : short(DocumentPaths.safeName($0), 60) }
         switch tool {
         case "Read": return file.map { "Reading \u{201C}\($0)\u{201D}" } ?? "Reading a file"
         case "Write", "Edit": return file.map { "Changing \u{201C}\($0)\u{201D}" } ?? "Changing a file"
@@ -41,10 +42,12 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
         }
     }
 
+    private static let limitBeforeCleaning = 400
+
     /// One line: no control or direction character, runs of space closed up, cut at a character's edge.
     private static func short(_ text: String, _ limit: Int) -> String {
         var scalars = String.UnicodeScalarView()
-        for s in text.unicodeScalars {
+        for s in text.unicodeScalars.prefix(limitBeforeCleaning * 4) {
             let c = s.properties.generalCategory
             scalars.append(c == .control || c == .format || c == .lineSeparator || c == .paragraphSeparator ? " " : s)
         }

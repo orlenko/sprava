@@ -490,6 +490,7 @@ public actor ClaudeConversationRuntime {
     /// The error's type, and for Sprava's own refusals which one, whose names carry no data.
     static func errorKind(_ error: Error) -> String {
         if let refused = error as? Refused { return "Refused.\(refused)" }
+        if let refused = error as? ClaudeReadLaunch.Refused { return "ClaudeReadLaunch.\(refused)" }
         return String(describing: type(of: error))
     }
 
