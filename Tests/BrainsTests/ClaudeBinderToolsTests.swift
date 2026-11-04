@@ -458,6 +458,11 @@ import Testing
             #expect(ClaudeTurnActivity.words(tool: "Read", input: .obj([("file_path", .str("/" + String(repeating: ".", count: 2_000_000)))])) == "Reading \u{201C}file\u{201D}")
         }
         #expect(dots < .seconds(2))
+        // So is one character carrying 800,000 combining marks, which a character count would let through whole.
+        let marks = ContinuousClock().measure {
+            _ = ClaudeTurnActivity.words(tool: "Read", input: .obj([("file_path", .str("/a" + String(repeating: "\u{0315}\u{0300}", count: 400_000)))]))
+        }
+        #expect(marks < .seconds(2))
         #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__update_notes", input: nil) == "Updating the notes")
         #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__search_binder", input: nil) == "Searching the documents")
         #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__add_todo", input: nil) == "Updating the to-dos")

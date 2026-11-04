@@ -27,8 +27,11 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
     mutating func toolFinished() { doing = "Thinking" }
 
     static func words(tool: String, input: JSONValue?) -> String {
-        // The model picks this path, and its length: the name is cut before anything walks it.
-        let file = (input?["file_path"]?.stringValue).map { String(($0 as NSString).lastPathComponent.prefix(limitBeforeCleaning)) }.flatMap { $0.isEmpty ? nil : short(DocumentPaths.safeName($0), 60) }
+        // The model picks this path, and its length: the name is cut by scalars, not characters (one character can
+        // carry any number of combining marks), before anything normalizes it.
+        let file = (input?["file_path"]?.stringValue).map { name in
+            String(String.UnicodeScalarView((name as NSString).lastPathComponent.unicodeScalars.prefix(limitBeforeCleaning)))
+        }.flatMap { $0.isEmpty ? nil : short(DocumentPaths.safeName($0), 60) }
         switch tool {
         case "Read": return file.map { "Reading \u{201C}\($0)\u{201D}" } ?? "Reading a file"
         case "Write", "Edit": return file.map { "Changing \u{201C}\($0)\u{201D}" } ?? "Changing a file"
