@@ -28,6 +28,7 @@ public enum Doctor {
 
     /// What a finding says when nothing in Sprava fixes it.
     public static let noFix = "There is no fix for this in Sprava yet."
+    static let hubWithdraws = "Sprava withdraws it on its next hub run, within a few minutes; if this stays, there is no fix for this in Sprava yet."
     static let lifeprojReach = "There is no fix for this in Sprava; taking the binder out of lifeproj's registry ends it."
 
     public static func run(rows: [ShelfRow], deviceID: String?, registry: LifeprojRegistry?, support: URL,
@@ -46,7 +47,8 @@ public enum Doctor {
             let name = row.name
             let teka = row.teka
             let inspection = HubLane.inspectPrivacy(teka, root: spool)
-            out.append(contentsOf: sliceFindings(row, inspection: inspection))
+            out.append(contentsOf: sliceFindings(row, inspection: inspection,
+                                                 owned: deviceID != nil && Owner.device(of: row.folder) == deviceID))
             if registered.contains(row.folder.standardizedFileURL.resolvingSymlinksInPath().path) {
                 if let privacy = inspection.privacy {
                     if privacy.disclosure != "full" {
@@ -63,12 +65,12 @@ public enum Doctor {
             }
             if deviceID == nil || Owner.device(of: row.folder) != deviceID {
                 out.append(Finding(level: .note, binder: name, text: "managed by another Mac or a development build; read-only here",
-                                   next: "Nothing to do here; change it on the Mac that manages it."))
+                                   next: "Nothing to do here; change it on the Mac, or in the build, that manages it."))
                 continue
             }
             if colliding.contains(row.folder.standardizedFileURL.path) {
                 out.append(Finding(level: .fix, binder: name, text: "another binder on the Shelf has the same name; neither publishes to nor drains from the hub until one is renamed",
-                                   next: "There is no way to rename a binder in Sprava yet."))
+                                   next: "Remove one of them from the Shelf if it was added there by hand (right-click it in the sidebar); there is no way to rename a binder in Sprava yet."))
             }
             switch ManualAddendum.isPresent(in: row.folder) {
             case false?: out.append(Finding(level: .fix, binder: name, text: "the manual for coding agents lacks Sprava's addendum",
@@ -83,7 +85,7 @@ public enum Doctor {
             }
             if !teka.findings.isEmpty {
                 out.append(Finding(level: .note, binder: name, text: "\(teka.findings.count) record(s) break the rules",
-                                   next: "Repair cards for them wait on the binder's page."))
+                                   next: "If a repair card from adopting the binder is still open, it is on the binder's page; otherwise there is no fix for this in Sprava yet."))
             }
             // A history that is not a plain file (a FIFO would block the read) is already reported by the state above.
             if !teka.writesBlocked, !OpLogBound.fits(row.folder) {
@@ -122,7 +124,9 @@ public enum Doctor {
         let records = JobRecords.load(support.appendingPathComponent("runtime/breakers.json"))
         for (key, record) in records.jobs.sorted(by: { $0.key < $1.key }) where record.breaker == "open" {
             out.append(Finding(level: .fix, binder: nil, text: "the \(key) job keeps failing and is paused (\(record.lastErrorCode ?? "error"))",
-                               next: "Sprava tries it again by itself after a pause; there is nothing to do in the app."))
+                               next: key == "backup"
+                                   ? "Sprava tries it again by itself after a pause; Backup Settings says what went wrong and asks for the key if it is needed."
+                                   : "Sprava tries it again by itself after a pause; there is nothing to do in the app."))
         }
         // Captures waiting too long (mvp.md 1.2, currency).
         let inbox = CaptureInbox(root: CaptureInbox.defaultRoot(support: support), support: support)
@@ -141,16 +145,19 @@ public enum Doctor {
     }
 
     /// Hub owns the names, privacy projection and state reads for every binder, including another Mac's.
-    private static func sliceFindings(_ row: ShelfRow, inspection: HubLane.PrivacyInspection) -> [Finding] {
+    /// `owned`: this Mac's hub job runs for the binder, and withdraws a slice that shows more than it may.
+    private static func sliceFindings(_ row: ShelfRow, inspection: HubLane.PrivacyInspection, owned: Bool) -> [Finding] {
         inspection.issues.map { issue in
             let text: String
             switch issue {
             case .privateSlice(let disclosure):
                 text = "this binder's disclosure is \(disclosure), but its slice is still on the hub"
+                if owned { return Finding(level: .fix, binder: row.name, text: text, next: hubWithdraws) }
             case .unknownPrivacy:
                 text = "this binder's slice is still on the hub, but Health could not confirm its approved disclosure"
             case .showsMore:
                 text = "this binder's slice on the hub shows more than its current privacy allows"
+                if owned { return Finding(level: .fix, binder: row.name, text: text, next: hubWithdraws) }
             case .otherPublisher:
                 text = "another program publishes this binder's slice (an old lifeproj?)"
                 return Finding(level: .fix, binder: row.name, text: text,

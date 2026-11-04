@@ -165,11 +165,14 @@ import Testing
         let slice = inbox.appendingPathComponent("estate-example.agenda.json")
         try Data("{}".utf8).write(to: slice)
         let findings = try doctorReturns(folder: folder, support: support, device: device)
-        #expect(findings.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub" })
+        #expect(findings.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub"
+            && $0.next == Doctor.hubWithdraws })
         let migrated = Doctor.run(rows: Shelf.rows(registry: nil, picked: [folder]), deviceID: "replacement-mac", registry: nil,
                                   support: support, spool: support)
         #expect(migrated.contains { $0.text.contains("managed by another Mac") })
-        #expect(migrated.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub" })
+        // Another Mac's hub job withdraws it, not this one's.
+        #expect(migrated.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub"
+            && $0.next == Doctor.noFix })
         #expect(try Data(contentsOf: slice) == Data("{}".utf8))
         // An outside widening still leaves the approved level at none; the old slice must keep alarming.
         let catalogFile = folder.appendingPathComponent("catalog.json")
