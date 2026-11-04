@@ -172,6 +172,97 @@ import Testing
         #expect(try String(contentsOf: taken, encoding: .utf8) == "an earlier file")
     }
 
+    func copies(_ s: Setup) throws -> [String] {
+        try call(s, [("command", .str("proposals")), ("binder", .string(s.folder.path))])["intake_copies"]?.arrayValue?.compactMap(\.stringValue) ?? []
+    }
+
+    /// Once a document is filed, an exact copy arriving later asks nothing of the person and stays where it is.
+    @Test func anExactCopyOfAFiledDocumentGetsNoCard() throws {
+        let s = try setup()
+        try drop(s, "quote.txt")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        try drop(s, "quote again.txt")
+        try card(s)
+        #expect(open(s).isEmpty)
+        #expect(try copies(s) == ["intake/quote again.txt"])
+        #expect(exists(s, "intake/quote again.txt"))
+        // The same name with other bytes is a different document: it gets its card and a free name.
+        try drop(s, "quote.txt", "a different invented quote")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        #expect(exists(s, "documents/quote (2).txt"))
+    }
+
+    /// A card already waiting goes once its document is filed through another card; it is not left to be refused.
+    @Test func aWaitingCardGoesOnceItsDocumentIsFiled() throws {
+        let s = try setup()
+        try drop(s, "first.txt")
+        try drop(s, "second.txt")
+        try card(s)
+        let cards = open(s)
+        #expect(cards.count == 2)
+        let chosen = try #require(cards.first)
+        #expect(try approve(s, chosen, folder: "documents")["ok"] == .bool(true))
+        let result = s.watcher.scan(binders: rows(s), commands: s.commands, now: now)
+        #expect(result.copies == 1)
+        #expect(open(s).isEmpty)
+        #expect(try copies(s).count == 1)
+        // Its record says why, in the card's own reason.
+        let other = ProposalStore.list(in: s.folder).map(\.0).first { $0.id == cards[1].id }
+        #expect(other?.state == "rejected")
+    }
+
+    /// For a message, its original holds everything else, so a different text beside it changes nothing.
+    @Test func aMessageWhoseOriginalIsFiledIsACopy() throws {
+        let s = try setup()
+        try dropMail(s, "2026-03-14_1_fence", subject: "The fence")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        let mail = s.folder.appendingPathComponent("intake/mail")
+        let attachments = mail.appendingPathComponent("again attachments")
+        try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+        try Data("---\nsubject: \"The fence\"\n---\n\nRendered another way.\n".utf8).write(to: mail.appendingPathComponent("again.md"))
+        try Data("Subject: The fence\n\nInvented original of 2026-03-14_1_fence.\n".utf8)
+            .write(to: attachments.appendingPathComponent(IntakeWatcher.mailOriginalName))
+        try card(s)
+        #expect(open(s).isEmpty)
+        #expect(try copies(s) == ["intake/mail/again.md"])
+    }
+
+    /// A record alone must not hide the only copy left: with the filed file gone, the one in intake gets its card.
+    @Test func aCopyGetsItsCardOnceTheFiledFileIsGone() throws {
+        let s = try setup()
+        try drop(s, "quote.txt")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        try drop(s, "quote again.txt")
+        try card(s)
+        #expect(open(s).isEmpty)
+        try FileManager.default.removeItem(at: s.folder.appendingPathComponent("documents/quote.txt"))
+        try card(s)
+        #expect(open(s).count == 1)
+        #expect(try copies(s).isEmpty)
+    }
+
+    /// A record with no digest, as an adopted binder's may be, is compared by the file itself.
+    @Test func aFiledDocumentWithNoRecordedDigestIsStillRecognised() throws {
+        let s = try setup()
+        let catalogURL = s.folder.appendingPathComponent("catalog.json")
+        var catalog = try #require(JSONParser.parse(Data(contentsOf: catalogURL)).value.objectValue)
+        let documents = s.folder.appendingPathComponent("documents")
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        try Data("invented older letter".utf8).write(to: documents.appendingPathComponent("older.txt"))
+        var list = catalog["documents"]?.arrayValue ?? []
+        list.append(.obj([("id", .str("doc-older")), ("title", .str("Older letter")), ("path", .str("documents/older.txt"))]))
+        catalog.set("documents", .array(list))
+        try Data(JSONWriter.compact(.object(catalog)).utf8).write(to: catalogURL)
+        try drop(s, "older copy.txt", "invented older letter")
+        try card(s)
+        #expect(open(s).isEmpty)
+        #expect(try copies(s) == ["intake/older copy.txt"])
+    }
+
     /// A machine-named message files by its date and subject, whatever its subject holds.
     @Test func aMachineNamedMessageFilesByDateAndSubject() throws {
         let s = try setup()

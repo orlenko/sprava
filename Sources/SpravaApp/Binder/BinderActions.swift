@@ -64,6 +64,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @Published var message: String? { didSet { readFoundNoRuntime = false } }
     /// The cards whose Details are open.
     @Published private(set) var openDetails: Set<String> = []
+    /// Files in intake left out of review because an exact copy is already filed (`intake/...` paths).
+    @Published private(set) var intakeCopies: [String] = []
     var readFoundNoRuntime = false
     @Published var busy = false
     @Published var description = ""
@@ -149,12 +151,12 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             if let left = self.folder { drafts[left] = draft.isEmpty ? nil : draft }
             self.folder = folder
             let kept = drafts.removeValue(forKey: folder) ?? Draft()
-            cards = []; history = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
+            cards = []; history = []; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
             description = ""; savedDescription = ""; descriptionDraft = kept.description
             filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false
             keeping = nil; keepingNote = nil; preview = nil
         }
-        guard adopted else { cards = []; history = []; return }
+        guard adopted else { cards = []; history = []; intakeCopies = []; return }
         await loadKeeping(folder)
         do {
             let s = try await client.command("binder_settings", binder: folder, timeout: 5)
@@ -235,6 +237,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                 card.review = CardReview(p["review"])
                 return card
             }
+            intakeCopies = (reply["intake_copies"]?.arrayValue ?? []).compactMap(\.stringValue)
             // A reply sent before the runtime settled a card still lists it, and the card stays locked.
             settled.formIntersection(cards.map(\.id))
             let past = try await client.command("history", binder: folder, timeout: 5)
@@ -443,6 +446,10 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             return
         }
         reveal(url)
+    }
+
+    func showCopyInFinder(_ path: String, _ folder: URL) async {
+        await showInFinder(CardReview.File(path: path, name: "", kind: "document"), folder)
     }
 
     /// Drops what the person set on a card, once its approval is accepted.

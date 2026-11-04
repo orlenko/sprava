@@ -24,6 +24,21 @@ import Testing
         #expect(DisplayLine.rows([]).isEmpty)
     }
 
+    @Test func theCopiesInIntakeBelongToTheBinderShown() async {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[],"intake_copies":["intake/quote again.txt"]}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        let actions = BinderActions(client: runtime.client)
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-kitchen"), adopted: true)
+        #expect(actions.intakeCopies == ["intake/quote again.txt"])
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-garden"), adopted: true)
+        #expect(actions.intakeCopies.isEmpty)
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-shed"), adopted: false)
+        #expect(actions.intakeCopies.isEmpty)
+    }
+
     @Test func anotherBindersSettingsAreNeverSavedIntoThisOne() async {
         let runtime = StandInRuntime()
         runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"Kitchen renovation quotes","filing":true}"# }

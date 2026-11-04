@@ -26,6 +26,8 @@ public struct IntakeWatcher: Sendable {
         /// The file has a card but its reading could not be written: `prepare` reads it again and `scan` keeps
         /// the reading then, so the document still reaches the clerk (adaptation-layer §4.2).
         package var readingMissing: Bool?
+        /// An exact copy of a document already filed: no card, and no reading, until that stops being true.
+        package var copy: Bool?
     }
 
     /// The cursor: empty only when `intake.json` does not exist. One that cannot be read or decoded throws, so it is
@@ -53,6 +55,8 @@ public struct IntakeWatcher: Sendable {
         public var heldWithoutCard = 0
         /// Files that sat in some intake/ for more than 7 days without being filed (mvp.md 1.2, currency).
         public var stale = 0
+        /// Files left out of review because an exact copy is already filed; shown on the binder's page.
+        public var copies = 0
         /// The cursor could not be written: every file would look new on every scan, so the job reports it.
         public var cursorUnsaved = false
         /// The cursor exists but cannot be read: nothing was scanned, and nothing was written over it.
@@ -152,6 +156,8 @@ public struct IntakeWatcher: Sendable {
     /// What `scan` needs that is slow: digests of every file and the readings, computed off the command queue.
     public struct Prepared: Sendable {
         public var digests: [String: String] = [:]
+        /// By binder: the digests of filed documents whose records carry none, for files sized like one in intake.
+        public var unrecorded: [String: [String: String]] = [:]
         public var readings: [String: IntakeReading] = [:]
         public init() {}
     }
@@ -168,8 +174,18 @@ public struct IntakeWatcher: Sendable {
         var out = Prepared()
         for row in binders where row.teka.isAdopted && !row.teka.writesBlocked && Owner.device(of: row.folder) == deviceID {
             let seen = state[row.folder.standardizedFileURL.path] ?? [:]
-            for c in (try? Self.listCandidates(in: row.folder)) ?? [] {
+            let candidates = (try? Self.listCandidates(in: row.folder)) ?? []
+            out.unrecorded[row.folder.path] = Self.unrecordedDigests(row, candidates: candidates)
+            for c in candidates {
                 guard let e = seen[c.name], e.card == nil || e.readingMissing == true, e.size == c.size, e.mtime == c.mtime else { continue }
+                // A known copy is only compared again: the words of a file left out of review are not read.
+                if e.copy == true {
+                    for name in [c.name] + c.attachments {
+                        let url = row.folder.appendingPathComponent("intake/" + name)
+                        out.digests[url.path] = Self.digest(of: url)
+                    }
+                    continue
+                }
                 if read && Date().timeIntervalSince(started) > budget { return out }
                 let file = row.folder.appendingPathComponent("intake/" + c.name)
                 let attachments = c.attachments.map { row.folder.appendingPathComponent("intake/" + $0) }
@@ -208,10 +224,22 @@ public struct IntakeWatcher: Sendable {
             }
             // Cards already waiting for a file, matched by name and digest, are never made twice.
             var waiting = ProposalStore.list(in: row.folder).map(\.0).filter { $0.state == "proposed" && $0.raw["provenance"]?["intake"] != nil }
+            let filed = Self.filedDigests(row.teka.catalog, unrecorded: prepared.unrecorded[row.folder.path] ?? [:])
             for file in files {
                 var entry = seen.removeValue(forKey: file.name)
                 if let e = entry, e.size == file.size, e.mtime == file.mtime {
                     if e.card == nil {
+                        // An exact copy of a document already filed needs no decision from anyone.
+                        let isCopy = Self.isFiled(names: [file.name] + file.attachments, filed: filed, in: row.folder) { name in
+                            let path = row.folder.appendingPathComponent("intake/" + name).path
+                            return prepared.digests[path] ?? Self.digest(of: URL(fileURLWithPath: path))
+                        }
+                        entry?.copy = isCopy ? true : nil
+                        if isCopy {
+                            result.copies += 1
+                            next[file.name] = entry
+                            continue
+                        }
                         // Nothing here may ever be filed (only key or credential files, binder-v0 §3.3): a card would
                         // have no change to approve, so none is made; Health counts the file as held.
                         if ([file.name] + file.attachments).allSatisfy(DocumentPaths.isKeyFile) {
@@ -250,6 +278,20 @@ public struct IntakeWatcher: Sendable {
                             }
                         }
                     } else {
+                        // One waiting for a decision, once its document has been filed some other way, goes too. Its own
+                        // recorded digests say so with no file read; a card Sprava did not record is left to the person.
+                        if let id = e.card, let waited = waiting.first(where: { $0.id == id }), commands.isTrusted(id, in: row.folder),
+                           Self.isFiled(card: waited, filed: filed, in: row.folder) {
+                            guard withdraw(id, in: row.folder, deviceID: commands.deviceID, now: now, reason: "an exact copy is already filed") else {
+                                next[file.name] = entry
+                                continue
+                            }
+                            entry?.card = nil
+                            entry?.copy = true
+                            result.copies += 1
+                            next[file.name] = entry
+                            continue
+                        }
                         if let card = e.card { entry?.card = finishReplacement(card, waiting: &waiting, in: row.folder, deviceID: commands.deviceID, now: now) }
                         if e.readingMissing == true, let card = e.card {
                             entry?.readingMissing = retryReading(prepared, file: file, card: card, in: row, commands: commands, now: now) ? nil : true
@@ -479,9 +521,9 @@ public struct IntakeWatcher: Sendable {
     /// reading, the clerk's included, goes with it, and a careful reading it asked for is no longer waited for; a card
     /// the person approved keeps both.
     @discardableResult
-    func withdraw(_ id: String, in folder: URL, deviceID: String, now: Date) -> Bool {
+    func withdraw(_ id: String, in folder: URL, deviceID: String, now: Date, reason: String = "the file in intake/ changed or is gone") -> Bool {
         if let (proposal, _) = ProposalStore.list(in: folder).first(where: { $0.0.id == id }), proposal.state == "proposed" {
-            guard (try? BinderWrite.reject(proposal, in: folder, reason: "the file in intake/ changed or is gone", deviceID: deviceID, now: now)) != nil else {
+            guard (try? BinderWrite.reject(proposal, in: folder, reason: reason, deviceID: deviceID, now: now)) != nil else {
                 return false
             }
         }

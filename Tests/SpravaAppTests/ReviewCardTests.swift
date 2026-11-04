@@ -173,4 +173,10 @@ import Testing
         #expect(review.changes.first?.line == "Change")
         #expect(review.warnings == ["w"])
     }
+
+    @Test func theLineAboutCopiesSaysNothingWasDeleted() {
+        #expect(CardReview.copiesLine(1).hasPrefix("1 file in intake is an exact copy"))
+        #expect(CardReview.copiesLine(12).hasPrefix("12 files in intake are exact copies"))
+        #expect(CardReview.copiesLine(12).contains("nothing was deleted"))
+    }
 }
