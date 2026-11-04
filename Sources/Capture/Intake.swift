@@ -339,19 +339,6 @@ public struct IntakeWatcher: Sendable {
         guard let sha else { return nil }
         let folder = Self.suggestedFolder(row.teka.catalog)
         let isMail = file.name.hasPrefix("mail/")
-        var used = Set<String>()
-        func destination(_ name: String) -> String {
-            var path = Self.freePath(folder, DocumentPaths.safeName((name as NSString).lastPathComponent), in: row.folder)
-            var n = 2
-            while used.contains(DocumentPaths.fold(path)) && n < 1000 {
-                let base = DocumentPaths.safeName((name as NSString).lastPathComponent)
-                let ext = (base as NSString).pathExtension
-                path = Self.freePath(folder, (base as NSString).deletingPathExtension + " (\(n))" + (ext.isEmpty ? "" : ".\(ext)"), in: row.folder)
-                n += 1
-            }
-            used.insert(DocumentPaths.fold(path))
-            return path
-        }
         // How it came (docs/adaptation-layer.md §3.3): copied into every document filed from it.
         var obtained = JSONObject([(key: "channel", value: .string(reading?.channel ?? file.channel))])
         if let from = reading?.from { obtained.set("from", .string(Clerk.shorten(from, to: 200))) }
@@ -370,7 +357,7 @@ public struct IntakeWatcher: Sendable {
             var document = JSONObject()
             document.set("id", .string("$new:\(number)"))
             document.set("title", .string(index == 0 ? Self.title(name, subject: reading?.subject) : Self.title(name, subject: nil)))
-            document.set("path", .string(destination(name)))
+            document.set("path", .string(folder + "/" + DocumentPaths.safeName((name as NSString).lastPathComponent)))
             document.set("sha256", .string(fileSHA))
             if index == 0, let r = reading {
                 if r.kind == "email" { document.set("kind", .str("email")) }
@@ -387,6 +374,7 @@ public struct IntakeWatcher: Sendable {
             ops.append(JSONObject([(key: "op", value: .str("file_document")),
                                    (key: "args", value: .obj([("document", .object(document)), ("from", .string("intake/" + name))]))]))
         }
+        ops = Self.settlingNames(ops, in: row.folder)
         let actor = JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)),
                                 (key: "model", value: .str("none"))])
         var intake = JSONObject([(key: "name", value: .string(file.name)), (key: "bytes", value: .int(file.size)),

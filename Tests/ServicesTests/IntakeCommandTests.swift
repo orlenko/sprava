@@ -111,12 +111,99 @@ import Testing
         _ = s.watcher.scan(binders: rows(s), commands: s.commands, now: now)
         _ = s.watcher.scan(binders: rows(s), commands: s.commands, now: now)
         let card = try #require(open(s).first)
-        // An existing file at the destination is refused; the folder is the person's choice.
-        #expect(try approve(s, card, folder: "letters")["ok"] == .bool(false))
+        // A taken name gets a number and the older file is left alone; a folder that cannot hold documents is refused.
         #expect(try approve(s, card, folder: "intake")["ok"] == .bool(false))
-        #expect(try approve(s, card, folder: "letters/2026")["ok"] == .bool(true))
-        #expect(FileManager.default.fileExists(atPath: s.folder.appendingPathComponent("letters/2026/reply.txt").path))
+        #expect(try approve(s, card, folder: "letters")["ok"] == .bool(true))
+        #expect(try String(contentsOf: s.folder.appendingPathComponent("letters/reply (2).txt"), encoding: .utf8) == "invented letter body")
         #expect(try String(contentsOf: s.folder.appendingPathComponent("letters/reply.txt"), encoding: .utf8) == "older")
-        #expect(IntakeWatcher.freePath("letters", "reply.txt", in: s.folder) == "letters/reply (2).txt")
+        #expect(IntakeWatcher.freePath("letters", "reply.txt", in: s.folder) == "letters/reply (3).txt")
+    }
+
+    /// One message from a mail monitor: its text, and its original in its attachments folder under the shared name.
+    func dropMail(_ s: Setup, _ base: String, subject: String, date: String = "Sat, 14 Mar 2026 09:00:00 +0000") throws {
+        let mail = s.folder.appendingPathComponent("intake/mail")
+        let attachments = mail.appendingPathComponent(base + " attachments")
+        try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+        try Data("---\nsubject: \"\(subject)\"\nfrom: \"a@example.invalid\"\ndate: \"\(date)\"\n---\n\nInvented body of \(base).\n".utf8)
+            .write(to: mail.appendingPathComponent(base + ".md"))
+        try Data("Subject: \(subject)\n\nInvented original of \(base).\n".utf8)
+            .write(to: attachments.appendingPathComponent(IntakeWatcher.mailOriginalName))
+    }
+
+    func card(_ s: Setup) throws {
+        for _ in 0..<2 {
+            let prepared = s.watcher.prepare(binders: rows(s), deviceID: "dev", reader: .inProcess)
+            _ = s.watcher.scan(binders: rows(s), commands: s.commands, now: now, prepared: prepared)
+        }
+    }
+
+    func exists(_ s: Setup, _ path: String) -> Bool { FileManager.default.fileExists(atPath: s.folder.appendingPathComponent(path).path) }
+
+    /// Cards written before any of them was filed all named the same original; each must still file.
+    @Test func everyWaitingMessageFilesThoughTheirOriginalsShareAName() throws {
+        let s = try setup()
+        try dropMail(s, "2026-03-14_1_fence", subject: "The fence")
+        try dropMail(s, "2026-03-15_2_gate", subject: "The gate")
+        try dropMail(s, "2026-03-16_3_shed", subject: "The shed")
+        try card(s)
+        let cards = open(s)
+        #expect(cards.count == 3)
+        for card in cards { #expect(try approve(s, card, folder: "documents")["ok"] == .bool(true)) }
+        #expect(open(s).isEmpty)
+        for name in ["2026-03-14_1_fence", "2026-03-15_2_gate", "2026-03-16_3_shed"] {
+            #expect(exists(s, "documents/\(name).md"))
+            #expect(exists(s, "documents/\(name).eml"))
+        }
+        #expect(!exists(s, "documents/000-original-message.eml"))
+    }
+
+    /// A name that was free when the card was written and is taken now gets a number; the older file stays.
+    @Test func aCardNamingATakenFileGetsAFreeNameOnApproval() throws {
+        let s = try setup()
+        try dropMail(s, "2026-03-14_1_fence", subject: "The fence")
+        let documents = s.folder.appendingPathComponent("documents")
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        let taken = documents.appendingPathComponent("2026-03-14_1_fence.eml")
+        try Data("an earlier file".utf8).write(to: taken)
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        #expect(exists(s, "documents/2026-03-14_1_fence.md"))
+        #expect(exists(s, "documents/2026-03-14_1_fence (2).eml"))
+        #expect(try String(contentsOf: taken, encoding: .utf8) == "an earlier file")
+    }
+
+    /// A machine-named message files by its date and subject, whatever its subject holds.
+    @Test func aMachineNamedMessageFilesByDateAndSubject() throws {
+        let s = try setup()
+        func args(title: String?, date: String?, from: String, path: String) -> JSONObject {
+            var document = JSONObject()
+            if let title { document.set("title", .string(title)) }
+            if let date { document.set("date", .string(date)) }
+            document.set("path", .string(path))
+            return JSONObject([(key: "op", value: .str("file_document")),
+                               (key: "args", value: .obj([("document", .object(document)), ("from", .string(from))]))])
+        }
+        func settled(_ ops: [JSONObject]) -> [String] {
+            IntakeWatcher.settlingNames(ops, in: s.folder).compactMap { $0["args"]?["document"]?["path"]?.stringValue }
+        }
+        let machine = "intake/mail/imap-1234-7-3.md"
+        let original = "intake/mail/imap-1234-7-3 attachments/000-original-message.eml"
+        #expect(settled([args(title: "Quote: the fence", date: "2026-03-14", from: machine, path: "documents/imap-1234-7-3.md"),
+                         args(title: "000-original-message", date: nil, from: original, path: "documents/000-original-message.eml")])
+            == ["documents/2026-03-14 Quote - the fence.md", "documents/2026-03-14 Quote - the fence.eml"])
+        // No subject: the title was only the machine's name.
+        #expect(settled([args(title: "imap-1234-7-3", date: nil, from: machine, path: "documents/imap-1234-7-3.md")]) == ["documents/email.md"])
+        // Two files of one card never settle on one name.
+        #expect(settled([args(title: "x", date: nil, from: "intake/a/reply.txt", path: "documents/reply.txt"),
+                         args(title: "x", date: nil, from: "intake/b/reply.txt", path: "documents/reply.txt")])
+            == ["documents/reply.txt", "documents/reply (2).txt"])
+        // A subject that would make a credential's name, or one no file system can hold, never reaches the disk as such.
+        #expect(settled([args(title: "credentials renewal", date: nil, from: machine, path: "documents/imap-1234-7-3.md")]) == ["documents/imap-1234-7-3.md"])
+        let long = settled([args(title: String(repeating: "é", count: 120), date: nil, from: machine, path: "documents/imap-1234-7-3.md")])[0]
+        #expect((long as NSString).lastPathComponent.utf8.count <= 255)
+        #expect(DocumentPaths.isSafe(long))
+        // A path escape in a subject stays one file name.
+        let escape = settled([args(title: "../../outside", date: "2026-03-14", from: machine, path: "documents/imap-1234-7-3.md")])[0]
+        #expect(escape.hasPrefix("documents/") && escape.split(separator: "/").count == 2)
     }
 }
