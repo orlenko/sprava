@@ -1,6 +1,7 @@
 import Brains
 import BinderFormat
 import BinderStore
+import Capture
 import Foundation
 import Shelf
 import SpravaKit
@@ -214,6 +215,9 @@ extension Commands {
                     return changed
                 }
             }
+            // The card's names were free when it was written; other cards may have filed since (binder-v0 §6.9).
+            let settled = IntakeWatcher.settlingNames(edited ?? proposal.ops, in: f)
+            if settled != (edited ?? proposal.ops) { edited = settled }
             let applied = try store.approve(proposal, edited: edited, now: now)
             // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
             try recordDigests([id] + store.createdProposals, in: f)
