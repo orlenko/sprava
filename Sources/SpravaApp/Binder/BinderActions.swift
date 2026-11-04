@@ -62,6 +62,10 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         let undone: Bool
     }
     @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    /// What the last approval did, said where the card was until the next change, another binder or a few seconds.
+    @Published private(set) var confirmation: String?
+    private var confirmationEnds: Task<Void, Never>?
+    var confirmationLifetime: Duration = .seconds(8)
     /// The cards whose Details are open.
     @Published private(set) var openDetails: Set<String> = []
     /// Files in intake left out of review because an exact copy is already filed (`intake/...` paths).
@@ -154,6 +158,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             cards = []; history = []; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
             description = ""; savedDescription = ""; descriptionDraft = kept.description
             filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false
+            confirm(nil)
             keeping = nil; keepingNote = nil; preview = nil
         }
         guard adopted else { cards = []; history = []; intakeCopies = []; return }
@@ -282,6 +287,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @discardableResult
     func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never> {
         busy = true
+        confirm(nil)
         return Task {
             defer { busy = false }
             do {
@@ -308,11 +314,11 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @discardableResult
     func run(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], then reload: @escaping () -> Void,
              onSuccess: @escaping () -> Void = {}, onAccepted: @escaping () -> Void = {},
-             onEnd: @escaping () -> Void = {}) -> Task<Void, Never> {
+             onReply: @escaping (JSONObject) -> Void = { _ in }, onEnd: @escaping () -> Void = {}) -> Task<Void, Never> {
         busy = true
         return Task {
             defer { busy = false; onEnd() }
-            await send(name, folder, fields, onSuccess: onSuccess, onAccepted: onAccepted)
+            await send(name, folder, fields, onSuccess: onSuccess, onAccepted: onAccepted, onReply: onReply)
             if serves(folder) { reload() }
         }
     }
@@ -320,13 +326,16 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// One change through the runtime; its outcome is shown only while its binder is the one shown. `onAccepted`
     /// runs whenever the runtime accepts it, shown or not, for state kept per binder that must follow the binder.
     func send(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], onSuccess: () -> Void = {},
-              onAccepted: () -> Void = {}) async {
+              onAccepted: () -> Void = {}, onReply: (JSONObject) -> Void = { _ in }) async {
+        // The next change ends the last approval's confirmation: it says only what that approval did.
+        if serves(folder) { confirm(nil) }
         do {
-            _ = try await client.command(name, binder: folder, fields)
+            let reply = try await client.command(name, binder: folder, fields)
             onAccepted()
             guard serves(folder) else { return }
             message = nil
             onSuccess()
+            onReply(reply)
         } catch {
             guard serves(folder) else { return }
             message = "\(error)"
@@ -350,17 +359,32 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// Approves a card with what the person set on it; nil when the card already has a request pending.
     @discardableResult
     func approve(_ card: Card, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
-        settle(card, "approve", folder, approval(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) })
+        settle(card, "approve", folder, approval(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
+               onReply: { [weak self] in self?.confirm(CardReview.approvedLine($0)) })
+    }
+
+    /// Shows what an approval did, or ends what is shown; it goes by itself after `confirmationLifetime`.
+    func confirm(_ text: String?) {
+        confirmationEnds?.cancel()
+        confirmation = text
+        guard text != nil else { return }
+        let lifetime = confirmationLifetime
+        confirmationEnds = Task { [weak self] in
+            try? await Task.sleep(for: lifetime)
+            guard !Task.isCancelled else { return }
+            self?.confirmation = nil
+        }
     }
 
     /// Sends a card's approval or rejection, with the card locked until the runtime answers, and, once the runtime
     /// accepts it, until a reload no longer lists the card.
     private func settle(_ card: Card, _ name: String, _ folder: URL, _ fields: [(String, JSONValue)],
-                        reload: @escaping () -> Void, onSuccess: @escaping () -> Void = {}) -> Task<Void, Never>? {
+                        reload: @escaping () -> Void, onSuccess: @escaping () -> Void = {},
+                        onReply: @escaping (JSONObject) -> Void = { _ in }) -> Task<Void, Never>? {
         guard isChangeable(card.id) else { return nil }
         pending.insert(card.id)
         return run(name, folder, fields, then: reload,
-                   onSuccess: { [weak self] in onSuccess(); self?.settled.insert(card.id) },
+                   onSuccess: { [weak self] in onSuccess(); self?.settled.insert(card.id) }, onReply: onReply,
                    onEnd: { [weak self] in self?.pending.remove(card.id) })
     }
 
