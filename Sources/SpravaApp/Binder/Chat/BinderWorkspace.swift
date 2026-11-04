@@ -18,11 +18,18 @@ final class BinderWorkspaceSelection: ObservableObject {
         choices[folder.standardizedFileURL] = surface
     }
 
-    /// Opens where a binder's cards are: Project, not its settings. In a narrow window Conversation would otherwise cover them.
+    /// Opens where a binder's cards are: Project's To-dos, not its settings. In a narrow window Conversation would otherwise cover them.
     func showCards(in folder: URL) {
         choose(.project, for: folder)
+        pageTab = .todos
         settings.remove(folder.standardizedFileURL)
     }
+
+    /// The parts of Project, one at a time, so the documents and history are not below a long to-do list (issue #593).
+    enum PageTab: String, CaseIterable, Hashable { case todos = "To-dos", explore = "Explore", history = "History" }
+    /// One choice for the window, kept through reloads, polls, edits and other binders: a tab is picked for a task, such as finding
+    /// a document, that often goes on in the next binder. A new window, so each launch, starts at To-dos.
+    @Published var pageTab: PageTab = .todos
 
     /// Binders with no conversation yet where the person asked to talk, so the conversation shows beside Project.
     @Published private var opened: Set<URL> = []

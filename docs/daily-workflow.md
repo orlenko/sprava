@@ -62,21 +62,23 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
    and `correspondence`, and an undated starter checklist to approve as above.
 2. Keep the records by dropping minutes, statements, quotes and letters on the binder, and choosing the folder on
    each card before filing it.
-3. Track action items in the binder's **Project** view or on **Today** across binders. Type in the top row and press
-   Return: it writes the task at once, without a model or a review card, and leaves the cursor there for the next.
+3. Track action items on the **To-dos** tab of the binder's **Project** view, where it opens, or on **Today** across
+   binders. Type in the top row and press Return: it writes the task at once, without a model or a review card, and
+   leaves the cursor there for the next.
    **Due** takes `today`, `tomorrow`, `fri`, `+3`, `nov 12`, `11/12` or `2031-02-03`. With the width for them, the row
    also has **Priority** and, on Today, **Binder**; it adds to the binder you are in, or to General on Today. Paste
    several lines to add one task for each. Clicking away keeps what you typed as a draft.
    Click a task's title or date to change it in place: Return or moving away saves, and Esc puts it back. **More…**, on
    the open row or the row's menu, has **Status**, who it is **Waiting on** and the follow-up date. The ring marks a task
    done; the menu has **Cancel to-do**. A task moves to its new group once it has saved. Use **Undo** beside the last
-   change on Today, or under **Recent changes** in Project, to reverse an addition, edit, completion or cancellation.
-4. Find a filed document under **Filed documents** with **Find a document by title or path**; **Show in Finder**
+   change on Today, or under **Recent changes** on Project's **History** tab, to reverse an addition, edit, completion
+   or cancellation. Project's tab stays as chosen while you work, also in other binders, and the app opens on To-dos.
+4. Find a filed document on Project's **Explore** tab with **Find a document by title or path**; **Show in Finder**
    selects its file. **Open Binder Folder** opens the whole folder, including files nobody has filed, which this list
    does not show.
    If it was filed in the wrong folder or under the wrong name, choose **Move / rename…**, type its **New path inside
    this binder** (such as `finances/annual-budget.pdf`) and choose **Move**: the file and its catalog record move
-   together. **Undo** under **Recent changes** moves it back, for seven days and while it is still where the move
+   together. **Undo** on the **History** tab moves it back, for seven days and while it is still where the move
    put it.
 
 ## Optional: Claude and email intake

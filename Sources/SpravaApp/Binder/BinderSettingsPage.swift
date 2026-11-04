@@ -62,7 +62,8 @@ struct EmailIntakeAttention: View {
     }
 
     var body: some View {
-        Group {
+        // A stack, not a Group: an empty Group draws nothing, so its task, which finds out whether to show, would never run.
+        VStack(alignment: .leading, spacing: 0) {
             if model.status.enabled && model.status.needsPassword {
                 HStack {
                     Text("Email intake needs its password.").foregroundStyle(.orange)

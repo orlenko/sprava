@@ -28,6 +28,8 @@ struct NowView: View {
     @ObservedObject var documents = FiledDocuments()
     @ObservedObject var todoAdd = TodoModel()
     @ObservedObject var workspace = BinderWorkspaceSelection()
+    /// Makes the model behind the email intake notice; a test hands in one with a stand-in runtime.
+    var emailIntake: () -> EmailIntakeModel = { EmailIntakeModel() }
     @State private var wideTodos = false
 
     private var showsSettings: Bool { row.teka.isAdopted && workspace.showsSettings(row.folder) }
@@ -123,55 +125,133 @@ struct NowView: View {
         .padding(.vertical, 4)
     }
 
-    private var project: some View {
+    /// To-dos, Explore and History, one at a time under a segmented control (issue #593). The choice is the window's, so a
+    /// reload, a poll, an edit or the conversation beside it never resets it.
+    var project: some View {
+        VStack(spacing: 0) {
+            notices
+            // The cards wait on To-dos only, so its segment counts them from every tab.
+            BinderPageTabs(selection: $workspace.pageTab, cards: actions.cards.count)
+                .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 4)
+            switch workspace.pageTab {
+            case .todos: List { todos }
+            case .explore: List { FiledDocumentsSection(row: row, model: documents, reload: refresh) }
+            case .history:
+                List {
+                    HistorySection(actions: actions, folder: row.folder, reload: refresh)
+                    if let line = Self.historyLine(actions.historyRead, empty: actions.history.isEmpty) {
+                        Text(line).foregroundStyle(actions.historyRead == .failed ? .orange : .secondary)
+                    }
+                }
+            }
+        }
+        .measuringTodoWidth($wideTodos)
+    }
+
+    /// What History says besides its list: nothing until a read has finished, and a failed read is never shown as no changes.
+    static func historyLine(_ read: BinderActions.HistoryRead, empty: Bool) -> String? {
+        switch read {
+        case .reading: empty ? "Reading recent changes\u{2026}" : nil
+        case .read: empty ? "No recent changes in this binder." : nil
+        case .failed: "Recent changes could not be read just now. Sprava tries again in a moment."
+        }
+    }
+
+    /// What must not wait for a visit to To-dos: above the tabs, so it shows on every one.
+    private var notices: some View {
         let teka = row.teka
-        return VStack(spacing: 0) {
-            List {
-                if teka.isAdopted, !teka.writesBlocked {
-                    DirectTodoSection(model: todoAdd, target: .init(folder: row.folder, label: row.name), reload: { refresh() })
+        return VStack(alignment: .leading, spacing: 6) {
+            if teka.isAdopted, !teka.writesBlocked {
+                EmailIntakeAttention(folder: row.folder, model: emailIntake()) {
+                    if !workspace.showsSettings(row.folder) { workspace.toggleSettings(row.folder) }
                 }
-                // The box for lines to review is gone from this page, which adds to-dos in its top row; a draft already typed
-                // into it stays in sight until it is sent or cleared.
-                if !note.text.isEmpty, let local = inputs.note { local }
-                if teka.isAdopted, !teka.writesBlocked {
-                    EmailIntakeAttention(folder: row.folder) { if !workspace.showsSettings(row.folder) { workspace.toggleSettings(row.folder) } }
-                }
-                ReviewSection(actions: actions, folder: row.folder, reload: refresh)
-                StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
-                ForEach(Bucket.allCases, id: \.self) { bucket in
-                    if bucket == .recentlyClosed {
-                        if !page.closed.isEmpty {
-                            Section(header: BucketHeader(bucket: bucket, count: page.closed.count)) {
-                                ForEach(page.closed.enumerated().map { ("closed-\($0.offset)", $0.element) }, id: \.0) { _, entry in
-                                    HStack {
-                                        Text(entry.closedOn?.description ?? "date unknown")
-                                            .monospacedDigit().foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
-                                        Text(entry.title).strikethrough(entry.action == "done")
-                                        Spacer()
-                                        Text(entry.action).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    } else if let items = page.items[bucket], !items.isEmpty {
-                        Section(header: BucketHeader(bucket: bucket, count: items.count)) {
-                            // Row ids are unique across sections: List reuses rows by id, and two sections that both
-                            // start at 0 would show one section's row in the other.
-                            ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
-                                ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
-                                        editable: teka.isAdopted && !teka.writesBlocked, today: today, reload: refresh)
-                            }
+            }
+            StrandedItemEdit(actions: actions, editor: editor, folder: row.folder, page: page, reload: refresh)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder private var todos: some View {
+        let teka = row.teka
+        if teka.isAdopted, !teka.writesBlocked {
+            DirectTodoSection(model: todoAdd, target: .init(folder: row.folder, label: row.name), reload: { refresh() })
+        }
+        // The box for lines to review is gone from this page, which adds to-dos in its top row; a draft already typed
+        // into it stays in sight until it is sent or cleared.
+        if !note.text.isEmpty, let local = inputs.note { local }
+        ReviewSection(actions: actions, folder: row.folder, reload: refresh)
+        ForEach(Bucket.allCases, id: \.self) { bucket in
+            if bucket == .recentlyClosed {
+                if !page.closed.isEmpty {
+                    Section(header: BucketHeader(bucket: bucket, count: page.closed.count)) {
+                        ForEach(page.closed.enumerated().map { ("closed-\($0.offset)", $0.element) }, id: \.0) { _, entry in
+                            ClosedTodoRow(entry: entry)
                         }
                     }
                 }
-                FiledDocumentsSection(row: row, model: documents, reload: refresh)
-                if page.hiddenCount > 0 {
-                    Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
+            } else if let items = page.items[bucket], !items.isEmpty {
+                Section(header: BucketHeader(bucket: bucket, count: items.count)) {
+                    // Row ids are unique across sections: List reuses rows by id, and two sections that both
+                    // start at 0 would show one section's row in the other.
+                    ForEach(items.map { ("item-\($0.index)", $0) }, id: \.0) { _, item in
+                        ItemRow(item: item, bucket: bucket, actions: actions, editor: editor, folder: row.folder,
+                                editable: teka.isAdopted && !teka.writesBlocked, today: today, reload: refresh)
+                    }
                 }
-                HistorySection(actions: actions, folder: row.folder, reload: refresh)
             }
-            .measuringTodoWidth($wideTodos)
         }
+        if page.hiddenCount > 0 {
+            Text("\(page.hiddenCount) dismissed item(s) hidden").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Which part of a binder's page shows: a native segmented control, reached with Tab and read by VoiceOver as one choice.
+/// To-dos says how many cards wait there, so a card that arrives while another tab shows is not missed.
+struct BinderPageTabs: View {
+    @Binding var selection: BinderWorkspaceSelection.PageTab
+    /// The cards waiting for a decision on To-dos.
+    var cards = 0
+
+    static func title(_ tab: BinderWorkspaceSelection.PageTab, cards: Int) -> String {
+        tab == .todos && cards > 0 ? "\(tab.rawValue) \u{00B7} \(cards)" : tab.rawValue
+    }
+
+    static func spoken(_ tab: BinderWorkspaceSelection.PageTab, cards: Int) -> String {
+        tab == .todos && cards > 0 ? "\(tab.rawValue), \(cards) \(cards == 1 ? "card" : "cards") waiting" : tab.rawValue
+    }
+
+    var body: some View {
+        Picker("Show", selection: $selection) {
+            ForEach(BinderWorkspaceSelection.PageTab.allCases, id: \.self) {
+                Text(Self.title($0, cards: cards)).accessibilityLabel(Self.spoken($0, cards: cards)).tag($0)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel("Binder page section")
+        // Also said of the whole control, in case a segment's own label is not passed on to VoiceOver.
+        .accessibilityHint(cards > 0 ? Self.spoken(.todos, cards: cards) : "")
+        .frame(maxWidth: 340)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// A to-do closed in the last days, paler than the open ones above it: smaller type in the secondary label colour, still
+/// readable, and beside that, so colour is never the only sign, the line through a done one and the word for how it closed.
+struct ClosedTodoRow: View {
+    let entry: ClosedEntry
+    static let font = Font.callout
+
+    var body: some View {
+        HStack {
+            Text(entry.closedOn?.description ?? "date unknown")
+                .monospacedDigit().foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
+            Text(entry.title).strikethrough(entry.action == "done").foregroundStyle(.secondary)
+            Spacer()
+            Text(entry.action).foregroundStyle(.secondary)
+        }
+        .font(Self.font)
     }
 }
 
