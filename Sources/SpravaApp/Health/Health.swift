@@ -193,6 +193,9 @@ struct HealthView: View {
     var openBackup: () -> Void = {}
 
     static let supportID = "support"
+    /// The notice's tuned colours, readable as text on a light page as well as a dark one.
+    static let needsYou = NoticeLevel.needsYou.color
+    static let broken = NoticeLevel.broken.color
 
     var body: some View {
         ScrollViewReader { scroller in
@@ -209,7 +212,8 @@ struct HealthView: View {
                     Section("Background jobs") {
                         ForEach(beat.jobs.keys.sorted(), id: \.self) { key in
                             JobLine(key: key, job: beat.jobs[key]!, beat: beat, lastWake: model.lastWake, now: model.now,
-                                    restart: model.beatGrade == .green && !model.starting ? { model.restart() } : nil)
+                                    restart: model.runtimeStatus == .enabled && model.beatGrade == .green && !model.starting
+                                        ? { model.restart() } : nil)
                         }
                     }
                     Section("Apple Intelligence") { clerkLine(beat) }
@@ -217,8 +221,8 @@ struct HealthView: View {
                 }
                 Section("Backup") {
                     Button("Open Backup Settings", action: openBackup).buttonStyle(.link)
-                    if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(.red) }
-                    else if !model.backupConfigured { Text("Backup is not set up.").foregroundStyle(.orange) }
+                    if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(Self.broken) }
+                    else if !model.backupConfigured { Text("Backup is not set up.").foregroundStyle(Self.needsYou) }
                     else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                     ForEach(HealthLine.rows("backup", model.backups)) { line in
                         let b = line.value
@@ -232,21 +236,21 @@ struct HealthView: View {
                     }
                 }
                 Section("Checks") {
-                    if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(.red) }
+                    if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(Self.broken) }
                     else if model.findings.isEmpty { Text("Nothing to fix.").foregroundStyle(.secondary) }
                     ForEach(HealthLine.rows("doctor", model.findings)) { line in
                         let f = line.value
                         HStack(alignment: .top) {
                             Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
-                                .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
+                                .foregroundStyle(f.level == .fix ? Self.needsYou : .secondary).frame(width: 34, alignment: .leading)
                             Text(f.sentence)
                         }
                     }
                 }
                 Section {
                     DisclosureGroup("Details for support", isExpanded: $model.supportOpen) { support }
+                        .id(Self.supportID)
                 }
-                .id(Self.supportID)
             }
         }
         // The Shelf re-reads health every ten seconds whichever page is open; opening the page reads it at once.
@@ -255,7 +259,8 @@ struct HealthView: View {
 
     var supportText: String {
         SupportDetails.text(heartbeat: model.heartbeat, registration: SupportDetails.registration(model.runtimeStatus),
-                            startsToday: model.startsToday, refusals: model.refusals, watchRecord: model.watchRecord)
+                            startsToday: model.startsToday, refusals: model.refusals, watchRecord: model.watchRecord,
+                            problems: model.supportProblems)
     }
 
     @ViewBuilder var support: some View {
@@ -282,12 +287,12 @@ struct HealthView: View {
             Spacer()
             buttons(grade)
         }
-        if let stale = model.staleRuntimeBuild { Text(stale).foregroundStyle(.orange) }
-        if let failure = model.watcherRepairFailure { Text(failure).foregroundStyle(.orange) }
+        if let stale = model.staleRuntimeBuild { Text(stale).foregroundStyle(Self.needsYou) }
+        if let failure = model.watcherRepairFailure { Text(failure).foregroundStyle(Self.needsYou) }
         if let failure = model.startFailure, failure != model.locationProblem, model.notice?.title != failure {
-            Text(failure).foregroundStyle(.orange)
+            Text(failure).foregroundStyle(Self.needsYou)
         }
-        if let problem = model.locationProblem { Text(problem).foregroundStyle(.orange) }
+        if let problem = model.locationProblem, model.notice?.title != problem { Text(problem).foregroundStyle(Self.needsYou) }
     }
 
     func statusText(_ grade: HealthGrade) -> String {
@@ -312,7 +317,7 @@ struct HealthView: View {
         }
         let age = Int(model.now.timeIntervalSince(beatAt))
         switch grade {
-        case .green: return "Running · last checked \(age) s ago"
+        case .green: return age < 5 ? "Running · checked just now" : "Running · last checked \(age) s ago"
         case .waking: return "Waking up"
         case .amber: return "May be stuck · no sign of life for \(age / 60) min"
         case .red:
@@ -360,7 +365,7 @@ struct HealthView: View {
             Text("Allowed")
         } else {
             Text("Off, so Sprava cannot warn you when something stops. Turn them on in System Settings › Notifications › Sprava.")
-                .foregroundStyle(.red)
+                .foregroundStyle(Self.broken)
         }
     }
 }
@@ -419,7 +424,9 @@ struct RuntimeBanner: View {
         if let notice = health.notice {
             Notice(level: notice.level, title: notice.title, detail: notice.detail) {
                 if notice.loginItems { Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() } }
-                if notice.restart { Button("Restart") { health.restart() } }
+                if notice.restart {
+                    Button("Restart") { health.restart() }.accessibilityLabel("Restart Sprava's background part")
+                }
                 if notice.level == .broken {
                     if let openHealth { Button("Open Health", action: openHealth) }
                     if let details { Button("Details for Support", action: details) }
@@ -456,7 +463,10 @@ struct JobLine: View {
                     Text(problem).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if words.restartHelps, let restart { Button("Restart", action: restart).controlSize(.small) }
+            .accessibilityElement(children: .combine)
+            if words.restartHelps, let restart {
+                Button("Restart", action: restart).controlSize(.small).accessibilityLabel("Restart Sprava's background part")
+            }
         }
     }
 }

@@ -85,7 +85,7 @@ import Testing
         await model.settled()
         model.runtimeStatus = .enabled
         #expect(model.connectionProblem == nil && model.statusGrade == .green)
-        #expect(HealthView(model: model).statusText(.green).hasPrefix("Running · last checked"))
+        #expect(HealthView(model: model).statusText(.green).hasPrefix("Running · "))
     }
 
     /// A read that waits until the test lets it go, standing in for a binder whose files block (a FIFO) or a slow disk.

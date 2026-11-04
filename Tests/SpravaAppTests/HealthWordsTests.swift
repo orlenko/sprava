@@ -32,7 +32,7 @@ import Testing
         let words = JobWords.of(job(), key: "intake", grade: .green, now: Self.now)
         #expect(words.lastRan.hasPrefix("last ran ") && words.lastRan.contains("26"))
         #expect(words.problem == nil && !words.restartHelps)
-        #expect(JobWords.of(job { $0.last_outcome = "running" }, key: "intake", grade: .green, now: Self.now).lastRan == "running now")
+        #expect(JobWords.of(job { $0.last_outcome = "running"; $0.last_start = ISOTime.string(Self.now) }, key: "intake", grade: .green, now: Self.now).lastRan == "running now")
         let never = job { $0.last_start = nil; $0.last_success = nil; $0.last_outcome = "none" }
         #expect(JobWords.of(never, key: "intake", grade: .green, now: Self.now).lastRan == "has not run yet")
     }
@@ -46,6 +46,12 @@ import Testing
         #expect(JobWords.of(job { $0.wedged = true }, key: "hub", grade: .red, now: Self.now).restartHelps)
         let overdue = JobWords.of(job(), key: "hub", grade: .amber, now: Self.now)
         #expect(overdue.restartHelps && overdue.problem?.contains("Restarting") == true)
+        // Half-open: being retried, by itself.
+        #expect(!JobWords.of(job { $0.breaker = "half_open" }, key: "hub", grade: .amber, now: Self.now).restartHelps)
+        // A long run in progress (a first backup, a large document) is not ended from its row.
+        let long = JobWords.of(job { $0.last_outcome = "running"; $0.last_start = ISOTime.string(Self.now.addingTimeInterval(-2 * 3600)) },
+                               key: "intake", grade: .red, now: Self.now)
+        #expect(!long.restartHelps && long.lastRan.hasPrefix("running for ") && long.problem?.hasPrefix("Still on its current run") == true)
         // One failed run: Sprava tries again by itself.
         let failed = JobWords.of(job { $0.last_outcome = "timeout"; $0.consecutive_failures = 1 }, key: "hub", grade: .amber, now: Self.now)
         #expect(!failed.restartHelps && failed.problem?.hasPrefix("The last run took too long.") == true)
@@ -82,6 +88,30 @@ import Testing
         model.heartbeat = .success(beat)
         let trouble = try #require(model.notice)
         #expect(trouble.level == .broken && !trouble.restart && trouble.title == "One of Sprava's background jobs has stopped working.")
+    }
+
+    /// The notice's other branches, as the banner on every other page had them: a connection that does not answer
+    /// offers Restart; starting offers nothing.
+    @Test func aConnectionThatDoesNotAnswerOffersRestart() async throws {
+        let client = RuntimeClient(answer: { _ in throw RuntimeClient.Failure(message: "Invented failure", kind: .notRunning) })
+        var records = HealthSnapshot.Runtime()
+        records.heartbeat = .success(Self.beat())
+        let snapshot = records
+        var reads = HealthModel.Reads()
+        reads.runtime = { _ in snapshot }
+        reads.checks = { _ in HealthSnapshot.Checks() }
+        let model = HealthModel(support: try temporaryFolder(), reads: reads, client: client)
+        model.refresh()
+        await model.settled()
+        model.runtimeStatus = .enabled
+        let notice = try #require(model.notice)
+        #expect(notice.level == .broken && notice.restart && !notice.loginItems && notice.title.contains("cannot connect"))
+        // What the copy says is wrong starts with the notice, and never names a binder.
+        model.backupConfigured = true
+        model.backups = [.init(name: "Invented binder", at: nil, error: "invented")]
+        #expect(model.supportProblems.first == notice.title)
+        #expect(model.supportProblems.contains("backups failed for 1 binder(s)"))
+        #expect(!model.supportProblems.joined().contains("Invented binder"))
     }
 
     /// The page in each state, light and dark. With SPRAVA_RENDER_ARTIFACTS_DIR set, it saves what it drew.

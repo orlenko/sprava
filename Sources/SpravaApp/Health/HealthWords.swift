@@ -14,6 +14,16 @@ struct RuntimeNotice: Equatable {
 }
 
 extension HealthModel {
+    /// What Health says is wrong outside the job rows, for the support details: never a binder's name.
+    var supportProblems: [String] {
+        var problems = [notice?.title, staleRuntimeBuild, watcherRepairFailure, locationProblem].compactMap { $0 }
+        let failed = backups.filter { $0.error != nil }.count
+        if backupConfigured, failed > 0 { problems.append("backups failed for \(failed) binder(s)") }
+        if backupSettingsError != nil { problems.append("backup settings cannot be read") }
+        if deviceIDError != nil { problems.append("this Mac's device id cannot be read") }
+        return problems
+    }
+
     /// Nil while the launch's own starting screen shows the start, and when nothing needs the person.
     var notice: RuntimeNotice? {
         if keeper.launching { return nil }
@@ -53,7 +63,7 @@ struct JobWords: Equatable {
         "capture": "Turning new notes into cards",
         "intake": "Reading new documents on this Mac",
         "clerk": "Drafting cards on this Mac",
-        "dashboard": "Keeping DASHBOARD.md up to date",
+        "dashboard": "Keeping each binder's dashboard up to date",
         "backup": "Backing up binders",
     ]
 
@@ -64,7 +74,11 @@ struct JobWords: Equatable {
     static func of(_ job: Heartbeat.Job, key: String, grade: HealthGrade, now: Date) -> JobWords {
         let lastRan: String
         if job.last_outcome == "running" {
-            lastRan = "running now"
+            let since = ISOTime.date(job.last_start).map { now.timeIntervalSince($0) } ?? 0
+            let duration = DateComponentsFormatter()
+            duration.unitsStyle = .short
+            duration.allowedUnits = since >= 3600 ? [.hour] : [.minute]
+            lastRan = since < 60 ? "running now" : "running for \(duration.string(from: since) ?? "a while")"
         } else if let ran = [ISOTime.date(job.last_start), ISOTime.date(job.last_success), ISOTime.date(job.last_idle)]
             .compactMap({ $0 }).max() {
             let relative = RelativeDateTimeFormatter()
@@ -76,8 +90,8 @@ struct JobWords: Equatable {
         var words = JobWords(name: name(key), lastRan: lastRan)
         guard grade != .green, grade != .waking, grade != .unknown else { return words }
         if job.breaker == "open" {
-            words.problem = "Paused after failing several times in a row. Sprava tries it again by itself within the hour; "
-                + "there is nothing to do in the app. If it stays paused, copy Details for support."
+            words.problem = "Paused after failing several times in a row. Sprava tries it again by itself after a pause; "
+                + "there is nothing to do in the app. If it stays paused, copy Details for support below for whoever helps you."
         } else if job.wedged {
             words.problem = "Stuck on its current run. Restarting the background part ends it."
             words.restartHelps = true
@@ -86,6 +100,9 @@ struct JobWords: Equatable {
         } else if job.consecutive_failures > 0 || ["error", "timeout"].contains(job.last_outcome) {
             words.problem = (job.last_outcome == "timeout" ? "The last run took too long." : "The last run failed.")
                 + " Sprava tries again on the next run by itself."
+        } else if job.last_outcome == "running" {
+            // A long first backup or a large document: ending it would lose the run, and the watchdog ends a stuck one.
+            words.problem = "Still on its current run, longer than usual. Sprava ends a run that is stuck by itself."
         } else {
             words.problem = "Has not run when it should have. Restarting the background part may help."
             words.restartHelps = true
@@ -97,9 +114,10 @@ struct JobWords: Equatable {
 /// Everything Health used to show in code words, kept whole for a person helping with a problem. Never binder content:
 /// a job's culprit is at most 200 characters and never names a binder or a file (architecture 3.7).
 enum SupportDetails {
+    /// `problems` are what the page says is wrong, without binder names, so the copy says what the trouble was.
     static func text(heartbeat: Result<Heartbeat, Heartbeat.ReadError>, registration: String, startsToday: Int,
-                     refusals: [String], watchRecord: String?) -> String {
-        var lines: [String] = []
+                     refusals: [String], watchRecord: String?, problems: [String] = []) -> String {
+        var lines = problems.map { "Problem: \($0)" }
         lines.append("Registration: \(registration)")
         switch heartbeat {
         case .failure(let error):
