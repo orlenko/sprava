@@ -11,8 +11,15 @@ extension EmailIntakeModel {
         s.pin = r["pin"]?.stringValue; s.user = r["user"]?.stringValue
         s.mailbox = r["mailbox"]?.stringValue; s.sender = r["sender"]?.stringValue ?? ""; s.subject = r["subject"]?.stringValue ?? ""
         s.search = r["search"]?.stringValue ?? ""; s.includeExisting = r["include_existing"] != .bool(false)
+        s.ownAddresses = (r["own_addresses"]?.arrayValue ?? []).compactMap(\.stringValue)
         s.message = r["message"]?.stringValue
         return s
+    }
+
+    /// The addresses typed in one field, split at commas, semicolons and line ends; the runtime checks each.
+    static func addresses(_ text: String) -> [String] {
+        // Spaces separate too, so two addresses typed with only a space between them are two, never one kept and one lost.
+        text.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isWhitespace }).map(String.init)
     }
 
     static func serverCheck(_ r: JSONObject) -> ServerCheck? {

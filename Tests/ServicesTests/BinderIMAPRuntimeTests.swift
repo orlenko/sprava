@@ -196,4 +196,29 @@ import Testing
         let account = try #require(IMAPAccount(host: "127.0.0.1", port: 1143, security: .startTLS, user: "member@example.invalid"))
         #expect(try passwords.read(account) == nil)
     }
+
+    @Test func otherAddressesRoundTripThroughConfigureAndStatus() async throws {
+        let support = try Self.support("own"), folder = try makeTeka(fixture: "sprava-v0")
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" })
+        let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: Self.passwords(), fetch: { _, cwd, _ in
+            try Data("{\"uid_validity\":7,\"last_seen_uid\":0}".utf8).write(to: cwd.appendingPathComponent("state.json"))
+        })
+        let base = Self.accountFields + [("mailbox", .str("Sent")), ("password", .str("invented"))]
+        let both: JSONValue = .array([.str("me@example.invalid"), .str("other@example.com")])
+        let saved = try await Self.answer(runtime, "imap_configure", folder,
+                                          base + [("own_addresses", .array([.str("Me@Example.Invalid"), .str("other@example.com")]))])
+        #expect(saved["own_addresses"] == both)
+        #expect(try await Self.answer(runtime, "imap_status", folder)["own_addresses"] == both)
+        #expect(BinderIMAPConnections.ownAddresses(support: support) == ["member@example.invalid", "me@example.invalid", "other@example.com"])
+        while try await Self.answer(runtime, "imap_status", folder)["running"] == .bool(true) { try await Task.sleep(for: .milliseconds(5)) }
+        // A word that is no address, or something other than a list of them, is refused with a sentence and changes nothing.
+        for bad: JSONValue in [.array([.str("not an address")]), .str("me@example.invalid"), .array([.int(1)])] {
+            let refused = try await Self.answer(runtime, "imap_configure", folder, base + [("own_addresses", bad)])
+            #expect(refused["ok"] == .bool(false))
+            #expect(refused["error"]?.stringValue?.hasPrefix("Write each of your other addresses in full") == true)
+        }
+        #expect(try store.configuration(for: folder)?.ownAddresses == ["me@example.invalid", "other@example.com"])
+        // Saving without the field clears them.
+        #expect(try await Self.answer(runtime, "imap_configure", folder, base)["own_addresses"] == .array([]))
+    }
 }

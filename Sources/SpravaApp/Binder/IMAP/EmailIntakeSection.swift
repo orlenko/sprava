@@ -186,6 +186,13 @@ struct EmailIntakeSection: View {
                 }
                 Text("From and Subject are matched on the server and again on the decoded message.").font(.caption).foregroundStyle(.secondary)
             }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your other addresses")
+                TextField("Your other addresses", text: $model.otherAddresses, prompt: Text(verbatim: "Optional, e.g. you@example.com, you@work.example.com"), axis: .vertical)
+                    .lineLimit(1...4).textFieldStyle(.roundedBorder).frame(maxWidth: 420)
+                Text("Mail you wrote from these or from this account is filed without proposing to-dos, since what it asks is for others to do.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Button(model.editing ? "Save changes" : "Connect binder") { Task { await model.connect() } }
                     .buttonStyle(.borderedProminent).disabled(!model.canConnect)

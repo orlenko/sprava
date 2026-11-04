@@ -29,7 +29,7 @@ import Testing
     }
 
     /// An adopted binder with one email in intake, carded by code, and a connection for `user` when one is given.
-    func setup(from: String, connection user: String?) throws -> (Commands, URL) {
+    func setup(from: String, connection user: String?, others: [String] = []) throws -> (Commands, URL) {
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-own-mail-\(UUID().uuidString)")
         let commands = Commands(support: support, deviceID: "dev")
         let folder = try makeTeka(fixture: "sprava-v0")
@@ -40,7 +40,8 @@ import Testing
         try Data(Self.message(from: from).utf8).write(to: url)
         if let user {
             let account = try #require(IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: user))
-            _ = try BinderIMAPConnections(support: support, hash: { "fixture" }).configure(folder: folder, account: account, mailbox: "Sent")
+            _ = try BinderIMAPConnections(support: support, hash: { "fixture" }).configure(folder: folder, account: account, mailbox: "Sent",
+                                                                                                   ownAddresses: others)
         }
         let watcher = IntakeWatcher(support: support)
         let rows = [ShelfRow(folder: folder, source: .picked, archived: false, teka: Teka.read(folder))]
@@ -71,6 +72,13 @@ import Testing
         let review = card.review(describe: { _ in "" })
         #expect(review["summary"]?.stringValue?.hasPrefix("You wrote this to supplier@example.com, so no to-dos are proposed from it.") == true)
         #expect(review["warnings"]?.arrayValue?.contains(.str("A reply may be needed.")) == false)
+    }
+
+    @Test func mailFromAnOtherAddressThePersonGaveIsTheirsToo() throws {
+        let (c, folder) = try setup(from: "Invented Person <me@example.invalid>", connection: "login-name", others: ["ME@example.invalid"])
+        let card = try run(c, folder)
+        #expect(card.ops.map { $0["op"] } == [.str("file_document")])
+        #expect(card.review(describe: { _ in "" })["summary"]?.stringValue?.hasPrefix("You wrote this to supplier@example.com") == true)
     }
 
     @Test func mailFromSomeoneElseStillProposesToDos() throws {

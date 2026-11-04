@@ -1,6 +1,7 @@
 import Backup
 import BinderFormat
 import Capture
+import Clerk
 import Foundation
 import Extract
 import Shelf
@@ -63,11 +64,20 @@ public actor BinderIMAPRuntime {
             case "imap_configure":
                 guard running == nil, try available(folder), let account = Self.account(r), !account.user.isEmpty,
                       let mailbox = r["mailbox"]?.stringValue else { throw IMAPIntakeImport.Refused.unavailable }
+                // The person's other addresses, so mail they wrote proposes no to-dos (issue #594).
+                let listed = r["own_addresses"].map { $0.arrayValue ?? [.null] } ?? []
+                let own = listed.compactMap(\.stringValue)
+                guard own.count == listed.count, own.allSatisfy({ MailAddress.single($0) != nil }) else {
+                    throw Refusal(message: "Write each of your other addresses in full, such as name@example.com, separated by commas.")
+                }
+                guard Set(own.compactMap(MailAddress.single)).count <= BinderIMAPConnections.maxOwnAddresses else {
+                    throw Refusal(message: "Give at most \(BinderIMAPConnections.maxOwnAddresses) other addresses.")
+                }
                 if let password = r["password"]?.stringValue { try passwords.store(password, for: account) }
                 guard try passwords.read(account) != nil else { throw Refusal(message: "Enter the account's password, then connect again.") }
                 let value = try connections.configure(folder: folder, account: account, mailbox: mailbox,
                     sender: r["sender"]?.stringValue ?? "", subject: r["subject"]?.stringValue ?? "", search: r["search"]?.stringValue ?? "",
-                    includeExisting: r["include_existing"] != .bool(false))
+                    includeExisting: r["include_existing"] != .bool(false), ownAddresses: own)
                 start(value)
             case "imap_password":
                 guard let value = try connections.configuration(for: folder), value.enabled, try available(folder),
@@ -101,7 +111,7 @@ public actor BinderIMAPRuntime {
             fields += [("host", .str(value.account.host)), ("port", .int(value.account.port)), ("security", .str(value.account.security.rawValue)),
                        ("pin", value.account.pin.map { .str($0) } ?? .null), ("user", .str(value.account.user)),
                        ("mailbox", .str(value.mailbox)), ("sender", .str(value.sender)), ("subject", .str(value.subject)), ("search", .str(value.search)),
-                       ("include_existing", .bool(value.includeExisting))]
+                       ("include_existing", .bool(value.includeExisting)), ("own_addresses", .array(value.ownAddresses.map { .str($0) }))]
         }
         return JSONWriter.compact(.obj(fields))
     }
