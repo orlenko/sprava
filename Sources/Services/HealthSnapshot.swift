@@ -84,16 +84,18 @@ public enum HealthSnapshot {
         do { rows = Shelf.rows(registry: shelf.showsRegistry ? registry : nil, picked: try shelf.readFolders()) }
         catch {
             return [Doctor.Finding(level: .fix, binder: nil,
-                text: "the Shelf cannot be read; binder and hub privacy checks are unavailable")]
+                text: "the Shelf cannot be read; binder and hub privacy checks are unavailable", next: Doctor.noFix)]
         }
         var findings = Doctor.run(rows: rows, deviceID: deviceID, registry: registry, support: support, spool: spool)
         if registryURL == nil {
             findings.append(Doctor.Finding(level: rows.contains { $0.teka.isAdopted } ? .fix : .note, binder: nil,
-                text: "lifeproj's registry path has not been configured here; coexistence privacy checks are unavailable"))
+                text: "lifeproj's registry path has not been configured here; coexistence privacy checks are unavailable",
+                next: Doctor.noFix))
         }
         if registryUnreadable {
             findings.append(Doctor.Finding(level: .note, binder: nil,
-                text: "lifeproj's registry cannot be read; Health could not check which binders it can still publish"))
+                text: "lifeproj's registry cannot be read; Health could not check which binders it can still publish",
+                next: Doctor.noFix))
         }
         return findings
     }

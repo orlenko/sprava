@@ -243,8 +243,12 @@ struct HealthView: View {
                         HStack(alignment: .top) {
                             Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
                                 .foregroundStyle(f.level == .fix ? Self.needsYou : .secondary).frame(width: 34, alignment: .leading)
-                            Text(f.sentence)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(f.sentence)
+                                Text(f.next).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
                         }
+                        .accessibilityElement(children: .combine)
                     }
                 }
                 Section {

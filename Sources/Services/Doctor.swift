@@ -13,15 +13,30 @@ public enum Doctor {
         public enum Level: String, Sendable { case fix, note }
         public let level: Level
         public let binder: String?
+        /// What is wrong.
         public let text: String
+        /// What to do about it, a sentence: where in Sprava, or that Sprava has no fix for it yet (decisions.md D37).
+        public let next: String
+
+        public init(level: Level, binder: String?, text: String, next: String) {
+            self.level = level
+            self.binder = binder
+            self.text = text
+            self.next = next
+        }
     }
+
+    /// What a finding says when nothing in Sprava fixes it.
+    public static let noFix = "There is no fix for this in Sprava yet."
+    static let lifeprojReach = "There is no fix for this in Sprava; taking the binder out of lifeproj's registry ends it."
 
     public static func run(rows: [ShelfRow], deviceID: String?, registry: LifeprojRegistry?, support: URL,
                            spool: URL? = nil) -> [Finding] {
         var out: [Finding] = []
         if spool == nil {
             out.append(Finding(level: rows.contains { $0.teka.isAdopted } ? .fix : .note, binder: nil,
-                text: "the shared hub folder is not set up on this Mac, so Sprava cannot check what each binder shares there"))
+                text: "the shared hub folder is not set up on this Mac, so Sprava cannot check what each binder shares there",
+                next: noFix))
         }
         let registered = Set((registry?.entries ?? []).compactMap { $0.workingDir }.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
@@ -35,57 +50,70 @@ public enum Doctor {
             if registered.contains(row.folder.standardizedFileURL.resolvingSymlinksInPath().path) {
                 if let privacy = inspection.privacy {
                     if privacy.disclosure != "full" {
-                        out.append(Finding(level: .note, binder: name, text: "lifeproj can still reach this binder, so its disclosure \(privacy.disclosure) is not enforced there"))
+                        out.append(Finding(level: .note, binder: name, text: "lifeproj can still reach this binder, so its disclosure \(privacy.disclosure) is not enforced there",
+                                           next: lifeprojReach))
                     } else if !privacy.lifted.isEmpty || !privacy.retitled.isEmpty || !privacy.retagged.isEmpty || !privacy.unkinded.isEmpty {
-                        out.append(Finding(level: .note, binder: name, text: "lifeproj can still reach this binder, so its pending item privacy changes are not enforced there"))
+                        out.append(Finding(level: .note, binder: name, text: "lifeproj can still reach this binder, so its pending item privacy changes are not enforced there",
+                                           next: lifeprojReach))
                     }
                 } else {
-                    out.append(Finding(level: .note, binder: name, text: "lifeproj can still reach this binder; Health could not check its approved disclosure"))
+                    out.append(Finding(level: .note, binder: name, text: "lifeproj can still reach this binder; Health could not check its approved disclosure",
+                                       next: lifeprojReach))
                 }
             }
             if deviceID == nil || Owner.device(of: row.folder) != deviceID {
-                out.append(Finding(level: .note, binder: name, text: "managed by another Mac or a development build; read-only here"))
+                out.append(Finding(level: .note, binder: name, text: "managed by another Mac or a development build; read-only here",
+                                   next: "Nothing to do here; change it on the Mac that manages it."))
                 continue
             }
             if colliding.contains(row.folder.standardizedFileURL.path) {
-                out.append(Finding(level: .fix, binder: name, text: "another binder on the Shelf has the same name; neither publishes to nor drains from the hub until one is renamed"))
+                out.append(Finding(level: .fix, binder: name, text: "another binder on the Shelf has the same name; neither publishes to nor drains from the hub until one is renamed",
+                                   next: "There is no way to rename a binder in Sprava yet."))
             }
             switch ManualAddendum.isPresent(in: row.folder) {
-            case false?: out.append(Finding(level: .fix, binder: name, text: "the manual lacks Sprava's addendum; paste it from the binder's page"))
-            case nil: out.append(Finding(level: .note, binder: name, text: "no CLAUDE.md or AGENTS.md; paste the addendum if an agent works here"))
+            case false?: out.append(Finding(level: .fix, binder: name, text: "the manual for coding agents lacks Sprava's addendum",
+                next: "Copy the addendum from the binder's Settings and paste it into its CLAUDE.md or AGENTS.md."))
+            case nil: out.append(Finding(level: .note, binder: name, text: "no CLAUDE.md or AGENTS.md",
+                next: "Only if a coding agent works in the binder's folder: copy the addendum from the binder's Settings into one."))
             default: break
             }
             if teka.state < .needsMigration {
-                out.append(Finding(level: .fix, binder: name, text: "\(teka.state.label): " + teka.reasons.joined(separator: "; ")))
+                out.append(Finding(level: .fix, binder: name, text: "\(teka.state.label): " + teka.reasons.joined(separator: "; "),
+                                   next: noFix))
             }
             if !teka.findings.isEmpty {
-                out.append(Finding(level: .note, binder: name, text: "\(teka.findings.count) record(s) break the rules; repair cards wait"))
+                out.append(Finding(level: .note, binder: name, text: "\(teka.findings.count) record(s) break the rules",
+                                   next: "Repair cards for them wait on the binder's page."))
             }
             // A history that is not a plain file (a FIFO would block the read) is already reported by the state above.
             if !teka.writesBlocked, !OpLogBound.fits(row.folder) {
-                out.append(Finding(level: .fix, binder: name, text: "the history is larger than \(OpLogBound.bytes >> 20) MB and was not read; undo is limited until it is repaired"))
+                out.append(Finding(level: .fix, binder: name, text: "the history is larger than \(OpLogBound.bytes >> 20) MB and was not read; undo is limited until it is repaired",
+                                   next: noFix))
             } else if !teka.writesBlocked, let bytes = DoctorReplayBudget.bytes(row.folder) {
                 do {
                     let log = try TekaStore(folder: row.folder).readOpLog().ops
                     if !DoctorReplayBudget.fits(log, bytes: bytes) {
-                        out.append(Finding(level: .note, binder: name, text: DoctorReplayBudget.finding))
+                        out.append(Finding(level: .note, binder: name, text: DoctorReplayBudget.finding, next: DoctorReplayBudget.next))
                     } else {
                         if !log.isEmpty, (try? Replay.run(log)) == nil {
-                            out.append(Finding(level: .fix, binder: name, text: "the history does not replay; undo is limited until it is repaired"))
+                            out.append(Finding(level: .fix, binder: name, text: "the history does not replay; undo is limited until it is repaired",
+                                                   next: noFix))
                         }
                     }
                 } catch {
-                    out.append(Finding(level: .fix, binder: name, text: "the history cannot be read; undo is limited until it is repaired"))
+                    out.append(Finding(level: .fix, binder: name, text: "the history cannot be read; undo is limited until it is repaired",
+                                   next: noFix))
                 }
             } else if !teka.writesBlocked {
-                out.append(Finding(level: .note, binder: name, text: DoctorReplayBudget.finding))
+                out.append(Finding(level: .note, binder: name, text: DoctorReplayBudget.finding, next: DoctorReplayBudget.next))
             }
             if DashboardKeeper(folder: row.folder).isSwitched == false {
                 switch SafeFile.read(row.folder.appendingPathComponent("DASHBOARD.md")) {
                 case .ok:
-                    out.append(Finding(level: .note, binder: name, text: "DASHBOARD.md is kept by hand; Sprava can keep it after you approve the switch"))
+                    out.append(Finding(level: .note, binder: name, text: "DASHBOARD.md is kept by hand",
+                                       next: "To have Sprava keep it, choose Let Sprava Keep It in the binder's Settings."))
                 case .refused(let why), .unreadable(let why):
-                    out.append(Finding(level: .fix, binder: name, text: "DASHBOARD.md cannot be read (\(why))"))
+                    out.append(Finding(level: .fix, binder: name, text: "DASHBOARD.md cannot be read (\(why))", next: noFix))
                 case .missing: break
                 }
             }
@@ -93,18 +121,21 @@ public enum Doctor {
         // Runtime: open breakers.
         let records = JobRecords.load(support.appendingPathComponent("runtime/breakers.json"))
         for (key, record) in records.jobs.sorted(by: { $0.key < $1.key }) where record.breaker == "open" {
-            out.append(Finding(level: .fix, binder: nil, text: "the \(key) job keeps failing and is paused (\(record.lastErrorCode ?? "error"))"))
+            out.append(Finding(level: .fix, binder: nil, text: "the \(key) job keeps failing and is paused (\(record.lastErrorCode ?? "error"))",
+                               next: "Sprava tries it again by itself after a pause; there is nothing to do in the app."))
         }
         // Captures waiting too long (mvp.md 1.2, currency).
         let inbox = CaptureInbox(root: CaptureInbox.defaultRoot(support: support), support: support)
         let health = inbox.health()
         if let error = health.error {
-            out.append(Finding(level: .fix, binder: nil, text: error))
+            out.append(Finding(level: .fix, binder: nil, text: error, next: noFix))
         } else if let oldest = health.oldestUnfiledSeconds, oldest > 7 * 86_400 {
-            out.append(Finding(level: .note, binder: nil, text: "a card has waited in the Inbox for more than 7 days"))
+            out.append(Finding(level: .note, binder: nil, text: "a card has waited in the Inbox for more than 7 days",
+                               next: "File or discard it in the Inbox."))
         }
         if health.error == nil, health.quarantined > 0 {
-            out.append(Finding(level: .note, binder: nil, text: "\(health.quarantined) capture file(s) were set aside as malformed"))
+            out.append(Finding(level: .note, binder: nil, text: "\(health.quarantined) capture file(s) were set aside as malformed",
+                               next: noFix))
         }
         return out
     }
@@ -122,10 +153,12 @@ public enum Doctor {
                 text = "this binder's slice on the hub shows more than its current privacy allows"
             case .otherPublisher:
                 text = "another program publishes this binder's slice (an old lifeproj?)"
+                return Finding(level: .fix, binder: row.name, text: text,
+                               next: "There is no fix for this in Sprava; stop the other program publishing it.")
             case .unavailable:
                 text = "this binder's slice on the hub cannot be read or safely checked"
             }
-            return Finding(level: .fix, binder: row.name, text: text)
+            return Finding(level: .fix, binder: row.name, text: text, next: noFix)
         }
     }
 
@@ -135,6 +168,7 @@ public enum Doctor {
 /// JSON Patch accepts only literal add/remove/replace, so catalog growth is bounded by values in the log.
 enum DoctorReplayBudget {
     static let finding = "the history exceeds Health's check budget and was not replayed; its files were left as they are"
+    static let next = "Nothing to do; this limits only Health's own check."
 
     static func bytes(_ folder: URL) -> Int? {
         var info = stat()

@@ -20,7 +20,10 @@ import Testing
         try Data("# Manual\nRun lifeproj publish after each digest.\n".utf8).write(to: folder.appendingPathComponent("CLAUDE.md"))
         var findings = Doctor.run(rows: Shelf.rows(registry: nil, picked: [folder]), deviceID: device, registry: nil,
                                   support: support, spool: support)
-        #expect(findings.contains { $0.level == .fix && $0.text.contains("addendum") })
+        #expect(findings.contains { $0.level == .fix && $0.text.contains("addendum") && $0.next.contains("binder's Settings") })
+        // Every finding says what to do, or that Sprava has no fix for it (decisions.md D37).
+        #expect(findings.allSatisfy { !$0.next.isEmpty && $0.next.hasSuffix(".") })
+        #expect(Doctor.run(rows: [], deviceID: nil, registry: nil, support: support).map(\.next) == [Doctor.noFix])
         try Data(("# Manual\n" + ManualAddendum.text).utf8).write(to: folder.appendingPathComponent("CLAUDE.md"))
         findings = Doctor.run(rows: Shelf.rows(registry: nil, picked: [folder]), deviceID: device, registry: nil,
                               support: support, spool: support)
