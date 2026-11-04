@@ -188,6 +188,18 @@ is no SMTP in Sprava. The result records the draft's UID and the folder. The dra
 the instruction's id, so a retry first searches the drafts folder for it (`UID SEARCH HEADER Message-ID`)
 and appends only when it is not there.
 
+The message itself is written by `MailDraft` (`Sources/Capture/Mail/MailDraft.swift`), a pure value with no I/O
+and, so far, no caller; it serves an IMAP append or an `.eml` file opened in Mail alike (`X-Unsent: 1`). Its
+strings may come from a model or a document, so it refuses, with an error that names the field and never the
+value: an address that is not exactly one well-formed ASCII address or holds `=?`, `%` or `!`, a display name
+with `@`, a Message-ID, In-Reply-To or References
+entry not shaped `<left@right>`, any control or line-breaking character in a header, and a file name with a
+control or direction character (only its last path component is used). Every header line is ASCII: non-ASCII
+subjects and names are UTF-8 encoded words, file names RFC 2231 with an ASCII fallback, folded at 78 columns.
+The body is quoted-printable UTF-8 text, attachments base64 at 76 columns in `multipart/mixed`, under a boundary
+that starts with `=_` and is checked against every part. Attachments over 18 MiB together (or another given
+limit) are refused, never cut.
+
 ### 5.3 Later exporters
 
 - monday.com: post an update on an item, after approval.
