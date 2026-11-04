@@ -17,6 +17,13 @@ struct ReviewSection: View {
                 ForEach(actions.cards) { ReviewCard(section: self, card: $0) }
             }
         }
+        if let first = actions.intakeCopies.first {
+            HStack {
+                Text(CardReview.copiesLine(actions.intakeCopies.count)).font(.caption).foregroundStyle(.secondary)
+                Button("Show in Finder") { Task { await actions.showCopyInFinder(first, folder) } }
+                    .buttonStyle(.link).font(.caption)
+            }
+        }
     }
 }
 

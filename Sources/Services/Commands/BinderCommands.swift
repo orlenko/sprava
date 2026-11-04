@@ -120,7 +120,7 @@ extension Commands {
                 o.set("document_folder", .string((folder as NSString).deletingLastPathComponent))
             }
             return .object(o)
-        }))])
+        })), (key: "intake_copies", value: .array(IntakeWatcher(support: support).copies(in: f).map(JSONValue.string)))])
     }
 
     /// Bound loading and every catalog scan before display or helpers inspect unverified cards (architecture 4.6).

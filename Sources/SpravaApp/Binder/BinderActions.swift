@@ -64,6 +64,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @Published var message: String? { didSet { readFoundNoRuntime = false } }
     /// The cards whose Details are open.
     @Published private(set) var openDetails: Set<String> = []
+    /// Files in intake left out of review because an exact copy is already filed (`intake/...` paths).
+    @Published private(set) var intakeCopies: [String] = []
     var readFoundNoRuntime = false
     @Published var busy = false
     @Published var description = ""
@@ -149,12 +151,12 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             if let left = self.folder { drafts[left] = draft.isEmpty ? nil : draft }
             self.folder = folder
             let kept = drafts.removeValue(forKey: folder) ?? Draft()
-            cards = []; history = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
+            cards = []; history = []; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
             description = ""; savedDescription = ""; descriptionDraft = kept.description
             filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false
             keeping = nil; keepingNote = nil; preview = nil
         }
-        guard adopted else { cards = []; history = []; return }
+        guard adopted else { cards = []; history = []; intakeCopies = []; return }
         await loadKeeping(folder)
         do {
             let s = try await client.command("binder_settings", binder: folder, timeout: 5)
@@ -219,6 +221,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         do {
             let reply = try await client.command("proposals", binder: folder, timeout: 5)
             guard serves(folder) else { return }
+            let before = cards
             cards = (reply["proposals"]?.arrayValue ?? []).compactMap { p in
                 guard p["state"] == .str("proposed"), let id = p["id"]?.stringValue else { return nil }
                 var card = Card(id: id, title: p["title"]?.stringValue ?? "", actor: p["actor"]?["kind"]?.stringValue ?? "?",
@@ -235,6 +238,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                 card.review = CardReview(p["review"])
                 return card
             }
+            intakeCopies = (reply["intake_copies"]?.arrayValue ?? []).compactMap(\.stringValue)
+            noticeDraftsLost(from: before)
             // A reply sent before the runtime settled a card still lists it, and the card stays locked.
             settled.formIntersection(cards.map(\.id))
             let past = try await client.command("history", binder: folder, timeout: 5)
@@ -445,6 +450,25 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         reveal(url)
     }
 
+    /// The runtime withdraws a card once its document is filed another way or its file changes. What the person typed
+    /// on that card has nowhere left to go, so they are told; it is never dropped without a word.
+    private func noticeDraftsLost(from before: [Card]) {
+        // By the drafts themselves: coming back to a binder restores them with no card shown yet.
+        let drafts = Set(editing.keys).union(folders.keys).union(channels.keys).union(said.keys)
+        // A card the person decided is not one that went away by itself.
+        let gone = drafts.filter { id in !cards.contains { $0.id == id } && isChangeable(id) }
+        guard !gone.isEmpty else { return }
+        for id in gone {
+            editing[id] = nil; folders[id] = nil; channels[id] = nil; said[id] = nil
+        }
+        let named = before.first { gone.contains($0.id) }.map { "The card for \u{201C}\($0.shown.heading ?? $0.title)\u{201D}" }
+        message = (named ?? "A card you were changing") + " went away because its document is already filed or its file changed. What you typed on it was not used."
+    }
+
+    func showCopyInFinder(_ path: String, _ folder: URL) async {
+        await showInFinder(CardReview.File(path: path, name: "", kind: "document"), folder)
+    }
+
     /// Drops what the person set on a card, once its approval is accepted.
     func forget(_ card: Card) {
         editing[card.id] = nil
@@ -455,7 +479,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
 
     @discardableResult
     func reject(_ card: Card, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
-        settle(card, "reject", folder, [("proposal", .string(card.id)), ("digest", .string(card.digest))], reload: reload)
+        settle(card, "reject", folder, [("proposal", .string(card.id)), ("digest", .string(card.digest))], reload: reload,
+               onSuccess: { [weak self] in self?.forget(card) })
     }
 
     /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id.

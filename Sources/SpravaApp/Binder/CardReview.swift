@@ -72,6 +72,12 @@ struct CardReview: Equatable {
         warnings = strings(v["warnings"])
     }
 
+    /// Says what happened to files the clerk left out of review, and that they are still there.
+    static func copiesLine(_ count: Int) -> String {
+        count == 1 ? "1 file in intake is an exact copy of a document already filed. It needs nothing from you, and nothing was deleted."
+            : "\(count) files in intake are exact copies of documents already filed. They need nothing from you, and nothing was deleted."
+    }
+
     /// A card's path is not trusted: only a plain file under `intake/`, never a credential, a link or anything else.
     nonisolated static func fileURL(_ path: String, in folder: URL) -> URL? {
         guard DocumentPaths.isIntake(path), !DocumentPaths.isKeyFile(path),

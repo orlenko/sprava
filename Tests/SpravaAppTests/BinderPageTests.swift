@@ -24,6 +24,60 @@ import Testing
         #expect(DisplayLine.rows([]).isEmpty)
     }
 
+    @Test func aWithdrawnCardsDraftIsNeverDroppedWithoutAWord() async {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-1","state":"proposed","title":"File quote.txt","digest":"d1","verified":true}]}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        let actions = BinderActions(client: runtime.client)
+        let folder = URL(fileURLWithPath: "/tmp/invented-kitchen")
+        await actions.load(folder, adopted: true)
+        actions.setSaid("p-1", "It came in the post")
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.loadReview(folder)
+        #expect(actions.message?.contains("What you typed on it was not used") == true)
+        #expect(actions.message?.contains("File quote.txt") == true)
+        // Told once: the draft is gone with the card, so the next read says nothing.
+        actions.message = nil
+        await actions.loadReview(folder)
+        #expect(actions.message == nil)
+
+        // A card the person rejected themselves went because they said so.
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-2","state":"proposed","title":"File note.txt","digest":"d2","verified":true}]}"# }
+        runtime.answers["reject"] = { _ in #"{"ok":true}"# }
+        await actions.loadReview(folder)
+        actions.setSaid("p-2", "It came in the post")
+        let card = actions.cards[0]
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.reject(card, folder, reload: {})?.value
+        await actions.loadReview(folder)
+        await actions.loadReview(folder)
+        #expect(actions.message == nil)
+        // A card withdrawn while another binder was shown still says so on coming back.
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-3","state":"proposed","title":"File plan.txt","digest":"d3","verified":true}]}"# }
+        await actions.loadReview(folder)
+        actions.setSaid("p-3", "It came in the post")
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-garden"), adopted: true)
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.load(folder, adopted: true)
+        #expect(actions.message?.contains("What you typed on it was not used") == true)
+    }
+
+    @Test func theCopiesInIntakeBelongToTheBinderShown() async {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[],"intake_copies":["intake/quote again.txt"]}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        let actions = BinderActions(client: runtime.client)
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-kitchen"), adopted: true)
+        #expect(actions.intakeCopies == ["intake/quote again.txt"])
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-garden"), adopted: true)
+        #expect(actions.intakeCopies.isEmpty)
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-shed"), adopted: false)
+        #expect(actions.intakeCopies.isEmpty)
+    }
+
     @Test func anotherBindersSettingsAreNeverSavedIntoThisOne() async {
         let runtime = StandInRuntime()
         runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"Kitchen renovation quotes","filing":true}"# }
