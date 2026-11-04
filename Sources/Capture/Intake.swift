@@ -26,7 +26,8 @@ public struct IntakeWatcher: Sendable {
         /// The file has a card but its reading could not be written: `prepare` reads it again and `scan` keeps
         /// the reading then, so the document still reaches the clerk (adaptation-layer §4.2).
         package var readingMissing: Bool?
-        /// An exact copy of a document already filed: no card, and no reading, until that stops being true.
+        /// A copy of a document already filed (its exact bytes, or the same email by its headers and body): no
+        /// card, and no reading, until that stops being true.
         package var copy: Bool?
     }
 
@@ -55,7 +56,7 @@ public struct IntakeWatcher: Sendable {
         public var heldWithoutCard = 0
         /// Files that sat in some intake/ for more than 7 days without being filed (mvp.md 1.2, currency).
         public var stale = 0
-        /// Files left out of review because an exact copy is already filed; shown on the binder's page.
+        /// Files left out of review because a copy is already filed; shown on the binder's page.
         public var copies = 0
         /// The cursor could not be written: every file would look new on every scan, so the job reports it.
         public var cursorUnsaved = false
@@ -158,6 +159,10 @@ public struct IntakeWatcher: Sendable {
         public var digests: [String: String] = [:]
         /// By binder: what filed documents hold now, by digest, for those sized like a file in intake.
         public var filed: [String: [String: String]] = [:]
+        /// By binder: the keys of the emails filed now (`messageKey`), read only when a message in intake has one.
+        public var filedMessageKeys: [String: Set<String>] = [:]
+        /// By file: the key of each message in intake (`messageFiles`) that has one.
+        public var messageKeys: [String: String] = [:]
         public var readings: [String: IntakeReading] = [:]
         public init() {}
     }
@@ -176,6 +181,15 @@ public struct IntakeWatcher: Sendable {
             let seen = state[row.folder.standardizedFileURL.path] ?? [:]
             let candidates = (try? Self.listCandidates(in: row.folder)) ?? []
             out.filed[row.folder.path] = Self.filedDigests(row, candidates: candidates)
+            // Every message's header, a waiting card's too, so one already filed is known whatever its bytes.
+            var anyKey = false
+            for c in candidates {
+                for name in Self.messageFiles(of: c) {
+                    let url = row.folder.appendingPathComponent("intake/" + name)
+                    if let key = Self.messageKey(of: url) { out.messageKeys[url.path] = key; anyKey = true }
+                }
+            }
+            if anyKey { out.filedMessageKeys[row.folder.path] = Self.filedMessageKeys(row) }
             for c in candidates {
                 guard let e = seen[c.name], e.card == nil || e.readingMissing == true, e.size == c.size, e.mtime == c.mtime else { continue }
                 // A known copy is only compared again: the words of a file left out of review are not read.
@@ -236,18 +250,21 @@ public struct IntakeWatcher: Sendable {
             // Cards already waiting for a file, matched by name and digest, are never made twice.
             var waiting = ProposalStore.list(in: row.folder).map(\.0).filter { $0.state == "proposed" && $0.raw["provenance"]?["intake"] != nil }
             let filed = prepared.filed[row.folder.path] ?? [:]
+            let filedKeys = prepared.filedMessageKeys[row.folder.path] ?? []
+            let messageKey = { (name: String) in prepared.messageKeys[row.folder.appendingPathComponent("intake/" + name).path] }
             for file in files {
                 var entry = seen.removeValue(forKey: file.name)
                 if let e = entry, e.size == file.size, e.mtime == file.mtime {
                     if e.card == nil {
-                        // An exact copy of a document already filed needs no decision from anyone. Digests come only
-                        // from `prepare`: this runs on the command queue, where a large file is never hashed for this.
+                        // A copy of a document already filed, by its bytes or as the same email, needs no decision from
+                        // anyone. Digests and ids come only from `prepare`: this runs on the command queue, where a large
+                        // file is never hashed for this.
                         let names = [file.name] + file.attachments
                         let known = names.filter { !DocumentPaths.isKeyFile($0) }.allSatisfy {
                             prepared.digests[row.folder.appendingPathComponent("intake/" + $0).path] != nil
                         }
                         if known {
-                            let isCopy = Self.isFiled(names: names, filed: filed) {
+                            let isCopy = Self.isFiled(names: names, filed: filed, filedKeys: filedKeys, messageKey: messageKey) {
                                 prepared.digests[row.folder.appendingPathComponent("intake/" + $0).path]
                             }
                             entry?.copy = isCopy ? true : nil
@@ -298,8 +315,10 @@ public struct IntakeWatcher: Sendable {
                         // One waiting for a decision, once its document has been filed some other way, goes too. Its own
                         // recorded digests say so with no file read; a card Sprava did not record is left to the person.
                         if let id = e.card, let waited = waiting.first(where: { $0.id == id }), commands.isTrusted(id, in: row.folder),
-                           Self.isFiled(card: waited, filed: filed) {
-                            guard withdraw(id, in: row.folder, deviceID: commands.deviceID, now: now, reason: "an exact copy is already filed") else {
+                           Self.isFiled(card: waited, filed: filed, filedKeys: filedKeys, messageKey: messageKey) {
+                            let reason = Self.isFiled(card: waited, filed: filed) ? "an exact copy is already filed"
+                                : "the same email (same headers and body) is already filed"
+                            guard withdraw(id, in: row.folder, deviceID: commands.deviceID, now: now, reason: reason) else {
                                 next[file.name] = entry
                                 continue
                             }

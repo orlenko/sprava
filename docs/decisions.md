@@ -480,7 +480,20 @@ Each line names what replaced the entry; its old text is in git history.
   gets no card, and a waiting card goes once its document is filed. A message's text may be rendered another way, so with its
   original filed its text does not count; a file added beside them does. Empty files never match.
   What counts is what the filed file holds now, so a filed document edited or gone never hides a copy. Nothing is deleted: the copy stays in intake, and
-  the binder's page says how many there are. Only exact bytes count; the same email saved another way still gets a card.
+  the binder's page says how many there are. Exact bytes count, and for an email the same headers and body (amended
+  2026-11-04: exact copies matched none of the author's duplicates, which were the same emails fetched or saved again).
+
+  The same email is one whose message file (a dropped `.eml`, or the original a mail monitor keeps beside its `.md`) has
+  the headers that identify it and say how it reads as a filed `.eml` holds them now, byte for byte, and the same body
+  byte for byte, its line endings evened out only where they carry no data (CRLF taken as LF when no CR in the message
+  stands alone and nothing in it declares the binary transfer encoding); then its rendered text does not count, as
+  with an exact original, and any other file beside it must still match by its bytes. The identifying headers
+  alone are not enough: anyone who received an email knows them and the sender proves nothing, so a forgery copying them,
+  filed first, must never hide the real email; the body, and how it is to be read, must match too. A message is read
+  whole (at most 32 MiB, its header within 64 KiB); one whose headers are missing, repeated, longer than 998 bytes or
+  hold a control character has no match of this kind. A filed email edited later, header or body, or gone, no longer
+  matches. Mail filed as a `.md` with no original, and every other document, has nothing of the kind to match: only its
+  exact bytes count.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
