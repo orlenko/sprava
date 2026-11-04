@@ -71,7 +71,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     var confirmationLifetime: Duration = .seconds(8)
     /// The cards whose Details are open.
     @Published private(set) var openDetails: Set<String> = []
-    /// Files in intake left out of review because an exact copy is already filed (`intake/...` paths).
+    /// Files in intake left out of review because a copy, or the same email, is already filed (`intake/...` paths).
     @Published private(set) var intakeCopies: [String] = []
     var readFoundNoRuntime = false
     @Published var busy = false

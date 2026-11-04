@@ -72,10 +72,11 @@ struct CardReview: Equatable {
         warnings = strings(v["warnings"])
     }
 
-    /// Says what happened to files the clerk left out of review, and that they are still there.
+    /// Says what happened to files the clerk left out of review, and that they are still there. A copy is the same bytes,
+    /// or the same email, by its headers and body (D39).
     static func copiesLine(_ count: Int) -> String {
-        count == 1 ? "1 file in intake is an exact copy of a document already filed. It needs nothing from you, and nothing was deleted."
-            : "\(count) files in intake are exact copies of documents already filed. They need nothing from you, and nothing was deleted."
+        count == 1 ? "1 file in intake is already filed, as an exact copy or the same email. It needs nothing from you, and nothing was deleted."
+            : "\(count) files in intake are already filed, as exact copies or the same emails. They need nothing from you, and nothing was deleted."
     }
 
     /// What an approval did, from the runtime's reply: what it applied, which edits may have made less than the card
