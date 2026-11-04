@@ -76,6 +76,15 @@ import Testing
         #expect(c.first?.channel == "email")
     }
 
+    /// The importer's original beside the body it wrote is filed but not read again, which put every sentence on the
+    /// card twice (#594). A message saved only as `.eml` keeps every file of its folder.
+    @Test func theOriginalBesideAnImportedBodyIsNotReadTwice() {
+        let folder = URL(fileURLWithPath: "/invented/intake/mail/imap-1-2-3 attachments", isDirectory: true)
+        let files = [IntakeWatcher.mailOriginalName, "001-levy.txt"].map { folder.appendingPathComponent($0) }
+        #expect(IntakeWatcher.readable(files, of: "mail/imap-1-2-3.md").map(\.lastPathComponent) == ["001-levy.txt"])
+        #expect(IntakeWatcher.readable(files, of: "mail/invented.eml") == files)
+    }
+
     @Test func anUnreadableFileIsHeldWithACardThatSaysWhy() throws {
         let s = try setup()
         try Data([0x00, 0x13, 0x37, 0x00, 0xFE, 0xED, 0x00, 0x01]).write(to: s.folder.appendingPathComponent("intake/blob.jpg"))

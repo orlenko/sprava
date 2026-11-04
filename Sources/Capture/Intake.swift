@@ -190,10 +190,21 @@ public struct IntakeWatcher: Sendable {
                 let file = row.folder.appendingPathComponent("intake/" + c.name)
                 let attachments = c.attachments.map { row.folder.appendingPathComponent("intake/" + $0) }
                 for url in [file] + attachments { out.digests[url.path] = Self.digest(of: url) }
-                if read { out.readings[file.path] = IntakeReading.read(file, in: row.folder, attachments: attachments, channel: c.channel, reader: reader) }
+                if read {
+                    out.readings[file.path] = IntakeReading.read(file, in: row.folder, attachments: Self.readable(attachments, of: c.name),
+                                                                 channel: c.channel, reader: reader)
+                }
             }
         }
         return out
+    }
+
+    /// The attachments a reading reads. The importer writes a message's body as `.md` and keeps the message itself
+    /// beside it as `000-original-message.eml`, whose files are also saved one by one: reading the original as well put
+    /// every sentence on the card twice (#594). It is still filed with the message.
+    static func readable(_ attachments: [URL], of name: String) -> [URL] {
+        guard name.hasSuffix(".md") else { return attachments }
+        return attachments.filter { $0.lastPathComponent != mailOriginalName }
     }
 
     /// One pass over the binders this Mac manages. With `requireReading`, a file is carded only once `prepare`
