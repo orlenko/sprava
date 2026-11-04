@@ -107,4 +107,24 @@ import Testing
         model.beginChange()
         #expect(model.host == "127.0.0.1"); #expect(model.trusted); #expect(model.serverReady); #expect(model.savedPasswordApplies)
     }
+
+    @Test func otherAddressesAreTypedInOneFieldAndSentAsAList() async throws {
+        #expect(EmailIntakeModel.addresses(" me@example.invalid,\nother@example.com ; \n\n") == ["me@example.invalid", "other@example.com"])
+        #expect(EmailIntakeModel.addresses("  ").isEmpty)
+        // A space alone separates them too: both are kept, none is lost.
+        #expect(EmailIntakeModel.addresses("first@example.com second@example.com") == ["first@example.com", "second@example.com"])
+        let runtime = Runtime()
+        let saved = "\"host\":\"mail.example.invalid\",\"port\":993,\"security\":\"tls\",\"user\":\"member@example.invalid\",\"mailbox\":\"Sent\""
+        runtime.answers["imap_status"] = "{\"ok\":true,\"installed\":true,\"enabled\":true,\(saved),\"own_addresses\":[\"me@example.invalid\",\"other@example.com\"]}"
+        runtime.answers["imap_folders"] = "{\"ok\":true,\"folders\":[\"Sent\"]}"
+        runtime.answers["imap_configure"] = runtime.answers["imap_status"]
+        let model = EmailIntakeModel(client: runtime.client, authenticate: {})
+        await model.show(Self.folder)
+        model.beginChange()
+        #expect(model.otherAddresses == "me@example.invalid, other@example.com")
+        model.otherAddresses = "me@example.invalid\nthird@example.org"
+        await model.signIn()
+        await model.connect()
+        #expect(runtime.last("imap_configure")?["own_addresses"] == .array([.str("me@example.invalid"), .str("third@example.org")]))
+    }
 }

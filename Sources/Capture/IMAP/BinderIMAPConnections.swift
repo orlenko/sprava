@@ -1,4 +1,5 @@
 import BinderFormat
+import Clerk
 import Darwin
 import Foundation
 import SpravaKit
@@ -20,6 +21,10 @@ public final class BinderIMAPConnections: Sendable {
         public let programHash: String
         public var enabled: Bool
         fileprivate let instance: String
+        /// The person's other addresses, lower case; absent in a row written before they could be given.
+        fileprivate let otherAddresses: [String]?
+        /// Addresses the person writes from besides the account's own name, so their own mail proposes no to-dos.
+        public var ownAddresses: [String] { otherAddresses ?? [] }
         public var description: String { "<private binder IMAP configuration>" }
         public var debugDescription: String { description }
     }
@@ -32,9 +37,16 @@ public final class BinderIMAPConnections: Sendable {
     public convenience init(support: URL) throws { try self.init(support: support, hash: IMAPNativeFetch.programHash) }
     package init(support: URL, hash: @escaping @Sendable () throws -> String) throws { self.hash = hash; state = try StateStore.open(support.appendingPathComponent("capture/imap.sqlite"), schema: Self.schema) }
 
+    /// At most this many other addresses per connection.
+    public static let maxOwnAddresses = 16
+
     public func configure(folder: URL, account: IMAPAccount, mailbox: String, sender: String = "", subject: String = "", search: String = "",
-                          includeExisting: Bool = true) throws -> Configuration {
+                          includeExisting: Bool = true, ownAddresses: [String] = []) throws -> Configuration {
         let folder = folder.resolvingSymlinksInPath()
+        // Each one a single well-formed address, kept lower case and once.
+        let parsed = ownAddresses.map(MailAddress.single)
+        let others = parsed.compactMap { $0 }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        guard !parsed.contains(nil), others.count <= Self.maxOwnAddresses else { throw Refused.invalidConfiguration }
         let instance = try Self.folderIdentity(folder), programHash = try hash()
         guard Teka.read(folder).catalog != nil, !Teka.expungePending(in: folder), !account.user.isEmpty, !mailbox.isEmpty,
               mailbox.utf8.count <= 1_024, sender.utf8.count <= 256, subject.utf8.count <= 256, search.utf8.count <= 1_024,
@@ -49,7 +61,7 @@ public final class BinderIMAPConnections: Sendable {
             }
             let value = Configuration(id: unchanged ? old!.id : UUID(), folder: folder, account: account,
                 mailbox: mailbox, sender: sender, subject: subject, search: search, includeExisting: includeExisting,
-                programHash: programHash, enabled: true, instance: instance)
+                programHash: programHash, enabled: true, instance: instance, otherAddresses: others.isEmpty ? nil : others)
             try t.execute("INSERT OR REPLACE INTO imap_connections VALUES (?, ?)", .text(instance), .blob(try JSONEncoder().encode(value)))
             return value
         }
@@ -70,6 +82,21 @@ public final class BinderIMAPConnections: Sendable {
         guard var value = try configuration(for: folder) else { return }; value.enabled = false
         _ = try state.write { try $0.execute("UPDATE imap_connections SET configuration = ? WHERE instance = ?", .blob(try JSONEncoder().encode(value)), .text(value.instance)) }
     }
+    /// The person's own addresses across every binder's connection: each account name that is an address, and the
+    /// other addresses they gave. Empty when no connection was ever made or the store cannot be read.
+    public static func ownAddresses(support: URL) -> Set<String> {
+        guard FileManager.default.fileExists(atPath: support.appendingPathComponent("capture/imap.sqlite").path),
+              let store = try? BinderIMAPConnections(support: support) else { return [] }
+        return store.ownAddresses()
+    }
+    public func ownAddresses() -> Set<String> {
+        let rows = (try? state.read { try $0.rows("SELECT configuration FROM imap_connections LIMIT 129") }) ?? []
+        return rows.reduce(into: Set<String>()) { out, row in
+            guard let value = try? Self.decode(row) else { return }
+            if let address = MailAddress.single(value.account.user) { out.insert(address) }
+            out.formUnion(value.ownAddresses)
+        }
+    }
     public func imported(_ connection: UUID, validity: UInt32, uid: UInt32) throws -> String? {
         try state.read { try $0.rows("SELECT path FROM imap_imports WHERE connection = ? AND validity = ? AND uid = ?",
                                      .text(connection.uuidString), .integer(Int64(validity)), .integer(Int64(uid))).first?.first?.text }
@@ -89,7 +116,8 @@ public final class BinderIMAPConnections: Sendable {
               let value = try? JSONDecoder().decode(Configuration.self, from: data),
               value.folder.isFileURL, value.folder.path.hasPrefix("/"), value.folder.path.utf8.count <= 4_096,
               !value.account.user.isEmpty, !value.mailbox.isEmpty, value.mailbox.utf8.count <= 1_024,
-              value.sender.utf8.count <= 256, value.subject.utf8.count <= 256, value.search.utf8.count <= 1_024, value.programHash.utf8.count <= 128 else { throw Refused.damagedState }
+              value.sender.utf8.count <= 256, value.subject.utf8.count <= 256, value.search.utf8.count <= 1_024, value.programHash.utf8.count <= 128,
+              value.ownAddresses.count <= maxOwnAddresses, value.ownAddresses.allSatisfy({ MailAddress.single($0) == $0 }) else { throw Refused.damagedState }
         return value
     }
     private static func folderIdentity(_ folder: URL) throws -> String {

@@ -30,6 +30,7 @@ final class EmailIntakeModel: ObservableObject {
         var installed = true, enabled = false, running = false, needsPassword = false
         var host: String?, port: Int?, security: Security?, pin: String?, user: String?
         var mailbox: String?, sender = "", subject = "", search = "", includeExisting = true
+        var ownAddresses: [String] = []
         var message: String?
         var configured: Bool { host != nil }
     }
@@ -54,6 +55,8 @@ final class EmailIntakeModel: ObservableObject {
     @Published var sender = ""
     @Published var subject = ""
     @Published var search = ""
+    /// The person's other addresses, separated by commas or new lines: mail from them proposes no to-dos.
+    @Published var otherAddresses = ""
     @Published private(set) var connectMessage: String?
     // Connected
     @Published private(set) var status = Status()
@@ -149,7 +152,8 @@ final class EmailIntakeModel: ObservableObject {
             try await authenticate()
             guard self.folder == folder else { return }
             var fields = accountFields() + [("mailbox", .str(mailbox)), ("include_existing", .bool(includeExisting)),
-                                            ("sender", .str(sender)), ("subject", .str(subject)), ("search", .str(search))]
+                                            ("sender", .str(sender)), ("subject", .str(subject)), ("search", .str(search)),
+                                            ("own_addresses", .array(Self.addresses(otherAddresses).map { .str($0) }))]
             if !password.isEmpty { fields.append(("password", .str(password))) }
             let r = try await client.command("imap_configure", binder: folder, fields, timeout: 20)
             guard self.folder == folder else { return }
@@ -212,6 +216,7 @@ final class EmailIntakeModel: ObservableObject {
         trusted = status.pin != nil
         folders = nil; mailbox = status.mailbox; includeExisting = status.includeExisting
         sender = status.sender; subject = status.subject; search = status.search
+        otherAddresses = status.ownAddresses.joined(separator: ", ")
         serverMessage = nil; accountMessage = nil; connectMessage = nil
     }
 
@@ -224,7 +229,7 @@ final class EmailIntakeModel: ObservableObject {
         loading = true; defer { loading = false }
         host = ""; security = .tls; port = "993"; server = nil; trusted = false; serverMessage = nil
         user = ""; password = ""; folders = nil; accountMessage = nil
-        mailbox = nil; filter = ""; includeExisting = true; sender = ""; subject = ""; search = ""; connectMessage = nil
+        mailbox = nil; filter = ""; includeExisting = true; sender = ""; subject = ""; search = ""; otherAddresses = ""; connectMessage = nil
         status = Status(); editing = false; pageMessage = nil; chosenByHand = false
     }
 
