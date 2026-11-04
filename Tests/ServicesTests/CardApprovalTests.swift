@@ -196,4 +196,32 @@ import Testing
         #expect(r["ok"] == .bool(true), "\(r)")
         #expect(filed()?["provenance"]?["obtained"]?["said"] == .string(whole))
     }
+
+    /// The reply says what the approval applied, for the app's confirmation: an item the person left out is not
+    /// counted, a filed document goes by the intake name its card showed, and no title is in it.
+    @Test func theReplyCountsWhatWasAppliedAndNamesNoTitle() throws {
+        let (c, folder) = try adopted()
+        let intake = folder.appendingPathComponent("intake", isDirectory: true)
+        try FileManager.default.createDirectory(at: intake, withIntermediateDirectories: true)
+        try Data("invented bill".utf8).write(to: intake.appendingPathComponent("bill.pdf"))
+        let sha = try #require(DocumentPaths.sha256(of: intake.appendingPathComponent("bill.pdf")))
+        let filing = JSONObject([(key: "op", value: .str("file_document")), (key: "args", value: .obj([
+            ("document", .obj([("id", .str("$new:1")), ("title", .str("Invented water bill")),
+                               ("path", .str("documents/bill.pdf")), ("sha256", .string(sha))])),
+            ("from", .str("intake/bill.pdf"))]))])
+        func add(_ n: Int, _ title: String) -> JSONObject {
+            JSONObject([(key: "op", value: .str("add_item")), (key: "args", value: .obj([("item", .obj([
+                ("id", .string("$new:\(n)")), ("title", .string(title)), ("status", .str("open")), ("priority", .str("normal")),
+                ("no_deadline", .bool(true))]))]))])
+        }
+        let (card, approve) = try approval([filing, add(2, "Invented meter reading"), add(3, "Invented payment")], c, folder)
+        let edits: (String, JSONValue) = ("edits", .array([.obj([("index", .int(2)), ("skip", .bool(true))])]))
+        let reply = c.handle(JSONWriter.compact(.obj(approve + [edits])), now: now, today: today)
+        let r = try JSONParser.parse(reply).value
+        #expect(r["ok"] == .bool(true), "\(r)")
+        #expect(state(card.id, in: folder) == "applied")
+        #expect(r["applied"] == .int(2) && r["todos_added"] == .int(1))
+        #expect(r["filed"] == .array([.obj([("name", .str("bill.pdf")), ("kind", .str("document"))])]))
+        for title in ["Invented water bill", "Invented meter reading", "Invented payment"] { #expect(!reply.contains(title)) }
+    }
 }

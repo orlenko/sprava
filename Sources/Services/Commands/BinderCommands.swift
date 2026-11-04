@@ -222,6 +222,14 @@ extension Commands {
             // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
             try recordDigests([id] + store.createdProposals, in: f)
             var result = JSONObject([(key: "applied", value: .int(applied.count))])
+            // What the approval did, from the ops applied rather than the card as made, for the app's confirmation:
+            // counts, and for each filed document the intake name its card showed, never a title.
+            result.set("todos_added", .int(applied.filter { $0["op"] == .str("add_item") }.count))
+            result.set("filed", .array(applied.filter { $0["op"] == .str("file_document") }.map { line in
+                let from = line["args"]?["from"]?.stringValue
+                return .obj([("name", .string(from.map { ($0 as NSString).lastPathComponent } ?? "")),
+                             ("kind", line["args"]?["document"]?["kind"] ?? .str("document"))])
+            }))
             // The approval stands either way; a stamp that could not be offered is reported, and offered again the
             // next time the binder's cards are listed.
             do {

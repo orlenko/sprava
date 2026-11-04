@@ -179,4 +179,69 @@ import Testing
         #expect(CardReview.copiesLine(12).hasPrefix("12 files in intake are exact copies"))
         #expect(CardReview.copiesLine(12).contains("nothing was deleted"))
     }
+
+    private func reply(_ json: String) throws -> JSONObject {
+        try #require(try JSONParser.parse(Data(json.utf8)).value.objectValue)
+    }
+
+    @Test func theConfirmationSaysWhatTheApprovalDid() throws {
+        let bill = #"{"name":"invoice.pdf","kind":"document"}"#
+        let mail = #"{"name":"0199-invented.eml","kind":"email"}"#
+        let lines: [(String, String)] = [
+            (#"{"applied":3,"todos_added":2,"filed":[\#(bill)]}"#, "Filed \u{201C}invoice.pdf\u{201D} and added 2 to-dos."),
+            (#"{"applied":2,"todos_added":1,"filed":[\#(bill)]}"#, "Filed \u{201C}invoice.pdf\u{201D} and added 1 to-do."),
+            (#"{"applied":1,"todos_added":1,"filed":[]}"#, "Added 1 to-do."),
+            (#"{"applied":4,"todos_added":4,"filed":[]}"#, "Added 4 to-dos."),
+            (#"{"applied":1,"todos_added":0,"filed":[\#(bill)]}"#, "Filed \u{201C}invoice.pdf\u{201D}."),
+            (#"{"applied":3,"todos_added":0,"filed":[\#(bill),\#(bill),\#(mail)]}"#, "Filed 3 documents."),
+            (#"{"applied":2,"todos_added":1,"filed":[\#(mail)]}"#, "Filed the email and added 1 to-do."),
+            (#"{"applied":1,"todos_added":0,"filed":[{"name":"","kind":"document"}]}"#, "Filed a document."),
+            (#"{"applied":1,"todos_added":0,"filed":[]}"#, "Made 1 change."),
+            (#"{"applied":3,"todos_added":0,"filed":[]}"#, "Made 3 changes."),
+            (#"{"applied":4,"todos_added":2,"filed":[\#(bill)]}"#, "Filed \u{201C}invoice.pdf\u{201D}, added 2 to-dos and made 1 other change."),
+            (#"{}"#, "Done."),
+        ]
+        for (json, line) in lines { #expect(CardReview.approvedLine(try reply(json)) == line, "\(json)") }
+    }
+
+    /// An approved card leaves the page with a word on what it did, counted from the runtime's reply, not the card:
+    /// the person may have left out items. A rejection, a refused approval and the next change say nothing of it.
+    @Test func anApprovedCardSaysWhatWasDoneUntilTheNextChange() async throws {
+        let folder = URL(fileURLWithPath: "/Invented/kitchen-reno", isDirectory: true)
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        runtime.answers["proposals"] = { _ in
+            #"{"ok":true,"proposals":[{"id":"p-1","state":"proposed","title":"t","digest":"d1","verified":true,"actor":{"kind":"clerk"},"lines":["l"],"editable":[{"index":1,"title":"Invented call","due":"","priority":"normal"},{"index":2,"title":"Invented visit","due":"","priority":"normal"}],"review":{"kind":"filing","files":[{"path":"intake/quote.pdf","name":"quote.pdf","kind":"document"}],"todos":[{"index":1,"title":"Invented call"},{"index":2,"title":"Invented visit"}]}},{"id":"p-2","state":"proposed","title":"t","digest":"d2","verified":true,"actor":{"kind":"clerk"},"lines":["l"]}]}"#
+        }
+        let actions = BinderActions(client: runtime.client)
+        await actions.load(folder, adopted: true)
+        let card = try #require(actions.cards.first)
+        let other = try #require(actions.cards.last)
+
+        runtime.answers["approve"] = { _ in #"{"ok":false,"error":"invented refusal"}"# }
+        await actions.approve(card, folder, reload: {})?.value
+        #expect(actions.confirmation == nil)
+
+        // One of the two to-dos left out: the runtime applied the filing and one to-do.
+        actions.startEditing(card)
+        actions.setItem(card.id, 2, \.include, false)
+        runtime.answers["approve"] = { _ in #"{"ok":true,"applied":2,"todos_added":1,"filed":[{"name":"quote.pdf","kind":"document"}]}"# }
+        await actions.approve(card, folder, reload: {})?.value
+        #expect(actions.confirmation == "Filed \u{201C}quote.pdf\u{201D} and added 1 to-do.")
+        #expect(actions.message == nil)
+
+        runtime.answers["reject"] = { _ in #"{"ok":true}"# }
+        await actions.reject(other, folder, reload: {})?.value
+        #expect(actions.confirmation == nil)
+
+        // It goes by itself, and with the binder.
+        actions.confirmationLifetime = .milliseconds(10)
+        actions.confirm("Added 1 to-do.")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(actions.confirmation == nil)
+        actions.confirm("Added 1 to-do.")
+        await actions.load(URL(fileURLWithPath: "/Invented/garden-shed", isDirectory: true), adopted: true)
+        #expect(actions.confirmation == nil)
+    }
 }

@@ -78,6 +78,31 @@ struct CardReview: Equatable {
             : "\(count) files in intake are exact copies of documents already filed. They need nothing from you, and nothing was deleted."
     }
 
+    /// What an approval did, from the runtime's reply: what it applied, which edits may have made less than the card
+    /// proposed. A filed document goes by the name its card showed; an email's own file name is a machine's.
+    static func approvedLine(_ reply: JSONObject) -> String {
+        func count(_ key: String) -> Int { reply[key]?.numberValue?.safeInteger.map { Int($0) } ?? 0 }
+        let filed = reply["filed"]?.arrayValue ?? []
+        let todos = count("todos_added")
+        let others = max(0, count("applied") - todos - filed.count)
+        var parts: [String] = []
+        if filed.count == 1 {
+            let name = filed[0]["name"]?.stringValue ?? ""
+            parts.append(filed[0]["kind"] == .str("email") ? "filed the email"
+                         : name.isEmpty ? "filed a document" : "filed \u{201C}\(name)\u{201D}")
+        } else if filed.count > 1 {
+            parts.append("filed \(filed.count) documents")
+        }
+        if todos > 0 { parts.append(todos == 1 ? "added 1 to-do" : "added \(todos) to-dos") }
+        if others > 0 {
+            let other = parts.isEmpty ? "" : " other"
+            parts.append(others == 1 ? "made 1\(other) change" : "made \(others)\(other) changes")
+        }
+        guard let last = parts.last else { return "Done." }
+        let sentence = parts.count == 1 ? last : parts.dropLast().joined(separator: ", ") + " and " + last
+        return sentence.prefix(1).uppercased() + sentence.dropFirst() + "."
+    }
+
     /// A card's path is not trusted: only a plain file under `intake/`, never a credential, a link or anything else.
     nonisolated static func fileURL(_ path: String, in folder: URL) -> URL? {
         guard DocumentPaths.isIntake(path), !DocumentPaths.isKeyFile(path),

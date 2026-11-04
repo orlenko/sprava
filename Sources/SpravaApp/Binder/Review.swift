@@ -10,6 +10,8 @@ struct ReviewSection: View {
     let reload: () -> Void
 
     var body: some View {
+        // Where the approved card was, so it does not just vanish; shown even once no card is left.
+        if let done = actions.confirmation { Notice(level: .info, title: done) }
         if !actions.cards.isEmpty {
             Section(header: Text("Waiting for your OK (\(actions.cards.count))").font(.headline)) {
                 Text("Nothing is filed or changed until you press a button on a card.")
