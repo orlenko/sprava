@@ -76,7 +76,7 @@ import Testing
                                      support: try temporaryFolder())
         #expect(checks.findings.contains { $0.level == .fix && $0.binder == nil })
         #expect(word(try await model(checks)) == "Running")
-        checks.findings.append(.init(level: .fix, binder: "Garden shed", text: "invented"))
+        checks.findings.append(.init(level: .fix, binder: "Garden shed", text: "invented", next: Doctor.noFix))
         #expect(word(try await model(checks)) == "Needs a look")
     }
 

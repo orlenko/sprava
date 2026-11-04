@@ -20,7 +20,10 @@ import Testing
         try Data("# Manual\nRun lifeproj publish after each digest.\n".utf8).write(to: folder.appendingPathComponent("CLAUDE.md"))
         var findings = Doctor.run(rows: Shelf.rows(registry: nil, picked: [folder]), deviceID: device, registry: nil,
                                   support: support, spool: support)
-        #expect(findings.contains { $0.level == .fix && $0.text.contains("addendum") })
+        #expect(findings.contains { $0.level == .fix && $0.text.contains("addendum") && $0.next.contains("binder's Settings") })
+        // Every finding says what to do, or that Sprava has no fix for it (decisions.md D37).
+        #expect(findings.allSatisfy { !$0.next.isEmpty && $0.next.hasSuffix(".") })
+        #expect(Doctor.run(rows: [], deviceID: nil, registry: nil, support: support).map(\.next) == [Doctor.noFix])
         try Data(("# Manual\n" + ManualAddendum.text).utf8).write(to: folder.appendingPathComponent("CLAUDE.md"))
         findings = Doctor.run(rows: Shelf.rows(registry: nil, picked: [folder]), deviceID: device, registry: nil,
                               support: support, spool: support)
@@ -162,11 +165,14 @@ import Testing
         let slice = inbox.appendingPathComponent("estate-example.agenda.json")
         try Data("{}".utf8).write(to: slice)
         let findings = try doctorReturns(folder: folder, support: support, device: device)
-        #expect(findings.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub" })
+        #expect(findings.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub"
+            && $0.next == Doctor.hubWithdraws })
         let migrated = Doctor.run(rows: Shelf.rows(registry: nil, picked: [folder]), deviceID: "replacement-mac", registry: nil,
                                   support: support, spool: support)
         #expect(migrated.contains { $0.text.contains("managed by another Mac") })
-        #expect(migrated.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub" })
+        // Another Mac's hub job withdraws it, not this one's.
+        #expect(migrated.contains { $0.level == .fix && $0.text == "this binder's disclosure is none, but its slice is still on the hub"
+            && $0.next == Doctor.noFix })
         #expect(try Data(contentsOf: slice) == Data("{}".utf8))
         // An outside widening still leaves the approved level at none; the old slice must keep alarming.
         let catalogFile = folder.appendingPathComponent("catalog.json")

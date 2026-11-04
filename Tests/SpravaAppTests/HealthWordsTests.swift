@@ -129,7 +129,8 @@ import Testing
         let trouble = try await Self.model(beat)
         trouble.backupConfigured = true
         trouble.backups = [.init(name: "Garden", at: nil, error: "The backup folder could not be written.")]
-        trouble.findings = [.init(level: .fix, binder: "Boat", text: "the manual lacks Sprava's addendum; paste it from the binder's page")]
+        trouble.findings = [.init(level: .fix, binder: "Boat", text: "the manual for coding agents lacks Sprava's addendum",
+                                  next: "Copy the addendum from the binder's Settings and paste it into its CLAUDE.md or AGENTS.md.")]
         trouble.supportOpen = true
         try await render(trouble, "trouble")
     }
