@@ -52,6 +52,9 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// are dropped, so a card left on the page until then stays locked: words typed into it would vanish with it.
     @Published private(set) var settled: Set<String> = []
     @Published var history: [Change] = []
+    /// Whether `history` is this binder's as last read, so an empty list is told apart from one not read yet or not readable.
+    enum HistoryRead { case reading, read, failed }
+    @Published private(set) var historyRead = HistoryRead.reading
 
     struct Change: Identifiable {
         let id: String
@@ -155,13 +158,13 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             if let left = self.folder { drafts[left] = draft.isEmpty ? nil : draft }
             self.folder = folder
             let kept = drafts.removeValue(forKey: folder) ?? Draft()
-            cards = []; history = []; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
+            cards = []; history = []; historyRead = .reading; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
             description = ""; savedDescription = ""; descriptionDraft = kept.description
             filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false
             confirm(nil)
             keeping = nil; keepingNote = nil; preview = nil
         }
-        guard adopted else { cards = []; history = []; intakeCopies = []; return }
+        guard adopted else { cards = []; history = []; historyRead = .read; intakeCopies = []; return }
         await loadKeeping(folder)
         do {
             let s = try await client.command("binder_settings", binder: folder, timeout: 5)
@@ -262,8 +265,10 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                 return Change(id: id, line: o["line"]?.stringValue ?? "", who: who, at: ISOTime.date(o["at"]?.stringValue),
                               undoable: o["undoable"] == .bool(true), undone: o["undone"] == .bool(true))
             }
+            historyRead = .read
         } catch {
             guard serves(folder) else { return }
+            historyRead = .failed
             readFailed("\(error)", error)
         }
     }

@@ -321,7 +321,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         catch { throw UndoRefused(description: "Undo did not complete. Nothing is reported as undone; check the binder's folder.") }
         guard value["undone"] == .bool(true) else {
             if value["records_changed"] == .bool(true) {
-                throw UndoRefused(description: "Nothing was undone: something was filed or approved during that turn. Use Undo under Recent changes for that, and change the files by hand.")
+                throw UndoRefused(description: "Nothing was undone: something was filed or approved during that turn. Use Undo on the History tab for that, and change the files by hand.")
             }
             if let left = value["todos_left"]?.arrayValue {
                 changed() // Everything else was undone.

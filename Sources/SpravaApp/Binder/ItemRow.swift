@@ -100,7 +100,7 @@ struct ItemEditFields: View {
             if deletable {
                 Button("Done") { editor.close(as: "complete", in: folder, actions, reload: reload) }
                 Button("Cancel to-do") { editor.close(as: "drop", in: folder, actions, reload: reload) }
-                    .help("Cancel this to-do; Undo in Recent changes brings it back")
+                    .help("Cancel this to-do; Undo on the History tab brings it back")
             }
           }
           TextField("Details", text: Binding(get: { editor.row(in: folder)?.details ?? "" },

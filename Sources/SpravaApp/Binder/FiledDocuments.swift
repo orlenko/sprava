@@ -187,7 +187,7 @@ struct FiledDocumentsSection: View {
                         Button("Move") { Task { await model.move(reload: reload) } }
                         Button("Cancel") { model.cancelMove() }
                     }
-                    Text("The file and its catalog record move together. Undo is in Recent changes.")
+                    Text("The file and its catalog record move together. Undo is on the History tab.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.disabled(model.moving)
             }
