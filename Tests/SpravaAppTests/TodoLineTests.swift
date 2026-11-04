@@ -121,6 +121,8 @@ import Testing
 
     /// The one thing the design rests on (2026-11-02 review): after Return, the cursor is back in the row for the next to-do.
     @Test func returnAddsTheToDoAndLeavesTheCursorInTheRow() async throws {
+        let turn = await FocusedWindows.take()
+        defer { turn.release() }
         let runtime = StandInRuntime()
         runtime.answers["apply"] = { _ in #"{"ok":true,"op":"0199ffff-0000-7000-8000-000000000001"}"# }
         let model = TodoModel(client: runtime.client)
@@ -203,6 +205,8 @@ import Testing
     /// Real field editors in a real window: Return saves, moving away saves, Esc puts it back, and a date it cannot read holds
     /// the row open.
     @Test func theKeysDoWhatTheRowSays() async throws {
+        let turn = await FocusedWindows.take()
+        defer { turn.release() }
         let f = ItemEditingTests(), (actions, _, folder) = try await f.binder()
         let item = try #require(await f.page(folder).items.values.joined().first { $0.object?["id"] != nil && !$0.hasRecurrence })
         let id = item.idText
@@ -277,5 +281,26 @@ import Testing
         await settle(host)
         #expect(editor.row(in: folder)?.unreadDate == true)
         #expect(row.date.stringValue == "someday")
+    }
+}
+
+/// One test at a time may hold a window with a focused field. A row saves and closes when its field loses focus, and a window
+/// another suite focuses takes it away, so tests that run in parallel could close each other's rows.
+@MainActor
+enum FocusedWindows {
+    private static var waiting: [CheckedContinuation<Void, Never>] = []
+    private static var held = false
+
+    @MainActor struct Turn {
+        func release() { FocusedWindows.next() }
+    }
+
+    static func take() async -> Turn {
+        if held { await withCheckedContinuation { waiting.append($0) } } else { held = true }
+        return Turn()
+    }
+
+    fileprivate static func next() {
+        if waiting.isEmpty { held = false } else { waiting.removeFirst().resume() }
     }
 }

@@ -8,6 +8,9 @@ import Testing
 
 @MainActor @Suite(.serialized) struct PlainTodoLayoutTests {
     @Test func bothSurfacesAndOpenEditorsFitTheMinimumWindowWithLongInventedText() async throws {
+        // With Later folded the open row shows in its panel, which takes focus as it appears.
+        let turn = await FocusedWindows.take()
+        defer { turn.release() }
         let f = ItemEditingTests(), (actions, runtime, folder) = try await f.binder()
         await actions.load(folder, adopted: true)
         let item = try await f.openItem("acme-1", in: folder), today = CalendarDate.today()

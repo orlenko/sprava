@@ -10,7 +10,9 @@ struct TodosView: View {
     @ObservedObject var editor = ItemEditor()
     let board: TodoBoard
     let rows: [ShelfRow]
+    var waiting = WaitingCards()
     let open: (URL) -> Void
+    var openCards: (URL) -> Void = { _ in }
     let reload: () async -> Void
 
     /// The binders an item can be added to, as the Inbox offers them: adopted and writable.
@@ -27,10 +29,19 @@ struct TodosView: View {
     var body: some View {
         List {
             Section {
-                HStack(alignment: .firstTextBaseline, spacing: 14) {
-                    Text("To-dos").font(.title2.bold())
-                    Spacer()
-                    counts
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("Today").font(.title2.bold())
+                        Text(board.today.spoken).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 14) { counts }.font(.callout)
+                }
+                .listRowSeparator(.hidden)
+                if let title = waiting.title, let target = waiting.target {
+                    Notice(level: .needsYou, title: title, detail: waiting.detail) {
+                        Button("Open") { openCards(target) }
+                    }
+                    .listRowSeparator(.hidden)
                 }
                 QuickAdd(model: model, targets: targets, contexts: board.contexts, offersGeneral: true, reload: reload)
                 filters
@@ -59,7 +70,7 @@ struct TodosView: View {
     private func stranded(in folder: URL) -> Bool {
         guard editor.row(in: folder) != nil else { return false }
         return !TodoBoard.Group.allCases.contains { group in
-            board.entries(group, model.filter).contains { $0.folder == folder && editor.isEditing($0.item, in: folder) && !model.collapsed.contains(group) }
+            board.entries(group, model.filter).contains { $0.folder == folder && editor.isEditing($0.item, in: folder) && !model.isCollapsed(group) }
         }
     }
 
@@ -108,6 +119,7 @@ struct TodosView: View {
             model.collapsed = model.collapsed.isEmpty ? Set(TodoBoard.Group.allCases) : []
         }
         .buttonStyle(.link)
+        .disabled(model.filtering)
     }
 
     @ViewBuilder var list: some View {
@@ -119,7 +131,7 @@ struct TodosView: View {
         } else {
                 ForEach(shown.filter { !$0.1.isEmpty }, id: \.0) { group, entries in
                     Section {
-                        if !model.collapsed.contains(group) {
+                        if !model.isCollapsed(group) {
                             ForEach(entries) { entry in
                                 TodoLine(item: entry.item, bucket: entry.bucket, today: board.today, changeable: entry.closable,
                                          binder: entry.binder, actions: model.actions(for: entry.folder), editor: editor, folder: entry.folder,
@@ -134,7 +146,7 @@ struct TodosView: View {
                     } header: {
                         Button { model.toggle(group) } label: {
                             HStack(spacing: 4) {
-                                if model.collapsed.contains(group) {
+                                if model.isCollapsed(group) {
                                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                                 }
                                 TodoGroupHeading(title: group.title, count: entries.count, bucket: group == .waiting ? .waiting : entries.first?.bucket)
@@ -142,6 +154,7 @@ struct TodosView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(model.filtering)
                     }
                 }
         }

@@ -88,6 +88,7 @@ import Testing
             try? ShelfStore(supportDirectory: support).remove(folder)
             return #"{"ok":true}"#
         }
+        shelf.selection = folder
         // Removal from a second window must also respect the first window's draft.
         await shelf.removeFromShelf(row)
         #expect(!runtime.sent.contains { $0["command"] == .str("shelf_remove") })

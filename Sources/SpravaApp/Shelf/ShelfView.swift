@@ -17,6 +17,8 @@ final class ShelfModel: ObservableObject, DraftOwner {
     @Published var today = CalendarDate.today()
     @Published private(set) var counts: [URL: ShelfCounts] = [:]
     @Published private(set) var todos = TodoBoard(today: CalendarDate.today())
+    /// The cards waiting for a decision, for Today and the sidebar's rows.
+    @Published private(set) var waiting = WaitingCards()
     /// The row that is General, once it exists.
     @Published private(set) var general: URL?
     /// The Shelf as the sidebar lists it: General last, whatever its place among recent binders.
@@ -28,6 +30,8 @@ final class ShelfModel: ObservableObject, DraftOwner {
     /// next refresh, so the row never jumps away under the pointer.
     @Published var selection: URL? {
         didSet {
+            // Coming back to Today after deciding a card, the line is read again rather than left until the next poll.
+            if selection == todosSelection, oldValue != todosSelection { refreshWaiting() }
             if let s = selection, s.isFileURL, s != oldValue {
                 let support = support
                 workQueue.async { try? RecentBinders(supportDirectory: support).touch(s) }
@@ -64,6 +68,10 @@ final class ShelfModel: ObservableObject, DraftOwner {
     var chooseFolders: @MainActor () -> [URL] = ShelfModel.addPanel
     /// The runtime's health, shared by the sidebar, the Health page and the binder pages; its keeper starts the runtime.
     let health: HealthModel
+    private let waitingDisk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.shelf.waiting", qos: .utility))
+    private var waitingTask: Task<Void, Never>?
+    private var waitingAgain = false
+    var readWaiting: @Sendable ([ShelfRow], URL) -> WaitingCards = { WaitingCards.read(rows: $0, support: $1) }
     /// Starts the runtime without asking when an action finds it not running (decisions.md A19).
     var startRuntime: @MainActor () async -> RuntimeKeeper.Outcome
     /// How long a runtime just started has to answer before the action gives up; it usually answers at once.
@@ -118,7 +126,9 @@ final class ShelfModel: ObservableObject, DraftOwner {
             todos = prepared.todos
             general = prepared.general
             snapshotNote = prepared.snapshot.note
-            if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = rows.first?.folder }
+            if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = landing }
+            waiting = waiting.keeping(rows)
+            refreshWaiting()
             lastRefresh = Date()
         }
     }
@@ -190,6 +200,9 @@ final class ShelfModel: ObservableObject, DraftOwner {
             }
         }
         await refreshAndWait(afterChanges: true)
+        // The folder just added is what the person wants to see.
+        let added = Set(binders.map(\.standardizedFileURL))
+        if let first = rows.first(where: { added.contains($0.folder.standardizedFileURL) }) { selection = first.folder }
         let current = Self.currentYear()
         let templates: [BinderTemplate]
         do { templates = empty.isEmpty ? [] : try await availableTemplates() }
@@ -235,7 +248,8 @@ final class ShelfModel: ObservableObject, DraftOwner {
             _ = try await client.command("shelf_remove", binder: row.folder)
             snapshotGeneration &+= 1
             rows.removeAll { $0.folder == row.folder }
-            if selection == row.folder { selection = rows.first?.folder }
+            waiting = waiting.keeping(rows)
+            if selection == row.folder { selection = landing }
         } catch {
             failure = "Could not remove \(row.name): \(error)"
         }
@@ -346,6 +360,24 @@ final class ShelfModel: ObservableObject, DraftOwner {
 
     var selectedRow: ShelfRow? { rows.first { $0.folder == selection } }
 
+    /// Where the app opens and where it goes when the binder open has left the Shelf (decisions.md D37). With no binders
+    /// there is nothing selected, which shows the screen offering to make the first.
+    var landing: URL? { rows.isEmpty ? nil : todosSelection }
+
+    /// Reads the waiting cards apart from the Shelf's own read, so a binder with many cards cannot make that one late. One
+    /// read at a time; a request during one reads again after it, since that one may be older than the change asked about.
+    func refreshWaiting() {
+        guard waitingTask == nil else { waitingAgain = true; return }
+        let rows = rows, support = support, read = readWaiting
+        waitingTask = Task { [weak self, waitingDisk] in
+            let found = await waitingDisk.run(timeout: 60) { read(rows, support) }
+            guard let self else { return }
+            waitingTask = nil
+            if let found { waiting = found.keeping(self.rows) }
+            if waitingAgain { waitingAgain = false; refreshWaiting() }
+        }
+    }
+
     /// The sidebar's pages above the Shelf.
     let pages: Set<URL> = [healthSelection, todosSelection, inboxSelection, backupSelection, brainsSelection]
 }
@@ -377,7 +409,7 @@ struct ShelfView: View {
             List(selection: $model.selection) {
                 Section {
                     HStack {
-                        Label("To-dos", systemImage: "checklist")
+                        Label("Today", systemImage: "checklist")
                         Spacer()
                         if model.todos.count(.overdue) > 0 { Text("\(model.todos.count(.overdue))").foregroundStyle(.red) }
                     }
@@ -393,7 +425,7 @@ struct ShelfView: View {
                 }
                 Section("Shelf") {
                     ForEach(model.shelfRows, id: \.folder) { row in
-                        ShelfRowView(row: row, counts: model.counts[row.folder] ?? ShelfCounts(), isGeneral: row.folder == model.general)
+                        ShelfRowView(row: row, counts: model.counts[row.folder] ?? ShelfCounts(), cards: model.waiting.count(in: row.folder), isGeneral: row.folder == model.general)
                             .tag(row.folder)
                             .contextMenu {
                                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([row.folder]) }
@@ -438,7 +470,8 @@ struct ShelfView: View {
                 if model.selection == healthSelection {
                     HealthView(model: model.health)
                 } else if model.selection == todosSelection {
-                    TodosView(model: todo, editor: itemEditor, board: model.todos, rows: model.rows, open: { model.selection = $0 },
+                    TodosView(model: todo, editor: itemEditor, board: model.todos, rows: model.rows, waiting: model.waiting, open: { model.selection = $0 },
+                              openCards: { binderWorkspace.showCards(in: $0); model.selection = $0 },
                               reload: { await model.refreshAndWait(afterChanges: true) })
                 } else if model.selection == inboxSelection {
                     InboxView(model: inbox, rows: model.rows, general: { try await model.ensureGeneral() })
@@ -503,6 +536,7 @@ struct ShelfView: View {
 struct ShelfRowView: View {
     let row: ShelfRow
     let counts: ShelfCounts
+    var cards = 0
     var isGeneral = false
 
     struct Signal: Equatable {
@@ -512,7 +546,7 @@ struct ShelfRowView: View {
     }
 
     /// The line under the name: anything wrong with the binder first, since its counts may not be whole then.
-    static func signal(_ row: ShelfRow, chase: Int) -> Signal? {
+    static func signal(_ row: ShelfRow, chase: Int, cards: Int = 0) -> Signal? {
         switch row.teka.state {
         case .notATeka, .corrupt: return Signal(tone: .trouble, words: row.stateLabel)
         case .needsAttention, .unknownLevel: return Signal(tone: .needsYou, words: row.stateLabel)
@@ -520,6 +554,7 @@ struct ShelfRowView: View {
         }
         if !row.teka.isAdopted { return Signal(tone: .quiet, words: row.stateLabel) }
         if row.teka.state != .ready { return Signal(tone: .needsYou, words: row.stateLabel) }
+        if cards > 0 { return Signal(tone: .needsYou, words: "\(cards) to review") }
         return chase > 0 ? Signal(tone: .needsYou, words: "\(chase) to chase") : nil
     }
 
@@ -527,7 +562,7 @@ struct ShelfRowView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.name).font(.headline).lineLimit(1).foregroundStyle(isGeneral ? .secondary : .primary)
-                if let signal = Self.signal(row, chase: counts.count(.nudge)) { line(signal) }
+                if let signal = Self.signal(row, chase: counts.count(.nudge), cards: cards) { line(signal) }
             }
             Spacer(minLength: 0)
             if counts.count(.overdue) > 0 {

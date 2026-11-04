@@ -10,6 +10,9 @@ struct TodoBoard: Sendable {
     enum Group: String, CaseIterable, Sendable {
         case overdue, today, next7, waiting, later, noDeadline
 
+        /// Whether a due date falls in Later: past the next seven days (binder-v0 §5.2).
+        static func isLater(_ due: CalendarDate, today: CalendarDate) -> Bool { today.days(to: due) > 7 }
+
         init?(_ bucket: Bucket) {
             switch bucket {
             case .overdue: self = .overdue

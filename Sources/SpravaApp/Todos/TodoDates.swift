@@ -65,3 +65,13 @@ enum TodoDates {
         return day.year == today.year ? short : short + ", \(day.year)"
     }
 }
+
+extension CalendarDate {
+    /// The day as the Today page's title says it: "Tuesday, November 3".
+    var spoken: String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)) else { return description }
+        return date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+    }
+}
