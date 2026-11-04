@@ -11,6 +11,8 @@ struct SpravaApp: App {
     @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
     @StateObject private var model: ShelfModel
     @StateObject private var appearance: AppearanceSettings
+    @StateObject private var backup = BackupModel()
+    @StateObject private var brains = BrainsModel()
     @StateObject private var binderLocation: BinderLocationSettings
 
     init() {
@@ -70,7 +72,7 @@ struct SpravaApp: App {
             }
         }
         // The app menu's Settings… item, ⌘,.
-        Settings { SettingsView(appearance: appearance, binderLocation: binderLocation) }
+        Settings { SettingsView(appearance: appearance, binderLocation: binderLocation, shelf: model, backup: backup, brains: brains) }
     }
 }
 
@@ -81,7 +83,7 @@ enum Snapshot {
         let model = ShelfModel()
         model.refresh()
         if let pick = ProcessInfo.processInfo.environment["SPRAVA_SELECT"] {
-            model.selection = pick == "health" ? healthSelection : pick == "todos" ? todosSelection : pick == "inbox" ? inboxSelection : pick == "brains" ? brainsSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
+            model.selection = pick == "health" ? healthSelection : pick == "todos" ? todosSelection : pick == "inbox" ? inboxSelection : model.rows.first { $0.name == pick }?.folder ?? model.selection
         }
         if let today = ProcessInfo.processInfo.environment["SPRAVA_TODAY"].flatMap(CalendarDate.strict) {
             model.today = today
