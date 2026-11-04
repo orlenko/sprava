@@ -146,7 +146,7 @@ Use an invented binder adopted in the installed app, with invented documents onl
    card files both; it does not ask how the message came.
 4. **A file that cannot be read.** Drop a file of random bytes named `x.pdf`: a card "Held: … was not read"
    says why.
-5. **The channel answer.** Approve a card with "on paper, scanned" picked: the document in `catalog.json` has
+5. **The channel answer.** File a card with "on paper, scanned" picked: the document in `catalog.json` has
    `provenance.obtained.channel: paper`.
 6. **A careful reading.** An invented by-law appears under Inbox › "Worth a careful reading". No brain gets
    intake documents until the person can mark one as not private (issue #283). With an invented legacy client

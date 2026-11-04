@@ -37,6 +37,9 @@ import Testing
         let listed = try call(c, [("command", .str("proposals")), ("binder", .string(folder.path))])
         let card = try #require(listed["proposals"]?.arrayValue?.first)
         #expect(card["verified"] == .bool(true))
+        // The card says what its button will do: a to-do for each op, read from the card itself.
+        #expect(card["review"]?["kind"] == .str("change"))
+        #expect(card["review"]?["todos"]?.arrayValue?.count == card["lines"]?.arrayValue?.count)
         let approved = try call(c, [("command", .str("approve")), ("binder", .string(folder.path)), ("proposal", card["id"]!), ("digest", card["digest"]!)])
         #expect(approved["ok"] == .bool(true), "\(approved)")
         let items = Teka.read(folder).items

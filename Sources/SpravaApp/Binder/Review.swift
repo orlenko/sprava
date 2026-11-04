@@ -12,80 +12,185 @@ struct ReviewSection: View {
     var body: some View {
         if !actions.cards.isEmpty {
             Section(header: Text("Waiting for your OK (\(actions.cards.count))").font(.headline)) {
-                ForEach(actions.cards) { card in
-                    // Locked while its approval or rejection is on its way: the request already holds its edits.
-                    let locked = !actions.isChangeable(card.id)
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(card.title).font(.body.bold())
-                            Spacer()
-                            Text("from \(card.actor)").font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(DisplayLine.rows(card.lines)) { Text("• \($0.text)").font(.callout) }
-                        ForEach(DisplayLine.rows(card.notes)) { Text($0.text).font(.caption).foregroundStyle(.orange) }
-                        if let intake = card.intake {
-                            Text(intake).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                        if let suggested = card.folder {
-                            HStack {
-                                Text("Folder").font(.caption)
-                                TextField(suggested, text: Binding(get: { actions.folders[card.id] ?? suggested },
-                                                                   set: { actions.setFolder(card.id, $0) }))
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(maxWidth: 280)
-                                    .disabled(locked)
-                            }
-                        }
-                        if card.asksChannel {
-                            HStack {
-                                Picker("How did it reach you?", selection: Binding(get: { actions.channels[card.id] ?? "other" },
-                                                                                  set: { actions.setChannel(card.id, $0) })) {
-                                    Text("not saying").tag("other")
-                                    Text("by email").tag("email")
-                                    Text("on paper, scanned").tag("paper")
-                                    Text("downloaded").tag("download")
-                                    Text("in a message").tag("message")
-                                    Text("I wrote it").tag("note")
-                                }
-                                .frame(maxWidth: 320)
-                                TextField("in your words (optional)", text: Binding(get: { actions.said[card.id] ?? "" },
-                                                                                    set: { actions.setSaid(card.id, $0) }))
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            .font(.caption)
-                            .disabled(locked)
-                        }
-                        if !card.verified {
-                            Text("Not written by Sprava; it cannot be approved. Reject it to clear it away.").font(.caption).foregroundStyle(.orange)
-                        }
-                        if let edits = actions.editing[card.id] {
-                            ForEach(edits) { e in
-                                HStack {
-                                    Toggle("", isOn: binding(card.id, e, \.include)).labelsHidden()
-                                    TextField("Title", text: binding(card.id, e, \.title)).textFieldStyle(.roundedBorder)
-                                    TextField("YYYY-MM-DD or empty", text: binding(card.id, e, \.due)).textFieldStyle(.roundedBorder).frame(width: 130)
-                                    Picker("", selection: binding(card.id, e, \.priority)) {
-                                        Text("high").tag("high"); Text("normal").tag("normal"); Text("low").tag("low")
-                                    }
-                                    .labelsHidden().frame(width: 90)
-                                    if e.waitingOn != nil {
-                                        TextField("Waiting on", text: partyBinding(card.id, e)).textFieldStyle(.roundedBorder).frame(width: 160)
-                                    }
-                                }
-                                .disabled(locked)
-                            }
-                        }
-                        HStack {
-                            Button("Approve") { actions.approve(card, folder, reload: reload) }
-                                .disabled(!card.verified || actions.busy || locked)
-                            if !card.editable.isEmpty, actions.editing[card.id] == nil {
-                                Button("Edit") { actions.startEditing(card) }.disabled(!card.verified || locked)
-                            }
-                            Button("Reject") { actions.reject(card, folder, reload: reload) }
-                                .disabled(actions.busy || locked)
+                Text("Nothing is filed or changed until you press a button on a card.")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(actions.cards) { ReviewCard(section: self, card: $0) }
+            }
+        }
+    }
+}
+
+/// One card: the document, what its button will do, and only what could change the decision. The card's full record
+/// stays under Details.
+struct ReviewCard: View {
+    let section: ReviewSection
+    let card: BinderActions.Card
+    private var actions: BinderActions { section.actions }
+
+    var body: some View {
+        // Locked while its approval or rejection is on its way: the request already holds its edits.
+        let locked = !actions.isChangeable(card.id)
+        let edits = actions.editing[card.id]
+        let review = card.shown
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: card.heading).font(.body.bold())
+                if let byline = card.byline { Text(verbatim: byline).font(.caption).foregroundStyle(.secondary) }
+            }
+            if !card.verified {
+                ReviewNote(text: "Not written by Sprava, so it cannot be carried out. You can clear it away.")
+            }
+            if let summary = review.summary {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("The clerk\u{2019}s summary").font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: summary).textSelection(.enabled)
+                }
+            } else if let begins = review.begins {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("The document begins").font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: "\u{201C}\(begins)\u{201D}").textSelection(.enabled)
+                }
+            }
+            if !review.files.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(review.files) { file in
+                        Button(file.label) { Task { await actions.showInFinder(file, section.folder) } }
+                            .buttonStyle(.link)
+                    }
+                }
+            }
+            ForEach(DisplayLine.rows(review.warnings)) { ReviewNote(text: $0.text) }
+            // Only on a card that can be carried out: neither answer means anything on one that cannot.
+            let actionable = card.action(editing: edits) != nil
+            if actionable, let suggested = card.folder {
+                HStack {
+                    Text("File in folder").font(.caption)
+                    TextField(suggested, text: Binding(get: { actions.folders[card.id] ?? suggested },
+                                                       set: { actions.setFolder(card.id, $0) }))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 280)
+                        .disabled(locked)
+                }
+            }
+            if actionable, card.asksChannel { channelRow.disabled(locked) }
+            if let edits {
+                ForEach(edits) { e in
+                    VStack(alignment: .leading, spacing: 2) {
+                        editRow(e).disabled(locked)
+                        // What the clerk was unsure of is what the person came here to correct.
+                        ForEach(DisplayLine.rows(review.todos.first { $0.index == e.index }?.notes ?? [])) {
+                            Text(verbatim: $0.text).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.vertical, 4)
+                }
+            } else if !review.todos.isEmpty {
+                ReviewList(title: review.kind == .manual ? "To repair by hand"
+                               : review.todos.count == 1 ? "To-do it would add" : "To-dos it would add",
+                           rows: review.todos.map { todo in
+                               let due = todo.due.isEmpty ? "" : ", due \(todo.due)"
+                               let high = todo.priority == "high" ? ", high priority" : ""
+                               return (todo.id, todo.title + due + high, todo.notes)
+                           })
+            }
+            // Never folded, and kept while editing: an op can write more than its edit row offers, such as a repair
+            // card's derived follow-up, and a change to what the hub may receive is what the person decides on.
+            if !review.changes.isEmpty {
+                ReviewList(title: review.kind == .manual ? "To repair by hand"
+                               : review.changes.count == 1 ? "Change it would make" : "Changes it would make",
+                           rows: review.changes.map { ($0.id, $0.line, $0.notes) })
+            }
+            // A card Sprava did not write, or one the runtime has no facts for: its own lines.
+            if review.kind == .plain, !card.lines.isEmpty {
+                ReviewList(title: nil, rows: card.lines.enumerated().map { ($0.offset, $0.element, []) })
+            }
+            HStack {
+                if let action = card.action(editing: edits) {
+                    Button(action.title) { actions.approve(card, section.folder, reload: section.reload) }
+                        .disabled(!action.enabled || actions.busy || locked)
+                }
+                if let edit = card.editTitle, edits == nil {
+                    Button(edit) { actions.startEditing(card) }.disabled(locked)
+                }
+                Button(card.declineTitle) { actions.reject(card, section.folder, reload: section.reload) }
+                    .help(card.declineHelp)
+                    .disabled(actions.busy || locked)
+            }
+            ClaudeExpandingRow(title: "Details", open: Binding(get: { actions.openDetails.contains(card.id) },
+                                                               set: { actions.setDetails(card.id, open: $0) }))
+                .font(.caption).foregroundStyle(.secondary)
+            if actions.openDetails.contains(card.id) { details }
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// Everything the card holds, for whoever wants to check it: its raw lines and every note, once.
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: "Suggested by \(card.actor)")
+            ForEach(DisplayLine.rows(card.lines)) { Text(verbatim: "\u{2022} \($0.text)") }
+            ForEach(DisplayLine.rows(card.notes)) { Text(verbatim: $0.text) }
+            if let intake = card.intake { Text(verbatim: intake) }
+        }
+        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+    }
+
+    private var channelRow: some View {
+        HStack {
+            Picker("How did it reach you?", selection: Binding(get: { actions.channels[card.id] ?? "other" },
+                                                              set: { actions.setChannel(card.id, $0) })) {
+                Text("not saying").tag("other")
+                Text("by email").tag("email")
+                Text("on paper, scanned").tag("paper")
+                Text("downloaded").tag("download")
+                Text("in a message").tag("message")
+                Text("I wrote it").tag("note")
+            }
+            .frame(maxWidth: 320)
+            TextField("in your words (optional)", text: Binding(get: { actions.said[card.id] ?? "" },
+                                                                set: { actions.setSaid(card.id, $0) }))
+                .textFieldStyle(.roundedBorder)
+        }
+        .font(.caption)
+    }
+
+    private func editRow(_ e: BinderActions.Editable) -> some View {
+        HStack {
+            Toggle("", isOn: section.binding(card.id, e, \.include)).labelsHidden()
+            TextField("Title", text: section.binding(card.id, e, \.title)).textFieldStyle(.roundedBorder)
+            TextField("YYYY-MM-DD or empty", text: section.binding(card.id, e, \.due)).textFieldStyle(.roundedBorder).frame(width: 130)
+            Picker("", selection: section.binding(card.id, e, \.priority)) {
+                Text("high").tag("high"); Text("normal").tag("normal"); Text("low").tag("low")
+            }
+            .labelsHidden().frame(width: 90)
+            if e.waitingOn != nil {
+                TextField("Waiting on", text: section.partyBinding(card.id, e)).textFieldStyle(.roundedBorder).frame(width: 160)
+            }
+        }
+    }
+}
+
+/// One thing the person should know before deciding: said once, in ordinary text, with a quiet mark.
+private struct ReviewNote: View {
+    let text: String
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(verbatim: text).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        }
+    }
+}
+
+/// A short list of what a card's button would do, each row with its own notes beneath it.
+private struct ReviewList: View {
+    let title: String?
+    let rows: [(id: Int, line: String, notes: [String])]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let title { Text(verbatim: title).font(.caption).foregroundStyle(.secondary) }
+            ForEach(rows, id: \.id) { row in
+                Text(verbatim: "\u{2022} \(row.line)").fixedSize(horizontal: false, vertical: true)
+                ForEach(DisplayLine.rows(row.notes)) {
+                    Text(verbatim: $0.text).font(.caption).foregroundStyle(.secondary).padding(.leading, 10)
                 }
             }
         }

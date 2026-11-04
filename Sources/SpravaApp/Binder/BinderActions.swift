@@ -21,6 +21,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         let editable: [Editable]
         /// A filing card whose source could not tell how the document reached the person (adaptation-layer §3.3).
         var asksChannel = false
+        /// What the card shows first; see `CardReview`.
+        var review = CardReview()
     }
 
     /// One add_item, or one item an adoption repair card completes, the person may change before approving.
@@ -60,6 +62,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         let undone: Bool
     }
     @Published var message: String? { didSet { readFoundNoRuntime = false } }
+    /// The cards whose Details are open.
+    @Published private(set) var openDetails: Set<String> = []
     var readFoundNoRuntime = false
     @Published var busy = false
     @Published var description = ""
@@ -120,12 +124,15 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     private let readTimeout: TimeInterval
     private let readKeeping: @Sendable (URL) -> Keeping
     private let renderPreview: @Sendable (URL, CalendarDate) -> String?
+    private let reveal: @MainActor (URL) -> Void
 
     init(client: RuntimeClient = RuntimeClient(), readTimeout: TimeInterval = 5,
          readKeeping: @escaping @Sendable (URL) -> Keeping = Keeping.read,
          renderPreview: @escaping @Sendable (URL, CalendarDate) -> String? = { DashboardKeeper(folder: $0).preview(today: $1) },
-         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock) {
+         deadline: @escaping DiskDeadline = ShelfDiskWorker.wallClock,
+         reveal: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }) {
         disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.binder.reads", qos: .utility), deadline: deadline)
+        self.reveal = reveal
         self.client = client
         self.readTimeout = readTimeout
         self.readKeeping = readKeeping
@@ -225,6 +232,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                                                 priority: e["priority"]?.stringValue ?? "normal", waitingOn: e["waiting_on"]?.stringValue)
                             })
                 card.asksChannel = p["intake"]?["obtained"]?["channel"] == .str("other")
+                card.review = CardReview(p["review"])
                 return card
             }
             // A reply sent before the runtime settled a card still lists it, and the card stays locked.
@@ -419,6 +427,22 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                                              ("said", .string(said[card.id] ?? ""))])))
         }
         return fields
+    }
+
+    func setDetails(_ card: String, open: Bool) {
+        if open { openDetails.insert(card) } else { openDetails.remove(card) }
+    }
+
+    /// Shows a card's file in Finder, never running it. Its path comes from a card, so it is checked again here.
+    func showInFinder(_ file: CardReview.File, _ folder: URL) async {
+        let path = file.path
+        let located = await disk.run(timeout: readTimeout) { CardReview.fileURL(path, in: folder) }
+        guard serves(folder) else { return }
+        guard let url = located ?? nil else {
+            message = "This file is no longer in intake, or cannot be shown safely. Check the binder folder."
+            return
+        }
+        reveal(url)
     }
 
     /// Drops what the person set on a card, once its approval is accepted.
