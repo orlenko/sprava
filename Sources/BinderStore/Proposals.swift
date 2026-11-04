@@ -52,6 +52,8 @@ public struct Proposal: Sendable {
     /// Every note for a card: each op's, plus the card's own (capture-event-v0 §3.2, §6.5).
     public var cardNotes: [String] {
         var out = ops.flatMap(Self.notes)
+        var seen = Set<String>()
+        out = out.filter { seen.insert($0).inserted }
         if let already = raw["provenance"]?["already_in_binder"]?.arrayValue?.compactMap(\.stringValue), !already.isEmpty {
             out.append("already in the binder: " + already.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", "))
         }

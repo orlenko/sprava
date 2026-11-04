@@ -49,19 +49,19 @@ New Binder opens Settings first if no folder has been chosen. Changing the locat
 
 1. **New Binder…**, pick **A tax year**, and set **Tax year** to the year it is for. The name follows the year
    (`tax-2027`) unless you type your own. Check the name and location, then choose **Create Binder**.
-2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Edit** it to
-   leave lines out or to give a date of your own, then **Approve**. No item carries a filing deadline; any date on
+2. Its starter checklist arrives under **Waiting for your OK** as one card, every item undated. **Change to-dos first** to
+   leave lines out or to give a date of your own, then press its main button, which says how many to-dos it adds. No item carries a filing deadline; any date on
    it is one you chose, and you can add one later with the item's visible **Edit** button and **Add date**.
 3. Add slips and receipts by dropping them anywhere on the binder's page. Each
-   becomes a card within a minute. Check its **Folder** (`slips`, `receipts` or `return`) and **How did it reach
-   you?**, change the folder if it is wrong, then **Approve** to file it.
+   becomes a card within a minute. Check **File in folder** (`slips`, `receipts` or `return`) and **How did it reach
+   you?**, change the folder if it is wrong, then **File this document**.
 
 ## A condo board
 
 1. **New Binder…**, pick **A condo board**. It has folders for `governing`, `meetings`, `finances`, `maintenance`
    and `correspondence`, and an undated starter checklist to approve as above.
 2. Keep the records by dropping minutes, statements, quotes and letters on the binder, and choosing the folder on
-   each card before **Approve**.
+   each card before filing it.
 3. Track action items in the binder's **Project** view or on **Today** across binders. Type in the top row and press
    Return: it writes the task at once, without a model or a review card, and leaves the cursor there for the next.
    **Due** takes `today`, `tomorrow`, `fri`, `+3`, `nov 12`, `11/12` or `2031-02-03`. With the width for them, the row

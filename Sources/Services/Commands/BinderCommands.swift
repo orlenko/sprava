@@ -94,10 +94,12 @@ extension Commands {
             o.set("verified", .bool(digests[key(f, p.id)] == digest))
             o.set("lines", .array(p.ops.map { .string(description($0)) }))
             var notes = p.cardNotes
-            if case let changed = p.changedSince(catalog: catalog), !changed.isEmpty {
+            let changed = p.changedSince(catalog: catalog)
+            if !changed.isEmpty {
                 notes.insert("needs a look: changed since this card was made: " + changed.joined(separator: ", "), at: 0)
             }
             o.set("notes", .array(notes.map(JSONValue.string)))
+            o.set("review", .object(p.review(describe: description, changed: changed)))
             // What the person may edit on the card (CardEdits).
             o.set("editable", .array(p.ops.enumerated().compactMap { i, op -> JSONValue? in
                 if op["op"] == .str("add_item"), let item = op["args"]?["item"] {
