@@ -35,6 +35,43 @@ import Testing
         }
     }
 
+    /// The CLI records its built-in plugin during a turn. Refusing that made every turn after a session's first fail at once,
+    /// and the retry start a fresh session.
+    @Test func aSessionContinuesPastTheCLIsOwnPluginRecord() throws {
+        let folder = try home()
+        try AtomicFile.makePrivateFolder(folder)
+        let store = folder.appendingPathComponent("config/plugins/store")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        func launch() throws {
+            _ = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.316"), home: folder,
+                                          sessionID: UUID(), credential: "invented", policy: "Canonical")
+        }
+        let record = store.appendingPathComponent("cc-plugin-agents-md_builtin-b049b47b3618.json")
+        try Data(#"{"invented":"record"}"#.utf8).write(to: record)
+        try launch()
+        // A larger file under that name is not the CLI's record.
+        try Data(repeating: 0x20, count: 2048).write(to: record)
+        #expect(throws: ClaudeReadLaunch.Refused.unsafeHome) { try launch() }
+        try FileManager.default.removeItem(at: record)
+        // Neither is a link under that name, another plugin's file, or anything beside the store.
+        try FileManager.default.createSymbolicLink(at: record, withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
+        #expect(throws: ClaudeReadLaunch.Refused.unsafeHome) { try launch() }
+        try FileManager.default.removeItem(at: record)
+        let other = store.appendingPathComponent("evil-plugin.json")
+        try Data("{}".utf8).write(to: other)
+        #expect(throws: ClaudeReadLaunch.Refused.unsafeHome) { try launch() }
+        try FileManager.default.removeItem(at: other)
+        let beside = folder.appendingPathComponent("config/plugins/installed")
+        try FileManager.default.createDirectory(at: beside, withIntermediateDirectories: true)
+        #expect(throws: ClaudeReadLaunch.Refused.unsafeHome) { try launch() }
+        try FileManager.default.removeItem(at: beside)
+        try launch()
+        // A plugins file, or a link, in place of the folder.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("config/plugins"))
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("config/plugins"), withDestinationURL: store)
+        #expect(throws: ClaudeReadLaunch.Refused.unsafeHome) { try launch() }
+    }
+
     @Test func anUnsignedProgramCannotBecomeAProductionLaunch() throws {
         #expect(throws: ClaudeReadLaunch.Refused.unsupportedInstallation) {
             try ClaudeReadLaunch.prepare(program: URL(fileURLWithPath: "/does-not-exist/2.1.304"), support: home(), connectionID: UUID(),

@@ -51,6 +51,23 @@ package enum ClaudeReadLaunch {
 
     /// Also used by deterministic fixture tests. Production callers cannot bypass prepare's signature
     /// and managed-source checks: this plan builder is internal to Brains, not a package API.
+    /// The CLI records its built-in plugin here during a turn (`plugins/store/cc-plugin-agents-md_builtin-<hex>.json`, 92 bytes
+    /// in 2.1.316), so a session's next turn finds it. That record is not customization and is allowed. Anything else under
+    /// `plugins`, a link or a larger file included, is refused as before.
+    static func holdsOnlyTheCLIsOwnRecords(plugins: URL) -> Bool {
+        var info = stat()
+        guard lstat(plugins.path, &info) == 0 else { return errno == ENOENT }
+        let manager = FileManager.default
+        guard info.st_mode & S_IFMT == S_IFDIR, let top = try? manager.contentsOfDirectory(atPath: plugins.path), top.allSatisfy({ $0 == "store" }) else { return false }
+        guard !top.isEmpty else { return true }
+        let store = plugins.appendingPathComponent("store")
+        guard lstat(store.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, let records = try? manager.contentsOfDirectory(atPath: store.path) else { return false }
+        return records.allSatisfy { name in
+            name.wholeMatch(of: /cc-plugin-[a-z0-9-]+_builtin-[0-9a-f]+\.json/) != nil
+                && lstat(store.appendingPathComponent(name).path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG && info.st_size <= 1024
+        }
+    }
+
     static func plan(program: URL, home: URL, sessionID: UUID, credential: String, policy: String, reach: Reach? = nil, appTools: ClaudeAppTools? = nil,
                      onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) throws -> ClaudeReadOnlyTurn.Launch {
         // The real path, which is what the sandbox compares: resolvingSymlinksInPath would strip /private from /private/var.
@@ -78,9 +95,10 @@ package enum ClaudeReadLaunch {
         for name in ["CLAUDE.md", "AGENTS.md", ".claude", ".mcp.json", "settings.json", "settings.local.json", "plugins", "hooks", "agents", "skills"] {
             if lstat(home.appendingPathComponent(name).path, &info) == 0 || errno != ENOENT { throw Refused.unsafeHome }
         }
-        for name in ["CLAUDE.md", "AGENTS.md", ".mcp.json", "settings.json", "settings.local.json", "plugins", "hooks", "agents", "skills"] {
+        for name in ["CLAUDE.md", "AGENTS.md", ".mcp.json", "settings.json", "settings.local.json", "hooks", "agents", "skills"] {
             if lstat(home.appendingPathComponent("config/" + name).path, &info) == 0 || errno != ENOENT { throw Refused.unsafeHome }
         }
+        guard holdsOnlyTheCLIsOwnRecords(plugins: home.appendingPathComponent("config/plugins")) else { throw Refused.unsafeHome }
         try directory.write(Data(policy.utf8), to: "app-policy.txt")
         try directory.write(Data((reach.map { sandbox(home: home, program: program, reach: $0, session: sessionID) } ?? sandbox(home: home, program: program)).utf8), to: "app-sandbox.sb")
         var environment = [
