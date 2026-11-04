@@ -429,6 +429,35 @@ import Testing
         #expect(frames.reply == "the reply" && frames.ended)
     }
 
+    /// The status line follows the tools, and what it takes from a tool's input is one short line.
+    @Test func aTurnsActivityFollowsItsTools() throws {
+        var frames = try started(["Bash", "Read", "Edit", "Grep"])
+        let id = session.uuidString.lowercased()
+        func assistant(_ blocks: String) throws {
+            try frames.receive(frame(#"{"type":"assistant","session_id":"\#(id)","parent_tool_use_id":null,"message":{"role":"assistant","content":[\#(blocks)]}}"#))
+        }
+        #expect(frames.activity.doing == nil && frames.activity.steps == 0)
+        try assistant(#"{"type":"tool_use","id":"a","name":"Read","input":{"file_path":"/invented/documents/quote.pdf"}}"#)
+        #expect(frames.activity.doing == "Reading \u{201C}quote.pdf\u{201D}" && frames.activity.steps == 1)
+        try frames.receive(frame(#"{"type":"user","session_id":"\#(id)","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"x"}]}}"#))
+        #expect(frames.activity.doing == "Thinking" && frames.activity.steps == 1)
+        try assistant(#"{"type":"tool_use","id":"b","name":"Bash","input":{"command":"rm x","description":"Remove\n\u202Eduplicate   emails"}}"#)
+        #expect(frames.activity.doing == "Remove duplicate emails" && frames.activity.steps == 2)
+        try assistant(#"{"type":"tool_use","id":"c","name":"Bash","input":{"command":"ls"}}"#)
+        #expect(frames.activity.doing == "Running a command")
+        try assistant(#"{"type":"tool_use","id":"d","name":"Edit","input":{"file_path":"/invented/a\u202Eb.txt"}}"#)
+        #expect(frames.activity.doing == "Changing \u{201C}a_b.txt\u{201D}")
+        try assistant(#"{"type":"tool_use","id":"e","name":"Grep","input":{"pattern":"private words"}}"#)
+        #expect(frames.activity.doing == "Searching the binder")
+        try assistant(#"{"type":"text","text":"the reply"}"#)
+        #expect(frames.activity.doing == "Writing" && frames.activity.steps == 5)
+        let long = ClaudeTurnActivity.words(tool: "Bash", input: .obj([("description", .str(String(repeating: "é", count: 500)))]))
+        #expect(long.count == 91)
+        #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__update_notes", input: nil) == "Updating the notes")
+        #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__search_binder", input: nil) == "Searching the documents")
+        #expect(ClaudeTurnActivity.words(tool: "mcp__sprava__add_todo", input: nil) == "Updating the to-dos")
+    }
+
     /// A session runs for a long time, so a kind of frame a newer CLI adds, or a compaction's summary, must not fail its turn.
     @Test func aBinderAgentsLongTurnSurvivesFramesTheContractDoesNotName() throws {
         var frames = try started(["Bash", "Read"])

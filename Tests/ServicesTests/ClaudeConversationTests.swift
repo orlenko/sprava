@@ -1,5 +1,5 @@
 import BinderStore
-import Brains
+@testable import Brains
 import Foundation
 import Retrieval
 import BinderFormat
@@ -27,6 +27,7 @@ import Testing
         var failure: (any Error)?
         var failNext: [any Error] = []
         var contextUsed: (used: Int, window: Int?)?
+        var activity: ClaudeTurnActivity?
         var credentials: [String] = []
         var named: [String: String] = [:]
         /// The folder each launch was given tools in; nil for a tool-free one.
@@ -48,7 +49,8 @@ import Testing
                 if let failure = lock.withLock({ failure }) { throw failure }
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
-            }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash, context: { [self] in lock.withLock { contextUsed } })
+            }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash, context: { [self] in lock.withLock { contextUsed } },
+               activity: { [self] in lock.withLock { running ? activity : nil } })
         }
     }
     struct Fixture {
@@ -255,6 +257,32 @@ import Testing
         #expect(try Data(contentsOf: notes) == Data("first".utf8))
         #expect(try Data(contentsOf: old) == Data("unneeded".utf8))
         #expect(try await f.request("chat_poll", [("request_id", .str(id.uuidString))])["changes"]?["undone"] == .bool(true))
+    }
+
+    /// The status line comes from the turn running now, and from no other, and is not kept.
+    @Test func aPollSaysWhatTheRunningTurnIsDoing() async throws {
+        let f = try Fixture(); try await f.connect()
+        var doing = ClaudeTurnActivity()
+        doing.saw([.obj([("type", .str("tool_use")), ("name", .str("Grep")), ("input", .obj([]))])])
+        f.engine.lock.withLock { f.engine.hold = true; f.engine.activity = doing }
+        let id = UUID()
+        _ = try await f.send(id, "Tidy the invented binder")
+        var seen: JSONObject?
+        for _ in 0..<200 {
+            let r = try await f.request("chat_poll", [("request_id", .str(id.uuidString))])
+            if r["activity"] != nil { seen = r; break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(seen?["activity"] == .str("Searching the binder") && seen?["steps"] == .int(1))
+        f.engine.lock.withLock { f.engine.hold = false }
+        let finished = try await f.completed(id)
+        #expect(finished["activity"] == nil && finished["steps"] == nil)
+    }
+
+    @Test func anUnexplainedFailureNamesItsKindAndNoData() {
+        #expect(ClaudeConversationRuntime.errorKind(ClaudeConversationRuntime.Refused.notConnected) == "Refused.notConnected")
+        struct InventedError: Error { let path = "/invented/private/name" }
+        #expect(ClaudeConversationRuntime.errorKind(InventedError()) == "InventedError")
     }
 
     @Test func aFolderACommandClosedIsReopenedSoItsTurnIsStillRecorded() async throws {

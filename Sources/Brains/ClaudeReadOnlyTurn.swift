@@ -76,6 +76,7 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
                 DispatchQueue.global(qos: .userInitiated).async { [self] in
                     let result = Result { try perform(text, frame: frame, resume: resume, id: id) }
                     lock.withLock {
+                        activity = nil
                         if case .failure = result { replacementRequired = true }
                         if case .success(.interrupted) = result { replacementRequired = true }
                         if active == id { active = nil }
@@ -93,6 +94,9 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
     /// How full the session was at this turn's last model request, when the CLI said.
     package var lastContext: (used: Int, window: Int?)? { lock.withLock { context } }
     private var context: (used: Int, window: Int?)?
+    /// What the turn running now is doing, for the person's status line; nil between turns.
+    package var currentActivity: ClaudeTurnActivity? { lock.withLock { activity } }
+    private var activity: ClaudeTurnActivity?
     private func requestStop(_ id: UUID) { lock.withLock { if active == id { stopped = true } } }
     private func isStopped(_ id: UUID) -> Bool { lock.withLock { active == id && stopped } }
 
@@ -155,6 +159,7 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
                         do {
                             try decoder.append(Data(buffer.prefix(count))) { value in
                                 try frames.receive(value)
+                                lock.withLock { activity = frames.activity }
                                 // Valid frames only. The overall deadline still bounds a chatty engine.
                                 pending += supervisor.event(at: started.duration(to: clock.now))
                             }
