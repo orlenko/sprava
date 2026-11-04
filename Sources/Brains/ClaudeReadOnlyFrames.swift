@@ -24,6 +24,8 @@ struct ClaudeReadOnlyFrames {
     /// How much of the model's context this session's last request used, and how much it can hold.
     private(set) var contextTokens: Int?
     private(set) var contextWindow: Int?
+    /// What the turn is doing now, for the person's status line and nothing else.
+    private(set) var activity = ClaudeTurnActivity()
     /// A binder's agent, which runs a whole session and is walled by its sandbox.
     private var hasShell: Bool { tools.contains("Bash") }
     var ended: Bool { receivedResult && (interruptID == nil || interruptAcknowledged) }
@@ -41,6 +43,7 @@ struct ClaudeReadOnlyFrames {
         case "user":
             // Native interruption markers belong to discarded engine context, never app/person history.
             if acknowledged && interruptID != nil { return }
+            if acknowledged, !receivedResult { activity.toolFinished() }
             // A tool's result: data for the model, never a reply, an acknowledgment or a permission. An agent with file tools runs a
             // whole session, so a compaction's summary and whatever else the CLI streams as a user frame pass the same way.
             if acknowledged, !receivedResult, hasShell { return }
@@ -56,6 +59,7 @@ struct ClaudeReadOnlyFrames {
                 throw ClaudeReadOnlyTurn.Failure.protocolMismatch
             }
             if value["message"]?["content"]?.arrayValue?.contains(where: { $0["type"] == .str("tool_use") }) == true { toolUsed = true }
+            activity.saw(value["message"]?["content"]?.arrayValue ?? [])
             // The last model request's whole prompt is how full the session is; the result's totals add up every request and every resume.
             if let usage = value["message"]?["usage"] {
                 let parts: [Int] = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].map { key in

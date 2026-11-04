@@ -247,7 +247,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         let events = AsyncStream<ChatReplyEvent> { continuation in
             let polling = Task { @MainActor [weak self] in
                 guard let self else { continuation.finish(); return }
-                continuation.yield(.activity("Reading this binder…"))
+                let began = ContinuousClock.now
+                var shown = Self.activityLine(doing: nil, steps: 0, elapsed: .zero)
+                continuation.yield(.activity(shown))
                 defer { continuation.finish() }
                 while !Task.isCancelled {
                     do {
@@ -270,7 +272,11 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                             self.forgetPending(turn, in: folder)
                             if let change = Self.change(value, turn: turn.turnID) { continuation.yield(.binderChanged(change)); self.changed() }
                             continuation.yield(.failed(.turnFailed(value["reason"]?.stringValue, account: value["account"]?.stringValue))); return
-                        case "accepted", "running": break
+                        case "accepted", "running":
+                            let line = Self.activityLine(doing: value["activity"]?.stringValue,
+                                                         steps: value["steps"]?.numberValue?.safeInteger.map { Int(clamping: $0) } ?? 0,
+                                                         elapsed: began.duration(to: .now))
+                            if line != shown { shown = line; continuation.yield(.activity(line)) }
                         default: throw ChatCommandFailure.unavailable
                         }
                         try await Task.sleep(for: .milliseconds(750))
@@ -281,6 +287,15 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
             continuation.onTermination = { _ in polling.cancel() } // Never Stop on lost subscription.
         }
         return ChatTurn(binderID: turn.binderID, requestID: turn.requestID, turnID: turn.turnID, events: events)
+    }
+    /// The one line a running turn shows, replaced as it goes and gone when the reply comes. A turn has no known length, so
+    /// it says what is happening and how far it has come, not a share of a whole.
+    nonisolated static func activityLine(doing: String?, steps: Int, elapsed: Duration) -> String {
+        var line = doing ?? "Starting\u{2026}"
+        if steps > 0 { line += " \u{00B7} \(steps) step\(steps == 1 ? "" : "s")" }
+        let minutes = Int(elapsed.components.seconds / 60)
+        if minutes > 0 { line += " \u{00B7} \(minutes) min" }
+        return line
     }
     private func forgetPending(_ turn: SavedTurn, in folder: URL) {
         if pending[folder]?.turnID == turn.turnID { pending[folder] = nil }

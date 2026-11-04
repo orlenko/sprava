@@ -13,6 +13,7 @@ import Testing
         var polls = 0
         var waiting: [CheckedContinuation<Void, Never>] = []
         var hold = true
+        var activity: [(String, JSONValue)] = []
         let text = "Keep this exact invented question."
 
         func finish(_ phase: String) {
@@ -32,7 +33,7 @@ import Testing
                 polls += 1
                 if hold { await withCheckedContinuation { waiting.append($0) } }
                 record.removeAll { $0.0 == "phase" }
-                record += [("phase", .str(phase)), ("reply", .str(reply)), ("ok", .bool(true))]
+                record += [("phase", .str(phase)), ("reply", .str(reply)), ("ok", .bool(true))] + activity
                 return JSONWriter.compact(.obj(record))
             case "chat_stop": finish("interrupted"); return #"{"ok":true}"#
             default: Issue.record("A restored turn must never be sent again"); throw ChatCommandFailure.invalidRequest
@@ -47,6 +48,23 @@ import Testing
     }
     func model(_ server: Server) -> ClaudeBinderConversation {
         ClaudeBinderConversation(client: RuntimeClient(answer: { try await server.answer($0) }), authenticate: {})
+    }
+
+    @Test func theLineShownWhileATurnRunsSaysWhatItIsDoing() async {
+        #expect(ClaudeBinderConversation.activityLine(doing: nil, steps: 0, elapsed: .seconds(5)) == "Starting\u{2026}")
+        #expect(ClaudeBinderConversation.activityLine(doing: "Searching the binder", steps: 1, elapsed: .seconds(59)) == "Searching the binder \u{00B7} 1 step")
+        #expect(ClaudeBinderConversation.activityLine(doing: "Thinking", steps: 12, elapsed: .seconds(190)) == "Thinking \u{00B7} 12 steps \u{00B7} 3 min")
+        let server = Server(), conversation = model(server)
+        defer { server.finish("interrupted") }
+        server.hold = false
+        server.activity = [("activity", .str("Reading \u{201C}quote.pdf\u{201D}")), ("steps", .int(4))]
+        await conversation.show(folder)
+        let shown = { conversation.chat.entries.first { $0.speaker == .binder }?.activity }
+        await until { shown() == "Reading \u{201C}quote.pdf\u{201D} \u{00B7} 4 steps" }
+        #expect(shown() == "Reading \u{201C}quote.pdf\u{201D} \u{00B7} 4 steps")
+        server.activity = [("activity", .str("Thinking")), ("steps", .int(5))]
+        await until { shown() == "Thinking \u{00B7} 5 steps" }
+        #expect(shown() == "Thinking \u{00B7} 5 steps")
     }
 
     @Test func reopeningAnActiveConversationResumesTheReplyWithoutAcceptingAnotherTurn() async {

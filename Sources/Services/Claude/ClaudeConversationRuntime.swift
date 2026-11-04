@@ -18,6 +18,7 @@ public actor ClaudeConversationRuntime {
         let exited: @Sendable () -> Bool
         let hash: String
         var context: @Sendable () -> (used: Int, window: Int?)? = { nil }
+        var activity: @Sendable () -> ClaudeTurnActivity? = { nil }
     }
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
@@ -262,7 +263,13 @@ public actor ClaudeConversationRuntime {
             guard let id = try connections.savedID(for: folder),
                   let requestID = request["request_id"]?.stringValue.flatMap(UUID.init(uuidString:)),
                   let record = try receipts.record(conversationID: id, requestID: requestID) else { throw Refused.invalidRequest }
-            return recordJSON(record).objectValue!
+            var reply = recordJSON(record).objectValue!
+            // Asked of the turn running now, and kept nowhere: it is only for the person's status line.
+            if let current = active[id], current.turn == record.turnID, let activity = current.driver?.activity(), let doing = activity.doing {
+                reply.set("activity", .str(doing))
+                reply.set("steps", .int(activity.steps))
+            }
+            return reply
         }
         guard let scope = try connections.connection(for: folder) else { throw Refused.notConnected }
         _ = try currentFolder(scope)
@@ -474,8 +481,17 @@ public actor ClaudeConversationRuntime {
         if failureReasons.count >= 64 { failureReasons.removeAll(); failureAccounts.removeAll() }
         failureReasons[request] = reason
         failureAccounts[request] = account
-        AtomicFile.appendLine("\(ISOTime.string(Date())) claude turn outcome=failed reason=\(reason)",
+        // "other" alone says nothing to look at later: the kind of error names no file or text of the person's.
+        let kind = reason == "other" ? " kind=\(Self.errorKind(error))" : ""
+        AtomicFile.appendLine("\(ISOTime.string(Date())) claude turn outcome=failed reason=\(reason)\(kind)",
                               to: support.appendingPathComponent("runtime/jobs.log"))
+    }
+
+    /// The error's type, and for Sprava's own refusals which one, whose names carry no data.
+    static func errorKind(_ error: Error) -> String {
+        if let refused = error as? Refused { return "Refused.\(refused)" }
+        if let refused = error as? ClaudeReadLaunch.Refused { return "ClaudeReadLaunch.\(refused)" }
+        return String(describing: type(of: error))
     }
 
     static func failureCode(_ error: Error) -> String {

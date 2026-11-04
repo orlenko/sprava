@@ -24,6 +24,7 @@ enum ClaudeNativeConversation {
             case .text(let text): return text
             case .interrupted: return nil
             }
-        }, stop: { runner.stop() }, exited: { runner.processExitConfirmed }, hash: prepared.programHash, context: { runner.lastContext })
+        }, stop: { runner.stop() }, exited: { runner.processExitConfirmed }, hash: prepared.programHash, context: { runner.lastContext },
+                     activity: { runner.currentActivity })
     }
 }
