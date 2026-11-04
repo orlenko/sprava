@@ -477,8 +477,9 @@ Each line names what replaced the entry; its old text is in git history.
   shown in Finder, never opened by Sprava, under the rule of D30.
 - **D39 decided (2026-11-04, from the author, filing waiting cards: "He should be able to detect duplicates, figure out if
   we've already filed something and generally act intelligently").** A file in intake that is an exact copy of a filed document
-  gets no card, and a waiting card goes once its document is filed. For a message, its original decides, since it holds the rest.
-  The filed document's file must still be there, or the copy gets its card. Nothing is deleted: the copy stays in intake, and
+  gets no card, and a waiting card goes once its document is filed. A message's text may be rendered another way, so with its
+  original filed its text does not count; a file added beside them does. Empty files never match.
+  What counts is what the filed file holds now, so a filed document edited or gone never hides a copy. Nothing is deleted: the copy stays in intake, and
   the binder's page says how many there are. Only exact bytes count; the same email saved another way still gets a card.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).

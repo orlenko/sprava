@@ -7,66 +7,52 @@ import SpravaKit
 /// Recognising a file in intake that is already filed, by its exact bytes. Anything less exact (the same email saved
 /// another way) is not decided here: such a file still gets a card. A file left out stays in intake; nothing is deleted.
 extension IntakeWatcher {
-    /// By digest, the path of each filed document: as its record says, or as `unrecorded` found for a record with none.
-    static func filedDigests(_ catalog: JSONObject?, unrecorded: [String: String]) -> [String: [String]] {
-        var filed = unrecorded.mapValues { [$0] }
-        for doc in catalog?["documents"]?.arrayValue ?? [] {
-            guard let digest = doc["sha256"]?.stringValue, let path = doc["path"]?.stringValue else { continue }
-            filed[digest, default: []].append(path)
-        }
-        return filed
-    }
-
-    /// Digests of filed documents whose records carry none (an adopted binder's need not), hashed only when a file in
-    /// intake has the same size: most never do. A catalog's path is untrusted, so it is checked as any other.
-    static func unrecordedDigests(_ row: ShelfRow, candidates: [Candidate]) -> [String: String] {
+    /// What filed documents hold now, by digest: a record's own digest may be out of date, and may be missing from an
+    /// adopted binder's. Only a file of the same size as one in intake is hashed, and most have none. An empty file
+    /// says nothing about what a document is, so it never matches. A catalog's path is untrusted and checked as any other.
+    static func filedDigests(_ row: ShelfRow, candidates: [Candidate]) -> [String: String] {
         let manager = FileManager.default
+        func size(_ url: URL) -> Int? { (try? manager.attributesOfItem(atPath: url.path))?[.size] as? Int }
         var sizes = Set<Int>()
         for candidate in candidates {
             for name in [candidate.name] + candidate.attachments {
-                let path = row.folder.appendingPathComponent("intake/" + name).path
-                if let size = (try? manager.attributesOfItem(atPath: path))?[.size] as? Int { sizes.insert(size) }
+                if let found = size(row.folder.appendingPathComponent("intake/" + name)), found > 0 { sizes.insert(found) }
             }
         }
         guard !sizes.isEmpty else { return [:] }
         var out: [String: String] = [:]
-        for doc in row.teka.catalog?["documents"]?.arrayValue ?? [] where doc["sha256"] == nil {
-            guard let path = doc["path"]?.stringValue, usable(path, in: row.folder),
-                  let size = (try? manager.attributesOfItem(atPath: row.folder.appendingPathComponent(path).path))?[.size] as? Int,
-                  sizes.contains(size), let digest = DocumentPaths.sha256(of: row.folder.appendingPathComponent(path)) else { continue }
-            out[digest] = path
+        for path in Set((row.teka.catalog?["documents"]?.arrayValue ?? []).compactMap({ $0["path"]?.stringValue })) {
+            guard DocumentPaths.isSafe(path, forFiling: false), !DocumentPaths.isKeyFile(path),
+                  DocumentPaths.plainFile(path, in: row.folder) else { continue }
+            let url = row.folder.appendingPathComponent(path)
+            if let found = size(url), sizes.contains(found), let digest = DocumentPaths.sha256(of: url) { out[digest] = path }
         }
         return out
     }
 
-    private static func usable(_ path: String, in folder: URL) -> Bool {
-        DocumentPaths.isSafe(path, forFiling: false) && !DocumentPaths.isKeyFile(path) && DocumentPaths.plainFile(path, in: folder)
-    }
-
-    /// Whether this digest names a document whose file is still there: a record alone would hide the only copy left.
-    private static func holds(_ digest: String?, filed: [String: [String]], in folder: URL) -> Bool {
-        digest.flatMap { filed[$0] }?.contains { usable($0, in: folder) } ?? false
-    }
-
-    /// Whether a thing in intake is already filed: every file it would file, or for a message its original, which holds
-    /// all the rest. Names are relative to `intake/`. A key or credential file is never read, so it never decides.
-    static func isFiled(names: [String], filed: [String: [String]], in folder: URL, digest: (String) -> String?) -> Bool {
+    /// Whether a thing in intake is already filed: every file it would file. A message's text may be rendered another
+    /// way, so with its original filed its text does not count; a file added beside them still does. `names` are relative
+    /// to `intake/`, the message or file first. A key or credential file is never read, so it never decides.
+    static func isFiled(names: [String], filed: [String: String], digest: (String) -> String?) -> Bool {
         let fileable = names.filter { !DocumentPaths.isKeyFile($0) }
-        guard !fileable.isEmpty else { return false }
-        if let original = fileable.first(where: { ($0 as NSString).lastPathComponent == mailOriginalName }),
-           holds(digest(original), filed: filed, in: folder) { return true }
-        return fileable.allSatisfy { holds(digest($0), filed: filed, in: folder) }
+        guard let first = fileable.first else { return false }
+        func holds(_ name: String) -> Bool { digest(name).map { filed[$0] != nil } ?? false }
+        let original = fileable.dropFirst().first { ($0 as NSString).lastPathComponent == mailOriginalName }
+        let needed = original.map(holds) == true ? Array(fileable.dropFirst()) : [first] + fileable.dropFirst()
+        return needed.allSatisfy(holds)
     }
 
     /// The same, from the digests a card recorded when it was written.
-    static func isFiled(card: Proposal, filed: [String: [String]], in folder: URL) -> Bool {
-        var digests: [String: String] = [:]
+    static func isFiled(card: Proposal, filed: [String: String]) -> Bool {
+        var names: [String] = [], digests: [String: String] = [:]
         for op in card.ops where op["op"] == .str("file_document") {
             guard let from = op["args"]?["from"]?.stringValue, from.hasPrefix("intake/"),
                   let digest = op["args"]?["document"]?["sha256"]?.stringValue else { return false }
-            digests[String(from.dropFirst("intake/".count))] = digest
+            let name = String(from.dropFirst("intake/".count))
+            names.append(name)
+            digests[name] = digest
         }
-        return isFiled(names: Array(digests.keys).sorted(), filed: filed, in: folder) { digests[$0] }
+        return isFiled(names: names, filed: filed) { digests[$0] }
     }
 
     /// The files of this binder's intake left out of review, as `intake/...` paths, in a stable order.

@@ -204,8 +204,7 @@ import Testing
         #expect(cards.count == 2)
         let chosen = try #require(cards.first)
         #expect(try approve(s, chosen, folder: "documents")["ok"] == .bool(true))
-        let result = s.watcher.scan(binders: rows(s), commands: s.commands, now: now)
-        #expect(result.copies == 1)
+        try card(s)
         #expect(open(s).isEmpty)
         #expect(try copies(s).count == 1)
         // Its record says why, in the card's own reason.
@@ -243,6 +242,47 @@ import Testing
         try card(s)
         #expect(open(s).count == 1)
         #expect(try copies(s).isEmpty)
+    }
+
+    /// What counts is what the filed file holds now: after an edit, a copy of the old bytes is the only one left.
+    @Test func aCopyOfWhatAFiledDocumentUsedToHoldGetsACard() throws {
+        let s = try setup()
+        try drop(s, "quote.txt")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        try Data("invented letter, edited".utf8).write(to: s.folder.appendingPathComponent("documents/quote.txt"))
+        try drop(s, "quote again.txt")
+        try card(s)
+        #expect(open(s).count == 1)
+        #expect(try copies(s).isEmpty)
+    }
+
+    /// A file added beside a filed original is not in it as far as anyone can tell, and empty files all match.
+    @Test func onlyWhatIsReallyFiledMakesACopy() throws {
+        let s = try setup()
+        try dropMail(s, "2026-03-14_1_fence", subject: "The fence")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        let mail = s.folder.appendingPathComponent("intake/mail")
+        let attachments = mail.appendingPathComponent("again attachments")
+        try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+        try Data("---\nsubject: \"The fence\"\n---\n\nRendered another way.\n".utf8).write(to: mail.appendingPathComponent("again.md"))
+        try Data("Subject: The fence\n\nInvented original of 2026-03-14_1_fence.\n".utf8)
+            .write(to: attachments.appendingPathComponent(IntakeWatcher.mailOriginalName))
+        try Data("an invented drawing added later".utf8).write(to: attachments.appendingPathComponent("drawing.txt"))
+        try card(s)
+        #expect(open(s).count == 1)
+        #expect(try copies(s).isEmpty)
+    }
+
+    @Test func emptyFilesAreNeverCopiesOfEachOther() throws {
+        let s = try setup()
+        try drop(s, "blank.txt", "")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        try drop(s, "another blank.txt", "")
+        try card(s)
+        #expect(open(s).count == 1)
     }
 
     /// A record with no digest, as an adopted binder's may be, is compared by the file itself.

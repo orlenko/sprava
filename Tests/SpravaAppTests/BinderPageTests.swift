@@ -24,6 +24,36 @@ import Testing
         #expect(DisplayLine.rows([]).isEmpty)
     }
 
+    @Test func aWithdrawnCardsDraftIsNeverDroppedWithoutAWord() async {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-1","state":"proposed","title":"File quote.txt","digest":"d1","verified":true}]}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        let actions = BinderActions(client: runtime.client)
+        let folder = URL(fileURLWithPath: "/tmp/invented-kitchen")
+        await actions.load(folder, adopted: true)
+        actions.setSaid("p-1", "It came in the post")
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.loadReview(folder)
+        #expect(actions.message?.contains("What you typed on it was not used") == true)
+        #expect(actions.message?.contains("File quote.txt") == true)
+        // Told once: the draft is gone with the card, so the next read says nothing.
+        actions.message = nil
+        await actions.loadReview(folder)
+        #expect(actions.message == nil)
+
+        // A card the person rejected themselves went because they said so.
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-2","state":"proposed","title":"File note.txt","digest":"d2","verified":true}]}"# }
+        runtime.answers["reject"] = { _ in #"{"ok":true}"# }
+        await actions.loadReview(folder)
+        actions.setSaid("p-2", "It came in the post")
+        let card = actions.cards[0]
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.reject(card, folder, reload: {})?.value
+        await actions.loadReview(folder)
+        #expect(actions.message == nil)
+    }
+
     @Test func theCopiesInIntakeBelongToTheBinderShown() async {
         let runtime = StandInRuntime()
         runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }

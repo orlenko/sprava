@@ -221,6 +221,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         do {
             let reply = try await client.command("proposals", binder: folder, timeout: 5)
             guard serves(folder) else { return }
+            let before = cards
             cards = (reply["proposals"]?.arrayValue ?? []).compactMap { p in
                 guard p["state"] == .str("proposed"), let id = p["id"]?.stringValue else { return nil }
                 var card = Card(id: id, title: p["title"]?.stringValue ?? "", actor: p["actor"]?["kind"]?.stringValue ?? "?",
@@ -238,6 +239,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                 return card
             }
             intakeCopies = (reply["intake_copies"]?.arrayValue ?? []).compactMap(\.stringValue)
+            noticeDraftsLost(from: before)
             // A reply sent before the runtime settled a card still lists it, and the card stays locked.
             settled.formIntersection(cards.map(\.id))
             let past = try await client.command("history", binder: folder, timeout: 5)
@@ -446,6 +448,20 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             return
         }
         reveal(url)
+    }
+
+    /// The runtime withdraws a card once its document is filed another way or its file changes. What the person typed
+    /// on that card has nowhere left to go, so they are told; it is never dropped without a word.
+    private func noticeDraftsLost(from before: [Card]) {
+        let gone = before.filter { old in
+            // A card the person decided is not one that went away by itself.
+            !cards.contains { $0.id == old.id } && isChangeable(old.id)
+                && (editing[old.id] != nil || folders[old.id] != nil || channels[old.id] != nil || said[old.id] != nil)
+        }
+        guard let first = gone.first else { return }
+        gone.forEach(forget)
+        let name = first.shown.heading ?? first.title
+        message = "The card for \u{201C}\(name)\u{201D} went away because its document is already filed or its file changed. What you typed on it was not used."
     }
 
     func showCopyInFinder(_ path: String, _ folder: URL) async {
