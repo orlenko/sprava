@@ -67,10 +67,16 @@ import Testing
         #expect(good.standing == .good && good.text.hasPrefix("Backed up, last run ") && good.text.contains("2"))
         backup.lines = [line(0, ago: 600), line(1, ago: 3 * 86_400)]
         #expect(backup.summary(now: now).standing == .late)
+        #expect(BackupModel.standing(of: backup.lines[1], now: now) == .late && BackupModel.standing(of: backup.lines[0], now: now) == .good)
         backup.lines = [line(0, ago: 600), line(1, ago: 8 * 86_400)]
         #expect(backup.summary(now: now).standing == .failed)
         backup.lines = [line(0, ago: 600), line(1, ago: nil, error: "invented"), line(2, ago: nil, error: "invented")]
         #expect(backup.summary(now: now) == (.failed, "2 binders' backups failed. They are named below."))
+        #expect(BackupModel.standing(of: backup.lines[1], now: now) == .failed)
+        // Backed up, but the mirror is not in iCloud: not yet a copy off this Mac.
+        backup.lines = [line(0, ago: 600)]
+        backup.upload = "not in iCloud"
+        #expect(backup.summary(now: now).standing == .late)
 
         #expect(backup.checksLabel == "Checks · no second copy yet")
         backup.secondPath = "/invented/Second"
@@ -78,6 +84,8 @@ import Testing
         backup.drillRequest = "invented-drill"
         backup.requests = [.init(id: "invented-drill", kind: "drill", state: "failed", message: "invented")]
         #expect(backup.checksLabel == "Checks · the restore drill failed")
+        backup.secondPath = nil
+        #expect(backup.checksLabel == "Checks · the restore drill failed · no second copy yet")
     }
 
     @Test func foldersAndTimesReadAsAPersonKnowsThem() {

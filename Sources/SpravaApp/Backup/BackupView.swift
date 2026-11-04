@@ -207,15 +207,28 @@ final class BackupModel: ObservableObject, RuntimePage {
             : "last run \(relative.localizedString(for: latest, relativeTo: now))"
         let age = now.timeIntervalSince(oldest)
         if age > 7 * 86_400 { return (.failed, "A binder has not been backed up for more than a week; \(ran).") }
-        if age > 48 * 3600 { return (.late, "A binder has not been backed up for two days; \(ran).") }
+        if age > 48 * 3600 { return (.late, "A binder has not been backed up for more than two days; \(ran).") }
+        // `BackupUpload.text` for a mirror outside iCloud: backed up, but not yet off this Mac.
+        if upload == "not in iCloud" {
+            return (.late, "Backed up on this Mac, \(ran), but the backup folder is not in iCloud, so it is not yet a copy off this Mac.")
+        }
         return (.good, "Backed up, \(ran).")
+    }
+
+    /// One binder's dot, with the same ages as the first line.
+    static func standing(of line: Line, now: Date = Date()) -> Standing {
+        if line.error != nil { return .failed }
+        guard let at = line.at.flatMap(ISOTime.date) else { return .waiting }
+        let age = now.timeIntervalSince(at)
+        return age > 7 * 86_400 ? .failed : age > 48 * 3600 ? .late : .good
     }
 
     /// What the closed Checks fold says on its label, so a missing second copy or a failed drill is not hidden by it.
     var checksLabel: String {
-        if drillStatus?.hasPrefix("Restore drill failed") == true { return "Checks · the restore drill failed" }
-        if secondPath == nil { return "Checks · no second copy yet" }
-        return "Checks"
+        var label = ["Checks"]
+        if drillStatus?.hasPrefix("Restore drill failed") == true { label.append("the restore drill failed") }
+        if secondPath == nil { label.append("no second copy yet") }
+        return label.joined(separator: " · ")
     }
 
     /// A folder as a person knows it: iCloud Drive by that name, and the home folder as `~`.
@@ -392,7 +405,8 @@ struct BackupView: View {
             if model.lines.isEmpty { Text("No backups yet; they start within the hour.").foregroundStyle(.secondary) }
             ForEach(model.lines) { l in
                 HStack(alignment: .firstTextBaseline) {
-                    Circle().fill(l.error != nil ? Color.red : l.at == nil ? Color.orange : Color.green).frame(width: 8, height: 8)
+                    // Grey for not yet, as on Health: a backup newly set up is not a failure.
+                    Circle().fill(Self.color(BackupModel.standing(of: l))).frame(width: 8, height: 8)
                         .accessibilityHidden(true)
                     Text(l.name)
                     Spacer()
@@ -404,7 +418,7 @@ struct BackupView: View {
         }
         DisclosureGroup(isExpanded: $model.checksOpen) {
             VStack(alignment: .leading, spacing: 16) {
-                BackupCheck("Second copy", "A second backup on another disk or folder. Offloading a binder needs one.") {
+                BackupCheck("Second copy", "A second backup on an external disk, or in another cloud service's folder, not iCloud. Offloading a binder needs one.") {
                     HStack(alignment: .firstTextBaseline) {
                         Text(model.secondPath.map { BackupModel.shown(path: $0) } ?? "not set")
                             .foregroundStyle(model.secondPath == nil ? NoticeLevel.needsYou.color : .secondary).lineLimit(1).truncationMode(.middle)
@@ -415,13 +429,15 @@ struct BackupView: View {
                     }
                 }
                 BackupCheck("Restore drill", "Restores one binder into a temporary folder and compares it, to prove the backup opens. "
-                    + "Last run: \(BackupModel.shown(time: model.lastDrill) ?? "never").") { drill }
-                BackupCheck("Backup check", "Sprava checks the backup itself now and then. "
-                    + "Last check: \(BackupModel.shown(time: model.lastCheck) ?? "not yet").") { EmptyView() }
+                    + "Last passed: \(BackupModel.shown(time: model.lastDrill) ?? "never").") { drill }
+                BackupCheck("Backup check", "Every week Sprava checks that the backup is whole, and each month it reads part of it back. "
+                    + "Last passed: \(BackupModel.shown(time: model.lastCheck) ?? "not yet").") { EmptyView() }
             }
             .padding(.top, 8)
         } label: {
-            Text(model.checksLabel).font(.headline)
+            // The words open and close the fold too, not only the chevron.
+            Text(model.checksLabel).font(.headline).contentShape(Rectangle())
+                .onTapGesture { withAnimation { model.checksOpen.toggle() } }
         }
     }
 
