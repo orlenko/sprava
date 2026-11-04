@@ -125,7 +125,7 @@ public enum Doctor {
         for (key, record) in records.jobs.sorted(by: { $0.key < $1.key }) where record.breaker == "open" {
             out.append(Finding(level: .fix, binder: nil, text: "the \(key) job keeps failing and is paused (\(record.lastErrorCode ?? "error"))",
                                next: key == "backup"
-                                   ? "Sprava tries it again by itself after a pause; Backup Settings says what went wrong and asks for the key if it is needed."
+                                   ? "Sprava tries it again by itself after a pause. Backup Settings shows each binder's backup, and asks for the key if it is missing."
                                    : "Sprava tries it again by itself after a pause; there is nothing to do in the app."))
         }
         // Captures waiting too long (mvp.md 1.2, currency).
