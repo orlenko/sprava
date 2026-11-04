@@ -175,8 +175,8 @@ import Testing
     }
 
     @Test func theLineAboutCopiesSaysNothingWasDeleted() {
-        #expect(CardReview.copiesLine(1).hasPrefix("1 file in intake is an exact copy"))
-        #expect(CardReview.copiesLine(12).hasPrefix("12 files in intake are exact copies"))
+        #expect(CardReview.copiesLine(1).hasPrefix("1 file in intake is already filed, as an exact copy or the same email"))
+        #expect(CardReview.copiesLine(12).hasPrefix("12 files in intake are already filed, as exact copies or the same emails"))
         #expect(CardReview.copiesLine(12).contains("nothing was deleted"))
     }
 
