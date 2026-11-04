@@ -48,6 +48,8 @@ final class BackupModel: ObservableObject, RuntimePage {
     @Published var drillBinder: URL?
     @Published var drillRequest: String?
     @Published private(set) var drillSending = false
+    /// Whether the Checks fold (second copy, restore drill, last check) is open.
+    @Published var checksOpen = false
     var readFoundNoRuntime = false
     let client: RuntimeClient
 
@@ -187,6 +189,48 @@ final class BackupModel: ObservableObject, RuntimePage {
         }
     }
 
+    /// The page's first line (decisions.md D37): how the backups stand, in one sentence. The ages match Health's dots:
+    /// late after 48 hours, failed after 7 days (architecture 3.4).
+    enum Standing: Equatable { case good, waiting, late, failed }
+
+    func summary(now: Date = Date()) -> (standing: Standing, text: String) {
+        let failed = lines.filter { $0.error != nil }.count
+        if failed == 1 { return (.failed, "A binder's backup failed. It is named below.") }
+        if failed > 1 { return (.failed, "\(failed) binders' backups failed. They are named below.") }
+        let times = lines.compactMap { $0.at.flatMap(ISOTime.date) }
+        guard let latest = times.max(), let oldest = times.min() else {
+            return (.waiting, "Set up. The first backups start within the hour.")
+        }
+        let relative = RelativeDateTimeFormatter()
+        relative.unitsStyle = .short
+        let ran = now.timeIntervalSince(latest) < 60 ? "last run just now"
+            : "last run \(relative.localizedString(for: latest, relativeTo: now))"
+        let age = now.timeIntervalSince(oldest)
+        if age > 7 * 86_400 { return (.failed, "A binder has not been backed up for more than a week; \(ran).") }
+        if age > 48 * 3600 { return (.late, "A binder has not been backed up for more than two days; \(ran).") }
+        // `BackupUpload.text` for a mirror outside iCloud: backed up, but not yet off this Mac.
+        if upload == "not in iCloud" {
+            return (.late, "Backed up on this Mac, \(ran), but the backup folder is not in iCloud, so it is not yet a copy off this Mac.")
+        }
+        return (.good, "Backed up, \(ran).")
+    }
+
+    /// One binder's dot, with the same ages as the first line.
+    static func standing(of line: Line, now: Date = Date()) -> Standing {
+        if line.error != nil { return .failed }
+        guard let at = line.at.flatMap(ISOTime.date) else { return .waiting }
+        let age = now.timeIntervalSince(at)
+        return age > 7 * 86_400 ? .failed : age > 48 * 3600 ? .late : .good
+    }
+
+    /// What the closed Checks fold says on its label, so a missing second copy or a failed drill is not hidden by it.
+    var checksLabel: String {
+        var label = ["Checks"]
+        if drillStatus?.hasPrefix("Restore drill failed") == true { label.append("the restore drill failed") }
+        if secondPath == nil { label.append("no second copy yet") }
+        return label.joined(separator: " · ")
+    }
+
     /// A folder as a person knows it: iCloud Drive by that name, and the home folder as `~`.
     static func shown(path: String, home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
         let root = home.hasSuffix("/") ? String(home.dropLast()) : home
@@ -311,7 +355,7 @@ struct BackupView: View {
     /// Restores one binder from the mirror into a temporary folder and compares it (docs/backup.md §8).
     @ViewBuilder var drill: some View {
         let chosen = model.drillBinder ?? drillable.first?.folder
-        BackupRow("Restore drill") {
+        HStack(alignment: .firstTextBaseline) {
             if drillable.isEmpty {
                 Text("No binder here to restore yet.").foregroundStyle(.secondary)
             } else {
@@ -338,42 +382,98 @@ struct BackupView: View {
         }
     }
 
+    /// One line that says how the backups stand, the binders, then the checks behind them, closed until wanted.
     @ViewBuilder var status: some View {
         if model.iCloudKeychainUnchecked {
             Text("iCloud Keychain is unavailable in this development build, so Sprava could not check it for a backup key an earlier Sprava build kept there. Only that build can remove such a copy.")
                 .font(.caption).foregroundStyle(.orange)
         }
-        BackupGroup("Backup") {
-            BackupRow("Backup folder") {
-                Text(BackupModel.shown(path: model.primary)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(model.primary)
+        let summary = model.summary()
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: Self.symbol(summary.standing)).foregroundStyle(Self.color(summary.standing))
+                    .accessibilityHidden(true)
+                Text(summary.text).font(.headline).fixedSize(horizontal: false, vertical: true)
             }
-            BackupRow("iCloud") { Text(model.upload ?? "not checked yet").foregroundStyle(.secondary) }
-            BackupRow("Last check") { Text(BackupModel.shown(time: model.lastCheck) ?? "not yet").foregroundStyle(.secondary) }
-            BackupRow("Last restore drill") { Text(BackupModel.shown(time: model.lastDrill) ?? "never").foregroundStyle(.secondary) }
-            BackupRow("Second backup") {
-                HStack {
-                    Text(model.secondPath.map { BackupModel.shown(path: $0) } ?? "not set; offloading needs one")
-                        .foregroundStyle(model.secondPath == nil ? .orange : .secondary).lineLimit(1).truncationMode(.middle)
-                        .help(model.secondPath ?? "")
-                    Button(model.secondPath == nil ? "Choose…" : "Change…") {
-                        if let p = BackupModel.chooseFolder(prompt: "Use for the Second Backup") { Task { await model.setSecond(p) } }
-                    }
-                }
+            HStack(alignment: .firstTextBaseline) {
+                Text("Encrypted, in \(BackupModel.shown(path: model.primary)) · iCloud: \(model.upload ?? "not checked yet")")
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(model.primary)
             }
-            drill
             if model.working { ProgressView().controlSize(.small) }
         }
         BackupGroup("Binders") {
             if model.lines.isEmpty { Text("No backups yet; they start within the hour.").foregroundStyle(.secondary) }
             ForEach(model.lines) { l in
                 HStack(alignment: .firstTextBaseline) {
-                    Circle().fill(l.error != nil ? Color.red : l.at == nil ? Color.orange : Color.green).frame(width: 8, height: 8)
+                    // Grey for not yet, as on Health: a backup newly set up is not a failure.
+                    Circle().fill(Self.color(BackupModel.standing(of: l))).frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
                     Text(l.name)
                     Spacer()
                     Text(l.error ?? BackupModel.shown(time: l.at).map { "last backup \($0)" } ?? "not yet")
                         .foregroundStyle(.secondary).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
                 }
+                .accessibilityElement(children: .combine)
             }
+        }
+        DisclosureGroup(isExpanded: $model.checksOpen) {
+            VStack(alignment: .leading, spacing: 16) {
+                BackupCheck("Second copy", "A second backup on an external disk, or in another cloud service's folder, not iCloud. Offloading a binder needs one.") {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(model.secondPath.map { BackupModel.shown(path: $0) } ?? "not set")
+                            .foregroundStyle(model.secondPath == nil ? NoticeLevel.needsYou.color : .secondary).lineLimit(1).truncationMode(.middle)
+                            .help(model.secondPath ?? "")
+                        Button(model.secondPath == nil ? "Choose…" : "Change…") {
+                            if let p = BackupModel.chooseFolder(prompt: "Use for the Second Backup") { Task { await model.setSecond(p) } }
+                        }
+                    }
+                }
+                BackupCheck("Restore drill", "Restores one binder into a temporary folder and compares it, to prove the backup opens. "
+                    + "Last passed: \(BackupModel.shown(time: model.lastDrill) ?? "never").") { drill }
+                BackupCheck("Backup check", "Every week Sprava checks that the backup is whole, and each month it reads part of it back. "
+                    + "Last passed: \(BackupModel.shown(time: model.lastCheck) ?? "not yet").") { EmptyView() }
+            }
+            .padding(.top, 8)
+        } label: {
+            // The words open and close the fold too, not only the chevron.
+            Text(model.checksLabel).font(.headline).contentShape(Rectangle())
+                .onTapGesture { withAnimation { model.checksOpen.toggle() } }
+        }
+    }
+
+    static func symbol(_ standing: BackupModel.Standing) -> String {
+        switch standing {
+        case .good: "checkmark.circle.fill"
+        case .waiting: "clock.fill"
+        case .late: "exclamationmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        }
+    }
+
+    static func color(_ standing: BackupModel.Standing) -> Color {
+        switch standing {
+        case .good: .green
+        case .waiting: .secondary
+        case .late: NoticeLevel.needsYou.color
+        case .failed: NoticeLevel.broken.color
+        }
+    }
+}
+
+/// One check in the fold: its name, one sentence about it, and its controls.
+private struct BackupCheck<Content: View>: View {
+    let title: String
+    let sentence: String
+    @ViewBuilder let content: Content
+    init(_ title: String, _ sentence: String, @ViewBuilder content: () -> Content) {
+        self.title = title; self.sentence = sentence; self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).fontWeight(.semibold)
+            Text(sentence).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            content
         }
     }
 }
