@@ -111,6 +111,12 @@ What changes inside Sprava:
   certificate.
 - The password is read from the Keychain; nothing is read from `.env`.
 
+Mail the person wrote (issue #594): what it asks is for others to do. The person's own addresses are the account
+names of their email connections that are addresses, across all binders. A message whose From is one of them, sent to someone else, is
+read and filed as any other, but the clerk proposes no to-dos from it, adds no reply item and asks for no careful
+reading; its card says "You wrote this to …, so no to-dos are proposed from it." A note the person mailed only to
+themselves, or with no To, is read as before.
+
 Implementation: a Swift port inside the runtime, reusing `imap-extract`'s logic and tests (about 800 lines of
 Rust in `orlenko/homebrew-tap`), rather than running the binary as a subprocess. The binary writes in place,
 drops the original message and keeps its own `.env` and `state.json`, all of which this design replaces.
