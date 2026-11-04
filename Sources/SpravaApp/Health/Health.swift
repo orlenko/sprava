@@ -31,6 +31,8 @@ final class HealthModel: ObservableObject {
     var lastWatcherRepair: Date?
     var watcherRepair: Task<Void, Never>?
     @Published var watcherRepairFailure: String?
+    /// Whether Health's Details for support is open; its notice opens it.
+    @Published var supportOpen = false
     /// Starts the runtime without asking (decisions.md A19). While it starts, launchd can take several seconds, and
     /// that wait is shown as "starting", not as a failure.
     let keeper: RuntimeKeeper
@@ -139,7 +141,7 @@ final class HealthModel: ObservableObject {
     var connectionProblem: String? {
         guard !starting, let connectionPresence, connectionPresence != .answers else { return nil }
         if beatGrade == .green {
-            return "The background process is alive, but Sprava cannot connect to it. Restart it below; if this continues, open Health."
+            return "Sprava's background part is running, but the app cannot connect to it. Restart it; if this continues, copy Details for support from Health."
         }
         return nil
     }
@@ -184,79 +186,113 @@ extension HealthGrade {
     }
 }
 
+/// Health in plain words (decisions.md D37): the notice first when something is wrong, then each part with what to do
+/// about it beside it. Process ids, builds, codes and timings stay whole under a closed Details for support.
 struct HealthView: View {
     @ObservedObject var model: HealthModel
     var openBackup: () -> Void = {}
 
+    static let supportID = "support"
+    /// The notice's tuned colours, readable as text on a light page as well as a dark one.
+    static let needsYou = NoticeLevel.needsYou.color
+    static let broken = NoticeLevel.broken.color
+
     var body: some View {
-        List {
-            Section("Runtime") { runtimeLines }
-            if case .success(let beat) = model.heartbeat {
-                Section("Jobs") {
-                    ForEach(beat.jobs.keys.sorted(), id: \.self) { key in
-                        JobLine(key: key, job: beat.jobs[key]!, beat: beat, lastWake: model.lastWake, now: model.now)
+        ScrollViewReader { scroller in
+            List {
+                if model.notice != nil {
+                    RuntimeBanner(health: model, inset: false, details: {
+                        model.supportOpen = true
+                        withAnimation { scroller.scrollTo(Self.supportID, anchor: .top) }
+                    })
+                    .listRowSeparator(.hidden)
+                }
+                Section("Sprava's background part") { runtimeLines }
+                if case .success(let beat) = model.heartbeat {
+                    Section("Background jobs") {
+                        ForEach(beat.jobs.keys.sorted(), id: \.self) { key in
+                            JobLine(key: key, job: beat.jobs[key]!, beat: beat, lastWake: model.lastWake, now: model.now,
+                                    restart: model.runtimeStatus == .enabled && model.beatGrade == .green && !model.starting
+                                        ? { model.restart() } : nil)
+                        }
+                    }
+                    Section("Apple Intelligence") { clerkLine(beat) }
+                    Section("Notifications") { alertsLine(beat) }
+                }
+                Section("Backup") {
+                    Button("Open Backup Settings", action: openBackup).buttonStyle(.link)
+                    if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(Self.broken) }
+                    else if !model.backupConfigured { Text("Backup is not set up.").foregroundStyle(Self.needsYou) }
+                    else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
+                    ForEach(HealthLine.rows("backup", model.backups)) { line in
+                        let b = line.value
+                        HStack {
+                            Circle().fill(model.grade(b).color).frame(width: 8, height: 8)
+                            Text(b.name)
+                            Spacer()
+                            Text(b.error ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
+                                .foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
                 }
-                Section("The clerk") { clerkLine(beat) }
-                Section("Alerts") { alertsLine(beat) }
-            }
-            Section("Backup") {
-                Button("Open Backup Settings", action: openBackup).buttonStyle(.link)
-                if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(.red) }
-                else if !model.backupConfigured { Text("Backup is not set up.").foregroundStyle(.orange) }
-                else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
-                ForEach(HealthLine.rows("backup", model.backups)) { line in
-                    let b = line.value
-                    HStack {
-                        Circle().fill(model.grade(b).color).frame(width: 8, height: 8)
-                        Text(b.name)
-                        Spacer()
-                        Text(b.error ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
-                            .foregroundStyle(.secondary).lineLimit(1)
+                Section("Checks") {
+                    if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(Self.broken) }
+                    else if model.findings.isEmpty { Text("Nothing to fix.").foregroundStyle(.secondary) }
+                    ForEach(HealthLine.rows("doctor", model.findings)) { line in
+                        let f = line.value
+                        HStack(alignment: .top) {
+                            Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
+                                .foregroundStyle(f.level == .fix ? Self.needsYou : .secondary).frame(width: 34, alignment: .leading)
+                            Text(f.sentence)
+                        }
                     }
                 }
-            }
-            Section("Doctor") {
-                if let error = model.deviceIDError { Text("This Mac's device id cannot be read: \(error)").foregroundStyle(.red) }
-                else if model.findings.isEmpty { Text("No findings.").foregroundStyle(.secondary) }
-                ForEach(HealthLine.rows("doctor", model.findings)) { line in
-                    let f = line.value
-                    HStack(alignment: .top) {
-                        Text(f.level == .fix ? "Fix" : "Note").font(.caption.bold())
-                            .foregroundStyle(f.level == .fix ? .orange : .secondary).frame(width: 34, alignment: .leading)
-                        Text(f.sentence)
-                    }
+                Section {
+                    DisclosureGroup("Details for support", isExpanded: $model.supportOpen) { support }
+                        .id(Self.supportID)
                 }
-            }
-            if let watch = model.watchRecord {
-                Section("Outside watcher") { Text(watch).font(.caption.monospaced()).foregroundStyle(.secondary) }
             }
         }
         // The Shelf re-reads health every ten seconds whichever page is open; opening the page reads it at once.
         .onAppear { model.refresh() }
     }
 
+    var supportText: String {
+        SupportDetails.text(heartbeat: model.heartbeat, registration: SupportDetails.registration(model.runtimeStatus),
+                            startsToday: model.startsToday, refusals: model.refusals, watchRecord: model.watchRecord,
+                            problems: model.supportProblems)
+    }
+
+    @ViewBuilder var support: some View {
+        let text = supportText
+        VStack(alignment: .leading, spacing: 8) {
+            Text("For someone helping you with a problem.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: text).font(.caption.monospaced()).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Copy Details") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+
     @ViewBuilder var runtimeLines: some View {
         let grade = model.beatGrade
         HStack {
             Circle().fill(model.statusGrade.color).frame(width: 10, height: 10)
-            VStack(alignment: .leading) {
-                Text(statusText(grade)).font(.headline)
-                if case .success(let beat) = model.heartbeat {
-                    Text("pid \(beat.pid) · build \(beat.build) · restarts today \(max(beat.restarts_today ?? 0, model.startsToday - 1))"
-                        + (beat.lease.duplicates_refused_today > 0
-                            ? " · duplicate starts refused \(beat.lease.duplicates_refused_today)" : ""))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            Text(statusText(grade)).font(.headline)
             Spacer()
             buttons(grade)
         }
-        if let stale = model.staleRuntimeBuild { Text(stale).foregroundStyle(.orange) }
-        if let failure = model.watcherRepairFailure { Text(failure).foregroundStyle(.orange) }
-        if let failure = model.startFailure, failure != model.locationProblem { Text(failure).foregroundStyle(.orange) }
-        if let problem = model.locationProblem { Text(problem).foregroundStyle(.orange) }
-        ForEach(HealthLine.rows("refusal", model.refusals)) { Text($0.value).font(.caption.monospaced()).foregroundStyle(.secondary) }
+        if let stale = model.staleRuntimeBuild { Text(stale).foregroundStyle(Self.needsYou) }
+        if let failure = model.watcherRepairFailure { Text(failure).foregroundStyle(Self.needsYou) }
+        if let failure = model.startFailure, failure != model.locationProblem, model.notice?.title != failure {
+            Text(failure).foregroundStyle(Self.needsYou)
+        }
+        if let problem = model.locationProblem, model.notice?.title != problem { Text(problem).foregroundStyle(Self.needsYou) }
     }
 
     func statusText(_ grade: HealthGrade) -> String {
@@ -264,9 +300,9 @@ struct HealthView: View {
         switch model.runtimeStatus {
         case .notRegistered, .notFound:
             if case .success = model.heartbeat, grade == .green {
-                return "A runtime is running that launchd did not start (a development run)"
+                return "Running, started by hand rather than by macOS (a development run)"
             }
-            return model.starting ? "Starting background work…" : "Background work is not running"
+            return model.starting ? "Starting…" : "Not running"
         case .requiresApproval:
             return "Waiting for your approval in System Settings › General › Login Items"
         case .enabled:
@@ -274,49 +310,51 @@ struct HealthView: View {
         @unknown default:
             break
         }
-        if model.starting { return "Starting… (launchd can take up to a minute)" }
+        if model.starting { return "Starting… (this can take up to a minute)" }
         guard case .success(let beat) = model.heartbeat, let beatAt = ISOTime.date(beat.beat_at) else {
-            if case .failure(.invalid) = model.heartbeat { return "Health data unreadable" }
-            return "Runtime has not started yet"
+            if case .failure(.invalid) = model.heartbeat { return "Its status cannot be read" }
+            return "Not started yet"
         }
         let age = Int(model.now.timeIntervalSince(beatAt))
         switch grade {
-        case .green: return "Runtime running · last heartbeat \(age) s ago"
+        case .green: return age < 5 ? "Running · checked just now" : "Running · last checked \(age) s ago"
         case .waking: return "Waking up"
-        case .amber: return "The runtime may be stuck · last heartbeat \(age / 60) min ago"
+        case .amber: return "May be stuck · no sign of life for \(age / 60) min"
         case .red:
             if !ProcessCheck.isAlive(pid: beat.pid, startedAt: ISOTime.date(beat.started_at)) {
-                return "Runtime stopped · last seen \(age / 60) min ago"
+                return "Stopped · last seen \(age / 60) min ago"
             }
-            return "Runtime not answering (pid \(beat.pid)) · last heartbeat \(age / 60) min ago"
+            return "Not answering · no sign of life for \(age / 60) min"
         case .unknown: return "Unknown"
         }
     }
 
+    /// The fix beside the line it fixes, unless the notice above already offers the same button.
     @ViewBuilder func buttons(_ grade: HealthGrade) -> some View {
+        let notice = model.notice
         // Background work is not optional (decisions.md A19): there is no Turn Off, and the app starts it by itself.
         switch model.runtimeStatus {
         case .requiresApproval:
-            Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+            if notice?.loginItems != true { Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() } }
         case .enabled:
             if (grade == .red || grade == .amber || model.startFailure != nil || model.connectionProblem != nil
-                || model.staleRuntimeBuild != nil) && !model.starting {
+                || model.staleRuntimeBuild != nil) && !model.starting && notice?.restart != true {
                 Button("Restart") { model.restart() }
             }
         default:
-            if !model.starting && model.statusGrade != .green { Button("Restart") { model.restart() } }
+            if !model.starting && model.statusGrade != .green && notice?.restart != true { Button("Restart") { model.restart() } }
         }
     }
 
     @ViewBuilder func clerkLine(_ beat: Heartbeat) -> some View {
         if let m = beat.model {
             let words: [String: String] = [
-                "available": "Apple Intelligence model available",
-                "deviceNotEligible": "This Mac cannot run Apple Intelligence",
-                "appleIntelligenceNotEnabled": "Apple Intelligence is off in System Settings",
-                "modelNotReady": "The model is still downloading",
+                "available": "Available on this Mac",
+                "deviceNotEligible": "This Mac cannot run Apple Intelligence. Notes still become cards, with less help.",
+                "appleIntelligenceNotEnabled": "Off. Notes still become cards, with less help; turn it on in System Settings › Apple Intelligence & Siri for more.",
+                "modelNotReady": "Still downloading. Notes still become cards meanwhile, with less help.",
             ]
-            Text((words[m.availability] ?? m.availability) + (m.context_size.map { " · context \($0) tokens" } ?? ""))
+            Text(words[m.availability] ?? m.availability)
         } else {
             Text("Not checked yet").foregroundStyle(.secondary)
         }
@@ -324,9 +362,10 @@ struct HealthView: View {
 
     @ViewBuilder func alertsLine(_ beat: Heartbeat) -> some View {
         if let alerts = beat.alerts, alerts.authorized {
-            Text("Notifications allowed")
+            Text("Allowed")
         } else {
-            Text("Alerts are off: Sprava cannot warn you when it stops").foregroundStyle(.red)
+            Text("Off, so Sprava cannot warn you when something stops. Turn them on in System Settings › Notifications › Sprava.")
+                .foregroundStyle(Self.broken)
         }
     }
 }
@@ -372,76 +411,62 @@ struct HealthStatusLine: View {
     }
 }
 
-/// The binder page's line for runtime trouble the app cannot fix alone (decisions.md A19): the Login Items approval
-/// only the person can give, or why starting failed. Nothing is opened for the person; the button is theirs to press.
+/// The line for runtime trouble the app cannot fix alone (decisions.md A19), above every page and first on Health: the
+/// Login Items approval only the person can give, or why starting failed. Nothing is opened for the person; the button
+/// is theirs to press. On Health it offers the support details in place of a way to Health.
 struct RuntimeBanner: View {
     @ObservedObject var health: HealthModel
     var openHealth: (() -> Void)? = nil
+    var inset = true
+    var details: (() -> Void)? = nil
 
     var body: some View {
-        if health.keeper.launching {
-            // The starting screen, or the Health page, shows the launch's start.
-            EmptyView()
-        } else if health.starting {
-            Notice(level: .info, title: "Starting Sprava's background part…", detail: "Binder creation waits until it can answer.")
-                .padding([.horizontal, .top], 16)
-        } else if health.runtimeStatus == .requiresApproval || health.keeper.state == .needsApproval {
-            Notice(level: .needsYou, title: "Sprava's background part is waiting for your approval.",
-                   detail: "Approve it in System Settings › General › Login Items. Changes wait until then.") {
-                Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+        if let notice = health.notice {
+            Notice(level: notice.level, title: notice.title, detail: notice.detail) {
+                if notice.loginItems { Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() } }
+                if notice.restart {
+                    Button("Restart") { health.restart() }.accessibilityLabel("Restart Sprava's background part")
+                }
+                if notice.level == .broken {
+                    if let openHealth { Button("Open Health", action: openHealth) }
+                    if let details { Button("Details for Support", action: details) }
+                }
             }
-            .padding([.horizontal, .top], 16)
-        } else if let failure = health.connectionProblem ?? health.startFailure {
-            Notice(level: .broken, title: failure) {
-                Button("Restart") { health.restart() }.disabled(health.starting)
-                if let openHealth { Button("Open Health", action: openHealth) }
-            }
-            .padding([.horizontal, .top], 16)
-        } else if health.summary.level == .trouble, let sentence = health.summary.sentence {
-            Notice(level: .broken, title: sentence, detail: health.summary.detail) {
-                if health.summary.restartHelps { Button("Restart") { health.restart() } }
-                if let openHealth { Button("Open Health", action: openHealth) }
-            }
-            .padding([.horizontal, .top], 16)
+            .padding(inset ? [.horizontal, .top] : [], 16)
         }
     }
 }
 
+/// One background job in plain words; its fix beside it when restarting is what helps.
 struct JobLine: View {
     let key: String
     let job: Heartbeat.Job
     let beat: Heartbeat
     let lastWake: Date?
     let now: Date
+    var restart: (() -> Void)? = nil
 
     var body: some View {
         let started = ISOTime.date(beat.started_at) ?? now
         let wake = [lastWake, ISOTime.date(beat.last_wake_at)].compactMap { $0 }.max()
         let grade = HealthGrade.job(job, key: key, startedAt: started, lastWake: wake, now: now)
-        HStack {
+        let words = JobWords.of(job, key: key, grade: grade, now: now)
+        HStack(alignment: .firstTextBaseline) {
             Circle().fill(grade.color).frame(width: 8, height: 8)
-            Text(key).font(.body.monospaced()).frame(width: 120, alignment: .leading)
-            Text(detail).foregroundStyle(.secondary)
-            Spacer()
-            if let median = job.median_ms {
-                Text("median \(median) ms · slowest \(job.slowest_of_twenty_ms ?? median) ms")
-                    .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(words.name)
+                    Spacer()
+                    Text(words.lastRan).foregroundStyle(.secondary)
+                }
+                if let problem = words.problem {
+                    Text(problem).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            if words.restartHelps, let restart {
+                Button("Restart", action: restart).controlSize(.small).accessibilityLabel("Restart Sprava's background part")
             }
         }
-    }
-
-    var detail: String {
-        var parts: [String] = [job.last_outcome]
-        if let success = ISOTime.date(job.last_success) {
-            parts.append("last success \(success.formatted(.relative(presentation: .named)))")
-        } else {
-            parts.append("no success yet")
-        }
-        if job.breaker != "closed" { parts.append("breaker \(job.breaker.replacingOccurrences(of: "_", with: "-"))") }
-        if job.wedged { parts.append("wedged") }
-        if let error = job.last_error, job.consecutive_failures > 0 {
-            parts.append("\(error.code)" + (error.culprit.map { ": \($0)" } ?? ""))
-        }
-        return parts.joined(separator: " · ")
     }
 }
