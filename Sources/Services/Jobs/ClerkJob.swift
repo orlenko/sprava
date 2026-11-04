@@ -41,6 +41,8 @@ public enum ClerkJob {
         }
         // Then intake documents (adaptation-layer §4.2, §4.3), started within the same budget.
         let watcher = IntakeWatcher(support: context.support)
+        // The person's own addresses, from every binder's email connection: mail from them proposes no to-dos.
+        let ownAddresses = ownAddresses(context.support)
         while clock().timeIntervalSince(started) < budget {
             do { _ = try filingList.read() }
             catch { return (.error(code: "filing_list_unreadable", culprit: nil), read) }
@@ -55,7 +57,8 @@ public enum ClerkJob {
                 }
             let t0 = clock()
             let locale = IntakeReading.language(of: entry.reading.text)
-            let doc = waitFor { await Clerk(model: model).readDocument(entry.reading, name: entry.name, binder: binder, locale: locale) }
+            let doc = waitFor { await Clerk(model: model).readDocument(entry.reading, name: entry.name, binder: binder, locale: locale,
+                                                                  ownAddresses: ownAddresses) }
             let seconds = clock().timeIntervalSince(t0)
             if doc.title == nil && doc.summary == nil && doc.items.isEmpty {
                 context.onCommandQueue { watcher.failReading(entry) }
@@ -67,6 +70,14 @@ public enum ClerkJob {
             read += 1
         }
         return (.ok, read)
+    }
+
+    /// The person's own addresses: each email connection's account name that is an address, across all binders.
+    /// Empty when no connection was ever made or the connections cannot be read.
+    static func ownAddresses(_ support: URL) -> Set<String> {
+        guard FileManager.default.fileExists(atPath: support.appendingPathComponent("capture/imap.sqlite").path),
+              let all = try? BinderIMAPConnections(support: support).enabled() else { return [] }
+        return Set(all.compactMap { MailAddress.single($0.account.user) })
     }
 
     /// The developer switch that lifts the model gate; read without following a link.

@@ -26,6 +26,10 @@ public struct DocumentReading: Sendable {
     public var failure: String?
     /// Why a careful reading by a smarter model is recommended (§4.4); empty when it is not.
     public var escalate: [String] = []
+    /// The person wrote it: its From is one of their own addresses, so nothing in it is proposed as their to-do.
+    public var fromPerson = false
+    /// Whom they wrote to, as bare addresses, when `fromPerson`.
+    public var wroteTo: [String] = []
 
     public var json: JSONObject {
         var o = JSONObject([(key: "id", value: .string(id)), (key: "model", value: .string(model)),
@@ -36,6 +40,10 @@ public struct DocumentReading: Sendable {
         o.set("reply_needed", .bool(replyNeeded))
         o.set("items", .int(items.count))
         if let modelClass { o.set("model_class", .string(modelClass)) }
+        if fromPerson {
+            o.set("from_person", .bool(true))
+            o.set("wrote_to", .array(wroteTo.map(JSONValue.string)))
+        }
         if let failure { o.set("failure", .string(failure)) }
         if dropped > 0 { o.set("dropped_items", .int(dropped)) }
         if unread > 0 { o.set("unread_windows", .int(unread)) }
@@ -152,9 +160,10 @@ extension Clerk {
         return head + "\nThe document begins:\n" + start
     }
 
-    /// Reads one document. `binder` is the binder it sits in, for the duplicate check.
+    /// Reads one document. `binder` is the binder it sits in, for the duplicate check. `ownAddresses` are the person's
+    /// own email addresses: mail from one of them is filed with no to-dos (issue #594).
     public func readDocument(_ reading: IntakeReading, name: String, binder: FilingBinder?, locale rawLocale: String = "und",
-                             now: Date = Date()) async -> DocumentReading {
+                             ownAddresses: Set<String> = [], now: Date = Date()) async -> DocumentReading {
         var doc = DocumentReading(id: UUIDv7.make(now: now), model: model.name)
         let text = reading.text
         let locale = rawLocale.wholeMatch(of: /[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,4}/) != nil ? rawLocale : "und"
@@ -215,6 +224,22 @@ extension Clerk {
             doc.replyNeeded = answer["reply_needed"] == .bool(true)
         } else {
             doc.outcome = "partial"
+        }
+        // Mail the person wrote to someone else asks things of others, never of them: no item, no reply added by code
+        // and no careful reading, which would only find the same requests. It is filed as any other (issue #594). A note
+        // the person mailed only to themselves is read as before: its requests are theirs.
+        let own = Set(ownAddresses.map { $0.lowercased() })
+        let recipients = reading.to.map { MailAddress.bare(in: $0) } ?? []
+        if let from = reading.from.flatMap({ MailAddress.bare(in: $0).first }), own.contains(from),
+           recipients.contains(where: { !own.contains($0) }) {
+            doc.fromPerson = true
+            doc.wroteTo = Array(recipients.prefix(20))
+            doc.replyNeeded = false
+            // The card shows the summary first, so it says why the card proposes nothing, and to whom it was written.
+            let named = doc.wroteTo.prefix(3).joined(separator: ", ") + (doc.wroteTo.count > 3 ? " and \(doc.wroteTo.count - 3) more" : "")
+            let line = "You wrote this\(named.isEmpty ? "" : " to " + named), so no to-dos are proposed from it."
+            doc.summary = doc.summary.map { line + " " + $0 } ?? line
+            return doc
         }
 
         // §4.3: what it asks, window by window. Relative dates are read from the document's own date.
