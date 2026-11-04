@@ -51,7 +51,16 @@ import Testing
         runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
         await actions.reject(card, folder, reload: {})?.value
         await actions.loadReview(folder)
+        await actions.loadReview(folder)
         #expect(actions.message == nil)
+        // A card withdrawn while another binder was shown still says so on coming back.
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-3","state":"proposed","title":"File plan.txt","digest":"d3","verified":true}]}"# }
+        await actions.loadReview(folder)
+        actions.setSaid("p-3", "It came in the post")
+        await actions.load(URL(fileURLWithPath: "/tmp/invented-garden"), adopted: true)
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[]}"# }
+        await actions.load(folder, adopted: true)
+        #expect(actions.message?.contains("What you typed on it was not used") == true)
     }
 
     @Test func theCopiesInIntakeBelongToTheBinderShown() async {

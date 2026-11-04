@@ -31,15 +31,19 @@ extension IntakeWatcher {
     }
 
     /// Whether a thing in intake is already filed: every file it would file. A message's text may be rendered another
-    /// way, so with its original filed its text does not count; a file added beside them still does. `names` are relative
-    /// to `intake/`, the message or file first. A key or credential file is never read, so it never decides.
+    /// way, so with its original filed that text does not count; any other file beside them still does. `names` are
+    /// relative to `intake/`. A key or credential file is never read, so it never decides.
     static func isFiled(names: [String], filed: [String: String], digest: (String) -> String?) -> Bool {
         let fileable = names.filter { !DocumentPaths.isKeyFile($0) }
-        guard let first = fileable.first else { return false }
+        guard !fileable.isEmpty else { return false }
         func holds(_ name: String) -> Bool { digest(name).map { filed[$0] != nil } ?? false }
-        let original = fileable.dropFirst().first { ($0 as NSString).lastPathComponent == mailOriginalName }
-        let needed = original.map(holds) == true ? Array(fileable.dropFirst()) : [first] + fileable.dropFirst()
-        return needed.allSatisfy(holds)
+        // `mail/x attachments/000-original-message.eml` is the original of `mail/x.md`, and of nothing else.
+        let folder = fileable.first { ($0 as NSString).lastPathComponent == mailOriginalName && holds($0) }
+            .map { ($0 as NSString).deletingLastPathComponent }
+        return fileable.allSatisfy { name in
+            let text = (name as NSString).deletingPathExtension + " attachments"
+            return text == folder || holds(name)
+        }
     }
 
     /// The same, from the digests a card recorded when it was written.

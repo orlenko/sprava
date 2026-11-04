@@ -275,6 +275,24 @@ import Testing
         #expect(try copies(s).isEmpty)
     }
 
+    /// With the message itself a key file, nothing in the folder is excused because its original is filed.
+    @Test func anOriginalExcusesOnlyItsOwnMessage() throws {
+        let s = try setup()
+        try dropMail(s, "2026-03-14_1_fence", subject: "The fence")
+        try card(s)
+        #expect(try approve(s, try #require(open(s).first), folder: "documents")["ok"] == .bool(true))
+        let mail = s.folder.appendingPathComponent("intake/mail")
+        let attachments = mail.appendingPathComponent("credentials attachments")
+        try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+        try Data("---\nsubject: \"Other\"\n---\n\nInvented.\n".utf8).write(to: mail.appendingPathComponent("credentials.md"))
+        try Data("an invented cover note".utf8).write(to: attachments.appendingPathComponent("000-cover.txt"))
+        try Data("Subject: The fence\n\nInvented original of 2026-03-14_1_fence.\n".utf8)
+            .write(to: attachments.appendingPathComponent(IntakeWatcher.mailOriginalName))
+        try card(s)
+        #expect(open(s).count == 1)
+        #expect(try copies(s).isEmpty)
+    }
+
     @Test func emptyFilesAreNeverCopiesOfEachOther() throws {
         let s = try setup()
         try drop(s, "blank.txt", "")
