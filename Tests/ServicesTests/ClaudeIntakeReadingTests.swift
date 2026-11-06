@@ -92,6 +92,35 @@ import Testing
         #expect(!f.engine.lock.withLock { f.engine.running })
     }
 
+    /// A withdrawal after the last check, as the process is about to start, keeps the document in: the start is refused
+    /// before the line is written.
+    @Test func aWithdrawalAsTheProcessStartsSendsNothing() async throws {
+        let f = try Fixture(); try await f.connect(files: false)
+        let support = f.root.appendingPathComponent("support")
+        let sent = Kept(); sent.value = false
+        final class Box: @unchecked Sendable { var runtime: ClaudeConversationRuntime? }
+        let box = Box()
+        let runtime = try ClaudeConversationRuntime(support: support, secrets: .init(read: { "invented-token" }, replace: { _ in }),
+            makeDriver: { _, _, _, _, policy, _, _, _ in f.engine.driver(policy: policy) },
+            context: { _, _, _, _, _ in .init(data: .obj([]), sources: []) },
+            available: { _ in true },
+            makeReader: { _, _, _, _, _, onSpawn in
+                .init(run: { _, _ in
+                    // The person disables the binder just as the process starts.
+                    let disable = Task { try await box.runtime?.handle(.init([(key: "command", value: .str("claude_disable")), (key: "binder", value: .str(f.folder.path))])) }
+                    try await Task.sleep(for: .milliseconds(100))
+                    try onSpawn(1)   // never a real process: a start not refused fails on its own
+                    sent.value = true
+                    _ = try? await disable.value
+                    return #"{"summary":"Invented.","items":[]}"#
+                }, stop: {}, exited: { true }, hash: "fixture-hash")
+            })
+        box.runtime = runtime
+        let engine = try #require(await runtime.intakeEngine(for: f.folder))
+        await #expect(throws: ClerkModelError.unavailable("withdrawn")) { try await engine.answer(instructions: "Invented.", prompt: "Invented.") }
+        #expect(!sent.value)
+    }
+
     /// A home an intake reading left when the runtime stopped holds the document's transcript: the next runtime removes it.
     @Test func aReadingsHomeDoesNotOutliveItsRuntime() async throws {
         let f = try Fixture(); try await f.configure()

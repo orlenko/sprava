@@ -169,13 +169,17 @@ public actor ClaudeConversationRuntime {
             guard ClaudeIntakeReading.Cap(support: support).take() else { throw refused("daily cap") }
             let (_, credential) = try await chooseToken(ask: true, tried: [])
             guard stillShared() else { throw refused("withdrawn") }
-            let made = try await makeReader(account.program, credential, home, session.native, instructions, { [state] pid in try state.spawned(session, pid: pid) })
+            // A stop that lands after the last check still keeps the document in: the process refuses to start, before
+            // anything is written to it, as for a conversation turn.
+            let made = try await makeReader(account.program, credential, home, session.native, instructions, { [state] pid in
+                guard !signal.stopped else { throw Refused.stopped }
+                try state.spawned(session, pid: pid)
+            })
             driver = made
             readings[home]?.driver = made
-            guard stillShared() else { throw refused("withdrawn") }
             _ = await admission.started(lease); _ = await admission.beginTurn(lease)
-            let reply = try await made.run(prompt, false)
-            outcome = signal.stopped ? .failure(refused("withdrawn")) : .success(reply)
+            guard stillShared() else { throw refused("withdrawn") }
+            outcome = .success(try await made.run(prompt, false))
         } catch let refusal as ClerkModelError {
             outcome = .failure(refusal)
         } catch let failure as ClaudeReadOnlyTurn.Failure {
@@ -187,6 +191,8 @@ public actor ClaudeConversationRuntime {
             }
         } catch Refused.noQuota { outcome = .failure(refused("usage limit")) }
         catch { outcome = .failure(refused("failed")) }
+        // Whatever the call returned or threw after a stop, it is a withdrawal, and its reply is not used.
+        let result = signal.stopped ? .failure(refused("withdrawn")) : outcome
         // Released only once its process is known to be gone, as for a conversation turn, and before the next reading asks.
         if driver?.exited() != false {
             try? state.exited(session, keep: false)
@@ -194,7 +200,7 @@ public actor ClaudeConversationRuntime {
             _ = await admission.confirmedExit(lease)
             readings[home] = nil
         }
-        let reply = try outcome.get()
+        let reply = try result.get()
         guard let reply else { throw refused("interrupted") }
         return try ClaudeIntakeReading.answer(reply)
     }
