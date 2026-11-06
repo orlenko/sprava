@@ -88,8 +88,11 @@ import Testing
         }
     }
 
-    @Test func anAnswerWithNoSummaryFallsBack() async {
-        for bad in [JSONValue.array([]), .obj([("class", .str("action"))]), Self.answer(summary: "   ", items: [])] {
+    /// An answer with no summary, or without its list of items, is no reading: the clerk reads the document.
+    @Test func anAnswerWithNoSummaryOrItemsFallsBack() async {
+        let noItems = JSONValue.obj([("class", .str("action")), ("summary", .str("A supplier asks for an invoice."))])
+        let notAList = JSONValue.obj([("class", .str("action")), ("summary", .str("A supplier asks for an invoice.")), ("items", .str("none"))])
+        for bad in [JSONValue.array([]), .obj([("class", .str("action"))]), Self.answer(summary: "   ", items: []), noItems, notAList] {
             let (doc, _) = await read(ScriptedEngine(.success(bad)))
             #expect(doc.readBy == nil && doc.engineFailure == "badAnswer")
         }

@@ -76,7 +76,10 @@ extension Clerk {
         } catch {
             return .failure(EngineFailure(kind: String(describing: type(of: error))))
         }
-        guard case .object = answer, answer["summary"]?.stringValue != nil else { return .failure(EngineFailure(kind: "badAnswer")) }
+        // An answer without its list of items is no reading: taken as one, it would say the document asks nothing.
+        guard case .object = answer, answer["summary"]?.stringValue != nil, let listed = answer["items"]?.arrayValue else {
+            return .failure(EngineFailure(kind: "badAnswer"))
+        }
         Self.takeHeading(answer, into: &doc, text: text, signals: Set(facts.signals), locale: locale, today: today)
         guard doc.summary != nil else { return .failure(EngineFailure(kind: "badAnswer")) }
         if let wroteTo {
@@ -89,7 +92,7 @@ extension Clerk {
         let dated = doc.date ?? header
         let sentences = CaptureText.sentences(text)
         var items: [ClerkItem] = []
-        for value in (answer["items"]?.arrayValue ?? []).prefix(Self.engineItems) {
+        for value in listed.prefix(Self.engineItems) {
             guard var item = check(value, text: text, sentences: sentences, today: dated, locale: locale, taken: items) else {
                 doc.dropped += 1
                 continue
