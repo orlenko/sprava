@@ -1,5 +1,6 @@
 import BinderFormat
 import Foundation
+import SpravaKit
 
 extension Extractor {
     // MARK: - Email: imap-extract's Markdown, and .eml
@@ -12,15 +13,23 @@ extension Extractor {
         func field(_ key: String) -> String? {
             for line in front.split(separator: "\n") where line.lowercased().hasPrefix(key + ":") {
                 var v = line.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+                // The importer writes each value as a JSON string; read it as one, so a backslash comes back as written.
+                if v.hasPrefix("\""), let s = (try? JSONParser.parse(v))?.value.stringValue { return s }
                 if v.hasPrefix("\""), v.hasSuffix("\""), v.count >= 2 { v = String(v.dropFirst().dropLast()) }
                 return v.replacingOccurrences(of: "\\\"", with: "\"")
             }
             return nil
         }
         let body = cut.map { String(text[$0.upperBound...]) } ?? ""
-        let email = Email(subject: field("subject"), from: field("from"), to: field("to"), date: field("date"), messageID: nil, attachments: [])
+        let email = Email(subject: field("subject"), from: field("from"), to: field("to"), date: field("date"), messageID: nil, attachments: [],
+                          fromHeader: field("from_header"), toHeader: field("to_header"))
         return Result(kind: "email", text: body, textFrom: "parsed", email: email)
     }
+
+    /// An address header kept whole, or empty when it is longer than the 4,096 characters a reading keeps: a header
+    /// cut short can end in part of an address, and part of a stranger's address can be the person's. Empty, it names no
+    /// one, so the message is read as anyone's.
+    static func whole(_ header: String) -> String { header.count <= 4_096 ? header : "" }
 
     /// A MIME message: headers, the text body (plain preferred, else HTML as text), and attachments.
     static func eml(_ data: Data, limits: Limits = Limits()) -> Result {
@@ -30,7 +39,8 @@ extension Extractor {
         var state = Walk(maxParts: limits.parts)
         let text = walk(headers: headers, body: body, attachments: &attachments, state: &state, depth: 0)?.text ?? ""
         let email = Email(subject: headers["subject"].map(decodeWords), from: headers["from"].map(decodeWords), to: headers["to"].map(decodeWords),
-                          date: headers["date"], messageID: headers["message-id"], attachments: attachments)
+                          date: headers["date"], messageID: headers["message-id"], attachments: attachments,
+                          fromHeader: headers["from"].map(whole), toHeader: headers["to"].map(whole))
         // Parts past the nesting or part limits were not read, so the message is held rather than passed on as whole.
         let problem = state.tooDeep ? "its parts nest deeper than \(maxDepth) levels; the deeper ones were not read"
             : state.tooMany ? "it has more than \(limits.parts) parts; the later ones were not read" : nil

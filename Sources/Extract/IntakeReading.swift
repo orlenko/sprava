@@ -18,6 +18,9 @@ public struct IntakeReading: Sendable, Equatable {
     public var subject: String?
     public var from: String?
     public var to: String?
+    /// From and To as the message wrote them (`Extractor.Email.fromHeader`): what decides whose mail it is.
+    public var fromHeader: String?
+    public var toHeader: String?
     public var date: String?
     public var attachments: [String] = []
     /// `email` for a message from a mail monitor or an email file; `other` when the source cannot tell (§3.3).
@@ -46,7 +49,7 @@ public struct IntakeReading: Sendable, Equatable {
                               text: result.text, held: result.problem, channel: result.email != nil ? "email" : channel)
         r.mismatch = result.mismatch
         if let e = result.email {
-            r.subject = e.subject; r.from = e.from; r.to = e.to; r.date = e.date
+            r.subject = e.subject; r.from = e.from; r.to = e.to; r.date = e.date; r.fromHeader = e.fromHeader; r.toHeader = e.toHeader
         }
         // Each attachment is read when its turn comes, so no more are read, or held in memory, once the reading is full.
         var parts: [(String, () throws -> Extractor.Result)] = []
@@ -152,7 +155,7 @@ public struct IntakeReading: Sendable, Equatable {
         if let held { o.set("held", .string(held)) }
         if !notes.isEmpty { o.set("notes", .array(notes.map(JSONValue.string))) }
         if mismatch { o.set("mismatch", .bool(true)) }
-        for (k, v) in [("subject", subject), ("from", from), ("to", to), ("date", date)] { if let v { o.set(k, .string(v)) } }
+        for (k, v) in [("subject", subject), ("from", from), ("to", to), ("date", date), ("from_header", fromHeader), ("to_header", toHeader)] { if let v { o.set(k, .string(v)) } }
         if !attachments.isEmpty { o.set("attachments", .array(attachments.map(JSONValue.string))) }
         o.set("channel", .string(channel))
         return o
@@ -165,6 +168,7 @@ public struct IntakeReading: Sendable, Equatable {
         notes = o["notes"]?.arrayValue?.compactMap(\.stringValue) ?? []
         mismatch = o["mismatch"] == .bool(true)
         subject = o["subject"]?.stringValue; from = o["from"]?.stringValue; to = o["to"]?.stringValue; date = o["date"]?.stringValue
+        fromHeader = o["from_header"]?.stringValue; toHeader = o["to_header"]?.stringValue
         attachments = o["attachments"]?.arrayValue?.compactMap(\.stringValue) ?? []
     }
 }
