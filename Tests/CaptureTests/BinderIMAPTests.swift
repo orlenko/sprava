@@ -113,6 +113,19 @@ import Testing
         } == 1)
         #expect(IntakeWatcher.candidates(in: f.folder).count == 1)
     }
+    /// Whose mail a message is is read from From and To as written (#598), so the published Markdown keeps them
+    /// beside the decoded ones, and they read back as written.
+    @Test func publishedMailKeepsFromAndToAsWritten() throws {
+        let f = try Fixture(); try f.baseline()
+        let crafted = "=?utf-8?q?you@example.invalid=2C?= <coordinator@example.invalid>"
+        #expect(try f.run { _, cwd, target in try Self.message(target, uid: 3, from: crafted); try f.cursor(cwd, 3) } == 1)
+        let path = try #require(IntakeWatcher.candidates(in: f.folder).first?.name)
+        let text = try String(contentsOf: f.folder.appendingPathComponent("intake/" + path), encoding: .utf8)
+        let front = (text.components(separatedBy: "\n---\n").first ?? "") + "\n"
+        #expect(front.contains("\nfrom_header: " + JSONWriter.compact(.str(crafted)) + "\n"))
+        #expect(front.contains("\nto_header: \"member@example.invalid\"\n"))
+        #expect(front.contains("\nfrom: \"you@example.invalid, <coordinator@example.invalid>\"\n"))
+    }
     @Test func partialExportsNeverAdvanceOrBecomeSearchableAndForeignFilesArePreserved() throws {
         let f = try Fixture(); try f.baseline()
         #expect(throws: (any Error).self) { try f.run { _, cwd, target in try Self.message(target, uid: 3); try f.cursor(cwd, 2) } }
