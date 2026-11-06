@@ -203,6 +203,28 @@ The body is quoted-printable UTF-8 text, attachments base64 at 76 columns in `mu
 that starts with `=_` and is checked against every part. Attachments over 18 MiB together (or another given
 limit) are refused, never cut.
 
+How a draft goes from a card to the server:
+
+1. **The card.** A draft card holds the draft's fields: recipients, subject, plain-text body, the binder documents it
+   attaches, each marked private when it is, and the message it answers, if any. Whoever proposes it, whether the
+   person in the app or the binder's conversation (D41), only proposes: nothing is built or sent until the card is
+   approved. The card shows each field as inert text (binder-v0 §3.4). Approving it applies one op to the binder: a
+   log entry naming the recipients and subject, never the body.
+2. **At approval.** The message is built then by `MailDraft`: the attachments read from the binder's own document
+   folders through the safe reader, their sum at most 18 MiB, and a Message-ID made from the card's id. The bytes are
+   kept in a private request in the support folder (`capture/draft-requests/`), so what is placed is exactly what was
+   approved, even if a document changes later. The approval and the request are one step: a request is written
+   only for an approved card, and a card whose message cannot be built is not approved and says why.
+3. **Placing it.** A runtime job takes each waiting request and places it with `IMAPDraftAppend` over the binder's
+   email connection, with its password from the Keychain. That is the step that leaves the Mac (A7). A retry, after a
+   failure or a restart, finds the earlier draft by its Message-ID and appends nothing. On success the request is
+   removed and the binder's page says where the draft is ("In Drafts on mail.example.invalid"). On a failure that
+   may pass (the server, the network, a usage limit) the request waits for the next run. On one that will not (the
+   sign-in refused, no Drafts folder found, the connection removed) the page says so, with Try again and Discard;
+   discarding removes the request and leaves the log entry, which says the draft was approved, not placed.
+4. **Never.** No SMTP, no send, no change to a message already on the server, and no draft for a binder with no
+   email connection.
+
 ### 5.3 Later exporters
 
 - monday.com: post an update on an item, after approval.
