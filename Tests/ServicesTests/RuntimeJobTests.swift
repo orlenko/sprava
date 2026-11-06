@@ -102,6 +102,18 @@ import Testing
         #expect(SummaryJob.run(input).outcome == .error(code: "notification_failed", culprit: nil))
     }
 
+    @Test func theSummaryWaitsWithoutFailingWhileNotificationsAreOff() {
+        var posted = 0
+        var input = SummaryJob.Inputs(today: "2026-10-07", lastSent: nil, report: { report(true) }, sentinelBreaker: nil,
+                                      runSentinel: {}, notify: { _, _, _ in posted += 1; return false }, allowed: { false })
+        let off = SummaryJob.run(input)
+        #expect(off.outcome == .ok && off.sent == nil && posted == 0)
+        input.allowed = { true }
+        input.notify = { _, _, _ in posted += 1; return true }
+        #expect(SummaryJob.run(input) == (.ok, "2026-10-07") as (JobOutcome, String?))
+        #expect(posted == 1)
+    }
+
     @Test func theAlertsCheckRecordsWhatItSawAndKeepsTheClerksLastSuccess() {
         let model = Heartbeat.Model(availability: "available", context_size: 4096)
         let on = AlertsJob.run(authorized: { true }, model: { model }, lastModelSuccess: "2026-10-07T07:00:00Z", now: now)

@@ -4,8 +4,8 @@ import SpravaKit
 /// The daily summary (architecture 3.7): one notification with counts only, at most once per calendar day.
 public enum SummaryJob {
     /// What the run needs from the runtime: today's sentinel report when there is one, the sentinel's breaker,
-    /// a way to run the sentinel now, and the notifier (nil outside the app bundle, where there is no notification
-    /// identity).
+    /// a way to run the sentinel now, the notifier (nil outside the app bundle, where there is no notification
+    /// identity), and whether the person allows notifications.
     public struct Inputs {
         public var today: String
         public var lastSent: String?
@@ -13,15 +13,18 @@ public enum SummaryJob {
         public var sentinelBreaker: String?
         public var runSentinel: () -> Void
         public var notify: ((_ title: String, _ body: String, _ id: String) -> Bool)?
+        public var allowed: () -> Bool
 
         public init(today: String, lastSent: String?, report: @escaping () -> SentinelReport?, sentinelBreaker: String?,
-                    runSentinel: @escaping () -> Void, notify: ((String, String, String) -> Bool)?) {
+                    runSentinel: @escaping () -> Void, notify: ((String, String, String) -> Bool)?,
+                    allowed: @escaping () -> Bool = { true }) {
             self.today = today
             self.lastSent = lastSent
             self.report = report
             self.sentinelBreaker = sentinelBreaker
             self.runSentinel = runSentinel
             self.notify = notify
+            self.allowed = allowed
         }
     }
 
@@ -39,6 +42,10 @@ public enum SummaryJob {
         if let text = report.summaryText {
             // A development run outside the app bundle skips, never fails.
             guard let notify = input.notify else { return (.skipped, nil) }
+            // Notifications off is the person's choice, which Health already shows on its own line. The job is
+            // healthy (ok, so an earlier breaker closes), and the day stays unsent so the summary goes out once they
+            // are allowed.
+            guard input.allowed() else { return (.ok, nil) }
             guard notify("Sprava today", text, "summary-\(input.today)") else {
                 return (.error(code: "notification_failed", culprit: nil), nil)
             }

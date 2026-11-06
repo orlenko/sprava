@@ -307,7 +307,8 @@ final class Runtime: @unchecked Sendable {
         let (outcome, sent) = SummaryJob.run(.init(
             today: today, lastSent: lastSent, report: { SentinelJob.report(runtimeDir: runtimeDir, today: today) },
             sentinelBreaker: breaker, runSentinel: { _ = self.sentinel() },
-            notify: Notifier.hasBundle ? { self.notify(title: $0, body: $1, id: $2) } : nil))
+            notify: Notifier.hasBundle ? { self.notify(title: $0, body: $1, id: $2) } : nil,
+            allowed: { Notifier.authorized() == true }))
         if let sent {
             queue.async { [self] in
                 scheduler.summarySent(day: sent)

@@ -39,6 +39,7 @@ struct SpravaApp: App {
         keeper.beginLaunch()
         RuntimeClient.whenNotRunning = { Task { _ = await keeper.ensureRunning() } }
         RuntimeClient.untilStarted = { await keeper.untilStarted() }
+        NotificationPermission.ask()
     }
 
     var body: some Scene {
