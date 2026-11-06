@@ -78,6 +78,12 @@ import Testing
         #expect(c.byline == nil)
     }
 
+    /// The summary is labelled by who wrote it: Claude when it read the document in the clerk's place (decisions.md D40).
+    @Test func theSummarySaysWhoWroteIt() {
+        #expect(CardReview(.obj([("summary", .str("An invented notice."))])).summaryLabel == "The clerk\u{2019}s summary")
+        #expect(CardReview(.obj([("summary", .str("An invented notice.")), ("summary_by", .str("Claude"))])).summaryLabel == "Claude\u{2019}s summary")
+    }
+
     @Test func declineSaysWhatHappensToTheFile() {
         let filed = card(filing(files: ["a.eml"]))
         #expect(filed.declineTitle == "Leave in intake")

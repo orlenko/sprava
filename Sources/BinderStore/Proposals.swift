@@ -66,18 +66,27 @@ public struct Proposal: Sendable {
         return out
     }
 
+    /// The engines that may read an intake document in the clerk's place (decisions.md D40), as a card names them.
+    static let readers: Set<String> = ["Claude"]
+
+    /// The engine a reading names, when it is one of `readers`; nil for the clerk, or any other name.
+    static func reader(of reading: JSONValue?) -> String? {
+        reading?["read_by"]?.stringValue.flatMap { readers.contains($0) ? $0 : nil }
+    }
+
     /// What code and the clerk found in an intake file (docs/adaptation-layer.md §4), in plain words.
     public var intakeNotes: [String] {
         guard let intake = raw["provenance"]?["intake"] else { return [] }
         var out: [String] = []
         if let held = intake["held"]?.stringValue { out.append("held, not read: \(held). File it as it is, or take it out of intake/") }
         if let reading = raw["provenance"]?["reading"] {
+            let reader = Self.reader(of: reading) ?? "the clerk"
             let classes = ["governing": "a document that sets rules or obligations", "action": "asks you to do something",
-                           "information": "a record to keep", "unsure": "the clerk is not sure what it is"]
-            if let c = reading["class"]?.stringValue, let words = classes[c] { out.append("the clerk reads it as \(words)") }
-            if let s = reading["summary"]?.stringValue { out.append("the clerk\u{2019}s summary, in its own words: \(s)") }
+                           "information": "a record to keep", "unsure": "\(reader) is not sure what it is"]
+            if let c = reading["class"]?.stringValue, let words = classes[c] { out.append("\(reader) reads it as \(words)") }
+            if let s = reading["summary"]?.stringValue { out.append("\(reader)\u{2019}s summary, in its own words: \(s)") }
             if reading["reply_needed"] == .bool(true) { out.append("a reply may be needed") }
-            if let n = reading["unread_windows"]?.numberValue?.safeInteger, n > 0 { out.append("the clerk read only part of it") }
+            if let n = reading["unread_windows"]?.numberValue?.safeInteger, n > 0 { out.append("\(reader) read only part of it") }
         }
         if let preview = intake["preview"]?.stringValue { out.append("begins: \u{201C}\(preview)\u{201D}") }
         if intake["text_from"] == .str("ocr") { out.append("read from a scan: check names and numbers against the file") }

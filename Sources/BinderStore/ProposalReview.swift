@@ -53,7 +53,11 @@ extension Proposal {
         out.set("from_intake", .bool(intake != nil))
         // A file that was held was not read, so nothing may look like a reading of it.
         if held == nil {
-            if let summary = reading?["summary"]?.stringValue { out.set("summary", .string(summary)) }
+            if let summary = reading?["summary"]?.stringValue {
+                out.set("summary", .string(summary))
+                // Who wrote the summary: the clerk, unless an engine read the document in its place (decisions.md D40).
+                if let by = Self.reader(of: reading) { out.set("summary_by", .string(by)) }
+            }
             else if let begins = intake?["preview"]?.stringValue { out.set("begins", .string(begins)) }
         }
         out.set("files", .array(files))
