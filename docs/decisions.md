@@ -494,6 +494,17 @@ Each line names what replaced the entry; its old text is in git history.
   hold a control character has no match of this kind. A filed email edited later, header or body, or gone, no longer
   matches. Mail filed as a `.md` with no original, and every other document, has nothing of the kind to match: only its
   exact bytes count.
+- **D40 decided (2026-11-06, the author: "1a", with a daily cap of 100).** In a binder connected to Claude with intake
+  shared, Sprava asks Claude (Sonnet) one question about each intake document as it arrives: who wrote it, who is asked
+  to do what, and what falls to the person. Its answer replaces the clerk's to-dos and summary on the card, labelled as
+  Claude's. The call has no tools, runs on the binder's own connection, and sends only that document's text with code's
+  verdict on whether the person wrote it, never the person's addresses. This changes when intake text leaves the Mac, not
+  what may leave: the binder's Claude may already read it. Code checks every item as it checks the clerk's (the quoted
+  words are in the text, the title comes from them, dates resolve), and the person approves every card. Without Claude,
+  without intake shared, past 100 calls in a day, or when a call fails or runs out of time, the on-device clerk stays.
+  The author accepted on 2026-11-06, after being told, that this sends intake text off the Mac as it arrives, uses their
+  Claude quota, and makes unattended calls on their claude.ai login, whose subscription terms are still open (D28).
+  Not chosen: opening the careful-reading queue to registered MCP brains, which lets other programs read intake.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
