@@ -109,7 +109,7 @@ final class Runtime: @unchecked Sendable {
             do { claude = development ? nil : try .production(support: support) }
             catch { claude = nil; log("claude_state_unavailable") }
             let imap: BinderIMAPRuntime?
-            do { imap = development ? nil : try BinderIMAPRuntime(support: support) }
+            do { imap = development ? nil : try BinderIMAPRuntime(support: support, log: { [weak self] in self?.log($0) }) }
             catch { imap = nil; log("imap_state_unavailable") }
             let service = XPCService(commands: commands, watch: watch, companion: companion, claude: claude, imap: imap) { [weak self] line in self?.log(line) }
             claude?.todoWriter.attach(commands: commands, queue: service.queue)

@@ -2,6 +2,7 @@ import Brains
 import BinderFormat
 import BinderStore
 import Capture
+import Clerk
 import Foundation
 import Shelf
 import SpravaKit
@@ -218,7 +219,21 @@ extension Commands {
             // The card's names were free when it was written; other cards may have filed since (binder-v0 §6.9).
             let settled = IntakeWatcher.settlingNames(edited ?? proposal.ops, in: f)
             if settled != (edited ?? proposal.ops) { edited = settled }
-            let applied = try store.approve(proposal, edited: edited, now: now)
+            // An email draft (D41): its message is built now, from the documents as they are, and kept in a request
+            // written before the approval and made ready after, so an approved draft is always placed and an
+            // unapproved one never is (integrations.md §5.2).
+            let draft = DraftCard(proposal)
+            if let draft {
+                guard edited == nil else { throw Failure(message: "an email draft is approved as it is; nothing was approved") }
+                let message = try Self.draftMessage(draft, card: proposal.id, folder: f, support: support, now: now)
+                try DraftRequests(support: support).begin(id: proposal.id, binder: f, message: message, now: now)
+            }
+            let applied: [JSONObject]
+            do { applied = try store.approve(proposal, edited: edited, now: now) } catch {
+                if draft != nil { try? DraftRequests(support: support).remove(id: proposal.id) }
+                throw error
+            }
+            if draft != nil { try DraftRequests(support: support).ready(id: proposal.id) }
             // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
             try recordDigests([id] + store.createdProposals, in: f)
             var result = JSONObject([(key: "applied", value: .int(applied.count))])
@@ -243,6 +258,27 @@ extension Commands {
         try store.reject(proposal, reason: r["reason"]?.stringValue, now: now)
         try recordDigests([id], in: f)
         return JSONObject()
+    }
+
+    /// A draft card's message, from the binder's email account; a refusal says what to do and names no value.
+    static func draftMessage(_ draft: DraftCard, card: String, folder: URL, support: URL, now: Date) throws -> Data {
+        guard let config = try BinderIMAPConnections(support: support).configuration(for: folder) else {
+            throw Failure(message: "this binder has no email connection, so the draft has nowhere to go; nothing was approved")
+        }
+        // The address it is from: the account's own name when it is an address, or the one other address given.
+        let own = config.ownAddresses
+        guard let from = MailAddress.single(config.account.user) ?? (own.count == 1 ? own.first : nil) else {
+            throw Failure(message: "Sprava does not know which address this account writes from: give it under Your other addresses in the binder's email settings; nothing was approved")
+        }
+        do {
+            return try draft.message(card: card, from: from, folder: folder, catalog: Teka.read(folder).catalog, now: now)
+        } catch DraftCard.Refused.tooLarge {
+            throw Failure(message: "the attachments are over 18 MiB together; nothing was approved")
+        } catch DraftCard.Refused.attachment(let index) {
+            throw Failure(message: "attachment \(index + 1) is no longer a document filed in this binder; nothing was approved")
+        } catch DraftCard.Refused.field(let field) {
+            throw Failure(message: "the draft's \(field) cannot be written as an email; nothing was approved")
+        }
     }
 
     func apply(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
