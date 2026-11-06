@@ -9,9 +9,12 @@ public enum MailAddress {
     /// The addresses in `header`, lower case, in order, each once. Display names, quoted strings and comments are
     /// skipped; a part that holds no well-formed address gives none.
     public static func bare(in header: String) -> [String] {
+        // A header longer than is read names no one: cut short, it could end inside an address, and the start of a
+        // stranger's address can be the person's whole address.
+        guard header.unicodeScalars.dropFirst(16_384).first == nil else { return [] }
         var parts: [String] = [], current = ""
         var quoted = false, escaped = false, angle = false, depth = 0
-        for c in header.prefix(16_384) {
+        for c in header {
             if escaped { escaped = false; continue }
             if quoted {
                 if c == "\\" { escaped = true } else if c == "\"" { quoted = false }
@@ -37,7 +40,9 @@ public enum MailAddress {
             let candidate: Substring
             if let open = part.lastIndex(of: "<") {
                 let rest = part[part.index(after: open)...]
-                candidate = rest.firstIndex(of: ">").map { rest[..<$0] } ?? rest
+                // An address whose angle bracket never closes is not one.
+                guard let close = rest.firstIndex(of: ">") else { return nil }
+                candidate = rest[..<close]
             } else {
                 // Without angle brackets the address is the one word holding "@" ("Group: a@x" keeps "a@x").
                 let words = part.split(whereSeparator: { $0.isWhitespace })
@@ -47,6 +52,14 @@ public enum MailAddress {
             guard let address = valid(candidate.trimmingCharacters(in: .whitespacesAndNewlines)), seen.insert(address).inserted else { return nil }
             return address
         }
+    }
+
+    /// The addresses in a header as the message wrote it (`IntakeReading.fromHeader`): each RFC 2047 encoded word is
+    /// display text whatever it holds, a comma or an "@" included (RFC 2047 section 5), so it is read as a control
+    /// character. Beside a display name that changes nothing, and inside or against an address it makes that address
+    /// not one, never a different one: "<=?utf-8?q?x?=me@example.invalid>" names no one.
+    public static func bare(inRaw header: String) -> [String] {
+        bare(in: header.replacingOccurrences(of: #"=\?[^?\s]+\?[BbQq]\?[^?\s]*\?="#, with: "\u{1}", options: .regularExpression))
     }
 
     /// `text` as one address, lower case, when it is exactly one well-formed address and nothing else: no display
