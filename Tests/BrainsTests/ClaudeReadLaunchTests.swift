@@ -25,6 +25,25 @@ import Testing
         #expect(!String(reflecting: plan).contains("invented-private-credential"))
     }
 
+    /// A launch names Opus unless it asks for Sonnet, and nothing else can reach `--model` (decisions.md D40).
+    @Test func theModelIsOpusUnlessSonnetIsAskedFor() throws {
+        func model(_ chosen: ClaudeReadLaunch.Model?) throws -> [String] {
+            let folder = try home()
+            let plan = try chosen.map {
+                try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.316"), home: folder, sessionID: UUID(),
+                                          credential: "invented", policy: "Canonical", model: $0)
+            } ?? ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.316"), home: folder, sessionID: UUID(),
+                                       credential: "invented", policy: "Canonical")
+            let at = try #require(plan.arguments.firstIndex(of: "--model"))
+            #expect(plan.arguments.filter { $0 == "--model" }.count == 1)
+            return [plan.arguments[at + 1]]
+        }
+        #expect(try model(nil) == ["opus"])
+        #expect(try model(.opus) == ["opus"])
+        #expect(try model(.sonnet) == ["sonnet"])
+        #expect(ClaudeReadLaunch.Model(rawValue: "claude-invented") == nil)
+    }
+
     @Test func cachedCustomizationIsRefusedRatherThanLoaded() throws {
         let folder = try home()
         try AtomicFile.makePrivateFolder(folder)
