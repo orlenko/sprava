@@ -56,6 +56,12 @@ enum DraftPlacing {
                 try? requests.failed(id: request.id, reason: "no email connection")
                 continue
             }
+            // It was approved for one account: if the binder's connection is another now, it goes nowhere until the
+            // person approves it again.
+            guard DraftRequests.account(of: config.account) == request.account else {
+                try? requests.failed(id: request.id, reason: "account changed")
+                continue
+            }
             // A password this runtime does not have waits for the person; the server is never tried without it.
             guard let secret = try? password(config.account) else { continue }
             chosen = (request, config, secret)

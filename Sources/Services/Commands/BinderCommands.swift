@@ -230,8 +230,8 @@ extension Commands {
             }
             if let draft {
                 guard edited == nil else { throw Failure(message: "an email draft is approved as it is; nothing was approved") }
-                let message = try Self.draftMessage(draft, card: proposal.id, folder: f, support: support, now: now)
-                try DraftRequests(support: support).begin(id: proposal.id, binder: f, message: message, now: now)
+                let (message, account) = try Self.draftMessage(draft, card: proposal.id, folder: f, support: support, now: now)
+                try DraftRequests(support: support).begin(id: proposal.id, binder: f, account: account, message: message, now: now)
             }
             // An approval that fails may still have written its batch: the request stays, and the runtime settles it
             // from the binder's log (DraftPlacing).
@@ -264,7 +264,7 @@ extension Commands {
     }
 
     /// A draft card's message, from the binder's email account; a refusal says what to do and names no value.
-    static func draftMessage(_ draft: DraftCard, card: String, folder: URL, support: URL, now: Date) throws -> Data {
+    static func draftMessage(_ draft: DraftCard, card: String, folder: URL, support: URL, now: Date) throws -> (Data, String) {
         guard let config = try BinderIMAPConnections(support: support).configuration(for: folder) else {
             throw Failure(message: "this binder has no email connection, so the draft has nowhere to go; nothing was approved")
         }
@@ -274,7 +274,8 @@ extension Commands {
             throw Failure(message: "Sprava does not know which address this account writes from: give it under Your other addresses in the binder's email settings; nothing was approved")
         }
         do {
-            return try draft.message(card: card, from: from, folder: folder, catalog: Teka.read(folder).catalog, now: now)
+            return (try draft.message(card: card, from: from, folder: folder, catalog: Teka.read(folder).catalog, now: now),
+                    DraftRequests.account(of: config.account))
         } catch DraftCard.Refused.tooLarge {
             throw Failure(message: "the attachments are over 18 MiB together; nothing was approved")
         } catch DraftCard.Refused.attachment(let index) {

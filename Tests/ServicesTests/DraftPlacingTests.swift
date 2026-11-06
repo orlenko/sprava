@@ -147,6 +147,12 @@ import Testing
         placer.failure = nil
         #expect(run(c, connections, placer) == .none)
         #expect(placer.messages.isEmpty)
+        // The binder's connection moved to another account since approval: the draft goes nowhere.
+        try requests.ready(id: card.id)
+        let other = try #require(IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: "someone-else@example.invalid"))
+        _ = try connections.configure(folder: folder, account: other, mailbox: "INBOX")
+        #expect(run(c, connections, placer) == .waiting || requests.all().first?.failure == "account changed")
+        #expect(requests.all().first?.failure == "account changed" && placer.messages.isEmpty)
         // A binder whose email connection was removed fails at once.
         try requests.ready(id: card.id)
         try connections.disable(folder: folder)
@@ -159,7 +165,7 @@ import Testing
         let (c, folder, connections) = try setup()
         let requests = DraftRequests(support: c.support)
         let (card, _) = try card(c, folder)
-        try requests.begin(id: card.id, binder: folder, message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
+        try requests.begin(id: card.id, binder: folder, account: "me@example.invalid@mail.example.invalid:993", message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
         let placer = Placer()
         // Recent: an approval may be writing it now, so it is left alone.
         #expect(run(c, connections, placer, at: now.addingTimeInterval(60)) == .none)
@@ -168,7 +174,7 @@ import Testing
         #expect(run(c, connections, placer, at: now.addingTimeInterval(3600)) == .none)
         #expect(requests.all().isEmpty && placer.messages.isEmpty)
         // With the card's ops written but the card not yet marked, as a stop between the two leaves it: placed.
-        try requests.begin(id: card.id, binder: folder, message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
+        try requests.begin(id: card.id, binder: folder, account: "me@example.invalid@mail.example.invalid:993", message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
         _ = try TekaStore(folder: folder).approve(card, now: now)
         var unmarked = try #require(ProposalStore.list(in: folder).first { $0.0.id == card.id }?.0).raw
         unmarked.set("state", .str("proposed"))
@@ -188,9 +194,9 @@ import Testing
         _ = other
         let requests = DraftRequests(support: c.support)
         let mine = UUIDv7.make(now: outer.now), theirs = UUIDv7.make(now: outer.now.addingTimeInterval(1))
-        try requests.begin(id: mine, binder: folder, message: Data("x".utf8), now: outer.now)
+        try requests.begin(id: mine, binder: folder, account: "x", message: Data("x".utf8), now: outer.now)
         try requests.failed(id: mine, reason: "no drafts folder")
-        try requests.begin(id: theirs, binder: otherFolder, message: Data("x".utf8), now: outer.now)
+        try requests.begin(id: theirs, binder: otherFolder, account: "x", message: Data("x".utf8), now: outer.now)
         let runtime = BinderIMAPRuntime(support: c.support, connections: connections, passwords: BinderIMAPRuntimeTests.passwords(),
                                         fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
         func ask(_ command: String, _ fields: [(String, JSONValue)] = []) async throws -> JSONValue {
