@@ -76,6 +76,40 @@ import Testing
         #expect(try await f.completed(id)["phase"] == .str("replied"))
     }
 
+    /// Disabling the binder while a reading runs stops it, waits for it, and its reply is not used.
+    @Test func aReadingUnderWayStopsWhenConsentIsWithdrawn() async throws {
+        let f = try Fixture(); try await f.connect(files: false)
+        let engine = try #require(await f.runtime.intakeEngine(for: f.folder))
+        f.engine.lock.withLock { f.engine.hold = true }
+        let reading = Task { () -> ClerkModelError? in
+            do { _ = try await engine.answer(instructions: "Invented.", prompt: "Invented."); return nil }
+            catch { return error as? ClerkModelError }
+        }
+        for _ in 0..<500 where !f.engine.lock.withLock({ f.engine.running }) { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(f.engine.lock.withLock { f.engine.running })
+        _ = try await f.request("claude_disable")
+        #expect(await reading.value == .unavailable("withdrawn"))
+        #expect(!f.engine.lock.withLock { f.engine.running })
+    }
+
+    /// A home an intake reading left when the runtime stopped holds the document's transcript: the next runtime removes it.
+    @Test func aReadingsHomeDoesNotOutliveItsRuntime() async throws {
+        let f = try Fixture(); try await f.configure()
+        let support = f.root.appendingPathComponent("support")
+        let state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
+        let home = UUID()
+        _ = try state.session(connection: home, generation: UUID(), hash: "intake")
+        let folder = support.appendingPathComponent("brains/read-homes/\(home.uuidString)/transcript")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let next = try ClaudeConversationRuntime(support: support, secrets: .init(read: { "invented" }, replace: { _ in }),
+                                                 makeDriver: { _, _, _, _, policy, _, _, _ in f.engine.driver(policy: policy) },
+                                                 context: { _, _, _, _, _ in .init(data: .obj([]), sources: []) })
+        _ = try await next.handle(.init([(key: "command", value: .str("claude_status"))]))
+        _ = try? await next.intakeEngine(for: f.folder)?.answer(instructions: "Invented.", prompt: "Invented.")
+        #expect(!FileManager.default.fileExists(atPath: support.appendingPathComponent("brains/read-homes/\(home.uuidString)").path))
+        #expect(try state.allSessions().allSatisfy { $0.connection != home })
+    }
+
     @Test func failuresAreFixedReasonsAndTheCapIsKept() async throws {
         let f = try Fixture(); try await f.connect(files: false)
         let engine = try #require(await f.runtime.intakeEngine(for: f.folder))
