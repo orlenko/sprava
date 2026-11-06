@@ -1,6 +1,7 @@
 import BinderFormat
 import BinderStore
 import Brains
+import Capture
 import Foundation
 import SpravaKit
 
@@ -52,6 +53,8 @@ final class ClaudeTodoTools: @unchecked Sendable {
     private var known: [String: String]
     private var changes = 0
     private var searches = 0
+    private var drafts = 0
+    static let maximumDrafts = 5
     private let search: (@Sendable (String, Int) throws -> ClaudeBinderContext.Found)?
     static let wholeBinderTools: Set<String> = ["search_binder", "update_notes"]
     static let maximumSearches = 40, maximumSearchBytes = 64 * 1024, maximumNotesBytes = 32 * 1024
@@ -101,6 +104,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
         guard search != nil || !Self.wholeBinderTools.contains(name) else { throw Refusal.invalid("No such tool.") }
         if name == "list_todos" { return try lock.withLock { try list() } }
         if name == "search_binder" { return try searchBinder(args) }
+        if name == "propose_email_draft" { return try lock.withLock { try proposeDraft(args) } }
         return try lock.withLock {
             guard changes < Self.maximumChanges else { throw Refusal.tooMany }
             let result: JSONValue
@@ -163,6 +167,54 @@ final class ClaudeTodoTools: @unchecked Sendable {
             try history.markNotesUndone(forTurn: turn)
             return true
         }
+    }
+
+    // MARK: - An email draft, on a card (decisions.md D41)
+
+    /// Writes a draft card for the person to approve. Nothing is built or sent: approving it puts the draft in the Drafts
+    /// folder of the binder's email account (integrations.md §5.2), and the person sends it from their mail program.
+    private func proposeDraft(_ args: JSONObject) throws -> JSONValue {
+        guard drafts < Self.maximumDrafts else { throw Refusal.invalid("This turn has proposed as many drafts as one turn may (\(Self.maximumDrafts)). Tell the person.") }
+        func strings(_ key: String) throws -> [String] {
+            guard let value = args[key] else { return [] }
+            guard let list = value.arrayValue, list.count <= 50 else { throw Refusal.invalid("\(key) is a list of at most 50. Nothing was proposed.") }
+            return try list.map { guard let s = $0.stringValue else { throw Refusal.invalid("\(key) holds text only. Nothing was proposed.") }; return s }
+        }
+        guard let subject = args["subject"]?.stringValue, let body = args["body"]?.stringValue else {
+            throw Refusal.invalid("Give the draft's subject and body. Nothing was proposed.")
+        }
+        if let value = args["in_reply_to"], value.stringValue == nil { throw Refusal.invalid("in_reply_to is one Message-ID. Nothing was proposed.") }
+        // Documents reach a draft only in a conversation the person let read them.
+        if search == nil, !(try strings("attachments")).isEmpty {
+            throw Refusal.invalid("This conversation does not share the binder's documents, so a draft cannot attach them. Nothing was proposed.")
+        }
+        let draft = DraftCard(to: try strings("to"), cc: try strings("cc"), subject: subject, body: body,
+                              attachments: try strings("attachments").map { .init(path: $0, isPrivate: false) },
+                              inReplyTo: args["in_reply_to"]?.stringValue, references: try strings("references"))
+        let folder = self.folder
+        let id: String
+        do {
+            id = try writer.perform { commands -> String in
+                guard (try? BinderIMAPConnections(support: commands.support).configuration(for: folder)) != nil else {
+                    throw Refusal.invalid("This binder has no email connection, so a draft has nowhere to go. Tell the person; nothing was proposed.")
+                }
+                let card = try draft.proposal(actor: JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))]),
+                                              catalog: Teka.read(folder).catalog)
+                try ProposalStore.save(card, in: folder)
+                try commands.trustProposals([card.id], in: folder)
+                try commands.recordDraftCard(card.id, in: folder)
+                return card.id
+            }
+        } catch let refusal as Refusal { throw refusal }
+        catch DraftCard.Refused.field(let field) { throw Refusal.invalid("The draft's \(field) cannot be written as an email. Nothing was proposed.") }
+        catch DraftCard.Refused.attachment(let index) {
+            throw Refusal.invalid("Attachment \(index + 1) is not a document filed in this binder, or is a key or credential file. Nothing was proposed.")
+        }
+        catch DraftCard.Refused.tooLarge { throw Refusal.invalid("The attachments are over 18 MiB together. Nothing was proposed.") }
+        catch { throw Refusal.refused }
+        drafts += 1
+        return .obj([("ok", .bool(true)), ("card", .str(id)),
+                     ("message", .str("The draft is on a card in this binder for the person to approve. Nothing is sent: approving puts it in their Drafts folder, and they send it from their mail program."))])
     }
 
     // MARK: - The four changes
@@ -302,6 +354,17 @@ final class ClaudeTodoTools: @unchecked Sendable {
               schema: schema([("query", .obj([("type", .str("string")), ("description", .str("Words to look for; any of them matches."))]))], required: ["query"])),
         .init(name: "update_notes", description: "Replaces the whole Notes section of DASHBOARD.md at once. Other sections cannot change.",
               schema: schema([("text", .obj([("type", .str("string")), ("description", .str("The section's whole new text, without its heading."))]))], required: ["text"])),
+        .init(name: "propose_email_draft",
+              description: "Proposes one email draft on a card for the person to approve. Nothing is sent: approving puts it in the Drafts folder of this binder's email account, and the person sends it from their mail program. Attachments are paths of documents filed in this binder.",
+              schema: schema([
+                  ("to", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))])), ("description", .str("Addresses, one per entry, such as name@example.com."))])),
+                  ("cc", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))]))])),
+                  ("subject", .obj([("type", .str("string"))])),
+                  ("body", .obj([("type", .str("string")), ("description", .str("Plain text."))])),
+                  ("attachments", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))])), ("description", .str("Paths of filed documents, as the binder lists them."))])),
+                  ("in_reply_to", .obj([("type", .str("string")), ("description", .str("The Message-ID of the email this answers, when it answers one."))])),
+                  ("references", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))]))])),
+              ], required: ["to", "subject", "body"])),
         .init(name: "list_todos", description: "Lists this binder's open to-dos with their ids, as they are now.", schema: schema([], required: [])),
         .init(name: "add_todo", description: "Adds one to-do to this binder at once. Returns its id.", schema: schema(fields, required: ["title"])),
         .init(name: "edit_todo", description: "Changes the named fields of one open to-do at once.", schema: schema([id] + fields, required: ["id"])),

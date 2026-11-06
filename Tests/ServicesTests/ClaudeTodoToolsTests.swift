@@ -117,7 +117,8 @@ import Testing
         #expect(tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])).refused)
     }
 
-    /// A connection that shares no documents has the to-do tools and nothing that reaches the rest of the binder.
+    /// A connection that shares no documents has the to-do tools, and a draft with no attachment, and nothing that reaches
+    /// the rest of the binder.
     @Test func withoutFileConsentThereIsNoSearchAndNoNotes() throws {
         let s = try pSetup(); _ = try keptDashboard(s)
         let store = try ConversationTurnStore(at: s.support.appendingPathComponent("turns-\(UUID()).sqlite"))
@@ -125,7 +126,10 @@ import Testing
         let writer = ClaudeTodoWriter(); writer.attach(commands: s.commands, queue: DispatchQueue(label: "invented-writer"))
         let made = ClaudeTodoTools(folder: s.folder, record: record, history: TurnHistory(support: s.support, binder: UUID()), writer: writer)
         let tools = try #require(made), before = try notes(s)
-        #expect(Set(tools.appTools.tools.map(\.name)) == ["list_todos", "add_todo", "edit_todo", "complete_todo", "remove_todo"])
+        #expect(Set(tools.appTools.tools.map(\.name)) == ["list_todos", "add_todo", "edit_todo", "complete_todo", "remove_todo", "propose_email_draft"])
+        let attaching = tools.appTools.call("propose_email_draft", .init([(key: "to", value: .array([.str("a@example.com")])), (key: "subject", value: .str("x")),
+                                                                          (key: "body", value: .str("x")), (key: "attachments", value: .array([.str("documents/a.txt")]))]))
+        #expect(attaching.refused && attaching.content["message"]?.stringValue?.contains("does not share the binder's documents") == true)
         #expect(tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])).refused)
         #expect(tools.appTools.call("update_notes", .init([(key: "text", value: .str("Invented"))])).refused)
         #expect(try notes(s) == before)
