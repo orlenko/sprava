@@ -18,6 +18,8 @@ public struct DraftRequests: Sendable {
         public var state: State
         /// Why it could not be placed, in fixed words, when `failed`.
         public var failure: String?
+        /// When it was written: one still `approving` long after belongs to an approval that did not finish.
+        public let created: Date
     }
 
     public let root: URL
@@ -27,13 +29,13 @@ public struct DraftRequests: Sendable {
     static func valid(_ id: String) -> Bool { UUID(uuidString: id) != nil }
 
     /// Writes the message for card `id` before it is approved.
-    public func begin(id: String, binder: URL, message: Data) throws {
+    public func begin(id: String, binder: URL, message: Data, now: Date = Date()) throws {
         guard Self.valid(id) else { throw Refused.invalidID }
         try AtomicFile.makePrivateFolder(root)
         let folder = root.appendingPathComponent(id, isDirectory: true)
         try AtomicFile.makePrivateFolder(folder)
         try AtomicFile.write(message, to: folder.appendingPathComponent("message.eml"))
-        try write(Request(id: id, binder: binder.standardizedFileURL.path, state: .approving, failure: nil))
+        try write(Request(id: id, binder: binder.standardizedFileURL.path, state: .approving, failure: nil, created: now))
     }
 
     /// The card was approved: the request may be placed.
@@ -66,13 +68,15 @@ public struct DraftRequests: Sendable {
     func read(_ id: String) -> Request? {
         guard case .ok(let data) = SafeFile.read(root.appendingPathComponent(id).appendingPathComponent("request.json"), limit: 64 * 1024),
               let value = try? JSONParser.parse(data).value, value["id"]?.stringValue == id,
-              let binder = value["binder"]?.stringValue, let state = value["state"]?.stringValue.flatMap(State.init(rawValue:)) else { return nil }
-        return Request(id: id, binder: binder, state: state, failure: value["failure"]?.stringValue)
+              let binder = value["binder"]?.stringValue, let state = value["state"]?.stringValue.flatMap(State.init(rawValue:)),
+              let created = ISOTime.date(value["created"]?.stringValue) else { return nil }
+        return Request(id: id, binder: binder, state: state, failure: value["failure"]?.stringValue, created: created)
     }
 
     func write(_ request: Request) throws {
         var o = JSONObject([(key: "id", value: .string(request.id)), (key: "binder", value: .string(request.binder)),
-                            (key: "state", value: .string(request.state.rawValue))])
+                            (key: "state", value: .string(request.state.rawValue)),
+                            (key: "created", value: .string(ISOTime.string(request.created)))])
         if let failure = request.failure { o.set("failure", .string(failure)) }
         try AtomicFile.write(Data(JSONWriter.compact(.object(o)).utf8), to: root.appendingPathComponent(request.id).appendingPathComponent("request.json"))
     }
