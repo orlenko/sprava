@@ -58,6 +58,13 @@ import Testing
         #expect(refused { $0.attachments = [.init(path: "intake/mail.eml", isPrivate: false)] } == .attachment(0))
         #expect(refused { $0.attachments = [.init(path: "../outside.txt", isPrivate: false)] } == .attachment(0))
         #expect(refused { $0.attachments = [.init(path: "/etc/hosts", isPrivate: false)] } == .attachment(0))
+        // A key or credential file is never attached, even one the catalog lists.
+        var keyed = catalog
+        keyed.set("documents", .array([.obj([("path", .str("documents/signing.key"))]), .obj([("path", .str("documents/credentials.json"))])]))
+        for path in ["documents/signing.key", "documents/credentials.json"] {
+            var d = draft; d.attachments = [.init(path: path, isPrivate: false)]
+            #expect(throws: DraftCard.Refused.attachment(0)) { try d.proposal(actor: actor, catalog: keyed, now: now) }
+        }
     }
 
     @Test func theMessageIsBuiltAtApprovalFromTheFilesAsTheyAreThen() throws {
@@ -73,6 +80,15 @@ import Testing
         try FileManager.default.removeItem(at: folder.appendingPathComponent("documents/notice.txt"))
         try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("documents/notice.txt"), withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
         #expect(throws: DraftCard.Refused.attachment(1)) { try draft.message(card: id, from: "me@example.invalid", folder: folder, catalog: catalog, now: now) }
+        // A folder of the binder that is a link to one elsewhere never leads a read out of it.
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-draft-outside-\(UUID())")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("Outside the binder.".utf8).write(to: outside.appendingPathComponent("report.txt"))
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("documents/export"), withDestinationURL: outside)
+        var linked = catalog
+        linked.set("documents", .array([.obj([("path", .str("documents/export/report.txt"))])]))
+        var through = draft; through.attachments = [.init(path: "documents/export/report.txt", isPrivate: false)]
+        #expect(throws: DraftCard.Refused.attachment(0)) { try through.message(card: id, from: "me@example.invalid", folder: folder, catalog: linked, now: now) }
         // Attachments over 18 MiB together are refused, never cut.
         try Data(count: 18 * 1024 * 1024).write(to: folder.appendingPathComponent("documents/plan.txt"))
         var big = draft; big.attachments = [draft.attachments[0], .init(path: "documents/plan.txt", isPrivate: false)]

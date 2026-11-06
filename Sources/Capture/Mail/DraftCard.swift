@@ -72,7 +72,9 @@ public struct DraftCard: Sendable, Equatable {
         let filed = catalog?["documents"]?.arrayValue ?? []
         var marked = self
         for (index, attachment) in attachments.enumerated() {
-            guard DocumentPaths.isSafe(attachment.path), let doc = filed.first(where: { $0["path"]?.stringValue == attachment.path }) else {
+            // A key or credential file is never read, whatever names it (binder-v0 §3.3).
+            guard DocumentPaths.isSafe(attachment.path), !DocumentPaths.isKeyFile(attachment.path),
+                  let doc = filed.first(where: { $0["path"]?.stringValue == attachment.path }) else {
                 throw Refused.attachment(index)
             }
             marked.attachments[index].isPrivate = doc["sensitivity"] == .str("private")
@@ -96,8 +98,8 @@ public struct DraftCard: Sendable, Equatable {
                              provenance: JSONObject([(key: "draft", value: .object(draft))]), now: now)
     }
 
-    /// The message, built at approval: from `from`, its attachments read now from the binder's filed documents through the
-    /// safe reader, at most 18 MiB together. What is placed is exactly this.
+    /// The message, built at approval: from `from`, its attachments read now from the binder's filed documents, from the
+    /// binder down with no link anywhere on the way, at most 18 MiB together. What is placed is exactly this.
     public func message(card id: String, from: String, folder: URL, catalog: JSONObject?, now: Date = Date()) throws -> Data {
         let card = try checked(catalog: catalog)
         var files: [MailDraft.Attachment] = []
@@ -105,7 +107,7 @@ public struct DraftCard: Sendable, Equatable {
         for (index, attachment) in card.attachments.enumerated() {
             let limit = MailDraft.Limits().attachmentBytes
             let data: Data
-            switch SafeFile.read(folder.appendingPathComponent(attachment.path), limit: limit - total) {
+            switch SafeFile.read(folder.appendingPathComponent(attachment.path), under: folder, limit: limit - total) {
             case .ok(let read): data = read
             case .refused(let why) where why.hasPrefix("larger than"): throw Refused.tooLarge
             default: throw Refused.attachment(index)   // gone, a link, not a plain file, or not the person's

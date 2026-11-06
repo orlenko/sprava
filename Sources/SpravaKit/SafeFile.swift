@@ -17,6 +17,22 @@ public enum SafeFile {
         return read(fd: fd, limit: limit)
     }
 
+    /// A file below `root`, opened from `root` down with no symbolic link anywhere on the way (`O_NOFOLLOW_ANY`): a
+    /// folder in a binder linked to one elsewhere never leads a read out of it. Then the checks of `read`.
+    public static func read(_ file: URL, under root: URL, limit: Int) -> Outcome {
+        let base = root.standardizedFileURL.pathComponents, path = file.standardizedFileURL.pathComponents
+        guard path.count > base.count, Array(path.prefix(base.count)) == base else { return .refused("outside the folder it is read from") }
+        let dir = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard dir >= 0 else { return errno == ENOENT || errno == ENOTDIR ? .missing : .unreadable(String(cString: strerror(errno))) }
+        defer { close(dir) }
+        var fd: Int32
+        repeat { fd = openat(dir, path.dropFirst(base.count).joined(separator: "/"), O_RDONLY | O_NOFOLLOW_ANY | O_CLOEXEC | O_NONBLOCK) }
+        while fd < 0 && errno == EINTR
+        if fd < 0 { return errno == ELOOP ? .refused("a symbolic link, or inside a folder that is one") : openFailure(errno) }
+        defer { close(fd) }
+        return read(fd: fd, limit: limit)
+    }
+
     /// What a failed `open` means for the caller.
     package static func openFailure(_ code: Int32) -> Outcome {
         switch code {
