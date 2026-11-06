@@ -80,6 +80,28 @@ import Testing
         #expect(out["begins"] == nil)
     }
 
+    /// A reading by Claude in the clerk's place says so on the card and in its notes; any other name is the clerk's (decisions.md D40).
+    @Test func aSummaryNamesTheEngineThatWroteIt() {
+        func card(_ by: String?) -> (JSONObject, [String]) {
+            var reading = JSONObject([(key: "class", value: .str("action")), (key: "summary", value: .str("An invented rent notice.")),
+                                      (key: "unread_windows", value: .int(1))])
+            if let by { reading.set("read_by", .string(by)) }
+            let provenance = JSONObject([(key: "intake", value: .obj([])), (key: "reading", value: .object(reading))])
+            let p = Proposal.make(title: "Invented card", actor: actor, ops: [file("a.txt")], provenance: provenance)
+            return (p.review(describe: { _ in "" }), p.intakeNotes)
+        }
+        let (claude, notes) = card("Claude")
+        #expect(claude["summary_by"] == .str("Claude"))
+        #expect(notes.contains("Claude reads it as asks you to do something"))
+        #expect(notes.contains("Claude\u{2019}s summary, in its own words: An invented rent notice."))
+        #expect(notes.contains("Claude read only part of it"))
+        for by in [nil, "Invented Engine"] {
+            let (clerk, notes) = card(by)
+            #expect(clerk["summary_by"] == nil)
+            #expect(notes.contains("the clerk\u{2019}s summary, in its own words: An invented rent notice."))
+        }
+    }
+
     @Test func aReasonThatOnlyDescribesTheDocumentIsNoWarningButAnyOtherIs() {
         func warned(_ reason: String) -> Bool {
             let out = review([todo("Invented")], provenance: JSONObject([(key: "escalate", value: .array([.string(reason)]))]))

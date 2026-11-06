@@ -51,7 +51,7 @@ struct ReviewCard: View {
             }
             if let summary = review.summary {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("The clerk\u{2019}s summary").font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: review.summaryLabel).font(.caption).foregroundStyle(.secondary)
                     Text(verbatim: summary).textSelection(.enabled)
                 }
             } else if let begins = review.begins {

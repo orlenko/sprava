@@ -36,6 +36,8 @@ struct CardReview: Equatable {
     var date: String?
     var sender: String?
     var summary: String?
+    /// Who wrote the summary, when not the clerk: "Claude" (decisions.md D40).
+    var summaryBy: String?
     var begins: String?
     var fromIntake = false
     var files: [File] = []
@@ -44,6 +46,9 @@ struct CardReview: Equatable {
     var warnings: [String] = []
 
     init() {}
+
+    /// The caption above the summary.
+    var summaryLabel: String { summaryBy.map { "\($0)\u{2019}s summary" } ?? "The clerk\u{2019}s summary" }
 
     init(_ v: JSONValue?) {
         guard let v else { return }
@@ -54,6 +59,7 @@ struct CardReview: Equatable {
         date = v["date"]?.stringValue
         sender = v["sender"]?.stringValue
         summary = v["summary"]?.stringValue
+        summaryBy = v["summary_by"]?.stringValue
         begins = v["begins"]?.stringValue
         fromIntake = v["from_intake"] == .bool(true)
         files = (v["files"]?.arrayValue ?? []).compactMap { f in
