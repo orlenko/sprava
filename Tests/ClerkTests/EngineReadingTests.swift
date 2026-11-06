@@ -119,6 +119,32 @@ import Testing
         #expect(doc.items.contains { $0.flags.contains("added by code: the document asks for a reply") })
     }
 
+    /// A dated request the engine left out is named on the card and makes the reading partial, as for the clerk.
+    @Test func aDatedRequestTheEngineLeftOutIsNamed() async {
+        let note = "Notes for the week.\nPlease return the signed form by December 1, 2026."
+        let (doc, _) = await read(ScriptedEngine(.success(Self.answer(items: []))), from: "me@example.invalid", to: "me@example.invalid", text: note)
+        #expect(doc.items.isEmpty)
+        #expect(doc.notCovered.map(\.text) == ["Please return the signed form by December 1, 2026."])
+        #expect(doc.outcome == "partial")
+        // In mail the person wrote to others, it is a request of them.
+        let (sent, _) = await read(ScriptedEngine(.success(Self.answer(items: []))), from: "me@example.invalid", to: "supplier@example.com", text: note)
+        #expect(sent.notCovered.isEmpty && sent.outcome == "complete")
+    }
+
+    /// The document's own words asking for a reply add the reply item even when the engine says none is needed.
+    @Test func aReplyTheDocumentAsksForIsAddedWhateverTheEngineSays() async {
+        let (doc, _) = await read(ScriptedEngine(.success(Self.answer(reply: false, items: []))), text: "Please reply to confirm the date.")
+        #expect(doc.items.contains { $0.flags.contains("added by code: the document asks for a reply") })
+    }
+
+    /// Items listed past those read make the reading partial, whatever was kept from the rest.
+    @Test func itemsListedPastThoseReadMakeItPartial() async {
+        let notes = (0..<Clerk.engineItems).map { _ in Self.item("Could you please send the invoice", "Send the invoice", "note") }
+        let (doc, _) = await read(ScriptedEngine(.success(Self.answer(items: notes + [Self.item("I will call you on Friday", "Call", "call")]))))
+        #expect(!doc.items.contains { $0.action == "call" } && doc.dropped == 0)
+        #expect(doc.outcome == "partial")
+    }
+
     @Test func aLongDocumentIsSentInPartAndSaysSo() async {
         let long = text + " " + String(repeating: "Background words of the minutes. ", count: 5_000)
         let engine = ScriptedEngine(.success(Self.answer(items: [])))

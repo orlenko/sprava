@@ -103,7 +103,9 @@ extension Clerk {
             items.append(item)
         }
         items.sort { $0.sentence.start < $1.sentence.start }
-        if doc.replyNeeded { Self.addReplyItem(&items, title: doc.title, sentences: sentences, dated: dated, locale: locale, binder: binder) }
+        if wroteTo == nil, doc.replyNeeded || facts.signals.contains("reply") {
+            Self.addReplyItem(&items, title: doc.title, sentences: sentences, dated: dated, locale: locale, binder: binder)
+        }
         let found = items.count
         var interp = Interpretation(id: doc.id, event: doc.id, model: engine.name)
         interp.items = Array(items.prefix(Self.documentItems))
@@ -111,9 +113,18 @@ extension Clerk {
         doc.items = interp.items
         doc.calls += interp.calls
         if text.count < whole.count { doc.unread = 1 }
-        // The engine is the careful reading (adaptation-layer §4.4), so nothing is escalated: what it could not do is
-        // said by a partial outcome, which the card shows.
-        if doc.unread > 0 || doc.dropped > 0 || found > Self.documentItems { doc.outcome = "partial" }
+        // A sentence that asks something by a date and that no item covers is kept, as for the clerk, so a to-do the
+        // engine left out is named on the card. In mail the person wrote, such requests are of others.
+        if wroteTo == nil {
+            doc.notCovered = sentences.filter { s in
+                !doc.items.contains(where: { $0.sentence == s }) && Self.asksByDate(s, dated: dated, locale: locale)
+            }
+        }
+        // The engine is the careful reading (adaptation-layer §4.4), so nothing is escalated: what it could not do, or
+        // listed past what is read, is said by a partial outcome, which the card shows.
+        if doc.unread > 0 || doc.dropped > 0 || found > Self.documentItems || listed.count > Self.engineItems || !doc.notCovered.isEmpty {
+            doc.outcome = "partial"
+        }
         return .success(doc)
     }
 }

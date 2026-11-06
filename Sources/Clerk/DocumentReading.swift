@@ -166,6 +166,18 @@ extension Clerk {
         return head + "\nThe document begins:\n" + start
     }
 
+    static let askingWords = ["please", "must", "required", "reply", "respond", "return", "sign", "submit", "pay", "send", "confirm",
+                              "veuillez", "devez", "doit", "retourner", "signer", "payer", "répondre", "confirmer"]
+
+    /// Whether a sentence asks something by a date on or after the document's: one no item covers is a part not read (§4.4).
+    static func asksByDate(_ s: TextSpan, dated: CalendarDate, locale: String) -> Bool {
+        // The words first: they are cheap, and most sentences of a long document ask nothing.
+        let lower = s.text.lowercased()
+        guard askingWords.contains(where: { lower.range(of: "\\b" + $0 + "\\b", options: .regularExpression) != nil }),
+              let found = DateGrammar.scan(s.text, anchor: dated, locale: locale), let d = found.date else { return false }
+        return d >= dated
+    }
+
     /// Whom the person wrote to, when they wrote this mail and someone else is among its recipients (issue #594);
     /// nil otherwise. A note they mailed only to themselves, or to no one named, holds their own to-dos.
     static func wroteTo(_ reading: IntakeReading, own ownAddresses: Set<String>) -> [String]? {
@@ -339,13 +351,7 @@ extension Clerk {
         }
         // One more reading for dated sentences that ask something and that no item covers, as for notes
         // (capture-event-v0 §10.5): a smaller prompt recovers items a full window missed. At most twelve.
-        let asking = ["please", "must", "required", "reply", "respond", "return", "sign", "submit", "pay", "send", "confirm",
-                      "veuillez", "devez", "doit", "retourner", "signer", "payer", "répondre", "confirmer"]
-        func asksByDate(_ s: TextSpan) -> Bool {
-            guard let found = DateGrammar.scan(s.text, anchor: dated, locale: locale), let d = found.date, d >= dated else { return false }
-            let lower = s.text.lowercased()
-            return asking.contains { lower.range(of: "\\b" + $0 + "\\b", options: .regularExpression) != nil }
-        }
+        func asksByDate(_ s: TextSpan) -> Bool { Self.asksByDate(s, dated: dated, locale: locale) }
         let missed = sentences.filter { s in !interp.items.contains(where: { $0.sentence == s }) && asksByDate(s) }.prefix(12)
         if !missed.isEmpty, interp.items.count < Self.documentItems {
             doc.calls += 1
