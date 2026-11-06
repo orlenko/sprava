@@ -60,6 +60,9 @@ struct ReviewCard: View {
                     Text(verbatim: "\u{201C}\(begins)\u{201D}").textSelection(.enabled)
                 }
             }
+            if let draft = review.draft {
+                DraftFields(draft: draft) { file in Task { await actions.showInFinder(file, section.folder) } }
+            }
             if !review.files.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(review.files) { file in
@@ -332,6 +335,43 @@ struct KeepingRows: View {
                 HStack { Spacer(); Button("Close") { actions.showPreview = false }.keyboardShortcut(.defaultAction) }.padding()
             }
             .frame(width: 720, height: 560)
+        }
+    }
+}
+
+/// An email draft as it would leave the Mac (decisions.md D41): every field as inert text, the body in full, and each
+/// attachment with its private mark. Nothing a model wrote is rendered as anything but text.
+struct DraftFields: View {
+    let draft: CardReview.Draft
+    var show: (CardReview.File) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            field("To", draft.to.joined(separator: ", "))
+            if !draft.cc.isEmpty { field("Cc", draft.cc.joined(separator: ", ")) }
+            field("Subject", draft.subject)
+            ScrollView {
+                Text(verbatim: draft.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 240)
+            .padding(6)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            if !draft.attachments.isEmpty {
+                Text(draft.attachments.count == 1 ? "Attached" : "Attached (\(draft.attachments.count))").font(.caption).foregroundStyle(.secondary)
+                ForEach(draft.attachments) { a in
+                    HStack(spacing: 6) {
+                        Button(a.file.label) { show(a.file) }.buttonStyle(.link)
+                        if a.isPrivate { Text("Private").font(.caption2.weight(.semibold)).foregroundStyle(.orange) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func field(_ name: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(name).font(.caption).foregroundStyle(.secondary).frame(width: 52, alignment: .leading)
+            Text(verbatim: value).textSelection(.enabled)
         }
     }
 }

@@ -1,6 +1,8 @@
 import Foundation
 import SpravaKit
 import SpravaTestSupport
+import SwiftUI
+import AppKit
 import Testing
 @testable import SpravaApp
 
@@ -82,6 +84,39 @@ import Testing
     @Test func theSummarySaysWhoWroteIt() {
         #expect(CardReview(.obj([("summary", .str("An invented notice."))])).summaryLabel == "The clerk\u{2019}s summary")
         #expect(CardReview(.obj([("summary", .str("An invented notice.")), ("summary_by", .str("Claude"))])).summaryLabel == "Claude\u{2019}s summary")
+    }
+
+    /// A draft card shows its fields and its button says where it goes; it is approved as it is.
+    @Test func aDraftCardSaysPutInDrafts() {
+        let v = JSONValue.obj([("kind", .str("draft")), ("draft", .obj([("to", .array([.str("supplier@example.com")])), ("cc", .array([])),
+            ("subject", .str("Invoice")), ("body", .str("Invented body.")),
+            ("attachments", .array([.obj([("path", .str("documents/notice.txt")), ("name", .str("notice.txt")), ("private", .bool(true))])]))]))])
+        let review = CardReview(v)
+        #expect(review.draft?.subject == "Invoice" && review.draft?.attachments.first?.isPrivate == true)
+        #expect(review.draft?.attachments.first?.file.label == "Show \u{201C}notice.txt\u{201D} in Finder")
+        #expect(card(review).action(editing: nil)?.title == "Put in Drafts")
+        // A card Sprava did not write shows none of it and offers nothing to carry out.
+        #expect(card(review, verified: false).shown.draft == nil && card(review, verified: false).action(editing: nil) == nil)
+    }
+
+    /// The draft's fields draw as text, its body in full in a bounded box, its private attachment marked. With
+    /// SPRAVA_RENDER_ARTIFACTS_DIR set, it saves what it drew.
+    @Test func aDraftCardDraws() throws {
+        let draft = CardReview.Draft(to: ["supplier@example.com"], cc: ["office@example.com"], subject: "Invoice for October",
+                                     body: "Hello,\n\nCould you send the invoice for October? The notice is attached.\n\nThanks",
+                                     attachments: [.init(path: "documents/notice.txt", name: "notice.txt", isPrivate: true),
+                                                   .init(path: "documents/plan.txt", name: "plan.txt", isPrivate: false)])
+        let host = NSHostingView(rootView: DraftFields(draft: draft, show: { _ in }).padding(12).frame(width: 520))
+        host.frame = NSRect(x: 0, y: 0, width: 520, height: 360)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        #expect(bitmap.pixelsWide > 0)
+        if let directory = ProcessInfo.processInfo.environment["SPRAVA_RENDER_ARTIFACTS_DIR"] {
+            let destination = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to: destination.appendingPathComponent("draft-card-light.png"))
+        }
     }
 
     @Test func declineSaysWhatHappensToTheFile() {

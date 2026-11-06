@@ -4,7 +4,23 @@ import SpravaKit
 
 /// What a review card says first, as the runtime reads it from the card (`Proposal.review`).
 struct CardReview: Equatable {
-    enum Kind: String { case filing, change, manual, plain }
+    enum Kind: String { case filing, change, manual, plain, draft }
+
+    /// An email draft's fields, each shown as it would leave the Mac (decisions.md D41).
+    struct Draft: Equatable {
+        struct Attachment: Identifiable, Equatable {
+            let path: String
+            let name: String
+            let isPrivate: Bool
+            var id: String { path }
+            var file: File { File(path: path, name: name, kind: "document") }
+        }
+        let to: [String]
+        let cc: [String]
+        let subject: String
+        let body: String
+        let attachments: [Attachment]
+    }
 
     struct File: Identifiable, Equatable {
         let path: String
@@ -44,6 +60,7 @@ struct CardReview: Equatable {
     var todos: [Todo] = []
     var changes: [Change] = []
     var warnings: [String] = []
+    var draft: Draft?
 
     init() {}
 
@@ -76,6 +93,13 @@ struct CardReview: Equatable {
             return Change(index: i, line: c["line"]?.stringValue ?? "", notes: strings(c["notes"]))
         }
         warnings = strings(v["warnings"])
+        if kind == .draft, let d = v["draft"] {
+            draft = Draft(to: strings(d["to"]), cc: strings(d["cc"]), subject: d["subject"]?.stringValue ?? "", body: d["body"]?.stringValue ?? "",
+                          attachments: (d["attachments"]?.arrayValue ?? []).compactMap { a in
+                              guard let path = a["path"]?.stringValue, let name = a["name"]?.stringValue else { return nil }
+                              return .init(path: path, name: name, isPrivate: a["private"] == .bool(true))
+                          })
+        }
     }
 
     /// Says what happened to files the clerk left out of review, and that they are still there. A copy is the same bytes,
@@ -126,6 +150,8 @@ extension BinderActions.Card {
     /// because Sprava did not write it or because the runtime refuses to apply it (a card asking for manual work).
     func action(editing edits: [BinderActions.Editable]?) -> (title: String, enabled: Bool)? {
         guard verified, review.kind != .manual else { return nil }
+        // A draft is approved as it is; its button says where it goes.
+        if review.kind == .draft { return review.draft == nil ? nil : ("Put in Drafts", true) }
         let skipped = Set((edits ?? []).filter { !$0.include }.map(\.index))
         let files = review.files.count
         let todos = review.todos.filter { !skipped.contains($0.index) }.count

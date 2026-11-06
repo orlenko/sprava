@@ -46,6 +46,21 @@ extension Proposal {
 
         var out = JSONObject()
         let manual = ops.isEmpty || provenance?["manual_repair"] == .bool(true)
+        // An email draft (decisions.md D41) shows every field it would carry out of the Mac, as inert text.
+        if let d = provenance?["draft"]?.objectValue {
+            func strings(_ key: String) -> JSONValue { .array((d[key]?.arrayValue ?? []).filter { $0.stringValue != nil }) }
+            let attachments: [JSONValue] = (d["attachments"]?.arrayValue ?? []).compactMap { a in
+                guard let path = a["path"]?.stringValue else { return nil }
+                return .obj([("path", .string(path)), ("name", .string((path as NSString).lastPathComponent)), ("private", .bool(a["private"] == .bool(true)))])
+            }
+            out.set("kind", .str("draft"))
+            out.set("draft", .obj([("to", strings("to")), ("cc", strings("cc")), ("subject", d["subject"] ?? .str("")),
+                                   ("body", d["body"] ?? .str("")), ("attachments", .array(attachments))]))
+            out.set("warnings", Self.strings(["Approving puts this draft in the Drafts folder of this binder\u{2019}s email account. Sprava never sends it: you send it from your mail program."]
+                + (attachments.contains { $0["private"] == .bool(true) } ? ["It attaches private documents: they leave this Mac with the draft."] : [])))
+            out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
+            return out
+        }
         out.set("kind", .string(manual ? "manual" : files.isEmpty ? "change" : "filing"))
         if let heading { out.set("heading", .string(heading)) }
         if let date { out.set("date", .string(date)) }
