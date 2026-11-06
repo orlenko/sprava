@@ -46,16 +46,18 @@ public enum IMAPNativeFetch {
     }
     /// Runs the worker once in `directory`, a private folder, and returns its exit status. A run past its time,
     /// memory or disk budget is stopped and refused.
-    static func invoke(_ arguments: [String], input: Data?, home directory: URL, cancelled: @Sendable () -> Bool = { false }) throws -> Int32 {
+    /// `script` is the read-only exporter unless a caller names another app-owned worker (the draft worker, D41).
+    static func invoke(_ arguments: [String], input: Data?, home directory: URL, script: String = IMAPExporterSource.script,
+                       name: String = "imap-fetch.py", cancelled: @Sendable () -> Bool = { false }) throws -> Int32 {
         let program = try physical(installedProgram()), home = try physical(directory)
         guard let state = try StateDirectory.open(home) else { throw IMAPIntakeImport.Refused.unavailable }
-        try state.createImmutable(Data(IMAPExporterSource.script.utf8), to: "imap-fetch.py")
+        try state.createImmutable(Data(script.utf8), to: name)
         try state.write(Data(profile(program: program, home: home).utf8), to: "sandbox.sb")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         // Isolated stdlib only: no site-packages, .pth hooks, user modules, shell or profile.
         process.arguments = ["-f", home.appendingPathComponent("sandbox.sb").path, program.path,
-                             "-I", "-S", "-B", home.appendingPathComponent("imap-fetch.py").path] + arguments
+                             "-I", "-S", "-B", home.appendingPathComponent(name).path] + arguments
         process.environment = environment(home: home)
         process.currentDirectoryURL = home
         if let input {
