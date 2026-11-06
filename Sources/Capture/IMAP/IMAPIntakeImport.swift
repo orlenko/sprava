@@ -89,7 +89,9 @@ public enum IMAPIntakeImport {
             guard try canPublish() else { throw Refused.unavailable }; _ = try connections.current(config)
             let base = "imap-\(config.id.uuidString)-\(validity)-\(uid)"
             var fields = "---\n"
-            for (key, value) in [("subject", email.subject), ("from", email.from), ("date", email.date), ("to", email.to)] {
+            // From and To as written decide whose mail it is (#598); the decoded ones are for showing.
+            for (key, value) in [("subject", email.subject), ("from", email.from), ("date", email.date), ("to", email.to),
+                                 ("from_header", email.fromHeader), ("to_header", email.toHeader)] {
                 fields += key + ": " + JSONWriter.compact(.str(String((value ?? "").prefix(4_096)))) + "\n"
             }
             let data = Data((fields + "---\n\n" + decoded.text + "\n\nOriginal email and all MIME parts are retained in the matching attachments folder. This Markdown rendering and attachment extraction are bounded.\n").utf8)
