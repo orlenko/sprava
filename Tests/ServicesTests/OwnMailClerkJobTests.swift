@@ -88,3 +88,64 @@ import Testing
         #expect(card.review(describe: { _ in "" })["summary"] == .str("An email about an invoice."))
     }
 }
+
+/// With an engine for the binder, it reads the intake document in the clerk's place, and the log names it with fixed
+/// words only (decisions.md D40). Invented mail only.
+@Suite(.serialized) struct EngineClerkJobTests {
+    final class Engine: DocumentEngine, @unchecked Sendable {
+        let name = "Claude"
+        let reply: Result<JSONValue, ClerkModelError>
+        init(_ reply: Result<JSONValue, ClerkModelError>) { self.reply = reply }
+        func answer(instructions: String, prompt: String) async throws -> JSONValue { try reply.get() }
+    }
+
+    func run(_ engine: Engine?) throws -> (Proposal, [String]) {
+        let own = OwnMailClerkJobTests()
+        let (c, folder) = try own.setup(from: "Invented Supplier <supplier@example.com>", connection: nil)
+        let model = ScriptedModel(extractions: [], contextSize: 8192)
+        model.document = .obj([("class", .str("action")), ("title", .str("")), ("date_text", .str("")),
+                               ("summary", .str("The clerk's summary.")), ("reply_needed", .bool(false))])
+        let lines = LockedLines()
+        let context = JobContext(support: c.support, commands: c, rows: { Shelf.rows(registry: nil, picked: [folder]) }, commandQueue: nil,
+                                 log: { lines.append($0) })
+        let expected = folder.standardizedFileURL.path
+        #expect(ClerkJob.run(context, model: .success(model), engine: { asked in
+            asked.standardizedFileURL.path == expected ? engine : nil
+        }).read == 1)
+        let card = try #require(ProposalStore.list(in: folder).map(\.0).first { $0.state == "proposed" })
+        return (card, lines.all)
+    }
+
+    final class LockedLines: @unchecked Sendable {
+        private let lock = NSLock(); private var lines: [String] = []
+        func append(_ s: String) { lock.withLock { lines.append(s) } }
+        var all: [String] { lock.withLock { lines } }
+    }
+
+    @Test func anEngineReadsTheDocumentAndTheCardSaysSo() throws {
+        let ask = JSONValue.obj([("quote", .str("Could you please send the invoice")), ("title", .str("Send the invoice")),
+                                 ("action", .str("send")), ("when_text", .str("this week"))])
+        let (card, lines) = try run(Engine(.success(.obj([("class", .str("action")), ("title", .str("")), ("date_text", .str("")),
+                                                          ("summary", .str("A supplier asks for the invoice.")), ("reply_needed", .bool(false)),
+                                                          ("items", .array([ask]))]))))
+        let review = card.review(describe: { _ in "" })
+        #expect(review["summary"] == .str("A supplier asks for the invoice."))
+        #expect(card.raw["provenance"]?["reading"]?["read_by"] == .str("Claude"))
+        #expect(card.ops.contains { $0["op"] == .str("add_item") })
+        #expect(lines.contains { $0.hasPrefix("clerk document ") && $0.contains(" read_by=Claude ") })
+    }
+
+    @Test func aFailedEngineLeavesTheClerkAndLogsOnlyTheReason() throws {
+        let (card, lines) = try run(Engine(.failure(.unavailable("daily cap"))))
+        let review = card.review(describe: { _ in "" })
+        #expect(review["summary"] == .str("The clerk's summary."))
+        #expect(card.raw["provenance"]?["reading"]?["read_by"] == nil)
+        #expect(lines.contains { $0.contains(" engine_failure=unavailable__daily_cap__ ") })
+    }
+
+    @Test func noEngineIsTheClerkAsBefore() throws {
+        let (card, lines) = try run(nil)
+        #expect(card.review(describe: { _ in "" })["summary"] == .str("The clerk's summary."))
+        #expect(!lines.contains { $0.contains("read_by") || $0.contains("engine_failure") })
+    }
+}

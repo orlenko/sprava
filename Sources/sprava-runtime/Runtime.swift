@@ -191,7 +191,9 @@ final class Runtime: @unchecked Sendable {
     }
 
     func clerk() -> JobOutcome {
-        let (outcome, read) = ClerkJob.run(jobContext(), model: AppleClerkModel.load().map { $0 as any ClerkModel }.mapError { $0 as Error })
+        let claude = queue.sync { xpc?.claude }
+        let (outcome, read) = ClerkJob.run(jobContext(), model: AppleClerkModel.load().map { $0 as any ClerkModel }.mapError { $0 as Error },
+                                           engine: { folder in await claude?.intakeEngine(for: folder) })
         if read > 0 { queue.async { [self] in model?.last_success = ISOTime.string(Date()) } }
         return outcome
     }

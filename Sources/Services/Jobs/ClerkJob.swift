@@ -10,8 +10,10 @@ import SpravaKit
 /// queue. Gated on a model with a context of at least 8,192 tokens for the MVP (mvp.md question 7), unless
 /// `developer.json` sets `"clerk_any_model": true`.
 public enum ClerkJob {
-    /// The outcome, and how many readings it made (the runtime records the model's last success when any).
+    /// The outcome, and how many readings it made (the runtime records the model's last success when any). `engine` gives
+    /// the engine that reads an intake document of a binder in the clerk's place, when there is one (decisions.md D40).
     public static func run(_ context: JobContext, model: Result<any ClerkModel, Error>, budget: TimeInterval = 45,
+                           engine: @escaping @Sendable (URL) async -> (any DocumentEngine)? = { _ in nil },
                            clock: () -> Date = Date.init) -> (outcome: JobOutcome, read: Int) {
         guard let commands = context.commands else { return (context.noCommands, 0) }
         guard case .success(let model) = model else { return (.skipped, 0) }
@@ -57,19 +59,29 @@ public enum ClerkJob {
                 }
             let t0 = clock()
             let locale = IntakeReading.language(of: entry.reading.text)
-            let doc = waitFor { await Clerk(model: model).readDocument(entry.reading, name: entry.name, binder: binder, locale: locale,
-                                                                  ownAddresses: ownAddresses) }
+            let folder = URL(fileURLWithPath: entry.binder, isDirectory: true)
+            let doc = waitFor {
+                await Clerk(model: model).readDocument(entry.reading, name: entry.name, binder: binder, locale: locale,
+                                                       ownAddresses: ownAddresses, engine: await engine(folder))
+            }
+            // Which engine read it, or the fixed reason it did not: never content.
+            let by = (doc.readBy.map { " read_by=\($0)" } ?? "") + (doc.engineFailure.map { " engine_failure=\(logWord($0))" } ?? "")
             let seconds = clock().timeIntervalSince(t0)
             if doc.title == nil && doc.summary == nil && doc.items.isEmpty {
                 context.onCommandQueue { watcher.failReading(entry) }
-                context.log("clerk document outcome=failed calls=\(doc.calls) ms=\(Int(seconds * 1000))")
+                context.log("clerk document outcome=failed calls=\(doc.calls)\(by) ms=\(Int(seconds * 1000))")
             } else {
                 let outcome = context.onCommandQueue { watcher.commitReading(entry, doc, commands: commands) }
-                context.log("clerk document outcome=\(doc.outcome) class=\(doc.documentClass) items=\(outcome.items) escalated=\(outcome.escalated) card_changed=\(outcome.cardChanged) calls=\(doc.calls) ms=\(Int(seconds * 1000))")
+                context.log("clerk document outcome=\(doc.outcome) class=\(doc.documentClass) items=\(outcome.items) escalated=\(outcome.escalated) card_changed=\(outcome.cardChanged) calls=\(doc.calls)\(by) ms=\(Int(seconds * 1000))")
             }
             read += 1
         }
         return (.ok, read)
+    }
+
+    /// A reason as one log word: letters, digits and underscores only, at most 40.
+    static func logWord(_ s: String) -> String {
+        String(s.map { $0.isLetter || $0.isNumber ? $0 : "_" }.prefix(40))
     }
 
     /// The developer switch that lifts the model gate; read without following a link.

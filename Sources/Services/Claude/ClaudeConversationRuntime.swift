@@ -1,3 +1,4 @@
+import Clerk
 import CryptoKit
 import BinderStore
 import Backup
@@ -29,6 +30,8 @@ public actor ClaudeConversationRuntime {
         var replaceNamed: @Sendable (String, String?) throws -> Void = { _, _ in }
     }
     typealias MakeDriver = @Sendable (URL, String, UUID, UUID, String, URL?, ClaudeAppTools?, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
+    /// A tool-free Sonnet launch, for reading one intake document (decisions.md D40): program, credential, home id, session, policy.
+    typealias MakeReader = @Sendable (URL, String, UUID, UUID, String, @escaping @Sendable (Int32) throws -> Void) async throws -> Driver
     typealias ReadContext = @Sendable (URL, Bool, Bool, String, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext
     typealias SearchBinder = @Sendable (URL, String, Int, @escaping @Sendable () -> Bool) throws -> ClaudeBinderContext.Found
     /// The binder writer the to-do tools go through. The runtime attaches it at start.
@@ -55,6 +58,7 @@ public actor ClaudeConversationRuntime {
     static let closingTimeLimit: Duration = .seconds(120)
     private let secrets: Secrets
     private let makeDriver: MakeDriver
+    private let makeReader: MakeReader
     private let readContext: ReadContext
     private let searchBinder: SearchBinder
     private let admission: AgentSessionAdmission
@@ -78,8 +82,12 @@ public actor ClaudeConversationRuntime {
 
     init(support: URL, secrets: Secrets, makeDriver: @escaping MakeDriver, context: @escaping ReadContext,
          search: @escaping SearchBinder = { _, _, _, _ in .init(sources: [], incomplete: 0) },
-         chooser: @escaping @Sendable (String) -> ClaudeAccountChooser.Outcome = { ClaudeAccountChooser.run($0) }, available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
+         chooser: @escaping @Sendable (String) -> ClaudeAccountChooser.Outcome = { ClaudeAccountChooser.run($0) }, available: @escaping @Sendable (URL) throws -> Bool = { _ in true },
+         makeReader: MakeReader? = nil) throws {
         self.support = support; self.available = available; self.secrets = secrets; self.makeDriver = makeDriver; readContext = context; searchBinder = search
+        self.makeReader = makeReader ?? { program, credential, home, session, policy, onSpawn in
+            try await makeDriver(program, credential, home, session, policy, nil, nil, onSpawn)
+        }
         connections = try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite"))
         receipts = try ConversationTurnStore(at: support.appendingPathComponent("binder-store/conversation.sqlite"))
         state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
@@ -113,7 +121,64 @@ public actor ClaudeConversationRuntime {
                 $0.kind == "offload" && $0.binder == path && ["queued", "running", "waiting_for_icloud"].contains($0.state)
             }
             return listed && !offloading
+        }, makeReader: { program, credential, home, session, policy, onSpawn in
+            try await ClaudeNativeConversation.driver(program: program, support: support, credential: credential, connection: home, session: session,
+                                                      policy: policy, binder: nil, appTools: nil, model: .sonnet, onSpawn: onSpawn)
         })
+    }
+
+    // MARK: - Reading intake in the clerk's place (decisions.md D40)
+
+    /// The engine for an intake document in `folder`: only when Claude is set up, the binder is connected to it with
+    /// intake shared, and it is one the person keeps here. Nil otherwise, and the clerk reads it.
+    public func intakeEngine(for folder: URL) -> (any DocumentEngine)? {
+        guard (try? state.account()) != nil, let scope = try? connections.connection(for: folder), scope.intake,
+              (try? available(folder)) == true else { return nil }
+        return ClaudeIntakeReading.Engine(folder: folder, runtime: self)
+    }
+
+    /// One tool-free Sonnet call: `instructions` as the session's policy and `prompt` as its one line. Every failure is a
+    /// fixed reason, and the clerk reads the document instead.
+    func readIntake(folder: URL, instructions: String, prompt: String) async throws -> JSONValue {
+        func refused(_ why: String) -> ClerkModelError { ClaudeIntakeReading.refusal(why) }
+        guard !configuring else { throw refused("busy") }
+        do { try await recover() } catch { throw refused("unavailable") }
+        // The connection is checked again at the call: one disconnected or narrowed since is not read.
+        guard let account = try? state.account(), let scope = try? connections.connection(for: folder), scope.intake,
+              (try? available(folder)) == true else { throw refused("not shared") }
+        guard ClaudeIntakeReading.Cap(support: support).take() else { throw refused("daily cap") }
+        let home = UUID()
+        guard let session = try? state.session(connection: home, generation: UUID(), hash: "intake") else { throw refused("unavailable") }
+        guard case .reserved(let lease) = await admission.reserve(sessionID: session.native, kind: .task) else {
+            try? state.exited(session, keep: false)
+            throw refused("busy")
+        }
+        var driver: Driver?
+        let outcome: Result<String?, ClerkModelError>
+        do {
+            let (_, credential) = try await chooseToken(ask: true, tried: [])
+            let made = try await makeReader(account.program, credential, home, session.native, instructions, { [state] pid in try state.spawned(session, pid: pid) })
+            driver = made
+            _ = await admission.started(lease); _ = await admission.beginTurn(lease)
+            outcome = .success(try await made.run(prompt, false))
+        } catch let failure as ClaudeReadOnlyTurn.Failure {
+            switch failure {
+            case .usageLimit, .usageLimitMidTurn: outcome = .failure(refused("usage limit"))
+            case .deadline: outcome = .failure(refused("deadline"))
+            case .authentication: outcome = .failure(refused("authentication"))
+            default: outcome = .failure(refused("failed"))
+            }
+        } catch Refused.noQuota { outcome = .failure(refused("usage limit")) }
+        catch { outcome = .failure(refused("failed")) }
+        // Released only once its process is known to be gone, as for a conversation turn, and before the next reading asks.
+        if driver?.exited() != false {
+            try? state.exited(session, keep: false)
+            try? removeHome(home)
+            _ = await admission.confirmedExit(lease)
+        }
+        let reply = try outcome.get()
+        guard let reply else { throw refused("interrupted") }
+        return try ClaudeIntakeReading.answer(reply)
     }
 
     public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_token_save", "claude_token_remove", "claude_chooser_set", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_closing_notes", "chat_file_and_clear", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
