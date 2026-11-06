@@ -131,6 +131,17 @@ import Testing
         #expect(sent.notCovered.isEmpty && sent.outcome == "complete")
     }
 
+    /// A due date in the sentence after the request is the item's, as for the clerk, even when the engine copied it from there.
+    @Test func aDueDateInTheNextSentenceIsTheItems() async {
+        let note = "Pay the inspection fee. Payment is due November 1, 2026."
+        let (doc, _) = await read(ScriptedEngine(.success(Self.answer(items: [Self.item("Pay the inspection fee", "Pay the fee", "pay", when: "November 1, 2026")]))),
+                                  from: "me@example.invalid", to: nil, text: note)
+        #expect(doc.items.count == 1)
+        #expect(doc.items.first?.whenResolved == CalendarDate(year: 2026, month: 11, day: 1))
+        #expect(doc.items.first?.flags.contains("date taken from the next sentence") == true)
+        #expect(doc.notCovered.isEmpty && doc.outcome == "complete")
+    }
+
     /// The document's own words asking for a reply add the reply item even when the engine says none is needed.
     @Test func aReplyTheDocumentAsksForIsAddedWhateverTheEngineSays() async {
         let (doc, _) = await read(ScriptedEngine(.success(Self.answer(reply: false, items: []))), text: "Please reply to confirm the date.")

@@ -98,11 +98,13 @@ extension Clerk {
                 continue
             }
             guard item.action != "note", !items.contains(where: { Self.repeats($0, item) }) else { continue }
+            Self.takeNextSentenceDate(&item, sentences: sentences, dated: dated, locale: locale)
             item.binder = binder?.name
             item.signals = ["document"]
             items.append(item)
         }
         items.sort { $0.sentence.start < $1.sentence.start }
+        Self.mergeBorrowedDates(&items, sentences: sentences)
         if wroteTo == nil, doc.replyNeeded || facts.signals.contains("reply") {
             Self.addReplyItem(&items, title: doc.title, sentences: sentences, dated: dated, locale: locale, binder: binder)
         }
@@ -116,8 +118,9 @@ extension Clerk {
         // A sentence that asks something by a date and that no item covers is kept, as for the clerk, so a to-do the
         // engine left out is named on the card. In mail the person wrote, such requests are of others.
         if wroteTo == nil {
+            let borrowed = Self.borrowedSentences(doc.items, sentences: sentences)
             doc.notCovered = sentences.filter { s in
-                !doc.items.contains(where: { $0.sentence == s }) && Self.asksByDate(s, dated: dated, locale: locale)
+                !doc.items.contains(where: { $0.sentence == s }) && !borrowed.contains(s) && Self.asksByDate(s, dated: dated, locale: locale)
             }
         }
         // The engine is the careful reading (adaptation-layer §4.4), so nothing is escalated: what it could not do, or

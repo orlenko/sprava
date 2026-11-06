@@ -166,6 +166,48 @@ extension Clerk {
         return head + "\nThe document begins:\n" + start
     }
 
+    /// Letters often say what to pay in one sentence and when in the next: a due date there is taken, and the card says
+    /// so. Only when the next sentence asks for nothing else ("Submit the permit application by November 1" is a task of
+    /// its own) and is about the same thing (`sameObligation`).
+    static func takeNextSentenceDate(_ item: inout ClerkItem, sentences: [TextSpan], dated: CalendarDate, locale: String) {
+        guard item.whenResolved == nil, ["pay", "send", "file", "call", "meet", "decide"].contains(item.action),
+              let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { return }
+        let next = sentences[i + 1].text
+        let lower = next.lowercased()
+        if asksOnlyFor(item.action, lower), let found = DateGrammar.scan(next, anchor: dated, locale: locale), let d = found.date, d >= dated,
+           sameObligation(item, next: next, dateText: found.text),
+           ["due", "by", "before", "deadline", "no later than", "échéance", "avant", "au plus tard", "dû", "due le"].contains(where: {
+               lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }) {
+            item.whenText = found.text
+            item.whenResolved = d
+            item.whenRole = .due
+            item.flags.append("date taken from the next sentence")
+        }
+    }
+
+    /// An item that took its date from the next sentence and an item read from that sentence with the same date and the
+    /// same task are one ("Your share is $1,240." / "The levy is due November 1."): the first, with its amount, stays. A
+    /// shared date and action are no evidence: the second must also name nothing the first does not, or the first
+    /// sentence must ask for nothing itself, so a different payment there stays.
+    static func mergeBorrowedDates(_ items: inout [ClerkItem], sentences: [TextSpan]) {
+        for item in items where item.flags.contains("date taken from the next sentence") {
+            guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
+            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.identity)
+            let asksNothing = Set(item.sentence.text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: taskVerbs)
+            items.removeAll {
+                $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
+                    && (similar($0.identity, item.identity) || $0.action == item.action
+                        && (asksNothing || FilingBinder.significantWords($0.identity).subtracting(taskVerbs).subtracting(plainWords).isSubset(of: mine)))
+            }
+        }
+    }
+
+    /// The sentences items took their dates from: an item covers the sentence after its own too.
+    static func borrowedSentences(_ items: [ClerkItem], sentences: [TextSpan]) -> [TextSpan] {
+        items.filter { $0.flags.contains("date taken from the next sentence") }
+            .compactMap { sentences.firstIndex(of: $0.sentence) }.filter { $0 + 1 < sentences.count }.map { sentences[$0 + 1] }
+    }
+
     static let askingWords = ["please", "must", "required", "reply", "respond", "return", "sign", "submit", "pay", "send", "confirm",
                               "veuillez", "devez", "doit", "retourner", "signer", "payer", "répondre", "confirmer"]
 
@@ -325,23 +367,7 @@ extension Clerk {
             }
             // A document holds much that is not the person's to do: only actions, or anything with a date, become items.
             guard item.action != "note", ["other", "review", "wait"].contains(item.action) == false || item.whenResolved != nil else { continue }
-            // Letters often say what to pay in one sentence and when in the next: a due date there is taken, and
-            // the card says so. Only when the next sentence asks for nothing else ("Submit the permit application by
-            // November 1" is a task of its own) and is about the same thing (`sameObligation`).
-            if item.whenResolved == nil, ["pay", "send", "file", "call", "meet", "decide"].contains(item.action),
-               let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count {
-                let next = sentences[i + 1].text
-                let lower = next.lowercased()
-                if Self.asksOnlyFor(item.action, lower), let found = DateGrammar.scan(next, anchor: dated, locale: locale), let d = found.date, d >= dated,
-                   Self.sameObligation(item, next: next, dateText: found.text),
-                   ["due", "by", "before", "deadline", "no later than", "échéance", "avant", "au plus tard", "dû", "due le"].contains(where: {
-                       lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }) {
-                    item.whenText = found.text
-                    item.whenResolved = d
-                    item.whenRole = .due
-                    item.flags.append("date taken from the next sentence")
-                }
-            }
+            Self.takeNextSentenceDate(&item, sentences: sentences, dated: dated, locale: locale)
             // A record mostly tells what others did; only a dated thing becomes the person's item.
             if doc.documentClass == "information", item.whenResolved == nil { continue }
             if interp.items.contains(where: { Self.repeats($0, item) }) { continue }
@@ -378,21 +404,11 @@ extension Clerk {
         // date and the same task are one ("Your share is $1,240." / "The levy is due November 1."): the first, with
         // its amount, stays. A shared date and action are no evidence: the second must also name nothing the first
         // does not, or the first sentence must ask for nothing itself, so a different payment there stays.
-        for item in interp.items where item.flags.contains("date taken from the next sentence") {
-            guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
-            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.identity)
-            let asksNothing = Set(item.sentence.text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: Self.taskVerbs)
-            interp.items.removeAll {
-                $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
-                    && (Self.similar($0.identity, item.identity) || $0.action == item.action
-                        && (asksNothing || FilingBinder.significantWords($0.identity).subtracting(Self.taskVerbs).subtracting(Self.plainWords).isSubset(of: mine)))
-            }
-        }
+        Self.mergeBorrowedDates(&interp.items, sentences: sentences)
         // What still asks something by a date and no item covers, after the second reading, is kept and makes the
         // reading partial (§4.4): an item that took its date from the next sentence covers that sentence too.
         Self.flagCapped(&interp.items, capped: interp.capped)
-        let borrowed = interp.items.filter { $0.flags.contains("date taken from the next sentence") }
-            .compactMap { sentences.firstIndex(of: $0.sentence) }.filter { $0 + 1 < sentences.count }.map { sentences[$0 + 1] }
+        let borrowed = Self.borrowedSentences(interp.items, sentences: sentences)
         // Items past the cap leave their sentences uncovered too, so the reading is partial and names them.
         let found = interp.items.count
         let cut = interp.items.dropFirst(Self.documentItems).map(\.sentence)
