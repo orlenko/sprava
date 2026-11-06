@@ -223,16 +223,19 @@ extension Commands {
             // written before the approval and made ready after, so an approved draft is always placed and an
             // unapproved one never is (integrations.md §5.2).
             let draft = DraftCard(proposal)
+            if proposal.raw["provenance"]?["draft"] != nil {
+                guard draft != nil, DraftCardRecord(support: support).contains(key(f, id)) else {
+                    throw Failure(message: "this card holds an email draft Sprava did not write, so it cannot be approved; nothing was changed")
+                }
+            }
             if let draft {
                 guard edited == nil else { throw Failure(message: "an email draft is approved as it is; nothing was approved") }
                 let message = try Self.draftMessage(draft, card: proposal.id, folder: f, support: support, now: now)
                 try DraftRequests(support: support).begin(id: proposal.id, binder: f, message: message, now: now)
             }
-            let applied: [JSONObject]
-            do { applied = try store.approve(proposal, edited: edited, now: now) } catch {
-                if draft != nil { try? DraftRequests(support: support).remove(id: proposal.id) }
-                throw error
-            }
+            // An approval that fails may still have written its batch: the request stays, and the runtime settles it
+            // from the binder's log (DraftPlacing).
+            let applied = try store.approve(proposal, edited: edited, now: now)
             if draft != nil { try DraftRequests(support: support).ready(id: proposal.id) }
             // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
             try recordDigests([id] + store.createdProposals, in: f)

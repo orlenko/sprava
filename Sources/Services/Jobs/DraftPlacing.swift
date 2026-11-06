@@ -13,6 +13,20 @@ enum DraftPlacing {
     /// A request still `approving` this long after it was written belongs to an approval that did not finish.
     static let settleAfter: TimeInterval = 600
 
+    /// Whether card `id`'s approval went through: its ops are in the binder's log (an approval writes them before it
+    /// marks the card), or the card says applied. False only when the card is readable, still proposed or rejected, and
+    /// the log holds none of its ops; nil when that cannot be told.
+    static func approved(_ id: String, in folder: URL) -> Bool? {
+        guard let log = try? TekaStore(folder: folder).readOpLog(), !log.torn else { return nil }
+        let aborted = Set(log.ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
+        if log.ops.contains(where: { $0["proposal"]?.stringValue == id && !aborted.contains($0["id"]?.stringValue ?? "") }) { return true }
+        switch ProposalStore.list(in: folder).first(where: { $0.0.id == id })?.0.state {
+        case "applied": return true
+        case "proposed", "rejected": return false
+        default: return nil
+        }
+    }
+
     /// What one run did, in fixed words: logged, and never content.
     enum Outcome: String, Equatable { case placed, present, waiting, failed, none }
 
@@ -24,9 +38,11 @@ enum DraftPlacing {
         for request in all where request.state == .approving && now.timeIntervalSince(request.created) > settleAfter {
             let folder = URL(fileURLWithPath: request.binder, isDirectory: true)
             guard (try? available(folder)) == true else { continue }
-            // Approved (its ops applied): it is placed. Anything else, or the card gone: the person never approved it.
-            let state = ProposalStore.list(in: folder).first { $0.0.id == request.id }?.0.state
-            if state == "applied" { try? requests.ready(id: request.id) } else { try? requests.remove(id: request.id) }
+            switch approved(request.id, in: folder) {
+            case true?: try? requests.ready(id: request.id)
+            case false?: try? requests.remove(id: request.id)
+            case nil: continue   // not known: kept, and the person can discard it from the binder's page
+            }
         }
         // The oldest that can go now: one whose binder is away or whose password is not here does not hold up the rest.
         let ready = requests.all().filter { $0.state == .ready }.sorted { $0.created < $1.created }

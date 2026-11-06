@@ -31,6 +31,7 @@ import Testing
         let card = try draft.proposal(actor: actor, catalog: Teka.read(folder).catalog, now: now)
         try ProposalStore.save(card, in: folder)
         try c.trustProposals([card.id], in: folder)
+        try c.recordDraftCard(card.id, in: folder)
         let listed = try JSONParser.parse(c.handle(JSONWriter.compact(.obj([("command", .str("proposals")), ("binder", .string(folder.path))])), now: now, today: today)).value
         return (card, try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .string(card.id) }?["digest"]))
     }
@@ -61,6 +62,33 @@ import Testing
         #expect(r["error"]?.stringValue?.contains("no email connection") == true)
         #expect(DraftRequests(support: c.support).all().isEmpty)
         #expect(ProposalStore.list(in: folder).first { $0.0.id == card.id }?.0.state == "proposed")
+    }
+
+    /// Only a draft card Sprava wrote, in exactly its shape, is approved as one: another card holding a draft is not.
+    @Test func aDraftSpravaDidNotWriteIsNeverApproved() throws {
+        let (c, folder, _) = try setup()
+        let draft = DraftCard(to: ["supplier@example.com"], subject: "Invoice", body: "Invented.")
+        // Trusted as a card, but not recorded as a draft Sprava wrote.
+        let unrecorded = try draft.proposal(actor: actor, catalog: Teka.read(folder).catalog, now: now)
+        try ProposalStore.save(unrecorded, in: folder)
+        try c.trustProposals([unrecorded.id], in: folder)
+        // Ordinary ops with a draft riding along in its provenance.
+        var raw = unrecorded.raw
+        raw.set("id", .string(UUIDv7.make(now: now.addingTimeInterval(1))))
+        raw.set("ops", .array(unrecorded.raw["ops"]!.arrayValue! + [.obj([("op", .str("add_log_entry")), ("args", .obj([("entry", .obj([("action", .str("Invented"))]))]))])]))
+        let riding = Proposal(raw: raw)
+        try ProposalStore.save(riding, in: folder)
+        try c.trustProposals([riding.id], in: folder)
+        try c.recordDraftCard(riding.id, in: folder)
+        #expect(DraftCard(riding) == nil)
+        let listed = try JSONParser.parse(c.handle(JSONWriter.compact(.obj([("command", .str("proposals")), ("binder", .string(folder.path))])), now: now, today: today)).value
+        for card in [unrecorded, riding] {
+            let digest = try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .string(card.id) }?["digest"])
+            let r = try approve(c, folder, card, digest)
+            #expect(r["ok"] == .bool(false))
+            #expect(r["error"]?.stringValue?.contains("Sprava did not write") == true)
+        }
+        #expect(DraftRequests(support: c.support).all().isEmpty)
     }
 
     final class Placer: @unchecked Sendable {
@@ -139,9 +167,12 @@ import Testing
         // Long after, with the card never approved: removed, never placed.
         #expect(run(c, connections, placer, at: now.addingTimeInterval(3600)) == .none)
         #expect(requests.all().isEmpty && placer.messages.isEmpty)
-        // With the card approved: placed.
+        // With the card's ops written but the card not yet marked, as a stop between the two leaves it: placed.
         try requests.begin(id: card.id, binder: folder, message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
         _ = try TekaStore(folder: folder).approve(card, now: now)
+        var unmarked = try #require(ProposalStore.list(in: folder).first { $0.0.id == card.id }?.0).raw
+        unmarked.set("state", .str("proposed"))
+        try ProposalStore.save(Proposal(raw: unmarked), in: folder)
         #expect(run(c, connections, placer, at: now.addingTimeInterval(3600)) == .placed)
         #expect(placer.messages.count == 1)
     }

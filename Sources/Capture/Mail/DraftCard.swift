@@ -51,6 +51,14 @@ public struct DraftCard: Sendable, Equatable {
         }
         self.init(to: to, cc: strings("cc") ?? [], subject: subject, body: body, attachments: attachments,
                   inReplyTo: d["in_reply_to"]?.stringValue, references: strings("references") ?? [])
+        // Exactly the card `proposal` makes from these fields: nothing else rides along with a draft.
+        guard proposal.ops == [Self.logOp(to: to, subject: subject)], proposal.raw["title"]?.stringValue == "Email draft: \(subject)" else { return nil }
+    }
+
+    /// The card's one op: a log entry that names the recipients and subject, never the body.
+    static func logOp(to: [String], subject: String) -> JSONObject {
+        let entry = JSONObject([(key: "action", value: .string("Email draft to \(to.joined(separator: ", ")): \(subject)"))])
+        return JSONObject([(key: "op", value: .str("add_log_entry")), (key: "args", value: .obj([("entry", .object(entry))]))])
     }
 
     /// The draft's Message-ID, made from its card's id, so a retry after approval finds the same draft.
@@ -86,8 +94,7 @@ public struct DraftCard: Sendable, Equatable {
     /// provenance. `checked` first; the caller writes it to the binder's cards.
     public func proposal(actor: JSONObject, catalog: JSONObject?, now: Date = Date()) throws -> Proposal {
         let card = try checked(catalog: catalog)
-        let entry = JSONObject([(key: "action", value: .string("Email draft to \(card.to.joined(separator: ", ")): \(card.subject)"))])
-        let op = JSONObject([(key: "op", value: .str("add_log_entry")), (key: "args", value: .obj([("entry", .object(entry))]))])
+        let op = Self.logOp(to: card.to, subject: card.subject)
         var draft = JSONObject([(key: "to", value: .array(card.to.map(JSONValue.string))), (key: "cc", value: .array(card.cc.map(JSONValue.string))),
                                 (key: "subject", value: .string(card.subject)), (key: "body", value: .string(card.body)),
                                 (key: "attachments", value: .array(card.attachments.map {
