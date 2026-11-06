@@ -13,9 +13,9 @@ struct AddressHeadersTests {
         #expect(email.from == "you@example.com, <sender@example.net>")
         #expect(email.fromHeader == crafted)
         #expect(email.toHeader == "=?utf-8?q?Friend?= <friend@example.org>")
-        // A header is kept to its first 4 KiB.
-        let long = "From: " + String(repeating: "a", count: 10_000) + "@example.net\r\n\r\nx\r\n"
-        #expect(Extractor.eml(Data(long.utf8)).email?.fromHeader?.count == 4_096)
+        // A header too long to keep whole is kept empty, never cut: cut, it could end in part of an address.
+        let long = "From: (" + String(repeating: "x", count: 4_100) + ") <me@example.invalid.other.invalid>\r\n\r\nx\r\n"
+        #expect(Extractor.eml(Data(long.utf8)).email?.fromHeader == "")
     }
 
     /// The importer writes each front-matter value as a JSON string; reading it back gives the same text, backslashes

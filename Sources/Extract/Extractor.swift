@@ -25,7 +25,7 @@ public enum Extractor {
         public var date: String?
         public var messageID: String?
         public var attachments: [Attachment]
-        /// From and To as the message wrote them, encoded words and all, at most 4 KiB each. Whose mail this is is read
+        /// From and To as the message wrote them, encoded words and all; empty when longer than 4,096 characters. Whose mail this is is read
         /// from these, as a mail program reads them: the decoded `from` is for showing, and an encoded word in it can
         /// decode to a comma or a quote that reads as address syntax (issue #598).
         public var fromHeader: String? = nil

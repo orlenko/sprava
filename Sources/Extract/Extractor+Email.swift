@@ -26,6 +26,11 @@ extension Extractor {
         return Result(kind: "email", text: body, textFrom: "parsed", email: email)
     }
 
+    /// An address header kept whole, or empty when it is longer than the 4,096 characters a reading keeps: a header
+    /// cut short can end in part of an address, and part of a stranger's address can be the person's. Empty, it names no
+    /// one, so the message is read as anyone's.
+    static func whole(_ header: String) -> String { header.count <= 4_096 ? header : "" }
+
     /// A MIME message: headers, the text body (plain preferred, else HTML as text), and attachments.
     static func eml(_ data: Data, limits: Limits = Limits()) -> Result {
         let raw = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
@@ -35,7 +40,7 @@ extension Extractor {
         let text = walk(headers: headers, body: body, attachments: &attachments, state: &state, depth: 0)?.text ?? ""
         let email = Email(subject: headers["subject"].map(decodeWords), from: headers["from"].map(decodeWords), to: headers["to"].map(decodeWords),
                           date: headers["date"], messageID: headers["message-id"], attachments: attachments,
-                          fromHeader: headers["from"].map { String($0.prefix(4_096)) }, toHeader: headers["to"].map { String($0.prefix(4_096)) })
+                          fromHeader: headers["from"].map(whole), toHeader: headers["to"].map(whole))
         // Parts past the nesting or part limits were not read, so the message is held rather than passed on as whole.
         let problem = state.tooDeep ? "its parts nest deeper than \(maxDepth) levels; the deeper ones were not read"
             : state.tooMany ? "it has more than \(limits.parts) parts; the later ones were not read" : nil
