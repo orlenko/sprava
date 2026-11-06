@@ -101,12 +101,12 @@ import Testing
         let requests = DraftRequests(support: support)
         let id = UUIDv7.make(now: now)
         let binder = URL(fileURLWithPath: "/invented/binder")
-        try requests.begin(id: id, binder: binder, message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
-        #expect(requests.all() == [.init(id: id, binder: "/invented/binder", state: .approving, failure: nil, created: now)])
+        try requests.begin(id: id, binder: binder, account: "me@mail.example.invalid:993", message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
+        #expect(requests.all() == [.init(id: id, binder: "/invented/binder", state: .approving, failure: nil, created: now, account: "me@mail.example.invalid:993")])
         try requests.ready(id: id)
         #expect(requests.all().first?.state == .ready)
         try requests.failed(id: id, reason: "no drafts folder")
-        #expect(requests.all().first == .init(id: id, binder: "/invented/binder", state: .failed, failure: "no drafts folder", created: now))
+        #expect(requests.all().first == .init(id: id, binder: "/invented/binder", state: .failed, failure: "no drafts folder", created: now, account: "me@mail.example.invalid:993"))
         #expect(try requests.message(id: id) == Data("Message-ID: <a@b>\r\n\r\nx".utf8))
         // Private: the folder and its files are the person's alone.
         var info = stat()
@@ -114,7 +114,7 @@ import Testing
         try requests.remove(id: id)
         #expect(requests.all().isEmpty)
         // A name that is no card id is never a folder, and an unreadable request is never placed.
-        #expect(throws: DraftRequests.Refused.invalidID) { try requests.begin(id: "../escape", binder: binder, message: Data()) }
+        #expect(throws: DraftRequests.Refused.invalidID) { try requests.begin(id: "../escape", binder: binder, account: "x", message: Data()) }
         try FileManager.default.createDirectory(at: requests.root.appendingPathComponent(UUID().uuidString), withIntermediateDirectories: true)
         #expect(requests.all().isEmpty)
     }

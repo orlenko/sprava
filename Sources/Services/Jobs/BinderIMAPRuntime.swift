@@ -10,7 +10,8 @@ import SpravaKit
 /// The signed app's built-in email intake controls. Configuration is external trusted state, never
 /// binder instructions. Timers reuse this owner; model/MCP requests cannot reach its command door.
 public actor BinderIMAPRuntime {
-    public static let commands: Set<String> = ["imap_status", "imap_probe", "imap_folders", "imap_configure", "imap_password", "imap_disable", "imap_sync"]
+    public static let commands: Set<String> = ["imap_status", "imap_probe", "imap_folders", "imap_configure", "imap_password", "imap_disable", "imap_sync",
+                                               "imap_drafts", "imap_draft_retry", "imap_draft_discard"]
     /// The setup checks, replaceable in tests so no test reaches a server.
     public struct Checks: Sendable {
         let probe: @Sendable (IMAPAccount) throws -> IMAPServerCheck.Answer
@@ -33,6 +34,10 @@ public actor BinderIMAPRuntime {
     private let passwords: IMAPPasswords
     private let checks: Checks
     private let fetch: IMAPIntakeImport.Fetch?
+    private let place: DraftPlacing.Place
+    /// The draft being placed now, if any (integrations.md §5.2).
+    private var placing: Task<DraftPlacing.Outcome, Never>?
+    private let log: @Sendable (String) -> Void
     private let reader: ExtractHelper.Reader
     private let available: @Sendable (URL) throws -> Bool
     private var running: (id: UUID, cancellation: Cancellation, task: Task<Int, Error>)?
@@ -40,14 +45,17 @@ public actor BinderIMAPRuntime {
     private var next = Date.distantPast
     private var offset = 0
     private var changing = false
-    public init(support: URL) throws {
+    public init(support: URL, log: @escaping @Sendable (String) -> Void = { _ in }) throws {
         self.support = support; connections = try BinderIMAPConnections(support: support); fetch = nil; reader = .located()
+        place = DraftPlacing.native; self.log = log
         passwords = IMAPPasswords(); checks = .native(support)
         available = { try ListedBinder.accepts($0, support: support) }
     }
     init(support: URL, connections: BinderIMAPConnections, passwords: IMAPPasswords, checks: Checks? = nil, fetch: @escaping IMAPIntakeImport.Fetch,
-         available: @escaping @Sendable (URL) throws -> Bool = { _ in true }, reader: ExtractHelper.Reader = .inProcess) {
+         available: @escaping @Sendable (URL) throws -> Bool = { _ in true }, reader: ExtractHelper.Reader = .inProcess,
+         place: @escaping DraftPlacing.Place = { _, _, _, _ in throw IMAPIntakeImport.Refused.unavailable }, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.support = support; self.connections = connections; self.passwords = passwords; self.fetch = fetch; self.available = available; self.reader = reader
+        self.place = place; self.log = log
         self.checks = checks ?? Checks(probe: { _ in throw IMAPIntakeImport.Refused.unavailable }, folders: { _, _ in throw IMAPIntakeImport.Refused.unavailable })
     }
     public func respond(_ text: String) async -> String {
@@ -88,6 +96,16 @@ public actor BinderIMAPRuntime {
                 let account = try connections.configuration(for: folder)?.account
                 try await retire(folder)
                 if let account, try !connections.enabled().contains(where: { $0.account.sharesPassword(with: account) }) { passwords.remove(account) }
+            case "imap_drafts":
+                return try drafts(folder)
+            case "imap_draft_retry", "imap_draft_discard":
+                // Only a draft of this binder, by its card id.
+                let requests = DraftRequests(support: support)
+                guard let id = r["id"]?.stringValue, let request = requests.all().first(where: { $0.id == id }),
+                      URL(fileURLWithPath: request.binder).resolvingSymlinksInPath() == folder else { throw IMAPIntakeImport.Refused.unavailable }
+                if command == "imap_draft_retry" { if request.state == .failed { try requests.ready(id: id) } }
+                else { guard placing == nil else { throw Refusal(message: "A draft is being placed now; try again in a moment.") }; try requests.remove(id: id) }
+                return try drafts(folder)
             case "imap_sync":
                 guard running == nil, let value = try connections.configuration(for: folder), value.enabled, try available(folder) else { throw IMAPIntakeImport.Refused.unavailable }
                 start(value)
@@ -182,6 +200,7 @@ public actor BinderIMAPRuntime {
         catch { return JSONWriter.compact(.obj([("ok", .bool(false)), ("error", .str("Email intake could not stop safely before this binder change. Nothing was confirmed."))])) }
     }
     public func tick(now: Date = Date()) {
+        placeDrafts(now: now)
         guard running == nil, !changing, now >= next else { return }
         next = now.addingTimeInterval(300)
         // A connection whose password this runtime does not have waits for the person; it never tries the server.
@@ -193,9 +212,38 @@ public actor BinderIMAPRuntime {
             }
         }
     }
+    /// Starts placing the next approved draft unless one is under way (integrations.md §5.2).
+    private func placeDrafts(now: Date) {
+        guard placing == nil, !changing else { return }
+        let support = self.support, connections = self.connections, passwords = self.passwords, available = self.available, place = self.place
+        let task = Task.detached(priority: .utility) {
+            DraftPlacing.run(support: support, connections: connections, password: { try passwords.read($0) }, available: available, place: place, now: now)
+        }
+        placing = task
+        Task {
+            let outcome = await task.value
+            if outcome != .none && outcome != .waiting { log("imap draft outcome=\(outcome.rawValue)") }
+            placing = nil
+        }
+    }
+
+    /// The approved drafts of one binder that are not placed yet, in fixed words.
+    private func drafts(_ folder: URL) throws -> String {
+        let mine = DraftRequests(support: support).all().filter { URL(fileURLWithPath: $0.binder).resolvingSymlinksInPath() == folder }
+        let rows: [JSONValue] = mine.map { r in
+            .obj([("id", .str(r.id)), ("state", .str(r.state.rawValue)), ("failure", r.failure.map(JSONValue.str) ?? .null)])
+        }
+        return JSONWriter.compact(.obj([("ok", .bool(true)), ("drafts", .array(rows))]))
+    }
+
     /// Called before a signed-app removal/offload is submitted. Disable first, then await confirmed
     /// fetch completion; publication rechecks this external grant before touching intake.
     public func retire(_ folder: URL) async throws {
+        // Its approved drafts not placed yet go nowhere while it is away: the person tries them again when it is back.
+        let requests = DraftRequests(support: support)
+        for request in requests.all() where URL(fileURLWithPath: request.binder).resolvingSymlinksInPath() == folder.resolvingSymlinksInPath() {
+            if request.state == .ready { try? requests.failed(id: request.id, reason: "binder put away") }
+        }
         let value = try connections.configuration(for: folder)
         try connections.disable(folder: folder)
         if let value, let current = running, current.id == value.id {

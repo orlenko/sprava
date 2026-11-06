@@ -12,6 +12,7 @@ public enum IMAPDraftAppend {
         public let uid: UInt32?
         /// It was there already, from an earlier attempt: nothing was appended.
         public let present: Bool
+        public init(folder: String, uid: UInt32?, present: Bool) { self.folder = folder; self.uid = uid; self.present = present }
     }
 
     public enum Refused: Error, Equatable {
