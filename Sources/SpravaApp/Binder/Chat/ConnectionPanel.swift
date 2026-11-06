@@ -48,7 +48,7 @@ struct ConnectionPanel: View {
                 Toggle("Let Claude change and delete files in this binder; you can undo each turn",
                        isOn: Binding(get: { model.allowsFiles }, set: { model.files = $0 }))
                     .disabled(!model.documents || !model.intake)
-                Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude can add, change and close this binder's to-dos when you ask, and you can undo each turn. It cannot send mail. With intake shared, Claude also reads each new intake document as it arrives, up to 100 a day on your Claude plan, and proposes its to-dos for you to approve. With file changes allowed, it can read the whole folder and run tools inside it, and nothing else on this Mac.")
+                Text("Claude always sees this binder's task titles and details and the saved conversation, plus what you tick above. It goes to Anthropic; a copied binder has its own conversation. Claude can add, change and close this binder's to-dos when you ask, and you can undo each turn. It can propose an email draft on a card for you to approve, which then goes to your Drafts folder; it cannot send mail. With intake shared, Claude also reads each new intake document as it arrives, up to 100 a day on your Claude plan, and proposes its to-dos for you to approve. With file changes allowed, it can read the whole folder and run tools inside it, and nothing else on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
