@@ -51,18 +51,22 @@ import Testing
         let config = try BinderIMAPConnections(support: support, hash: { "another-interpreter" }).configure(folder: folder, account: account, mailbox: "INBOX")
         let directory = support.appendingPathComponent("attempt")
         try AtomicFile.makePrivateFolder(directory)
-        let id = "<draft-1@sprava.invalid>"
-        func run(_ message: Data, id: String = id, folder: String? = nil) throws {
-            _ = try IMAPDraftAppend.run(config, password: "invented", folder: folder, message: message, messageID: id, directory: directory)
+        func draft(_ headers: String) -> Data { Data((headers + "\r\n\r\nInvented body.\r\n").utf8) }
+        let good = draft("Message-ID: <draft-1@sprava.invalid>\r\nSubject: Invented")
+        func run(_ message: Data, folder: String? = nil) throws {
+            _ = try IMAPDraftAppend.run(config, password: "invented", folder: folder, message: message, directory: directory)
         }
         #expect(throws: IMAPDraftAppend.Refused.tooLarge) { try run(Data(count: IMAPDraftAppend.limit + 1)) }
-        #expect(throws: IMAPDraftAppend.Refused.invalid) { try run(Data()) }
-        for bad in ["draft@sprava.invalid", "<draft@>", "<a b@sprava.invalid>", "<draft@sprava.invalid>\r\nBcc: x@example.com"] {
-            #expect(throws: IMAPDraftAppend.Refused.invalid) { try run(Data("x".utf8), id: bad) }
+        // The Message-ID a retry finds the draft by is the message's own, one and well formed.
+        #expect(IMAPDraftAppend.messageID(in: good) == "<draft-1@sprava.invalid>")
+        for bad in [Data(), draft("Subject: Invented"), draft("Message-ID: draft@sprava.invalid"), draft("Message-ID: <draft@>"),
+                    draft("Message-ID: <a b@sprava.invalid>"), draft("Message-ID: <a@sprava.invalid>\r\nMessage-ID: <b@sprava.invalid>"),
+                    Data("Message-ID: <draft-1@sprava.invalid>".utf8)] {
+            #expect(throws: IMAPDraftAppend.Refused.invalid) { try run(bad) }
         }
-        #expect(throws: IMAPDraftAppend.Refused.invalid) { try run(Data("x".utf8), folder: "Drafts\r\nDELETE INBOX") }
+        #expect(throws: IMAPDraftAppend.Refused.invalid) { try run(good, folder: "Drafts\r\nDELETE INBOX") }
         if (try? IMAPNativeFetch.installedProgram()) != nil {
-            #expect(throws: IMAPIntakeImport.Refused.unavailable) { try run(Data("x".utf8)) }
+            #expect(throws: IMAPIntakeImport.Refused.unavailable) { try run(good) }
         }
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("draft.eml").path))
     }
@@ -76,8 +80,8 @@ message = b"Message-ID: <draft-1@sprava.invalid>\r\nSubject: Invented\r\n\r\nInv
 done = []
 class Session:
     capabilities = ("IMAP4REV1",)
-    def __init__(self, listing, found=b""):
-        self.listing, self.found, self.calls = listing, found, []
+    def __init__(self, listing, found=b"", headers=None):
+        self.listing, self.found, self.calls, self.headers = listing, found, [], headers or {}
     def __getattr__(self, name):
         raise AssertionError("unexpected IMAP command " + name)
     def login(self, user, password):
@@ -90,6 +94,10 @@ class Session:
         self.calls.append("EXAMINE " + folder)
         return "OK", [b"1"]
     def uid(self, command, *args):
+        if command == "FETCH":
+            assert args[1] == "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"
+            self.calls.append("FETCH " + args[0])
+            return "OK", [(b"1 (UID " + args[0].encode() + b" BODY[HEADER.FIELDS (MESSAGE-ID)] {40}", self.headers[args[0]]), b")"]
         assert command == "SEARCH" and args == (None, "HEADER", "Message-ID", '"<draft-1@sprava.invalid>"')
         self.calls.append("SEARCH")
         return "OK", [self.found]
@@ -97,14 +105,19 @@ class Session:
         assert flags == "(\\Draft)" and date is None and data == message
         self.calls.append("APPEND " + folder)
         return "OK", [b"[APPENDUID 38505 3955] APPEND completed"]
-marked = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Drafts) "/" "Brouillons &AOk-t&AOk-"', b'(\\Sent) "/" "Sent"']
+marked = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Drafts) "/" "Brouillons &AOk-t&AOk-"', b'(\\Sent) "/" "Sent"',
+          b'(\\Drafts \\NonExistent) "/" "Gone"', b'(\\Drafts) "/" "Bad&AA0ACg-name"']
 s = Session(marked)
 assert m["place"](s, credentials, "", message, "<draft-1@sprava.invalid>") == {"folder": "Brouillons été", "uid": 3955, "present": False}
 assert s.calls == ["LIST", 'EXAMINE "Brouillons &AOk-t&AOk-"', "SEARCH", 'APPEND "Brouillons &AOk-t&AOk-"']
 done.append("marked/append")
-s = Session(marked, b"17")
+s = Session(marked, b"17", {"17": b"Message-ID: <draft-1@sprava.invalid>\r\n\r\n"})
 assert m["place"](s, credentials, "", message, "<draft-1@sprava.invalid>") == {"folder": "Brouillons été", "uid": 17, "present": True}
 assert not any(c.startswith("APPEND") for c in s.calls)
+# A server that matches a part of the header finds another draft: it is not this one, and this one is placed.
+s = Session(marked, b"18", {"18": b"Message-ID: <draft-1-b@sprava.invalid>\r\n\r\n"})
+assert m["place"](s, credentials, "", message, "<draft-1@sprava.invalid>")["present"] is False
+assert s.calls[-1].startswith("APPEND")
 done.append("once")
 s = Session([])
 assert m["place"](s, credentials, "Invented Drafts", message, "<draft-1@sprava.invalid>")["folder"] == "Invented Drafts"

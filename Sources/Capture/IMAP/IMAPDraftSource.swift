@@ -41,17 +41,30 @@ def listed(session):
             name = decoded_name(raw.decode("utf-8"))
         except ValueError:
             continue
-        yield match.group(1).lower().split(), name
+        flags = match.group(1).lower().split()
+        # As the exporter's folder list: no unselectable, missing, overlong or control-character names.
+        if b"\\noselect" in flags or b"\\nonexistent" in flags or not name or len(name) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            continue
+        yield flags, name
 
 
 def drafts_folder(session, chosen):
     # The folder the person chose, or the one the server marks \Drafts (RFC 6154); never a guess by name.
     if chosen:
         return chosen
-    marked = [name for flags, name in listed(session) if b"\\drafts" in flags and b"\\noselect" not in flags]
+    marked = [name for flags, name in listed(session) if b"\\drafts" in flags]
     if len(marked) != 1:
         raise NoDrafts()
     return marked[0]
+
+
+def header_id(response):
+    # The Message-ID of one fetched header block, exactly as written, or None.
+    blocks = [part[1] for part in response if isinstance(part, tuple) and len(part) == 2 and isinstance(part[1], bytes)]
+    if len(blocks) != 1:
+        return None
+    values = [line.split(b":", 1)[1].strip() for line in blocks[0].split(b"\r\n") if line.lower().startswith(b"message-id:")]
+    return values[0].decode("ascii", "replace") if len(values) == 1 else None
 
 
 def place(session, credentials, chosen, message, message_id):
@@ -65,8 +78,12 @@ def place(session, credentials, chosen, message, message_id):
     checked(*session.select(mailbox_name(folder), readonly=True))
     found = checked(*session.uid("SEARCH", None, "HEADER", "Message-ID", quoted(message_id)))
     uids = [int(value) for value in b" ".join(part for part in found if isinstance(part, bytes)).split()]
-    if uids:
-        return {"folder": folder, "uid": uids[0], "present": True}
+    # SEARCH HEADER matches a part of the header, and some servers match words: each candidate's own Message-ID must
+    # be this one exactly, or it is another draft.
+    for uid in uids[:20]:
+        fetched = checked(*session.uid("FETCH", str(uid), "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"))
+        if header_id(fetched) == message_id:
+            return {"folder": folder, "uid": uid, "present": True}
     response = checked(*session.append(mailbox_name(folder), "(\\Draft)", None, message))
     match = APPENDUID.search(b" ".join(part for part in response if isinstance(part, bytes)))
     return {"folder": folder, "uid": int(match.group(1)) if match else None, "present": False}
