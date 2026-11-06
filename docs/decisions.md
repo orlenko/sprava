@@ -213,7 +213,8 @@
 - **A7 recommended.** An explicit inventory of what leaves the Mac, kept in the docs and the app: nothing by
   default; backup ciphertext (A11); the companion relay's ciphertext (P19); a binder's content to its agent's
   provider, per binder and opt-in (D4, D22); the agent's web requests, each listed in its turn (D23); and,
-  until the hub lane ends, the hub's Google Tasks mirror (A17). Sprava ignores `.claude/settings.json` and the
+  until the hub lane ends, the hub's Google Tasks mirror (A17); and an email draft the person approved, placed in their
+  mail account's Drafts folder at that moment (D41). Sprava ignores `.claude/settings.json` and the
   lifeproj routing hooks and never calls TypeSafe itself.
 - **A9 recommended.** Mechanical docs are generated from a capability manifest; a `doctor` command
   checks binders and docs against reality; every hook and job is timed with a circuit breaker.
@@ -505,6 +506,14 @@ Each line names what replaced the entry; its old text is in git history.
   The author accepted on 2026-11-06, after being told, that this sends intake text off the Mac as it arrives, uses their
   Claude quota, and makes unattended calls on their claude.ai login, whose subscription terms are still open (D28).
   Not chosen: opening the careful-reading queue to registered MCP brains, which lets other programs read intake.
+- **D41 decided (2026-11-06, the author: "2a"; issue #592).** Sprava writes email drafts and never sends them. A draft
+  is a card the person approves; only then is it appended to the Drafts folder of the binder's email account, with the
+  `\Draft` flag, over the same connection and credentials that import mail, and the person sends it from their own mail
+  program. Sprava has no SMTP and no IMAP command beyond what placing a draft needs. A draft on the server counts as data
+  leaving the Mac when the person approves it (A7). It may attach the binder's documents, private ones included; the card
+  marks each private one. Attachments are at most 18 MiB together, before encoding. The binder's conversation may propose
+  a draft, and it still needs the person's approval on a card before anything is appended. Not chosen: a local `.eml`
+  opened in Mail, which would not reach the person's other devices.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.

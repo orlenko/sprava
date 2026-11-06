@@ -187,6 +187,9 @@ document folders, and appends it to the account's drafts folder with the `\Draft
 is no SMTP in Sprava. The result records the draft's UID and the folder. The draft's Message-ID is made from
 the instruction's id, so a retry first searches the drafts folder for it (`UID SEARCH HEADER Message-ID`)
 and appends only when it is not there.
+Each draft is a card the person approves first, whether a command or the binder's conversation proposed it;
+it may attach private documents, each marked private on the card, at most 18 MiB together before encoding
+(decisions.md D41).
 
 The message itself is written by `MailDraft` (`Sources/Capture/Mail/MailDraft.swift`), a pure value with no I/O
 and, so far, no caller; it serves an IMAP append or an `.eml` file opened in Mail alike (`X-Unsent: 1`). Its
