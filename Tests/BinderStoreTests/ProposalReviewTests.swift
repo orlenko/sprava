@@ -102,6 +102,24 @@ import Testing
         }
     }
 
+    /// An email draft's card shows every field it would carry out of the Mac, says where it goes and that nothing is sent,
+    /// and names private attachments (decisions.md D41).
+    @Test func aDraftCardShowsAllItWouldCarryOut() {
+        let draft = JSONObject([(key: "to", value: .array([.str("supplier@example.com")])), (key: "cc", value: .array([])),
+                                (key: "subject", value: .str("Invoice")), (key: "body", value: .str("Invented body.")),
+                                (key: "attachments", value: .array([.obj([("path", .str("documents/notice.txt")), ("private", .bool(true))])]))])
+        let entry = JSONObject([(key: "op", value: .str("add_log_entry")), (key: "args", value: .obj([("entry", .obj([("action", .str("Email draft"))]))]))])
+        let out = review([entry], provenance: JSONObject([(key: "draft", value: .object(draft))]))
+        #expect(out["kind"] == .str("draft"))
+        #expect(out["draft"]?["body"] == .str("Invented body.") && out["draft"]?["to"] == .array([.str("supplier@example.com")]))
+        #expect(out["draft"]?["attachments"]?.arrayValue?.first?["name"] == .str("notice.txt"))
+        #expect(out["draft"]?["attachments"]?.arrayValue?.first?["private"] == .bool(true))
+        let warnings = strings(out["warnings"])
+        #expect(warnings.contains { $0.contains("Sprava never sends it") })
+        #expect(warnings.contains { $0.contains("private documents") })
+        #expect(out["changes"] == .array([]) && out["todos"] == .array([]))
+    }
+
     @Test func aReasonThatOnlyDescribesTheDocumentIsNoWarningButAnyOtherIs() {
         func warned(_ reason: String) -> Bool {
             let out = review([todo("Invented")], provenance: JSONObject([(key: "escalate", value: .array([.string(reason)]))]))
