@@ -206,7 +206,8 @@ public enum ExtractHelper {
                                       attachments: (e["attachments"]?.arrayValue ?? []).compactMap { a in
                                           guard let n = a["name"]?.stringValue, let d = a["data"]?.stringValue.flatMap({ Data(base64Encoded: $0) }) else { return nil }
                                           return .init(name: n, data: d)
-                                      })
+                                      },
+                                      fromHeader: e["from_header"]?.stringValue, toHeader: e["to_header"]?.stringValue)
         }
         return r
     }

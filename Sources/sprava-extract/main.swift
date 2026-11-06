@@ -26,7 +26,8 @@ if let problem = r.problem { o.set("problem", .string(problem)) }
 if r.mismatch { o.set("mismatch", .bool(true)) }
 if let e = r.email {
     var em = JSONObject()
-    for (k, v) in [("subject", e.subject), ("from", e.from), ("to", e.to), ("date", e.date), ("message_id", e.messageID)] {
+    for (k, v) in [("subject", e.subject), ("from", e.from), ("to", e.to), ("date", e.date), ("message_id", e.messageID),
+                   ("from_header", e.fromHeader), ("to_header", e.toHeader)] {
         if let v { em.set(k, .string(v)) }
     }
     em.set("attachments", .array(e.attachments.map { .obj([("name", .string($0.name)), ("data", .string($0.data.base64EncodedString()))]) }))
