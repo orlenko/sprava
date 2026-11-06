@@ -30,6 +30,10 @@ public struct DocumentReading: Sendable {
     public var fromPerson = false
     /// Whom they wrote to, as bare addresses, when `fromPerson`.
     public var wroteTo: [String] = []
+    /// The engine that read it in the clerk's place (decisions.md D40), as the card names it; nil for the clerk.
+    public var readBy: String?
+    /// Why the engine's reading was not used and the clerk read it, as the error's kind (never content).
+    public var engineFailure: String?
 
     public var json: JSONObject {
         var o = JSONObject([(key: "id", value: .string(id)), (key: "model", value: .string(model)),
@@ -45,6 +49,8 @@ public struct DocumentReading: Sendable {
             o.set("wrote_to", .array(wroteTo.map(JSONValue.string)))
         }
         if let failure { o.set("failure", .string(failure)) }
+        if let readBy { o.set("read_by", .string(readBy)) }
+        if let engineFailure { o.set("engine_failure", .string(engineFailure)) }
         if dropped > 0 { o.set("dropped_items", .int(dropped)) }
         if unread > 0 { o.set("unread_windows", .int(unread)) }
         if !notCovered.isEmpty {
@@ -160,15 +166,146 @@ extension Clerk {
         return head + "\nThe document begins:\n" + start
     }
 
+    /// Letters often say what to pay in one sentence and when in the next: a due date there is taken, and the card says
+    /// so. Only when the next sentence asks for nothing else ("Submit the permit application by November 1" is a task of
+    /// its own) and is about the same thing (`sameObligation`).
+    static func takeNextSentenceDate(_ item: inout ClerkItem, sentences: [TextSpan], dated: CalendarDate, locale: String) {
+        guard item.whenResolved == nil, ["pay", "send", "file", "call", "meet", "decide"].contains(item.action),
+              let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { return }
+        let next = sentences[i + 1].text
+        let lower = next.lowercased()
+        if asksOnlyFor(item.action, lower), let found = DateGrammar.scan(next, anchor: dated, locale: locale), let d = found.date, d >= dated,
+           sameObligation(item, next: next, dateText: found.text),
+           ["due", "by", "before", "deadline", "no later than", "échéance", "avant", "au plus tard", "dû", "due le"].contains(where: {
+               lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }) {
+            item.whenText = found.text
+            item.whenResolved = d
+            item.whenRole = .due
+            item.flags.append("date taken from the next sentence")
+        }
+    }
+
+    /// An item that took its date from the next sentence and an item read from that sentence with the same date and the
+    /// same task are one ("Your share is $1,240." / "The levy is due November 1."): the first, with its amount, stays. A
+    /// shared date and action are no evidence: the second must also name nothing the first does not, or the first
+    /// sentence must ask for nothing itself, so a different payment there stays.
+    static func mergeBorrowedDates(_ items: inout [ClerkItem], sentences: [TextSpan]) {
+        for item in items where item.flags.contains("date taken from the next sentence") {
+            guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
+            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.identity)
+            let asksNothing = Set(item.sentence.text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: taskVerbs)
+            items.removeAll {
+                $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
+                    && (similar($0.identity, item.identity) || $0.action == item.action
+                        && (asksNothing || FilingBinder.significantWords($0.identity).subtracting(taskVerbs).subtracting(plainWords).isSubset(of: mine)))
+            }
+        }
+    }
+
+    /// The sentences items took their dates from: an item covers the sentence after its own too.
+    static func borrowedSentences(_ items: [ClerkItem], sentences: [TextSpan]) -> [TextSpan] {
+        items.filter { $0.flags.contains("date taken from the next sentence") }
+            .compactMap { sentences.firstIndex(of: $0.sentence) }.filter { $0 + 1 < sentences.count }.map { sentences[$0 + 1] }
+    }
+
+    static let askingWords = ["please", "must", "required", "reply", "respond", "return", "sign", "submit", "pay", "send", "confirm",
+                              "veuillez", "devez", "doit", "retourner", "signer", "payer", "répondre", "confirmer"]
+
+    /// Whether a sentence asks something by a date on or after the document's: one no item covers is a part not read (§4.4).
+    static func asksByDate(_ s: TextSpan, dated: CalendarDate, locale: String) -> Bool {
+        // The words first: they are cheap, and most sentences of a long document ask nothing.
+        let lower = s.text.lowercased()
+        guard askingWords.contains(where: { lower.range(of: "\\b" + $0 + "\\b", options: .regularExpression) != nil }),
+              let found = DateGrammar.scan(s.text, anchor: dated, locale: locale), let d = found.date else { return false }
+        return d >= dated
+    }
+
+    /// Whom the person wrote to, when they wrote this mail and someone else is among its recipients (issue #594);
+    /// nil otherwise. A note they mailed only to themselves, or to no one named, holds their own to-dos.
+    static func wroteTo(_ reading: IntakeReading, own ownAddresses: Set<String>) -> [String]? {
+        let own = Set(ownAddresses.map { $0.lowercased() })
+        let recipients = reading.to.map { MailAddress.bare(in: $0) } ?? []
+        guard let from = reading.from.flatMap({ MailAddress.bare(in: $0).first }), own.contains(from),
+              recipients.contains(where: { !own.contains($0) }) else { return nil }
+        return Array(recipients.prefix(20))
+    }
+
+    /// "You wrote this to a@example.com and 2 more", for the start of the card's summary.
+    static func wroteLine(_ wroteTo: [String]) -> String {
+        let named = wroteTo.prefix(3).joined(separator: ", ") + (wroteTo.count > 3 ? " and \(wroteTo.count - 3) more" : "")
+        return "You wrote this" + (named.isEmpty ? "" : " to " + named)
+    }
+
+    /// What a model said the document is, as far as code's checks allow: its class, title, date, summary and whether
+    /// it asks for a reply.
+    static func takeHeading(_ answer: JSONValue, into doc: inout DocumentReading, text: String, signals: Set<String>,
+                            locale: String, today: CalendarDate) {
+        let cls = answer["class"]?.stringValue ?? "unsure"
+        doc.documentClass = documentClasses.contains(cls) ? cls : "unsure"
+        // Code's check: "governing" needs a governing word and no sign of a record; the model overuses it.
+        let asks = !signals.isDisjoint(with: ["payment", "deadline", "reply", "signature", "question", "invoice"])
+        let record = !signals.isDisjoint(with: ["minutes", "statement", "receipt", "confirmation"])
+        if doc.documentClass == "governing", !signals.contains("governing") || record {
+            doc.modelClass = "governing"
+            doc.documentClass = record ? "information" : asks ? "action" : "unsure"
+        }
+        let title = shorten((answer["title"]?.stringValue ?? "").components(separatedBy: .newlines).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces), to: 120)
+        // A heading copies a complete source sentence or line (capture-event-v0 §6.4 check 1).
+        doc.title = copiedHeading(title, in: text)
+        // The date must be written in the document, as a full date, and resolve (capture-event-v0 §6.4 check 2).
+        if let when = answer["date_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !when.isEmpty,
+           DateGrammar.isFullDate(when, locale: locale), CaptureText.containsWords(text, when),
+           let found = DateGrammar.resolve(when, anchor: today, locale: locale), let d = found.date, d <= today.adding(days: 366) {
+            doc.date = d
+        }
+        let summary = shorten((answer["summary"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines), to: 300)
+        if !summary.isEmpty { doc.summary = summary }
+        doc.replyNeeded = answer["reply_needed"] == .bool(true)
+    }
+
+    /// Adds a reply item, by code, to a document that asks for a reply when no item covers it.
+    static func addReplyItem(_ items: inout [ClerkItem], title: String?, sentences: [TextSpan], dated: CalendarDate, locale: String,
+                             binder: FilingBinder?) {
+        guard !items.contains(where: { ["send", "call"].contains($0.action) }),
+              let s = sentences.first(where: { s in
+                  let lower = s.text.lowercased()
+                  return ["reply", "respond", "let us know", "let me know", "confirm", "répondre", "réponse", "faire savoir", "confirmer"].contains {
+                      lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }
+              }) else { return }
+        var item = ClerkItem(title: "Reply" + (title.map { " about \u{201C}\($0)\u{201D}" } ?? ""), action: "send", sentence: s, people: [])
+        if let found = DateGrammar.scan(s.text, anchor: dated, locale: locale), let d = found.date, d >= dated {
+            item.whenText = found.text
+            item.whenResolved = d
+            item.whenRole = .due
+        }
+        item.binder = binder?.name
+        item.signals = ["document"]
+        item.flags = ["added by code: the document asks for a reply"]
+        items.append(item)
+        items.sort { $0.sentence.start < $1.sentence.start }
+    }
+
     /// Reads one document. `binder` is the binder it sits in, for the duplicate check. `ownAddresses` are the person's
-    /// own email addresses: mail from one of them is filed with no to-dos (issue #594).
+    /// own email addresses: mail from one of them is filed with no to-dos (issue #594). With `engine`, the engine reads it
+    /// in one call (decisions.md D40), and the clerk only when that fails.
     public func readDocument(_ reading: IntakeReading, name: String, binder: FilingBinder?, locale rawLocale: String = "und",
-                             ownAddresses: Set<String> = [], now: Date = Date()) async -> DocumentReading {
-        var doc = DocumentReading(id: UUIDv7.make(now: now), model: model.name)
+                             ownAddresses: Set<String> = [], engine: (any DocumentEngine)? = nil, now: Date = Date()) async -> DocumentReading {
         let text = reading.text
         let locale = rawLocale.wholeMatch(of: /[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,4}/) != nil ? rawLocale : "und"
         let today = CalendarDate.today(now: now)
         let facts = IntakeFacts.of(reading, anchor: IntakeReading.day(ofHeader: reading.date) ?? today, locale: locale)
+        let wroteTo = Self.wroteTo(reading, own: ownAddresses)
+        var engineFailure: String?
+        if let engine {
+            switch await engineReading(engine, reading: reading, name: name, binder: binder, locale: locale, facts: facts,
+                                       wroteTo: wroteTo, today: today, now: now) {
+            case .success(let doc): return doc
+            case .failure(let failure): engineFailure = failure.kind
+            }
+        }
+        var doc = DocumentReading(id: UUIDv7.make(now: now), model: model.name)
+        doc.engineFailure = engineFailure
 
         // §4.2: what is it? The start of the document, shortened until it fits.
         let instructions = documentInstructions()
@@ -199,45 +336,19 @@ extension Clerk {
             doc.documentClass = guess   // code's own reading of the signal words; the card shows the failure
         }
         if let answer {
-            let cls = answer["class"]?.stringValue ?? "unsure"
-            doc.documentClass = Self.documentClasses.contains(cls) ? cls : "unsure"
-            // Code's check: "governing" needs a governing word and no sign of a record; the model overuses it.
-            let signals = Set(facts.signals)
-            let asks = !signals.isDisjoint(with: ["payment", "deadline", "reply", "signature", "question", "invoice"])
-            let record = !signals.isDisjoint(with: ["minutes", "statement", "receipt", "confirmation"])
-            if doc.documentClass == "governing", !signals.contains("governing") || record {
-                doc.modelClass = "governing"
-                doc.documentClass = record ? "information" : asks ? "action" : "unsure"
-            }
-            let title = Self.shorten((answer["title"]?.stringValue ?? "").components(separatedBy: .newlines).joined(separator: " ")
-                .trimmingCharacters(in: .whitespaces), to: 120)
-            // A heading copies a complete source sentence or line (capture-event-v0 §6.4 check 1).
-            doc.title = Self.copiedHeading(title, in: text)
-            // The date must be written in the document, as a full date, and resolve (capture-event-v0 §6.4 check 2).
-            if let when = answer["date_text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !when.isEmpty,
-               DateGrammar.isFullDate(when, locale: locale), CaptureText.containsWords(text, when),
-               let found = DateGrammar.resolve(when, anchor: today, locale: locale), let d = found.date, d <= today.adding(days: 366) {
-                doc.date = d
-            }
-            let summary = Self.shorten((answer["summary"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines), to: 300)
-            if !summary.isEmpty { doc.summary = summary }
-            doc.replyNeeded = answer["reply_needed"] == .bool(true)
+            Self.takeHeading(answer, into: &doc, text: text, signals: Set(facts.signals), locale: locale, today: today)
         } else {
             doc.outcome = "partial"
         }
         // Mail the person wrote to someone else asks things of others, never of them: no item, no reply added by code
         // and no careful reading, which would only find the same requests. It is filed as any other (issue #594). A note
         // the person mailed only to themselves is read as before: its requests are theirs.
-        let own = Set(ownAddresses.map { $0.lowercased() })
-        let recipients = reading.to.map { MailAddress.bare(in: $0) } ?? []
-        if let from = reading.from.flatMap({ MailAddress.bare(in: $0).first }), own.contains(from),
-           recipients.contains(where: { !own.contains($0) }) {
+        if let wroteTo {
             doc.fromPerson = true
-            doc.wroteTo = Array(recipients.prefix(20))
+            doc.wroteTo = wroteTo
             doc.replyNeeded = false
             // The card shows the summary first, so it says why the card proposes nothing, and to whom it was written.
-            let named = doc.wroteTo.prefix(3).joined(separator: ", ") + (doc.wroteTo.count > 3 ? " and \(doc.wroteTo.count - 3) more" : "")
-            let line = "You wrote this\(named.isEmpty ? "" : " to " + named), so no to-dos are proposed from it."
+            let line = Self.wroteLine(wroteTo) + ", so no to-dos are proposed from it."
             doc.summary = doc.summary.map { line + " " + $0 } ?? line
             return doc
         }
@@ -256,23 +367,7 @@ extension Clerk {
             }
             // A document holds much that is not the person's to do: only actions, or anything with a date, become items.
             guard item.action != "note", ["other", "review", "wait"].contains(item.action) == false || item.whenResolved != nil else { continue }
-            // Letters often say what to pay in one sentence and when in the next: a due date there is taken, and
-            // the card says so. Only when the next sentence asks for nothing else ("Submit the permit application by
-            // November 1" is a task of its own) and is about the same thing (`sameObligation`).
-            if item.whenResolved == nil, ["pay", "send", "file", "call", "meet", "decide"].contains(item.action),
-               let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count {
-                let next = sentences[i + 1].text
-                let lower = next.lowercased()
-                if Self.asksOnlyFor(item.action, lower), let found = DateGrammar.scan(next, anchor: dated, locale: locale), let d = found.date, d >= dated,
-                   Self.sameObligation(item, next: next, dateText: found.text),
-                   ["due", "by", "before", "deadline", "no later than", "échéance", "avant", "au plus tard", "dû", "due le"].contains(where: {
-                       lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }) {
-                    item.whenText = found.text
-                    item.whenResolved = d
-                    item.whenRole = .due
-                    item.flags.append("date taken from the next sentence")
-                }
-            }
+            Self.takeNextSentenceDate(&item, sentences: sentences, dated: dated, locale: locale)
             // A record mostly tells what others did; only a dated thing becomes the person's item.
             if doc.documentClass == "information", item.whenResolved == nil { continue }
             if interp.items.contains(where: { Self.repeats($0, item) }) { continue }
@@ -282,13 +377,7 @@ extension Clerk {
         }
         // One more reading for dated sentences that ask something and that no item covers, as for notes
         // (capture-event-v0 §10.5): a smaller prompt recovers items a full window missed. At most twelve.
-        let asking = ["please", "must", "required", "reply", "respond", "return", "sign", "submit", "pay", "send", "confirm",
-                      "veuillez", "devez", "doit", "retourner", "signer", "payer", "répondre", "confirmer"]
-        func asksByDate(_ s: TextSpan) -> Bool {
-            guard let found = DateGrammar.scan(s.text, anchor: dated, locale: locale), let d = found.date, d >= dated else { return false }
-            let lower = s.text.lowercased()
-            return asking.contains { lower.range(of: "\\b" + $0 + "\\b", options: .regularExpression) != nil }
-        }
+        func asksByDate(_ s: TextSpan) -> Bool { Self.asksByDate(s, dated: dated, locale: locale) }
         let missed = sentences.filter { s in !interp.items.contains(where: { $0.sentence == s }) && asksByDate(s) }.prefix(12)
         if !missed.isEmpty, interp.items.count < Self.documentItems {
             doc.calls += 1
@@ -308,43 +397,18 @@ extension Clerk {
             }
         }
         // A document that asks for a reply gets a reply item, by code, when no item covers it.
-        if doc.replyNeeded || facts.signals.contains("reply"), !interp.items.contains(where: { ["send", "call"].contains($0.action) }),
-           let s = sentences.first(where: { s in
-               let lower = s.text.lowercased()
-               return ["reply", "respond", "let us know", "let me know", "confirm", "répondre", "réponse", "faire savoir", "confirmer"].contains {
-                   lower.range(of: "\\b" + NSRegularExpression.escapedPattern(for: $0) + "\\b", options: .regularExpression) != nil }
-           }) {
-            var item = ClerkItem(title: "Reply" + (doc.title.map { " about \u{201C}\($0)\u{201D}" } ?? ""), action: "send", sentence: s, people: [])
-            if let found = DateGrammar.scan(s.text, anchor: dated, locale: locale), let d = found.date, d >= dated {
-                item.whenText = found.text
-                item.whenResolved = d
-                item.whenRole = .due
-            }
-            item.binder = binder?.name
-            item.signals = ["document"]
-            item.flags = ["added by code: the document asks for a reply"]
-            interp.items.append(item)
-            interp.items.sort { $0.sentence.start < $1.sentence.start }
+        if doc.replyNeeded || facts.signals.contains("reply") {
+            Self.addReplyItem(&interp.items, title: doc.title, sentences: sentences, dated: dated, locale: locale, binder: binder)
         }
         // An item that took its date from the next sentence and an item read from that sentence with the same
         // date and the same task are one ("Your share is $1,240." / "The levy is due November 1."): the first, with
         // its amount, stays. A shared date and action are no evidence: the second must also name nothing the first
         // does not, or the first sentence must ask for nothing itself, so a different payment there stays.
-        for item in interp.items where item.flags.contains("date taken from the next sentence") {
-            guard let i = sentences.firstIndex(of: item.sentence), i + 1 < sentences.count else { continue }
-            let mine = FilingBinder.significantWords(item.sentence.text + " " + item.identity)
-            let asksNothing = Set(item.sentence.text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init)).isDisjoint(with: Self.taskVerbs)
-            interp.items.removeAll {
-                $0.sentence == sentences[i + 1] && $0.whenResolved == item.whenResolved && $0 != item
-                    && (Self.similar($0.identity, item.identity) || $0.action == item.action
-                        && (asksNothing || FilingBinder.significantWords($0.identity).subtracting(Self.taskVerbs).subtracting(Self.plainWords).isSubset(of: mine)))
-            }
-        }
+        Self.mergeBorrowedDates(&interp.items, sentences: sentences)
         // What still asks something by a date and no item covers, after the second reading, is kept and makes the
         // reading partial (§4.4): an item that took its date from the next sentence covers that sentence too.
         Self.flagCapped(&interp.items, capped: interp.capped)
-        let borrowed = interp.items.filter { $0.flags.contains("date taken from the next sentence") }
-            .compactMap { sentences.firstIndex(of: $0.sentence) }.filter { $0 + 1 < sentences.count }.map { sentences[$0 + 1] }
+        let borrowed = Self.borrowedSentences(interp.items, sentences: sentences)
         // Items past the cap leave their sentences uncovered too, so the reading is partial and names them.
         let found = interp.items.count
         let cut = interp.items.dropFirst(Self.documentItems).map(\.sentence)
