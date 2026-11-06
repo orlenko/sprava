@@ -224,8 +224,12 @@ extension Clerk {
     /// nil otherwise. A note they mailed only to themselves, or to no one named, holds their own to-dos.
     static func wroteTo(_ reading: IntakeReading, own ownAddresses: Set<String>) -> [String]? {
         let own = Set(ownAddresses.map { $0.lowercased() })
-        let recipients = reading.to.map { MailAddress.bare(in: $0) } ?? []
-        guard let from = reading.from.flatMap({ MailAddress.bare(in: $0).first }), own.contains(from),
+        // Read from the headers as the message wrote them, as a mail program reads them: a decoded encoded word can
+        // hold a comma or a quote that reads as address syntax (issue #598). Mail read before they were kept has only
+        // the decoded ones.
+        func addresses(_ raw: String?, _ decoded: String?) -> [String] { raw.map(MailAddress.bare(inRaw:)) ?? decoded.map { MailAddress.bare(in: $0) } ?? [] }
+        let recipients = addresses(reading.toHeader, reading.to)
+        guard let from = addresses(reading.fromHeader, reading.from).first, own.contains(from),
               recipients.contains(where: { !own.contains($0) }) else { return nil }
         return Array(recipients.prefix(20))
     }

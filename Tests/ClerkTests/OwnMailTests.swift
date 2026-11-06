@@ -23,6 +23,17 @@ import Testing
         #expect(MailAddress.bare(in: "Invented Team: a@example.com, b@example.com;") == ["a@example.com", "b@example.com"])
     }
 
+    /// A header cut short could end inside an address, and an unclosed angle bracket holds none.
+    @Test func aCutOrUnclosedHeaderGivesNoAddress() {
+        #expect(MailAddress.bare(in: "(" + String(repeating: "x", count: 16_362) + ") <me@example.invalid.other.invalid>").isEmpty)
+        #expect(MailAddress.bare(in: "Someone <me@example.invalid").isEmpty)
+        #expect(MailAddress.bare(inRaw: "=?utf-8?q?a,b@example.com?= <c@example.com>, d@example.com") == ["c@example.com", "d@example.com"])
+        // An encoded word is never part of an address, so one inside or against an address leaves no address.
+        #expect(MailAddress.bare(inRaw: "<=?utf-8?q?stranger?=me@example.invalid>").isEmpty)
+        #expect(MailAddress.bare(inRaw: "=?utf-8?q?stranger?=me@example.invalid").isEmpty)
+        #expect(MailAddress.bare(inRaw: "\"Jane =?utf-8?q?D?= Doe\" <jane@example.com>") == ["jane@example.com"])
+    }
+
     @Test func junkGivesNoAddress() {
         for junk in ["", "Invented Person", "undisclosed-recipients:;", "<>", "a@", "@example.com", "a@@example.com",
                      "a b@example.com <", "a@example..com", "<a@.example.com>", "\u{0}a@example.com",
@@ -46,7 +57,8 @@ import Testing
 
     // MARK: - The reading
 
-    func read(from: String, to: String?, text: String, reply: Bool = true) async -> (DocumentReading, ScriptedModel) {
+    func read(from: String, to: String?, text: String, reply: Bool = true, fromHeader: String? = nil, toHeader: String? = nil) async
+        -> (DocumentReading, ScriptedModel) {
         let ask = JSONValue.obj([("quote", .str("Could you please send the invoice")), ("title", .str("Send the invoice")),
                                  ("action", .str("send")), ("when_text", .str("this week"))])
         let model = ScriptedModel(extractions: [.obj([("items", .array([ask]))])])
@@ -55,6 +67,8 @@ import Testing
         var reading = IntakeReading(kind: "email", textFrom: "parsed", text: text, channel: "email")
         reading.from = from
         reading.to = to
+        reading.fromHeader = fromHeader
+        reading.toHeader = toHeader
         reading.subject = "Invoice"
         let doc = await Clerk(model: model).readDocument(reading, name: "mail/invoice.eml", binder: nil, locale: "en",
                                                          ownAddresses: mine, now: now)
@@ -99,6 +113,22 @@ import Testing
         #expect(doc.items.map(\.action) == ["send"])
         #expect(doc.replyNeeded)
         #expect(doc.escalate.contains("a reply may be needed"))
+    }
+
+    /// A stranger can encode a display name that decodes to "me@example.invalid,": decoded first, From read as the
+    /// person's address and then the stranger's. Read as written, as a mail program reads it, it is the stranger's.
+    @Test func whoseMailItIsIsReadFromTheHeadersAsWritten() async {
+        // To names someone else too, so the decoded From alone would have made it the person's mail to them.
+        let to = "me@example.invalid, colleague@example.net"
+        for header in ["=?utf-8?q?me@example.invalid=2C?= <supplier@example.com>",
+                       "=?utf-8?Q?=22,me@example.invalid,=22?= <supplier@example.com>"] {
+            let (forged, _) = await read(from: "me@example.invalid, <supplier@example.com>", to: to, text: text, fromHeader: header, toHeader: to)
+            #expect(!forged.fromPerson && forged.items.map(\.action) == ["send"], "\(header)")
+        }
+        // The person's own mail, with an encoded name, is still theirs.
+        let (own, _) = await read(from: "Me <me@example.invalid>", to: "Supplier <supplier@example.com>", text: text,
+                                  fromHeader: "=?utf-8?q?Me?= <me@example.invalid>", toHeader: "=?utf-8?q?Supplier?= <supplier@example.com>")
+        #expect(own.fromPerson && own.wroteTo == ["supplier@example.com"])
     }
 
     @Test func withNoOwnAddressesNothingChanges() async {
