@@ -239,6 +239,11 @@ public actor BinderIMAPRuntime {
     /// Called before a signed-app removal/offload is submitted. Disable first, then await confirmed
     /// fetch completion; publication rechecks this external grant before touching intake.
     public func retire(_ folder: URL) async throws {
+        // Its approved drafts not placed yet go nowhere while it is away: the person tries them again when it is back.
+        let requests = DraftRequests(support: support)
+        for request in requests.all() where URL(fileURLWithPath: request.binder).resolvingSymlinksInPath() == folder.resolvingSymlinksInPath() {
+            if request.state == .ready { try? requests.failed(id: request.id, reason: "binder put away") }
+        }
         let value = try connections.configuration(for: folder)
         try connections.disable(folder: folder)
         if let value, let current = running, current.id == value.id {

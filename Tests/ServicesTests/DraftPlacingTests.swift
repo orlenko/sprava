@@ -213,3 +213,68 @@ import Testing
         #expect(requests.all().map(\.id) == [theirs])
     }
 }
+
+/// What the bug hunt found, each kept from coming back (decisions.md D41).
+@Suite(.serialized) struct DraftPlacingHuntTests {
+    let t = DraftPlacingTests()
+
+    @Test func anAppliedDraftCardIsNeverQueuedAgain() throws {
+        let (c, folder, connections) = try t.setup()
+        let (card, digest) = try t.card(c, folder)
+        _ = try t.approve(c, folder, card, digest)
+        let placer = DraftPlacingTests.Placer()
+        #expect(t.run(c, connections, placer) == .placed)
+        // The same approval again, with the digest recorded after the first: refused, and nothing is queued.
+        let again = try #require(try c.loadDigests()[c.key(folder, card.id)])
+        #expect(JSONValue.string(again) != digest)
+        let r = try t.approve(c, folder, card, .string(again))
+        #expect(r["ok"] == .bool(false))
+        #expect(r["error"]?.stringValue?.contains("applied") == true)
+        #expect(DraftRequests(support: c.support).all().isEmpty)
+        #expect(t.run(c, connections, placer, at: t.now.addingTimeInterval(3600)) == .none && placer.messages.count == 1)
+    }
+
+    @Test func aDraftWithNoKnownAnswerIsSpacedOutThenToldAndHoldsUpNoOther() throws {
+        let (c, folder, connections) = try t.setup()
+        let (first, d1) = try t.card(c, folder)
+        _ = try t.approve(c, folder, first, d1)
+        let requests = DraftRequests(support: c.support)
+        let placer = DraftPlacingTests.Placer()
+        placer.failure = IMAPIntakeImport.Refused.unavailable
+        var at = t.now
+        #expect(t.run(c, connections, placer, at: at) == .waiting)
+        // Within the spacing it is not tried again.
+        #expect(t.run(c, connections, placer, at: at.addingTimeInterval(60)) == .waiting)
+        #expect(requests.all().first?.attempts == 1)
+        at = at.addingTimeInterval(DraftPlacing.retryAfter + 1)
+        #expect(t.run(c, connections, placer, at: at) == .waiting)
+        at = at.addingTimeInterval(DraftPlacing.retryAfter + 1)
+        #expect(t.run(c, connections, placer, at: at) == .failed)
+        #expect(requests.all().first?.failure == "not placed: the server refused it or did not answer")
+    }
+
+    /// The card file is not proof: only the binder's op log says an approval went through.
+    @Test func aCardFileSayingAppliedIsNoApproval() throws {
+        let (c, folder, connections) = try t.setup()
+        let (card, _) = try t.card(c, folder)
+        let requests = DraftRequests(support: c.support)
+        try requests.begin(id: card.id, binder: folder, account: "me@example.invalid@mail.example.invalid:993", message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: t.now)
+        var forged = card.raw
+        forged.set("state", .str("applied"))
+        try ProposalStore.save(Proposal(raw: forged), in: folder)
+        let placer = DraftPlacingTests.Placer()
+        #expect(t.run(c, connections, placer, at: t.now.addingTimeInterval(3600)) == .none)
+        #expect(requests.all().isEmpty && placer.messages.isEmpty)
+    }
+
+    @Test func aBinderPutAwayKeepsItsDraftsFromGoingLater() async throws {
+        let (c, folder, connections) = try t.setup()
+        let (card, digest) = try t.card(c, folder)
+        _ = try t.approve(c, folder, card, digest)
+        let runtime = BinderIMAPRuntime(support: c.support, connections: connections, passwords: BinderIMAPRuntimeTests.passwords(),
+                                        fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
+        try await runtime.retire(folder)
+        #expect(DraftRequests(support: c.support).all().first?.failure == "binder put away")
+        #expect(t.run(c, connections, DraftPlacingTests.Placer()) == .none)
+    }
+}

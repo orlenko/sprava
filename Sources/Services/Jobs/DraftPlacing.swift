@@ -13,19 +13,17 @@ enum DraftPlacing {
     /// A request still `approving` this long after it was written belongs to an approval that did not finish.
     static let settleAfter: TimeInterval = 600
 
-    /// Whether card `id`'s approval went through: its ops are in the binder's log (an approval writes them before it
-    /// marks the card), or the card says applied. False only when the card is readable, still proposed or rejected, and
-    /// the log holds none of its ops; nil when that cannot be told.
+    /// Whether card `id`'s approval went through, from the binder's op log alone: an approval writes its ops before it
+    /// marks the card, and the card file is not proof. Nil when the log cannot be read.
     static func approved(_ id: String, in folder: URL) -> Bool? {
         guard let log = try? TekaStore(folder: folder).readOpLog(), !log.torn else { return nil }
         let aborted = Set(log.ops.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
-        if log.ops.contains(where: { $0["proposal"]?.stringValue == id && !aborted.contains($0["id"]?.stringValue ?? "") }) { return true }
-        switch ProposalStore.list(in: folder).first(where: { $0.0.id == id })?.0.state {
-        case "applied": return true
-        case "proposed", "rejected": return false
-        default: return nil
-        }
+        return log.ops.contains { $0["proposal"]?.stringValue == id && !aborted.contains($0["id"]?.stringValue ?? "") }
     }
+
+    /// Placements with no known answer are spaced out by this, and after `maximumAttempts` the person is told.
+    static let retryAfter: TimeInterval = 300
+    static let maximumAttempts = 3
 
     /// What one run did, in fixed words: logged, and never content.
     enum Outcome: String, Equatable { case placed, present, waiting, failed, none }
@@ -40,7 +38,7 @@ enum DraftPlacing {
             guard (try? available(folder)) == true else { continue }
             switch approved(request.id, in: folder) {
             case true?: try? requests.ready(id: request.id)
-            case false?: try? requests.remove(id: request.id)
+            case false?: try? requests.remove(id: request.id, ifCreated: request.created)
             case nil: continue   // not known: kept, and the person can discard it from the binder's page
             }
         }
@@ -48,6 +46,8 @@ enum DraftPlacing {
         let ready = requests.all().filter { $0.state == .ready }.sorted { $0.created < $1.created }
         var chosen: (DraftRequests.Request, BinderIMAPConnections.Configuration, String)?
         for request in ready where chosen == nil {
+            // One that ended with no known answer lately waits its turn, and does not hold up the rest.
+            if let tried = request.tried, now.timeIntervalSince(tried) < retryAfter { continue }
             let folder = URL(fileURLWithPath: request.binder, isDirectory: true)
             guard (try? available(folder)) == true else { continue }
             // An unreadable connection list waits; only a binder with no connection fails.
@@ -88,7 +88,13 @@ enum DraftPlacing {
             try? requests.failed(id: request.id, reason: "message missing")
             return .failed
         } catch {
-            // The server, the network or a limit: it is tried again on the next run, and finds itself if it got there.
+            // The server, the network, a limit, or a refusal with no word for it: tried again later, and it finds itself
+            // if it got there. After a few, the person is told; Try again starts the count afresh.
+            try? requests.attempted(id: request.id, at: now)
+            if request.attempts + 1 >= maximumAttempts {
+                try? requests.failed(id: request.id, reason: "not placed: the server refused it or did not answer")
+                return .failed
+            }
             return .waiting
         }
     }

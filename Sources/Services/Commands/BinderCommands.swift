@@ -229,6 +229,8 @@ extension Commands {
                 }
             }
             if let draft {
+                // Only a card still waiting: an applied one is never built or queued again.
+                guard proposal.state == "proposed" else { throw Failure(message: "this card is \(proposal.state), so nothing was approved") }
                 guard edited == nil else { throw Failure(message: "an email draft is approved as it is; nothing was approved") }
                 let (message, account) = try Self.draftMessage(draft, card: proposal.id, folder: f, support: support, now: now)
                 try DraftRequests(support: support).begin(id: proposal.id, binder: f, account: account, message: message, now: now)
