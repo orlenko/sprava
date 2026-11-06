@@ -29,6 +29,9 @@ package enum ClaudeReadLaunch {
     /// The system log is closed too: what a command writes there would be binder text outside the binder.
     static let systemServices = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.notification_center"]
     package enum Refused: Error, Equatable { case unsupportedInstallation, managedPolicy, unsafeHome, invalidInput }
+    /// The models a launch may name. A binder's conversation is Opus; reading one intake document in the clerk's place is
+    /// Sonnet (decisions.md D40). A type, not a string, so nothing else reaches the command line.
+    package enum Model: String, Sendable { case opus, sonnet }
     package struct Prepared: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         package let launch: ClaudeReadOnlyTurn.Launch
         package let programHash: String
@@ -39,13 +42,14 @@ package enum ClaudeReadLaunch {
     /// Verify the vendor signature on every preparation. Connection setup checks the installed
     /// CLI's protocol instead of requiring a particular release or executable filename.
     package static func prepare(program: URL, support: URL, connectionID: UUID, sessionID: UUID, credential: String,
-                                policy: String, reach: Reach? = nil, appTools: ClaudeAppTools? = nil, onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
+                                policy: String, reach: Reach? = nil, appTools: ClaudeAppTools? = nil, model: Model = .opus,
+                                onSpawn: @escaping @Sendable (pid_t) throws -> Void) throws -> Prepared {
         let program = program.resolvingSymlinksInPath()
         let hash = try installationHash(program)
         try refuseManagedPolicy()
         let home = support.appendingPathComponent("brains/read-homes/\(connectionID.uuidString)/\(sessionID.uuidString)", isDirectory: true)
         let launch = try plan(program: program, home: home, sessionID: sessionID,
-                              credential: credential, policy: policy, reach: reach, appTools: appTools, onSpawn: onSpawn)
+                              credential: credential, policy: policy, reach: reach, appTools: appTools, model: model, onSpawn: onSpawn)
         return Prepared(launch: launch, programHash: hash)
     }
 
@@ -69,7 +73,7 @@ package enum ClaudeReadLaunch {
     }
 
     static func plan(program: URL, home: URL, sessionID: UUID, credential: String, policy: String, reach: Reach? = nil, appTools: ClaudeAppTools? = nil,
-                     onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) throws -> ClaudeReadOnlyTurn.Launch {
+                     model: Model = .opus, onSpawn: @escaping @Sendable (pid_t) throws -> Void = { _ in }) throws -> ClaudeReadOnlyTurn.Launch {
         // The real path, which is what the sandbox compares: resolvingSymlinksInPath would strip /private from /private/var.
         let reach = try reach.map { reach -> Reach in
             guard let real = realpath(reach.folder.path, nil) else { throw Refused.invalidInput }
@@ -132,7 +136,7 @@ package enum ClaudeReadLaunch {
                     "--safe-mode", "--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--verbose", "--replay-user-messages"] + toolArguments + [
                     "--permission-mode", "dontAsk", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", servers,
-                    "--settings", "{\"disableAllHooks\":true}", "--model", "opus", "--max-budget-usd", reach == nil ? "2" : "10",
+                    "--settings", "{\"disableAllHooks\":true}", "--model", model.rawValue, "--max-budget-usd", reach == nil ? "2" : "10",
                     "--append-system-prompt-file", home.appendingPathComponent("app-policy.txt").path]
         return ClaudeReadOnlyTurn.Launch(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"), arguments: args,
                                         environment: environment, directory: reach?.folder ?? home, sessionID: sessionID,
