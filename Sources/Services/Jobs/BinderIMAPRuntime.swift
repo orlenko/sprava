@@ -53,7 +53,7 @@ public actor BinderIMAPRuntime {
     }
     init(support: URL, connections: BinderIMAPConnections, passwords: IMAPPasswords, checks: Checks? = nil, fetch: @escaping IMAPIntakeImport.Fetch,
          available: @escaping @Sendable (URL) throws -> Bool = { _ in true }, reader: ExtractHelper.Reader = .inProcess,
-         place: @escaping DraftPlacing.Place = { _, _, _, _ in throw IMAPIntakeImport.Refused.unavailable }, log: @escaping @Sendable (String) -> Void = { _ in }) {
+         place: @escaping DraftPlacing.Place = { _, _, _, _, _ in throw IMAPIntakeImport.Refused.unavailable }, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.support = support; self.connections = connections; self.passwords = passwords; self.fetch = fetch; self.available = available; self.reader = reader
         self.place = place; self.log = log
         self.checks = checks ?? Checks(probe: { _ in throw IMAPIntakeImport.Refused.unavailable }, folders: { _, _ in throw IMAPIntakeImport.Refused.unavailable })
@@ -81,11 +81,14 @@ public actor BinderIMAPRuntime {
                 guard Set(own.compactMap(MailAddress.single)).count <= BinderIMAPConnections.maxOwnAddresses else {
                     throw Refusal(message: "Give at most \(BinderIMAPConnections.maxOwnAddresses) other addresses.")
                 }
+                // The Drafts folder the person chose, when the server marks none (issue #623); absent or empty: the marked one.
+                let drafts = r["drafts_folder"]
+                guard drafts == nil || drafts == .null || drafts?.stringValue != nil else { throw IMAPIntakeImport.Refused.unavailable }
                 if let password = r["password"]?.stringValue { try passwords.store(password, for: account) }
                 guard try passwords.read(account) != nil else { throw Refusal(message: "Enter the account's password, then connect again.") }
                 let value = try connections.configure(folder: folder, account: account, mailbox: mailbox,
                     sender: r["sender"]?.stringValue ?? "", subject: r["subject"]?.stringValue ?? "", search: r["search"]?.stringValue ?? "",
-                    includeExisting: r["include_existing"] != .bool(false), ownAddresses: own)
+                    includeExisting: r["include_existing"] != .bool(false), ownAddresses: own, draftsFolder: drafts?.stringValue)
                 start(value)
             case "imap_password":
                 guard let value = try connections.configuration(for: folder), value.enabled, try available(folder),
@@ -129,7 +132,8 @@ public actor BinderIMAPRuntime {
             fields += [("host", .str(value.account.host)), ("port", .int(value.account.port)), ("security", .str(value.account.security.rawValue)),
                        ("pin", value.account.pin.map { .str($0) } ?? .null), ("user", .str(value.account.user)),
                        ("mailbox", .str(value.mailbox)), ("sender", .str(value.sender)), ("subject", .str(value.subject)), ("search", .str(value.search)),
-                       ("include_existing", .bool(value.includeExisting)), ("own_addresses", .array(value.ownAddresses.map { .str($0) }))]
+                       ("include_existing", .bool(value.includeExisting)), ("own_addresses", .array(value.ownAddresses.map { .str($0) })),
+                       ("drafts_folder", value.draftsFolder.map { .str($0) } ?? .null)]
         }
         return JSONWriter.compact(.obj(fields))
     }

@@ -221,4 +221,24 @@ import Testing
         // Saving without the field clears them.
         #expect(try await Self.answer(runtime, "imap_configure", folder, base)["own_addresses"] == .array([]))
     }
+
+    /// The Drafts folder the person chose for a server that marks none (issue #623) is kept and reported back.
+    @Test func theChosenDraftsFolderRoundTripsThroughConfigureAndStatus() async throws {
+        let support = try Self.support("drafts"), folder = try makeTeka(fixture: "sprava-v0")
+        let store = try BinderIMAPConnections(support: support, hash: { "fixture" })
+        let runtime = BinderIMAPRuntime(support: support, connections: store, passwords: Self.passwords(), fetch: { _, cwd, _ in
+            try Data("{\"uid_validity\":7,\"last_seen_uid\":0}".utf8).write(to: cwd.appendingPathComponent("state.json"))
+        })
+        let base = Self.accountFields + [("mailbox", .str("INBOX")), ("password", .str("invented"))]
+        let saved = try await Self.answer(runtime, "imap_configure", folder, base + [("drafts_folder", .str("Brouillons"))])
+        #expect(saved["drafts_folder"] == .str("Brouillons"))
+        #expect(try await Self.answer(runtime, "imap_status", folder)["drafts_folder"] == .str("Brouillons"))
+        #expect(try store.configuration(for: folder)?.draftsFolder == "Brouillons")
+        while try await Self.answer(runtime, "imap_status", folder)["running"] == .bool(true) { try await Task.sleep(for: .milliseconds(5)) }
+        // Something other than a name is refused and changes nothing.
+        #expect(try await Self.answer(runtime, "imap_configure", folder, base + [("drafts_folder", .int(1))])["ok"] == .bool(false))
+        #expect(try store.configuration(for: folder)?.draftsFolder == "Brouillons")
+        // Saving without the field goes back to the folder the server marks.
+        #expect(try await Self.answer(runtime, "imap_configure", folder, base)["drafts_folder"] == .null)
+    }
 }

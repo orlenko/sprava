@@ -31,6 +31,7 @@ final class EmailIntakeModel: ObservableObject {
         var host: String?, port: Int?, security: Security?, pin: String?, user: String?
         var mailbox: String?, sender = "", subject = "", search = "", includeExisting = true
         var ownAddresses: [String] = []
+        var draftsFolder: String?
         var message: String?
         var configured: Bool { host != nil }
     }
@@ -57,6 +58,9 @@ final class EmailIntakeModel: ObservableObject {
     @Published var search = ""
     /// The person's other addresses, separated by commas or new lines: mail from them proposes no to-dos.
     @Published var otherAddresses = ""
+    /// Where approved drafts go: nil for the folder the server marks as Drafts, or one the person picks when it marks
+    /// none or several (issue #623).
+    @Published var draftsFolder: String?
     @Published private(set) var connectMessage: String?
     // Connected
     @Published private(set) var status = Status()
@@ -138,6 +142,8 @@ final class EmailIntakeModel: ObservableObject {
             folders = names
             if let current = mailbox, !names.contains(current) { mailbox = nil }
             if mailbox == nil, let saved = status.mailbox, names.contains(saved) { mailbox = saved }
+            // The person's choice stands, even "the one the server marks"; a folder no longer listed is no choice.
+            if let current = draftsFolder, !names.contains(current) { draftsFolder = nil }
             accountMessage = names.isEmpty ? "Signed in, but the account shows no folders Sprava can read." : "Signed in. \(names.count == 1 ? "1 folder" : "\(names.count) folders")."
         } catch {
             if self.folder == folder { folders = nil; accountMessage = (error as? RuntimeClient.Failure)?.message ?? "Sprava could not sign in." }
@@ -153,7 +159,8 @@ final class EmailIntakeModel: ObservableObject {
             guard self.folder == folder else { return }
             var fields = accountFields() + [("mailbox", .str(mailbox)), ("include_existing", .bool(includeExisting)),
                                             ("sender", .str(sender)), ("subject", .str(subject)), ("search", .str(search)),
-                                            ("own_addresses", .array(Self.addresses(otherAddresses).map { .str($0) }))]
+                                            ("own_addresses", .array(Self.addresses(otherAddresses).map { .str($0) })),
+                                            ("drafts_folder", draftsFolder.map { .str($0) } ?? .null)]
             if !password.isEmpty { fields.append(("password", .str(password))) }
             let r = try await client.command("imap_configure", binder: folder, fields, timeout: 20)
             guard self.folder == folder else { return }
@@ -216,7 +223,7 @@ final class EmailIntakeModel: ObservableObject {
         trusted = status.pin != nil
         folders = nil; mailbox = status.mailbox; includeExisting = status.includeExisting
         sender = status.sender; subject = status.subject; search = status.search
-        otherAddresses = status.ownAddresses.joined(separator: ", ")
+        otherAddresses = status.ownAddresses.joined(separator: ", "); draftsFolder = status.draftsFolder
         serverMessage = nil; accountMessage = nil; connectMessage = nil
     }
 
@@ -229,7 +236,7 @@ final class EmailIntakeModel: ObservableObject {
         loading = true; defer { loading = false }
         host = ""; security = .tls; port = "993"; server = nil; trusted = false; serverMessage = nil
         user = ""; password = ""; folders = nil; accountMessage = nil
-        mailbox = nil; filter = ""; includeExisting = true; sender = ""; subject = ""; search = ""; otherAddresses = ""; connectMessage = nil
+        mailbox = nil; filter = ""; includeExisting = true; sender = ""; subject = ""; search = ""; otherAddresses = ""; draftsFolder = nil; connectMessage = nil
         status = Status(); editing = false; pageMessage = nil; chosenByHand = false
     }
 

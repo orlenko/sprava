@@ -94,11 +94,13 @@ import Testing
     final class Placer: @unchecked Sendable {
         let lock = NSLock()
         var messages: [Data] = []
+        var folders: [String?] = []
         var failure: (any Error)?
-        func place(_ config: BinderIMAPConnections.Configuration, _ password: String, _ message: Data, _ dir: URL) throws -> IMAPDraftAppend.Placed {
+        func place(_ config: BinderIMAPConnections.Configuration, _ folder: String?, _ password: String, _ message: Data, _ dir: URL) throws -> IMAPDraftAppend.Placed {
             try lock.withLock {
                 if let failure { throw failure }
                 messages.append(message)
+                folders.append(folder)
                 return .init(folder: "Drafts", uid: 7, present: false)
             }
         }
@@ -106,7 +108,22 @@ import Testing
 
     func run(_ c: Commands, _ connections: BinderIMAPConnections, _ placer: Placer, password: String? = "invented", at: Date? = nil) -> DraftPlacing.Outcome {
         DraftPlacing.run(support: c.support, connections: connections, password: { _ in password }, available: { _ in true },
-                         place: { try placer.place($0, $1, $2, $3) }, now: at ?? now)
+                         place: { try placer.place($0, $1, $2, $3, $4) }, now: at ?? now)
+    }
+
+    /// With no folder chosen the server's marked one is used; once the person chooses one, the draft goes there (#623).
+    @Test func aDraftGoesToTheFolderThePersonChose() throws {
+        let (c, folder, connections) = try setup()
+        let placer = Placer()
+        let (first, firstDigest) = try card(c, folder)
+        _ = try approve(c, folder, first, firstDigest)
+        #expect(run(c, connections, placer) == .placed)
+        let account = try #require(IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: "me@example.invalid"))
+        _ = try connections.configure(folder: folder, account: account, mailbox: "INBOX", draftsFolder: "Brouillons/Sprava")
+        let (second, secondDigest) = try card(c, folder)
+        _ = try approve(c, folder, second, secondDigest)
+        #expect(run(c, connections, placer) == .placed)
+        #expect(placer.folders == [nil, "Brouillons/Sprava"])
     }
 
     @Test func theRuntimePlacesAnApprovedDraftOnceAndThenItIsGone() throws {

@@ -12,6 +12,7 @@ extension EmailIntakeModel {
         s.mailbox = r["mailbox"]?.stringValue; s.sender = r["sender"]?.stringValue ?? ""; s.subject = r["subject"]?.stringValue ?? ""
         s.search = r["search"]?.stringValue ?? ""; s.includeExisting = r["include_existing"] != .bool(false)
         s.ownAddresses = (r["own_addresses"]?.arrayValue ?? []).compactMap(\.stringValue)
+        s.draftsFolder = r["drafts_folder"]?.stringValue
         s.message = r["message"]?.stringValue
         return s
     }
