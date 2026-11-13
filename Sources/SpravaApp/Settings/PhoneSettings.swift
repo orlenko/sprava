@@ -14,6 +14,8 @@ final class PhoneSettings: ObservableObject, RuntimePage {
         let label: String
         let pairedAt: String
         let confirmed: Bool
+        /// Approved on this Mac; its keys are still on their way to the phone.
+        let awaiting: Bool
     }
     struct Pairing: Equatable {
         enum Stage: Equatable { case waiting, confirm(label: String, code: String), delivering, paired, notConfirmed }
@@ -70,6 +72,8 @@ final class PhoneSettings: ObservableObject, RuntimePage {
         do {
             state = try await client.global("companion_status", timeout: 5)["state"]?.stringValue
             if configured { try await readDevices() } else { devices = [] }
+            // An approved pairing whose keys have not reached the phone is delivered again (after a relaunch too).
+            for device in devices where device.awaiting { resumeDelivery(device.id) }
         } catch { readFailed(Self.plain(error, "Phone access could not be read. Try again in a moment."), error) }
     }
 
@@ -77,8 +81,9 @@ final class PhoneSettings: ObservableObject, RuntimePage {
         let reply = try await client.global("companion_devices", timeout: 5)
         devices = (reply["devices"]?.arrayValue ?? []).compactMap { d in
             guard let id = d["device_id"]?.stringValue, let label = d["label"]?.stringValue else { return nil }
+            let confirmation = d["confirmation"]?.stringValue
             return Device(id: id, label: label, pairedAt: d["paired_at"]?.stringValue ?? "",
-                          confirmed: d["confirmation"]?.stringValue == "acknowledged")
+                          confirmed: confirmation == "acknowledged", awaiting: confirmation == "awaiting")
         }
     }
 
@@ -132,16 +137,63 @@ final class PhoneSettings: ObservableObject, RuntimePage {
             _ = try await client.global("companion_pairing_confirm",
                                         [("device_id", .str(current.deviceID)), ("confirmation", .str(code))],
                                         timeout: Self.actionTimeout)
-            guard pairing?.deviceID == current.deviceID else { return }
-            pairing?.stage = .delivering
-            schedulePoll(after: 0)
+            polling?.cancel(); polling = nil
+            if pairing?.deviceID == current.deviceID { pairing?.stage = .delivering }
+            resumeDelivery(current.deviceID)
         } catch { message = Self.plain(error, "The phone could not be paired. Start pairing again.") }
     }
 
-    /// Stops showing the pairing. The relay forgets an unfinished pairing when it expires.
+    /// Stops showing the pairing. An unconfirmed pairing expires on the relay; an approved one keeps being
+    /// delivered (`resumeDelivery`), so closing the panel never drops what the person approved.
     func closePairing() {
         polling?.cancel(); polling = nil
         pairing = nil
+    }
+
+    /// Phones being given their keys, each by its own loop, independent of the panel.
+    private var deliveries: [String: Task<Void, Never>] = [:]
+    func isDelivering(_ deviceID: String) -> Bool { deliveries[deviceID] != nil }
+
+    /// Keeps stepping an approved pairing's key delivery until the phone acknowledges or the pairing ends. Started at
+    /// confirmation, and again from `load` for any phone still waiting, so a relaunch resumes it.
+    func resumeDelivery(_ deviceID: String) {
+        guard deliveries[deviceID] == nil else { return }
+        deliveries[deviceID] = Task { [weak self, wait] in
+            var next: TimeInterval = 0
+            while !Task.isCancelled {
+                do { try await wait(next) } catch { break }
+                guard let self, let after = await self.deliveryStep(deviceID) else { break }
+                next = after
+            }
+            self?.deliveries[deviceID] = nil
+        }
+    }
+
+    /// One delivery poll. The delay before the next, or nil when delivery is over or stopped.
+    func deliveryStep(_ deviceID: String) async -> TimeInterval? {
+        do {
+            let reply = try await client.global("companion_pairing_poll", [("device_id", .str(deviceID))],
+                                                timeout: Self.actionTimeout)
+            switch reply["state"]?.stringValue {
+            case "delivering": return delay(until: reply["retry_at"]?.stringValue)
+            case "paired": show(.paired, for: deviceID)
+            case "not-confirmed": show(.notConfirmed, for: deviceID)
+            default: if pairing?.deviceID == deviceID { message = "Pairing stopped. Start pairing again." }
+            }
+            try? await readDevices()
+            return nil
+        } catch let failure as RuntimeClient.Failure
+                    where failure.kind == .timedOut || failure.message.hasPrefix(Self.busyAnswer) {
+            return 5
+        } catch {
+            // Stopped for now; the next load resumes it while the phone is still listed as waiting.
+            message = Self.plain(error, "The phone's keys could not be sent yet. Open this page again to retry.")
+            return nil
+        }
+    }
+
+    private func show(_ stage: Pairing.Stage, for deviceID: String) {
+        if pairing?.deviceID == deviceID { pairing?.stage = stage }
     }
 
     private func schedulePoll(after delay: TimeInterval) {
@@ -162,10 +214,10 @@ final class PhoneSettings: ObservableObject, RuntimePage {
             let next = delay(until: reply["retry_at"]?.stringValue)
             switch reply["state"]?.stringValue {
             case "waiting": pairing?.stage = .waiting; schedulePoll(after: next)
-            case "delivering": pairing?.stage = .delivering; schedulePoll(after: next)
             case "confirm":
                 pairing?.stage = .confirm(label: reply["label"]?.stringValue ?? "",
                                           code: reply["confirmation"]?.stringValue ?? "")
+            case "delivering": pairing?.stage = .delivering; resumeDelivery(current.deviceID)
             case "paired": pairing?.stage = .paired; try await readDevices()
             case "not-confirmed": pairing?.stage = .notConfirmed; try await readDevices()
             default: message = "Pairing stopped. Start pairing again."

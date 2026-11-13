@@ -51,7 +51,8 @@ struct PhoneSettingsView: View {
                 HStack {
                     Text(device.label)
                     Spacer()
-                    Text(device.confirmed ? "Paired" : "Waiting for the phone").font(.caption).foregroundStyle(.secondary)
+                    Text(device.confirmed ? "Paired" : device.awaiting ? "Sending its keys…" : "The phone did not confirm")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if model.connected {

@@ -10,7 +10,7 @@ import Testing
 
     /// A model whose polls run only when the test steps them.
     private func model(_ runtime: StandInRuntime, now: Date = Date(timeIntervalSince1970: 0)) -> PhoneSettings {
-        PhoneSettings(client: runtime.client, wait: { _ in throw CancellationError() }, now: { now })
+        PhoneSettings(client: runtime.client, wait: { _ in try await Task.sleep(for: .seconds(3600)) }, now: { now })
     }
     private func answer(_ fields: [(String, JSONValue)]) -> String {
         JSONWriter.compact(.obj([("ok", .bool(true))] + fields))
@@ -58,7 +58,9 @@ import Testing
         let phone = model(runtime)
         await phone.load()
         #expect(phone.stateLine == "Connected to the relay.")
-        #expect(phone.devices == [.init(id: phoneID, label: "Invented phone", pairedAt: "2026-11-13T10:00:00Z", confirmed: true)])
+        #expect(phone.devices == [.init(id: phoneID, label: "Invented phone", pairedAt: "2026-11-13T10:00:00Z",
+                                        confirmed: true, awaiting: false)])
+        #expect(!phone.isDelivering(phoneID))
         let unconfigured = StandInRuntime()
         unconfigured.answers["companion_status"] = { [self] _ in answer([("state", .str("not-configured"))]) }
         let fresh = model(unconfigured)
@@ -94,13 +96,38 @@ import Testing
         await phone.confirmPairing()
         let confirm = try #require(runtime.sent.first { $0["command"] == .str("companion_pairing_confirm") })
         #expect(confirm["device_id"] == .str(phoneID) && confirm["confirmation"] == .str("123456"))
-        await phone.poll()
-        #expect(phone.pairing?.stage == .delivering)
-        await phone.poll()
+        #expect(phone.pairing?.stage == .delivering && phone.isDelivering(phoneID))
+        #expect(await phone.deliveryStep(phoneID) == 4)
+        #expect(await phone.deliveryStep(phoneID) == nil)
         #expect(phone.pairing?.stage == .paired && polls.isEmpty)
         #expect(commands(runtime).last == "companion_devices")
         phone.closePairing()
         #expect(phone.pairing == nil)
+    }
+
+    /// Regression: closing the panel, or quitting, after "The Codes Match" must not drop the approved delivery.
+    @Test func anApprovedPairingKeepsDeliveringAfterThePanelClosesAndAfterARelaunch() async {
+        let runtime = StandInRuntime()
+        runtime.answers["companion_status"] = { [self] _ in answer([("state", .str("claimed"))]) }
+        runtime.answers["companion_devices"] = { [self] _ in answer([("devices", .array([
+            .obj([("device_id", .str(phoneID)), ("label", .str("Invented phone")), ("paired_at", .str("2026-11-13T10:00:00Z")),
+                  ("confirmation", .str("awaiting"))]),
+        ]))]) }
+        runtime.answers["companion_pairing_start"] = { [self] _ in answer([("device_id", .str(phoneID)), ("link", .str(link))]) }
+        runtime.answers["companion_pairing_poll"] = { [self] _ in
+            answer([("state", .str("confirm")), ("label", .str("Invented phone")), ("confirmation", .str("123456"))])
+        }
+        runtime.answers["companion_pairing_confirm"] = { [self] _ in answer([("state", .str("delivering"))]) }
+        let phone = model(runtime)
+        await phone.load()
+        await phone.startPairing()
+        await phone.poll()
+        await phone.confirmPairing()
+        phone.closePairing()
+        #expect(phone.pairing == nil && phone.isDelivering(phoneID))
+        let relaunched = model(runtime)
+        await relaunched.load()
+        #expect(relaunched.devices.first?.awaiting == true && relaunched.isDelivering(phoneID))
     }
 
     @Test func aBusyOrSlowPollKeepsThePairingAndARefusalStopsIt() async {

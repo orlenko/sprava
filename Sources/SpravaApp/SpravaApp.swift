@@ -51,6 +51,8 @@ struct SpravaApp: App {
                 // Background work is not optional (decisions.md A19): at launch the app has the runtime running,
                 // without a prompt, and a request that finds it not running starts it the same way.
                 .task { _ = await model.health.keeper.ensureRunning() }
+                // Resumes key delivery to a phone approved before a quit (PhoneSettings.resumeDelivery).
+                .task { await phone.load() }
         }
         .commands {
             // The standard panel shows only CFBundleVersion after the version; this one adds the commit, so About says
