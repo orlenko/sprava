@@ -12,6 +12,7 @@
     "build": "node build.mjs --clean && tsc -p tsconfig.build.json && node build.mjs",
     "dev": "npm run build && node serve.mjs",
     "stand-in": "node dev/stand-in.ts",
+    "e2e": "node dev/e2e.ts",
     "test": "tsc -p . && node --test --test-timeout=60000 --test-reporter=spec 'test/**/*.test.ts' && npm run build",
     "test:browser": "npm run build && node test/browser-store.chrome.ts && node test/screens.chrome.ts"
   },

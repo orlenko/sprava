@@ -28,7 +28,15 @@ for a different port. Beside it, `npm run stand-in` plays the Mac (`dev/stand-in
 starts a relay on `localhost:8787` over a temporary folder, claims it, publishes invented binders,
 prints a pairing link, confirms the pairing by itself, and decides the phone's requests every two
 seconds (`--hold <seconds>` keeps each one pending that long first). `test/stand-in-owner.test.ts`
-runs the same owner against the app's own modules. Neither is part of `dist/`. The preview binds only to localhost. Serve the same static output
+runs the same owner against the app's own modules. Neither is part of `dist/`.
+
+`npm run e2e` (`dev/e2e.ts`) is the end-to-end check: it builds the app and serves it, starts a relay,
+opens a disposable headless Chrome at phone size (`SPRAVA_TEST_CHROME` or `--chrome` names the
+executable), pairs it with the Mac's side, compares the confirmation codes, marks a to-do Done on the
+phone and checks the Mac closed it and the phone read the outcome, publishes a new to-do from the Mac
+and finds it on the phone, and sends a note. The Mac's side is the stand-in owner for now;
+`--mac dev-phone` is the place for a development Mac build (`sprava dev-phone`, the companion job) and
+refuses to run until those are on main. Everything it starts is removed when it ends. The preview binds only to localhost. Serve the same static output
 over HTTPS at an origin dedicated to this app for a device test; no deployment is performed
 by the build or preview scripts. The version and commit appear at the foot of the app.
 
