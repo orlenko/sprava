@@ -77,14 +77,22 @@ final class PhoneSettings: ObservableObject, RuntimePage {
         } catch { readFailed(Self.plain(error, "Phone access could not be read. Try again in a moment."), error) }
     }
 
+    /// Every page (the runtime sends 20 phones at a time), so a phone awaiting delivery on a later page is resumed too.
+    static let devicePages = 10
     private func readDevices() async throws {
-        let reply = try await client.global("companion_devices", timeout: 5)
-        devices = (reply["devices"]?.arrayValue ?? []).compactMap { d in
-            guard let id = d["device_id"]?.stringValue, let label = d["label"]?.stringValue else { return nil }
-            let confirmation = d["confirmation"]?.stringValue
-            return Device(id: id, label: label, pairedAt: d["paired_at"]?.stringValue ?? "",
-                          confirmed: confirmation == "acknowledged", awaiting: confirmation == "awaiting")
+        var all: [Device] = [], after: String?
+        for _ in 0..<Self.devicePages {
+            let reply = try await client.global("companion_devices", after.map { [("after", .str($0))] } ?? [], timeout: 5)
+            all += (reply["devices"]?.arrayValue ?? []).compactMap { d in
+                guard let id = d["device_id"]?.stringValue, let label = d["label"]?.stringValue else { return nil }
+                let confirmation = d["confirmation"]?.stringValue
+                return Device(id: id, label: label, pairedAt: d["paired_at"]?.stringValue ?? "",
+                              confirmed: confirmation == "acknowledged", awaiting: confirmation == "awaiting")
+            }
+            guard let next = reply["next"]?.stringValue, next != after else { break }
+            after = next
         }
+        devices = all
     }
 
     /// Sends the relay's address and setup code, then claims the relay. The code is cleared once the runtime has it.

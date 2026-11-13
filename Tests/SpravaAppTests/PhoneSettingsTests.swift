@@ -149,6 +149,26 @@ import Testing
         #expect(phone.message == "This pairing expired. Start pairing again.")
     }
 
+    /// Regression: a phone awaiting delivery on a later device page is found and resumed too.
+    @Test func loadingReadsEveryDevicePageAndResumesADeliveryOnALaterOne() async {
+        let runtime = StandInRuntime()
+        let later = "CAgICAgICAgICAgICAgICA"
+        runtime.answers["companion_status"] = { [self] _ in answer([("state", .str("claimed"))]) }
+        runtime.answers["companion_devices"] = { [self] request in
+            if request["after"] == nil {
+                return answer([("devices", .array([.obj([("device_id", .str(phoneID)), ("label", .str("Invented phone")),
+                    ("paired_at", .str("2026-11-13T10:00:00Z")), ("confirmation", .str("acknowledged"))])])), ("next", .str(phoneID))])
+            }
+            #expect(request["after"] == .str(phoneID))
+            return answer([("devices", .array([.obj([("device_id", .str(later)), ("label", .str("Invented tablet")),
+                ("paired_at", .str("2026-11-13T10:00:00Z")), ("confirmation", .str("awaiting"))])]))])
+        }
+        let phone = model(runtime)
+        await phone.load()
+        #expect(phone.devices.map(\.id) == [phoneID, later])
+        #expect(phone.isDelivering(later) && !phone.isDelivering(phoneID))
+    }
+
     @Test func pairingWaitsAtTheRuntimesTimeWithinBounds() {
         let phone = model(StandInRuntime(), now: Date(timeIntervalSince1970: 100))
         #expect(phone.delay(until: "1970-01-01T00:01:44Z") == 4)
