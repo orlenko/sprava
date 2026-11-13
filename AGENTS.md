@@ -141,8 +141,9 @@ Do not report:
 
 ## Build facts
 
-- macOS 27, Swift 6.4, Command Line Tools only. SwiftUI macros such as `@State` are unavailable; app state
-  lives in `ObservableObject` models with `@Published`.
+- macOS 27, Swift 6.4, and Xcode (27.2 here) selected with `xcode-select -s /Applications/Xcode.app`; the package
+  does not build with Command Line Tools alone. Views use `@State` for their own local state; app state lives in
+  `ObservableObject` models with `@Published`.
 - `./scripts/build-app.sh` builds `build/Sprava.app`, signed with an Apple-issued identity, or ad-hoc with
   `SPRAVA_SIGN_IDENTITY=-` (`docs/manual-checks.md`, "Signing"). It refuses to run while the app is open.
 - The design docs in `docs/` are the source of truth for behavior; `docs/decisions.md` is the decision log.
