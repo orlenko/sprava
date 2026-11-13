@@ -132,6 +132,23 @@ import Testing
         #expect(off.grade(off.backups[0]) == .unknown && word(off) == "Running")
     }
 
+    /// Backup records that cannot be read are trouble, not a binder "not backed up yet" under a line saying Running (#574).
+    @Test func unreadableBackupRecordsTurnTheLineRed() async throws {
+        var checks = HealthSnapshot.Checks()
+        checks.backupConfigured = true
+        checks.backups = [.init(name: "Garden shed", at: nil, error: nil)]
+        checks.backupStateError = "invented: the data couldn't be read"
+        let unread = try await model(checks)
+        #expect(unread.grade(unread.backups[0]) == .red)
+        #expect(unread.summaryFacts.backupStateUnreadable && !unread.summaryFacts.backupVeryOld)
+        #expect(word(unread) == "Trouble")
+        #expect(unread.summary.sentence?.hasPrefix("Backup records cannot be read") == true)
+        #expect(unread.supportProblems.contains("backup records cannot be read"))
+        // With backup not set up, there is nothing to tell.
+        checks.backupConfigured = false
+        #expect(word(try await model(checks)) == "Running")
+    }
+
     @Test func anOrdinaryBinderIsSilentAndAChaseIsSaid() throws {
         let row = try Self.adopted(fixture: "sprava-v0")
         #expect(row.teka.state == .ready && row.teka.isAdopted)

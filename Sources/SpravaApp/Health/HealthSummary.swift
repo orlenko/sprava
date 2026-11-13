@@ -19,6 +19,7 @@ struct HealthSummary: Equatable {
         var backupOld = false
         var backupVeryOld = false
         var backupSettingsUnreadable = false
+        var backupStateUnreadable = false
         var alertsOff = false
         var otherFindings = false
     }
@@ -62,6 +63,7 @@ struct HealthSummary: Equatable {
         if stopped > 1 { return "\(stopped) of Sprava's background jobs have stopped working." }
         if facts.backupFailed { return "A backup failed." }
         if facts.backupSettingsUnreadable { return "Backup settings cannot be read." }
+        if facts.backupStateUnreadable { return "Backup records cannot be read, so Sprava cannot tell when each binder was last backed up." }
         if facts.backupVeryOld { return "A binder has not been backed up for more than a week." }
         return nil
     }
@@ -73,7 +75,7 @@ extension HealthModel {
     /// failure. With backup not set up, a record left from an earlier setup says nothing.
     func grade(_ line: HealthSnapshot.BackupLine) -> HealthGrade {
         guard backupConfigured else { return .unknown }
-        if line.error != nil { return .red }
+        if line.error != nil || backupStateError != nil { return .red }
         guard let at = line.at else { return .unknown }
         let age = now.timeIntervalSince(at)
         return age > 7 * 86_400 ? .red : age > 48 * 3600 ? .amber : .green
@@ -95,8 +97,9 @@ extension HealthModel {
         }
         facts.backupSettingsUnreadable = backupSettingsError != nil
         facts.backupFailed = backupConfigured && backups.contains { $0.error != nil }
+        facts.backupStateUnreadable = backupConfigured && backupStateError != nil
         let grades = backups.map(grade)
-        facts.backupVeryOld = !facts.backupFailed && grades.contains(.red)
+        facts.backupVeryOld = !facts.backupFailed && !facts.backupStateUnreadable && grades.contains(.red)
         facts.backupOld = grades.contains(.amber)
         // Only what a binder needs. The app reads the checks without the hub folder or lifeproj's registry, so what
         // that says about the whole Mac would be there for everyone with an adopted binder (#573).

@@ -1,4 +1,5 @@
 import Backup
+import BinderStore
 import Foundation
 import Shelf
 import SpravaKit
@@ -37,7 +38,10 @@ public enum HealthSnapshot {
         public var backupConfigured = false
         /// Why the backup settings cannot be read, if they cannot: not the same as backup not set up.
         public var backupSettingsError: String?
-        /// Each adopted binder on the Shelf with its last backup, if any.
+        /// Why the backup's records cannot be read, if they cannot: then no binder's line says anything (#574).
+        public var backupStateError: String?
+        /// Each adopted binder on the Shelf that this Mac backs up, with its last backup, if any. A binder another Mac
+        /// owns is left out: this Mac does not back it up, and an old record of it here is no fault (#577).
         public var backups: [BackupLine] = []
 
         public init() {}
@@ -113,8 +117,13 @@ public enum HealthSnapshot {
         } catch {
             out.backupSettingsError = "\(error)"
         }
-        let records = Dictionary(backup.status(checkUpload: false).binders.map { ($0.id, ($0.at, $0.error)) }, uniquingKeysWith: { a, _ in a })
-        out.backups = ShelfStore(supportDirectory: support).rows().filter(\.teka.isAdopted).map { row in
+        let status = backup.status(checkUpload: false)
+        out.backupStateError = status.stateError
+        let records = Dictionary(status.binders.map { ($0.id, ($0.at, $0.error)) }, uniquingKeysWith: { a, _ in a })
+        // Backup maintenance backs up only the binders whose owner record names this Mac. With this Mac's id unknown,
+        // which is reported on its own, every adopted binder is listed as before.
+        let mine = { (folder: URL) in id.map { Owner.device(of: folder) == $0 } ?? true }
+        out.backups = ShelfStore(supportDirectory: support).rows().filter { $0.teka.isAdopted && mine($0.folder) }.map { row in
             let record = Backup.existingBackupID(row.folder).flatMap { records[$0] }
             return BackupLine(name: row.name, at: record?.0.flatMap { ISOTime.date($0) }, error: record?.1)
         }
