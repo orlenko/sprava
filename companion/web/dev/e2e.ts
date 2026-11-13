@@ -93,6 +93,11 @@ class Phone {
 
     static async open(chrome: string, width = 390, height = 844): Promise<Phone> {
         const phone = new Phone(await mkdtemp(join(tmpdir(), 'sprava-e2e-chrome-')));
+        try { return await phone.start(chrome, width, height); }
+        catch (error) { await phone.close().catch(() => {}); throw error; } // no profile left behind
+    }
+    private async start(chrome: string, width: number, height: number): Promise<Phone> {
+        const phone = this;
         phone.child = spawn(chrome, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
             '--disable-extensions', '--disable-background-networking', `--user-data-dir=${phone.profile}`,
             '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--window-size=${width},${height}`],
@@ -158,7 +163,9 @@ class Phone {
     }
     async close() {
         this.socket?.close();
-        if (this.child && this.child.exitCode === null) { const exited = once(this.child, 'exit'); this.child.kill('SIGTERM'); await exited; }
+        if (this.child?.pid !== undefined && this.child.exitCode === null && this.child.signalCode === null) {
+            const exited = once(this.child, 'exit'); this.child.kill('SIGTERM'); await exited;
+        }
         await rm(this.profile, { recursive: true, force: true });
     }
 }
