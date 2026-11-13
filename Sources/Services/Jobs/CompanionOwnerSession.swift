@@ -44,6 +44,20 @@ public actor CompanionOwnerSession {
         try Task.checkCancellation()
         return .claim(try profile.ownerClaimState())
     }
+    /// Other owner actions share setup/recovery admission, without blocking keyless status while awaiting I/O.
+    /// The callback owns domain admission (including whether a refused claim permits local recovery),
+    /// bounded relay calls and any per-device decision lock. The profile is reopened for each action (§6).
+    func withConfiguredProfile<Result: Sendable>(
+        _ action: @Sendable (CompanionProfile) async throws -> Result
+    ) async throws -> Result? {
+        guard !recovering else { throw CompanionOwnerConnectionError.busy }
+        try Task.checkCancellation()
+        guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return nil }
+        recovering = true; defer { recovering = false }
+        let result = try await action(profile)
+        try Task.checkCancellation()
+        return result
+    }
     public func snapshot() throws -> CompanionOwnerRuntimeStatus {
         guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return .notConfigured }
         return .claim(try profile.ownerClaimState())
