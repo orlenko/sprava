@@ -41,13 +41,14 @@ struct SpravaApp: App {
         RuntimeClient.whenNotRunning = { Task { _ = await keeper.ensureRunning() } }
         RuntimeClient.untilStarted = { await keeper.untilStarted() }
         NotificationPermission.ask()
+        // With the app, not a window: Settings shows binder lists with no main window open (#580).
+        model.startRefreshing()
     }
 
     var body: some Scene {
         WindowGroup("Sprava") {
             ShelfView(model: model)
                 .frame(minWidth: 760, minHeight: 480)
-                .task { await model.refreshLoop() }
                 // Background work is not optional (decisions.md A19): at launch the app has the runtime running,
                 // without a prompt, and a request that finds it not running starts it the same way.
                 .task { _ = await model.health.keeper.ensureRunning() }

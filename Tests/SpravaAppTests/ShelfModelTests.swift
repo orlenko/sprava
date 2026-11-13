@@ -411,4 +411,23 @@ private final class BlockedShelfSummary: @unchecked Sendable {
         await model.refreshAndWait()
         #expect(model.rows.first?.folder == second)
     }
+
+    /// The Shelf keeps refreshing with no window showing it, so Settings' binder lists keep up with every main window
+    /// closed (#580). The app starts it once; a second start adds no second loop.
+    @Test func theShelfRefreshesWithNoWindow() async throws {
+        let support = try temporaryFolder()
+        let reads = Arrivals()
+        let model = ShelfModel(support: support, client: StandInRuntime().client,
+                               readSnapshot: { reads.arrive(); return ShelfSnapshot.read(support: $0) })
+        model.startRefreshing(every: .milliseconds(20))
+        model.startRefreshing(every: .milliseconds(20))
+        await reads.wait(for: 1)
+        let folder = try makeTeka(fixture: "sprava-v0", folderName: "garden-shed")
+        try ShelfStore(supportDirectory: support).add(folder)
+        // A binder added elsewhere shows by the next pass, with no view and no call to refresh.
+        let after = reads.value
+        await reads.wait(for: after + 2)
+        try await untilDone({ model.rows.count == 1 }) { await Task.yield() }
+        #expect(model.rows.count == 1)
+    }
 }
