@@ -15,6 +15,8 @@ public actor CompanionOwnerSession {
     private let secrets: any CompanionCredentialStorage
     private let recover: @Sendable (CompanionProfile) async throws -> CompanionOwnerClaimState
     private let prepare: @Sendable (String, String, String?) async throws -> CompanionProfile
+    /// Pairing steps for one opened profile; tests replace the relay-backed flow and delivery.
+    nonisolated let pairing: @Sendable (CompanionProfile) throws -> CompanionPairingSteps
     private var recovering = false
 
     public init(database: URL, secrets: any CompanionCredentialStorage) {
@@ -24,15 +26,18 @@ public actor CompanionOwnerSession {
             try await CompanionOwnerSetup.prepare(database: database, origin: origin, setupCode: code,
                                                   webOrigin: web, secrets: secrets)
         }
+        pairing = CompanionPairingSteps.relay
     }
     init(database: URL, secrets: any CompanionCredentialStorage,
          recover: @escaping @Sendable (CompanionProfile) async throws -> CompanionOwnerClaimState,
-         prepare: (@Sendable (String, String, String?) async throws -> CompanionProfile)? = nil) {
+         prepare: (@Sendable (String, String, String?) async throws -> CompanionProfile)? = nil,
+         pairing: (@Sendable (CompanionProfile) throws -> CompanionPairingSteps)? = nil) {
         self.database = database; self.secrets = secrets; self.recover = recover
         self.prepare = prepare ?? { origin, code, web in
             try await CompanionOwnerSetup.prepare(database: database, origin: origin, setupCode: code,
                                                   webOrigin: web, secrets: secrets)
         }
+        self.pairing = pairing ?? CompanionPairingSteps.relay
     }
     /// Setup and background claim recovery share one admission slot, while keyless status stays readable.
     /// Preparation stores the immutable identity; a separate claim action performs owner admission (§6).
@@ -57,6 +62,11 @@ public actor CompanionOwnerSession {
         let result = try await action(profile)
         try Task.checkCancellation()
         return result
+    }
+    /// Keyless and local, like status: labels and confirmation states without network or admission (§5.2).
+    func pairedDevices(now: String, after: String?) throws -> CompanionPairedDevicePage? {
+        guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return nil }
+        return try profile.pairedDevices(now: now, after: after)
     }
     public func snapshot() throws -> CompanionOwnerRuntimeStatus {
         guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return .notConfigured }

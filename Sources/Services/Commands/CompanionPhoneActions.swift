@@ -4,6 +4,7 @@ import SpravaKit
 /// Fixed app-facing errors; no relay body, credential or underlying error description reaches the person.
 public enum CompanionPhoneActionError: Error, Sendable, Equatable {
     case invalidSetup, alreadyClaimed, resetRequired, unavailable, busy
+    case invalidRequest, notClaimed, ownerRefused, webOriginMissing, pairingExpired, pairingInvalid
     public var message: String {
         switch self {
         case .invalidSetup: "Check the relay address, setup code and web app address."
@@ -11,15 +12,24 @@ public enum CompanionPhoneActionError: Error, Sendable, Equatable {
         case .resetRequired: "Phone access needs an explicit reset before changing this setup."
         case .unavailable: "Phone access could not finish. Check its state before retrying."
         case .busy: "Another Phone action is running. Try again when it finishes."
+        case .invalidRequest: "Phone request is invalid."
+        case .notClaimed: "Connect this Mac to a relay and claim it before pairing a phone."
+        case .ownerRefused: "The relay did not accept this Mac. Claim the relay again, then retry."
+        case .webOriginMissing: "Add the web app address to the relay setup, then pair again."
+        case .pairingExpired: "This pairing expired. Start pairing again."
+        case .pairingInvalid: "This pairing could not be checked. Start pairing again."
         }
     }
 }
 
-/// Async configure/claim contracts for the Phone screen (§6). Runtime registers these on its Phone queue,
-/// never on Commands' synchronous binder writer. Reset, pairing and device actions remain separate.
+/// Async Phone screen contracts (§6). Runtime registers these on its Phone queue, never on Commands'
+/// synchronous binder writer. Device removal and reset are not handled yet.
 public enum CompanionPhoneActions {
     public typealias Handler = @Sendable (JSONObject) async throws -> JSONObject
     public static func handlers(session: CompanionOwnerSession) -> [String: Handler] {
+        setup(session: session).merging(CompanionPairingActions.handlers(session: session)) { first, _ in first }
+    }
+    private static func setup(session: CompanionOwnerSession) -> [String: Handler] {
         [
             "companion_configure": { request in
                 guard request["command"] == .str("companion_configure"),
