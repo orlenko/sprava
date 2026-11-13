@@ -101,9 +101,10 @@ extension HealthModel {
         let grades = backups.map(grade)
         facts.backupVeryOld = !facts.backupFailed && !facts.backupStateUnreadable && grades.contains(.red)
         facts.backupOld = grades.contains(.amber)
-        // Only what a binder needs. The app reads the checks without the hub folder or lifeproj's registry, so what
-        // that says about the whole Mac would be there for everyone with an adopted binder (#573).
-        facts.otherFindings = findings.contains { $0.level == .fix && $0.binder != nil } || deviceIDError != nil
+        // A finding about a binder or the whole Mac. The app reads the checks without the hub folder or lifeproj's
+        // registry, so the two that say those checks could not run would be there for everyone with an adopted binder
+        // and are left to the Health page (#573).
+        facts.otherFindings = findings.contains { $0.level == .fix && ($0.binder != nil || !$0.unavailableCheck) } || deviceIDError != nil
             || watcherRepairFailure != nil || staleRuntimeBuild != nil
         return facts
     }

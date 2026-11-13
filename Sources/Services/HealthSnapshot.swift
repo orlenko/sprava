@@ -94,7 +94,7 @@ public enum HealthSnapshot {
         if registryURL == nil {
             findings.append(Doctor.Finding(level: rows.contains { $0.teka.isAdopted } ? .fix : .note, binder: nil,
                 text: "lifeproj's registry path has not been configured here; coexistence privacy checks are unavailable",
-                next: Doctor.noFix))
+                next: Doctor.noFix, unavailableCheck: true))
         }
         if registryUnreadable {
             findings.append(Doctor.Finding(level: .note, binder: nil,

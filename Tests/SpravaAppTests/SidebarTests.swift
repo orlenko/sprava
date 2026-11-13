@@ -80,6 +80,21 @@ import Testing
         #expect(word(try await model(checks)) == "Needs a look")
     }
 
+    /// A real finding about the whole Mac, with no binder, reaches the line; only the two that say a check could not run
+    /// here are left to the Health page (#573).
+    @Test func aRealFindingAboutTheWholeMacReachesTheLine() async throws {
+        var checks = HealthSnapshot.Checks()
+        checks.findings = Doctor.run(rows: [try Self.adopted(fixture: "sprava-v0")], deviceID: nil, registry: nil,
+                                     support: try temporaryFolder())
+        checks.findings.append(.init(level: .fix, binder: nil, text: "invented: a check that could not run here", next: Doctor.noFix,
+                                     unavailableCheck: true))
+        #expect(word(try await model(checks)) == "Running")
+        // The Shelf cannot be read: a fault about the whole Mac.
+        checks.findings.append(.init(level: .fix, binder: nil, text: "the Shelf cannot be read; binder and hub privacy checks are unavailable",
+                                     next: Doctor.noFix))
+        #expect(word(try await model(checks)) == "Needs a look")
+    }
+
     @Test func aFailedRestartIsNotRunningEvenWithTheOldProcessBeating() async throws {
         let keeper = RuntimeKeeper(system: .init(registration: { .enabled }, live: { _ in false }, start: { _ in "Invented failure" }))
         keeper.beatWait = .milliseconds(100)

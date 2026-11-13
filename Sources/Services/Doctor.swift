@@ -17,12 +17,16 @@ public enum Doctor {
         public let text: String
         /// What to do about it, a sentence: where in Sprava, or that Sprava has no fix for it yet (decisions.md D37).
         public let next: String
+        /// Set when the finding says a check could not run because a path was not given to this caller, such as the hub
+        /// folder or lifeproj's registry to the app, rather than that something is wrong (#573).
+        public let unavailableCheck: Bool
 
-        public init(level: Level, binder: String?, text: String, next: String) {
+        public init(level: Level, binder: String?, text: String, next: String, unavailableCheck: Bool = false) {
             self.level = level
             self.binder = binder
             self.text = text
             self.next = next
+            self.unavailableCheck = unavailableCheck
         }
     }
 
@@ -37,7 +41,7 @@ public enum Doctor {
         if spool == nil {
             out.append(Finding(level: rows.contains { $0.teka.isAdopted } ? .fix : .note, binder: nil,
                 text: "the shared hub folder is not set up on this Mac, so Sprava cannot check what each binder shares there",
-                next: noFix))
+                next: noFix, unavailableCheck: true))
         }
         let registered = Set((registry?.entries ?? []).compactMap { $0.workingDir }.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
