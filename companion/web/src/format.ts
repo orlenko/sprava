@@ -4,7 +4,8 @@ import type { OutboxEntry } from './outbox.ts';
 
 /** The local calendar day of `now`, as YYYY-MM-DD. */
 export function localDay(now = new Date()): string {
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return `${String(now.getFullYear()).padStart(4, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-` +
+        String(now.getDate()).padStart(2, '0');
 }
 const dayNumber = (date: string) => Date.parse(`${date}T00:00:00Z`) / 86400000;
 
@@ -14,13 +15,17 @@ export function dayLabel(date: string, today: string, locale?: string): string {
     if (difference === 0) return 'today';
     if (difference === 1) return 'tomorrow';
     if (difference === -1) return 'yesterday';
-    return new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
-        ...(date.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' }) }).format(new Date(`${date}T00:00:00Z`));
+    // Any date the Mac may publish renders; one this formatter cannot read shows as written.
+    try {
+        return new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
+            ...(date.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' }) }).format(new Date(`${date}T00:00:00Z`));
+    } catch { return date; }
 }
 
 /** A time the Mac wrote (UTC), in the phone's own zone: the clock time today, else the day and the time. */
 export function timeLabel(time: string, now = new Date(), locale?: string): string {
     const at = new Date(Date.parse(time.replace(':60Z', ':59Z')));
+    if (Number.isNaN(at.getTime())) return time;
     const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at);
     return localDay(at) === localDay(now) ? clock : `${dayLabel(localDay(at), localDay(now), locale)}, ${clock}`;
 }

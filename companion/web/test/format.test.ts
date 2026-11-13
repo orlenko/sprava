@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { codeLabel, dayLabel, itemFacts, pendingLabel, REFRESH_EVERY, refreshDue } from '../src/format.ts';
+import { codeLabel, dayLabel, itemFacts, localDay, pendingLabel, REFRESH_EVERY, refreshDue, timeLabel } from '../src/format.ts';
 import type { ViewItem } from '../src/view-payloads.ts';
 
 const today = '2026-03-10';
@@ -13,6 +13,16 @@ test('days read as words near today and as short dates further off, with the yea
     assert.equal(dayLabel('2026-03-09', today), 'yesterday');
     assert.equal(dayLabel('2026-03-17', today, 'en-GB'), 'Tue 17 Mar');
     assert.match(dayLabel('2027-01-05', today, 'en-GB'), /^Tue,? 5 Jan 2027$/);
+});
+
+test('dates and times with a year below 1000, which a view may carry, still render', () => {
+    // Regression: localDay wrote year 99 as "99", and dayLabel then threw on the invalid date it built.
+    const now = new Date('2026-03-10T12:00:00Z');
+    const early = new Date(2000, 2, 10); early.setFullYear(99);
+    assert.equal(localDay(early), '0099-03-10');
+    assert.match(timeLabel('0099-03-10T12:00:00Z', now, 'en-GB'), /0099|99/);
+    assert.match(dayLabel('0099-03-10', today, 'en-GB'), /99/);
+    assert.equal(timeLabel('not a time', now), 'not a time');
 });
 
 test('an item says what is late, what it waits on and when to chase it', () => {
