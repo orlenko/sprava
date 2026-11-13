@@ -279,7 +279,9 @@ import Testing
         // It goes by itself, and with the binder.
         actions.confirmationLifetime = .milliseconds(10)
         actions.confirm("Added 1 to-do.")
-        try await Task.sleep(for: .milliseconds(200))
+        // Waited for with a deadline, not a fixed sleep: on a busy main actor the clearing task may run late (#626).
+        let deadline = ContinuousClock.now + .seconds(30)
+        while actions.confirmation != nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(actions.confirmation == nil)
         actions.confirm("Added 1 to-do.")
         await actions.load(URL(fileURLWithPath: "/Invented/garden-shed", isDirectory: true), adopted: true)
