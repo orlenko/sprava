@@ -160,3 +160,50 @@ private struct FlowFixture {
     #expect(try f.profile().pairingDelivery(deviceID: started.deviceID) == nil)
     #expect(try f.profile().deviceRecords().first?.state == .abandoned)
 }
+
+@Test func restartingRestoresThePinnedCodeWithoutAnotherRelayPollOrImplicitApproval() async throws {
+    let f = FlowFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; try f.prepare()
+    let flow = try f.flow(), started = try await flow.start()
+    #expect(try await flow.approval(deviceID: started.deviceID) == nil)
+    guard case .confirmation(let first) = try await flow.poll(deviceID: started.deviceID) else { Issue.record("Expected approval"); return }
+    let restarted = try f.flow()
+    let restored = try #require(try await restarted.approval(deviceID: started.deviceID))
+    #expect(restored.deviceID == first.deviceID && restored.pairingID == first.pairingID)
+    #expect(restored.label == first.label && restored.confirmation == first.confirmation && restored.digest == first.digest)
+    #expect(await f.relay.counts().1 == 1)
+    #expect(try f.profile().deviceRecords().first?.state == .pairing)
+    #expect(try f.profile().pairingDelivery(deviceID: started.deviceID) == nil)
+    _ = try await restarted.confirm(restored)
+    #expect(try f.profile().deviceRecords().first?.state == .active)
+    #expect(try await restarted.approval(deviceID: started.deviceID) == nil)
+}
+
+@Test func aRecordedPairingCodeCannotBeRestoredAfterExpiryOrOwnerRefusal() async throws {
+    let f = FlowFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; try f.prepare()
+    let flow = try f.flow(), started = try await flow.start()
+    _ = try await flow.poll(deviceID: started.deviceID)
+    f.clock.set(started.deadline)
+    await #expect(throws: CompanionOwnerPairingError.expired) { try await f.flow().approval(deviceID: started.deviceID) }
+    #expect(try f.profile().deviceRecords().first?.state == .abandoned)
+    #expect(try f.profile().pairingDelivery(deviceID: started.deviceID) == nil)
+
+    let refused = FlowFixture(); defer { try? FileManager.default.removeItem(at: refused.folder) }; try refused.prepare()
+    let refusedFlow = try refused.flow(), pending = try await refusedFlow.start()
+    _ = try await refusedFlow.poll(deviceID: pending.deviceID)
+    try refused.profile().recordClaimState(.needsReset)
+    await #expect(throws: CompanionPairingFlowError.ownerUnavailable(.needsReset)) { try await refused.flow().approval(deviceID: pending.deviceID) }
+    #expect(try refused.profile().pairingDelivery(deviceID: pending.deviceID) == nil)
+}
+
+@Test func aChangedRecordedApprovalIsRefusedWithoutOverwritingItsTranscript() async throws {
+    let f = FlowFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }; try f.prepare()
+    let flow = try f.flow(), started = try await flow.start()
+    _ = try await flow.poll(deviceID: started.deviceID)
+    let changed = CompanionWire.base64(Data(repeating: 77, count: 32))
+    try f.profile().store.write { try $0.execute("UPDATE pairings SET approval = ? WHERE device = ?", .text(changed), .text(started.deviceID)) }
+    await #expect(throws: CompanionOwnerPairingError.invalid) { try await f.flow().approval(deviceID: started.deviceID) }
+    let stored = try f.profile().store.read { try $0.rows("SELECT approval FROM pairings WHERE device = ?", .text(started.deviceID)).first?.first?.text }
+    #expect(stored == changed)
+    #expect(try f.profile().deviceRecords().first?.state == .pairing)
+    #expect(try f.profile().pairingDelivery(deviceID: started.deviceID) == nil)
+}
