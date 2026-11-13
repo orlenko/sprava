@@ -133,13 +133,24 @@ try {
     const initialLoaded = loaded(); await command('Page.navigate', { url: origin + '/index.html#pair=invalid' }); await initialLoaded;
     await wait(`location.pathname === '/index.html' && document.querySelector('#device-label') !== null && location.hash === ''`);
     assert.equal(await evaluate('location.hash'), '');
-    // Regression: pairing with an empty name used to spend the link; it must be refused before any call.
-    const fakeLink = `#pair=v0.${encodeB64(utf8(origin))}.${id}.${id}.${encodeB64(new Uint8Array(32).fill(1))}.${id}`;
-    const linkLoaded = loaded(); await command('Page.navigate', { url: origin + '/' + fakeLink }); await linkLoaded;
+    // Regression: pairing with an empty name used to spend the link on a local failure. Pair waits for a name.
+    const fakeLink = (n: number) => `#pair=v0.${encodeB64(utf8(origin))}.${id}.${id}.${encodeB64(new Uint8Array(32).fill(n))}.${id}`;
+    const pairButton = `Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Pair this phone')`;
+    const nameField = (text: string) => evaluate(`{ const field = document.querySelector('#device-label');
+        field.value = ${JSON.stringify(text)}; field.dispatchEvent(new Event('input')); }`);
+    const linkLoaded = loaded(); await command('Page.navigate', { url: origin + '/' + fakeLink(1) }); await linkLoaded;
     await wait(`location.hash === '' && !document.querySelector('#device-label').closest('div').hidden`);
-    await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Pair this phone').click()`);
-    await wait(`document.querySelector('#status').textContent.includes('Give this phone a name')`);
-    assert.equal(await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Pair this phone').disabled`), false);
+    assert.equal(await evaluate(`${pairButton}.disabled`), true, 'no name, no pairing');
+    await nameField('   '); assert.equal(await evaluate(`${pairButton}.disabled`), true, 'spaces are not a name');
+    await nameField('Invented phone'); assert.equal(await evaluate(`${pairButton}.disabled`), false);
+    // This fixture has no relay, so the attempt fails. Regression: a second link opened in the same tab, without a
+    // reload, kept that failure; it must start clean.
+    await evaluate(`${pairButton}.click()`);
+    await wait(`document.querySelector('#status').textContent.includes('did not finish')`);
+    const relinked = loaded(); await evaluate(`location.hash = ${JSON.stringify(fakeLink(2))}`); await relinked;
+    await wait(`location.hash === '' && !document.querySelector('#device-label').closest('div').hidden &&
+        document.querySelector('#status').textContent === '' && document.querySelector('#device-label').value === ''`);
+    assert.equal(await evaluate(`${pairButton}.disabled`), true);
     await evaluate(`(async () => {
         const { BrowserStore } = await import('/web/src/browser-store.js');
         const { importKey } = await import('/web/src/sealed.js');

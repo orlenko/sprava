@@ -74,8 +74,11 @@ export function mount(root: HTMLElement, actions: {
     paired.append(freshness, binders, view, composer, pending, device); root.append(heading, banner, pairing, paired);
 
     let hasLink = false;
+    // Pairing needs a link and a name: an empty name would otherwise spend the link on a local failure.
+    const pairable = () => { pairButton.disabled = !hasLink || label.disabled || label.value.trim() === ''; };
+    label.addEventListener('input', pairable);
     const linkPresent = (present: boolean) => {
-        hasLink = present; withLink.hidden = !present; withoutLink.hidden = present; pairButton.disabled = !present;
+        hasLink = present; withLink.hidden = !present; withoutLink.hidden = present; pairable();
     };
     linkPresent(false);
 
@@ -110,7 +113,7 @@ export function mount(root: HTMLElement, actions: {
             pairing.hidden = connected; paired.hidden = !connected;
             refreshButton.hidden = !connected; refreshButton.disabled = !connected;
             binders.replaceChildren(); view.replaceChildren(); pending.replaceChildren(); freshness.replaceChildren();
-            if (!connected) pairButton.disabled = !hasLink;
+            if (!connected) pairable();
             if (page.entries.length || paging) {
                 pending.append(element('h2', 'Waiting for your Mac'));
                 const list = element('ul');
