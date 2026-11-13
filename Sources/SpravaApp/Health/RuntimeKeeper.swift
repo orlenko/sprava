@@ -90,6 +90,8 @@ final class RuntimeKeeper: ObservableObject {
     var poll: Duration = .seconds(2)
     private var run: Task<Outcome, Never>?
     private var refreshRegistration: Bool
+    /// When the run that failed began: a runtime process started after it is one that run's starts brought up late.
+    private var failedRunBegan: Date?
 
     init(system: System, refreshRegistration: Bool = false) {
         self.system = system; self.refreshRegistration = refreshRegistration
@@ -126,17 +128,29 @@ final class RuntimeKeeper: ObservableObject {
         return await perform(restartNow: true)
     }
 
+    /// A live heartbeat from a runtime process that started at `started` (#576). When launchd is slow, the runtime can
+    /// come up after a run gave up; its failure then no longer holds, and a process started after that run began is the
+    /// proof. A process already running before it, such as the old one a Restart could not replace, proves nothing.
+    /// Start times are recorded to the second, so one started in the run's first second counts as before it.
+    func noteLiveRuntime(startedAt started: Date) {
+        guard run == nil, case .failed = state, let began = failedRunBegan, started > began else { return }
+        failedRunBegan = nil
+        state = .running
+    }
+
     private func perform(restartNow: Bool) async -> Outcome {
+        let began = Date()
         let task = Task { await steps(waited: restartNow, restartNow: restartNow) }
         run = task
         let outcome = await task.value
         run = nil
         step = nil
         launching = false
+        failedRunBegan = nil
         switch outcome {
         case .running: state = .running
         case .needsApproval: state = .needsApproval
-        case .failed(let why): state = .failed(why)
+        case .failed(let why): failedRunBegan = began; state = .failed(why)
         }
         return outcome
     }

@@ -141,6 +141,27 @@ import Testing
         #expect(launchd.starts == [.kickstart, .reregister, .kickstart, .reregister])
     }
 
+    /// launchd was slow: the runtime came up after the run gave up. A process started after that run began clears the
+    /// failure; one already running before it, such as an old process a Restart could not replace, does not (#576).
+    @Test func aRuntimeThatComesUpAfterTheRunGaveUpClearsTheFailure() async {
+        let launchd = Launchd(.enabled)
+        let keeper = launchd.keeper()
+        let before = Date().addingTimeInterval(-60)
+        #expect(await keeper.ensureRunning() == .failed(RuntimeKeeper.noBeat))
+        keeper.noteLiveRuntime(startedAt: before)
+        #expect(keeper.state == .failed(RuntimeKeeper.noBeat))
+        keeper.noteLiveRuntime(startedAt: Date())
+        #expect(keeper.state == .running)
+        // Nothing was started for it; a request that finds the runtime gone again starts a new run, as before any failure.
+        #expect(launchd.starts.count == 2)
+        _ = await keeper.ensureRunning()
+        #expect(launchd.starts.count == 4)
+        // A keeper that never failed is not changed by a beat.
+        let fresh = Launchd(.enabled, live: true).keeper()
+        fresh.noteLiveRuntime(startedAt: Date())
+        #expect(fresh.state == .idle)
+    }
+
     @Test func aStartThatIsRefusedStopsWithTheReason() async {
         let launchd = Launchd(.notRegistered, failure: "Move Sprava to Applications first.")
         let keeper = launchd.keeper()
