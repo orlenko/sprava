@@ -152,8 +152,7 @@ Do not read any other folder there: those are private life projects.
 ## How the author works (please follow)
 
 - **Design-skeptic pass before any code.** Write the design, then attack it.
-- **After building:** a hostile-eyes review, specialist reviewers, a simplification review (report only),
-  and a security pass. Re-verify after each fix wave.
+- **After building:** the review and test process in `AGENTS.md` (since 2026-11-13).
 - **Monitors flag, humans act.** Propose, don't act, on anything outbound or irreversible.
 - **Prefer small, testable increments** and plain files over cleverness. Deterministic code for
   mechanics, models only for judgment.
