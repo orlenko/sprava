@@ -32,8 +32,8 @@ export class ItemControls {
     private readonly heading = element('h2');
     private readonly date = element('input');
     private readonly status = element('p');
-    private readonly submit = element('button', 'Save date action');
-    private readonly cancel = element('button', 'Cancel date action');
+    private readonly submit = element('button', 'Save');
+    private readonly cancel = element('button', 'Cancel');
     private selection?: Selection;
     private editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16)));
     private revision = 0;
@@ -49,6 +49,7 @@ export class ItemControls {
         this.panel.id = 'item-action'; this.panel.hidden = true; this.date.type = 'date'; this.date.id = 'item-action-date';
         const label = element('label', 'Date'); label.htmlFor = this.date.id;
         this.submit.type = this.cancel.type = 'button'; this.status.setAttribute('role', 'status');
+        this.cancel.className = 'secondary'; this.status.className = 'muted';
         this.panel.append(this.heading, label, this.date, this.submit, this.cancel, this.status); root.append(this.panel);
         this.date.addEventListener('input', () => this.persist());
         this.submit.addEventListener('click', () => { void this.saveDate(); });
@@ -60,7 +61,7 @@ export class ItemControls {
         if (this.selection) { this.message('Finish or cancel the current date action before choosing another.'); return; }
         this.selection = { generation, action: { ...action } }; this.editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16)));
         this.revision = this.durableRevision = 0; this.proof = undefined; this.date.value = '';
-        this.heading.textContent = `${action.type === 'follow_up' ? 'Follow up' : 'Postpone'}: ${title}`;
+        this.heading.textContent = `${action.type === 'follow_up' ? 'Follow up on' : 'New due date for'}: ${title}`;
         this.panel.hidden = false; this.date.focus(); this.persist();
     }
     pairingChanged(): void {
@@ -84,7 +85,7 @@ export class ItemControls {
             this.editorId = encodeB64(crypto.getRandomValues(new Uint8Array(16))); this.revision = this.durableRevision = 0; this.proof = undefined;
             this.date.value = action.date; this.heading.textContent = valid.type === 'follow_up' ? 'Recovered follow-up' : 'Recovered postponement';
             this.panel.hidden = false; this.persist({ editorId: draft.editorId, revision: draft.revision });
-        } catch { this.message('This saved date action could not be opened. Its encrypted draft remains on this device.'); }
+        } catch { this.message('This saved date action could not be opened. Its encrypted draft stays on this phone.'); }
     }
     private persist(recovered?: DraftProof): void {
         const selection = this.selection; if (!selection) return;
@@ -96,7 +97,7 @@ export class ItemControls {
             this.proof = { editorId, revision };
             this.durableRevision = revision;
             if (revision === this.revision) this.status.textContent = action.date === '' ?
-                'Action saved on this device; choose a date to finish.' : 'Encrypted date draft saved on this device.';
+                'Saved on this phone; choose a date, then Save.' : 'Encrypted date draft saved on this phone.';
         });
         void this.pending.catch(() => { this.status.textContent = 'Date draft is not saved. Keep this window open and copy the date.'; });
     }
@@ -127,13 +128,13 @@ export class ItemControls {
         const key = JSON.stringify([generation, action.type, action.binder, action.item, action.seenVersion, action.date]);
         if (!this.permitted(generation)) { this.message('The pairing changed. This action was not queued; keep a copy of its date.'); return false; }
         const duplicate = this.pendingActions.get(key); if (duplicate) return duplicate;
-        this.message('Saving action on this device…');
+        this.message('Saving on this phone…');
         const work = (this.itemQueues.get(item) ?? Promise.resolve(true)).then(async () => {
             if (!this.permitted(generation)) { this.message('The pairing changed. This action was not queued; keep a copy of its date.'); return false; }
             try {
                 const entry = await this.store.enqueue(action, now(), generation, proof ? [proof] : []);
                 if (entry.state !== 'queued') throw new Error();
-                this.message('Action saved on this device. Your Mac will confirm the result.'); this.changed(); return true;
+                this.message('Saved on this phone. The item stays listed until your Mac applies it.'); this.changed(); return true;
             } catch { this.message('The action could not be saved. Your date draft stays available; retry when ready.'); return false; }
         });
         this.pendingActions.set(key, work); this.itemQueues.set(item, work);

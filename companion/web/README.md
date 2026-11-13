@@ -130,13 +130,22 @@ a replacement generation, and lost joins require a new link. The complete flow i
 bounded to ten minutes; each HTTP call also has its own deadline. The app calls these helpers during pairing and scheduled refresh.
 
 `src/refresh.ts` searches keys before indexes, reconciles epoch-independent outcomes, and
-fetches only the selected binder's exact view. Each prefix has a five-candidate budget,
+fetches the exact view of every shown binder not yet admitted at its version, the selected
+one first, so Today can list overdue, due and follow-up items across binders. Each prefix has a five-candidate budget,
 including the index re-list after a missing view; the whole refresh has a 30-second network
 deadline. All admissions belong to the pairing generation that started the request.
 Invalid candidates and network failures leave admitted offline caches intact; storage
 failures remain visible to the caller. `src/display-cache.ts` opens admitted sealed data
 in memory and rechecks pairing/index prerequisites after decryption. It never persists
 decrypted names or content. The app calls it at startup, on visibility/network changes and during scheduled refresh.
+Queued actions are sent every 10 seconds; the relay is read at most once a minute while the page is visible
+(`src/format.ts`, `refreshDue`), and at once on opening, on Refresh, on reconnecting and after pairing, so a
+phone left open stays under the relay's 600 reads an hour (companion-v0 §7.5).
+
+The screens (`src/screens.ts`) open on Today across binders, then one tab per binder with its non-empty
+buckets; dates, waiting and follow-up read as plain words (`src/format.ts`). The date editor opens as a
+sheet at the bottom of the screen. Colours follow the system's light or dark setting. The PNG icons are
+renders of `public/icon.svg` (the maskable one without rounded corners) for Android's installer.
 
 `src/drafts.ts` saves editor drafts encrypted under the non-extractable device key with
 fresh nonces and a local, generation/editor-bound context. Each window has its own editor

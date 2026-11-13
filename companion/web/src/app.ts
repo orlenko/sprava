@@ -10,6 +10,8 @@ import { removePairing } from './pairing-removal.ts';
 import { encodeB64 } from './encoding.ts';
 import type { Draft, DraftProof } from './drafts.ts';
 import { ItemControls } from './item-controls.ts';
+import { helloPayload } from './device-payloads.ts';
+import { codeLabel, refreshDue } from './format.ts';
 
 const root = document.getElementById('app')!;
 // Refuse a frame before reading a pairing fragment, opening storage, or accessing keys.
@@ -24,7 +26,8 @@ async function start(): Promise<void> {
     try { link = consumePairingLink(location, history); } catch { invalidLink = true; }
     const store = await BrowserStore.open();
     let selected: string | undefined, generation: string | undefined, draftGeneration: string | undefined;
-    let pageAfter: IDBValidKey | undefined, lastReachedAt: number | undefined;
+    let pageAfter: IDBValidKey | undefined, lastReachedAt: number | undefined, lastRefresh: number | undefined;
+    let forceRefresh = false, viewMissing = false;
     const freshEditor = () => encodeB64(crypto.getRandomValues(new Uint8Array(16)));
     let editorId = freshEditor(), draftRevision = 0, proof: DraftProof | undefined, recovered: DraftProof | undefined;
     let draftSave: Promise<void> = Promise.resolve();
@@ -36,8 +39,9 @@ async function start(): Promise<void> {
     const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sprava-companion') : undefined;
     const screen = mount(root, {
         pair: label => { void connect(label).catch(failed); }, cancel: () => { pairing?.abort(); },
-        select: id => { selected = id; void draw().then(cycle).catch(failed); },
-        save: () => { void save().catch(failed); }, refresh: () => { void cycle(); },
+        // Every view is fetched with the index; a tab reads the relay only when its view has not arrived yet.
+        select: id => { selected = id; void draw().then(() => { if (viewMissing) void cycle(true); }).catch(failed); },
+        save: () => { void save().catch(failed); }, refresh: () => { void cycle(true); },
         remove: () => { void disconnect().catch(failed); },
         item: (owner, action, title) => itemControls.open(owner, action, title),
         next: key => { pageAfter = key; void draw().catch(failed); },
@@ -46,7 +50,7 @@ async function start(): Promise<void> {
     const tell = (message: string) => { screen.banner.textContent = message; };
     const failed = () => tell('The operation could not finish. Your note stays in the editor; retry when ready.');
     const itemControls = new ItemControls(root, store, owner => owner === generation && !retiring.has(owner),
-        () => { channel?.postMessage('changed'); void draw().then(cycle).catch(failed); }, tell);
+        () => { channel?.postMessage('changed'); void draw().then(() => cycle()).catch(failed); }, tell);
     screen.draft.addEventListener('input', () => {
         if (screen.draft.value === '' && draftGeneration !== generation) {
             draftGeneration = generation; editorId = freshEditor(); proof = recovered = undefined; draftRevision = 0;
@@ -55,7 +59,7 @@ async function start(): Promise<void> {
         persistDraft(screen.draft.value);
     });
     if (invalidLink) tell('This pairing link is invalid. Ask your Mac for a new link.');
-    if (!link) screen.pairButton.disabled = true;
+    screen.linkPresent(link !== null);
 
     function persistDraft(text: string): void {
         const owner = draftGeneration, editor = editorId, revision = ++draftRevision, source = recovered;
@@ -67,7 +71,7 @@ async function start(): Promise<void> {
             if (editorId === editor) {
                 proof = { editorId: editor, revision };
                 if (recovered === source) recovered = undefined;
-                if (revision === draftRevision) screen.draftStatus.textContent = 'Encrypted draft saved on this device.';
+                if (revision === draftRevision) screen.draftStatus.textContent = 'Encrypted draft saved on this phone.';
             }
         });
         void draftSave.catch(() => {
@@ -101,24 +105,34 @@ async function start(): Promise<void> {
         generation = cache.generation;
         itemControls.pairingChanged();
         if (selected && cache.index && !cache.index.binders.some(b => b.id === selected)) selected = undefined;
-        screen.render(cache, await store.readOutbox(50, pageAfter), lastReachedAt);
+        viewMissing = selected !== undefined && cache.view === undefined;
+        screen.render(cache, await store.readOutbox(50, pageAfter), lastReachedAt, pageAfter !== undefined);
         screen.saveButton.disabled = saving || !generation;
         if (screen.draft.value && draftGeneration !== generation)
             tell('This draft belongs to an earlier pairing. Keep a copy, then clear it before writing for this pairing.');
-        if (generation && link) tell('This browser is already paired. A new link cannot replace its pairing.');
+        if (generation && link) tell('This phone is already paired. To pair it again, first remove its pairing at the bottom of the page.');
         if (!generation && removalNotice) tell(removalNotice);
     }
     async function connect(label: string): Promise<void> {
         if (!link || pairing) return;
+        // A name the hello cannot carry is refused here, before the link is used up.
+        try { helloPayload(label); } catch {
+            tell('Give this phone a name, up to 40 characters.'); screen.label.focus(); return;
+        }
         const controller = new AbortController(); pairing = controller;
         screen.pairButton.disabled = true; screen.label.disabled = true; screen.cancelButton.hidden = false;
-        tell('Connecting. Compare the code on your Mac before approving.');
+        tell('Connecting to the relay…');
         try {
-            await pairDevice(store, link, label, { signal: controller.signal,
-                onCode: code => { screen.code.textContent = `Confirmation code: ${code}`; } });
-            link = null; screen.code.textContent = ''; tell('Paired. Waiting for your Mac to publish.');
-            channel?.postMessage('changed'); await draw(); await cycle();
-        } catch { link = null; tell('Pairing did not finish. Ask your Mac for a new pairing link.'); await draw(); }
+            await pairDevice(store, link, label, { signal: controller.signal, onCode: code => {
+                screen.code.textContent = codeLabel(code);
+                tell('Check that your Mac shows the same code, then confirm it there.');
+            } });
+            link = null; screen.linkPresent(false); screen.code.textContent = ''; tell('Paired.');
+            channel?.postMessage('changed'); await draw(); await cycle(true);
+        } catch {
+            link = null; screen.linkPresent(false); screen.code.textContent = '';
+            tell('Pairing did not finish. On your Mac, start pairing again for a new code.'); await draw();
+        }
         finally { pairing = undefined; screen.label.disabled = false; screen.cancelButton.hidden = true; }
     }
     async function save(): Promise<void> {
@@ -132,7 +146,7 @@ async function start(): Promise<void> {
             if (entry.state !== 'queued') { tell('The pairing changed. Your note has not been sent; keep your draft.'); return; }
             screen.draft.value = ''; draftGeneration = undefined; proof = recovered = undefined;
             editorId = freshEditor(); draftRevision = 0; screen.draftStatus.textContent = '';
-            tell('Note saved on this device. It will be sent when the relay is reachable.');
+            tell('Note saved on this phone. It is sent when the relay can be reached.');
             channel?.postMessage('changed');
         } catch { failed(); }
         finally { saving = false; screen.draft.disabled = false; await draw(); void cycle(); }
@@ -144,7 +158,7 @@ async function start(): Promise<void> {
     async function disconnect(): Promise<void> {
         const original = generation;
         if (!original || retiring.has(original) || !window.confirm(
-            'Remove this device’s pairing and its saved binder data? Unconfirmed actions remain visible. Keep a copy of any unsent note or date action first.')) return;
+            'Remove this phone’s pairing? Its keys and saved binders are deleted from this phone. Actions your Mac has not confirmed stay listed. Copy any unsent note or date first.')) return;
         stop(original); screen.removeButton.disabled = true; screen.saveButton.disabled = true;
         try {
             const result = await removePairing(store, original, { notify: value => {
@@ -164,14 +178,20 @@ async function start(): Promise<void> {
             await draw();
         } finally { screen.removeButton.disabled = false; }
     }
-    async function cycle(): Promise<void> {
+    /** Sends queued actions every 10 seconds; reads the relay once a minute while visible, or when forced. */
+    async function cycle(force = false): Promise<void> {
+        forceRefresh ||= force;
         if (busy) { queued = true; return; }
         busy = true; screen.refreshButton.disabled = true; clearTimeout(sendTimer);
         try {
-            const result = await refresh(store, selected);
-            if (result.lastReachedAt !== undefined) lastReachedAt = result.lastReachedAt;
-            if (result.status === 'offline') tell('Relay unavailable. Showing admitted data saved on this device.');
-            if (result.status === 'refused') tell('The relay refused this device. Saved data and keys remain on this device.');
+            const now = Date.now();
+            const result = refreshDue(lastRefresh, now, forceRefresh, document.hidden) ?
+                await refresh(store, selected) : { status: 'skipped' as const };
+            if (result.status !== 'skipped') { lastRefresh = now; forceRefresh = false; }
+            if (result.status !== 'skipped' && result.lastReachedAt !== undefined) lastReachedAt = result.lastReachedAt;
+            if (result.status === 'offline') tell('Can’t reach the relay. Showing what this phone saved; actions wait here until it’s back.');
+            if (result.status === 'refused') tell('The relay refused this phone. Its saved binders and keys are still here; check the phone’s pairing on your Mac.');
+            if (result.status === 'reached' && screen.banner.textContent?.startsWith('Can’t reach')) tell('');
             let after: IDBValidKey | null = null;
             // Expiry is paged, with no whole-queue ciphertext read.
             do { after = await store.expireOutbox(Date.now(), 100, after ?? undefined); } while (after !== null);
@@ -203,14 +223,16 @@ async function start(): Promise<void> {
         const message = event.data;
         if (message?.type === 'remove' && typeof message.generation === 'string') stop(message.generation);
         if (message?.type === 'resume' && typeof message.generation === 'string') retiring.delete(message.generation);
-        void draw().then(cycle).catch(failed);
+        void draw().then(() => cycle()).catch(failed);
     });
-    window.addEventListener('online', () => { void cycle(); });
+    window.addEventListener('online', () => { void cycle(true); });
+    // A pairing link opened while the app is already open changes only the fragment; start again to read it.
+    window.addEventListener('hashchange', () => { if (location.hash.startsWith('#pair=')) location.reload(); });
     window.addEventListener('beforeunload', event => {
         if (screen.draft.value || itemControls.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; }
     });
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) void cycle(); });
-    await draw(); await recoverDrafts(); void cycle();
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) void cycle(true); });
+    await draw(); await recoverDrafts(); void cycle(true);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('./sw.js').catch(() => {
         tell('Offline app loading is unavailable in this browser.');
     });

@@ -155,3 +155,24 @@ test('404 recovery shares the original five-candidate index budget', async () =>
     assert.equal(calls.filter(c => /^\/v0\/objects\/index\//.test(c)).length, 5);
     assert.equal((await store.read()).index!.revision, 5); store.close();
 });
+
+test('one refresh admits every binder view for the cross-binder Today, and fetches nothing already admitted', async () => {
+    const store = await paired(), calls: string[] = [], second = encodeB64(new Uint8Array(16).fill(2));
+    const both = sealed('index/5', 'account', 1, { revision: 5, generated_at: timestamp, binders: [
+        { id, name: 'Invented binder', view_version: 7, key: encodeB64(raw) },
+        { id: second, name: 'Second invented binder', view_version: 3, key: encodeB64(raw) }] });
+    const secondView = sealed(`views/${second}/3`, second, 1, { version: 3, generated_at: timestamp, today: null,
+        binder: { name: 'Second invented binder', description: null }, notes_omitted: false, items: [], closed: [],
+        documents: [], buckets: Object.fromEntries(bucketNames.map(b => [b, []])) });
+    const objects = { 'index/5': both, [`views/${id}/7`]: view(7), [`views/${second}/3`]: secondView };
+    await refresh(store, second, { fetcher: api({ 'index/': ['index/5'] }, objects, calls) });
+    const views = calls.filter(c => c.startsWith('/v0/objects/views/'));
+    assert.deepEqual(views, [`/v0/objects/views/${second}/3`, `/v0/objects/views/${id}/7`], 'the selected binder first');
+    const display = await readDisplayCache(store);
+    assert.deepEqual([...display.views!.keys()].sort(), [id, second].sort());
+    assert.equal(display.view, undefined);
+    calls.length = 0;
+    await refresh(store, undefined, { fetcher: api({ 'index/': ['index/5'] }, objects, calls) });
+    assert.equal(calls.filter(c => c.startsWith('/v0/objects/views/')).length, 0);
+    store.close();
+});
