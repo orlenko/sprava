@@ -13,7 +13,7 @@ public final class CompanionProfile: Sendable {
     let store: StateStore
     let relay: CompanionRelayIdentity
     let secrets: any CompanionCredentialStorage
-    static let schema = StateStore.Schema(version: 15, statements: [
+    static let schema = StateStore.Schema(version: 16, statements: [
         "CREATE TABLE profile (slot INTEGER PRIMARY KEY CHECK (slot = 1), origin TEXT NOT NULL, " +
         "instance TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 9007199254740991), " +
         "index_reserved INTEGER NOT NULL DEFAULT 0, index_published INTEGER NOT NULL DEFAULT 0, " +
@@ -57,7 +57,11 @@ public final class CompanionProfile: Sendable {
         "CREATE TABLE index_upload_views (binder TEXT PRIMARY KEY REFERENCES phone_binders(binder), version INTEGER NOT NULL) WITHOUT ROWID",
         "CREATE TABLE index_published_views (binder TEXT PRIMARY KEY REFERENCES phone_binders(binder), version INTEGER NOT NULL) WITHOUT ROWID",
         "CREATE TABLE binder_cleanup (binder TEXT PRIMARY KEY REFERENCES phone_binders(binder), " +
-        "next INTEGER NOT NULL CHECK (next >= 1), done INTEGER NOT NULL CHECK (done IN (0,1))) WITHOUT ROWID"
+        "next INTEGER NOT NULL CHECK (next >= 1), done INTEGER NOT NULL CHECK (done IN (0,1))) WITHOUT ROWID",
+        // companion-v0 §4.4: each rotation's recorded keys objects, and the epochs whose keys await discard.
+        "CREATE TABLE rotation_keys (epoch INTEGER NOT NULL, device TEXT NOT NULL REFERENCES devices(device), " +
+        "state TEXT NOT NULL CHECK (state IN ('pending','uploaded','refused')), bytes BLOB NOT NULL, PRIMARY KEY(epoch, device)) WITHOUT ROWID",
+        "CREATE TABLE discard_epochs (epoch INTEGER PRIMARY KEY CHECK (epoch BETWEEN 1 AND 9007199254740991))"
     ])
 
     public init(database: URL, relay: CompanionRelayIdentity, secrets: any CompanionCredentialStorage) throws {
@@ -115,7 +119,7 @@ public final class CompanionProfile: Sendable {
         }
         return number
     }
-    private func keyAccount(_ number: Int64) -> String { relay.account + ":account-key-v0:\(number)" }
+    func keyAccount(_ number: Int64) -> String { relay.account + ":account-key-v0:\(number)" }
     func key(_ number: Int64) throws -> SymmetricKey {
         guard let bytes = try secrets.read(account: keyAccount(number)) else { throw CompanionCredentialError.unavailable }
         guard bytes.count == 32 else { throw CompanionCredentialError.invalid }
