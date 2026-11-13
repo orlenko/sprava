@@ -13,6 +13,7 @@ struct SpravaApp: App {
     @StateObject private var appearance: AppearanceSettings
     @StateObject private var backup = BackupModel()
     @StateObject private var brains = BrainsModel()
+    @StateObject private var phone = PhoneSettings()
     @StateObject private var binderLocation: BinderLocationSettings
 
     init() {
@@ -73,7 +74,7 @@ struct SpravaApp: App {
             }
         }
         // The app menu's Settings… item, ⌘,.
-        Settings { SettingsView(appearance: appearance, binderLocation: binderLocation, shelf: model, backup: backup, brains: brains) }
+        Settings { SettingsView(appearance: appearance, binderLocation: binderLocation, shelf: model, backup: backup, brains: brains, phone: phone) }
     }
 }
 
