@@ -132,6 +132,7 @@ extension CompanionProfile {
         try store.write { t in
             guard try record(deviceID, t)?.state == .revoked else { throw CompanionRotationError.invalid }
             try t.execute("UPDATE device_removals SET relay_delete = 0 WHERE device = ?", .text(deviceID))
+            try t.execute("DELETE FROM publication_attempts WHERE scope = ?", .text("removal/" + deviceID))
         }
     }
     /// Removed phones the relay has not confirmed deleting, with their private labels, for Settings › Phone only.
@@ -220,8 +221,8 @@ public actor CompanionOwnerRotation {
         guard deletion != nil || keys != nil else { return try profile.discardOldEpochKeys() ? .discarded : .idle }
         let state = try profile.ownerClaimState()
         guard state == .claimed else { throw CompanionPairingFlowError.ownerUnavailable(state) }
-        if let deletion {
-            // §4.4 step 1: repeated until 204; the rotation never waits for it.
+        // §4.4 step 1: repeated until 204, paced on its own so a relay refusing it never holds up the new keys.
+        if let deletion, try profile.reservePublicationAttempt(scope: "removal/" + deletion, name: "devices/" + deletion, now: now()).send {
             let reply = try await transport().deleteDevice(deviceID: deletion, downloadLimit: 4096)
             switch reply.status {
             case 204: try profile.recordRelayDeletion(deviceID: deletion); return .deleted(deviceID: deletion)

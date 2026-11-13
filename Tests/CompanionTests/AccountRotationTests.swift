@@ -258,18 +258,30 @@ func eachRelayAnswerToAKeysUploadHasOneOutcome(_ answer: String) async throws {
                       .text(phoneA), .text(rotationID(84)))
     }
     try await f.remove(phoneA, p)
-    let relay = RotationRelay(), worker = CompanionOwnerRotation(profile: p, transport: relay, now: { rotationAt })
+    let clock = RotationClock()
+    let relay = RotationRelay(), worker = CompanionOwnerRotation(profile: p, transport: relay, now: { clock.now() })
     #expect(try await worker.step() == .rotated(epoch: 2))
     #expect(try p.removalsAwaitingRelay().map(\.label) == ["Invented phone"])
     relay.deleteAnswer = .success(503)
     await #expect(throws: CompanionOwnerConnectionError.relayRejected(503)) { try await worker.step() }
+    // A refused deletion is paced on its own: the remaining phone's keys go out meanwhile (§4.4).
+    #expect(try await worker.step() == .uploaded(deviceID: phoneB))
+    clock.advance(60)
     relay.deleteAnswer = .success(401)
     await #expect(throws: CompanionOwnerConnectionError.relayRejected(401)) { try await worker.step() }
-    #expect(try p.ownerClaimState() == .checkingRefusal && p.relayDeletionPending() == phoneA && relay.puts.isEmpty)
+    #expect(try p.ownerClaimState() == .checkingRefusal && p.relayDeletionPending() == phoneA)
     try p.recordClaimState(.claimed)
+    clock.advance(60)
     relay.deleteAnswer = .success(204)
     #expect(try await worker.step() == .deleted(deviceID: phoneA))
     #expect(try p.removalsAwaitingRelay().isEmpty && p.relayDeletionPending() == nil)
     #expect(relay.deletes == [phoneA, phoneA, phoneA])
-    #expect(try await worker.step() == .uploaded(deviceID: phoneB))
+    #expect(try await worker.step() == .idle)
+}
+
+private final class RotationClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date = Date(timeIntervalSince1970: 1_792_000_000)
+    func now() -> String { lock.withLock { date.ISO8601Format() } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { date = date.addingTimeInterval(seconds) } }
 }
