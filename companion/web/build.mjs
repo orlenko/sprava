@@ -3,13 +3,14 @@ import { cp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { releaseInfo } from './release.ts';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const destination = new URL('./dist/', import.meta.url);
 if (process.argv.includes('--clean')) { await rm(destination, { recursive: true, force: true }); process.exit(0); }
 await cp(new URL('./public/', import.meta.url), destination, { recursive: true });
 const pkg = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
-await writeFile(new URL('release.json', destination), JSON.stringify({ version: pkg.version, commit }));
+await writeFile(new URL('release.json', destination), JSON.stringify(releaseInfo(process.env, pkg.version, commit)));
 async function files(at, prefix = '') {
     const paths = [];
     for (const entry of await readdir(at, { withFileTypes: true })) {
