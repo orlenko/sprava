@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 const root = new URL('./dist/', import.meta.url);
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
-    '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml' };
+    '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const server = createServer(async (request, response) => {
     try {
         if (!request.url?.startsWith('/') || request.url.startsWith('//')) throw Error();

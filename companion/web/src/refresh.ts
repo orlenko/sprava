@@ -11,7 +11,7 @@ export interface RefreshResult {
 }
 class StaleRefresh extends Error {}
 
-/** Refresh one selected view; unopened binders do not download their entire caches. */
+/** Refresh the index, keys, outcomes and every changed view, the selected binder's first. */
 export async function refresh(store: BrowserStore, binderId?: string,
     environment: RefreshEnvironment = {}): Promise<RefreshResult> {
     const initial = (await store.read()).pairing;
@@ -68,16 +68,22 @@ export async function refresh(store: BrowserStore, binderId?: string,
             below = listing.value.next;
         }
     };
+    // Every shown binder's exact view, the selected one first: Today lists items across binders (companion.md §9).
+    // A view already admitted at its version costs nothing, so a refresh reads only what changed.
     const selected = async (): Promise<boolean> => {
         const state = await current(), index = state.index;
-        if (!binderId || !index || index.epoch !== state.pairing!.epoch) return false;
-        const binder = index.binders.find(b => b.id === binderId);
-        if (!binder || await store.readView(binderId)) return false;
-        const reply = contacted(await client.getObject(`views/${binderId}/${binder.viewVersion}`,
-            initial.token, controller.signal));
-        if (reply.status === 404) return true;
-        if (reply.value) await candidate(() => store.acceptView(binderId, binder.viewVersion, reply.value!, generation));
-        return false;
+        if (!index || index.epoch !== state.pairing!.epoch) return false;
+        let missing = false;
+        const binders = [...index.binders].sort((a, b) => Number(b.id === binderId) - Number(a.id === binderId));
+        for (const binder of binders) {
+            if (refused || controller.signal.aborted) break;
+            if (await store.readView(binder.id)) continue;
+            const reply = contacted(await client.getObject(`views/${binder.id}/${binder.viewVersion}`,
+                initial.token, controller.signal));
+            if (reply.status === 404) missing = true;
+            else if (reply.value) await candidate(() => store.acceptView(binder.id, binder.viewVersion, reply.value!, generation));
+        }
+        return missing;
     };
     try {
         // Isolate unavailable prefixes: outcomes are epoch-independent and can still resolve sent actions.

@@ -2,11 +2,16 @@
   "id": "./",
   "name": "Sprava companion",
   "short_name": "Sprava",
-  "description": "Shared binders and notes for Sprava on your Mac.",
+  "description": "Your to-dos from Sprava on your Mac.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f8f6f0",
   "theme_color": "#243d36",
-  "icons": [{ "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
 }

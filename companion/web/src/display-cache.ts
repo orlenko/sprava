@@ -6,7 +6,10 @@ import { openView } from './view-payloads.ts';
 import type { BinderView } from './view-payloads.ts';
 import { PayloadError } from './payload.ts';
 
-export interface DisplayCache { generation?: string; index?: BinderIndex; view?: BinderView; binderId?: string }
+/** `views` holds every binder whose admitted view matches the current index, for the cross-binder Today. */
+export interface DisplayCache {
+    generation?: string; index?: BinderIndex; view?: BinderView; binderId?: string; views?: Map<string, BinderView>;
+}
 const equal = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 /** The returned generation also identifies which pairing a screen's later actions belong to. */
@@ -15,13 +18,17 @@ export async function readDisplayCache(store: BrowserStore, binderId?: string): 
         const before = await store.read(), p = before.pairing, i = before.index;
         if (!p) return {};
         if (!i || i.epoch !== p.epoch) return { generation: p.generation };
-        let index: BinderIndex, view: BinderView | undefined;
-        const stored = binderId ? await store.readView(binderId) : undefined;
-        const binder = i.binders.find(b => b.id === binderId);
+        let index: BinderIndex;
+        const views = new Map<string, BinderView>();
         try {
             index = await openIndex(i.revision, i.epoch, p.accountKey, p.ownerKey, i.bytes);
-            if (stored && binder && stored.epoch === i.epoch && stored.version === binder.viewVersion)
-                view = await openView(binder.id, stored.version, i.epoch, binder.key, p.ownerKey, stored.bytes);
+            for (const binder of i.binders) {
+                const stored = await store.readView(binder.id);
+                if (!stored || stored.epoch !== i.epoch || stored.version !== binder.viewVersion) continue;
+                // One view that no longer opens hides only its own binder.
+                try { views.set(binder.id, await openView(binder.id, stored.version, i.epoch, binder.key, p.ownerKey, stored.bytes)); }
+                catch (error) { if (!(error instanceof PayloadError)) throw error; }
+            }
         } catch (error) {
             if (!(error instanceof PayloadError)) throw error;
             return { generation: p.generation };
@@ -29,8 +36,9 @@ export async function readDisplayCache(store: BrowserStore, binderId?: string): 
         const after = await store.read(), current = after.pairing, latest = after.index;
         if (!current || current.generation !== p.generation || current.epoch !== p.epoch ||
             !latest || latest.revision !== i.revision || latest.epoch !== i.epoch || !equal(latest.bytes, i.bytes)) continue;
-        if (view && (after.viewMarks[binderId!] ?? 0) > view.version) continue;
-        return { generation: p.generation, index, view, binderId };
+        if ([...views].some(([id, view]) => (after.viewMarks[id] ?? 0) > view.version)) continue;
+        const view = binderId === undefined ? undefined : views.get(binderId);
+        return { generation: p.generation, index, view, binderId: index.binders.some(b => b.id === binderId) ? binderId : undefined, views };
     }
     return {};
 }

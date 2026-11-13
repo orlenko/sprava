@@ -133,6 +133,24 @@ try {
     const initialLoaded = loaded(); await command('Page.navigate', { url: origin + '/index.html#pair=invalid' }); await initialLoaded;
     await wait(`location.pathname === '/index.html' && document.querySelector('#device-label') !== null && location.hash === ''`);
     assert.equal(await evaluate('location.hash'), '');
+    // Regression: pairing with an empty name used to spend the link on a local failure. Pair waits for a name.
+    const fakeLink = (n: number) => `#pair=v0.${encodeB64(utf8(origin))}.${id}.${id}.${encodeB64(new Uint8Array(32).fill(n))}.${id}`;
+    const pairButton = `Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Pair this phone')`;
+    const nameField = (text: string) => evaluate(`{ const field = document.querySelector('#device-label');
+        field.value = ${JSON.stringify(text)}; field.dispatchEvent(new Event('input')); }`);
+    const linkLoaded = loaded(); await command('Page.navigate', { url: origin + '/' + fakeLink(1) }); await linkLoaded;
+    await wait(`location.hash === '' && !document.querySelector('#device-label').closest('div').hidden`);
+    assert.equal(await evaluate(`${pairButton}.disabled`), true, 'no name, no pairing');
+    await nameField('   '); assert.equal(await evaluate(`${pairButton}.disabled`), true, 'spaces are not a name');
+    await nameField('Invented phone'); assert.equal(await evaluate(`${pairButton}.disabled`), false);
+    // This fixture has no relay, so the attempt fails. Regression: a second link opened in the same tab, without a
+    // reload, kept that failure; it must start clean.
+    await evaluate(`${pairButton}.click()`);
+    await wait(`document.querySelector('#status').textContent.includes('did not finish')`);
+    const relinked = loaded(); await evaluate(`location.hash = ${JSON.stringify(fakeLink(2))}`); await relinked;
+    await wait(`location.hash === '' && !document.querySelector('#device-label').closest('div').hidden &&
+        document.querySelector('#status').textContent === '' && document.querySelector('#device-label').value === ''`);
+    assert.equal(await evaluate(`${pairButton}.disabled`), true);
     await evaluate(`(async () => {
         const { BrowserStore } = await import('/web/src/browser-store.js');
         const { importKey } = await import('/web/src/sealed.js');
@@ -147,7 +165,7 @@ try {
         store.close(); const channel = new BroadcastChannel('sprava-companion'); channel.postMessage('changed'); channel.close();
     })()`);
     await wait(`document.querySelector('nav button') !== null`);
-    await evaluate(`document.querySelector('nav button').click()`);
+    await evaluate(`document.querySelectorAll('nav button')[1].click()`);
     await wait(`document.querySelector('#binder-view').textContent.includes('Invented string item')`);
     assert.equal(await evaluate(`document.querySelector('#binder-view img') !== null || window.injected === true`), false);
     assert.equal(await evaluate(`document.querySelector('#binder-view').textContent.includes('Invented numeric item')`), true);
@@ -168,9 +186,9 @@ try {
     assert.equal(await evaluate(`document.querySelector('#note').value`), '\u0000');
     await evaluate(`document.querySelector('#note').value = 'Invented saved note'; document.querySelector('#note').dispatchEvent(new Event('input'));
         document.querySelector('#note').nextElementSibling.click()`);
-    await wait(`document.querySelector('#pending').textContent.includes('note #1: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Note #1 · Sent')`);
     assert.equal(sentText, 'Invented saved note'); assert.equal(await evaluate(`document.querySelector('#note').value`), '');
-    await evaluate(`document.querySelector('nav button').click()`);
+    await evaluate(`document.querySelectorAll('nav button')[1].click()`);
     await wait(`document.querySelector('#binder-view').textContent.includes('Invented waiting item')`);
     const clickItem = (name: string, label: string, twice = false) => evaluate(`{
         const row = Array.from(document.querySelectorAll('#binder-view li')).find(r => r.querySelector('strong').textContent === ${JSON.stringify(name)});
@@ -185,11 +203,11 @@ try {
     assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), true,
         'a one-click approval whose encryption is pending receives unload protection');
     await evaluate(`window.resumeActionEncryption(); crypto.subtle.encrypt = window.originalActionEncrypt`);
-    await wait(`document.querySelector('#pending').textContent.includes('done #2: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Done #2 · Sent')`);
     assert.equal(await evaluate(`{ const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); event.defaultPrevented; }`), false,
         'a one-click approval is safe to unload after durable enqueue');
     await clickItem('Invented string item', 'Done');
-    await wait(`document.querySelector('#pending').textContent.includes('done #3: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Done #3 · Sent')`);
     assert.equal(sentActions[1]!.item, 7); assert.equal(sentActions[2]!.item, '7');
     assert.equal(sentActions[1]!.seen_version, 7); assert.equal(sentActions[1]!.binder, id);
     await clickItem('Invented waiting item', 'Follow up…');
@@ -220,22 +238,22 @@ try {
     await wait(`document.querySelector('#item-action [role=status]').textContent.includes('draft saved')`);
     assert.equal(await evaluate(`document.querySelector('#note').value`), '');
     await evaluate(`document.querySelector('#item-action button').click()`);
-    await wait(`document.querySelector('#pending').textContent.includes('postpone #4: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Postpone #4 · Sent')`);
     assert.equal(sentActions[3]!.date, '2026-10-25'); assert.equal(sentActions[3]!.item, 7);
-    await evaluate(`document.querySelector('nav button').click()`);
+    await evaluate(`document.querySelectorAll('nav button')[1].click()`);
     await wait(`document.querySelector('#binder-view').textContent.includes('Invented waiting item')`);
     await clickItem('Invented waiting item', 'Follow up…');
     await evaluate(`document.querySelector('#item-action-date').value = '2026-10-26';
         document.querySelector('#item-action-date').dispatchEvent(new Event('input')); document.querySelector('#item-action button').click()`);
-    await wait(`document.querySelector('#pending').textContent.includes('follow_up #5: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Follow up #5 · Sent')`);
     assert.equal(sentActions[4]!.date, '2026-10-26'); assert.equal(sentActions[4]!.item, 'wait');
     await evaluate(`{
         const row = Array.from(document.querySelectorAll('#binder-view li')).find(r => r.querySelector('strong').textContent === 'Invented blocked item');
         Array.from(row.querySelectorAll('button')).find(b => b.textContent === 'Arrived').click();
         Array.from(row.querySelectorAll('button')).find(b => b.textContent === 'Done').click(); }`);
-    await wait(`document.querySelector('#pending').textContent.includes('done #7: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Done #7 · Sent')`);
     await clickItem('Invented string item', 'Drop');
-    await wait(`document.querySelector('#pending').textContent.includes('drop #8: sent')`);
+    await wait(`document.querySelector('#pending').textContent.includes('Drop #8 · Sent')`);
     assert.deepEqual(sentActions.map(a => a.seq), [1, 2, 3, 4, 5, 6, 7, 8]);
     assert.deepEqual(sentActions.slice(1).map(a => a.type), ['done', 'done', 'postpone', 'follow_up', 'arrived', 'done', 'drop']);
     assert.equal(sentActions[5]!.item, 'block'); assert.equal(sentActions[6]!.item, 'block');
@@ -249,7 +267,7 @@ try {
     await command('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
     const offlineLoaded = loaded(); await command('Page.reload'); await offlineLoaded;
     await wait(`document.querySelector('nav button') !== null`);
-    await evaluate(`document.querySelector('nav button').click()`);
+    await evaluate(`document.querySelectorAll('nav button')[1].click()`);
     await wait(`document.querySelector('#binder-view').textContent.includes('Invented string item')`);
     await command('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     await evaluate(`document.querySelector('#note').value = 'Invented draft kept after removal';
@@ -261,12 +279,12 @@ try {
             socket!.removeEventListener('message', listener); resolve();
         }; socket!.addEventListener('message', listener);
     });
-    const clicked = evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Remove this device')).click()`);
+    const clicked = evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Remove this phone')).click()`);
     await dialog; await command('Page.handleJavaScriptDialog', { accept: true }); await clicked;
     await wait(`document.querySelector('#status').textContent.includes('Pairing removed')`);
     assert.equal(await evaluate(`document.querySelector('#note').value`), 'Invented draft kept after removal');
     assert.equal(await evaluate(`document.querySelector('#note').closest('section').hidden`), false);
-    assert.equal(await evaluate(`document.querySelector('#pending').textContent.includes('unresolved')`), true);
+    assert.equal(await evaluate(`document.querySelector('#pending').textContent.includes('No answer from your Mac')`), true);
     assert.equal(await evaluate(`document.querySelector('#status').textContent.includes('Also remove this phone on your Mac')`), true);
     assert.equal(await evaluate(`(async () => { const { BrowserStore } = await import('/web/src/browser-store.js');
         const store = await BrowserStore.open(); const state = await store.read(); store.close(); return state.pairing === undefined && state.index === undefined; })()`), true);
