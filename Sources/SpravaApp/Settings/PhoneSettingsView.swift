@@ -53,12 +53,36 @@ struct PhoneSettingsView: View {
                     Spacer()
                     Text(device.confirmed ? "Paired" : device.awaiting ? "Sending its keys…" : "The phone did not confirm")
                         .font(.caption).foregroundStyle(.secondary)
+                    Button("Remove…") { model.confirmingRemoval = device }.disabled(model.busy)
+                }
+            }
+            ForEach(model.removed, id: \.id) { phone in
+                HStack {
+                    Text(phone.label.isEmpty ? "A removed phone" : phone.label).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Removed here; the relay has not confirmed").font(.caption).foregroundStyle(.secondary)
+                    Button("Retry") { Task { await model.retryRelay() } }.disabled(model.busy)
+                }
+            }
+            if let line = model.relayLine {
+                HStack {
+                    Text(line).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    Button("Retry") { Task { await model.retryRelay() } }.disabled(model.busy)
                 }
             }
             if model.connected {
                 Button("Pair a Phone…") { Task { await model.startPairing() } }.disabled(model.busy)
             }
-            Text("A phone cannot be removed from here yet.").font(.caption).foregroundStyle(.secondary)
+        }
+        .alert("Remove “\(model.confirmingRemoval?.label ?? "")”?", isPresented: Binding(
+            get: { model.confirmingRemoval != nil }, set: { if !$0 { model.confirmingRemoval = nil } })) {
+            Button("Remove", role: .destructive) {
+                if let device = model.confirmingRemoval { Task { await model.remove(device) } }
+                model.confirmingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) { model.confirmingRemoval = nil }
+        } message: {
+            Text("It stops working at once. Your other phones get new keys.")
         }
     }
 

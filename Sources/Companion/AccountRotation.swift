@@ -120,6 +120,32 @@ extension CompanionProfile {
             }
         }
     }
+    /// The first removed device whose relay deletion is not yet confirmed, keyless.
+    public func relayDeletionPending() throws -> String? {
+        try store.read { t in
+            guard let row = try t.rows("SELECT device FROM device_removals WHERE relay_delete = 1 ORDER BY device LIMIT 1").first else { return nil }
+            guard row.count == 1, let id = row[0].text, CompanionWire.isID(id) else { throw CompanionRotationError.invalid }
+            return id
+        }
+    }
+    func recordRelayDeletion(deviceID: String) throws {
+        try store.write { t in
+            guard try record(deviceID, t)?.state == .revoked else { throw CompanionRotationError.invalid }
+            try t.execute("UPDATE device_removals SET relay_delete = 0 WHERE device = ?", .text(deviceID))
+        }
+    }
+    /// Removed phones the relay has not confirmed deleting, with their private labels, for Settings › Phone only.
+    public func removalsAwaitingRelay() throws -> [(deviceID: String, label: String)] {
+        try store.read { t in
+            try t.rows("SELECT r.device, COALESCE(p.label, '') FROM device_removals r LEFT JOIN pairings p ON p.device = r.device " +
+                       "WHERE r.relay_delete = 1 ORDER BY r.device LIMIT 20").map { row in
+                guard row.count == 2, let id = row[0].text, CompanionWire.isID(id), let label = row[1].text else {
+                    throw CompanionRotationError.invalid
+                }
+                return (id, label)
+            }
+        }
+    }
     func deviceRevoked(_ id: String) throws -> Bool { try store.read { try record(id, $0)?.state == .revoked } }
 
     /// Step 5: once an index at the current epoch is recorded as published, discard the account key and the
@@ -145,21 +171,24 @@ extension CompanionProfile {
 
 protocol OwnerRotationTransport: Sendable {
     func putObject(name: String, bytes: Data) async throws -> Int
+    func deleteDevice(deviceID: String, downloadLimit: Int) async throws -> CompanionRelayReply<Data>
 }
 extension CompanionOwnerRelay: OwnerRotationTransport {}
 
 public enum CompanionRotationProgress: Sendable, Equatable {
     case idle
     case rotated(epoch: Int64)
+    case deleted(deviceID: String)
     case waiting(retryAt: String)
     case uploaded(deviceID: String)
     case refused(deviceID: String)
     case discarded
 }
 
-/// companion-v0 §4.4: one bounded step per call. Begins a pending rotation (local), else uploads one recorded keys
-/// object with its exact bytes, else discards old keys behind a published index at the new epoch. A refused upload
-/// is recorded as a relay fault and never re-rotated automatically: an untrusted relay cannot make the Mac loop.
+/// companion-v0 §4.4: one bounded step per call. Begins a pending rotation (local); else deletes one removed device
+/// on the relay (first, so its token stops working); else uploads one recorded keys object with its exact bytes;
+/// else discards old keys behind a published index at the new epoch. A refused upload is recorded as a relay fault
+/// and never re-rotated automatically: an untrusted relay cannot make the Mac loop.
 public actor CompanionOwnerRotation {
     private let profile: CompanionProfile
     private let transport: @Sendable () throws -> any OwnerRotationTransport
@@ -186,11 +215,23 @@ public actor CompanionOwnerRotation {
         busy = true; defer { busy = false }
         try Task.checkCancellation()
         if let epoch = try profile.beginRotation() { return .rotated(epoch: epoch) }
-        guard let keys = try profile.pendingRotationKeys() else {
-            return try profile.discardOldEpochKeys() ? .discarded : .idle
-        }
+        let deletion = try profile.relayDeletionPending()
+        let keys = try profile.pendingRotationKeys()
+        guard deletion != nil || keys != nil else { return try profile.discardOldEpochKeys() ? .discarded : .idle }
         let state = try profile.ownerClaimState()
         guard state == .claimed else { throw CompanionPairingFlowError.ownerUnavailable(state) }
+        if let deletion {
+            // §4.4 step 1: repeated until 204; the rotation never waits for it.
+            let reply = try await transport().deleteDevice(deviceID: deletion, downloadLimit: 4096)
+            switch reply.status {
+            case 204: try profile.recordRelayDeletion(deviceID: deletion); return .deleted(deviceID: deletion)
+            case 401:
+                try profile.recordClaimState(.checkingRefusal)
+                throw CompanionOwnerConnectionError.relayRejected(401)
+            default: throw CompanionOwnerConnectionError.relayRejected(reply.status)
+            }
+        }
+        guard let keys else { return .idle }
         let attempt = try profile.reservePublicationAttempt(scope: "rotation/" + keys.deviceID, name: keys.name, now: now())
         if !attempt.send { return .waiting(retryAt: attempt.next) }
         let status = try await transport().putObject(name: keys.name, bytes: keys.bytes)

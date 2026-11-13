@@ -76,10 +76,11 @@ private struct PairingFixture {
     }
 }
 
-@Test func phoneActionsRegisterPairingAndDevicesButNotRemovalOrReset() throws {
+@Test func phoneActionsRegisterEverythingButReset() throws {
     let f = PairingFixture()
     #expect(Set(f.actions().keys) == ["companion_configure", "companion_claim", "companion_pairing_start",
-                                      "companion_pairing_poll", "companion_pairing_confirm", "companion_devices"])
+                                      "companion_pairing_poll", "companion_pairing_confirm", "companion_devices",
+                                      "companion_device_remove", "companion_relay_retry"])
     #expect(CompanionRequestQueue.actionNames.isSuperset(of: f.actions().keys))
 }
 
@@ -183,8 +184,9 @@ private struct PairingFixture {
     let profile = try f.profile(claim: .checkingRefusal)
     try activate(profile, acknowledged: true)
     let reply = try await f.run("companion_devices")
-    #expect(reply == JSONObject([("devices", .array([.obj([("device_id", .string(phoneID)), ("label", .str("Invented phone")),
-        ("paired_at", .str("2026-11-13T10:00:00Z")), ("confirmation", .str("acknowledged"))])]))]))
+    #expect(reply["devices"] == .array([.obj([("device_id", .string(phoneID)), ("label", .str("Invented phone")),
+        ("paired_at", .str("2026-11-13T10:00:00Z")), ("confirmation", .str("acknowledged"))])]))
+    #expect(reply["removed"] == .array([]) && reply["relay_pending"] == .bool(false) && reply["relay_fault"] == .bool(false))
     #expect(f.fake.calls.isEmpty)
 }
 

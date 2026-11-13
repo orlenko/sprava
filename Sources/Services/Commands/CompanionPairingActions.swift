@@ -78,16 +78,21 @@ enum CompanionPairingActions {
                       request["after"] == nil || request["after"]?.stringValue != nil else {
                     throw CompanionPhoneActionError.invalidRequest
                 }
-                let page: CompanionPairedDevicePage?
-                do { page = try await session.pairedDevices(now: Date().ISO8601Format(), after: request["after"]?.stringValue) }
-                catch { throw CompanionPhoneActionError.unavailable }
-                guard let page else { return JSONObject([("devices", .array([]))]) }
-                var reply = JSONObject([("devices", .array(page.devices.map { device in
-                    .obj([("device_id", .string(device.deviceID)), ("label", .string(device.label)),
-                          ("paired_at", .string(device.pairedAt)), ("confirmation", .string(device.confirmation.rawValue))])
-                }))])
-                if let next = page.next { reply.set("next", .string(next)) }
-                return reply
+                let now = Date().ISO8601Format(), after = request["after"]?.stringValue
+                let reply: JSONObject?
+                do {
+                    reply = try await session.readProfile { profile in
+                        let page = try profile.pairedDevices(now: now, after: after)
+                        var reply = JSONObject([("devices", .array(page.devices.map { device in
+                            .obj([("device_id", .string(device.deviceID)), ("label", .string(device.label)),
+                                  ("paired_at", .string(device.pairedAt)), ("confirmation", .string(device.confirmation.rawValue))])
+                        }))])
+                        if let next = page.next { reply.set("next", .string(next)) }
+                        for (key, value) in try CompanionRemovalActions.relayWork(profile) { reply.set(key, value) }
+                        return reply
+                    }
+                } catch { throw CompanionPhoneActionError.unavailable }
+                return reply ?? JSONObject([("devices", .array([]))])
             },
         ]
     }
@@ -97,7 +102,7 @@ enum CompanionPairingActions {
                     ("confirmation", .string(approval.confirmation))])
     }
     /// Exactly the named string fields, so a binder path or extra field never reaches the relay work.
-    private static func fields(_ request: JSONObject, _ command: String, _ names: [String]) throws -> [String] {
+    static func fields(_ request: JSONObject, _ command: String, _ names: [String]) throws -> [String] {
         guard request["command"] == .str(command),
               Set(request.entries.map(\.key)) == Set(["command"] + names) else { throw CompanionPhoneActionError.invalidRequest }
         return try names.map { name in
@@ -107,7 +112,7 @@ enum CompanionPairingActions {
             return value
         }
     }
-    private static func configured(_ session: CompanionOwnerSession,
+    static func configured(_ session: CompanionOwnerSession,
                                    _ action: @escaping @Sendable (CompanionProfile) async throws -> JSONObject) async throws -> JSONObject {
         do {
             guard let reply = try await session.withConfiguredProfile(action) else { throw CompanionPhoneActionError.notClaimed }
@@ -122,8 +127,12 @@ enum CompanionPairingActions {
             throw CompanionPhoneActionError.busy
         } catch CompanionPairingFlowError.ownerUnavailable {
             throw CompanionPhoneActionError.notClaimed
-        } catch CompanionPairingFlowError.relayRejected(401) {
+        } catch CompanionPairingFlowError.relayRejected(401), CompanionOwnerConnectionError.relayRejected(401) {
             throw CompanionPhoneActionError.ownerRefused
+        } catch CompanionDeviceRemovalError.decisionPending {
+            throw CompanionPhoneActionError.removalWaiting
+        } catch CompanionDeviceRemovalError.invalid {
+            throw CompanionPhoneActionError.deviceUnknown
         } catch CompanionOwnerPairingError.expired {
             throw CompanionPhoneActionError.pairingExpired
         } catch CompanionOwnerPairingError.invalid {

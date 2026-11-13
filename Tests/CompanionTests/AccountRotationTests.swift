@@ -21,9 +21,15 @@ private final class RotationRelay: OwnerRotationTransport, @unchecked Sendable {
     private let lock = NSLock()
     var answer: Result<Int, any Error> = .success(204)
     private(set) var puts: [String] = []
+    var deleteAnswer: Result<Int, any Error> = .success(204)
+    private(set) var deletes: [String] = []
     func putObject(name: String, bytes: Data) async throws -> Int {
         lock.withLock { puts.append(name) }
         return try answer.get()
+    }
+    func deleteDevice(deviceID: String, downloadLimit: Int) async throws -> CompanionRelayReply<Data> {
+        lock.withLock { deletes.append(deviceID) }
+        return CompanionRelayReply(status: try deleteAnswer.get(), value: nil, receivedBytes: 0)
     }
 }
 private struct RotationTimeout: Error {}
@@ -137,6 +143,7 @@ func eachRelayAnswerToAKeysUploadHasOneOutcome(_ answer: String) async throws {
     let relay = RotationRelay()
     let worker = CompanionOwnerRotation(profile: p, transport: relay, now: { rotationAt })
     #expect(try await worker.step() == .rotated(epoch: 2))
+    #expect(try await worker.step() == .deleted(deviceID: phoneA)) // the removed phone goes first
     let keys = try #require(try p.pendingRotationKeys())
     switch answer {
     case "204": relay.answer = .success(204)
@@ -226,6 +233,7 @@ func eachRelayAnswerToAKeysUploadHasOneOutcome(_ answer: String) async throws {
     try await f.remove(phoneA, p)
     let relay = RotationRelay(), worker = CompanionOwnerRotation(profile: p, transport: relay, now: { rotationAt })
     #expect(try await worker.step() == .rotated(epoch: 2))
+    #expect(try await worker.step() == .deleted(deviceID: phoneA))
     #expect(try await worker.step() == .uploaded(deviceID: phoneB))
     #expect(try await worker.step() == .idle)
     #expect(try f.secrets.read(account: p.keyAccount(1)) != nil)
@@ -240,4 +248,28 @@ func eachRelayAnswerToAKeysUploadHasOneOutcome(_ answer: String) async throws {
     #expect(try f.secrets.read(account: p.keyAccount(2)) != nil)
     #expect(try f.secrets.read(account: p.binderKeyAccount(shownBinder, epoch: 2)) != nil)
     #expect(try await worker.step() == .idle)
+}
+
+@Test func theRemovedPhoneIsDeletedOnTheRelayFirstAndStaysListedUntilTheRelayConfirms() async throws {
+    let f = RotationFixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
+    let p = try f.prepare()
+    try p.store.write { t in
+        try t.execute("INSERT INTO pairings (device, pairing, expires, label) VALUES (?, ?, '2099-01-01T00:00:00Z', 'Invented phone')",
+                      .text(phoneA), .text(rotationID(84)))
+    }
+    try await f.remove(phoneA, p)
+    let relay = RotationRelay(), worker = CompanionOwnerRotation(profile: p, transport: relay, now: { rotationAt })
+    #expect(try await worker.step() == .rotated(epoch: 2))
+    #expect(try p.removalsAwaitingRelay().map(\.label) == ["Invented phone"])
+    relay.deleteAnswer = .success(503)
+    await #expect(throws: CompanionOwnerConnectionError.relayRejected(503)) { try await worker.step() }
+    relay.deleteAnswer = .success(401)
+    await #expect(throws: CompanionOwnerConnectionError.relayRejected(401)) { try await worker.step() }
+    #expect(try p.ownerClaimState() == .checkingRefusal && p.relayDeletionPending() == phoneA && relay.puts.isEmpty)
+    try p.recordClaimState(.claimed)
+    relay.deleteAnswer = .success(204)
+    #expect(try await worker.step() == .deleted(deviceID: phoneA))
+    #expect(try p.removalsAwaitingRelay().isEmpty && p.relayDeletionPending() == nil)
+    #expect(relay.deletes == [phoneA, phoneA, phoneA])
+    #expect(try await worker.step() == .uploaded(deviceID: phoneB))
 }

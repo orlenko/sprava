@@ -9,7 +9,7 @@ public final class CompanionRequestQueue: @unchecked Sendable {
     public typealias Reply = @Sendable (_ answer: String, _ command: String, _ ms: Int) -> Void
     public static let actionNames: Set<String> = [
         "companion_configure", "companion_claim", "companion_pairing_start", "companion_pairing_poll",
-        "companion_pairing_confirm", "companion_devices", "companion_device_remove", "companion_reset",
+        "companion_pairing_confirm", "companion_devices", "companion_device_remove", "companion_relay_retry", "companion_reset",
         "companion_binder_show", "companion_binder_hide",
     ]
     private let handlers: [String: Handler]

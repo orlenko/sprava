@@ -89,10 +89,59 @@ final class PhoneSettings: ObservableObject, RuntimePage {
                 return Device(id: id, label: label, pairedAt: d["paired_at"]?.stringValue ?? "",
                               confirmed: confirmation == "acknowledged", awaiting: confirmation == "awaiting")
             }
+            if after == nil { readRelayWork(reply) } // the relay work rides on the first page
             guard let next = reply["next"]?.stringValue, next != after else { break }
             after = next
         }
         devices = all
+    }
+
+    /// Phones removed here whose deletion the relay has not confirmed (id, label).
+    @Published private(set) var removed: [(id: String, label: String)] = []
+    /// Relay work after a removal is unfinished: deletion, or the remaining phones' new keys.
+    @Published private(set) var relayPending = false
+    /// The relay refused a phone's new keys; nothing retries that until the person does.
+    @Published private(set) var relayFault = false
+    /// The phone the person asked to remove, awaiting their confirmation.
+    @Published var confirmingRemoval: Device?
+
+    private func readRelayWork(_ reply: JSONObject) {
+        removed = (reply["removed"]?.arrayValue ?? []).compactMap { r in
+            guard let id = r["device_id"]?.stringValue else { return nil }
+            return (id, r["label"]?.stringValue ?? "")
+        }
+        relayPending = reply["relay_pending"] == .bool(true)
+        relayFault = reply["relay_fault"] == .bool(true)
+    }
+
+    /// Removes a phone after the person confirmed. It stops working on this Mac at once; the relay deletion and the
+    /// other phones' new keys follow, and stay listed with Retry until the relay confirms them.
+    func remove(_ device: Device) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            let reply = try await client.global("companion_device_remove", [("device_id", .str(device.id))], timeout: Self.actionTimeout)
+            readRelayWork(reply)
+            message = nil
+        } catch { message = Self.plain(error, "The phone could not be removed. Try again in a moment.") }
+        try? await readDevices()
+    }
+
+    /// The person's Retry for unfinished relay work, or for a relay fault (which then rotates the keys again).
+    func retryRelay() async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            readRelayWork(try await client.global("companion_relay_retry", timeout: Self.actionTimeout))
+            message = nil
+        } catch { message = Self.plain(error, "The relay could not be reached. Try again in a moment.") }
+        try? await readDevices()
+    }
+
+    var relayLine: String? {
+        if relayFault { return "The relay refused new keys for your phones, so they may not see new changes. Retry makes new keys." }
+        if !removed.isEmpty { return nil }
+        return relayPending ? "Your phones' new keys have not all reached the relay yet." : nil
     }
 
     /// Sends the relay's address and setup code, then claims the relay. The code is cleared once the runtime has it.
