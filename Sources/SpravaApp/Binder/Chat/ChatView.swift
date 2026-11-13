@@ -58,6 +58,11 @@ struct ChatView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The message line is plain text that appears where the person is not looking, often while the keyboard is in
+        // the box: VoiceOver says it when it appears (#570).
+        .onChange(of: chat.message) { _, message in
+            if let message { AccessibilityNotification.Announcement(message).post() }
+        }
     }
 
     var transcript: some View {
