@@ -39,6 +39,7 @@ extension CompanionProfile {
                 if r.state == .active { return try delivery(d, t) }
                 guard let expires = row[1].text, CompanionOwnerRelay.time(expires), let b = row[2].blob else { throw CompanionCredentialError.invalid }
                 if now >= expires { throw CompanionOwnerPairingError.expired }
+                guard try !rotationPending(t) else { throw CompanionCredentialError.unavailable }
                 guard let e = try epoch(t), let floor = try t.rows("SELECT index_reserved, index_published FROM profile").first,
                       floor.count == 2, let reserved = floor[0].integer, let published = floor[1].integer,
                       published >= 0, published <= JSONNumber.maxSafeInteger, reserved == published else {
