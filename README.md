@@ -30,7 +30,8 @@ Nothing touches a live binder until you adopt it in the app.
 
 ## Build and test
 
-Requires macOS 27 and Swift 6.4 (Command Line Tools are enough).
+Requires macOS 27, Swift 6.4 and Xcode (27.2 or later) selected with `xcode-select`. Command Line Tools alone
+do not build the package.
 
 ```sh
 ./scripts/test.sh              # Swift Testing suites, on invented fixtures only
@@ -44,10 +45,12 @@ $(swift build --show-bin-path)/sprava now ~/binders/kitchen-reno
 ./scripts/make-app-icon.sh     # Resources/AppIcon: AppIcon.icns, and with Xcode Assets.car, from the sketches; run when they change
 ```
 
-For a fresh machine, install Command Line Tools (`xcode-select --install`), restic
+For a fresh machine, install Xcode from the App Store, open it once to accept its licence and install its components,
+and select it (`sudo xcode-select -s /Applications/Xcode.app`; `xcode-select -p` then prints
+`/Applications/Xcode.app/Contents/Developer`). Then install restic
 (`brew install restic`, or set `SPRAVA_RESTIC` to its executable) and cmake (`brew install cmake`, which
 `scripts/build-llm.sh` needs to build the pinned llama.cpp of the local model helper once), clone this repository, and run
-`./scripts/restart-app.sh`. The machine needs macOS 27 and Swift 6.4. In the app, use
+`./scripts/restart-app.sh`. The machine needs macOS 27, Swift 6.4 and Xcode. In the app, use
 Health › Set Up Background Work and approve Sprava in Login Items, then create a binder with invented
 notes and documents. Each machine has its own app state and background-work approval.
 
