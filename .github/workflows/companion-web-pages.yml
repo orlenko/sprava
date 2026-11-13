@@ -1,0 +1,109 @@
+# Builds the companion web app (companion/web) from a published release, or from a release tag given by hand,
+# and publishes it to GitHub Pages (docs/companion.md §9). The app shows the release and commit it was built from.
+#
+# It publishes nothing until the owner chooses the app's address: set the repository variable
+# COMPANION_WEB_DOMAIN to the host name alone (companion.example.org), set the same custom domain in
+# Settings › Pages with "Enforce HTTPS", and choose "GitHub Actions" as the Pages source. The address must serve
+# nothing else, because every page on one origin can use the keys stored there. The deploy job checks that Pages
+# serves that domain over HTTPS before it publishes. A run started by a release deploys from its tag: allow the
+# release tags under Settings › Environments › github-pages › Deployment branches and tags. Set the relay's
+# SPRAVA_WEB_ORIGIN to https://<the domain>.
+name: Companion web app to Pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to build and publish
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: companion-web-pages
+  cancel-in-progress: false
+
+jobs:
+  not-configured:
+    if: vars.COMPANION_WEB_DOMAIN == ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say why nothing was published
+        run: echo "::notice::COMPANION_WEB_DOMAIN is not set, so the companion web app was not published."
+
+  build:
+    if: vars.COMPANION_WEB_DOMAIN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Check the tag names a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          case "$TAG" in (*[!A-Za-z0-9._+-]*|''|-*) echo "::error::Not a release tag."; exit 1;; esac
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$draft" != false ]; then echo "::error::$TAG is not a published release."; exit 1; fi
+
+      - name: Check out the release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+
+      - name: Test the relay and the web app
+        run: companion/test.sh
+
+      - name: Build the web app for this release
+        working-directory: companion/web
+        env:
+          SPRAVA_RELEASE: ${{ env.TAG }}
+        run: npm run build
+
+      - name: Check the release and commit the app will show
+        working-directory: companion/web
+        run: |
+          expected=$(printf '{"version":"%s","commit":"%s"}' "$TAG" "$(git rev-parse HEAD)")
+          if [ "$(cat dist/release.json)" != "$expected" ]; then echo "::error::dist/release.json does not name this release."; exit 1; fi
+          if find dist -name '*.map' -o -name '*.ts' | grep -q .; then echo "::error::Sources in dist."; exit 1; fi
+
+      - name: Upload the build
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: companion/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check Pages serves the chosen domain over HTTPS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOMAIN: ${{ vars.COMPANION_WEB_DOMAIN }}
+        run: |
+          settings=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq '[.cname // "", .https_enforced] | @tsv')
+          if [ "$settings" != "$(printf '%s\ttrue' "$DOMAIN")" ]; then
+            echo "::error::Settings › Pages must use the custom domain in COMPANION_WEB_DOMAIN, with HTTPS enforced."
+            exit 1
+          fi
+
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

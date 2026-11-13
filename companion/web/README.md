@@ -5,8 +5,15 @@ action status. IndexedDB holds encrypted caches, immutable queued requests and
 non-extractable keys. A service worker caches only this build's static shell, so admitted
 data can be opened offline. Every binder string is rendered as text.
 
-Mac companion integration and release
-publishing are still pending. This build does not yet provide phone-to-Mac use.
+Mac companion integration is still pending. This build does not yet provide phone-to-Mac use.
+
+**Publishing.** `.github/workflows/companion-web-pages.yml` builds this app from a published release (or a
+release tag given by hand), runs `companion/test.sh`, and publishes `dist/` to GitHub Pages with the release tag
+and commit in `release.json` (`release.ts`), shown at the app's foot. It publishes nothing while the repository
+variable `COMPANION_WEB_DOMAIN` is unset. To publish: set it to the app's host name, set the same custom domain
+with "Enforce HTTPS" and the "GitHub Actions" source in Settings › Pages, allow release tags to deploy to the
+`github-pages` environment, and set the relay's `SPRAVA_WEB_ORIGIN` to `https://` and that host. The deploy job
+refuses to publish unless Pages serves that domain over HTTPS. The domain must serve nothing else (companion.md §9).
 
 ```sh
 cd companion/web
