@@ -104,8 +104,8 @@ final class Runtime: @unchecked Sendable {
             do { try BackupRequests(support: support).recoverInterrupted() } catch { log("backup requests_unreadable") }
             let companion: CompanionRuntimeRequests?
             // Development: file-backed credentials in the development folder, never the Keychain.
-            if development { companion = try .development(support: support, watch: watch) }
-            else { companion = try .production(support: support, watch: watch) }
+            if development { companion = try .development(support: support, watch: watch, deviceID: commands.deviceID) }
+            else { companion = try .production(support: support, deviceID: commands.deviceID, watch: watch) }
             let claude: ClaudeConversationRuntime?
             do { claude = development ? nil : try .production(support: support) }
             catch { claude = nil; log("claude_state_unavailable") }

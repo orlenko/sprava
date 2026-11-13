@@ -6,6 +6,7 @@ import SpravaKit
 extension Commands {
     static let companionCommands: [String: Handler] = [
         "companion_status": { commands, _, _, _, _ in try commands.companionStatus() },
+        "companion_binder_status": { commands, _, r, _, _ in try commands.companionBinderStatus(r) },
     ]
     /// Owner admission only. No request paths, credentials, network calls or binder reads (§6).
     /// State words are the stable PhoneSettings contract; the app owns their display text.
@@ -21,7 +22,7 @@ extension Commands {
 }
 
 /// A status request cannot become a credential read or write even if its lower implementation changes.
-private struct CompanionMetadataCredentials: CompanionCredentialStorage {
+struct CompanionMetadataCredentials: CompanionCredentialStorage {
     func read(account: String) throws -> Data? { throw CompanionCredentialError.unavailable }
     func insert(account: String, bytes: Data) throws -> Bool { throw CompanionCredentialError.unavailable }
 }

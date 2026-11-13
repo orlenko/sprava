@@ -5,8 +5,12 @@ import SpravaKit
 public enum CompanionPhoneActionError: Error, Sendable, Equatable {
     case invalidSetup, alreadyClaimed, resetRequired, unavailable, busy
     case invalidRequest, notClaimed, ownerRefused, webOriginMissing, pairingExpired, pairingInvalid
+    case notSetUp, notShowable, tooManyShown
     public var message: String {
         switch self {
+        case .notSetUp: "Connect this Mac to a relay in Settings › Phone first."
+        case .notShowable: "Only an adopted binder on the Shelf that this Mac manages can be shown on the phone."
+        case .tooManyShown: "At most 100 binders can be shown on the phone. Turn one off first."
         case .invalidSetup: "Check the relay address, setup code and web app address."
         case .alreadyClaimed: "This relay was claimed by another setup. Start a new relay instance to use it here."
         case .resetRequired: "Phone access needs an explicit reset before changing this setup."
