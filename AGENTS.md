@@ -29,37 +29,67 @@ Read this first; then `docs/code-structure.md` for which target owns what.
    pre-commit scans the staged files for private tokens and builds the staged snapshot (a copy of the index
    under the git directory, never the working tree), and rejects the commit if anything is staged while it
    runs; commit-msg scans the message; pre-push tests every pushed commit that is new to the remote, oldest
-   first, so a broken commit is caught even when a later one reverts it: the test targets of the targets it
-   changes and of every target that depends on them (`scripts/affected-tests.sh`), or the whole suite when it
-   changes `Package.swift`, `Package.resolved`, `scripts/test.sh` or shared test support; the companion suite
-   for `companion/`; the hook suite for the hooks. Each commit is tested in a detached worktree kept at `<git dir>/sprava-hooks/push-tree`
-   with its own `.build`, never in the checkout itself. A push of N such commits
-   runs the suite N times, except for what already passed: each pass is recorded in
-   `<git common dir>/sprava-hooks/passed-trees` and not run again, a Swift pass by the package's inputs
-   (`Sources/`, `Tests/`, `Resources/`, `Package.*`, `scripts/test.sh`), so a rebase onto a docs-only main
-   keeps it, and other suites by tree hash. To test a stack once before pushing it, run
-   `./scripts/git-hooks/test-tree.sh $(git rev-list --reverse origin/main..HEAD)`. Never bypass the hooks with
-   `--no-verify`; a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`, `test-gate.sh`).
-4. The gate before merge, with a review budget so a PR converges:
-   - a local Codex review on the `gpt-6-astra` model passes (no MUST-FIX finding). It converges too: from its
-     third round on a PR, a MUST-FIX is fixed when ordinary use or one untrusted input reaches it; one that needs
-     a failure inside a particular window, or a combination of earlier states, is filed as an issue and named in
-     the PR. When rounds keep finding new cases of one kind, change the design so the kind cannot occur (one
-     safe reader for a file every caller uses; a feature off until it can be made safe) instead of patching
-     each caller;
-   - the cloud review gets one round. Findings in the classes of "Review guidelines" below are fixed; every
-     other finding is answered with a link to an issue that records it, and its thread resolved. A further
-     round only when a fix changed behavior;
-   - `./scripts/merge-pr.sh <number>` runs the whole suite once on the PR's tip, refuses a tip that does not
-     contain the current main (so the tree tested is the tree merged), then merges.
+   first, in a detached worktree, never in the checkout: the test targets `scripts/affected-tests.sh` names, or
+   the whole suite; the companion suite for `companion/`; the hook suite for the hooks (`scripts/git-hooks/suites.sh`).
+   Each pass is recorded in `<git common dir>/sprava-hooks/passed-trees` and not run again; a Swift pass is
+   keyed by the package's inputs, so a rebase onto a docs-only main keeps it. To test a stack once before
+   pushing it, run `./scripts/git-hooks/test-tree.sh $(git rev-list --reverse origin/main..HEAD)`. Planned, not
+   yet in force: pre-push tests only the tip of each PR in a stack. Never bypass the hooks with `--no-verify`;
+   a push that changes them also runs their own tests (`test-hooks.sh`, `test-pr-check.sh`, `test-gate.sh`).
+4. The gate before merge. The tier and the review rounds follow "Review and test process" below:
+   - round 1 is the local review, `./scripts/dev/review.sh` (Codex on the `gpt-6-astra` model), plus the cloud
+     Codex review of the PR in tier B. A finding in the classes of "Review guidelines" is a blocker (MUST-FIX).
+     Any other finding is fixed, or answered in one line; in the cloud review with `threads.sh reply`, or with
+     `threads.sh file` to record it in an issue;
+   - after a fix to a blocker, `./scripts/dev/review.sh <reviewed commit>` reviews only the fix: at most 1 such
+     round in tier C, 2 in tier B. When rounds keep finding new cases of one kind, change the design so the
+     kind cannot occur (one safe reader for a file every caller uses; a feature off until it can be made safe)
+     instead of patching each caller;
+   - a conflict-free rebase onto main needs no new review. `./scripts/merge-pr.sh <number>` still refuses a tip
+     that does not contain the current main (so the tree tested is the tree merged) or has unresolved review
+     threads; it runs the whole suite once on the tip when the PR changes Swift inputs, unless the passed-trees
+     cache shows those inputs already passed, then merges.
 5. Commit messages say what changed and why, in plain words.
 
-## Manual review supplement
+## Review and test process
 
-Use the compatible manual procedure in [docs/manual-review.md](docs/manual-review.md), pinned to shared
-workflow v0.2. It adds design, specialist and separate adjudication records without replacing the gates above.
-Full supplement adoption remains blocked on the review-round deferral conflict documented there; step 4 and
-the review guidelines below are unchanged. This is no runtime policy, permission or review-attestation upgrade.
+The owner adopted the shared [review and test process v0.3](https://github.com/orlenko/software-quality/blob/main/docs/process.md)
+for Sprava on 2026-11-13. It sets the tiers, review rounds, caps, stop rules and the record. This section is
+Sprava's part. Sprava has no tier A.
+
+- **Sensitive-path list.** A change to one of these files is tier B:
+  - secrets, Keychain, signing, launchd: `Sources/SpravaKit/{LocalKeychainSecret,LegacyKeychainInteraction}.swift`,
+    `Sources/Services/DeviceID.swift`, `Sources/Services/Claude/ClaudeSubscriptionSecrets.swift`,
+    `Sources/SpravaApp/Health/{RuntimeKeeper,WatcherRepair,BundleSignature}.swift`, `Sources/sprava-runtime/**`,
+    `Resources/LaunchAgents/**`, `Resources/{*.entitlements,App-Info.plist}`, `scripts/{build-app,build-llm,restart-app}.sh`;
+  - writing, moving or deleting documents; backup and restore: `Sources/Backup/**`,
+    `Sources/Services/Commands/BackupCommands.swift`, `Sources/BinderFormat/DocumentPaths.swift`,
+    `Sources/SpravaKit/{SafeFile,AtomicFile,StateDirectory}.swift`, `Sources/SpravaApp/Binder/Drop/IntakeDropModel.swift`,
+    `Sources/BinderStore/{OpApplier,TransactionGuard,Undo,TekaStore+*,TurnHistory*,Adoption,AdoptionStamp,DashboardKeeper,DocumentPaths+Writing,CompanionOperationTransaction,ProposalStore+BoundedReading}.swift`,
+    `Sources/Capture/{BinderWrite,CaptureInbox+Carry,CaptureInbox+Handoff,CaptureInbox+Retraction,CaptureInbox+Unfiled}.swift`;
+  - network and data leaving the Mac: `Sources/Capture/IMAP/**`, `Sources/Services/Jobs/DraftPlacing.swift`,
+    `Sources/Services/XPCPeer.swift`, `Sources/sprava-mcp/**`, `Sources/Brains/{MCPSocket,MCPServer*,MCPTools}.swift`,
+    `Sources/Companion/{CompanionKeychain,OwnerVault,PairingKeys,OwnerRelay,RelayStream,SealedObject,Wire,OwnerPublication,IndexPublication,OutcomesPublication,ViewProjection,OwnerPairingDelivery,BinderSharing,SelfRevocation}.swift`,
+    `companion/relay/src/**`, `companion/web/src/{relay-client,pairing-*}.ts`;
+  - agent sandbox: `Sources/Brains/{AgentContainment,AgentEgressProxy,AgentSessionAdmission,ClaudeReadLaunch,LLMHelper}.swift`,
+    `Sources/Services/Claude/ClaudeNativeConversation.swift`, `Sources/AgentSandboxProbe/**`, `Sources/Extract/ExtractHelper.swift`.
+- **Triggers**, also tier B: the change parses model output into actions or to-dos the person relies on; or it
+  changes behavior across a restart, an update or a change of signing identity.
+- **Round-1 question:** what deletes or loses a user file or a stored secret?
+- **Reviewers:** tier C, the local review; tier B, the local review and the cloud review (step 4). When one is out
+  of quota, use the other; `review.sh --claude` runs the local review through Claude instead of Codex.
+- **Tests:** while working, `./scripts/test.sh --filter '<pattern>'` with the pattern that
+  `./scripts/affected-tests.sh origin/main HEAD` prints (`ALL` means the whole suite), and `companion/test.sh` for
+  `companion/`. The whole suite, `./scripts/test.sh`, runs once on the final head; `merge-pr.sh` runs it.
+- **Smoke checklist:**
+  - tier B, automated, once on the final head (one test run): replies recorded from the real model on invented
+    binders, replayed through the reply parser. Planned; until the fixtures exist the record says "none yet".
+  - each signed build, by the owner, about 20 minutes (real Keychain and launchd): install it with
+    `./scripts/restart-app.sh` over the previous build (an ad-hoc one the first time), quit and reopen Sprava, and
+    check that the Claude sign-in, the mail password and the backup key are still there, Health shows the runtime
+    running, and `runtime/watch.json` gets a new `ran_at` at the next quarter hour.
+- **Documents:** design and process documents get one critique and one revision. They do not go through the Codex
+  review loop, local or cloud.
 
 ## Tools (`scripts/dev/`, for Claude, Codex and the author alike)
 
@@ -72,7 +102,6 @@ the review guidelines below are unchanged. This is no runtime policy, permission
 - `../merge-pr.sh <number>`: the last step of the gate.
 - `prune-worktrees.sh [--apply]`: removes worktrees under `.claude/worktrees` that hold nothing unmerged and no file
   but build products; `test-prune.sh` tests it.
-
 
 ## Review guidelines
 
@@ -88,6 +117,9 @@ Report a finding only when it can cause, in ordinary use or from an untrusted in
 - a crash or hang from an untrusted input or ordinary use;
 - a silent failure that loses something the person wrote or approved;
 - a dependency on a higher layer (`docs/code-structure.md`).
+
+Also answer the round-1 question in "Review and test process" above, and name any of its triggers the change
+matches.
 
 Do not report:
 
