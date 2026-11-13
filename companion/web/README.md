@@ -17,7 +17,11 @@ npm run dev
 ```
 
 `npm run dev` builds and serves `dist/` at `http://localhost:5173`; set `SPRAVA_WEB_PORT`
-for a different port. The preview binds only to localhost. Serve the same static output
+for a different port. Beside it, `npm run stand-in` plays the Mac (`dev/stand-in-owner.ts`): it
+starts a relay on `localhost:8787` over a temporary folder, claims it, publishes invented binders,
+prints a pairing link, confirms the pairing by itself, and decides the phone's requests every two
+seconds (`--hold <seconds>` keeps each one pending that long first). `test/stand-in-owner.test.ts`
+runs the same owner against the app's own modules. Neither is part of `dist/`. The preview binds only to localhost. Serve the same static output
 over HTTPS at an origin dedicated to this app for a device test; no deployment is performed
 by the build or preview scripts. The version and commit appear at the foot of the app.
 
