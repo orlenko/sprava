@@ -65,6 +65,11 @@ extension BinderChatTests {
         chat.putBack(try #require(chat.entries.last))
         #expect(chat.draft == "Something newer")
         #expect(chat.message?.contains("already holds text") == true)
+        // Once the box is emptied, the line goes, and Edit and Send works (#570).
+        chat.draft = "  "
+        #expect(chat.message == nil)
+        chat.putBack(try #require(chat.entries.last))
+        #expect(chat.draft == "Pay the invented plumber" && chat.message == nil)
     }
 
     @Test func aBrokenContactAndAStreamThatEndsLeaveOnlyAQuestion() async throws {

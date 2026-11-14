@@ -120,6 +120,10 @@ final class BinderChat: ObservableObject {
             guard let shownKey else { return }
             threads[shownKey, default: Thread()].draft = newValue
             threads[shownKey]?.restored = nil   // typed by the person: no longer the line put back
+            // Once the box is empty, the line asking to send or clear it first has nothing left to say (#570).
+            if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, threads[shownKey]?.message == Self.boxHoldsText {
+                threads[shownKey]?.message = nil
+            }
         }
     }
     var canSend: Bool {
@@ -302,11 +306,14 @@ final class BinderChat: ObservableObject {
         return shown.entries.first { $0.speaker == .person && $0.requestID == requestID }
     }
 
+    /// What Edit and Send says when the box already holds text.
+    static let boxHoldsText = "The box below already holds text. Send or clear it first."
+
     /// Puts the person's words back in the composer, to change or send as a new turn. Never over text already there.
     func putBack(_ entry: Entry) {
         guard let shownKey, actions(for: entry).contains(.editAndSend), let line = line(answeredBy: entry) else { return }
         guard draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            threads[shownKey]?.message = "The box below already holds text. Send or clear it first."
+            threads[shownKey]?.message = Self.boxHoldsText
             return
         }
         threads[shownKey]?.draft = line.text
