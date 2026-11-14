@@ -16,9 +16,20 @@ extension CompanionJob {
             guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return }
             // The throwing read: an unreadable Shelf is a job failure, never an empty Shelf that hides every binder.
             let rows = try ShelfStore(supportDirectory: support).rowsForJobs()
-            let publisher = try CompanionOwnerPublication(profile: profile)
-            _ = try await publishing.run(profile: profile, target: publisher, rows: rows, now: Date())
-            _ = try await draining.run(profile: profile, locks: locks, outcomes: publisher)
+            try await cycle(publishing: publishing, draining: draining, profile: profile, locks: locks,
+                            target: try CompanionOwnerPublication(profile: profile), rows: rows)
+        }
+    }
+
+    /// One run's work: publish, drain, and publish again when the drain changed a binder, so what the phones did
+    /// reaches their views in this run, not a publish cycle later (§9.7).
+    static func cycle(publishing: CompanionPublishing, draining: CompanionDraining, profile: CompanionProfile,
+                      locks: CompanionDeviceDecisionLocks, target: any CompanionPublishingTarget & CompanionOutcomesTarget,
+                      rows: [ShelfRow], timeZone: TimeZone = .current, clock: @escaping @Sendable () -> Date = { Date() }) async throws {
+        _ = try await publishing.run(profile: profile, target: target, rows: rows, now: clock(), timeZone: timeZone)
+        let drained = try await draining.run(profile: profile, locks: locks, outcomes: target, timeZone: timeZone, clock: clock)
+        if drained.decisionsCommitted > 0 {
+            _ = try await publishing.run(profile: profile, target: target, rows: rows, now: clock(), timeZone: timeZone)
         }
     }
 }

@@ -30,15 +30,19 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           recall, dates, amounts, binders, calls and time
        sprava measures [--days N]          the shadow run's measures (mvp.md 1.2) over the last N days (30)
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
-                                          approve <id>, reject <id>, complete <item-id>, drop <item-id>.
+                                          approve <id>, reject <id>, complete <item-id>, drop <item-id>,
+                                          shelve (onto the development Shelf), add <title> (due today),
+                                          undo <op-id>.
                                           Refuses any folder in lifeproj's registry or on Sprava's
                                           Shelf, or owned by the installed Sprava. Uses its own
                                           state and device id (the support folder plus "-dev").
        sprava dev-phone '<request>'      development only: one Phone action, as JSON as Settings › Phone
                                           sends it (companion_configure, companion_claim,
                                           companion_pairing_start, ..._poll, ..._confirm, companion_devices,
-                                          companion_device_remove, companion_relay_retry),
-                                          on the development state with file credentials, never the Keychain
+                                          companion_device_remove, companion_relay_retry,
+                                          companion_binder_show), on the development state with file
+                                          credentials, never the Keychain; `sprava dev-phone run` runs the
+                                          companion job once (publish, drain the phones' requests, outcomes)
 
 The shelf lists new binders and folders added with `sprava shelf add`. lifeproj's registry
 ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml) is listed only with "showRegistry": true in shelf.json.
