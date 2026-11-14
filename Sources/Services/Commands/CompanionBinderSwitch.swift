@@ -21,7 +21,8 @@ public struct CompanionBinderSwitch: Sendable {
                 try checkShowable(folder)
                 return try await Self.perform {
                     try await session.withConfiguredProfile { profile in
-                        try profile.showBinder(try identities.identity(for: folder)).state == .shown
+                        // Another folder put where a shown binder was is switched off before this one is shown.
+                        try profile.showBinder(try identities.identity(for: folder, retire: { try profile.hideBinder($0) })).state == .shown
                     }
                 }
             },

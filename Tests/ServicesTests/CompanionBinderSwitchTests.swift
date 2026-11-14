@@ -68,6 +68,8 @@ private func send(_ requests: CompanionRuntimeRequests, _ command: String, _ fol
     let f = SwitchFixture(); defer { try? FileManager.default.removeItem(at: f.support) }
     let identities = CompanionBinderIdentities(support: f.support)
     let other = f.support.appendingPathComponent("Invented Shed", isDirectory: true)
+    try FileManager.default.createDirectory(at: f.binder, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
     #expect(try identities.recorded(for: f.binder) == nil)
     _ = try identities.identity(for: f.binder)
     let first = try #require(try CompanionBinderIdentities(support: f.support).recorded(for: f.binder.appendingPathComponent(".")))
@@ -123,6 +125,24 @@ private func send(_ requests: CompanionRuntimeRequests, _ command: String, _ fol
     let answer = try await send(try f.requests(), "companion_binder_show", f.binder)
     #expect(answer["error"] == .string(CompanionPhoneActionError.notSetUp.message))
     #expect(f.secrets.binderKeys().isEmpty)
+}
+
+@Test func anotherBinderPutWhereAShownOneWasStartsWithItsSwitchOff() async throws {
+    let f = SwitchFixture(); defer { try? FileManager.default.removeItem(at: f.support) }
+    try f.makeBinder(at: f.binder); try f.claim()
+    let requests = try f.requests()
+    #expect(try await send(requests, "companion_binder_show", f.binder)["shown"] == .bool(true))
+    let old = try CompanionLocalBinderIdentity(bytes: try #require(try CompanionBinderIdentities(support: f.support).recorded(for: f.binder)))
+    // While the runtime is stopped, the shown binder is moved away and another binder of this Mac takes its folder name.
+    try FileManager.default.moveItem(at: f.binder, to: f.support.appendingPathComponent("Invented Garden Away", isDirectory: true))
+    try f.makeBinder(at: f.binder, onShelf: false)
+    #expect(try f.status()["shown"] == .bool(false))
+    #expect(try f.sharing() == nil)
+    // Showing the newcomer switches the old identity off and gives this folder a new one.
+    #expect(try await send(requests, "companion_binder_show", f.binder)["shown"] == .bool(true))
+    let profile = try #require(try CompanionProfile.openConfigured(database: f.database, secrets: f.secrets))
+    #expect(try profile.binderSharing(old) == nil)
+    #expect(try f.sharing()?.state == .shown)
 }
 
 @Test func aMovedBinderComesBackWithItsSwitchOff() async throws {
