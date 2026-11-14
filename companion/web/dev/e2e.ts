@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
 import { startLocalRelay, type LocalRelay } from './local-relay.ts';
 import { day, StandInOwner, type Decision } from './stand-in-owner.ts';
@@ -38,6 +39,9 @@ interface MacSide {
     changeBeforePublishing?(title: string): Promise<void>;
     /** Only a real Mac: Undo, as the app offers it, of the change a phone's Done made; whether the to-do is open again. */
     undoPhoneDone?(title: string): Promise<boolean>;
+    /** Only a real Mac: Remove the paired phone, then one job run; the account epoch the Mac is at. */
+    removePhone?(): Promise<void>;
+    epoch?(): Promise<number>;
     cards?(): string[];
     close(): Promise<void>;
 }
@@ -170,6 +174,15 @@ class DevPhoneMac implements MacSide {
         await this.run(['dev', 'undo', this.binder, op.id]);
         return this.catalog().open_items.some((i: any) => i.title === title);
     }
+    async removePhone() {
+        const reply = await this.phone({ command: 'companion_device_remove', device_id: this.device });
+        if (reply.state !== 'removed') throw new Error(`The Mac did not remove the phone: ${reply.state}`);
+        await this.run(['dev-phone', 'run']);
+    }
+    async epoch() {
+        const database = new DatabaseSync(join(this.root, 'support-dev', 'companion', 'state.sqlite'), { readOnly: true });
+        try { return Number((database.prepare('SELECT epoch FROM profile').get() as { epoch: number }).epoch); } finally { database.close(); }
+    }
     /** The cards waiting in the binder, by title. */
     cards(): string[] {
         const folder = join(this.binder, '.sprava', 'proposals');
@@ -288,7 +301,26 @@ const { values } = parseArgs({ options: {
 const mac: MacSide = values.mac === 'dev-phone' ? new DevPhoneMac() : values.mac === 'stand-in' ? new StandInMac() :
     (() => { throw new Error('--mac is stand-in or dev-phone.'); })();
 const step = (text: string) => console.log(`e2e: ${text}`);
-let web: ChildProcess | undefined, relay: LocalRelay | undefined, phone: Phone | undefined;
+let web: ChildProcess | undefined, relay: LocalRelay | undefined, phone: Phone | undefined, second: Phone | undefined;
+
+/** Opens the pairing link on `device`, names it, compares the codes both sides show, and has the Mac confirm. */
+async function pair(device: Phone, link: string, label: string): Promise<void> {
+    await device.command('Page.enable');
+    await device.navigate(link);
+    await device.wait(`location.hash === '' && !!document.querySelector('#device-label') && !document.querySelector('#device-label').closest('div').hidden`,
+        'the name field for a pairing link');
+    await device.type('#device-label', label);
+    await device.click('Pair this phone');
+    const joined = await mac.joined();
+    await device.wait(`/^\\d{3} \\d{3}$/.test(document.querySelector('#pairing-code').textContent)`, 'the confirmation code');
+    const shown = await device.text('#pairing-code');
+    if (shown !== joined.code || joined.label !== label) {
+        throw new Error(`The two sides show different codes or labels: "${shown}" and "${joined.code}", "${joined.label}".`);
+    }
+    step(`codes match (${shown}); the Mac confirms`);
+    await mac.confirm();
+    await device.wait(`document.querySelector('#status').textContent === 'Paired.'`, 'that it is paired');
+}
 try {
     const served = await serveWebApp(new URL('..', import.meta.url)); web = served.child;
     relay = await startLocalRelay({ webOrigin: served.origin });
@@ -303,21 +335,7 @@ try {
     const link = await mac.pairingLink();
 
     phone = await Phone.open(values.chrome);
-    await phone.command('Page.enable');
-    await phone.navigate(link);
-    await phone.wait(`location.hash === '' && !!document.querySelector('#device-label') && !document.querySelector('#device-label').closest('div').hidden`,
-        'the name field for a pairing link');
-    await phone.type('#device-label', 'Invented e2e phone');
-    await phone.click('Pair this phone');
-    const joined = await mac.joined();
-    await phone.wait(`/^\\d{3} \\d{3}$/.test(document.querySelector('#pairing-code').textContent)`, 'the confirmation code');
-    const shown = await phone.text('#pairing-code');
-    if (shown !== joined.code || joined.label !== 'Invented e2e phone') {
-        throw new Error(`The two sides show different codes or labels: "${shown}" and "${joined.code}", "${joined.label}".`);
-    }
-    step(`codes match (${shown}); the Mac confirms`);
-    await mac.confirm();
-    await phone.wait(`document.querySelector('#status').textContent === 'Paired.'`, 'that it is paired');
+    await pair(phone, link, 'Invented e2e phone');
     await phone.wait(`document.querySelector('#binder-view').textContent.includes('Pay the water bill')`, 'Today with the published to-dos');
     step('paired; Today shows the published to-dos');
 
@@ -358,12 +376,26 @@ try {
         await phone.wait(`document.querySelector('#pending').textContent.includes('changed on your Mac since')`, 'the conflict outcome');
         step('a stale Done became a card on the Mac, and the phone says so');
     }
+
+    if (mac.removePhone) {
+        // Settings › Phone › Remove: the relay forgets the phone, and the keys move to a new epoch without it.
+        await mac.removePhone();
+        await phone.click('Refresh');
+        await phone.wait(`document.querySelector('#status').textContent.includes('The relay refused this phone')`, 'that the relay refuses it');
+        step('the removed phone is refused by the relay');
+        second = await Phone.open(values.chrome);
+        await pair(second, await mac.pairingLink(), 'Invented second phone');
+        await second.wait(`document.querySelector('#binder-view').textContent.includes('Pay the water bill')`, 'the to-dos on the second phone');
+        if (await mac.epoch!() < 2) throw new Error('The Mac did not move to a new epoch after the removal.');
+        step(`a second phone paired and reads the to-dos at epoch ${await mac.epoch!()}`);
+    }
     console.log('e2e: PASS');
 } catch (error) {
     console.error(`e2e: FAIL: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
 } finally {
     await phone?.close().catch(() => {});
+    await second?.close().catch(() => {});
     await mac.close().catch(() => {});
     await relay?.close().catch(() => {});
     web?.kill('SIGTERM');
