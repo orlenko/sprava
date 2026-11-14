@@ -3,12 +3,13 @@
 //
 //   npm run e2e [-- --mac stand-in|dev-phone] [--chrome <path>]
 //
-// `--mac stand-in` (the default) plays the Mac with dev/stand-in-owner.ts. `--mac dev-phone` is the swap for a
-// development build of the Mac (DevPhoneMac below): not wired yet; see the notes there.
+// `--mac stand-in` (the default) plays the Mac with dev/stand-in-owner.ts. `--mac dev-phone` uses a development
+// build of the Mac instead (DevPhoneMac below), and also checks that a stale Done becomes a card.
 // Every binder, item, label and note is invented. Nothing is installed, deployed or kept: the relay's folder,
 // the Chrome profile and the servers go when the script ends.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +34,11 @@ interface MacSide {
     /** Whether a to-do with this title is closed on the Mac, and whether a note with this text reached its inbox. */
     closed(title: string): boolean;
     noted(text: string): boolean;
+    /** Only a real Mac: change a to-do without publishing, then the cards waiting in its binder (companion-v0 §9.5). */
+    changeBeforePublishing?(title: string): Promise<void>;
+    /** Only a real Mac: Undo, as the app offers it, of the change a phone's Done made; whether the to-do is open again. */
+    undoPhoneDone?(title: string): Promise<boolean>;
+    cards?(): string[];
     close(): Promise<void>;
 }
 
@@ -60,26 +66,118 @@ class StandInMac implements MacSide {
 }
 
 /**
- * The swap for a development build of the Mac. Its pairing requests come with `sprava dev-phone '<request>'`
- * (Track A, `mac-pairing`): run `swift run sprava dev-phone …` from the repository root with SPRAVA_SUPPORT_DIR
- * set to a fresh temporary folder, as scripts/test.sh isolates state, for `configure` (the relay's origin, its
- * setup code and this web app's address), `claim`, `pairing_start`, `pairing_poll`, `pairing_confirm` and
- * `devices`. Publishing, adding a to-do and draining need the companion job (Track B, `mac-sync`) and a way to
- * reach it from a development build. Until both are on main, this side refuses to run.
+ * A development build of the Mac: the `sprava` command line built from this checkout, on its own state in a fresh
+ * temporary folder (SPRAVA_SUPPORT_DIR; the development state is that folder plus "-dev"), with file credentials,
+ * never the Keychain, and an invented binder it adopts and shows on the phone. `sprava dev-phone '<request>'` sends
+ * the Phone actions as Settings › Phone does; `sprava dev-phone run` runs the companion job once, as the runtime's
+ * timer would: publish, drain the phone's requests, publish its outcomes.
  */
 class DevPhoneMac implements MacSide {
-    private refuse(): never {
-        throw new Error('--mac dev-phone needs `sprava dev-phone` (Track A) and the companion job (Track B) on main.');
+    private root = '';
+    private binder = '';
+    private device = '';
+    private confirmation = '';
+    private readonly repository = new URL('../../../', import.meta.url).pathname;
+    private get sprava() { return join(this.repository, '.build/debug/sprava'); }
+    private env(): NodeJS.ProcessEnv {
+        // An empty registry path: the development guard then reads no lifeproj registry at all.
+        return { ...process.env, SPRAVA_SUPPORT_DIR: join(this.root, 'support'), SPRAVA_CAPTURE_ROOT: join(this.root, 'captures'),
+            CMIRROR_CONFIG: join(this.root, 'no-registry.toml') };
     }
-    async start(): Promise<void> { this.refuse(); }
-    async pairingLink(): Promise<string> { this.refuse(); }
-    async joined(): Promise<{ code: string; label: string }> { this.refuse(); }
-    async confirm(): Promise<void> { this.refuse(); }
-    async addToDo(): Promise<void> { this.refuse(); }
-    async drain(): Promise<Decision[]> { this.refuse(); }
-    closed(): boolean { this.refuse(); }
-    noted(): boolean { this.refuse(); }
-    async close() {}
+    private async run(args: string[]): Promise<string> {
+        const child = spawn(this.sprava, args, { cwd: this.repository, env: this.env(), stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '', err = '';
+        child.stdout!.on('data', bytes => { out += String(bytes); }); child.stderr!.on('data', bytes => { err += String(bytes); });
+        const [code] = await once(child, 'exit');
+        // Named by its command only: a request can carry the relay's setup code.
+        const what = args[1]!.startsWith('{') ? JSON.parse(args[1]!).command : args[1];
+        if (code !== 0) throw new Error(`sprava ${args[0]} ${what} failed: ${(out + err).trim().slice(0, 400)}`);
+        return out;
+    }
+    private async phone(request: object): Promise<any> { return JSON.parse(await this.run(['dev-phone', JSON.stringify(request)])); }
+    private catalog(): any { return JSON.parse(readFileSync(join(this.binder, 'catalog.json'), 'utf8')); }
+
+    async start(relay: LocalRelay, webApp: string) {
+        const build = spawn('swift', ['build', '--product', 'sprava'], { cwd: this.repository, stdio: ['ignore', 'ignore', 'inherit'] });
+        const [code] = await once(build, 'exit'); if (code !== 0) throw new Error('sprava did not build.');
+        this.root = await mkdtemp(join(tmpdir(), 'sprava-e2e-mac-'));
+        this.binder = join(this.root, 'binders', 'invented-home');
+        mkdirSync(this.binder, { recursive: true });
+        writeFileSync(join(this.binder, 'catalog.json'), JSON.stringify({
+            meta: { schema_version: 2, name: 'invented-home', format: 'teka', format_version: '0', disclosure: 'none',
+                id_scheme: 'teka-year-seq', domain: 'home', lifecycle: 'ongoing', created: day(-30), next_doc_id: 1, next_item_id: 2 },
+            documents: [], processing_log: [],
+            open_items: [{ id: 'invented-home-2026-001', title: 'Pay the water bill', status: 'open', priority: 'normal', due: day(0), kind: 'payment' }],
+        }, null, 2));
+        await this.run(['dev', 'adopt', this.binder]);
+        await this.run(['dev', 'shelve', this.binder]);
+        await this.phone({ command: 'companion_configure', relay_origin: relay.origin, setup_code: relay.setupCode, web_origin: new URL(webApp).origin });
+        const claimed = await this.phone({ command: 'companion_claim' });
+        if (claimed.state !== 'claimed') throw new Error(`The relay was not claimed: ${claimed.state}`);
+        await this.phone({ command: 'companion_binder_show', binder: this.binder });
+        await this.run(['dev-phone', 'run']);
+    }
+    async pairingLink() {
+        const started = await this.phone({ command: 'companion_pairing_start' });
+        this.device = started.device_id;
+        return started.link as string;
+    }
+    private async poll(until: string[], ms = 30000): Promise<any> {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+            const reply = await this.phone({ command: 'companion_pairing_poll', device_id: this.device });
+            if (until.includes(reply.state)) return reply;
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        throw new Error(`The pairing did not reach ${until.join(' or ')}.`);
+    }
+    async joined() {
+        const reply = await this.poll(['confirm']);
+        this.confirmation = reply.confirmation;
+        // The Mac shows its six digits in two groups, as the phone does.
+        return { code: String(reply.confirmation).replace(/^(\d{3})(\d{3})$/, '$1 $2'), label: reply.label as string };
+    }
+    async confirm() {
+        await this.phone({ command: 'companion_pairing_confirm', device_id: this.device, confirmation: this.confirmation });
+        await this.poll(['paired']);
+        await this.run(['dev-phone', 'run']);
+    }
+    async addToDo(title: string) {
+        await this.run(['dev', 'add', this.binder, title]);
+        await this.run(['dev-phone', 'run']);
+    }
+    async drain(): Promise<Decision[]> { await this.run(['dev-phone', 'run']); return []; }
+    closed(title: string) { return (this.catalog().processing_log ?? []).some((e: any) => e.title === title && e.action === 'done'); }
+    noted(text: string) {
+        const root = join(this.root, 'captures');
+        if (!existsSync(root)) return false;
+        return readdirSync(root).some(device => readdirSync(join(root, device)).filter(n => n.endsWith('.json'))
+            .some(name => { try { return JSON.parse(readFileSync(join(root, device, name), 'utf8')).text === text; } catch { return false; } }));
+    }
+    /** An edit made on the Mac after the phone's view was published, without a publish in between. */
+    async changeBeforePublishing(title: string) {
+        const catalog = this.catalog();
+        const item = catalog.open_items.find((i: any) => i.title === title);
+        if (!item) throw new Error(`No to-do ${title} on the Mac.`);
+        item.priority = item.priority === 'high' ? 'normal' : 'high';
+        writeFileSync(join(this.binder, 'catalog.json'), JSON.stringify(catalog, null, 2));
+    }
+    async undoPhoneDone(title: string) {
+        const closure = (this.catalog().processing_log ?? []).find((e: any) => e.title === title && e.action === 'done');
+        const ops = readFileSync(join(this.binder, '.sprava', 'ops.ndjson'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+        const op = ops.find((o: any) => o.op === 'complete' && String(o.note ?? '').startsWith('companion:') && o.args?.id === closure?.id);
+        if (!op) throw new Error(`No phone Done for ${title} in the op log.`);
+        await this.run(['dev', 'undo', this.binder, op.id]);
+        return this.catalog().open_items.some((i: any) => i.title === title);
+    }
+    /** The cards waiting in the binder, by title. */
+    cards(): string[] {
+        const folder = join(this.binder, '.sprava', 'proposals');
+        if (!existsSync(folder)) return [];
+        return readdirSync(folder).filter(n => n.endsWith('.json')).map(n => JSON.parse(readFileSync(join(folder, n), 'utf8')))
+            .filter(p => p.state === 'proposed').map(p => String(p.title));
+    }
+    async close() { if (this.root) await rm(this.root, { recursive: true, force: true }); }
 }
 
 /** A disposable headless Chrome driven over the DevTools protocol, on its own fresh profile. */
@@ -214,7 +312,9 @@ try {
     const joined = await mac.joined();
     await phone.wait(`/^\\d{3} \\d{3}$/.test(document.querySelector('#pairing-code').textContent)`, 'the confirmation code');
     const shown = await phone.text('#pairing-code');
-    if (shown !== joined.code || joined.label !== 'Invented e2e phone') throw new Error('The two sides show different codes or labels.');
+    if (shown !== joined.code || joined.label !== 'Invented e2e phone') {
+        throw new Error(`The two sides show different codes or labels: "${shown}" and "${joined.code}", "${joined.label}".`);
+    }
     step(`codes match (${shown}); the Mac confirms`);
     await mac.confirm();
     await phone.wait(`document.querySelector('#status').textContent === 'Paired.'`, 'that it is paired');
@@ -223,12 +323,16 @@ try {
 
     await phone.click('Done', '#binder-view', 'Pay the water bill');
     await phone.wait(`document.querySelector('#pending').textContent.includes('Done #1 · Sent')`, 'the Done action sent');
-    const decided = await mac.drain();
-    if (decided[0]?.outcome !== 'applied' || !mac.closed('Pay the water bill')) throw new Error('The Mac did not apply Done.');
+    const decided = await mac.drain(); // the stand-in reports its decisions; a real Mac shows them in the binder
+    if ((decided.length > 0 && decided[0]?.outcome !== 'applied') || !mac.closed('Pay the water bill')) throw new Error('The Mac did not apply Done.');
     await phone.click('Refresh');
     await phone.wait(`document.querySelector('#pending').textContent === '' &&
         !document.querySelector('#binder-view').textContent.includes('Pay the water bill')`, 'the outcome, and the item gone');
     step('Done on the phone closed the to-do on the Mac; the phone read the outcome');
+    if (mac.undoPhoneDone) {
+        if (!await mac.undoPhoneDone('Pay the water bill')) throw new Error('Undo on the Mac did not reopen the to-do.');
+        step('Undo on the Mac reopened it');
+    }
 
     await mac.addToDo('Invented to-do added on the Mac');
     await phone.click('Refresh');
@@ -241,6 +345,19 @@ try {
     await mac.drain();
     if (!mac.noted('Invented note from the e2e phone')) throw new Error('The note did not reach the Mac.');
     step('a note from the phone reached the Mac');
+
+    if (mac.changeBeforePublishing && mac.cards) {
+        // The person changes the to-do on the Mac while the phone still shows the older version, and the phone marks it done.
+        await mac.changeBeforePublishing('Invented to-do added on the Mac');
+        await phone.click('Done', '#binder-view', 'Invented to-do added on the Mac');
+        await phone.wait(`document.querySelector('#pending').textContent.includes('Done #3 · Sent')`, 'the stale Done sent');
+        await mac.drain();
+        if (mac.closed('Invented to-do added on the Mac')) throw new Error('The Mac applied a stale Done.');
+        if (!mac.cards().some(title => title.includes('changed since your phone saw it'))) throw new Error('The stale Done did not become a card.');
+        await phone.click('Refresh');
+        await phone.wait(`document.querySelector('#pending').textContent.includes('changed on your Mac since')`, 'the conflict outcome');
+        step('a stale Done became a card on the Mac, and the phone says so');
+    }
     console.log('e2e: PASS');
 } catch (error) {
     console.error(`e2e: FAIL: ${error instanceof Error ? error.message : String(error)}`);
