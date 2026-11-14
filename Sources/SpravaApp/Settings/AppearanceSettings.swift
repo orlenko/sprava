@@ -50,7 +50,7 @@ final class AppearanceSettings: ObservableObject {
 }
 
 /// The Settings window (⌘,).
-enum SettingsTab: Hashable { case general, backup, assistant }
+enum SettingsTab: Hashable { case general, backup, assistant, phone }
 
 /// The Settings window. Backup and Assistant live here (decisions.md D37): things set up once and rarely looked at again.
 /// Health's status line and notice say when one of them needs a person.
@@ -60,6 +60,7 @@ struct SettingsView: View {
     @ObservedObject var shelf: ShelfModel
     @ObservedObject var backup: BackupModel
     @ObservedObject var brains: BrainsModel
+    @ObservedObject var phone: PhoneSettings
 
     /// Backup and Assistant scroll on their own, so a small screen does not hide their buttons.
     static let pageSize = CGSize(width: 640, height: 560)
@@ -77,6 +78,10 @@ struct SettingsView: View {
                 .frame(width: Self.pageSize.width, height: Self.pageSize.height)
                 .tabItem { Label("Assistant", systemImage: "bubble.left.and.bubble.right") }
                 .tag(SettingsTab.assistant)
+            PhoneSettingsView(model: phone)
+                .frame(width: Self.pageSize.width, height: Self.pageSize.height)
+                .tabItem { Label("Phone", systemImage: "iphone") }
+                .tag(SettingsTab.phone)
         }
     }
 
