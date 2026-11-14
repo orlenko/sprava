@@ -33,6 +33,8 @@ public actor CompanionJob {
             }
         } catch CompanionOwnerConnectionError.busy {
             return .skipped
+        } catch CompanionJobFault.rotationRefused {
+            return .error(code: "companion_rotation_refused", culprit: nil)
         } catch is CancellationError {
             return .skipped
         } catch {

@@ -17,21 +17,34 @@ extension CompanionJob {
             // The throwing read: an unreadable Shelf is a job failure, never an empty Shelf that hides every binder.
             let rows = try ShelfStore(supportDirectory: support).rowsForJobs()
             try await cycle(publishing: publishing, draining: draining, profile: profile, locks: locks,
-                            target: try CompanionOwnerPublication(profile: profile), rows: rows)
+                            target: try CompanionOwnerPublication(profile: profile), rotation: session.rotation(profile), rows: rows)
         }
     }
 
-    /// One run's work: publish, drain, and publish again when the drain changed a binder, so what the phones did
-    /// reaches their views in this run, not a publish cycle later (§9.7).
+    /// Relay calls one run spends on a removal's relay work and new keys (§4.4), each bounded to 30 seconds.
+    static let rotationCalls = 20
+
+    /// One run's work: a removal's relay work and new keys first (§4.4), then publish, drain, and publish again
+    /// when the drain changed a binder, so what the phones did reaches their views in this run (§9.7). A keys object
+    /// the relay refused fails the run after its work, so Health names it until the person's Retry.
     static func cycle(publishing: CompanionPublishing, draining: CompanionDraining, profile: CompanionProfile,
                       locks: CompanionDeviceDecisionLocks, target: any CompanionPublishingTarget & CompanionOutcomesTarget,
+                      rotation: @escaping @Sendable () async throws -> CompanionRotationProgress,
                       rows: [ShelfRow], timeZone: TimeZone = .current, clock: @escaping @Sendable () -> Date = { Date() }) async throws {
+        await CompanionRemovalActions.advance(profile, limit: rotationCalls, step: rotation)
         _ = try await publishing.run(profile: profile, target: target, rows: rows, now: clock(), timeZone: timeZone)
         let drained = try await draining.run(profile: profile, locks: locks, outcomes: target, timeZone: timeZone, clock: clock)
         if drained.decisionsCommitted > 0 {
             _ = try await publishing.run(profile: profile, target: target, rows: rows, now: clock(), timeZone: timeZone)
         }
+        if try profile.rotationFault() { throw CompanionJobFault.rotationRefused }
     }
+}
+
+/// A fault the companion job reports on Health after doing what it could.
+enum CompanionJobFault: Error, Equatable {
+    /// The relay refused a phone's new keys after a removal; publication waits for the person's Retry (§4.4, §9.7).
+    case rotationRefused
 }
 
 /// The part of the owner's publisher the companion job uses; tests stand in for the relay through it.
@@ -45,6 +58,8 @@ extension CompanionOwnerPublication: CompanionPublishingTarget {}
 /// What one publishing pass did, by count only: logs never carry binder names, ids or titles.
 struct CompanionPublishingReport: Sendable, Equatable {
     var snapshots = 0, uploads = 0, skipped = 0, hidden = 0, indexes = 0, deletions = 0
+    /// Nothing was published: a rotation's keys are not all on the relay yet (§4.4).
+    var held = false
 }
 
 /// companion-v0 §9.7 for the runtime: each shown binder's view, the index, and the cleanup of a binder switched off.
@@ -76,6 +91,11 @@ actor CompanionPublishing {
             if match == .missing { report.skipped += 1; continue }
             shown.append((sharing.id, folder))
         }
+        // §4.4: until every remaining phone's new keys are on the relay, nothing is published at the new epoch, so no
+        // phone meets an index it cannot open.
+        if try profile.rotationBlocksPublication() { report.held = true; return report }
+        // After a rotation, each shown binder gets a view at its new key epoch, changed or not (§4.4 step 4).
+        for id in try profile.bindersNeedingEpochView() { seen[id] = nil }
         let ids = Set(shown.map(\.id))
         if ids != lastShown { indexDue = true }
         for binder in shown {

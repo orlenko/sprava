@@ -320,7 +320,7 @@ private actor OutcomesRelay: CompanionOutcomesTarget {
     _ = try await publishing.run(profile: p, target: AcceptingTarget(p), rows: rows, now: morning, timeZone: utc)
     #expect(try indexed() == [[.integer(2)]])
     try await CompanionJob.cycle(publishing: publishing, draining: draining, profile: p, locks: CompanionDeviceDecisionLocks(),
-                                 target: AcceptingTarget(p), rows: rows, timeZone: utc, clock: { morning })
+                                 target: AcceptingTarget(p), rotation: { .idle }, rows: rows, timeZone: utc, clock: { morning })
     #expect(!f.openIDs().contains("estate-example-2026-007"))
     #expect(try indexed() == [[.integer(3)]])
 }
