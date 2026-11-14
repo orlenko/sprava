@@ -3,7 +3,7 @@ import Foundation
 import SpravaKit
 
 /// Stable 128-bit identity supplied by a higher adapter; never manufacture this from a binder's name or path.
-public struct CompanionLocalBinderIdentity: Sendable {
+public struct CompanionLocalBinderIdentity: Sendable, Equatable {
     let bytes: Data
     public init(bytes: Data) throws {
         guard bytes.count == 16 else { throw CompanionPublicationError.invalid }
@@ -65,6 +65,19 @@ extension CompanionProfile {
         try store.read { t in
             guard try epoch(t) != nil else { return nil }
             return try sharing(identity, t)
+        }
+    }
+    /// The local identity and state behind a phone binder id, removed ones included, so a decision recorded for a
+    /// binder switched off since can still find its folder (companion-v0 §9.6). Nil for an id this Mac never made.
+    public func localBinder(phoneID id: String) throws -> (identity: CompanionLocalBinderIdentity, state: CompanionBinderSharing.State)? {
+        guard CompanionWire.isID(id) else { return nil }
+        return try store.read { t in
+            guard let row = try t.rows("SELECT local_identity, state FROM phone_binders WHERE binder = ?", .text(id)).first else { return nil }
+            guard row.count == 2, let raw = row[1].text, let state = CompanionBinderSharing.State(rawValue: raw) else {
+                throw CompanionPublicationError.invalid
+            }
+            guard let bytes = row[0].blob else { return nil }
+            return (try CompanionLocalBinderIdentity(bytes: bytes), state)
         }
     }
     /// Turn off even during claim suspension. Keep the old id and counters for safe cleanup behind a new index.
