@@ -216,7 +216,8 @@ How a draft goes from a card to the server:
    approved, even if a document changes later. The approval and the request are one step: a request is written
    only for an approved card, and a card whose message cannot be built is not approved and says why.
 3. **Placing it.** A runtime job takes each waiting request and places it with `IMAPDraftAppend` over the binder's
-   email connection, with its password from the Keychain. That is the step that leaves the Mac (A7). A retry, after a
+   email connection, with its password from the Keychain, in the folder the server marks `\Drafts`, or in the one the
+   person chose in the binder's email settings when the server marks none or several. That is the step that leaves the Mac (A7). A retry, after a
    failure or a restart, finds the earlier draft by its Message-ID and appends nothing. On success the request is
    removed and the binder's page says where the draft is ("In Drafts on mail.example.invalid"). On a failure that
    may pass (the server, the network, a usage limit) the request waits for the next run. On one that will not (the

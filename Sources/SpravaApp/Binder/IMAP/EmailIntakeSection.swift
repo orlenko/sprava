@@ -61,6 +61,7 @@ struct EmailIntakeSection: View {
             Text(verbatim: s.mailbox ?? "").font(.headline)
             Text(verbatim: "\(s.user ?? "") · \(s.host ?? ""):\(s.port.map(String.init) ?? "") \(s.security?.label ?? "")")
                 .foregroundStyle(.secondary)
+            if let drafts = s.draftsFolder { Text(verbatim: "Drafts go to \(drafts)").foregroundStyle(.secondary) }
         }
         if s.needsPassword {
             Note(symbol: "key.fill", tint: .orange, text: "This account's saved password is unavailable. Unlock the Keychain or enter it again to keep checking.")
@@ -191,6 +192,15 @@ struct EmailIntakeSection: View {
                 TextField("Your other addresses", text: $model.otherAddresses, prompt: Text(verbatim: "Optional, e.g. you@example.com, you@work.example.com"), axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.roundedBorder).frame(maxWidth: 420)
                 Text("Mail you wrote from these or from this account is filed without proposing to-dos, since what it asks is for others to do.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("Drafts folder", selection: $model.draftsFolder) {
+                    Text("The one the server marks as Drafts").tag(String?.none)
+                    ForEach(folders, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                }
+                .frame(maxWidth: 420)
+                Text("Drafts you approve go here. Choose one if the server marks no Drafts folder, or more than one.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {

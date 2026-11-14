@@ -127,4 +127,47 @@ import Testing
         await model.connect()
         #expect(runtime.last("imap_configure")?["own_addresses"] == .array([.str("me@example.invalid"), .str("third@example.org")]))
     }
+
+    /// The Drafts folder is chosen from the account's folders, kept across a change, and dropped when the account no
+    /// longer lists it (issue #623).
+    @Test func theDraftsFolderIsChosenFromTheListAndSentWithTheConnection() async throws {
+        let runtime = Runtime()
+        let saved = "\"host\":\"mail.example.invalid\",\"port\":993,\"security\":\"tls\",\"user\":\"member@example.invalid\",\"mailbox\":\"INBOX\""
+        runtime.answers["imap_status"] = "{\"ok\":true,\"installed\":true,\"enabled\":true,\(saved),\"drafts_folder\":\"Brouillons\"}"
+        runtime.answers["imap_folders"] = "{\"ok\":true,\"folders\":[\"INBOX\",\"Brouillons\",\"Archive/Drafts\"]}"
+        runtime.answers["imap_configure"] = runtime.answers["imap_status"]
+        let model = EmailIntakeModel(client: runtime.client, authenticate: {})
+        await model.show(Self.folder)
+        #expect(model.status.draftsFolder == "Brouillons")
+        model.beginChange()
+        #expect(model.draftsFolder == "Brouillons")
+        await model.signIn()
+        await model.connect()
+        #expect(runtime.last("imap_configure")?["drafts_folder"] == .str("Brouillons"))
+        model.beginChange()
+        model.draftsFolder = "Archive/Drafts"
+        await model.signIn()
+        await model.connect()
+        #expect(runtime.last("imap_configure")?["drafts_folder"] == .str("Archive/Drafts"))
+        // Back to the folder the server marks: signing in again keeps that choice, even with the saved folder listed.
+        model.beginChange()
+        model.draftsFolder = nil
+        await model.signIn()
+        #expect(model.draftsFolder == nil)
+        await model.connect()
+        #expect(runtime.last("imap_configure")?["drafts_folder"] == .null)
+    }
+
+    /// A folder the account no longer lists is not kept as the Drafts folder.
+    @Test func aDraftsFolderTheAccountNoLongerListsIsDropped() async throws {
+        let runtime = Runtime()
+        let saved = "\"host\":\"mail.example.invalid\",\"port\":993,\"security\":\"tls\",\"user\":\"member@example.invalid\",\"mailbox\":\"INBOX\""
+        runtime.answers["imap_status"] = "{\"ok\":true,\"installed\":true,\"enabled\":true,\(saved),\"drafts_folder\":\"Gone\"}"
+        runtime.answers["imap_folders"] = "{\"ok\":true,\"folders\":[\"INBOX\"]}"
+        let model = EmailIntakeModel(client: runtime.client, authenticate: {})
+        await model.show(Self.folder)
+        model.beginChange()
+        await model.signIn()
+        #expect(model.draftsFolder == nil)
+    }
 }

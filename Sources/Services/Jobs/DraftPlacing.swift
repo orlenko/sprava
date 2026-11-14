@@ -6,9 +6,11 @@ import SpravaKit
 /// Places approved email drafts in the account's Drafts folder (integrations.md §5.2, decisions.md D41), one at a time,
 /// from the runtime's email owner. This is the step that leaves the Mac (A7); Sprava never sends.
 enum DraftPlacing {
-    typealias Place = @Sendable (BinderIMAPConnections.Configuration, String, Data, URL) throws -> IMAPDraftAppend.Placed
-    static let native: Place = { config, password, message, directory in
-        try IMAPDraftAppend.run(config, password: password, folder: nil, message: message, directory: directory)
+    /// The connection, the Drafts folder the person chose (nil: the one the server marks), the password, the message,
+    /// and the attempt's private folder.
+    typealias Place = @Sendable (BinderIMAPConnections.Configuration, String?, String, Data, URL) throws -> IMAPDraftAppend.Placed
+    static let native: Place = { config, folder, password, message, directory in
+        try IMAPDraftAppend.run(config, password: password, folder: folder, message: message, directory: directory)
     }
     /// A request still `approving` this long after it was written belongs to an approval that did not finish.
     static let settleAfter: TimeInterval = 600
@@ -72,7 +74,7 @@ enum DraftPlacing {
         do {
             try AtomicFile.makePrivateFolder(attempt.deletingLastPathComponent())
             try AtomicFile.makePrivateFolder(attempt)
-            let placed = try place(config, secret, try requests.message(id: request.id), attempt)
+            let placed = try place(config, config.draftsFolder, secret, try requests.message(id: request.id), attempt)
             try requests.remove(id: request.id)
             return placed.present ? .present : .placed
         } catch let refused as IMAPDraftAppend.Refused {
