@@ -17,7 +17,7 @@ import Testing
 
     @Test func atTheStartEveryJobIsDueAndTheSummaryOnlyAfterEight() {
         let early = Scheduler(now: at(7, 7), lastSummaryDate: "2026-10-06", lastSentinelDate: nil, calendar: toronto)
-        #expect(early.due(now: at(7, 7)) == ["sentinel", "alerts", "hub", "capture", "clerk", "dashboard", "backup", "intake"])
+        #expect(early.due(now: at(7, 7)) == ["sentinel", "alerts", "hub", "capture", "clerk", "dashboard", "backup", "intake", "companion"])
         #expect(early.due(now: at(7, 8)).contains("summary"))
         // Started late that day without having sent it: it goes at once. Sent already: tomorrow.
         let late = Scheduler(now: at(7, 11), lastSummaryDate: "2026-10-06", lastSentinelDate: nil, calendar: toronto)
@@ -34,6 +34,7 @@ import Testing
         #expect(s.due(now: t0.addingTimeInterval(1)) == ["capture", "clerk", "backup"])
         #expect(s.due(now: t0.addingTimeInterval(30)) == ["capture", "clerk", "backup", "intake"])
         #expect(s.due(now: t0.addingTimeInterval(60)).contains("dashboard"))
+        #expect(s.due(now: t0.addingTimeInterval(60)).contains("companion"))
         #expect(s.due(now: t0.addingTimeInterval(300)).contains("hub"))
         #expect(!s.due(now: t0.addingTimeInterval(3599)).contains("sentinel"))
         #expect(s.due(now: t0.addingTimeInterval(3600)).contains("sentinel") && s.due(now: t0.addingTimeInterval(3600)).contains("alerts"))
@@ -48,7 +49,7 @@ import Testing
         let back = at(7, 9)
         #expect(s.due(now: back) == ["capture", "clerk", "backup"])
         s.clockChanged(now: back)
-        #expect(s.due(now: back) == ["sentinel", "alerts", "hub", "capture", "clerk", "dashboard", "backup", "intake"])
+        #expect(s.due(now: back) == ["sentinel", "alerts", "hub", "capture", "clerk", "dashboard", "backup", "intake", "companion"])
     }
 
     @Test func aTimeZoneChangeDoesNotSkipTheSummary() {

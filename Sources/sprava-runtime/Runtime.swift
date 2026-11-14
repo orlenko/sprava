@@ -168,6 +168,10 @@ final class Runtime: @unchecked Sendable {
         case "clerk": { [unowned self] in clerk() }
         case "dashboard": { [unowned self] in DashboardJob.run(jobContext()) { notify(title: $0, body: $1, id: $2) } }
         case "hub": { [unowned self] in HubJob.run(jobContext()) }
+        case "companion": { [unowned self] in
+            guard let job = queue.sync(execute: { xpc?.companion?.job }) else { return .idle }
+            return waitFor { await job.run() }
+        }
         case "backup": { [unowned self] in
             BackupJob.run(jobContext(), backup: Backup(support: support)) { notify(title: $0, body: $1, id: $2) }
         }
@@ -269,7 +273,8 @@ final class Runtime: @unchecked Sendable {
         let before = records.jobs[key]?.breaker
         records.jobs[key, default: JobRecord()].finish(final, at: Date(), durationMS: ms,
                                                        threshold: Scheduler.specs[key]?.breakerThreshold ?? 3)
-        if !["heartbeat", "capture", "intake", "clerk", "dashboard"].contains(key) || final != .ok {
+        // The companion job runs every minute and is idle until a relay is claimed: only its failures are logged.
+        if !["heartbeat", "capture", "intake", "clerk", "dashboard", "companion"].contains(key) || final != .ok && !(key == "companion" && final == .idle) {
             var line = "job=\(key) outcome=\(records.jobs[key]?.lastOutcome ?? "?") ms=\(ms)"
             if case .error(let code, _) = final { line += " code=\(code)" }
             log(line)

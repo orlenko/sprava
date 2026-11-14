@@ -60,8 +60,8 @@ struct ShowOnPhoneSection: View {
     /// What the switch does today, and nothing it does not (decisions recorded in the PR).
     static func help(available: Bool) -> String {
         let what = "Off by default. On sends this binder's to-dos, encrypted, to the phones paired with this Mac. "
-            + "Off takes it off those phones at their next update; its last copy stays on the relay, encrypted, until Sprava "
-            + "deletes it. Turned on again, it gets a new key."
+            + "Off takes it off those phones at their next update, then deletes its encrypted copies from the relay and "
+            + "forgets its key. Turned on again, it gets a new key."
         return available ? what : "Connect this Mac to a relay in Settings › Phone to use this. " + what
     }
 }

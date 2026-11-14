@@ -28,6 +28,25 @@ public struct CompanionBinderIdentities: Sendable {
         try CompanionLocalBinderIdentity(bytes: try recorded(for: folder, create: true, retire: retire)!)
     }
 
+    /// Whether the folder now at a recorded path is the one its identity was made for.
+    public enum Match: Sendable, Equatable { case same, missing, replaced }
+
+    /// Every identity ever made, with its path and whether the folder there is still the one it was made for; the
+    /// companion job matches them to the Shelf.
+    public func all() throws -> [(folder: URL, identity: CompanionLocalBinderIdentity, match: Match)] {
+        let rows = try StateStore.open(database, schema: Self.schema).read { t in
+            try t.rows("SELECT path, identity, folder FROM binders ORDER BY path")
+        }
+        return try rows.map { row in
+            guard row.count == 3, let path = row[0].text, let bytes = row[1].blob, let stamp = row[2].text else {
+                throw CompanionPublicationError.invalid
+            }
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            let current = try Self.stamp(folder)
+            return (folder, try CompanionLocalBinderIdentity(bytes: bytes), current == nil ? .missing : current == stamp ? .same : .replaced)
+        }
+    }
+
     /// The folder's physical identity, or nil when nothing is there. A link or a file is never a binder folder.
     static func stamp(_ folder: URL) throws -> String? {
         var info = stat()
