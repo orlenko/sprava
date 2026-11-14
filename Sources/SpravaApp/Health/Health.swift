@@ -131,6 +131,10 @@ final class HealthModel: ObservableObject {
             watchRecord = records.watchRecord
             refusals = records.refusals
             startsToday = records.startsToday
+            // A runtime that came up after a start gave up clears that failure (#576).
+            if beatGrade == .green, case .success(let beat) = heartbeat, let started = ISOTime.date(beat.started_at) {
+                keeper.noteLiveRuntime(startedAt: started)
+            }
             repairWatcherIfDue()
         }
     }

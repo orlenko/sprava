@@ -108,6 +108,42 @@ import Testing
         #expect(model.summary.level == .trouble && model.summary.restartHelps)
     }
 
+    /// launchd brought the runtime up after the start gave up: its live beat, from a process started after that run,
+    /// clears the failure, and the line and the notice stop saying Trouble (#576).
+    @Test func aRuntimeThatCameUpLateClearsTheFailedStart() async throws {
+        let keeper = RuntimeKeeper(system: .init(registration: { .enabled }, live: { _ in false }, start: { _ in "Invented failure" }))
+        keeper.beatWait = .milliseconds(100)
+        keeper.poll = .milliseconds(20)
+        _ = await keeper.ensureRunning()
+        #expect(keeper.state == .failed("Invented failure"))
+        // A process started now stands in for the runtime launchd brought up late. Start times are kept to the second,
+        // so it starts in a later second than the run.
+        try await Task.sleep(for: .milliseconds(1_100))
+        let late = Process()
+        late.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        late.arguments = ["30"]
+        try late.run()
+        defer { late.terminate() }
+        let started = try #require(ProcessCheck.startTime(pid: late.processIdentifier))
+        var beat = Heartbeat(pid: late.processIdentifier, started_at: ISOTime.string(started), beat_at: ISOTime.string(Date()),
+                             last_wake_at: nil, build: "0.1.0 (2)", xpc_protocol: 1, lease: .init(inode: 9, duplicates_refused_today: 0),
+                             restarts_today: 0, alerts: nil, runtime_key: nil, stage_crashes: [:], model: nil, outbound_today: [:], jobs: [:])
+        beat.alerts = .init(authorized: true, checked_at: ISOTime.string(Date()))
+        var records = HealthSnapshot.Runtime()
+        records.heartbeat = .success(beat)
+        let runtime = records
+        var reads = HealthModel.Reads()
+        reads.runtime = { _ in runtime }
+        reads.checks = { _ in HealthSnapshot.Checks() }
+        let model = HealthModel(support: try temporaryFolder(), reads: reads, keeper: keeper,
+                                client: RuntimeClient(answer: { _ in #"{"ok":true}"# }))
+        model.refresh()
+        await model.settled()
+        model.runtimeStatus = .enabled
+        #expect(model.startFailure == nil && keeper.state == .running)
+        #expect(word(model) == "Running" && model.notice == nil)
+    }
+
     @Test func runningFromTheWrongPlaceAsksForALook() {
         #expect(HealthSummary.of(Facts(misplaced: true)).word == "Needs a look")
     }
