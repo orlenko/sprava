@@ -420,9 +420,14 @@ try {
             // The relay deletion is paced on its own (2 s after the attempt the outage failed), and the new keys never
             // wait for it; the next run deletes the removed phone.
             step('the relay deletion of the removed phone waits for its pace; the next run makes it');
+            // In that window the relay still takes the removed phone's requests; the Mac must never apply one.
+            await phone.click('Done', '#binder-view', 'Invented to-do added on the Mac');
+            await phone.wait(`document.querySelector('#pending').textContent.includes('Done #4 · Sent')`, 'the removed phone’s Done sent');
             await new Promise(resolve => setTimeout(resolve, 3000));
             await mac.drain();
             if (await mac.deletionPending!(0)) throw new Error('The next run did not delete the removed phone on the relay.');
+            if (mac.closed('Invented to-do added on the Mac')) throw new Error('The Mac applied a removed phone’s request.');
+            step('a Done the removed phone sent in that window was never applied');
         }
         await phone.click('Refresh');
         await phone.wait(`document.querySelector('#status').textContent.includes('The relay refused this phone')`, 'that the relay refuses it');
