@@ -37,14 +37,16 @@ enum CompanionRemovalActions {
         ]
     }
 
-    /// Local key cleanup, then at most `callsPerAction` relay calls. Failures stay pending and are reported by
-    /// `relayWork`; a refused keys object stops the steps (a fault, never retried by itself).
-    static func advance(_ profile: CompanionProfile, step: @Sendable () async throws -> CompanionRotationProgress) async {
+    /// Local key cleanup, then at most `limit` relay calls (`callsPerAction` for a Phone action; the companion job
+    /// allows more). Failures stay pending and are reported by `relayWork`; a refused keys object stops the steps
+    /// (a fault, never retried by itself).
+    static func advance(_ profile: CompanionProfile, limit: Int = callsPerAction,
+                        step: @Sendable () async throws -> CompanionRotationProgress) async {
         for removal in (try? profile.pendingDeviceRemovals().removals) ?? [] where removal.keyCleanupPending {
             _ = try? profile.finishRemovedDeviceKeyCleanup(deviceID: removal.deviceID)
         }
         var calls = 0
-        for _ in 0..<(callsPerAction + 3) where calls < callsPerAction {
+        for _ in 0..<(limit + 3) where calls < limit {
             guard !Task.isCancelled, let progress = try? await step() else { return }
             switch progress {
             case .rotated, .discarded: continue
