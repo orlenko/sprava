@@ -19,7 +19,11 @@ private final class DecisionSecrets: CompanionCredentialStorage, @unchecked Send
     }
 }
 /// Accepts every upload, as the relay does after a `204`.
-private actor AcceptingTarget: CompanionPublishingTarget {
+private actor AcceptingTarget: CompanionPublishingTarget, CompanionOutcomesTarget {
+    func uploadOutcomes(deviceID: String, generatedAt: String) async throws -> CompanionPublicationProgress {
+        guard let outcomes = try profile.prepareOutcomes(deviceID: deviceID, generatedAt: generatedAt) else { return .idle }
+        try profile.completeOutcomes(outcomes); return .uploaded(name: outcomes.name)
+    }
     let profile: CompanionProfile
     init(_ profile: CompanionProfile) { self.profile = profile }
     func uploadView(binderID: String) async throws -> CompanionPublicationProgress {
@@ -288,14 +292,7 @@ private actor OutcomesRelay: CompanionOutcomesTarget {
 
 @Test func theJobsDrainDecidesAPhonesDoneDeletesItAndPublishesItsOutcome() async throws {
     let f = try await DecisionFixture(); defer { f.remove() }
-    let p = try f.profile(), key = Data(repeating: 43, count: 32)
-    _ = try p.secrets.insert(account: p.deviceAccount(phone), bytes: key)
-    let fields: [(String, JSONValue)] = [("type", .str("done")), ("seq", .number(JSONNumber(text: "1"))), ("made_at", .str("2026-11-13T08:59:00Z")),
-        ("binder", .string(f.binderID)), ("item", .str("estate-example-2026-007")), ("seen_version", .number(JSONNumber(text: "1")))]
-    let size = JSONWriter.compact(.obj(fields + [("pad", .str(""))])).utf8.count
-    let plaintext = Data(JSONWriter.compact(.obj(fields + [("pad", .string(String(repeating: " ", count: 1024 - size)))])).utf8)
-    let sealed = try CompanionSealedObject.seal(name: "requests/\(phone)/\(requestID(50))", epoch: 1, key: .init(data: key), plaintext: plaintext)
-    let mailbox = Mailbox([requestID(50): sealed]), outcomes = OutcomesRelay(p)
+    let p = try f.profile(), mailbox = Mailbox([requestID(50): try sealedDone(f, p)]), outcomes = OutcomesRelay(p)
     let draining = CompanionDraining(support: f.support, deviceID: mac) { profile, locks in
         CompanionOwnerDeviceTurn(profile: profile, locks: locks, transport: mailbox)
     }
@@ -308,4 +305,33 @@ private actor OutcomesRelay: CompanionOutcomesTarget {
     let quiet = try await draining.run(profile: p, locks: CompanionDeviceDecisionLocks(), outcomes: outcomes, timeZone: utc, clock: { morning })
     #expect(quiet.decisionsCommitted == 0)
     #expect(await outcomes.published == [phone])
+}
+
+@Test func aRunThatAppliesAPhonesDonePublishesTheChangedViewInTheSameRun() async throws {
+    let f = try await DecisionFixture(); defer { f.remove() }
+    let p = try f.profile(), mailbox = Mailbox([requestID(50): try sealedDone(f, p)])
+    let draining = CompanionDraining(support: f.support, deviceID: mac) { profile, locks in
+        CompanionOwnerDeviceTurn(profile: profile, locks: locks, transport: mailbox)
+    }
+    func indexed() throws -> [[StateValue]] { try p.store.read { try $0.rows("SELECT highest_indexed FROM phone_binders") } }
+    // This runtime's publisher has already snapshot the binder as it is (version 2 here), so only the drain's change
+    // can make a newer version in the run.
+    let publishing = CompanionPublishing(support: f.support, deviceID: mac), rows = try ShelfStore(supportDirectory: f.support).rowsForJobs()
+    _ = try await publishing.run(profile: p, target: AcceptingTarget(p), rows: rows, now: morning, timeZone: utc)
+    #expect(try indexed() == [[.integer(2)]])
+    try await CompanionJob.cycle(publishing: publishing, draining: draining, profile: p, locks: CompanionDeviceDecisionLocks(),
+                                 target: AcceptingTarget(p), rows: rows, timeZone: utc, clock: { morning })
+    #expect(!f.openIDs().contains("estate-example-2026-007"))
+    #expect(try indexed() == [[.integer(3)]])
+}
+
+/// A Done on the invented filing, sealed with the phone's key as the web app sends it (companion-v0 §8.6).
+private func sealedDone(_ f: DecisionFixture, _ p: CompanionProfile) throws -> Data {
+    let key = Data(repeating: 43, count: 32)
+    _ = try p.secrets.insert(account: p.deviceAccount(phone), bytes: key)
+    let fields: [(String, JSONValue)] = [("type", .str("done")), ("seq", .number(JSONNumber(text: "1"))), ("made_at", .str("2026-11-13T08:59:00Z")),
+        ("binder", .string(f.binderID)), ("item", .str("estate-example-2026-007")), ("seen_version", .number(JSONNumber(text: "1")))]
+    let size = JSONWriter.compact(.obj(fields + [("pad", .str(""))])).utf8.count
+    let plaintext = Data(JSONWriter.compact(.obj(fields + [("pad", .string(String(repeating: " ", count: 1024 - size)))])).utf8)
+    return try CompanionSealedObject.seal(name: "requests/\(phone)/\(requestID(50))", epoch: 1, key: .init(data: key), plaintext: plaintext)
 }
