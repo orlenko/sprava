@@ -33,6 +33,19 @@ import Testing
         #expect(!HealthSummary.of(Facts(jobs: [.red])).restartHelps)
     }
 
+    /// A job stuck on its run while the process beats: the notice on every page offers Restart, which ends it (#572).
+    /// A job paused after failures does not get one.
+    @Test func aWedgedJobOffersRestartOnTheNotice() async throws {
+        let wedged = HealthSummary.of(Facts(jobs: [.green, .red], wedgedJob: true))
+        #expect(wedged.level == .trouble && wedged.restartHelps && wedged.detail != nil)
+        #expect(!HealthSummary.of(Facts(jobs: [.red])).restartHelps)
+        // From the heartbeat, as the model reads it.
+        let job = Heartbeat.Job(last_start: ISOTime.string(Date()), last_outcome: "running", expected_cadence_s: 60, wedged: true)
+        let model = try await model(jobs: ["sentinel": job])
+        #expect(model.summaryFacts.wedgedJob)
+        #expect(model.notice?.restart == true)
+    }
+
     @Test func theWordsSayWhatTheGradeMeans() {
         #expect(HealthSummary.of(Facts(runtime: .amber)).word == "May be stuck")
         #expect(HealthSummary.of(Facts(runtime: .waking)).word == "Waking up")
@@ -43,11 +56,12 @@ import Testing
 
     /// What the model reads, as the status line sees it. This test process does not run from an app bundle, so the
     /// location is set apart; a running, healthy Mac with an adopted binder must then say Running.
-    private func model(_ checks: HealthSnapshot.Checks = HealthSnapshot.Checks(), keeper: RuntimeKeeper? = nil) async throws -> HealthModel {
+    private func model(_ checks: HealthSnapshot.Checks = HealthSnapshot.Checks(), keeper: RuntimeKeeper? = nil,
+                       jobs: [String: Heartbeat.Job] = [:]) async throws -> HealthModel {
         var heartbeat = Heartbeat(pid: getpid(), started_at: ISOTime.string(try #require(ProcessCheck.startTime(pid: getpid()))),
                                   beat_at: ISOTime.string(Date()), last_wake_at: nil, build: "0.1.0 (2)", xpc_protocol: 1,
                                   lease: .init(inode: 9, duplicates_refused_today: 0), restarts_today: 0, alerts: nil,
-                                  runtime_key: nil, stage_crashes: [:], model: nil, outbound_today: [:], jobs: [:])
+                                  runtime_key: nil, stage_crashes: [:], model: nil, outbound_today: [:], jobs: jobs)
         heartbeat.alerts = .init(authorized: true, checked_at: ISOTime.string(Date()))
         var records = HealthSnapshot.Runtime()
         records.heartbeat = .success(heartbeat)

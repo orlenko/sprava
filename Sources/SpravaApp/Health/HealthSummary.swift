@@ -15,6 +15,8 @@ struct HealthSummary: Equatable {
         var misplaced = false
         var runtime = HealthGrade.green
         var jobs: [HealthGrade] = []
+        /// A job is stuck on its current run while the process still beats: restarting the background part ends it.
+        var wedgedJob = false
         var backupFailed = false
         var backupOld = false
         var backupVeryOld = false
@@ -47,7 +49,13 @@ struct HealthSummary: Equatable {
                                  restartHelps: true)
         default: break
         }
-        if let trouble = worst(facts) { return HealthSummary(level: .trouble, word: "Trouble", sentence: trouble) }
+        if let trouble = worst(facts) {
+            // A stuck job ends when the background part restarts, so the notice on every page offers it, as the job's line
+            // on Health does (#572). A job paused after failures retries by itself, and a restart does not help it.
+            return HealthSummary(level: .trouble, word: "Trouble", sentence: trouble,
+                                 detail: facts.wedgedJob ? "A job is stuck on its current run. Restarting the background part ends it." : nil,
+                                 restartHelps: facts.wedgedJob)
+        }
         if facts.runtime == .amber { return HealthSummary(level: .needsYou, word: "May be stuck") }
         if facts.jobs.contains(.amber) || facts.backupOld || facts.alertsOff || facts.otherFindings
             || facts.misplaced {
@@ -93,6 +101,7 @@ extension HealthModel {
             let started = ISOTime.date(beat.started_at) ?? now
             let wake = [lastWake, ISOTime.date(beat.last_wake_at)].compactMap { $0 }.max()
             facts.jobs = beat.jobs.map { HealthGrade.job($0.value, key: $0.key, startedAt: started, lastWake: wake, now: now) }
+            facts.wedgedJob = beat.jobs.values.contains { $0.wedged }
             facts.alertsOff = beat.alerts?.authorized != true
         }
         facts.backupSettingsUnreadable = backupSettingsError != nil
