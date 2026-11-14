@@ -57,6 +57,8 @@ final class ShelfModel: ObservableObject, DraftOwner {
     private let readSnapshot: @Sendable (URL) -> ShelfSnapshot.Snapshot
     private let summarize: @Sendable (ShelfRow, CalendarDate) -> ShelfCounts
     private var refreshTask: Task<Void, Never>?
+    /// The app-wide refresh started by `startRefreshing`.
+    private var refreshing: Task<Void, Never>?
     let client: RuntimeClient
     /// The template, name and year, with the destination shown before the explicit Create Binder action.
     var askForBinder: @MainActor (_ empty: URL?, _ year: Int, _ parent: URL, _ templates: [BinderTemplate]) -> NewBinderAnswer? = ShelfModel.binderAlert
@@ -156,11 +158,17 @@ final class ShelfModel: ObservableObject, DraftOwner {
 
     private enum FolderKind: Sendable { case binder, empty, other }
 
-    /// Re-reads every minute, so a new day or an edit made elsewhere shows without a click.
-    func refreshLoop() async {
-        while !Task.isCancelled {
-            await refreshAndWait()
-            try? await Task.sleep(for: .seconds(60))
+    /// Re-reads every `period`, so a new day or an edit made elsewhere shows without a click. Started once by the app,
+    /// not by a window: with every main window closed, Settings still shows binder lists that keep up (#580). Calling it
+    /// again changes nothing.
+    func startRefreshing(every period: Duration = .seconds(60)) {
+        guard refreshing == nil else { return }
+        refreshing = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.refreshAndWait()
+                try? await Task.sleep(for: period)
+            }
         }
     }
 
