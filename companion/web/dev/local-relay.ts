@@ -20,12 +20,15 @@ export interface LocalRelay {
     close(): Promise<void>;
 }
 
-/** Starts a relay that accepts browser calls from `webOrigin` only. Port 0 picks a free one. */
+/**
+ * Starts a relay that accepts browser calls from `webOrigin` only. Port 0 picks a free one. Passing the port,
+ * folder, instance and setup code of an earlier start brings the same relay back after `close`, as a restart would.
+ */
 export async function startLocalRelay(options: { webOrigin: string; port?: number; folder?: string;
-    log?: (line: string) => void }): Promise<LocalRelay> {
+    instance?: string; setupCode?: string; log?: (line: string) => void }): Promise<LocalRelay & { instance: string }> {
     const owned = options.folder === undefined;
     const folder = options.folder ?? await mkdtemp(join(tmpdir(), 'sprava-relay-dev-'));
-    const instance = randomBytes(16).toString('hex'), setupCode = randomBytes(32).toString('base64');
+    const instance = options.instance ?? randomBytes(16).toString('hex'), setupCode = options.setupCode ?? randomBytes(32).toString('base64');
     const config = readConfig({ SPRAVA_INSTANCE: instance, SPRAVA_SETUP_CODE: setupCode,
         SPRAVA_WEB_ORIGIN: options.webOrigin, SPRAVA_STORAGE: `fs:${folder}` });
     // One process owns the folder, so it needs none of the warm-up that guards a host running two (§7.9). The
@@ -46,7 +49,7 @@ export async function startLocalRelay(options: { webOrigin: string; port?: numbe
     });
     const port = await listen('127.0.0.1', options.port ?? 0);
     await listen('::1', port).catch(() => {}); // a machine without IPv6 loopback still has the first
-    return { origin: `http://localhost:${port}`, setupCode, folder,
+    return { origin: `http://localhost:${port}`, setupCode, folder, instance,
         async close() {
             started.stop();
             await Promise.all(servers.map(server => new Promise<void>(resolve => {

@@ -40,8 +40,12 @@ interface MacSide {
     /** Only a real Mac: Undo, as the app offers it, of the change a phone's Done made; whether the to-do is open again. */
     undoPhoneDone?(title: string): Promise<boolean>;
     /** Only a real Mac: Remove the paired phone, then one job run; the account epoch the Mac is at. */
-    removePhone?(): Promise<void>;
+    removePhone?(which: number): Promise<void>;
     epoch?(): Promise<number>;
+    /** Only a real Mac: the newest keys object recorded for the `which`-th phone paired, and whether it is on the relay. */
+    keys?(which: number): Promise<{ epoch: number; state: string } | undefined>;
+    /** Only a real Mac: whether the relay has yet to confirm deleting the `which`-th phone paired. */
+    deletionPending?(which: number): Promise<boolean>;
     cards?(): string[];
     close(): Promise<void>;
 }
@@ -80,6 +84,8 @@ class DevPhoneMac implements MacSide {
     private root = '';
     private binder = '';
     private device = '';
+    /** Every phone this Mac started pairing, in order. */
+    private readonly paired: string[] = [];
     private confirmation = '';
     private readonly repository = new URL('../../../', import.meta.url).pathname;
     private get sprava() { return join(this.repository, '.build/debug/sprava'); }
@@ -124,6 +130,7 @@ class DevPhoneMac implements MacSide {
     async pairingLink() {
         const started = await this.phone({ command: 'companion_pairing_start' });
         this.device = started.device_id;
+        this.paired.push(this.device);
         return started.link as string;
     }
     private async poll(until: string[], ms = 30000): Promise<any> {
@@ -174,14 +181,21 @@ class DevPhoneMac implements MacSide {
         await this.run(['dev', 'undo', this.binder, op.id]);
         return this.catalog().open_items.some((i: any) => i.title === title);
     }
-    async removePhone() {
-        const reply = await this.phone({ command: 'companion_device_remove', device_id: this.device });
+    async removePhone(which: number) {
+        const reply = await this.phone({ command: 'companion_device_remove', device_id: this.paired[which] });
         if (reply.state !== 'removed') throw new Error(`The Mac did not remove the phone: ${reply.state}`);
-        await this.run(['dev-phone', 'run']);
     }
-    async epoch() {
+    private query<Row>(sql: string, ...values: string[]): Row | undefined {
         const database = new DatabaseSync(join(this.root, 'support-dev', 'companion', 'state.sqlite'), { readOnly: true });
-        try { return Number((database.prepare('SELECT epoch FROM profile').get() as { epoch: number }).epoch); } finally { database.close(); }
+        try { return database.prepare(sql).get(...values) as Row | undefined; } finally { database.close(); }
+    }
+    async epoch() { return Number(this.query<{ epoch: number }>('SELECT epoch FROM profile')!.epoch); }
+    async deletionPending(which: number) {
+        return this.query<{ n: number }>('SELECT COUNT(*) AS n FROM device_removals WHERE device = ? AND relay_delete = 1', this.paired[which]!)!.n > 0;
+    }
+    async keys(which: number) {
+        return this.query<{ epoch: number; state: string }>('SELECT epoch, state FROM rotation_keys WHERE device = ? ORDER BY epoch DESC LIMIT 1',
+            this.paired[which]!);
     }
     /** The cards waiting in the binder, by title. */
     cards(): string[] {
@@ -301,7 +315,8 @@ const { values } = parseArgs({ options: {
 const mac: MacSide = values.mac === 'dev-phone' ? new DevPhoneMac() : values.mac === 'stand-in' ? new StandInMac() :
     (() => { throw new Error('--mac is stand-in or dev-phone.'); })();
 const step = (text: string) => console.log(`e2e: ${text}`);
-let web: ChildProcess | undefined, relay: LocalRelay | undefined, phone: Phone | undefined, second: Phone | undefined;
+let web: ChildProcess | undefined, relay: (LocalRelay & { instance: string }) | undefined, relayFolder = '';
+let phone: Phone | undefined, second: Phone | undefined;
 
 /** Opens the pairing link on `device`, names it, compares the codes both sides show, and has the Mac confirm. */
 async function pair(device: Phone, link: string, label: string): Promise<void> {
@@ -323,7 +338,8 @@ async function pair(device: Phone, link: string, label: string): Promise<void> {
 }
 try {
     const served = await serveWebApp(new URL('..', import.meta.url)); web = served.child;
-    relay = await startLocalRelay({ webOrigin: served.origin });
+    relayFolder = await mkdtemp(join(tmpdir(), 'sprava-e2e-relay-')); // kept across a restart, removed at the end
+    relay = await startLocalRelay({ webOrigin: served.origin, folder: relayFolder });
     for (let tries = 0; ; tries++) { // a relay process answers only health while it warms up (§7.9)
         const health = await fetch(`${relay.origin}/v0/health`).catch(() => undefined);
         if (health?.ok) break;
@@ -377,17 +393,51 @@ try {
         step('a stale Done became a card on the Mac, and the phone says so');
     }
 
-    if (mac.removePhone) {
-        // Settings › Phone › Remove: the relay forgets the phone, and the keys move to a new epoch without it.
-        await mac.removePhone();
-        await phone.click('Refresh');
-        await phone.wait(`document.querySelector('#status').textContent.includes('The relay refused this phone')`, 'that the relay refuses it');
-        step('the removed phone is refused by the relay');
+    if (mac.removePhone && mac.keys && mac.epoch && mac.deletionPending) {
         second = await Phone.open(values.chrome);
         await pair(second, await mac.pairingLink(), 'Invented second phone');
         await second.wait(`document.querySelector('#binder-view').textContent.includes('Pay the water bill')`, 'the to-dos on the second phone');
-        if (await mac.epoch!() < 2) throw new Error('The Mac did not move to a new epoch after the removal.');
-        step(`a second phone paired and reads the to-dos at epoch ${await mac.epoch!()}`);
+        const before = await mac.epoch();
+        step(`a second phone paired at epoch ${before}`);
+        // Settings › Phone › Remove for the first phone, while the relay is down: the Remove action reaches nothing,
+        // so the second phone's keys for the new epoch can only come from the companion job.
+        const restart = { webOrigin: served.origin, port: Number(new URL(relay.origin).port), folder: relayFolder,
+            instance: relay.instance, setupCode: relay.setupCode };
+        await relay.close(); relay = undefined;
+        await mac.removePhone(0);
+        const recorded = await mac.keys(1);
+        if (recorded?.epoch !== before + 1 || recorded.state !== 'pending') {
+            throw new Error(`The second phone's keys were not left to the job: ${JSON.stringify(recorded)}.`);
+        }
+        relay = await startLocalRelay(restart);
+        await mac.drain();
+        const delivered = await mac.keys(1);
+        if (delivered?.epoch !== before + 1 || delivered.state !== 'uploaded') {
+            throw new Error(`The job did not deliver the second phone's keys: ${JSON.stringify(delivered)}.`);
+        }
+        step(`the job, not the Remove action, delivered the second phone's keys for epoch ${delivered.epoch}`);
+        if (await mac.deletionPending!(0)) {
+            // The relay deletion is paced on its own (2 s after the attempt the outage failed), and the new keys never
+            // wait for it; the next run deletes the removed phone.
+            step('the relay deletion of the removed phone waits for its pace; the next run makes it');
+            // In that window the relay still takes the removed phone's requests; the Mac must never apply one.
+            await phone.click('Done', '#binder-view', 'Invented to-do added on the Mac');
+            await phone.wait(`document.querySelector('#pending').textContent.includes('Done #4 · Sent')`, 'the removed phone’s Done sent');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            await mac.drain();
+            if (await mac.deletionPending!(0)) throw new Error('The next run did not delete the removed phone on the relay.');
+            if (mac.closed('Invented to-do added on the Mac')) throw new Error('The Mac applied a removed phone’s request.');
+            step('a Done the removed phone sent in that window was never applied');
+        }
+        await phone.click('Refresh');
+        await phone.wait(`document.querySelector('#status').textContent.includes('The relay refused this phone')`, 'that the relay refuses it');
+        step('the removed phone is refused by the relay');
+        // A to-do published only at the new epoch: the second phone can show it only with its new keys.
+        await mac.addToDo('Invented to-do after the removal');
+        await second.click('Refresh');
+        await second.wait(`document.querySelector('#binder-view').textContent.includes('Invented to-do after the removal')`,
+            'the to-do published at the new epoch, on the second phone');
+        step(`the second phone reads the to-dos at epoch ${await mac.epoch()}`);
     }
     console.log('e2e: PASS');
 } catch (error) {
@@ -398,5 +448,6 @@ try {
     await second?.close().catch(() => {});
     await mac.close().catch(() => {});
     await relay?.close().catch(() => {});
+    if (relayFolder) await rm(relayFolder, { recursive: true, force: true }).catch(() => {});
     web?.kill('SIGTERM');
 }
