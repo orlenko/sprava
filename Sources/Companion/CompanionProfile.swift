@@ -71,6 +71,9 @@ public final class CompanionProfile: Sendable {
         _ = try store.read { try epoch($0) }
     }
 
+    /// The relay this profile belongs to, so a runtime can tell when a long-lived relay client must be made again.
+    public var relayIdentity: CompanionRelayIdentity { relay }
+
     public func currentAccount() throws -> CompanionAccountEpoch? {
         try store.read { t in
             guard let number = try epoch(t) else { return nil }

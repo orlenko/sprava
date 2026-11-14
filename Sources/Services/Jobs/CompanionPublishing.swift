@@ -7,15 +7,18 @@ import SpravaKit
 
 extension CompanionJob {
     /// The runtime's companion job: after owner recovery admits a claimed relay, one publishing pass over the
-    /// shown binders of the Shelf. Draining the phones' requests joins it later (companion-v0 §9.2).
+    /// shown binders of the Shelf, then one drain of the phones' requests and their outcomes (companion-v0 §9.2).
     static func publishing(session: CompanionOwnerSession, database: URL, secrets: any CompanionCredentialStorage,
                            support: URL, deviceID: String) -> CompanionJob {
         let publishing = CompanionPublishing(support: support, deviceID: deviceID)
-        return CompanionJob(session: session) { _ in
+        let draining = CompanionDraining(support: support, deviceID: deviceID)
+        return CompanionJob(session: session) { locks in
             guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return }
             // The throwing read: an unreadable Shelf is a job failure, never an empty Shelf that hides every binder.
             let rows = try ShelfStore(supportDirectory: support).rowsForJobs()
-            _ = try await publishing.run(profile: profile, target: try CompanionOwnerPublication(profile: profile), rows: rows, now: Date())
+            let publisher = try CompanionOwnerPublication(profile: profile)
+            _ = try await publishing.run(profile: profile, target: publisher, rows: rows, now: Date())
+            _ = try await draining.run(profile: profile, locks: locks, outcomes: publisher)
         }
     }
 }
