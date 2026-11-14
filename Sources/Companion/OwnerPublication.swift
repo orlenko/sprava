@@ -9,6 +9,7 @@ public enum CompanionPublicationProgress: Sendable {
 }
 protocol OwnerPublicationTransport: Sendable {
     func putObject(name: String, bytes: Data) async throws -> Int
+    func deleteObject(name: String) async throws -> Int
 }
 extension CompanionOwnerRelay: OwnerPublicationTransport {}
 
@@ -16,10 +17,10 @@ extension CompanionOwnerRelay: OwnerPublicationTransport {}
 /// A runtime uses one publisher per profile, and routes sharing removal through it to hold its upload lock.
 /// Snapshot callers separately hold the binder write lock; a newer snapshot may supersede an in-flight upload.
 public actor CompanionOwnerPublication {
-    private let profile: CompanionProfile
-    private let transport: any OwnerPublicationTransport
+    let profile: CompanionProfile
+    let transport: any OwnerPublicationTransport
     private let now: @Sendable () -> String
-    private var busy = false
+    var busy = false
     public init(profile: CompanionProfile) throws {
         guard let owner = try CompanionOwnerVault(backend: profile.secrets).load(profile.relay) else { throw CompanionCredentialError.unavailable }
         self.profile = profile
@@ -94,7 +95,7 @@ public actor CompanionOwnerPublication {
         guard status == 204 else { throw CompanionOwnerConnectionError.relayRejected(status) }
         return try profile.completeOutcomes(publication) ? .uploaded(name: publication.name) : .superseded(name: publication.name)
     }
-    private func refusal(_ status: Int) throws {
+    func refusal(_ status: Int) throws {
         if status == 401 {
             try profile.recordClaimState(.checkingRefusal)
             throw CompanionOwnerConnectionError.relayRejected(401)

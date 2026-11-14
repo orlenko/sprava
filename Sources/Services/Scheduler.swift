@@ -21,13 +21,15 @@ public struct Scheduler: Sendable, Equatable {
         // A first backup of a large binder takes long; the job is never killed for that, only by restic's cutoff
         // after a stretch with no progress (docs/backup.md §3.3). Daily, graded by its own 48-hour and 7-day marks.
         "backup": JobSpec(key: "backup", budget: nil, expectedCadence: 86_400, breakerThreshold: 3),
+        // Shown binders to the phones (companion.md §3): bounded relay calls, idle until a relay is claimed.
+        "companion": JobSpec(key: "companion", budget: .seconds(120), expectedCadence: 60, breakerThreshold: 3),
     ]
 
     /// The jobs with a wall-clock period, in seconds.
     public static let intervals: [String: TimeInterval] = ["sentinel": 3600, "alerts": 3600, "hub": 300,
-                                                           "dashboard": 60, "intake": 30]
+                                                           "dashboard": 60, "intake": 30, "companion": 60]
     /// The jobs the scheduler starts, in the order a tick starts them. The heartbeat has its own timer.
-    public static let order = ["sentinel", "alerts", "summary", "hub", "capture", "clerk", "dashboard", "backup", "intake"]
+    public static let order = ["sentinel", "alerts", "summary", "hub", "capture", "clerk", "dashboard", "backup", "intake", "companion"]
 
     /// Checked when each due job starts, since an earlier job in the same tick may have started meanwhile. The
     /// summary waits for the sentinel's report instead of launching a second scan inside its five-second budget.

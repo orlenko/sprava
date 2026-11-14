@@ -65,6 +65,7 @@ struct JobWords: Equatable {
         "clerk": "Drafting cards on this Mac",
         "dashboard": "Keeping each binder's dashboard up to date",
         "backup": "Backing up binders",
+        "companion": "Sending shown binders to your phones",
     ]
 
     static func name(_ key: String) -> String {
