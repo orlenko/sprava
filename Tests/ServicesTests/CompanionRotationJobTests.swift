@@ -133,9 +133,21 @@ private struct RotationFixture {
     await #expect(throws: CompanionJobFault.rotationRefused) { try await f.cycle(target, rotation: { try await worker.step() }) }
     #expect(await target.taken().isEmpty)
     #expect(try f.viewEpochs() == [1])
-    // The job turns the fault into the code Health shows, after its work.
-    let session = CompanionOwnerSession(database: f.support.appendingPathComponent("companion/state.sqlite"), secrets: f.secrets,
-                                        recover: { _ in .claimed })
-    let job = CompanionJob(session: session) { _ in throw CompanionJobFault.rotationRefused }
+    // The job turns the fault into the code Health shows, after its work: a fixed word, no label or title.
+    let database = f.support.appendingPathComponent("companion/state.sqlite")
+    let job = CompanionJob(session: CompanionOwnerSession(database: database, secrets: f.secrets, recover: { _ in .claimed })) { _ in
+        throw CompanionJobFault.rotationRefused
+    }
     #expect(await job.run() == .error(code: "companion_rotation_refused", culprit: nil))
+    // Retry on the Phone page rotates again with keys the relay takes; the fault clears and the next run publishes.
+    let accepting = CompanionOwnerRotation(profile: p, transport: KeysRelay(status: 204), now: { "2026-11-13T09:00:00Z" })
+    let session = CompanionOwnerSession(database: database, secrets: f.secrets, recover: { _ in .claimed },
+                                        rotation: { _ in { try await accepting.step() } })
+    let retry = try #require(CompanionRemovalActions.handlers(session: session)["companion_relay_retry"])
+    let reply = try await retry(JSONObject([("command", .str("companion_relay_retry"))]))
+    #expect(reply["relay_fault"] == .bool(false) && reply["relay_pending"] == .bool(false))
+    try await f.cycle(target, rotation: { try await accepting.step() })
+    #expect(try p.currentAccount()?.number == 3)
+    #expect(try f.viewEpochs() == [1, 3])
+    #expect(await target.taken() == ["view", "index"])
 }
