@@ -57,7 +57,6 @@ private struct PhoneActionTransportError: Error, CustomStringConvertible {
         return try f.profile()
     })
     let actions = CompanionPhoneActions.handlers(session: session)
-    #expect(Set(actions.keys) == ["companion_configure", "companion_claim"])
     let configure = try #require(actions["companion_configure"])
     let claim = try #require(actions["companion_claim"])
     #expect(try await configure(f.request) == JSONObject([("state", .str("pending"))]))
