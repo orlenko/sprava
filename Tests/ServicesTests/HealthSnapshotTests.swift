@@ -127,7 +127,11 @@ import Testing
         let (folder, _) = try readyBinder(c)
         try ShelfStore(supportDirectory: c.support).add(folder)
         let findings = try HealthSnapshot.doctorFindings(support: c.support, deviceID: "dev", spool: c.support)
-        #expect(findings.contains { $0.level == .fix && $0.text == "lifeproj's registry path has not been configured here; coexistence privacy checks are unavailable" })
+        #expect(findings.contains { $0.level == .fix && $0.unavailableCheck && $0.text == "lifeproj's registry path has not been configured here; coexistence privacy checks are unavailable" })
+        // Only the checks that could not run are marked so; the status line counts every other finding (#573).
+        let noSpool = try HealthSnapshot.doctorFindings(support: c.support, deviceID: "dev")
+        #expect(noSpool.contains { $0.unavailableCheck && $0.text.hasPrefix("the shared hub folder is not set up") })
+        #expect(noSpool.filter(\.unavailableCheck).count == 2)
     }
 
     @Test func theRuntimeRecordsAreReadWithoutFollowingLinks() throws {
