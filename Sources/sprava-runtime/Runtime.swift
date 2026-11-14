@@ -103,7 +103,8 @@ final class Runtime: @unchecked Sendable {
             // No backup request runs yet, so one left "running" was cut off by the stop.
             do { try BackupRequests(support: support).recoverInterrupted() } catch { log("backup requests_unreadable") }
             let companion: CompanionRuntimeRequests?
-            if development { companion = nil }
+            // Development: file-backed credentials in the development folder, never the Keychain.
+            if development { companion = try .development(support: support, watch: watch) }
             else { companion = try .production(support: support, watch: watch) }
             let claude: ClaudeConversationRuntime?
             do { claude = development ? nil : try .production(support: support) }

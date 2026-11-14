@@ -34,6 +34,10 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
                                           Refuses any folder in lifeproj's registry or on Sprava's
                                           Shelf, or owned by the installed Sprava. Uses its own
                                           state and device id (the support folder plus "-dev").
+       sprava dev-phone '<request>'      development only: one Phone action, as JSON as Settings › Phone
+                                          sends it (companion_configure, companion_claim,
+                                          companion_pairing_start, ..._poll, ..._confirm, companion_devices),
+                                          on the development state with file credentials, never the Keychain
 
 The shelf lists new binders and folders added with `sprava shelf add`. lifeproj's registry
 ($CMIRROR_CONFIG or ~/.config/cmirror/config.toml) is listed only with "showRegistry": true in shelf.json.
@@ -47,6 +51,7 @@ case "shelf": shelf(arguments)
 case "now": now(arguments)
 case "check": check(arguments)
 case "dev": dev(arguments)
+case "dev-phone": devPhone(arguments)
 case "note": note(arguments)
 case "dashboard":
     var args = arguments

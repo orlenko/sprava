@@ -56,6 +56,23 @@ func dev(_ args: [String]) {
     if value["ok"] != .bool(true) { exit(1) }
 }
 
+/// One Phone action (`companion_*`, as Settings › Phone sends it) on the development companion state, with file-backed
+/// credentials in the development folder, never the Keychain: for pairing against a local relay. The reply can hold
+/// the pairing link, which is a secret: invented data only.
+func devPhone(_ args: [String]) {
+    guard args.count == 1 else { fail(usage) }
+    let support = DevelopmentSupport.directory()
+    let requests: CompanionRuntimeRequests
+    do { requests = try .development(support: support, watch: nil) } catch { fail("\(error)", code: 1) }
+    let done = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var answer = ""
+    _ = requests.requests.submit(args[0]) { reply, _, _ in answer = reply; done.signal() }
+    done.wait()
+    guard let value = try? JSONParser.parse(answer).value else { fail(answer, code: 1) }
+    print(JSONWriter.pretty(value), terminator: "")
+    if value["ok"] != .bool(true) { exit(1) }
+}
+
 /// A typed note, written exactly as the app writes one (capture-event-v0 §8.1). The CLI cannot prove itself to
 /// the runtime, so the note's binder is shown as a hint only and the card asks for a binder.
 func note(_ args: [String]) {
