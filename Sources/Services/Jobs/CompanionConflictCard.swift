@@ -61,11 +61,11 @@ enum CompanionConflictCard {
         let card = Proposal(raw: raw)
         guard ProposalStore.isValidID(card.id), card.raw["expect"] != nil else { throw CompanionDecisionError.invalid }
         let written = Data(JSONWriter.pretty(.object(raw)).utf8)
-        if let existing = ProposalStore.list(in: folder).first(where: { $0.0.id == card.id }) {
-            let digest = "sha256:" + SHA256.hash(data: written).map { String(format: "%02x", $0) }.joined()
-            if existing.1 == digest { try commands.trustChecked(card.id, digest: digest, in: folder) }
-            return
-        }
+        let digest = "sha256:" + SHA256.hash(data: written).map { String(format: "%02x", $0) }.joined()
+        // Only this card's own file is read, never the whole proposals folder, which may hold anything.
+        do { try commands.trustChecked(card.id, digest: digest, in: folder); return }
+        catch is ProposalStore.Tampered { return }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile {}
         try ProposalStore.save(card, in: folder)
         try commands.trustProposals([card.id], in: folder)
     }

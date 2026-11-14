@@ -159,6 +159,28 @@ private struct DecisionFixture {
     #expect(!f.openIDs().contains("estate-example-2026-007"))
 }
 
+@Test func aCardLeftByAnInterruptedDecisionIsTrustedAgainAndOneAlreadySettledIsLeftAlone() async throws {
+    for settled in [false, true] {
+        let f = try await DecisionFixture(); defer { f.remove() }
+        try TekaStore(folder: f.binder).apply([TekaStore.OpBody(op: "update_item",
+            args: JSONObject([("id", .str("estate-example-2026-007")), ("set", .obj([("priority", .str("normal"))]))]),
+            actor: JSONObject([("kind", .str("user"))]))], now: morning)
+        let request = f.request(.done, item: "estate-example-2026-007")
+        #expect(throws: Crash.self) { try f.decide(request, adapter: CrashingDecisions(real: try f.decisions(), afterApply: true)) }
+        let id = CompanionConflictCard.id(device: phone, request: requestID(50))
+        let file = f.binder.appendingPathComponent(".sprava/proposals/\(id).json")
+        // The process stopped before it recorded the card as its own; or the person already rejected it.
+        try FileManager.default.removeItem(at: f.support.appendingPathComponent("runtime/proposal-digests.json"))
+        if settled { try Data(String(decoding: try Data(contentsOf: file), as: UTF8.self).replacingOccurrences(of: "\"proposed\"", with: "\"rejected\"").utf8).write(to: file) }
+        let before = try Data(contentsOf: file)
+        let recovered = try #require(try CompanionDecisionExecution(profile: f.profile()).recoverPending(deviceID: phone,
+            today: "2026-11-13", now: "2026-11-13T09:01:00Z", adapter: f.decisions()))
+        #expect(recovered.outcome.outcome == .conflict)
+        #expect(try Data(contentsOf: file) == before)
+        #expect(Commands(support: f.support, deviceID: mac).isTrusted(id, in: f.binder) == !settled)
+    }
+}
+
 @Test func doneOnARepeatingItemWaitsForThePerson() async throws {
     let f = try await DecisionFixture(); defer { f.remove() }
     #expect(try f.decide(f.request(.done, item: "estate-example-2026-010")).outcome.outcome == .conflict)
