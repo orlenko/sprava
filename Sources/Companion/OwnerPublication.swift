@@ -108,7 +108,9 @@ extension CompanionProfile {
         try store.read { t in
             guard let e = try epoch(t),
                   try t.rows("SELECT 1 FROM recipients r JOIN devices d ON d.device = r.device WHERE r.epoch = ? AND d.state = 'revoked' LIMIT 1",
-                             .integer(e)).isEmpty else { throw CompanionPublicationError.unavailable }
+                             .integer(e)).isEmpty,
+                  // §4.4: nothing at a new epoch goes out before every remaining device's keys object is on the relay.
+                  try !rotationBlocks(t) else { throw CompanionPublicationError.unavailable }
         }
     }
     /// A pending index prepared before sharing was switched off must never be resumed after restart.
