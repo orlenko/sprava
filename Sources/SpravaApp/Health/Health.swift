@@ -25,6 +25,8 @@ final class HealthModel: ObservableObject {
     @Published var backupConfigured = false
     /// Why the backup settings cannot be read, if they cannot: not the same as backup not set up.
     @Published var backupSettingsError: String?
+    /// Why the backup's records cannot be read, if they cannot: not the same as no backup yet (#574).
+    @Published var backupStateError: String?
     var lastDoctor: Date?
     var lastWake: Date?
     /// The last time the watcher was registered again, the attempt in flight, and why the last one failed (#523).
@@ -105,6 +107,7 @@ final class HealthModel: ObservableObject {
                 deviceIDError = checks.deviceIDError
                 backupConfigured = checks.backupConfigured
                 backupSettingsError = checks.backupSettingsError
+                backupStateError = checks.backupStateError
                 backups = checks.backups
             }
         }
@@ -223,6 +226,7 @@ struct HealthView: View {
                     Button("Open Backup Settings", action: openBackup).buttonStyle(.link)
                     if let error = model.backupSettingsError { Text("Backup settings cannot be read: \(error)").foregroundStyle(Self.broken) }
                     else if !model.backupConfigured { Text("Backup is not set up.").foregroundStyle(Self.needsYou) }
+                    else if let error = model.backupStateError { Text("Backup records cannot be read: \(error)").foregroundStyle(Self.broken) }
                     else if model.backups.isEmpty { Text("No adopted binders yet.").foregroundStyle(.secondary) }
                     ForEach(HealthLine.rows("backup", model.backups)) { line in
                         let b = line.value
@@ -230,7 +234,8 @@ struct HealthView: View {
                             Circle().fill(model.grade(b).color).frame(width: 8, height: 8)
                             Text(b.name)
                             Spacer()
-                            Text(b.error ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
+                            Text(b.error ?? (model.backupStateError != nil ? "its record cannot be read" : nil)
+                                 ?? b.at.map { "backed up \($0.formatted(.relative(presentation: .named)))" } ?? "not backed up yet")
                                 .foregroundStyle(.secondary).lineLimit(1)
                         }
                     }

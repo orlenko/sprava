@@ -20,6 +20,7 @@ extension HealthModel {
         let failed = backups.filter { $0.error != nil }.count
         if backupConfigured, failed > 0 { problems.append("backups failed for \(failed) binder(s)") }
         if backupSettingsError != nil { problems.append("backup settings cannot be read") }
+        if backupStateError != nil { problems.append("backup records cannot be read") }
         if deviceIDError != nil { problems.append("this Mac's device id cannot be read") }
         return problems
     }

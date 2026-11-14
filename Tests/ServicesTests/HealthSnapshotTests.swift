@@ -58,6 +58,33 @@ import Testing
         #expect(try String(contentsOf: settings, encoding: .utf8) == "{broken")
     }
 
+    /// Backup records that cannot be read are said, not shown as "not backed up yet" (#574).
+    @Test func unreadableBackupRecordsAreReported() throws {
+        let c = commands()
+        let (folder, _) = try readyBinder(c)
+        try ShelfStore(supportDirectory: c.support).add(folder)
+        #expect(HealthSnapshot.checks(support: c.support).backupStateError == nil)
+        let state = c.support.appendingPathComponent("backup/state.json")
+        try fm.createDirectory(at: state.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{broken".utf8).write(to: state)
+        let checks = HealthSnapshot.checks(support: c.support)
+        #expect(checks.backupStateError != nil)
+        #expect(try String(contentsOf: state, encoding: .utf8) == "{broken")
+    }
+
+    /// Only the binders this Mac backs up are listed: one another Mac owns, with an old record here, is left out (#577).
+    @Test func aBinderAnotherMacOwnsHasNoBackupLine() throws {
+        let c = commands()
+        let (mine, _) = try readyBinder(c), (theirs, _) = try readyBinder(c)
+        let shelf = ShelfStore(supportDirectory: c.support)
+        try shelf.add(mine); try shelf.add(theirs)
+        let id = try DeviceID.load(support: c.support)
+        try Data(JSONWriter.compact(.obj([("device", .string(id))])).utf8).write(to: mine.appendingPathComponent(".sprava/owner.json"))
+        #expect(Owner.device(of: theirs) != id)
+        let name = try #require(shelf.rows().first { $0.folder.resolvingSymlinksInPath() == mine.resolvingSymlinksInPath() }?.name)
+        #expect(HealthSnapshot.checks(support: c.support).backups.map(\.name) == [name])
+    }
+
     @Test func missingAndCopiedDeviceIDsStillCheckTheExplicitSpoolReadOnly() throws {
         let c = commands()
         let (folder, _) = try readyBinder(c)
