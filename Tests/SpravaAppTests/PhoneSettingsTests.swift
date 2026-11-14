@@ -177,6 +177,53 @@ import Testing
         #expect(phone.delay(until: nil) == 2 && phone.delay(until: "not a time") == 2)
     }
 
+    @Test func removingAPhoneListsItAsRemovedUntilTheRelayConfirmsAndRetryContinues() async throws {
+        let runtime = StandInRuntime()
+        var removedHere = false, confirmed = false
+        runtime.answers["companion_status"] = { [self] _ in answer([("state", .str("claimed"))]) }
+        runtime.answers["companion_devices"] = { [self] _ in
+            answer([("devices", .array(removedHere ? [] : [.obj([("device_id", .str(phoneID)), ("label", .str("Invented phone")),
+                        ("paired_at", .str("2026-11-13T10:00:00Z")), ("confirmation", .str("acknowledged"))])])),
+                    ("removed", .array(removedHere && !confirmed ? [.obj([("device_id", .str(phoneID)), ("label", .str("Invented phone"))])] : [])),
+                    ("relay_pending", .bool(removedHere && !confirmed)), ("relay_fault", .bool(false))])
+        }
+        runtime.answers["companion_device_remove"] = { [self] _ in
+            removedHere = true
+            return answer([("state", .str("removed")), ("removed", .array([.obj([("device_id", .str(phoneID)), ("label", .str("Invented phone"))])])),
+                           ("relay_pending", .bool(true)), ("relay_fault", .bool(false))])
+        }
+        runtime.answers["companion_relay_retry"] = { [self] _ in
+            confirmed = true
+            return answer([("state", .str("checked")), ("removed", .array([])), ("relay_pending", .bool(false)), ("relay_fault", .bool(false))])
+        }
+        let phone = model(runtime)
+        await phone.load()
+        let device = try #require(phone.devices.first)
+        phone.confirmingRemoval = device
+        await phone.remove(device)
+        let removal = runtime.sent.first { $0["command"] == .str("companion_device_remove") }
+        #expect(removal?["device_id"] == .str(phoneID))
+        #expect(phone.devices.isEmpty && phone.removed.map(\.label) == ["Invented phone"] && phone.relayLine == nil)
+        await phone.retryRelay()
+        #expect(phone.removed.isEmpty && !phone.relayPending && phone.message == nil)
+    }
+
+    @Test func aRelayFaultIsShownWithRetryAndARefusedRemovalSaysWhy() async {
+        let runtime = StandInRuntime()
+        runtime.answers["companion_status"] = { [self] _ in answer([("state", .str("claimed"))]) }
+        runtime.answers["companion_devices"] = { [self] _ in
+            answer([("devices", .array([])), ("removed", .array([])), ("relay_pending", .bool(true)), ("relay_fault", .bool(true))])
+        }
+        runtime.answers["companion_device_remove"] = { _ in
+            #"{"ok":false,"error":"An action from this phone is still being applied. Try again in a moment."}"#
+        }
+        let phone = model(runtime)
+        await phone.load()
+        #expect(phone.relayLine?.contains("refused") == true)
+        await phone.remove(.init(id: phoneID, label: "Invented phone", pairedAt: "", confirmed: true, awaiting: false))
+        #expect(phone.message == "An action from this phone is still being applied. Try again in a moment.")
+    }
+
     @Test func pairingIsOfferedOnlyOnceTheRelayIsClaimed() async {
         let runtime = StandInRuntime()
         runtime.answers["companion_status"] = { [self] _ in answer([("state", .str("pending"))]) }
