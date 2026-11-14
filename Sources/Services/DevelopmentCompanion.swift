@@ -45,9 +45,10 @@ public struct DevelopmentCompanionCredentials: CompanionCredentialStorage {
 
 extension CompanionRuntimeRequests {
     /// The development runtime's Phone actions: the same handlers over the development state and credentials.
-    public static func development(support: URL, watch: WatchBox?,
+    public static func development(support: URL, watch: WatchBox?, deviceID: String? = nil,
                                    developmentSupport: URL = DevelopmentSupport.directory()) throws -> Self {
         try Self(database: support.appendingPathComponent("companion/state.sqlite"),
-                 secrets: DevelopmentCompanionCredentials(support: support, development: developmentSupport), watch: watch)
+                 secrets: DevelopmentCompanionCredentials(support: support, development: developmentSupport), watch: watch,
+                 binders: deviceID.map { CompanionBinderSwitch(support: support, deviceID: $0) })
     }
 }

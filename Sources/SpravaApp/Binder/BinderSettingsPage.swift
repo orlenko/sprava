@@ -36,6 +36,7 @@ struct BinderSettingsPage: View {
                 Section("Assistant") { ConversationSettings(model: conversation) }
             }
             if writable { EmailIntakeSection(folder: folder, expanded: true) }
+            if writable { ShowOnPhoneSection(folder: folder) }
             Section("About this binder") {
                 VStack(alignment: .leading, spacing: 10) {
                     RoutingRows(actions: actions, folder: folder)
