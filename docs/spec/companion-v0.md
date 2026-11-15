@@ -493,7 +493,9 @@ prefix `SPRAVA_INSTANCE` (section 13), a random id the deployer generates. To re
 relay, sets a new `SPRAVA_INSTANCE` and a new setup code, and starts it. The new instance reads and writes only
 under its own prefix, so nothing of the old one, not even a write that lands late, can reach it; every earlier
 token, device, object and request is out of sight at once. The deployer may delete the old prefix by hand. The
-devices are then paired again.
+devices are then paired again. On the Mac, the person resets phone access first (companion.md §13): it forgets every credential of the
+old relay identity, the owner token and signing key first, and sets its companion state aside; it then claims the
+new instance, or any other relay, as a new one.
 
 ## 7. The API
 

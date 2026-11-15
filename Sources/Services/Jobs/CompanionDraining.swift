@@ -17,6 +17,12 @@ actor CompanionDraining {
     private let makeTurn: MakeTurn
     private let drain = CompanionOwnerDrain()
     private var turn: (relay: [String], turn: CompanionOwnerDeviceTurn)?
+    private var generation = 0
+
+    /// Drops the device turn made before the owner session's latest reset, even for the same relay (§6, re-claiming).
+    func forget(unless generation: Int) {
+        if generation != self.generation { turn = nil; self.generation = generation }
+    }
 
     init(support: URL, deviceID: String,
          makeTurn: @escaping MakeTurn = { try CompanionOwnerDeviceTurn(profile: $0, locks: $1) }) {

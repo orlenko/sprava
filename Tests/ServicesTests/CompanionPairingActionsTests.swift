@@ -76,11 +76,11 @@ private struct PairingFixture {
     }
 }
 
-@Test func phoneActionsRegisterEverythingButReset() throws {
+@Test func phoneActionsRegisterEveryPhoneSettingsAction() throws {
     let f = PairingFixture()
     #expect(Set(f.actions().keys) == ["companion_configure", "companion_claim", "companion_pairing_start",
                                       "companion_pairing_poll", "companion_pairing_confirm", "companion_devices",
-                                      "companion_device_remove", "companion_relay_retry"])
+                                      "companion_device_remove", "companion_relay_retry", "companion_reset"])
     #expect(CompanionRequestQueue.actionNames.isSuperset(of: f.actions().keys))
 }
 
