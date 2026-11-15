@@ -222,7 +222,7 @@ extension BackupKey {
         // checked: an earlier copy there can be neither found nor removed from here.
         let cloudReachable = keychain.read(syncedAccount, true).0 != errSecMissingEntitlement
         if !cloudReachable, inICloudKeychain {
-            throw Failure(message: "iCloud Keychain is unavailable in this development build; the backup key can be kept on this Mac only. Nothing was changed.",
+            throw Failure(message: "iCloud Keychain is unavailable to this build of Sprava; the backup key can be kept on this Mac only. Nothing was changed.",
                           status: errSecMissingEntitlement)
         }
         func read(_ acct: String, _ synchronized: Bool) throws -> String? {

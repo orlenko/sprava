@@ -48,9 +48,10 @@ import Testing
                 }
                 done = true
                 return #"{"ok":true}"#
-            default: return #"{"ok":true,"configured":\#(done ? "true" : "false"),"pending_key":\#(done ? "false" : "true")}"#
+            default: return #"{"ok":true,"configured":\#(done ? "true" : "false"),"pending_key":\#(done ? "false" : "true"),"icloud_keychain_available":true}"#
             }
         }))
+        await model.load()
         model.primary = "/Invented/Mirror"
         await model.createKey()
         #expect(model.newKey == "invented-key-0000")

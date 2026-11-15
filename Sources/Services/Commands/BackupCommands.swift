@@ -18,6 +18,13 @@ extension Commands {
 
     static func optional(_ text: String?) -> JSONValue { text.map(JSONValue.string) ?? .null }
 
+    /// Whether this runtime can reach iCloud Keychain (`BackupKey.iCloudKeychainAvailable`). It depends only on how the
+    /// runtime is signed, which does not change while it runs, so the Keychain is asked once, not at every status read.
+    static let iCloudKeychainReachable = BackupKey.iCloudKeychainAvailable()
+    /// A test's own answer in place of the Keychain's.
+    @TaskLocal static var iCloudKeychainAnswer: Bool?
+    static var iCloudKeychainAvailable: Bool { iCloudKeychainAnswer ?? iCloudKeychainReachable }
+
     func backupStatus() throws -> JSONObject {
         let backup = Backup(support: support)
         // Settings that cannot be read are reported, never shown as "not set up": the setup offered then would save
@@ -45,6 +52,8 @@ extension Commands {
             (key: "key_unavailable", value: .bool(s.primary != nil && s.resticSHA256 != nil && backup.key == nil)),
             (key: "icloud_keychain", value: .bool(s.iCloudKeychain)),
             (key: "icloud_keychain_unchecked", value: .bool(s.iCloudKeychainUnchecked == true)),
+            // Whether setup may offer iCloud Keychain: asked here, in the runtime that stores the key, not in the app.
+            (key: "icloud_keychain_available", value: .bool(Self.iCloudKeychainAvailable)),
             (key: "upload_checked_at", value: uploadCheckedAt),
             (key: "last_check", value: Self.optional(st.lastCheck)), (key: "last_second_check", value: Self.optional(st.lastSecondCheck)),
             (key: "last_drill", value: Self.optional(st.lastDrill)), (key: "state_error", value: Self.optional(st.stateError)),
@@ -83,8 +92,8 @@ extension Commands {
         }
         let icloud = r["icloud_keychain"] == .bool(true)
         // Refused before setup saves the choice: a refused opt-in left on record would make every later try fail too.
-        if icloud, !BackupKey.iCloudKeychainAvailable() {
-            throw Failure(message: "iCloud Keychain is unavailable in this development build; keep the key yourself. Nothing was changed.")
+        if icloud, !Self.iCloudKeychainAvailable {
+            throw Failure(message: "iCloud Keychain is unavailable to this build of Sprava; keep the key yourself. Nothing was changed.")
         }
         let backup = Backup(support: support, key: key)
         // One change of the backup's state at a time with the backup job (`BackupStateLock`). The repository opens with

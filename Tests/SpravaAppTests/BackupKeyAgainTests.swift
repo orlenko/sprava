@@ -13,6 +13,7 @@ import Testing
         var unchecked = true
         var setups: [JSONValue] = []
         var refusal: String?
+        var iCloudKeychainAvailable = true
 
         lazy var client = RuntimeClient(answer: { [self] text in
             let r = try JSONParser.parse(text).value
@@ -25,7 +26,8 @@ import Testing
             // Set up, but with no readable key: not configured, as the runtime reports it.
             return JSONWriter.compact(.obj([("ok", .bool(true)), ("configured", .bool(!keyUnavailable)), ("primary", .str("/Invented/Mirror")),
                                             ("key_unavailable", .bool(keyUnavailable)), ("icloud_keychain", .bool(true)),
-                                            ("icloud_keychain_unchecked", .bool(unchecked)), ("binders", .array([])), ("requests", .array([]))]))
+                                            ("icloud_keychain_unchecked", .bool(unchecked)),
+                                            ("icloud_keychain_available", .bool(iCloudKeychainAvailable)), ("binders", .array([])), ("requests", .array([]))]))
         })
     }
 
@@ -55,6 +57,28 @@ import Testing
         model.typedKey = "INVNT-KEYAA-KEYBB"
         await model.reenterKey()
         #expect(try #require(runtime.setups.first)["icloud_keychain"] == .bool(false))
+    }
+
+    /// A runtime that cannot reach iCloud Keychain (a build without its entitlement) leaves the choice off, also when
+    /// the saved choice of a configured backup was on, and setup never asks for it.
+    @Test func anUnreachableICloudKeychainKeepsTheChoiceOff() async throws {
+        let runtime = StandIn()
+        runtime.iCloudKeychainAvailable = false
+        let model = BackupModel(client: runtime.client)
+        await model.load()
+        #expect(!model.iCloudKeychainAvailable && !model.iCloudKeychain)
+        model.iCloudKeychain = true
+        #expect(!model.keepInICloudKeychain)
+        model.typedKey = "INVNT-KEYAA-KEYBB"
+        await model.reenterKey()
+        #expect(try #require(runtime.setups.first)["icloud_keychain"] == .bool(false))
+        // Configured now, with the saved choice on: still off while the runtime cannot reach iCloud Keychain.
+        await model.load()
+        #expect(model.configured == true && !model.iCloudKeychain)
+        // A runtime that can reach it again restores the saved choice.
+        runtime.iCloudKeychainAvailable = true
+        await model.load()
+        #expect(model.iCloudKeychainAvailable && model.iCloudKeychain)
     }
 
     /// A key the runtime refuses (it does not open the mirror) keeps what was typed, so it can be corrected.
