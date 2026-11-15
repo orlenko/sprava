@@ -234,4 +234,28 @@ import Testing
         #expect(phone.pairing == nil && !commands(runtime).contains("companion_pairing_start"))
         #expect(phone.stateLine.contains("Claim"))
     }
+
+    @Test func resettingClearsThePageAndSaysWhatTheRelayStillTakes() async {
+        let runtime = StandInRuntime()
+        runtime.answers["companion_status"] = { [self] _ in answer([("state", .str("needs-reset"))]) }
+        runtime.answers["companion_devices"] = { [self] _ in answer([("devices", .array([
+            .obj([("device_id", .str(phoneID)), ("label", .str("Invented phone")), ("paired_at", .str("")), ("confirmation", .str("acknowledged"))]),
+        ]))]) }
+        runtime.answers["companion_reset"] = { [self] _ in
+            answer([("state", .str("not-configured")), ("phones_refused", .int(0)), ("phones_not_reached", .int(1)), ("binders_off", .int(2))])
+        }
+        let phone = model(runtime)
+        await phone.load()
+        #expect(phone.stateLine.contains("reset phone access here") && phone.devices.count == 1)
+        await phone.reset()
+        #expect(commands(runtime).last == "companion_reset")
+        #expect(!phone.configured && phone.devices.isEmpty && !phone.busy)
+        #expect(phone.message == "Phone access was reset. The relay could not be told to refuse 1 phone, so it can still read what was " +
+                "already published there until you delete the relay or start it over. Show on my phone is off for 2 binders; " +
+                "turn it on again after you connect.")
+        #expect(PhoneSettings.resetLine(refused: 2, notReached: 0, bindersOff: 0) == "Phone access was reset. The relay now refuses 2 phones.")
+        runtime.answers["companion_reset"] = { _ in #"{"ok":false,"error":"Another Phone action is running. Try again when it finishes."}"# }
+        await phone.reset()
+        #expect(phone.message == "Another Phone action is running. Try again when it finishes.")
+    }
 }

@@ -216,6 +216,12 @@ Everything a person needs to run Sprava's companion for themselves is a relay an
 4. In the Mac app, Settings › Phone: the relay's address and the setup code, and the web app's address if it is
    not the shared build. The Mac claims the relay, and the relay ignores the code from then on. Devices are
    paired from the Mac with a QR code.
+5. To move the Mac to another relay, or to a relay started over, Settings › Phone › Reset Phone Access. Every
+   paired phone loses access and is paired again; the Mac first asks the relay, if it can reach it, to refuse each
+   phone at once. The Mac forgets the relay's credentials (owner token, signing key, account, binder, device and
+   pairing keys) and sets its companion state aside as `companion-reset-<time>` in its support folder, never
+   deleted. "Show on my phone" goes off for every binder: what a new relay receives is chosen again. The old
+   relay keeps its encrypted copies until it is deleted or started over.
 
 The web app needs no hosting of their own: the shared GitHub Pages build works with any relay, which it learns
 from the QR code. A person who prefers to trust their own host instead builds the same release and serves it

@@ -34,9 +34,21 @@ struct PhoneSettingsView: View {
                     .disabled(model.busy || model.relayAddress.isEmpty || model.setupCode.isEmpty || model.webAddress.isEmpty)
                 Text("The relay's address and setup code come from where you run the relay. The web app address is where your phone opens Sprava.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            } else if model.state == "pending" || model.state == "checking-refusal" {
-                Button("Claim") { Task { await model.claim() } }.disabled(model.busy)
+            } else {
+                HStack {
+                    if model.state == "pending" || model.state == "checking-refusal" {
+                        Button("Claim") { Task { await model.claim() } }.disabled(model.busy)
+                    }
+                    Button("Reset Phone Access…") { model.confirmingReset = true }.disabled(model.busy)
+                }
             }
+        }
+        .alert("Reset phone access?", isPresented: $model.confirmingReset) {
+            Button("Reset", role: .destructive) { Task { await model.reset() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every paired phone loses access and must be paired again. “Show on my phone” goes off for every binder. "
+                 + "The relay keeps its encrypted copies until you delete it or start it over. Then you can connect to any relay.")
         }
     }
 

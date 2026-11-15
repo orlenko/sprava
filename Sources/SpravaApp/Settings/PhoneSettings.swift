@@ -62,8 +62,8 @@ final class PhoneSettings: ObservableObject, RuntimePage {
         case "pending": "The relay is set up but not claimed yet. Claim it to finish connecting."
         case "claimed": "Connected to the relay."
         case "checking-refusal": "The relay did not accept this Mac. Claim it again to check."
-        case "needs-reset": "Another setup claimed this relay. It needs a new instance and setup code, and Sprava cannot reset phone access yet."
-        case "instance-changed": "The relay was started over. Phone access must be set up again, and Sprava cannot reset it yet."
+        case "needs-reset": "Another setup claimed this relay. Give it a new instance and setup code, then reset phone access here and connect again."
+        case "instance-changed": "The relay was started over. Reset phone access here, then connect again with its new setup code."
         default: "Phone access is in a state this version does not know."
         }
     }
@@ -143,6 +143,43 @@ final class PhoneSettings: ObservableObject, RuntimePage {
         if !removed.isEmpty { return nil }
         return relayPending ? "Your phones' new keys have not all reached the relay yet." : nil
     }
+
+    /// The person asked to reset phone access, awaiting their confirmation.
+    @Published var confirmingReset = false
+
+    /// Forgets this Mac's relay setup after the person confirmed: every paired phone loses access, "Show on my phone"
+    /// goes off for every binder, and the page starts again at "Not connected" (companion.md §13).
+    func reset() async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        do {
+            let reply = try await client.global("companion_reset", timeout: Self.actionTimeout)
+            closePairing()
+            for task in deliveries.values { task.cancel() }
+            deliveries = [:]
+            state = reply["state"]?.stringValue
+            devices = []; removed = []; relayPending = false; relayFault = false
+            message = Self.resetLine(refused: Self.count(reply["phones_refused"]), notReached: Self.count(reply["phones_not_reached"]),
+                                     bindersOff: Self.count(reply["binders_off"]))
+        } catch { message = Self.plain(error, "Phone access could not be reset. Check this page, then reset again.") }
+    }
+
+    private static func count(_ value: JSONValue?) -> Int { value?.numberValue.flatMap { Int($0.text) } ?? 0 }
+
+    /// What a reset did, in plain words: which phones the relay refuses now, and what the person turns on again.
+    static func resetLine(refused: Int, notReached: Int, bindersOff: Int) -> String {
+        var parts = ["Phone access was reset."]
+        if refused > 0 { parts.append("The relay now refuses \(phones(refused)).") }
+        if notReached > 0 {
+            parts.append("The relay could not be told to refuse \(phones(notReached)), so \(notReached == 1 ? "it" : "they") can still " +
+                         "read what was already published there until you delete the relay or start it over.")
+        }
+        if bindersOff > 0 {
+            parts.append("Show on my phone is off for \(bindersOff == 1 ? "1 binder" : "\(bindersOff) binders"); turn it on again after you connect.")
+        }
+        return parts.joined(separator: " ")
+    }
+    private static func phones(_ n: Int) -> String { n == 1 ? "1 phone" : "\(n) phones" }
 
     /// Sends the relay's address and setup code, then claims the relay. The code is cleared once the runtime has it.
     func connect() async {
