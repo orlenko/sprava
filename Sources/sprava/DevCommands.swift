@@ -48,6 +48,14 @@ func dev(_ args: [String]) {
         request.set("op", .str("add_item"))
         request.set("args", .obj([("item", .obj([("id", .str("$new:1")), ("title", .string(args[2])), ("status", .str("open")),
             ("priority", .str("normal")), ("due", .string(CalendarDate.today().description)), ("kind", .str("other"))]))]))
+    case "repeat":
+        // Sets an item to repeat monthly on the day it is due, as the item editor's Repeats would.
+        guard args.count == 3 else { fail(usage) }
+        let item = Teka.read(folder).catalog?["open_items"]?.arrayValue?.first { $0["id"]?.stringValue == args[2] }
+        guard let due = item?["due"]?.stringValue.flatMap(CalendarDate.strict) else { fail("no open item \(args[2]) with a due date") }
+        request.set("command", .str("apply"))
+        request.set("op", .str("edit_item"))
+        request.set("args", .obj([("id", .string(args[2])), ("set", .obj([("recurrence", Recurrence.Rule.monthly(day: due.day).json)]))]))
     case "approve", "reject":
         guard args.count == 3 else { fail(usage) }
         let listed = commands.handle(JSONWriter.compact(.obj([("command", .str("proposals")), ("binder", .string(folder.path))])))
@@ -60,8 +68,12 @@ func dev(_ args: [String]) {
         guard args.count == 3 else { fail(usage) }
         request.set("command", .str("apply"))
         request.set("op", .string(args[0]))
-        request.set("args", .obj([("id", .string(args[2])), ("closed_at", .string(ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!))),
-                                  ("source", .str("user"))]))
+        var closing = JSONObject([("id", .string(args[2])), ("closed_at", .string(ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!))),
+                                  ("source", .str("user"))])
+        // A Done on a repeating to-do names the date it completes, as the app's does (binder-v0 §5.4).
+        let item = Teka.read(folder).catalog?["open_items"]?.arrayValue?.first { $0["id"]?.stringValue == args[2] }
+        if args[0] == "complete", Recurrence.rule(item?["recurrence"]) != nil, let due = item?["due"] { closing.set("occurrence_due", due) }
+        request.set("args", .object(closing))
     default:
         fail(usage)
     }

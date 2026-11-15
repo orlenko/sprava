@@ -185,12 +185,59 @@ private struct DecisionFixture {
     }
 }
 
-@Test func doneOnARepeatingItemWaitsForThePerson() async throws {
+/// Since 2026-11-15 a phone's Done moves a repeating to-do on as the Mac's does (decisions.md F3): monthly on the 14th,
+/// due 2026-11-14, done on 2026-11-13, comes back due 2026-12-14, and Undo puts the date back.
+@Test func doneOnARepeatingItemMovesItToItsNextDateWithUndo() async throws {
     let f = try await DecisionFixture(); defer { f.remove() }
+    let request = f.request(.done, item: "estate-example-2026-010")
+    let decision = try f.decide(request)
+    #expect(decision.committed && decision.outcome.outcome == .applied)
+    let item = { Teka.read(f.binder).catalog?["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-010") } }
+    #expect(item()?["due"] == .str("2026-12-14"))
+    let op = try #require(try f.tagged(request).first)
+    #expect(op["args"]?["occurrence_due"] == .str("2026-11-14") && op["args"]?["next_due"] == .str("2026-12-14"))
+    // The same request again moves nothing a second time.
+    #expect(!(try f.decide(request)).committed)
+    #expect(item()?["due"] == .str("2026-12-14"))
+    _ = try TekaStore(folder: f.binder).undoChange(opID: try #require(op["id"]?.stringValue), now: morning.addingTimeInterval(60))
+    #expect(item()?["due"] == .str("2026-11-14"))
+}
+
+@Test func dropEndsARepeatingSeriesAndPostponeMovesOnlyThisDate() async throws {
+    let f = try await DecisionFixture(); defer { f.remove() }
+    #expect(try f.decide(f.request(.postpone, item: "estate-example-2026-010", date: "2026-11-20")).outcome.outcome == .applied)
+    let item = Teka.read(f.binder).catalog?["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-010") }
+    #expect(item?["due"] == .str("2026-11-20") && item?["recurrence"] == Recurrence.Rule.monthly(day: 14).json)
+    let g = try await DecisionFixture(); defer { g.remove() }
+    #expect(try g.decide(g.request(.drop, item: "estate-example-2026-010")).outcome.outcome == .applied)
+    #expect(!g.openIDs().contains("estate-example-2026-010"))
+}
+
+/// A stale Done on a repeating to-do becomes a card that names the date due when it was made, so approving it moves the
+/// series on from that date rather than being refused.
+@Test func aStaleDoneOnARepeatingItemBecomesACardThatMovesItOn() async throws {
+    let f = try await DecisionFixture(); defer { f.remove() }
+    try TekaStore(folder: f.binder).apply([TekaStore.OpBody(op: "update_item",
+        args: JSONObject([("id", .str("estate-example-2026-010")), ("set", .obj([("priority", .str("high"))]))]),
+        actor: JSONObject([("kind", .str("user"))]))], now: morning)
     #expect(try f.decide(f.request(.done, item: "estate-example-2026-010")).outcome.outcome == .conflict)
-    #expect(f.openIDs().contains("estate-example-2026-010"))
     let card = try Commands(support: f.support, deviceID: mac).loadTrusted(CompanionConflictCard.id(device: phone, request: requestID(50)), in: f.binder)
-    #expect(card.title.contains("repeating"))
+    #expect(card.ops.first?["args"]?["occurrence_due"] == .str("2026-11-14"))
+    try TekaStore(folder: f.binder).approve(card, now: morning.addingTimeInterval(60))
+    let item = Teka.read(f.binder).catalog?["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-010") }
+    #expect(item?["due"] == .str("2026-12-14"))
+}
+
+@Test func aDoneOnARepeatTheMacCannotReadWaitsForThePerson() {
+    let id = JSONValue.str("i-1")
+    let unreadable = JSONValue.obj([("id", id), ("due", .str("2026-11-14")), ("recurrence", .obj([("freq", .str("weekly"))]))])
+    #expect(CompanionBinderDecisions.body(.complete, of: unreadable, id: id) == nil)
+    let lenient = JSONValue.obj([("id", id), ("due", .str("20261114")), ("recurrence", Recurrence.Rule.monthly(day: 14).json)])
+    #expect(CompanionBinderDecisions.body(.complete, of: lenient, id: id) == nil)
+    // Drop and Postpone on it, and Done on a one-off, are the plain ops.
+    #expect(CompanionBinderDecisions.body(.drop, of: unreadable, id: id)?.args["occurrence_due"] == nil)
+    let once = JSONValue.obj([("id", id), ("due", .str("2026-11-14"))])
+    #expect(CompanionBinderDecisions.body(.complete, of: once, id: id)?.args == JSONObject([("id", id)]))
 }
 
 @Test func aRequestForABinderNotShownIsRejectedAndOneAwayForNowWaits() async throws {

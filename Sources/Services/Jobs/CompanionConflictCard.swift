@@ -41,9 +41,17 @@ enum CompanionConflictCard {
     /// The card's exact bytes, with `expect` taken from `catalog`, the binder as read under its write lock.
     static func bytes(for request: CompanionAuthenticatedRequest, label: String, reason: Reason, catalog: JSONObject,
                       client: String, now: Date) throws -> Data {
-        guard let action = request.action, let op = op(action) else { throw CompanionDecisionError.invalid }
-        let item = (catalog["open_items"]?.arrayValue ?? []).first { same($0["id"], action.itemID) }
-            ?? (catalog["processing_log"]?.arrayValue ?? []).first { same($0["id"], action.itemID) }
+        guard let action = request.action, var op = op(action) else { throw CompanionDecisionError.invalid }
+        let open = (catalog["open_items"]?.arrayValue ?? []).first { same($0["id"], action.itemID) }
+        let item = open ?? (catalog["processing_log"]?.arrayValue ?? []).first { same($0["id"], action.itemID) }
+        // A Done on a repeating to-do completes the date it is due now, which `expect` holds until the person approves,
+        // so the approval moves the series on from it (binder-v0 §5.4).
+        if action.kind == .done, let open, let id = open["id"],
+           let done = CompanionBinderDecisions.body(.complete, of: open, id: id), let due = done.args["occurrence_due"],
+           var args = op["args"]?.objectValue {
+            args.set("occurrence_due", due)
+            op.set("args", .object(args))
+        }
         var card = Proposal.make(title: title(action, item: item, label: label, reason: reason),
             actor: JSONObject([("kind", .str("user")), ("client", .string(client))]), ops: [op],
             provenance: JSONObject([("companion", .obj([("device_id", .string(request.deviceID)),
@@ -91,7 +99,7 @@ enum CompanionConflictCard {
         let why: String
         switch reason {
         case .changed: why = "changed since your phone saw it"
-        case .repeating: why = "a repeating to-do: check its dates before approving"
+        case .repeating: why = "it repeats, and this Mac cannot work out its next date; check it here"
         case .refused: why = "the binder would not take it as it is"
         case .interrupted: why = "Sprava stopped in the middle; check whether it is already done"
         }

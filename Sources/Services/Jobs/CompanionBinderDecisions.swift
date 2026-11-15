@@ -89,14 +89,20 @@ struct CompanionBinderDecisions: CompanionDecisionAdapter, Sendable {
             guard let item = open.first(where: { CompanionConflictCard.same($0["id"], action.itemID) }), let id = item["id"] else {
                 throw CompanionDecisionError.invalid
             }
-            // The Mac shows a repeating item read-only, and nothing computes its next date (binder-v0 §5.4), so any
-            // change to it waits for the person.
-            if item["recurrence"] != nil { return try conflict(.repeating) }
+            // A repeating item moves on at Done as on the Mac (decisions.md F3, 2026-11-15): the Done names the due date the
+            // phone saw, which the snapshot check above has just matched, and the store fills the next one under this
+            // lock. Drop ends the series (binder-v0 §5.7); Postpone and Follow up change this occurrence only. A repeat by a
+            // rule this version cannot read has no next date here, so its Done waits for the person.
+            guard let body = Self.body(mutation, of: item, id: id) else { return try conflict(.repeating) }
             let effectID = UUID().uuidString.lowercased()
             do {
-                let bytes = try transaction.prepare(Self.body(mutation, id: id), effectID: effectID, tag: Self.tag(request), now: clock())
+                let bytes = try transaction.prepare(body, effectID: effectID, tag: Self.tag(request), now: clock())
                 return CompanionDecisionPlan(outcome: .applied, effect: .operation(binderID: binderID, id: effectID, bytes: bytes))
             } catch is TransactionGuard.Rejection {
+                return try conflict(.refused)
+            } catch is TekaStore.Refused {
+                // The store would not move the series on (its date changed, or no next date exists): a card, never a
+                // retry, since the same request is refused the same way every time.
                 return try conflict(.refused)
             }
         }
@@ -114,6 +120,17 @@ struct CompanionBinderDecisions: CompanionDecisionAdapter, Sendable {
             return TekaStore.OpBody(op: "update_item", args: JSONObject([("id", id), ("set", .obj([("due", .string(date))]))]), actor: actor)
         case .arrived: return TekaStore.OpBody(op: "set_status", args: JSONObject([("id", id), ("status", .str("open"))]), actor: actor)
         }
+    }
+
+    /// The op for `item` as it is now: a Done on a repeating item names the due date it completes, so the store moves the
+    /// series on from it. Nil for a Done on a repeat this version cannot read, or one without a plain date, which waits.
+    static func body(_ mutation: CompanionItemMutation, of item: JSONValue, id: JSONValue) -> TekaStore.OpBody? {
+        var body = body(mutation, id: id)
+        guard mutation == .complete, item["recurrence"].map({ !$0.isNull }) == true else { return body }
+        guard Recurrence.rule(item["recurrence"]) != nil, let due = item["due"]?.stringValue,
+              CalendarDate.strict(due)?.description == due else { return nil }
+        body.args.set("occurrence_due", .string(due))
+        return body
     }
 
     static func tag(_ request: CompanionAuthenticatedRequest) -> String { "companion:\(request.deviceID)/\(request.requestID)" }
