@@ -6,7 +6,7 @@ extension Commands {
     /// op, so a refused follow-up never leaves half of the person's edit saved (binder-v0 §6.9).
     static func itemEdit(_ args: JSONObject, actor: JSONObject) throws -> [TekaStore.OpBody] {
         guard let id = args["id"] else { throw Failure(message: "an item edit needs an id") }
-        let fields: Set<String> = ["title", "details", "priority", "due", "no_deadline"]
+        let fields: Set<String> = ["title", "details", "priority", "due", "no_deadline", "recurrence"]
         if let set = args["set"], set.objectValue == nil { throw Failure(message: "the edited fields must be an object") }
         if let unset = args["unset"], unset.arrayValue?.allSatisfy({ $0.stringValue != nil }) != true {
             throw Failure(message: "the removed fields must be a list of names")

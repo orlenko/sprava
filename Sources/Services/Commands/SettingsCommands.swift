@@ -39,7 +39,10 @@ extension Commands {
             }
             try list.set(f, entry)
         }
-        return JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
+        var reply = JSONObject([(key: "description", value: .string(entry.description)), (key: "filing", value: .bool(entry.filing))])
+        // Why the item editor offers no repeats here, so the person sees it before choosing one (decisions.md F3).
+        if let why = Self.repeatsRefusal(f) { reply.set("repeats_off", .string(why)) }
+        return reply
     }
 
     func doctor(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
