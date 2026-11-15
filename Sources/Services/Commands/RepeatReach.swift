@@ -15,15 +15,12 @@ extension Commands {
         var inRegistry = false
         if FileManager.default.fileExists(atPath: registryURL.path) {
             guard case .ok(let data) = SafeFile.read(registryURL, limit: 1 << 20), let text = String(data: data, encoding: .utf8),
-                  everyFolderIsPlain(text) else {
+                  let folders = registeredFolders(text) else {
                 return "Repeats are off here: Sprava could not read lifeproj's registry, so it cannot tell whether lifeproj still manages this binder."
             }
-            let registry = LifeprojRegistry.parse(text)
-            inRegistry = registry.entries.contains { entry in
-                entry.workingDir.map {
-                    URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
-                        .standardizedFileURL.resolvingSymlinksInPath().path == here
-                } ?? false
+            inRegistry = folders.contains {
+                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
+                    .standardizedFileURL.resolvingSymlinksInPath().path == here
             }
         }
         let tail = " lifeproj would end a repeating to-do the first time it was checked off."
@@ -40,20 +37,24 @@ extension Commands {
             + " Remove those lines to use repeats."
     }
 
-    /// Whether every line of the registry that names a `working_dir` is one `LifeprojRegistry.parse` reads exactly:
-    /// `working_dir = "<path>"` or `'<path>'` on one line, with no escape in it. An escape, a multi-line string, an inline
-    /// table or a dotted key could name a binder the small reader would miss, so any of them fails the check.
-    static func everyFolderIsPlain(_ text: String) -> Bool {
+    /// Every folder the registry names, read line by line whatever table a line sits in, so no header, comment or table
+    /// form can hide one: a `working_dir` anywhere counts. Nil when a line that mentions `working_dir` is not exactly
+    /// `working_dir = "<path>"` or `'<path>'` on one line with no escape (an escape, a multi-line string, an inline table
+    /// or a dotted key could name a folder this reader would misread), so such a registry counts as listing the binder.
+    static func registeredFolders(_ text: String) -> [String]? {
+        var folders: [String] = []
         for raw in text.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard !line.hasPrefix("#"), line.contains("working_dir") else { continue }
-            guard let eq = line.firstIndex(of: "=") else { return false }
+            guard let eq = line.firstIndex(of: "=") else { return nil }
             let key = line[..<eq].trimmingCharacters(in: .whitespaces)
             let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
             guard ["working_dir", "\"working_dir\"", "'working_dir'"].contains(key), let quote = value.first, quote == "\"" || quote == "'",
-                  !value.hasPrefix("\"\"\""), !value.hasPrefix("'''"), !value.contains("\\"),
-                  value.dropFirst().contains(quote) else { return false }
+                  !value.hasPrefix("\"\"\""), !value.hasPrefix("'''"), !value.contains("\\") else { return nil }
+            let body = value.dropFirst()
+            guard let end = body.firstIndex(of: quote) else { return nil }
+            folders.append(String(body[..<end]))
         }
-        return true
+        return folders
     }
 }

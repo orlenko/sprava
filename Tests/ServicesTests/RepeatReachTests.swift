@@ -88,6 +88,12 @@ import Testing
         #expect(Commands.repeatsRefusal(f, registryURL: registry) == nil)
         try Data("[projects.tax]\nworking_dir = \"\(f.path)\"\n".utf8).write(to: registry)
         #expect(Commands.repeatsRefusal(f, registryURL: registry)?.contains("lifeproj's registry") == true)
+        // A folder counts whatever table names it: a comment in the header, or a table lifeproj's small reader skips
+        // (cloud review of this PR).
+        for header in ["[projects.tax] # see [projects.other]", "[projects.\"tax.2026\"]", "[elsewhere]"] {
+            try Data("\(header)\nworking_dir = '\(f.path)'\n".utf8).write(to: registry)
+            #expect(Commands.repeatsRefusal(f, registryURL: registry)?.contains("lifeproj's registry") == true, "\(header)")
+        }
         // A folder named in a form the small reader would not take whole may be this binder: an escape, an inline table,
         // a dotted key, a multi-line string (local review of this PR).
         let name = f.lastPathComponent
