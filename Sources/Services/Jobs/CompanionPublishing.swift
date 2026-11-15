@@ -16,6 +16,8 @@ extension CompanionJob {
             guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return }
             // The throwing read: an unreadable Shelf is a job failure, never an empty Shelf that hides every binder.
             let rows = try ShelfStore(supportDirectory: support).rowsForJobs()
+            // A reset made since the last run: the drain's memory belonged to the setup that was forgotten.
+            await draining.forget(unless: await session.generation)
             try await cycle(publishing: publishing, draining: draining, profile: profile, locks: locks,
                             target: try CompanionOwnerPublication(profile: profile), rotation: session.rotation(profile), rows: rows)
         }

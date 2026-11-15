@@ -24,7 +24,9 @@ public actor CompanionJob {
             switch status {
             case .notConfigured: return .idle
             case .claim(.claimed):
-                try await work(session.deviceDecisionLocks)
+                // Kept by the session, so a reset cancels this run and waits for it before forgetting the setup.
+                let (work, locks) = (work, session.deviceDecisionLocks)
+                try await session.runWork { try await work(locks) }
                 return .ok
             case .claim(.pending): return .error(code: "companion_claim_pending", culprit: nil)
             case .claim(.checkingRefusal): return .error(code: "companion_owner_refused", culprit: nil)

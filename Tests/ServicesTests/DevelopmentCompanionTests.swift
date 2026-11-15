@@ -44,7 +44,7 @@ private func devFolder() -> URL {
 @Test func theDevelopmentPhoneActionsKeepTheirStateInTheDevelopmentFolder() async throws {
     let dev = devFolder(); defer { try? FileManager.default.removeItem(at: dev) }
     let helper = try CompanionRuntimeRequests.development(support: dev, watch: nil, developmentSupport: dev)
-    #expect(helper.requests.handles("companion_pairing_start") && !helper.requests.handles("companion_reset"))
+    #expect(helper.requests.handles("companion_pairing_start") && helper.requests.handles("companion_reset"))
     #expect(!FileManager.default.fileExists(atPath: dev.path))
     // Unconfigured: devices are listed from the development state without touching any credential.
     let answer = await withCheckedContinuation { continuation in
