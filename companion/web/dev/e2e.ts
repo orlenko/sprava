@@ -47,6 +47,10 @@ interface MacSide {
     /** Only a real Mac: whether the relay has yet to confirm deleting the `which`-th phone paired. */
     deletionPending?(which: number): Promise<boolean>;
     cards?(): string[];
+    /** Only a real Mac: Settings › Phone › Reset, then what it says it did. */
+    reset?(): Promise<{ refused: number; notReached: number; bindersOff: number }>;
+    /** Only a real Mac: `configure` and `claim` on another relay after a reset, the binder shown again, one job run. */
+    connect?(relay: LocalRelay, webApp: string): Promise<void>;
     close(): Promise<void>;
 }
 
@@ -121,6 +125,9 @@ class DevPhoneMac implements MacSide {
         }, null, 2));
         await this.run(['dev', 'adopt', this.binder]);
         await this.run(['dev', 'shelve', this.binder]);
+        await this.connect(relay, webApp);
+    }
+    async connect(relay: LocalRelay, webApp: string) {
         await this.phone({ command: 'companion_configure', relay_origin: relay.origin, setup_code: relay.setupCode, web_origin: new URL(webApp).origin });
         const claimed = await this.phone({ command: 'companion_claim' });
         if (claimed.state !== 'claimed') throw new Error(`The relay was not claimed: ${claimed.state}`);
@@ -203,6 +210,13 @@ class DevPhoneMac implements MacSide {
         if (!existsSync(folder)) return [];
         return readdirSync(folder).filter(n => n.endsWith('.json')).map(n => JSON.parse(readFileSync(join(folder, n), 'utf8')))
             .filter(p => p.state === 'proposed').map(p => String(p.title));
+    }
+    async reset() {
+        const reply = await this.phone({ command: 'companion_reset' });
+        if (reply.state !== 'not-configured') throw new Error(`The reset left the Mac ${reply.state}.`);
+        const status = JSON.parse(await this.run(['dev-phone', JSON.stringify({ command: 'companion_devices' })]));
+        if (status.devices.length !== 0) throw new Error('The reset left paired phones listed.');
+        return { refused: Number(reply.phones_refused), notReached: Number(reply.phones_not_reached), bindersOff: Number(reply.binders_off) };
     }
     async close() { if (this.root) await rm(this.root, { recursive: true, force: true }); }
 }
@@ -317,6 +331,11 @@ const mac: MacSide = values.mac === 'dev-phone' ? new DevPhoneMac() : values.mac
 const step = (text: string) => console.log(`e2e: ${text}`);
 let web: ChildProcess | undefined, relay: (LocalRelay & { instance: string }) | undefined, relayFolder = '';
 let phone: Phone | undefined, second: Phone | undefined;
+/** Relays and phones of the reset steps, closed at the end. */
+const others: { close(): Promise<void> }[] = [], folders: string[] = [];
+/** Each relay's request lines (method, route, status; never an id or body), so a step can check who called it. */
+const calls = (log: string[], from: number, method: string) =>
+    log.slice(from).map(line => JSON.parse(line)).filter(line => line.method === method).length;
 
 /** Opens the pairing link on `device`, names it, compares the codes both sides show, and has the Mac confirm. */
 async function pair(device: Phone, link: string, label: string): Promise<void> {
@@ -393,6 +412,7 @@ try {
         step('a stale Done became a card on the Mac, and the phone says so');
     }
 
+    const firstLog: string[] = [];
     if (mac.removePhone && mac.keys && mac.epoch && mac.deletionPending) {
         second = await Phone.open(values.chrome);
         await pair(second, await mac.pairingLink(), 'Invented second phone');
@@ -402,7 +422,7 @@ try {
         // Settings › Phone › Remove for the first phone, while the relay is down: the Remove action reaches nothing,
         // so the second phone's keys for the new epoch can only come from the companion job.
         const restart = { webOrigin: served.origin, port: Number(new URL(relay.origin).port), folder: relayFolder,
-            instance: relay.instance, setupCode: relay.setupCode };
+            instance: relay.instance, setupCode: relay.setupCode, log: (line: string) => { firstLog.push(line); } };
         await relay.close(); relay = undefined;
         await mac.removePhone(0);
         const recorded = await mac.keys(1);
@@ -439,6 +459,54 @@ try {
             'the to-do published at the new epoch, on the second phone');
         step(`the second phone reads the to-dos at epoch ${await mac.epoch()}`);
     }
+
+    if (mac.reset && mac.connect && second && relay) {
+        // Reset with the first relay reachable: its remaining phone is refused at once, and the Mac moves to another relay.
+        const mark = firstLog.length;
+        const done = await mac.reset();
+        if (done.refused !== 1 || done.notReached !== 0 || done.bindersOff !== 1) throw new Error(`The reset said ${JSON.stringify(done)}.`);
+        await second.click('Refresh');
+        await second.wait(`document.querySelector('#status').textContent.includes('The relay refused this phone')`, 'that the first relay refuses it');
+        step('reset: the first relay refuses the phone paired there at once; Show on my phone is off for 1 binder');
+        const secondFolder = await mkdtemp(join(tmpdir(), 'sprava-e2e-relay-')); folders.push(secondFolder);
+        const secondLog: string[] = [];
+        const next = { webOrigin: served.origin, folder: secondFolder, log: (line: string) => { secondLog.push(line); } };
+        let relay2 = await startLocalRelay(next); others.push(relay2);
+        await mac.connect(relay2, `${served.origin}/`);
+        const third = await Phone.open(values.chrome); others.push(third);
+        await pair(third, await mac.pairingLink(), 'Invented phone on the second relay');
+        await third.wait(`document.querySelector('#binder-view').textContent.includes('Invented to-do after the removal')`,
+            'the to-dos from the second relay');
+        await mac.addToDo('Invented to-do on the second relay');
+        await third.click('Refresh');
+        await third.wait(`document.querySelector('#binder-view').textContent.includes('Invented to-do on the second relay')`, 'a new to-do');
+        step(`after the reset the Mac claimed a second relay (${relay2.origin}), paired a phone there and published to it`);
+        if (calls(firstLog, mark, 'PUT') + calls(firstLog, mark, 'POST') > 0) throw new Error('The Mac wrote to the first relay after the reset.');
+        if (calls(firstLog, mark, 'DELETE') !== 1) throw new Error('The reset did not delete the phone on the first relay.');
+        step('the first relay got the one deletion of the reset and nothing published after it');
+
+        // Reset while the relay is down: nothing blocks it, and the reply says the phone was not refused.
+        const back = { ...next, port: Number(new URL(relay2.origin).port), instance: relay2.instance, setupCode: relay2.setupCode };
+        await relay2.close();
+        const offline = await mac.reset();
+        if (offline.refused !== 0 || offline.notReached !== 1 || offline.bindersOff !== 1) {
+            throw new Error(`The reset with the relay down said ${JSON.stringify(offline)}.`);
+        }
+        step('reset with the second relay down: done here, and it says 1 phone was not refused');
+        // The phone paired there is closed first, so every call the relay hears from now on could only be the Mac's.
+        await third.close();
+        relay2 = await startLocalRelay(back); others.push(relay2);
+        const mark2 = secondLog.length;
+        const relay3 = await startLocalRelay({ webOrigin: served.origin }); others.push(relay3);
+        await mac.connect(relay3, `${served.origin}/`);
+        const fourth = await Phone.open(values.chrome); others.push(fourth);
+        await pair(fourth, await mac.pairingLink(), 'Invented phone on the third relay');
+        await fourth.wait(`document.querySelector('#binder-view').textContent.includes('Invented to-do on the second relay')`,
+            'the to-dos from the third relay');
+        await mac.drain();
+        if (secondLog.slice(mark2).length > 0) throw new Error('The Mac called the second relay after the reset.');
+        step('then it claimed a third relay and paired a phone there; the second relay, back up, heard nothing from the Mac');
+    }
     console.log('e2e: PASS');
 } catch (error) {
     console.error(`e2e: FAIL: ${error instanceof Error ? error.message : String(error)}`);
@@ -446,6 +514,8 @@ try {
 } finally {
     await phone?.close().catch(() => {});
     await second?.close().catch(() => {});
+    for (const other of others.reverse()) await other.close().catch(() => {});
+    for (const folder of folders) await rm(folder, { recursive: true, force: true }).catch(() => {});
     await mac.close().catch(() => {});
     await relay?.close().catch(() => {});
     if (relayFolder) await rm(relayFolder, { recursive: true, force: true }).catch(() => {});
