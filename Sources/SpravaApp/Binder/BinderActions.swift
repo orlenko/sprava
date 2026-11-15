@@ -67,6 +67,15 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @Published var message: String? { didSet { readFoundNoRuntime = false } }
     /// What the last approval did, said where the card was until the next change, another binder or a few seconds.
     @Published private(set) var confirmation: String?
+    /// The last Done on a repeating to-do: where it moved ("Done: … Next: December 15."), and the op its Undo takes back.
+    /// The next change, or another binder, ends it.
+    struct Moved: Equatable {
+        let line: String
+        let opID: String
+    }
+    @Published private(set) var moved: Moved?
+    /// Why the item editor offers no new repeat in this binder (binder_settings `repeats_off`); nil when it may.
+    @Published private(set) var repeatsOff: String?
     private var confirmationEnds: Task<Void, Never>?
     var confirmationLifetime: Duration = .seconds(8)
     /// The cards whose Details are open.
@@ -160,7 +169,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             let kept = drafts.removeValue(forKey: folder) ?? Draft()
             cards = []; history = []; historyRead = .reading; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
             description = ""; savedDescription = ""; descriptionDraft = kept.description
-            filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false
+            filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false; moved = nil; repeatsOff = nil
             confirm(nil)
             keeping = nil; keepingNote = nil; preview = nil
         }
@@ -178,6 +187,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             }
             savedDescription = saved
             filing = s["filing"] == .bool(true)
+            repeatsOff = s["repeats_off"]?.stringValue
             settingsLoaded = true
         } catch {
             guard serves(folder) else { return }
@@ -293,6 +303,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     func undo(_ change: Change, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never> {
         busy = true
         confirm(nil)
+        moved = nil
         return Task {
             defer { busy = false }
             do {
@@ -332,8 +343,9 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// runs whenever the runtime accepts it, shown or not, for state kept per binder that must follow the binder.
     func send(_ name: String, _ folder: URL, _ fields: [(String, JSONValue)], onSuccess: () -> Void = {},
               onAccepted: () -> Void = {}, onReply: (JSONObject) -> Void = { _ in }) async {
-        // The next change ends the last approval's confirmation: it says only what that approval did.
-        if serves(folder) { confirm(nil) }
+        // The next change ends the last approval's confirmation, and the line of a repeating to-do's last Done: each says
+        // only what that one change did.
+        if serves(folder) { confirm(nil); moved = nil }
         do {
             let reply = try await client.command(name, binder: folder, fields)
             onAccepted()
@@ -512,14 +524,28 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                onSuccess: { [weak self] in self?.forget(card) })
     }
 
-    /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id.
+    /// Marks an item done (`complete`) or drops it (`drop`), as the person; nil for an item without an id. A Done on a
+    /// repeating item names the date it completes, and the page then says where the item moved, with its Undo.
     @discardableResult
     func close(_ item: Item, as op: String, _ folder: URL, reload: @escaping () -> Void,
                onAccepted: @escaping () -> Void = {}, onEnd: @escaping () -> Void = {}) -> Task<Void, Never>? {
-        guard let id = item.object?["id"] else { return nil }
+        if op == "complete", item.repeatUnreadable { message = RepeatWords.unreadableDone; return nil }
         let at = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)
-        return run("apply", folder, [("op", .string(op)),
-                                     ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))]))],
-                   then: reload, onAccepted: onAccepted, onEnd: onEnd)
+        guard let args = item.closeArgs(op, at: at) else { return nil }
+        let title = item.title
+        return run("apply", folder, [("op", .string(op)), ("args", args)], then: reload, onAccepted: onAccepted,
+                   onReply: { [weak self] reply in
+                       guard let next = reply["next_due"]?.stringValue.flatMap(CalendarDate.strict),
+                             let op = reply["op"]?.stringValue else { return }
+                       self?.moved = Moved(line: "Done: \(title). " + RepeatWords.next(next, today: .today()), opID: op)
+                   },
+                   onEnd: onEnd)
+    }
+
+    /// Takes back the Done that moved a repeating to-do on.
+    func undoMoved(_ folder: URL, reload: @escaping () -> Void) {
+        guard let moved, !busy else { return }
+        self.moved = nil
+        undo(Change(id: moved.opID, line: moved.line, who: "you", at: nil, undoable: true, undone: false), folder, reload: reload)
     }
 }

@@ -37,7 +37,7 @@ struct TodoLine: View {
     let item: Item
     let bucket: Bucket
     let today: CalendarDate
-    /// False while the row can only be read: a binder that cannot be written, an item that repeats or has no id.
+    /// False while the row can only be read: a binder that cannot be written, or an item with no id.
     let changeable: Bool
     /// Beside the row on a page of many binders; nil on a binder's own page.
     var binder: String?
@@ -63,7 +63,7 @@ struct TodoLine: View {
         if let text = item.object?["details"]?.stringValue, !text.isEmpty { parts.append(text) }
         if let party = item.waitingOn { parts.append("waiting on \(party)") }
         if bucket == .nudge || bucket == .waiting, let due = item.due { parts.append("due \(due.description)") }
-        if item.hasRecurrence { parts.append("repeats; the hub manages it for now") }
+        if let repeats = RepeatWords.line(item) { parts.append(repeats) }
         if !item.contexts.isEmpty { parts.append(item.contexts.joined(separator: " ")) }
         if !item.tags.isEmpty { parts.append(item.tags.map { "#\($0)" }.joined(separator: " ")) }
         return parts.joined(separator: "   ")
@@ -107,7 +107,7 @@ struct TodoLine: View {
         .frame(width: TodoColumns.leading)
         .disabled(!changeable)
         .accessibilityLabel("Mark done")
-        .help(changeable ? "Mark done" : item.hasRecurrence ? "Repeats; the hub manages it for now" : "Open the binder to change it")
+        .help(changeable ? (item.occurrence == nil ? "Mark done" : "Mark done; it moves to its next date") : "Open the binder to change it")
     }
 
     private var reading: some View {

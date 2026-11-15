@@ -166,7 +166,8 @@ final class TodoModel: ObservableObject, DraftOwner {
         await close(entry, operation: "drop", editor: editor, reload: reload)
     }
     private func close(_ entry: TodoBoard.Entry, operation: String, editor: ItemEditor?, reload: @escaping () async -> Void) async {
-        guard entry.closable, let id = entry.item.object?["id"], !closing.contains(entry.id) else { return }
+        guard entry.closable, !closing.contains(entry.id) else { return }
+        if operation == "complete", entry.item.repeatUnreadable { message = RepeatWords.unreadableDone; return }
         closing.insert(entry.id)
         defer { closing.remove(entry.id) }
         if let editor, editor.isEditing(entry.item, in: entry.folder) {
@@ -189,16 +190,22 @@ final class TodoModel: ObservableObject, DraftOwner {
             return
         }
         let at = ISOTime.string(Date(), timeZone: TimeZone(identifier: "UTC")!)
+        guard let args = entry.item.closeArgs(operation, at: at) else { return }
         do {
-            let r = try await client.command("apply", binder: entry.folder, [
-                ("op", .str(operation)), ("args", .obj([("id", id), ("closed_at", .string(at)), ("source", .str("user"))])),
-            ])
+            let r = try await client.command("apply", binder: entry.folder, [("op", .str(operation)), ("args", args)])
             message = nil
-            lastChange = r["op"]?.stringValue.map { Change(line: (operation == "complete" ? "Done: " : "Cancelled: ") + entry.item.title, folder: entry.folder, opIDs: [$0]) }
+            lastChange = r["op"]?.stringValue.map { Change(line: Self.closedLine(operation, entry.item.title, reply: r, today: .today()), folder: entry.folder, opIDs: [$0]) }
         } catch {
             message = "The to-do was not closed: \(error)"
         }
         await reload()
+    }
+
+    /// "Done: title", "Cancelled: title", or for a repeating to-do the store moved on, "Done: title. Next: December 15."
+    static func closedLine(_ operation: String, _ title: String, reply: JSONObject, today: CalendarDate) -> String {
+        guard operation == "complete" else { return "Cancelled: " + title }
+        guard let next = reply["next_due"]?.stringValue.flatMap(CalendarDate.strict) else { return "Done: " + title }
+        return "Done: \(title). " + RepeatWords.next(next, today: today)
     }
 
     func undo(reload: @escaping () async -> Void) async {

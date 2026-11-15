@@ -112,6 +112,7 @@ struct NowView: View {
                 }
             }
             if let message = actions.message { Text(message).foregroundStyle(.orange) }
+            MovedLine(actions: actions, folder: row.folder, reload: refresh)
             Text("\(teka.level?.label ?? "unreadable") · \(row.stateLabel) · today \(today.description)")
                 .foregroundStyle(.secondary)
             if teka.state < .needsMigration {

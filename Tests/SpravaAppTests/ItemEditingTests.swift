@@ -405,16 +405,25 @@ import Testing
         #expect(editor.begin(call, in: folder, actions, reload: {}) && editor.isEditing(call, in: folder))
     }
 
-    @Test func anItemThatRepeatsIsShownReadOnly() {
+    /// A repeat by a rule this version cannot read (no day): the row opens and edits like any other, its repeat is never
+    /// rewritten, and Done says why it is not sent rather than closing the series for good.
+    @Test func anItemRepeatingByARuleSpravaCannotReadIsKeptAsItIs() {
         let item = Item(raw: .obj([("id", .str("acme-3")), ("title", .str("Pay the Acme retainer")), ("due", .str("2026-12-14")),
                                    ("recurrence", .obj([("freq", .str("monthly"))]))]), index: 0)
         let folder = URL(fileURLWithPath: "/Invented/acme-books", isDirectory: true)
         let editor = ItemEditor()
-        let row = ItemRow(item: item, bucket: .later, actions: BinderActions(client: StandInRuntime().client), editor: editor,
-                          folder: folder, editable: true, reload: {})
-        #expect(!row.changeable && !row.closable)
+        let runtime = StandInRuntime()
+        let actions = BinderActions(client: runtime.client)
+        let row = ItemRow(item: item, bucket: .later, actions: actions, editor: editor, folder: folder, editable: true, reload: {})
+        #expect(row.changeable && row.closable)
+        #expect(actions.close(item, as: "complete", folder, reload: {}) == nil)
+        #expect(actions.message == RepeatWords.unreadableDone && runtime.sent.isEmpty)
         row.begin()
-        #expect(editor.row(in: folder) == nil)
+        editor.setRepeat(.never, in: folder)
+        editor.setTitle("Pay the Acme retainer early", in: folder)
+        let change = editor.row(in: folder)?.change
+        #expect(change?["set"]?["title"] == .str("Pay the Acme retainer early"))
+        #expect(change?["set"]?["recurrence"] == nil && change?["unset"] == nil)
     }
 
     @Test func aChangeLeavesALenientDueDateAsWrittenWhenTheDayIsTheSame() {

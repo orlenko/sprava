@@ -55,8 +55,8 @@ struct TodoBoard: Sendable {
         let writable: Bool
         /// Unique on the page: the binder's folder and the item's place in its catalog.
         var id: String { "\(folder.path)\u{0}\(item.index)" }
-        /// Done is offered as on the binder page: a writable binder, an item with an id, no recurrence.
-        var closable: Bool { writable && item.object?["id"] != nil && !item.hasRecurrence }
+        /// Done is offered as on the binder page: a writable binder and an item with an id. A repeating item moves on.
+        var closable: Bool { writable && item.object?["id"] != nil }
     }
 
     struct Filter: Equatable, Sendable {

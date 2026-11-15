@@ -15,9 +15,9 @@ struct ItemRow: View {
     var today = CalendarDate.today()
     let reload: () -> Void
 
-    /// Whether the row can be changed at all: an op names the item by its id, and an item that repeats is shown
-    /// read-only, since the hub manages it for now (mvp.md feature 2).
-    var changeable: Bool { editable && item.object?["id"] != nil && !item.hasRecurrence }
+    /// Whether the row can be changed at all: an op names the item by its id. A repeating item is changed like any other,
+    /// and its Done moves it to its next date (decisions.md F3, 2026-11-15).
+    var changeable: Bool { editable && item.object?["id"] != nil }
     /// A row that is not open closes at once; the open row closes through the editor, which saves what was typed first
     /// (Mark Done) or drops it with the item (Delete), so a closing the runtime refuses never takes the typed text.
     var closable: Bool { changeable && !editor.isEditing(item, in: folder) }
@@ -118,6 +118,9 @@ struct ItemEditFields: View {
                   options: [("Open", "open"), ("Waiting", "waiting"), ("Blocked", "blocked")])
               Spacer()
           }
+          if let row {
+              RepeatsField(row: row, off: Self.repeatsOff(actions), choose: { editor.setRepeat($0, in: folder) })
+          }
           if row?.waiting == true {
               HStack {
                   TextField("Waiting on", text: Binding(get: { editor.row(in: folder)?.waitingOn ?? "" },
@@ -141,6 +144,39 @@ struct ItemEditFields: View {
     }
 
     func save() { editor.save(in: folder, actions, reload: reload) }
+
+    /// Why no new repeat is offered: the runtime's reason, or, until the binder's settings are read, that it is not known yet.
+    static func repeatsOff(_ actions: BinderActions) -> String? {
+        actions.settingsLoaded ? actions.repeatsOff
+            : "Repeats can be set once Sprava has read this binder's settings."
+    }
+}
+
+/// The Repeats menu: Never, the repeat the item has, or monthly or yearly from its date (binder-v0 §5.4). Where a new
+/// repeat cannot be set, the menu offers only what removes or keeps one, and says why and what the person can do.
+struct RepeatsField: View {
+    let row: ItemEditor.Row
+    let off: String?
+    let choose: (ItemEditor.Row.RepeatChoice) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if row.item.repeatUnreadable {
+                Text("Repeats by a rule this version of Sprava cannot read; it is kept as it is.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 16) {
+                    LabeledPicker(label: "Repeats",
+                                  selection: Binding(get: { row.repeatChoice.rawValue },
+                                                     set: { if let c = ItemEditor.Row.RepeatChoice(rawValue: $0) { choose(c) } }),
+                                  options: row.repeatOptions(offersNew: off == nil))
+                        .disabled(off != nil && row.item.repeatRule == nil)
+                    Spacer()
+                }
+                if let off { Text(off).font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+    }
 }
 
 /// A short label and its menu, kept together at the menu's natural width.
