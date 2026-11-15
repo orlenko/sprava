@@ -26,6 +26,24 @@ public final class TekaStore {
         self.client = client
     }
 
+    /// Why this store writes no new repeat, nil once its caller has checked that it may (binder-v0 §8.1): lifeproj's
+    /// drain ends a repeating item for good, so a repeat is set only on a binder lifeproj cannot reach, and only a
+    /// caller that can read lifeproj's registry knows that. Off until a caller says otherwise.
+    public var repeatsRefusal: String? = TekaStore.repeatsUnchecked
+
+    public static let repeatsUnchecked = "Repeats are off for this binder until Sprava has checked that lifeproj no longer reaches it; nothing was changed."
+
+    /// Whether `body` gives an item a `recurrence`: a new item with one, an edit that sets one, or a reopen that
+    /// brings one back. Adoption's own `import` ops keep what the binder held.
+    static func writesRepeat(_ body: OpBody) -> Bool {
+        guard body.actor["kind"] != .str("import") else { return false }
+        switch body.op {
+        case "add_item", "reopen": return body.args["item"]?["recurrence"] != nil
+        case "update_item": return body.args["set"]?["recurrence"] != nil
+        default: return false
+        }
+    }
+
     var catalogURL: URL { folder.appendingPathComponent("catalog.json") }
     var spravaDir: URL { folder.appendingPathComponent(".sprava", isDirectory: true) }
     var opLogURL: URL { spravaDir.appendingPathComponent("ops.ndjson") }
@@ -247,6 +265,7 @@ public final class TekaStore {
         // The chain must hold before anything is appended: the head of the log is the catalog found.
         guard log.last?["after_hash"]?.stringValue == hash else { throw ChangedWhileWriting() }
         let bodies = try build(catalog, log)
+        if let why = repeatsRefusal, bodies.contains(where: Self.writesRepeat) { throw Refused(reason: why) }
         // A rename records the folder's new basename, the name the reader compares with (binder-v0 §3.1, §6.3).
         for body in bodies where body.op == "rename_teka" {
             guard let name = body.args["name"]?.stringValue,
@@ -267,6 +286,12 @@ public final class TekaStore {
             // An applied op carries every value its effect needs (binder-v0 §6.3): a closure's time and source are
             // written into the op, not only into the log entry.
             if ["complete", "drop"].contains(body.op) {
+                // A recurring item advances instead of closing: its next date is worked out here, under the lock,
+                // from the item as it is now (binder-v0 §5.4).
+                if body.op == "complete", let id = body.args["id"] {
+                    try Recurrence.fillNextDue(&body.args, item: catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+                                               at: at)
+                }
                 if body.args["next_due"] == nil, body.args["closed_at"] == nil { body.args.set("closed_at", .string(at)) }
                 if body.args["source"] == nil, let kind = body.actor["kind"] { body.args.set("source", kind) }
                 // A title that is not text is kept in the closure's `final` under the next free legacy name, named in

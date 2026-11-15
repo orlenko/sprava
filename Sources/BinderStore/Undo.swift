@@ -198,10 +198,10 @@ public enum Undo {
             // cannot write back with the same meaning refuses the undo, so it never reports success with a changed item.
             guard let closedID = args["id"] else { throw Unsupported(message: "no item id") }
             let source = try closedItem(target, catalog: catalog, stateBefore: stateBefore)
-            // This version never writes `recurrence` (the guard refuses it), and reopening without it would quietly turn
-            // a series into a one-off.
-            if let recurrence = source["recurrence"], recurrence != .null {
-                throw Unsupported(message: "this item repeated, and this version cannot reopen a repeating item; add it again instead")
+            // A series comes back as a series: reopening without its `recurrence` would quietly turn it into a one-off,
+            // so a rule this version cannot read refuses the undo.
+            if let recurrence = source["recurrence"], recurrence != .null, Recurrence.rule(recurrence) == nil {
+                throw Unsupported(message: "this item repeated by a rule this version cannot read; add it again instead")
             }
             guard case .string(let title)? = source["title"], !title.isEmpty else {
                 throw Unsupported(message: "it had no title this version can write back; add it again with its title")
@@ -213,7 +213,7 @@ public enum Undo {
             // Every other field is copied first, nulls dropped since null means absent; only then are values rewritten,
             // so a legacy name chosen below is never one a copied field still holds.
             for e in source.entries
-            where !["id", "title", "kind", "provenance", "created_at", "updated_at", "derived", "dismissed", "recurrence"].contains(e.key)
+            where !["id", "title", "kind", "provenance", "created_at", "updated_at", "derived", "dismissed"].contains(e.key)
                 && e.value != .null {
                 item.set(e.key, e.value)
             }

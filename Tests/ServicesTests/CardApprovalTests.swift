@@ -8,7 +8,7 @@ import SpravaTestSupport
 import Testing
 
 /// Approving cards through the command table: approving one card trusts no other file, a change another program
-/// overwrote comes back as a card, and recurrence cannot be set. Invented data only.
+/// overwrote comes back as a card, and the person can set a well-formed repeat. Invented data only.
 @Suite(.serialized) struct CardApprovalTests {
     let now = Date(timeIntervalSince1970: 1_791_360_000)   // 2026-10-07
 
@@ -109,15 +109,21 @@ import Testing
 
     // 12. A time-zone change after today's summary time sends today's summary at once.
 
-    // 15. Recurrence and dismissed are not set in this version.
-    @Test func recurrenceCannotBeSet() throws {
+    // 15. Since 2026-11-15 the person sets a repeat, checked against binder-v0 §5.4, once the runtime has checked that
+    // lifeproj cannot reach the binder; until it does, none is set. Dismissed is still not set.
+    @Test func aRepeatWaitsForTheLifeprojCheck() throws {
         let root = try scratch()
         let f = try binder(root, name: "tax", catalog: lifeproj(name: "tax", items: [item("a-1")]))
-        try TekaStore(folder: f).adopt(survey: JSONObject(), owner: JSONObject(), now: now)
         let c = Commands(support: root.appendingPathComponent("support"), deviceID: "dev")
-        let r = try req(c, [("command", .str("apply")), ("binder", .string(f.path)), ("op", .str("update_item")),
-                            ("args", .obj([("id", .str("a-1")), ("set", .obj([("recurrence", .obj([("freq", .str("monthly")), ("day", .int(1))]))]))]))])
-        #expect(r["ok"] == .bool(false))
+        #expect(try req(c, [("command", .str("adopt")), ("binder", .string(f.path))])["ok"] == .bool(true))
+        func repeats(_ day: Int) throws -> JSONValue {
+            try req(c, [("command", .str("apply")), ("binder", .string(f.path)), ("op", .str("update_item")),
+                        ("args", .obj([("id", .str("a-1")), ("set", .obj([("recurrence", .obj([("freq", .str("monthly")), ("day", .int(day))]))]))]))])
+        }
+        #expect(try repeats(32)["ok"] == .bool(false))
+        let refused = try repeats(1)
+        #expect(refused["ok"] == .bool(false))
+        #expect(refused["error"]?.stringValue?.contains("lifeproj") == true, "\(refused)")
     }
 }
 

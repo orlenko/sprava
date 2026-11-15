@@ -22,7 +22,7 @@ import Testing
     @Test func aRecurringPhoneCompletionRecordsItsClosureTimeAndReplaysOnlyOnce() throws {
         let (folder, store) = try adopted(); defer { try? FileManager.default.removeItem(at: folder) }
         let recurring = "estate-example-2026-010"
-        let next = JSONValue.string("2027-02-14")
+        let next = JSONValue.string("2026-12-14")
         let bytes = try store.withCompanionTransaction(now: now) { transaction in
             try transaction.prepare(.init(op: "complete", args: JSONObject([
                 ("id", .string(recurring)), ("occurrence_due", .string("2026-11-14")),
@@ -124,10 +124,10 @@ import Testing
             }
             #expect(throws: TekaStore.Refused.self) { try transaction.prepare(drop(), effectID: effect, tag: "untrusted", now: now) }
         }
-        // Existing TransactionGuard still refuses completing a recurring item without its next occurrence.
+        // The guard refuses a malformed repeat, and next_due on an item that does not repeat.
         #expect(throws: (any Error).self) {
             try store.apply([.init(op: "update_item", args: JSONObject([("id", .string(item)), ("set", .obj([
-                ("due", .string("2026-10-15")), ("recurrence", .obj([("freq", .string("monthly")), ("day", .int(15))]))]))]), actor: user)], now: now)
+                ("due", .string("2026-10-15")), ("recurrence", .obj([("freq", .string("monthly")), ("day", .int(0))]))]))]), actor: user)], now: now)
         }
         #expect(throws: (any Error).self) {
             try store.withCompanionTransaction(now: now) { try $0.prepare(.init(op: "complete", args: JSONObject([

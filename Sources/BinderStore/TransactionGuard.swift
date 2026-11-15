@@ -191,14 +191,26 @@ public enum TransactionGuard {
            !DocumentPaths.isSafe(path.stringValue ?? "", forFiling: false) {
             problems.append("update_document: path breaks the path rules")
         }
-        // Recurrence and dismissal are left to lifeproj and the hub in this version (mvp.md feature 2): neither is set
-        // nor removed, so a series never quietly becomes a one-off.
+        // Only the person sets or removes a repeat (mvp.md, 2026-11-15), so no clerk, brain or drained change turns a
+        // series into a one-off or a one-off into a series. Dismissal stays with the hub in this version (mvp.md
+        // feature 2): it is neither set nor removed.
         let written = [args?["item"]?.objectValue, args?["set"]?.objectValue].compactMap { $0 }
-        let removed = args?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []
-        if ["add_item", "update_item", "reopen"].contains(type), kind != "import",
-           written.contains(where: { $0["recurrence"] != nil || $0["dismissed"] != nil })
-            || (type == "update_item" && kind != "import" && (removed.contains("recurrence") || removed.contains("dismissed"))) {
-            problems.append("\(type): recurrence and dismissed are not set or removed in this version")
+        let removed = type == "update_item" ? args?["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [] : []
+        if ["add_item", "update_item", "reopen"].contains(type), kind != "import" {
+            if written.contains(where: { $0["dismissed"] != nil }) || removed.contains("dismissed") {
+                problems.append("\(type): dismissed is not set or removed in this version")
+            }
+            if kind != "user", written.contains(where: { $0["recurrence"] != nil }) || removed.contains("recurrence") {
+                problems.append("\(type): only the person sets or removes a repeat")
+            }
+            // At every catalog level, not only where the v0 item rules apply (binder-v0 §5.4).
+            if written.contains(where: { $0["recurrence"].map { Recurrence.rule($0) == nil } ?? false }) {
+                problems.append("\(type): a repeat is monthly on a day from 1 to 31, or yearly on a month from 1 to 12 and a day")
+            }
+        }
+        // A recurring completion names the occurrence it completes and the next one, together (binder-v0 §10.5).
+        if type == "complete", (args?["occurrence_due"] == nil) != (args?["next_due"] == nil) {
+            problems.append("complete: occurrence_due and next_due go together")
         }
         // A free log entry says what happened; `at`, `via` and `op_id` are stamped (binder-v0 §6.8, §10.4).
         if type == "add_log_entry" {
@@ -227,6 +239,43 @@ public enum TransactionGuard {
         if type == "external_edit", kind != "external" { problems.append("external_edit: actor kind must be external") }
         if ["import_snapshot", "migrate", "abort"].contains(type), kind != "import" { problems.append("\(type): actor kind must be import") }
         return problems
+    }
+
+    /// A repeat needs the date of its next occurrence (binder-v0 §5.4), at every catalog level: an op that writes an
+    /// item's `recurrence`, `due` or `no_deadline` never leaves a repeating item without a `YYYY-MM-DD` `due`.
+    static func repeatWithoutDue(_ op: JSONObject, in next: JSONObject) -> String? {
+        guard let type = op["op"]?.stringValue, ["add_item", "update_item", "reopen"].contains(type) else { return nil }
+        let args = op["args"]?.objectValue ?? JSONObject()
+        let id = type == "update_item" ? args["id"] : args["item"]?["id"]
+        let fields = Set((args["item"]?.objectValue?.keys ?? []) + (args["set"]?.objectValue?.keys ?? [])
+                         + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? []))
+        guard let id, !fields.isDisjoint(with: ["recurrence", "due", "no_deadline"]),
+              let item = next["open_items"]?.arrayValue?.first(where: { $0["id"] == id }),
+              let recurrence = item["recurrence"], recurrence != .null else { return nil }
+        return item["due"]?.stringValue.flatMap(CalendarDate.strict) == nil ? "\(type): a repeating to-do needs a due date" : nil
+    }
+
+    /// Problems with a completion that advances a recurring item (binder-v0 §5.4): it completes the occurrence the item
+    /// is due on now, never one already advanced past, and its `next_due` is `next_after(max(due, today))` on the day of
+    /// its `at`. So a repeated or stale Done is refused instead of advancing the series a second time.
+    static func occurrenceProblems(_ op: JSONObject, on state: JSONObject) -> [String] {
+        let args = op["args"]?.objectValue ?? JSONObject()
+        // The applier refuses next_due on a missing item and on a one-off.
+        guard let id = args["id"], let item = state["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+              let found = item["recurrence"], found != .null else { return [] }
+        guard let rule = Recurrence.rule(found) else { return ["complete: the item's recurrence cannot be read, so its next date is unknown"] }
+        guard let shown = args["occurrence_due"]?.stringValue.flatMap(CalendarDate.strict),
+              let next = args["next_due"]?.stringValue.flatMap(CalendarDate.strict) else {
+            return ["complete: occurrence_due and next_due are YYYY-MM-DD dates"]
+        }
+        guard item["due"] == .string(shown.description) else {
+            return ["complete: occurrence_due is not the item's due date; it moved on since"]
+        }
+        guard let today = op["at"]?.stringValue.flatMap({ Recurrence.day(ofAt: $0) }),
+              Recurrence.nextDue(occurrence: shown, today: today, rule) == next else {
+            return ["complete: next_due is not the next date the item's recurrence gives"]
+        }
+        return []
     }
 
     /// Problems with a log entry this implementation is about to write: the types of binder-v0 §10.4 for the fields
@@ -286,6 +335,9 @@ public enum TransactionGuard {
                title.stringValue == nil, op["args"]?["keep_title_as"]?.stringValue?.hasPrefix("legacy_title") != true {
                 reasons.append("\(type!): the item's title is not text, and the closure does not keep it (keep_title_as)")
             }
+            if type == "complete", op["args"]?["next_due"] != nil {
+                reasons += occurrenceProblems(op, on: state)
+            }
             let before = violations(state)
             let next: JSONObject
             do {
@@ -296,6 +348,7 @@ public enum TransactionGuard {
             }
             let after = violations(next)
             for v in after.subtracting(before) { reasons.append("new violation \(v)") }
+            if let problem = repeatWithoutDue(op, in: next) { reasons.append(problem) }
             // Records the op creates or changes must be valid afterwards, even if they were invalid before.
             for (array, id) in touchedRecords(op) {
                 for v in after where v.array == array && v.recordKey == canonicalText(id) && before.contains(v) {

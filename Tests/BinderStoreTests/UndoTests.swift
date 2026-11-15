@@ -93,10 +93,12 @@ import Testing
 
     // Layer 5 review, finding 1: undoing an older occurrence never sets back a series a later completion advanced.
     @Test func anOlderOccurrenceIsNotUndoneThroughALaterOne() throws {
-        let (folder, store) = try inline(#"{"id":"r-1","title":"Invented monthly report","status":"open","priority":"normal","due":"2026-10-15","recurrence":{"every":"month"}}"#)
+        let (folder, store) = try inline(#"{"id":"r-1","title":"Invented monthly report","status":"open","priority":"normal","due":"2026-10-15","recurrence":{"freq":"monthly","day":15}}"#)
         func advance(_ from: String, _ to: String) throws -> String {
-            try store.apply([.init(op: "complete", args: JSONObject([(key: "id", value: .str("r-1")), (key: "occurrence_due", value: .string(from)),
-                                                                     (key: "next_due", value: .string(to))]), actor: user)], now: now)[0]["id"]!.stringValue!
+            let applied = try store.apply([.init(op: "complete", args: JSONObject([(key: "id", value: .str("r-1")), (key: "occurrence_due", value: .string(from))]),
+                                                 actor: user)], now: now)
+            #expect(applied[0]["args"]?["next_due"] == .string(to))
+            return applied[0]["id"]!.stringValue!
         }
         let october = try advance("2026-10-15", "2026-11-15")
         let november = try advance("2026-11-15", "2026-12-15")
@@ -109,15 +111,20 @@ import Testing
         #expect(items(folder).first?["due"] == .str("2026-10-15"))
     }
 
-    // Layer 5 second calibrated review, finding 3: a completion without `occurrence_due` is undone to the due date
-    // the item had before it.
+    // Layer 5 second calibrated review, finding 3: a completion without `occurrence_due`, as another writer may have
+    // logged it (Sprava's guard no longer writes one), is undone to the due date the item had before it.
     @Test func anOccurrenceWithoutItsDueIsUndone() throws {
-        let (folder, store) = try inline(#"{"id":"r-1","title":"Invented monthly report","status":"open","priority":"normal","due":"2026-10-15","recurrence":{"every":"month"}}"#)
-        let applied = try store.apply([.init(op: "complete", args: JSONObject([(key: "id", value: .str("r-1")), (key: "next_due", value: .str("2026-11-15"))]),
-                                             actor: user)], now: now)
-        #expect(items(folder).first?["due"] == .str("2026-11-15"))
-        try store.undo(opID: applied[0]["id"]!.stringValue!, now: now)
-        #expect(items(folder).first?["due"] == .str("2026-10-15"))
+        func catalog(due: String) -> JSONObject {
+            JSONObject([(key: "open_items", value: .array([.obj([("id", .str("r-1")), ("title", .str("Invented monthly report")),
+                                                                ("due", .string(due)), ("recurrence", .obj([("freq", .str("monthly")), ("day", .int(15))]))])]))])
+        }
+        let target = JSONObject([(key: "id", value: .str("op-1")), (key: "op", value: .str("complete")),
+                                 (key: "args", value: .obj([("id", .str("r-1")), ("next_due", .str("2026-11-15"))]))])
+        let after = catalog(due: "2026-11-15")
+        let undo = try Undo.compensation(target, catalog: after, opLog: [target], stateBefore: catalog(due: "2026-10-15"), stateAfter: after,
+                                         year: 2026, now: now)
+        #expect(undo.op == "update_item")
+        #expect(undo.args["set"]?["due"] == .str("2026-10-15"))
     }
 
     // Layer 5 review, finding 7: undo restores the derivation flags of the fields it restores, and no others.
@@ -189,15 +196,22 @@ import Testing
         _ = try Replay.run(try store.readOpLog().ops)
     }
 
-    // Layer 5 third review, finding 3: undoing the drop of a repeating item is refused, never reopened as a one-off.
-    @Test func undoingTheDropOfARepeatingItemIsRefused() throws {
+    // Layer 5 third review, finding 3: undoing the drop of a repeating item never reopens it as a one-off. Since
+    // 2026-11-15 the person's repeats are written, so it comes back repeating; a rule this version cannot read is refused.
+    @Test func undoingTheDropOfARepeatingItemNeverMakesAOneOff() throws {
         let (folder, store) = try adopted()
         let applied = try store.apply([.init(op: "drop", args: JSONObject([
             (key: "id", value: .str("estate-example-2026-010")), (key: "closed_at", value: .str("2026-10-07T09:00:00Z")),
             (key: "source", value: .str("user"))]), actor: user)], now: now)
-        let count = items(folder).count
-        #expect(throws: Undo.Unsupported.self) { try store.undo(opID: applied[0]["id"]!.stringValue!, now: now) }
-        #expect(items(folder).count == count)
-        #expect(try store.readOpLog().ops.last?["id"] == applied[0]["id"])
+        store.repeatsRefusal = nil   // as the runtime sets it for a binder lifeproj cannot reach
+        try store.undo(opID: applied[0]["id"]!.stringValue!, now: now)
+        #expect(items(folder).last?["recurrence"] == .obj([("freq", .str("monthly")), ("day", .int(14))]))
+
+        let (other, unreadable) = try inline(#"{"id":"r-1","title":"Invented report","status":"open","priority":"normal","due":"2026-10-15","recurrence":{"every":"month"}}"#)
+        unreadable.repeatsRefusal = nil
+        let dropped = try unreadable.apply([.init(op: "drop", args: JSONObject([(key: "id", value: .str("r-1"))]), actor: user)], now: now)
+        #expect(throws: Undo.Unsupported.self) { try unreadable.undo(opID: dropped[0]["id"]!.stringValue!, now: now) }
+        #expect(items(other).isEmpty)
+        #expect(try unreadable.readOpLog().ops.last?["id"] == dropped[0]["id"])
     }
 }

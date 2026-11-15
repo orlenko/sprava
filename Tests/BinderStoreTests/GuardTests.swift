@@ -128,9 +128,9 @@ import Testing
                                                          ("source", .str("user"))])], on: c)
         }
         let advance = op("complete", [("id", id), ("closed_at", .str("2026-10-07T09:00:00Z")), ("source", .str("user")),
-                                      ("occurrence_due", .str("2026-11-14")), ("next_due", .str("2027-02-14"))])
+                                      ("occurrence_due", .str("2026-11-14")), ("next_due", .str("2026-12-14"))])
         let (result, _) = try TransactionGuard.check([advance], on: c)
-        #expect(result["open_items"]!.arrayValue!.first { $0["id"] == id }?["due"] == .str("2027-02-14"))
+        #expect(result["open_items"]!.arrayValue!.first { $0["id"] == id }?["due"] == .str("2026-12-14"))
         #expect(result["processing_log"]!.arrayValue!.last?["action"] == .str("occurrence"))
     }
 }
