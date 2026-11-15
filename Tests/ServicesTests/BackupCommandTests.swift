@@ -33,6 +33,33 @@ import Testing
         #expect(try String(contentsOf: settings, encoding: .utf8) == "{broken")
     }
 
+    /// The status tells the app whether the runtime can reach iCloud Keychain, so the page never offers a choice setup
+    /// refuses. Without it, setup refuses only the opt-in, before anything is saved; the opt-out goes on to the mirror.
+    @Test func statusSaysWhetherICloudKeychainIsReachableAndSetupRefusesOnlyTheOptIn() throws {
+        let c = commands()
+        for reachable in [false, true] {
+            let status = try Commands.$iCloudKeychainAnswer.withValue(reachable) { try call(c, [("command", .str("backup_status"))]) }
+            #expect(status["icloud_keychain_available"] == .bool(reachable))
+        }
+        // A mirror whose settings cannot be read: the step after the iCloud Keychain check fails, and says so.
+        let settings = c.support.appendingPathComponent("backup/settings.json")
+        try AtomicFile.makePrivateFolder(settings.deletingLastPathComponent())
+        try Data("{broken".utf8).write(to: settings)
+        let mirror = c.support.appendingPathComponent("invented-mirror").path
+        func setup(_ icloud: Bool) throws -> JSONValue {
+            try Commands.$iCloudKeychainAnswer.withValue(false) {
+                try call(c, [("command", .str("backup_setup")), ("key", .str("INVNT-KEYAA-KEYBB")), ("primary", .string(mirror)),
+                             ("icloud_keychain", .bool(icloud))])
+            }
+        }
+        let optIn = try setup(true)
+        #expect(optIn["error"] == .str("iCloud Keychain is unavailable to this build of Sprava; keep the key yourself. Nothing was changed."))
+        let optOut = try setup(false)
+        #expect(optOut["error"]?.stringValue?.contains("iCloud Keychain") == false)
+        #expect(try String(contentsOf: settings, encoding: .utf8) == "{broken")
+        #expect(!FileManager.default.fileExists(atPath: mirror))
+    }
+
     @Test func requestsAreQueuedOnlyForThisMacsBinders() throws {
         let c = commands()
         let mine = try adopted(c), another = try adopted(c, device: "another-mac")

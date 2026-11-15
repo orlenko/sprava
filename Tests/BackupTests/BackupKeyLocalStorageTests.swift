@@ -192,7 +192,7 @@ import Testing
         let refusal = #expect(throws: BackupKey.Failure.self) {
             try BackupKey.store("INVNT-NEWKEY", inICloudKeychain: true, keychain: keychain.keychain(interactive: true, lock: lock))
         }
-        #expect(refusal?.message == "iCloud Keychain is unavailable in this development build; the backup key can be kept on this Mac only. Nothing was changed.")
+        #expect(refusal?.message == "iCloud Keychain is unavailable to this build of Sprava; the backup key can be kept on this Mac only. Nothing was changed.")
         #expect(keychain.login == before && keychain.protected.isEmpty)
         #expect(BackupKey.load(keychain: keychain.keychain(lock: lock)) == "INVNT-EARLIER")
     }
