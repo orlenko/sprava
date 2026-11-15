@@ -13,6 +13,11 @@ public struct CompanionOwnerResetReport: Sendable, Equatable {
     public init() {}
 }
 
+public enum CompanionOwnerResetError: Error, Sendable, Equatable {
+    /// A phone's decision is recorded but not finished; nothing was changed (§9.4).
+    case decisionPending
+}
+
 protocol OwnerResetTransport: Sendable {
     func deleteDevice(deviceID: String, downloadLimit: Int) async throws -> CompanionRelayReply<Data>
 }
@@ -54,7 +59,8 @@ public enum CompanionOwnerReset {
     /// The local reset. First every credential of the relay identity is forgotten, the owner token and signing key
     /// first, so the old setup can make no further relay call; then the whole `companion` folder (the state with its
     /// WAL, and development credential files) is renamed aside with a timestamp, never deleted. A process still
-    /// holding the old state writes only into the folder set aside. Nil when nothing was set up.
+    /// holding the old state writes only into the folder set aside. Nil when nothing was set up. A phone decision begun
+    /// and not finished refuses the reset before anything changes; the caller finishes it first.
     public static func forget(database: URL, secrets: any CompanionCredentialStorage,
                               now: Date = Date()) throws -> Int? {
         let folder = database.deletingLastPathComponent()
@@ -62,6 +68,7 @@ public enum CompanionOwnerReset {
         let shown: Int
         do {
             guard let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) else { return nil }
+            guard try profile.devicesWithPendingDecisions().isEmpty else { throw CompanionOwnerResetError.decisionPending }
             let plan = try profile.resetPlan()
             for account in plan.accounts { try secrets.remove(account: account) }
             shown = plan.shownBinders
@@ -96,19 +103,33 @@ extension CompanionProfile {
                 return n
             }
             let epochs = Set(discard + [e, e + 1]).sorted()
-            let binders = try t.rows("SELECT binder FROM phone_binders ORDER BY binder").map { row in
-                guard row.count == 1, let id = row[0].text, CompanionWire.isID(id) else { throw CompanionCredentialError.invalid }
-                return id
+            // A binder switched off keeps the key of its own epoch until its cleanup, even past that epoch's discard.
+            let binders = try t.rows("SELECT binder, key_epoch FROM phone_binders ORDER BY binder").map { row in
+                guard row.count == 2, let id = row[0].text, CompanionWire.isID(id), let own = row[1].integer, own >= 1 else {
+                    throw CompanionCredentialError.invalid
+                }
+                return (id, own)
             }
             let devices = try t.rows("SELECT device FROM devices ORDER BY device").map { row in
                 guard row.count == 1, let id = row[0].text, CompanionWire.isID(id) else { throw CompanionCredentialError.invalid }
                 return id
             }
             var accounts = [relay.account] + epochs.map(keyAccount)
-            for id in binders { accounts += epochs.map { binderKeyAccount(id, epoch: $0) } }
+            for (id, own) in binders { accounts += Set(epochs + [own]).sorted().map { binderKeyAccount(id, epoch: $0) } }
             for id in devices { accounts += [deviceAccount(id), pairingAccount(id), createdAccount(id)] }
             let shown = try t.rows("SELECT COUNT(*) FROM phone_binders WHERE state = 'shown'").first?.first?.integer ?? 0
             return (accounts, Int(shown))
+        }
+    }
+
+    /// Phones with a decision recorded but not finished (companion-v0 §9.4): a reset waits until each is finished, so a
+    /// phone's note or Done that was begun is never lost with the state set aside. Keyless.
+    public func devicesWithPendingDecisions() throws -> [String] {
+        try store.read { t in
+            try t.rows("SELECT device FROM request_decisions ORDER BY device").map { row in
+                guard row.count == 1, let id = row[0].text, CompanionWire.isID(id) else { throw CompanionCredentialError.invalid }
+                return id
+            }
         }
     }
 

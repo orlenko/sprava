@@ -6,7 +6,7 @@ public enum CompanionPhoneActionError: Error, Sendable, Equatable {
     case invalidSetup, alreadyClaimed, resetRequired, unavailable, busy
     case invalidRequest, notClaimed, ownerRefused, webOriginMissing, pairingExpired, pairingInvalid
     case notSetUp, notShowable, tooManyShown
-    case removalWaiting, deviceUnknown, resetUnfinished
+    case removalWaiting, deviceUnknown, resetUnfinished, resetWaiting
     public var message: String {
         switch self {
         case .notSetUp: "Connect this Mac to a relay in Settings › Phone first."
@@ -25,6 +25,7 @@ public enum CompanionPhoneActionError: Error, Sendable, Equatable {
         case .pairingInvalid: "This pairing could not be checked. Start pairing again."
         case .removalWaiting: "An action from this phone is still being applied. Try again in a moment."
         case .deviceUnknown: "This phone is not paired with this Mac."
+        case .resetWaiting: "An action from a phone is still waiting for its binder. Make sure the binder is on this Mac, then reset again."
         case .resetUnfinished: "Phone access could not be reset. Nothing that was already forgotten comes back; reset again."
         }
     }
@@ -69,6 +70,7 @@ public enum CompanionPhoneActions {
                 do { report = try await session.reset() }
                 catch is CancellationError { throw CancellationError() }
                 catch CompanionOwnerConnectionError.busy { throw CompanionPhoneActionError.busy }
+                catch CompanionOwnerResetError.decisionPending { throw CompanionPhoneActionError.resetWaiting }
                 catch { throw CompanionPhoneActionError.resetUnfinished }
                 let done = report ?? CompanionOwnerResetReport()
                 return JSONObject([("state", .str("not-configured")),

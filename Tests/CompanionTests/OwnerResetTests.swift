@@ -165,3 +165,23 @@ private struct ResetFixture {
                                                   discover: { _ in CompanionRelayHealth(instance: f.relay.instance, claimed: true) })
     }
 }
+
+@Test func aPhoneDecisionNotFinishedRefusesTheLocalResetBeforeAnythingChanges() throws {
+    let f = ResetFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    let p = try f.prepare()
+    try p.store.write { try $0.execute("INSERT INTO request_decisions VALUES (?, 'r', x'00')", .text(resetID(70))) }
+    #expect(try p.devicesWithPendingDecisions() == [resetID(70)])
+    #expect(throws: CompanionOwnerResetError.decisionPending) { try CompanionOwnerReset.forget(database: f.database, secrets: f.secrets) }
+    #expect(f.secrets.accounts.count == 10 && f.secrets.removed.isEmpty)
+    #expect(try f.setAside().isEmpty)
+}
+
+@Test func aBinderSwitchedOffKeepsItsOwnEpochsKeyUntilTheResetForgetsIt() throws {
+    let f = ResetFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    let p = try f.prepare()
+    // Epoch 1 was discarded behind a published index; the binder switched off at epoch 1 still awaits its cleanup.
+    try p.store.write { try $0.execute("DELETE FROM discard_epochs") }
+    try f.secrets.remove(account: p.keyAccount(1)); try f.secrets.remove(account: p.binderKeyAccount(resetID(80), epoch: 1))
+    #expect(try CompanionOwnerReset.forget(database: f.database, secrets: f.secrets) == 1)
+    #expect(f.secrets.accounts.isEmpty)
+}

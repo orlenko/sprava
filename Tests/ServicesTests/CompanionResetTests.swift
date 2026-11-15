@@ -1,5 +1,6 @@
 import Companion
 import Foundation
+import SQLite3
 import SpravaKit
 import Testing
 @testable import Services
@@ -28,11 +29,22 @@ private struct ResetActionFixture {
         _ = try CompanionOwnerVault(backend: secrets).prepare(relay, setupCode: Data(repeating: 23, count: 32).base64EncodedString())
         _ = try CompanionProfile(database: database, relay: relay, secrets: secrets).prepareAccount()
     }
-    func session(deadline: Duration = .seconds(35), events: ResetEvents? = nil) -> CompanionOwnerSession {
+    func session(deadline: Duration = .seconds(35), events: ResetEvents? = nil,
+                 settle: (@Sendable (CompanionProfile, CompanionDeviceDecisionLocks) async -> Void)? = nil) -> CompanionOwnerSession {
         CompanionOwnerSession(database: database, secrets: secrets, recover: { _ in .claimed }, refuse: { _, _ in
             await events?.add("refuse")
             var report = CompanionOwnerResetReport(); report.phonesRefused = 1; report.phonesNotReached = 2; return report
-        }, resetDeadlines: (deadline, .seconds(50)))
+        }, resetDeadlines: (deadline, .seconds(50)), settle: settle)
+    }
+    /// A phone decision begun and not finished, as a crash between its intent and its effect leaves it.
+    func recordPendingDecision() {
+        var db: OpaquePointer?
+        #expect(sqlite3_open(database.path, &db) == SQLITE_OK)
+        let device = "RkZGRkZGRkZGRkZGRkZGRg"
+        #expect(sqlite3_exec(db, "INSERT INTO devices (device,state,key_ready,creation_attempted,cleanup_pending) " +
+                             "VALUES ('\(device)', 'active', 1, 1, 0); INSERT INTO request_decisions VALUES ('\(device)', 'r', x'00')",
+                             nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
     }
     func reset(_ session: CompanionOwnerSession) async throws -> JSONObject {
         let handler = try #require(CompanionPhoneActions.handlers(session: session)["companion_reset"])
@@ -97,4 +109,21 @@ private struct ResetActionFixture {
     #expect(await session.generation == 0)
     // The session is free again for the next action.
     #expect(try await session.recoverClaim() == .claim(.claimed))
+}
+
+@Test func aPhoneDecisionThatCannotBeFinishedRefusesTheResetWithNothingChanged() async throws {
+    let f = ResetActionFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    try f.prepare()
+    f.recordPendingDecision()
+    let events = ResetEvents()
+    // Its binder is offloaded: the decision stays recorded.
+    let session = f.session(events: events, settle: { profile, _ in
+        await events.add("settle \((try? profile.devicesWithPendingDecisions().count) ?? -1)")
+    })
+    await #expect(throws: CompanionPhoneActionError.resetWaiting) { _ = try await f.reset(session) }
+    #expect(await events.events == ["settle 1"])
+    #expect(f.secrets.count == 2)
+    #expect(try await session.snapshot() != .notConfigured)
+    // Without binders to apply it to, the same.
+    await #expect(throws: CompanionPhoneActionError.resetWaiting) { _ = try await f.reset(f.session()) }
 }

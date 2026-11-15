@@ -20,6 +20,9 @@ public actor CompanionOwnerSession {
     /// One bounded removal/rotation step for an opened profile (§4.4); tests replace the relay.
     nonisolated let rotation: @Sendable (CompanionProfile) -> @Sendable () async throws -> CompanionRotationProgress
     /// Best-effort relay step of a reset (§4.4 removal path); tests replace the relay.
+    /// Finishes, under each phone's decision lock, a decision a phone's request began before a reset (§9.4); nil when
+    /// this session has no binders to apply them to.
+    private let settle: (@Sendable (CompanionProfile, CompanionDeviceDecisionLocks) async -> Void)?
     private let refuse: @Sendable (CompanionProfile, @escaping @Sendable () -> Bool) async -> CompanionOwnerResetReport
     private var recovering = false
     /// While a reset runs, no job run, recovery or Phone action is admitted.
@@ -37,8 +40,9 @@ public actor CompanionOwnerSession {
         return { try await worker.step() }
     }
 
-    public init(database: URL, secrets: any CompanionCredentialStorage) {
-        self.database = database; self.secrets = secrets
+    public init(database: URL, secrets: any CompanionCredentialStorage,
+                settle: (@Sendable (CompanionProfile, CompanionDeviceDecisionLocks) async -> Void)? = nil) {
+        self.database = database; self.secrets = secrets; self.settle = settle
         recover = { try await CompanionOwnerConnection(profile: $0).recoverClaim() }
         prepare = { origin, code, web in
             try await CompanionOwnerSetup.prepare(database: database, origin: origin, setupCode: code,
@@ -55,8 +59,9 @@ public actor CompanionOwnerSession {
          pairing: (@Sendable (CompanionProfile) throws -> CompanionPairingSteps)? = nil,
          rotation: (@Sendable (CompanionProfile) -> @Sendable () async throws -> CompanionRotationProgress)? = nil,
          refuse: (@Sendable (CompanionProfile, @escaping @Sendable () -> Bool) async -> CompanionOwnerResetReport)? = nil,
-         resetDeadlines: (work: Duration, relay: Duration) = (.seconds(35), .seconds(25))) {
-        self.database = database; self.secrets = secrets; self.recover = recover
+         resetDeadlines: (work: Duration, relay: Duration) = (.seconds(35), .seconds(25)),
+         settle: (@Sendable (CompanionProfile, CompanionDeviceDecisionLocks) async -> Void)? = nil) {
+        self.database = database; self.secrets = secrets; self.recover = recover; self.settle = settle
         self.prepare = prepare ?? { origin, code, web in
             try await CompanionOwnerSetup.prepare(database: database, origin: origin, setupCode: code,
                                                   webOrigin: web, secrets: secrets)
@@ -142,7 +147,8 @@ public actor CompanionOwnerSession {
 
     /// Reset of phone access (companion.md §13). The job's run in flight is cancelled and awaited first; one that does
     /// not end by the deadline makes the reset answer busy with nothing changed, since its relay client may still hold
-    /// the owner token in memory. Then, best effort, the relay is asked to delete each phone; then this Mac forgets
+    /// the owner token in memory. A phone decision begun and not finished is finished next (`settle`); one that cannot be
+    /// yet refuses the reset unchanged. Then, best effort, the relay is asked to delete each phone; then this Mac forgets
     /// every credential of the relay and sets its companion folder aside (`CompanionOwnerReset`). Nil when nothing was
     /// set up. After it, `configure` takes any relay.
     public func reset(now: Date = Date()) async throws -> CompanionOwnerResetReport? {
@@ -154,6 +160,9 @@ public actor CompanionOwnerSession {
         var report = CompanionOwnerResetReport()
         // Once begun, the reset is finished even if its caller goes away: stopping halfway helps no one.
         if let profile = try CompanionProfile.openConfigured(database: database, secrets: secrets) {
+            // A phone's note or Done begun before is finished first; one that cannot be yet refuses the reset unchanged.
+            if try !profile.devicesWithPendingDecisions().isEmpty { await settle?(profile, deviceDecisionLocks) }
+            guard try profile.devicesWithPendingDecisions().isEmpty else { throw CompanionOwnerResetError.decisionPending }
             let end = ContinuousClock.now + resetDeadlines.relay
             report = await refuse(profile, { ContinuousClock.now < end })
         }
