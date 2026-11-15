@@ -88,6 +88,15 @@ import Testing
         #expect(Commands.repeatsRefusal(f, registryURL: registry) == nil)
         try Data("[projects.tax]\nworking_dir = \"\(f.path)\"\n".utf8).write(to: registry)
         #expect(Commands.repeatsRefusal(f, registryURL: registry)?.contains("lifeproj's registry") == true)
+        // A folder named in a form the small reader would not take whole may be this binder: an escape, an inline table,
+        // a dotted key, a multi-line string (local review of this PR).
+        let name = f.lastPathComponent
+        for line in ["working_dir = \"\(root.path)/\\u0074\(name.dropFirst())\"", "\(name) = { working_dir = \"\(f.path)\" }",
+                     "\(name).working_dir = \"\(f.path)\"", "working_dir = \"\"\"\n\(f.path)\"\"\""] {
+            let header = line.hasPrefix("working_dir") ? "[projects.\(name)]\n" : "[projects]\n"
+            try Data((header + line + "\n").utf8).write(to: registry)
+            #expect(Commands.repeatsRefusal(f, registryURL: registry)?.contains("could not read") == true, "\(line)")
+        }
         try FileManager.default.removeItem(at: registry)
         try FileManager.default.createDirectory(at: registry, withIntermediateDirectories: false)
         #expect(Commands.repeatsRefusal(f, registryURL: registry)?.contains("could not read") == true)

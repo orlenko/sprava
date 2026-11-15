@@ -8,14 +8,17 @@ import SpravaKit
 /// person tries, and every write the runtime makes for the person checks again.
 extension Commands {
     /// Why no repeat may be set in `folder`, in words the person can act on; nil when lifeproj cannot reach it.
-    /// A registry that exists but cannot be read counts as one that may list the binder.
+    /// A registry that exists but cannot be read, or names a folder in a form Sprava's small reader does not take
+    /// whole, counts as one that may list the binder.
     static func repeatsRefusal(_ folder: URL, registryURL: URL = LifeprojRegistry.defaultPath()) -> String? {
         let here = folder.standardizedFileURL.resolvingSymlinksInPath().path
         var inRegistry = false
         if FileManager.default.fileExists(atPath: registryURL.path) {
-            guard let registry = try? LifeprojRegistry.load(from: registryURL) else {
+            guard case .ok(let data) = SafeFile.read(registryURL, limit: 1 << 20), let text = String(data: data, encoding: .utf8),
+                  everyFolderIsPlain(text) else {
                 return "Repeats are off here: Sprava could not read lifeproj's registry, so it cannot tell whether lifeproj still manages this binder."
             }
+            let registry = LifeprojRegistry.parse(text)
             inRegistry = registry.entries.contains { entry in
                 entry.workingDir.map {
                     URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true)
@@ -35,5 +38,22 @@ extension Commands {
         }
         return "Repeats are off here: the binder's CLAUDE.md or AGENTS.md tells coding agents to run lifeproj publish or drain." + tail
             + " Remove those lines to use repeats."
+    }
+
+    /// Whether every line of the registry that names a `working_dir` is one `LifeprojRegistry.parse` reads exactly:
+    /// `working_dir = "<path>"` or `'<path>'` on one line, with no escape in it. An escape, a multi-line string, an inline
+    /// table or a dotted key could name a binder the small reader would miss, so any of them fails the check.
+    static func everyFolderIsPlain(_ text: String) -> Bool {
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#"), line.contains("working_dir") else { continue }
+            guard let eq = line.firstIndex(of: "=") else { return false }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            guard ["working_dir", "\"working_dir\"", "'working_dir'"].contains(key), let quote = value.first, quote == "\"" || quote == "'",
+                  !value.hasPrefix("\"\"\""), !value.hasPrefix("'''"), !value.contains("\\"),
+                  value.dropFirst().contains(quote) else { return false }
+        }
+        return true
     }
 }
