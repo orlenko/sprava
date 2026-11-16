@@ -76,6 +76,25 @@ import Testing
         #expect(try await f.completed(id)["phase"] == .str("replied"))
     }
 
+    /// The person's instructions go to Claude only where the connection allows file changes (docs/binder-instructions.md
+    /// §4.3): a guided call on a binder shared for reading only is refused before anything leaves.
+    @Test func theInstructionsGoOnlyWhereClaudeMayReadThem() async throws {
+        let reading = try Fixture(); try await reading.connect(files: false)
+        let readOnly = try #require(await reading.runtime.intakeEngine(for: reading.folder))
+        #expect(!readOnly.takesGuidance)
+        let before = reading.engine.lock.withLock { reading.engine.lines.count }
+        await #expect(throws: ClerkModelError.self) {
+            try await readOnly.answer(instructions: "Invented guided instructions.", prompt: "Invented.", guided: true)
+        }
+        #expect(reading.engine.lock.withLock { reading.engine.lines.count } == before)
+
+        let files = try Fixture(); try await files.connect(files: true)
+        files.engine.lock.withLock { files.engine.reply = #"{"class":"action","summary":"An invented notice.","items":[]}"# }
+        let guided = try #require(await files.runtime.intakeEngine(for: files.folder))
+        #expect(guided.takesGuidance)
+        #expect(try await guided.answer(instructions: "Invented guided instructions.", prompt: "Invented.", guided: true)["summary"] == .str("An invented notice."))
+    }
+
     /// Disabling the binder while a reading runs stops it, waits for it, and its reply is not used.
     @Test func aReadingUnderWayStopsWhenConsentIsWithdrawn() async throws {
         let f = try Fixture(); try await f.connect(files: false)

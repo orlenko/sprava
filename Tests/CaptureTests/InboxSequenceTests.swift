@@ -136,6 +136,8 @@ import Testing
                 return .obj([("candidate", .string(id)), ("relation", .string(relation))])
             case .document:
                 return .obj([("class", .str("unsure"))])
+            case .filing:
+                return .obj([("folder", .str("none"))])
             }
         }
     }

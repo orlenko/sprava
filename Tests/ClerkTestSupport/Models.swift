@@ -12,6 +12,8 @@ package final class ScriptedModel: ClerkModel, @unchecked Sendable {
     package var document: JSONValue = .obj([("class", .str("unsure")), ("title", .str("")), ("date_text", .str("")),
                                     ("summary", .str("")), ("reply_needed", .bool(false))])
     package var prompts: [String] = []
+    /// The folder the filing call answers; "none" by default.
+    package var filing = "none"
     package let lock = NSLock()
 
     package init(extractions: [JSONValue], binders: [String: String] = [:], contextSize: Int = 4096) {
@@ -41,6 +43,8 @@ package final class ScriptedModel: ClerkModel, @unchecked Sendable {
             return .obj([("binder", .string(names.contains(pick) ? pick : "not-sure"))])
         case .document:
             return document
+        case .filing(let folders):
+            return .obj([("folder", .string(folders.contains(filing) ? filing : "none"))])
         }
     }
 }
@@ -66,6 +70,7 @@ package final class RecordingModel: ClerkModel, @unchecked Sendable {
                 guard let d = dup else { return .obj([("candidate", .str("none")), ("relation", .str("related"))]) }
                 return .obj([("candidate", .string(ids.contains(d.0) ? d.0 : ids.first!)), ("relation", .string(d.1))])
             case .document: return .obj([("class", .str("unsure"))])
+            case .filing: return .obj([("folder", .str("none"))])
             }
         }
     }

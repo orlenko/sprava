@@ -60,12 +60,17 @@ public enum ClerkJob {
             let t0 = clock()
             let locale = IntakeReading.language(of: entry.reading.text)
             let folder = URL(fileURLWithPath: entry.binder, isDirectory: true)
-            let doc = waitFor {
+            // The person's instructions for the binder, when they saved or confirmed them in the app (decisions.md D43).
+            let catalog = rows.first { $0.folder.standardizedFileURL.path == entry.binder }?.teka.catalog
+            let (guidance, note) = FilingGuidance.of(folder, catalog: catalog)
+            var doc = waitFor {
                 await Clerk(model: model).readDocument(entry.reading, name: entry.name, binder: binder, locale: locale,
-                                                       ownAddresses: ownAddresses, engine: await engine(folder))
+                                                       ownAddresses: ownAddresses, engine: await engine(folder), guidance: guidance)
             }
+            if let note { doc.instructionsNote = note }
             // Which engine read it, or the fixed reason it did not: never content.
             let by = (doc.readBy.map { " read_by=\($0)" } ?? "") + (doc.engineFailure.map { " engine_failure=\(logWord($0))" } ?? "")
+                + (doc.folder != nil ? " folder_from=instructions" : "") + (doc.fileName != nil ? " name_from=instructions" : "")
             let seconds = clock().timeIntervalSince(t0)
             if doc.title == nil && doc.summary == nil && doc.items.isEmpty {
                 context.onCommandQueue { watcher.failReading(entry) }

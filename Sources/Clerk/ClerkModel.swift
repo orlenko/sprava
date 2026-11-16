@@ -10,6 +10,8 @@ public enum ClerkTask: Sendable, Equatable {
     case duplicate(ids: [String])
     /// docs/adaptation-layer.md §4.2: `{class: governing|action|information|unsure, title, date_text, summary, reply_needed}`.
     case document
+    /// docs/binder-instructions.md §4.3: `{folder: <one of folders or none>}`, following the person's instructions.
+    case filing(folders: [String])
 }
 
 public enum ClerkModelError: Error, Equatable {

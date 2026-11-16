@@ -58,8 +58,14 @@ enum ClaudeIntakeReading {
         let name = "Claude"
         let folder: URL
         let runtime: ClaudeConversationRuntime
+        /// The connection allowed file changes when the engine was made, so Claude may already read `AGENTS.md`
+        /// (docs/binder-instructions.md §4.3); `readIntake` checks it again before a guided call leaves.
+        var takesGuidance = false
         func answer(instructions: String, prompt: String) async throws -> JSONValue {
             try await runtime.readIntake(folder: folder, instructions: instructions, prompt: prompt)
+        }
+        func answer(instructions: String, prompt: String, guided: Bool) async throws -> JSONValue {
+            try await runtime.readIntake(folder: folder, instructions: instructions, prompt: prompt, guided: guided)
         }
     }
 }
