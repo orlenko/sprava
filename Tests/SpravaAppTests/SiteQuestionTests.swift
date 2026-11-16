@@ -37,6 +37,22 @@ import Testing
         #expect(chat.entries.last?.siteQuestion == nil)
     }
 
+    @Test func aTapThatCouldNotBePassedOnLeavesTheQuestionToAnswerAgain() async throws {
+        let standIn = BinderChatTests.StandIn()
+        let commands = ChatCommands(send: { try standIn.send($0) }, interrupt: { _, turn in standIn.interrupt(turn) },
+                                    answerSite: { _, _, _, _ in throw ChatCommandFailure.unavailable })
+        let chat = BinderChat(commands: commands, binderID: { _ in "acme-binder" }, readHistory: { _ in ([], nil) })
+        await chat.show(BinderChatTests.folder)
+        chat.draft = "Fetch the invented daily rate."
+        await chat.send()
+        let question = ChatSiteQuestion(id: UUID(), host: "rates.example.test", byCommand: false)
+        standIn.emit(.siteQuestion(question))
+        await BinderChatTests().until { chat.entries.last?.siteQuestion == question }
+        await chat.answer(question, .once, in: try #require(chat.entries.last))
+        #expect(chat.entries.last?.siteQuestion == question)
+        #expect(chat.message != nil)
+    }
+
     @Test func theWordsSayWhatACommandCouldDo() {
         let reading = SiteQuestionView.words(ChatSiteQuestion(id: UUID(), host: "docs.example.test", byCommand: false))
         let sending = SiteQuestionView.words(ChatSiteQuestion(id: UUID(), host: "api.example.test", byCommand: true))

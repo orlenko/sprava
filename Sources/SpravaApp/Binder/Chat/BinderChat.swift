@@ -341,6 +341,8 @@ final class BinderChat: ObservableObject {
         do {
             try await commands.answerSite(binderID: binder, turnID: turn, question: question.id, answer: answer)
         } catch {
+            // Shown again, so the person can answer before it times out: polling repeats only a question that changed.
+            update(entry.id, in: key) { if $0.siteQuestion == nil, $0.state == .replying { $0.siteQuestion = question } }
             threads[key]?.message = "Could not pass on your answer: \(Self.words(error))"
         }
     }
