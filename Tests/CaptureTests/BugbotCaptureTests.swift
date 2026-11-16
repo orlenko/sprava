@@ -429,6 +429,7 @@ final class BugModel: ClerkModel, @unchecked Sendable {
                 self.names += ids
                 return .obj([("candidate", .str("none")), ("relation", .str("related"))])
             case .document: return .obj([("class", .str("unsure"))])
+            case .filing: return .obj([("folder", .str("none"))])
             }
         }
     }

@@ -64,6 +64,11 @@ public struct AppleClerkModel: ClerkModel {
                 .init(name: "reply_needed", description: "True only when it asks the person to reply.", schema: .init(type: Bool.self)),
             ])
             return try GenerationSchema(root: root, dependencies: [])
+        case .filing(let folders):
+            let root = DynamicGenerationSchema(name: "Filing", description: "Where one document is filed, as the person's instructions say.", properties: [
+                .init(name: "folder", description: "The folder, or none when the instructions do not say.", schema: .init(name: "Folder", anyOf: folders)),
+            ])
+            return try GenerationSchema(root: root, dependencies: [])
         }
     }
 

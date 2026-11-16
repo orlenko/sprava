@@ -34,6 +34,13 @@ public struct DocumentReading: Sendable {
     public var readBy: String?
     /// Why the engine's reading was not used and the clerk read it, as the error's kind (never content).
     public var engineFailure: String?
+    /// The folder the person's instructions put the document in, checked (docs/binder-instructions.md §4.1); nil for
+    /// code's suggestion.
+    public var folder: String?
+    /// The file name the person's instructions give it, with the original's extension, checked; nil to keep the original.
+    public var fileName: String?
+    /// One line for the card about the person's instructions: not used, or read only in part. Never their text.
+    public var instructionsNote: String?
 
     public var json: JSONObject {
         var o = JSONObject([(key: "id", value: .string(id)), (key: "model", value: .string(model)),
@@ -51,6 +58,15 @@ public struct DocumentReading: Sendable {
         if let failure { o.set("failure", .string(failure)) }
         if let readBy { o.set("read_by", .string(readBy)) }
         if let engineFailure { o.set("engine_failure", .string(engineFailure)) }
+        if let folder {
+            o.set("folder", .string(folder))
+            o.set("folder_from", .str("instructions"))
+        }
+        if let fileName {
+            o.set("file_name", .string(fileName))
+            o.set("name_from", .str("instructions"))
+        }
+        if let instructionsNote { o.set("instructions_note", .string(instructionsNote)) }
         if dropped > 0 { o.set("dropped_items", .int(dropped)) }
         if unread > 0 { o.set("unread_windows", .int(unread)) }
         if !notCovered.isEmpty {
@@ -293,8 +309,22 @@ extension Clerk {
     /// Reads one document. `binder` is the binder it sits in, for the duplicate check. `ownAddresses` are the person's
     /// own email addresses: mail from one of them is filed with no to-dos (issue #594). With `engine`, the engine reads it
     /// in one call (decisions.md D40), and the clerk only when that fails.
+    /// With `guidance`, the person's instructions choose the folder and the file name: in the engine's call where the engine
+    /// may have them, else in one more small call to the clerk (docs/binder-instructions.md §4.3).
     public func readDocument(_ reading: IntakeReading, name: String, binder: FilingBinder?, locale rawLocale: String = "und",
-                             ownAddresses: Set<String> = [], engine: (any DocumentEngine)? = nil, now: Date = Date()) async -> DocumentReading {
+                             ownAddresses: Set<String> = [], engine: (any DocumentEngine)? = nil, guidance: FilingGuidance? = nil,
+                             now: Date = Date()) async -> DocumentReading {
+        var doc = await readDocumentAlone(reading, name: name, binder: binder, locale: rawLocale, ownAddresses: ownAddresses,
+                                          engine: engine, guidance: guidance, now: now)
+        if let guidance {
+            if guidance.cut { doc.instructionsNote = "Only the first part of your instructions was read." }
+            if doc.readBy == nil || engine?.takesGuidance != true { await filingChoice(&doc, guidance: guidance, name: name) }
+        }
+        return doc
+    }
+
+    func readDocumentAlone(_ reading: IntakeReading, name: String, binder: FilingBinder?, locale rawLocale: String,
+                           ownAddresses: Set<String>, engine: (any DocumentEngine)?, guidance: FilingGuidance?, now: Date) async -> DocumentReading {
         let text = reading.text
         let locale = rawLocale.wholeMatch(of: /[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,4}/) != nil ? rawLocale : "und"
         let today = CalendarDate.today(now: now)
@@ -303,7 +333,7 @@ extension Clerk {
         var engineFailure: String?
         if let engine {
             switch await engineReading(engine, reading: reading, name: name, binder: binder, locale: locale, facts: facts,
-                                       wroteTo: wroteTo, today: today, now: now) {
+                                       wroteTo: wroteTo, today: today, now: now, guidance: engine.takesGuidance ? guidance : nil) {
             case .success(let doc): return doc
             case .failure(let failure): engineFailure = failure.kind
             }

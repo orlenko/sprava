@@ -145,18 +145,20 @@ public actor ClaudeConversationRuntime {
     public func intakeEngine(for folder: URL) -> (any DocumentEngine)? {
         guard (try? state.account()) != nil, let scope = try? connections.connection(for: folder), scope.intake,
               (try? available(folder)) == true else { return nil }
-        return ClaudeIntakeReading.Engine(folder: folder, runtime: self)
+        return ClaudeIntakeReading.Engine(folder: folder, runtime: self, takesGuidance: (try? connections.allowsFileChanges(scope)) == true)
     }
 
     /// One tool-free Sonnet call: `instructions` as the session's policy and `prompt` as its one line. Every failure is a
-    /// fixed reason, and the clerk reads the document instead.
-    func readIntake(folder: URL, instructions: String, prompt: String) async throws -> JSONValue {
+    /// fixed reason, and the clerk reads the document instead. A `guided` call carries the person's instructions, so it
+    /// goes only while the connection allows file changes (docs/binder-instructions.md §4.3).
+    func readIntake(folder: URL, instructions: String, prompt: String, guided: Bool = false) async throws -> JSONValue {
         func refused(_ why: String) -> ClerkModelError { ClaudeIntakeReading.refusal(why) }
         guard !configuring else { throw refused("busy") }
         do { try await recover() } catch { throw refused("unavailable") }
         // The connection is checked again at the call: one disconnected or narrowed since is not read.
         guard let account = try? state.account(), let scope = try? connections.connection(for: folder), scope.intake,
               (try? available(folder)) == true else { throw refused("not shared") }
+        guard !guided || (try? connections.allowsFileChanges(scope)) == true else { throw refused("not shared") }
         let home = UUID()
         guard let session = try? state.session(connection: home, generation: UUID(), hash: "intake") else { throw refused("unavailable") }
         guard case .reserved(let lease) = await admission.reserve(sessionID: session.native, kind: .task) else {
@@ -168,7 +170,7 @@ public actor ClaudeConversationRuntime {
         // Consent is checked again just before the document leaves: the person may have withdrawn it meanwhile.
         func stillShared() -> Bool {
             guard !signal.stopped, !configuring, let now = try? connections.connection(for: folder), now.id == scope.id, now.intake,
-                  (try? available(folder)) == true else { return false }
+                  (try? available(folder)) == true, !guided || (try? connections.allowsFileChanges(now)) == true else { return false }
             return true
         }
         var driver: Driver?
