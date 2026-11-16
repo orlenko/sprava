@@ -38,11 +38,12 @@ extension IntakeWatcher {
     }
 
     /// The name a person would want. A message's original goes by the name of its message, and a message named by a
-    /// machine (`imap-<id>-<validity>-<uid>`) goes by its date and subject. Any other file keeps its own name.
+    /// machine (`imap-<id>-<validity>-<uid>`) goes by its date and subject. Any other file keeps its own name, and so
+    /// does one the person's instructions named (docs/binder-instructions.md §4.1).
     private static func readableName(_ document: JSONObject, path: String, from: String, message: String?) -> String {
         let current = (path as NSString).lastPathComponent
         let source = (from as NSString).lastPathComponent
-        guard from.hasPrefix("intake/mail/") else { return current }
+        guard from.hasPrefix("intake/mail/"), document["provenance"]?["name_from"] != .str("instructions") else { return current }
         let proposed: String
         if source == mailOriginalName, let message {
             proposed = message + ".eml"
