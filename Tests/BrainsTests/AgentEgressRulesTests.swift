@@ -7,6 +7,11 @@ import Testing
 /// What the agent's proxy accepts before a byte reaches a host (conversation.md 18.3.1). Every name is invented; on the wire
 /// a local listener stands in for each host.
 @Suite struct AgentEgressRulesTests {
+    /// A gate that never asks, over a fixed list.
+    static func gate(_ listed: @escaping @Sendable (String, AgentEgressProxy.Caller) -> Bool) -> AgentSiteGate {
+        AgentSiteGate(asks: false, listed: listed, remember: { _, _ in false })
+    }
+
     @Test func aHostHasOneFormAndLocalNamesHaveNone() {
         #expect(AgentEgressProxy.canonical("Docs.Example-Invoicing.test") == "docs.example-invoicing.test")
         #expect(AgentEgressProxy.canonical("xn--bcher-kva.example") == "xn--bcher-kva.example")
@@ -20,20 +25,27 @@ import Testing
 
     @Test func theModelHostIsTheAgentsAloneAndTheVendorsOtherHostsNobodys() throws {
         let proxy = try AgentEgressProxy(); defer { proxy.stop() }
-        let everything: AgentEgressProxy.Sites = { _, _ in true }
-        #expect(proxy.admits("api.anthropic.com", .agent, sites: everything))
-        #expect(!proxy.admits("api.anthropic.com", .command, sites: everything))
+        func admits(_ host: String, _ caller: AgentEgressProxy.Caller, _ gate: AgentSiteGate?) -> Bool {
+            final class Box: @unchecked Sendable { var allowed: Bool? }
+            let box = Box(), done = DispatchSemaphore(value: 0)
+            proxy.admit(host, caller, gate: gate) { allowed, _ in box.allowed = allowed; done.signal() }
+            _ = done.wait(timeout: .now() + 5)
+            return box.allowed == true
+        }
+        let everything = Self.gate { _, _ in true }
+        #expect(admits("api.anthropic.com", .agent, everything))
+        #expect(!admits("api.anthropic.com", .command, everything))
         for vendor in ["anthropic.com", "statsig.anthropic.com", "claude.ai", "x.claude.com"] {
-            #expect(!proxy.admits(vendor, .agent, sites: everything), "\(vendor)")
-            #expect(!proxy.admits(vendor, .command, sites: everything), "\(vendor)")
+            #expect(!admits(vendor, .agent, everything), "\(vendor)")
+            #expect(!admits(vendor, .command, everything), "\(vendor)")
         }
         // A name that only ends in the same letters is not the vendor's.
-        #expect(proxy.admits("notanthropic.com", .command, sites: everything))
-        let none: AgentEgressProxy.Sites = { _, _ in false }
-        let forReading: AgentEgressProxy.Sites = { host, caller in host == "docs.example.test" && caller == .agent }
-        #expect(!proxy.admits("docs.example.test", .agent, sites: none))
-        #expect(proxy.admits("docs.example.test", .agent, sites: forReading))
-        #expect(!proxy.admits("docs.example.test", .command, sites: forReading))
+        #expect(admits("notanthropic.com", .command, everything))
+        #expect(!admits("docs.example.test", .agent, nil))
+        #expect(!admits("docs.example.test", .agent, Self.gate { _, _ in false }))
+        let forReading = Self.gate { host, caller in host == "docs.example.test" && caller == .agent }
+        #expect(admits("docs.example.test", .agent, forReading))
+        #expect(!admits("docs.example.test", .command, forReading))
     }
 
     @Test func onlyOrdinaryPublicAddressesAreReached() {
@@ -170,13 +182,15 @@ import Testing
             _ = try f.allowed("curl -sS -m 3 --proxy http://127.0.0.1:\(proxy.port) https://\(host)/ -o /dev/null -w '%{http_connect}' > '\(out.path)' || true")
             return (try? String(contentsOf: out, encoding: .utf8)) ?? ""
         }
-        let sites: AgentEgressProxy.Sites = { host, caller in host == "site.example.test" && caller == .command }
+        let sites = Self.gate { host, caller in host == "site.example.test" && caller == .command }
         // Another session's agent: this sandbox's command is nobody's.
-        proxy.authorize(getpid(), session: UUID(), sites: sites)
+        proxy.authorize(getpid(), session: UUID(), gate: sites)
         #expect(try status("site.example.test") == "403")
-        proxy.authorize(getpid(), session: f.session, sites: sites)
+        proxy.authorize(getpid(), session: f.session, gate: sites)
         #expect(try status("site.example.test") == "200")
         #expect(upstream.waitFor(1))
+        // Counted for the summary: the hello at least went out.
+        #expect(sites.uses.contains { $0.host == "site.example.test" && $0.caller == .command && $0.connections == 1 && $0.sent > 0 })
         #expect(try status("model.example.test") == "403")
         #expect(try status("other.example.test") == "403")
     }
