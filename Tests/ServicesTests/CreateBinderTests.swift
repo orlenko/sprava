@@ -63,6 +63,10 @@ import Testing
         let folder = URL(fileURLWithPath: try #require(r["binder"]?.stringValue))
         #expect(Teka.read(folder).state == .ready)
         #expect(ProposalStore.list(in: folder).isEmpty)
+        // The dashboard is rendered at once and kept from then on (binder-v0 §7.1), with an empty Notes section.
+        let dashboard = try String(contentsOf: folder.appendingPathComponent("DASHBOARD.md"), encoding: .utf8)
+        #expect(dashboard.hasPrefix("<!-- teka-dashboard v0 sha256:") && Dashboard.split(dashboard).1 == "## Notes\n\n")
+        #expect(DashboardKeeper(folder: folder).isSwitched)
     }
 
     /// Any name the person types becomes a valid, free one; nothing is refused after the dialogs for its name.

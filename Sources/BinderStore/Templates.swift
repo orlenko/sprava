@@ -144,6 +144,8 @@ public enum BinderCreator {
                                                             owner: owner, now: now)
         guard let state = try StateDirectory.open(folder.appendingPathComponent(".sprava")) else { throw BinderTemplate.Invalid() }
         try state.write(Data(JSONWriter.pretty(template.json).utf8), to: "template.json")
+        // The dashboard is Sprava's own file here, rendered at creation (binder-v0 §7.1), so its Notes can be kept at once.
+        try DashboardKeeper(folder: folder, impl: client).switchOn(today: today, now: now)
 
         let ops: [JSONObject] = template.checklist.enumerated().map { n, title in
             var item = JSONObject()
