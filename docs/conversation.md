@@ -1036,11 +1036,11 @@ in a request. A model that read untrusted text (an intake document, an email, a 
 whatever its size. So:
 
 - **Outward actions stay drafts** (D13): mail, filings and payments land in `drafts/` for the person to send.
-- **Every outbound request is listed** in the turn's summary (18.4): domain, method, and the bytes sent.
-- **A new domain after untrusted text waits for a tap.** Once a turn has read untrusted text, a request to a
-  domain this binder has not used before is held, and the conversation shows "Claude wants to reach
-  example-supplier.test. Allow once / Always for this binder / Deny". Domains allowed always are listed per
-  binder in the app. Before untrusted text is read, requests run without asking.
+- **Every site reached is listed** in the turn's summary (18.4): the host, whether Claude or a command reached it,
+  and the bytes each way (18.3.1 says why not the method or the content).
+- **Every new site waits for a tap** (D42). A connection to a host this binder has not allowed is held, and the
+  conversation shows "Claude wants to reach example-supplier.test. Allow once / Always for this binder / Deny".
+  Hosts allowed always are listed per binder in the app. This holds before untrusted text as after it.
 - **Confinement is the operating system's, not the model's.** The sandbox (Claude Code's own on macOS, or
   Sprava's) enforces the file walls and routes every request through a proxy that Sprava controls. A model's
   promise is never the wall. Which sandbox, and how the proxy sees requests, is spike S6 (18.9).
@@ -1065,6 +1065,131 @@ Reads outside the binder and the agent's home are closed except for the folders 
 and listening on a port is closed. If a turn's changes cannot be recorded, its line says so and it has no Undo. Before a turn counts as
 over, `AgentContainment` kills every process still in that session's sandbox, detached ones included, so nothing goes on
 changing the binder after its turn is recorded.
+
+### 18.3.1 Web access (designed 2026-11-16, D42)
+
+The case that settled it: the person asked a binder's Claude to read an invoicing service's API documentation and write
+billing scripts (expenses, and conversion at an official daily exchange rate). It could not reach the web.
+
+**Three ways out, one wall.**
+
+- **WebSearch** runs on Anthropic's side: the query travels in the model request to `api.anthropic.com` and the results
+  come back as text. The Mac makes no connection of its own, so there is nothing to hold; the summary counts searches.
+- **WebFetch** runs in the agent process, which sends every connection through the proxy (`HTTPS_PROXY` is already set).
+  Before a fetch the CLI asks `api.anthropic.com` whether the domain is blocked (`/api/web/domain_info`, seen in 2.1.325);
+  that goes to the model host and stays on.
+- **Commands** (curl, python, git, pip, node) find the proxy in the environment the sandbox gives them: `HTTPS_PROXY`,
+  `https_proxy`, `HTTP_PROXY`, `http_proxy`, all `http://127.0.0.1:<port>`, and `NODE_USE_ENV_PROXY=1`; no `NO_PROXY`.
+  A client asks with `CONNECT host:443` and never resolves the name itself. A program that ignores these variables fails
+  to connect: the sandbox refuses name lookups and every outbound port but the proxy's.
+
+**What the proxy checks, per connection, in this order.** A failed check answers 403 and closes.
+
+1. **Who holds the connection.** The kernel names the process holding the other end (as built). The agent process may
+   reach the model hosts and the binder's sites. A process inside that session's sandbox (`AgentContainment`'s marker)
+   may reach the binder's sites only, never a model host: with someone else's API key, a command could upload a document
+   to another account there. Any other process is refused.
+2. **The request.** `CONNECT` to port 443 only; plain `http://` is refused, and the agent is told to use https. The host
+   is a name in lower-case ASCII (an international name in its `xn--` form, which is also how the prompt shows it), with
+   at least two labels and at most 253 bytes. An IP address, `localhost`, and names under `local`, `localhost`,
+   `internal` and `home.arpa` are refused without asking.
+3. **The vendor's hosts.** Any host under `anthropic.com`, `claude.ai` or `claude.com` other than the model hosts is
+   refused without asking, for the agent and commands alike. The CLI's background traffic is already off; whatever is
+   left of it must not become prompts, and a person would allow a familiar name.
+4. **The binder's sites and this turn's answers.** A host on the binder's list, or allowed once in this turn, passes; a
+   host denied in this turn is refused without asking again; any other host is held and asked about.
+5. **Where the name leads.** The proxy resolves the host itself, refuses it if any address is loopback, private,
+   link-local, shared (100.64.0.0/10), multicast or unspecified, and connects to an address it checked. So a site cannot
+   point its name at the person's router or at a service on this Mac.
+
+**The hold.** A held connection gets no answer yet. The runtime adds a question to the running turn, and `chat_poll`,
+which the app sends every 750 ms during a turn, carries it: an id, the host, and whether Claude or a command asked. The
+conversation shows it in place of the turn's activity line:
+
+> Claude wants to reach docs.example-invoicing.test. **Allow once** · **Always for this binder** · **Deny**
+
+or "A command Claude ran wants to reach api.example-invoicing.test." The tap goes back as `chat_site_answer` (the request
+id, the question id, and `once`, `always` or `deny`).
+
+- **Once** allows the host for the rest of this turn; **Always** adds it to the binder's sites; **Deny** refuses it for
+  the rest of this turn without asking again. Every held connection to that host then goes on or is refused.
+- **One question at a time.** Connections to the same host wait on one question. Other new hosts wait in line, at most 8;
+  a ninth is refused at once.
+- **Two minutes, then no.** A question with no answer after 2 minutes refuses its connections, and the host counts as
+  denied for the turn. That stays under the turn's inactivity limit of 5 minutes, so a held request never ends the turn.
+  A client that gives up sooner fails sooner; an answer given later still counts for the next attempt in the turn.
+- **Only where the person is.** Only a turn the person started in the conversation asks. In any other turn (closing
+  notes, anything else no one is watching) a host not on the list is refused without asking.
+- **Stop** on the turn refuses everything held.
+
+**The binder's sites.** `Brains` keeps them beside the connection's consent in `brains/read-scopes.sqlite`: one row per
+connection and host, with the time it was added, at most 200 per binder. Changing the sharing choices keeps the list;
+disconnecting Claude from the binder clears it. The binder's Claude settings show "Sites Claude may reach", each with
+Remove, through `chat_sites` and `chat_site_remove`. A removal stops new connections; one already open runs until it
+closes, and the turn's end closes those its commands held.
+
+**The summary.** The proxy counts, per turn and host: who reached it, the connections, the bytes each way, and how it was
+allowed (always, once, denied, no answer). The turn's line says "reached 2 sites" and opens to that list, with searches
+counted beside it ("searched the web 3 times"). The list is kept with the turn's record in
+`binder-store/conversation.sqlite`; logs and the heartbeat carry counts only, never a host. The proxy passes TLS unread,
+so it can say how much went, never a path, a method or what was sent. Reading inside TLS would need a certificate
+authority of Sprava's trusted inside the sandbox; 18.3.2 weighs that for secrets alone.
+
+**What the agent is told.** The launch policy gains a paragraph: the web is reachable through WebSearch, WebFetch and
+commands over https; each new site waits for the person's tap; a 403 from the proxy means the person declined or did not
+answer, so do not retry that host in the turn, and say what was needed and why; send a site only what the task needs.
+
+**What it costs.** An allowed host can receive whatever a command sends it, binder documents included; the summary shows
+how much went, not what. A page Claude reads can steer it; the prompt is the check on where data goes, and the person
+sees the host before anything leaves for it. A prompt names a host, never a URL: the proxy never sees one.
+
+**Order**, one PR each:
+
+1. This design.
+2. The proxy (`Brains`, tier B): the checks above, the sites store, a hold that asks through an interface `Services`
+   supplies and refuses on timeout, and the per-turn counts. Until the next PR, nothing answers, so a new host is
+   refused at once, as today.
+3. The question in the conversation and the sites list (`Services` handlers, `SpravaApp/Binder/Chat`).
+4. WebSearch and WebFetch in `allowedTools`, the proxy variables for commands, the policy paragraph and the summary line
+   (`Brains`, tier B). Checked then on the installed CLI: WebFetch goes through `HTTPS_PROXY`; commands keep the
+   variables under `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`; curl and Homebrew's python verify certificates inside the sandbox
+   (Homebrew's `etc/ca-certificates` may need a read rule).
+
+### 18.3.2 Secrets for scripts (designed, not built)
+
+A billing script needs the invoicing service's API key. Without a place for it, the person pastes it into the
+conversation or a file in the binder, and from there it is in the transcript, the model's context, the binder's history
+and its backups.
+
+**Where it is kept.** The person adds a secret in the binder's Claude settings: a name (`EXAMPLE_INVOICING_KEY`), the
+value in a secure field, and the hosts it may be sent to, chosen from the binder's sites. Sprava keeps it in the Keychain,
+service `org.sprava.binder-secrets`, not synchronized, one item per connection and name: data-protection when
+provisioned, the login Keychain for ad-hoc builds (A20). The binder holds no copy, so its history and backups hold none
+either. Disconnecting Claude from the binder deletes its secrets; on another Mac they are entered again. Claude never
+sees a value: its policy lists the names and their hosts.
+
+**Commands get a placeholder, never the value.** The sandbox's environment carries
+`EXAMPLE_INVOICING_KEY=sprava-secret-<random, per session>`, and a script puts it where the key goes, in a header. For a
+host a secret is bound to, the proxy stops passing TLS through: it ends the client's TLS with a certificate it mints for
+that host from Sprava's own authority, replaces the placeholder with the value in the request's header values, and opens
+its own TLS to the real host, verifying it as any client would. It offers HTTP/1.1 alone and sends `Connection: close`,
+so it reads one request head per connection. The authority's key stays in the Keychain. Its certificate is trusted only
+inside the sandbox, through `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` naming a
+bundle in the session's home (the system's roots plus Sprava's), never in the system's trust settings. Every other host
+still passes unread, so a placeholder sent anywhere else leaves as the useless placeholder.
+
+**Not chosen: the value in the commands' environment.** It needs no TLS in the proxy, but the model can print it, it
+lands in the transcript and the session's context, and a steered command can send it to any site the binder allows. With
+the placeholder, the value reaches only the hosts named for it, inside a request to them.
+
+**Limits.** A client that pins certificates or ignores those variables fails against a bound host. A key that goes in a
+URL or a body is out of the first version. A service that echoes the header back hands the value to the command; the
+proxy could strip exact matches from responses at the cost of reading them, to settle in the PR.
+
+**What it takes**, as later PRs after 18.3.1's, and only with the owner's go: the Keychain store and the settings rows
+(`Brains`, `SpravaApp`; tier B, secrets); the authority, minting, termination and substitution in the proxy (`Brains`,
+tier B), tested against a local TLS server on invented hosts; the placeholders, trust variables and the policy's list of
+names in the launch. No value and no authority key ever reaches a log, the heartbeat or the binder.
 
 ### 18.4 Undo by version history
 

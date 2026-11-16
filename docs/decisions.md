@@ -379,7 +379,8 @@
   to-do list, the brief, Sprava's dot folders) are read-only to it and change only through Sprava's tools. Web
   search and fetch are allowed: every request goes through Sprava's proxy and is listed in the turn's summary,
   and once a turn has read untrusted text a request to a domain new to the binder waits for the person's tap
-  (allow once, always for this binder, deny). Outward actions stay drafts (D13) (conversation.md §18.3).
+  (allow once, always for this binder, deny); D42 makes every new host wait, untrusted text or not. Outward actions
+  stay drafts (D13) (conversation.md §18.3).
 - **D24 decided (2026-10-30; the store settled 2026-11-01).** Undo by version history: a history per binder kept outside
   the folder, in Sprava's own store of bytes by hash rather than git (a copied project's `.git` would hide its files, and
   a friend's Mac may have no git), an entry before each turn for changes since the last one and an entry after it for the
@@ -521,6 +522,19 @@ Each line names what replaced the entry; its old text is in git history.
   marks each private one. Attachments are at most 18 MiB together, before encoding. The binder's conversation may propose
   a draft, and it still needs the person's approval on a card before anything is appended. Not chosen: a local `.eml`
   opened in Mail, which would not reach the person's other devices.
+- **D42 decided (2026-11-16, the author: "sites allowed per binder with a prompt"; amends D23).** A binder's Claude
+  reaches the web: WebSearch on Anthropic's side, and WebFetch and the commands it runs (curl, scripts) through Sprava's
+  proxy. The first time a host is used in a binder the connection is held and the conversation asks: Allow once (this
+  turn), Always for this binder, Deny (this turn); no answer in 2 minutes is a Deny. The hosts allowed always are listed
+  per binder in the app, each with Remove. Every new host asks, before untrusted text as after: Sprava cannot tell when a
+  session has read untrusted text (its binder's own files and earlier turns' pages are already in it), and one rule is
+  easier to trust, so D23's "once a turn has read untrusted text" is gone. Commands may now use the proxy for the
+  binder's hosts; the model's host stays the agent process's alone. The turn's summary lists each host with the bytes
+  each way; the proxy passes TLS unread, so not what was sent. Why: the author asked a binder's Claude to read an
+  invoicing service's API documentation and write billing scripts, and it could not reach the web. Not chosen: full
+  internet per binder, which asks nothing, so a steered command could send binder files to any host unseen. The cost of
+  the pick: a host the person allowed can receive anything a command sends it, documents included. Secrets for scripts
+  are designed, not built (conversation.md §18.3.2).
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
