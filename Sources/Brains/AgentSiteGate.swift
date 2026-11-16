@@ -20,6 +20,10 @@ package final class AgentSiteGate: @unchecked Sendable {
         package let caller: Caller
         package var connections = 0, refused = 0, sent = 0, received = 0
         package var how: How
+        package init(host: String, caller: Caller, connections: Int = 0, refused: Int = 0, sent: Int = 0, received: Int = 0, how: How) {
+            self.host = host; self.caller = caller; self.connections = connections; self.refused = refused
+            self.sent = sent; self.received = received; self.how = how
+        }
     }
 
     package static let questionLimit = 4, noesLimit = 3, usesLimit = 200

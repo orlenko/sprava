@@ -1,4 +1,4 @@
-@testable import Brains
+import Brains
 import Foundation
 import SpravaKit
 import Testing
@@ -48,7 +48,26 @@ import Testing
         let listed = try await f.request("chat_sites")["sites"]?.arrayValue
         #expect(listed == [.obj([("host", .str("docs.example-invoicing.test")), ("commands", .bool(false)), ("added", try #require(listed?.first?["added"]))])])
         #expect(try await f.request("chat_site_remove", [("host", .str("docs.example-invoicing.test"))])["sites"] == .array([]))
+        gate.count("docs.example-invoicing.test", .agent, received: 2048)
         _ = try await f.request("chat_stop", [("request_id", .str(id.uuidString)), ("turn_id", turn)])
+        // The turn's line says what it reached, after the stop as after a reply.
+        let summary = try await f.completed(id)["changes"]?["summary"]?.stringValue ?? ""
+        #expect(summary.contains("Reached docs.example-invoicing.test (Claude, 2 KB in)"))
+        _ = try await f.request("chat_clear")
+        #expect(try f.runtime.turnSites.line(turn: try #require(turn.stringValue.flatMap(UUID.init(uuidString:)))) == nil)
+    }
+
+    @Test func theLineNamesWhoReachedWhatAndWhatWasRefused() {
+        var reading = AgentSiteGate.Use(host: "docs.example.test", caller: .agent, how: .listed)
+        reading.connections = 2; reading.received = 14_000
+        var sending = AgentSiteGate.Use(host: "api.example.test", caller: .command, how: .once)
+        sending.connections = 1; sending.sent = 3_000; sending.received = 1_000
+        var refused = AgentSiteGate.Use(host: "tracker.example.test", caller: .command, how: .denied)
+        refused.refused = 2
+        #expect(ClaudeTurnSites.line([reading, sending, refused], searches: 2)
+                == "Reached docs.example.test (Claude, 14 KB in); api.example.test (a command, 3 KB out, 1 KB in). Refused tracker.example.test. Searched the web 2 times")
+        #expect(ClaudeTurnSites.line([], searches: 0) == nil)
+        #expect(ClaudeTurnSites.line([], searches: 1) == "Searched the web 1 time")
     }
 
     @Test func stopRefusesWhatIsHeld() async throws {

@@ -8,6 +8,8 @@ import SpravaKit
 package struct ClaudeTurnActivity: Sendable, Equatable {
     package private(set) var doing: String?
     package private(set) var steps = 0
+    /// WebSearch calls this turn, for its summary line.
+    package private(set) var searches = 0
 
     package init() {}
 
@@ -15,6 +17,7 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
         for block in blocks {
             if block["type"] == .str("tool_use"), let name = block["name"]?.stringValue {
                 steps += 1
+                if name == "WebSearch" { searches += 1 }
                 doing = Self.words(tool: name, input: block["input"])
             } else if block["type"] == .str("text") {
                 doing = "Writing"
@@ -37,6 +40,8 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
         case "Write", "Edit": return file.map { "Changing \u{201C}\($0)\u{201D}" } ?? "Changing a file"
         case "Glob": return "Looking through the folders"
         case "Grep": return "Searching the binder"
+        case "WebSearch": return "Searching the web"
+        case "WebFetch": return "Reading a web page"
         case "Bash": return input?["description"]?.stringValue.flatMap { let said = short($0, 90); return said.isEmpty ? nil : said } ?? "Running a command"
         case _ where tool.hasSuffix("search_binder"): return "Searching the documents"
         case _ where tool.hasSuffix("update_notes"): return "Updating the notes"

@@ -1,3 +1,4 @@
+import BinderStore
 import Brains
 import Foundation
 import SpravaKit
@@ -13,6 +14,12 @@ extension ClaudeConversationRuntime {
         }, remember: { host, caller in
             (try? connections.allowSite(scope, host: host, commands: caller == .command)) != nil
         })
+    }
+
+    /// The turn's sites and searches, kept before its phase is reported so the line arrives with the reply. Once per turn.
+    func noteSites(_ record: ConversationTurnStore.Record, gate: AgentSiteGate?, driver: Driver?) {
+        guard let gate, (try? turnSites.line(turn: record.turnID)) == nil else { return }
+        try? turnSites.note(conversation: record.conversationID, turn: record.turnID, uses: gate.uses, searches: driver?.searches() ?? 0)
     }
 
     static func siteQuestionJSON(_ question: AgentSiteGate.Question) -> JSONValue {

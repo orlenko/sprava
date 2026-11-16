@@ -15,12 +15,14 @@ package enum ClaudeReadLaunch {
         package let proxyPort: UInt16
         package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
     }
-    static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
     /// The agent's shell is a whole one (decisions.md D36): what holds it is the sandbox, not a list of commands. Its programs are those
     /// the system or Homebrew installed (`programFolders`), and nothing written to the binder or the session's home can run or load. It can
     /// start other programs, and through a program able to make arbitrary system calls read what the person's other programs show in their
     /// environment, which no sandbox rule stops (kern.procargs2, seen 2026-11-02). The author accepted that.
-    static let allowedTools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    /// WebSearch runs on Anthropic's side; WebFetch and commands reach a site only through the proxy, which asks the person
+    /// the first time a site is used in the binder (conversation.md 18.3.1, D42).
+    static let allowedTools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
     /// Where a program may run from. Homebrew's links lead into its Cellar, and the sandbox compares the path they lead to.
     static let programFolders = ["/bin", "/usr/bin", "/usr/sbin", "/sbin", "/usr/libexec", "/Library/Developer/CommandLineTools",
                                  "/opt/homebrew/bin", "/opt/homebrew/sbin", "/opt/homebrew/Cellar", "/opt/homebrew/opt", "/usr/local/bin", "/usr/local/Cellar", "/usr/local/opt"]
@@ -124,7 +126,11 @@ package enum ClaudeReadLaunch {
             // `git` and `python3` in /usr/bin ask which developer folder to use, and the person's choice may be one the sandbox does not reach.
             environment["DEVELOPER_DIR"] = "/Library/Developer/CommandLineTools"
             let proxy = "http://127.0.0.1:\(reach.proxyPort)"
-            environment["HTTPS_PROXY"] = proxy; environment["HTTP_PROXY"] = proxy
+            // Every spelling clients read, and Node's switch to read them; a program that ignores them cannot connect at all.
+            for name in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] { environment[name] = proxy }
+            environment["NODE_USE_ENV_PROXY"] = "1"
+            // A command may wait up to two minutes on the person's answer about a site; the turn's inactivity limit is five.
+            environment["BASH_DEFAULT_TIMEOUT_MS"] = "240000"
             // The person's token stays with the agent process. A process's environment can be read by another of the same user
             // whatever the sandbox says, so with commands running it arrives by pipe and is in no environment; the CLI also
             // strips such names from what its commands inherit.

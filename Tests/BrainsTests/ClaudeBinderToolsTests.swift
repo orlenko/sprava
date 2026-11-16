@@ -201,7 +201,7 @@ import Testing
         let plan = try ClaudeReadLaunch.plan(program: URL(fileURLWithPath: "/opt/invented/2.1.317"), home: f.root.appendingPathComponent("tools"),
                                              sessionID: UUID(), credential: "invented", policy: "p", reach: .init(folder: f.binder, proxyPort: 4242))
         let allowed = try #require(plan.arguments.firstIndex(of: "--allowedTools")).advanced(by: 1)
-        #expect(plan.arguments[allowed].split(separator: ",").map(String.init) == ["Read", "Write", "Edit", "Glob", "Grep", "Bash"])
+        #expect(plan.arguments[allowed].split(separator: ",").map(String.init) == ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"])
         #expect(plan.arguments.contains("--restricted") && plan.arguments.contains("dontAsk") && !plan.arguments.contains("--dangerously-skip-permissions"))
         #expect(plan.environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1")
         #expect(plan.environment["DEVELOPER_DIR"] == "/Library/Developer/CommandLineTools")
@@ -394,10 +394,15 @@ import Testing
         #expect(free.tools.isEmpty && free.arguments.contains("*") && free.environment["HTTPS_PROXY"] == nil)
         let tools = try ClaudeReadLaunch.plan(program: program, home: f.root.appendingPathComponent("tools"), sessionID: UUID(), credential: credential, policy: "p",
                                               reach: .init(folder: f.binder, proxyPort: 4242))
-        #expect(tools.tools == Set(["Read", "Write", "Edit", "Glob", "Grep", "Bash"]))
+        #expect(tools.tools == Set(["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]))
         #expect(tools.directory.path == f.binder.path)
-        #expect(tools.environment["HTTPS_PROXY"] == "http://127.0.0.1:4242")
-        #expect(!tools.arguments.contains("*") && !tools.arguments.contains("WebFetch") && !tools.arguments.contains("Task"))
+        // Commands find the proxy in every spelling they read; nothing tells them to go around it.
+        for name in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] { #expect(tools.environment[name] == "http://127.0.0.1:4242") }
+        #expect(tools.environment["NODE_USE_ENV_PROXY"] == "1" && tools.environment["NO_PROXY"] == nil && tools.environment["no_proxy"] == nil)
+        #expect(tools.environment["BASH_DEFAULT_TIMEOUT_MS"] == "240000")
+        #expect(!tools.arguments.contains("*") && !tools.arguments.contains("Task"))
+        let allowed = try #require(tools.arguments.firstIndex(of: "--allowedTools").map { tools.arguments[$0 + 1] })
+        #expect(allowed.split(separator: ",").contains("WebFetch") && allowed.split(separator: ",").contains("WebSearch"))
         #expect(tools.arguments.contains("dontAsk") && tools.arguments.contains("--restricted"))
         #expect(tools.environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1")
         #expect(free.environment["CLAUDE_CODE_OAUTH_TOKEN"] == credential && free.secret == nil)
@@ -425,6 +430,14 @@ import Testing
         try frames.receive(frame(#"{"type":"assistant","session_id":"\#(id)","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}"#))
         try frames.receive(frame(#"{"type":"result","subtype":"success","is_error":false,"session_id":"\#(id)","result":"the reply"}"#))
         #expect(frames.reply == "the reply" && frames.ended)
+    }
+
+    @Test func webSearchesAreCountedAndTheWebToolsSaySoInTheStatusLine() {
+        var activity = ClaudeTurnActivity()
+        activity.saw([.obj([("type", .str("tool_use")), ("name", .str("WebSearch")), ("input", .obj([("query", .str("invented daily rate"))]))])])
+        #expect(activity.searches == 1 && activity.doing == "Searching the web")
+        activity.saw([.obj([("type", .str("tool_use")), ("name", .str("WebFetch")), ("input", .obj([("url", .str("https://docs.example.test/"))]))])])
+        #expect(activity.searches == 1 && activity.doing == "Reading a web page" && activity.steps == 2)
     }
 
     /// The status line follows the tools, and what it takes from a tool's input is one short line.
