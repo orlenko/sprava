@@ -86,16 +86,23 @@ public struct FilingGuidance: Sendable, Equatable {
         return Self.writesOut(text, folder) ? folder : nil
     }
 
-    /// Whether `text` holds `path` whole: with nothing but the text's ends, spaces or punctuation other than `/ - _` on
-    /// either side, compared without case.
+    /// Whether `text` holds `path` whole: with nothing but the text's ends, spaces or punctuation other than `/ - _ .` on
+    /// either side, compared without case. A full stop that ends a sentence is not part of the path: "bills." holds
+    /// `bills`, "bills.pdf" does not.
     static func writesOut(_ text: String, _ path: String) -> Bool {
         let haystack = Array(DocumentPaths.fold(text).unicodeScalars), needle = Array(DocumentPaths.fold(path).unicodeScalars)
         guard !needle.isEmpty, needle.count <= haystack.count else { return false }
-        func joins(_ s: Unicode.Scalar) -> Bool { s.properties.isAlphabetic || s.properties.numericType != nil || "/-_".unicodeScalars.contains(s) }
+        func word(_ s: Unicode.Scalar) -> Bool { s.properties.isAlphabetic || s.properties.numericType != nil }
+        func joins(_ k: Int) -> Bool {
+            let s = haystack[k]
+            if word(s) || "/-_".unicodeScalars.contains(s) { return true }
+            // A dot joins only between parts of one name.
+            return s == "." && k + 1 < haystack.count && word(haystack[k + 1])
+        }
         var i = 0
         while i + needle.count <= haystack.count {
             if haystack[i..<(i + needle.count)].elementsEqual(needle),
-               i == 0 || !joins(haystack[i - 1]), i + needle.count == haystack.count || !joins(haystack[i + needle.count]) {
+               i == 0 || !joins(i - 1), i + needle.count == haystack.count || !joins(i + needle.count) {
                 return true
             }
             i += 1

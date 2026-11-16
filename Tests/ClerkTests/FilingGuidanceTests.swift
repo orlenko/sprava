@@ -73,6 +73,8 @@ import Testing
         #expect(FilingGuidance.writesOut(rules, "insurance/policies"))
         #expect(!FilingGuidance.writesOut(rules, "policies"))
         #expect(FilingGuidance.writesOut("File it in receipts.", "receipts"))
+        #expect(!FilingGuidance.writesOut("Keep receipts.pdf as it is.", "receipts"))
+        #expect(!FilingGuidance.writesOut("Old copies are in .receipts here.", "receipts"))
     }
 
     @Test func aNameThatWouldHideTheFileIsRefused() {
