@@ -89,7 +89,7 @@ import Testing
         #expect(peekDone.wait(timeout: .now() + 5) == .success)
         queues.repository.sync {}
         #expect(watch.runningFor("app_backup_request") == nil)
-        #expect(RequestQueues.repositoryCommands == ["peek", "backup_setup", "backup_second"])
+        #expect(RequestQueues.repositoryCommands == ["peek", "backup_setup", "backup_second", "backup_take_over"])
     }
 
     @Test func aRequestWithoutACommandIsNamedAndRunsOnTheCommandQueue() {

@@ -53,7 +53,7 @@ import Testing
     @Test(.enabled(if: hasRestic)) func aMissingKeyStopsTheWorkAsAFailure() throws {
         let base = try temp("no-key")
         let support = base.appendingPathComponent("support")
-        try backup(support).setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+        try backup(support).setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
         let m = maintain(backup(support, key: nil), [try adopted()])
         #expect(m.failedParts == ["backup_key"] && m.snapshots == 0)
     }
@@ -62,7 +62,7 @@ import Testing
         let base = try temp("due")
         let support = base.appendingPathComponent("support")
         let b = backup(support)
-        try b.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+        try b.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
         let mine = try adopted(), another = try adopted(device: "another-mac")
         let first = maintain(b, [mine, another])
         #expect(first.snapshots == 1 && first.failed == 0, "\(first)")
@@ -81,7 +81,7 @@ import Testing
         let base = try temp("blocked")
         let support = base.appendingPathComponent("support")
         let b = backup(support)
-        try b.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+        try b.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
         let folder = try adopted()
         // A duplicate key makes the catalog unsafe JSON, which blocks every write until it is repaired.
         let catalog = folder.appendingPathComponent("catalog.json")

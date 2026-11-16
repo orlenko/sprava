@@ -44,11 +44,11 @@ extension Backup {
                 rec.snapshot = snap
             } else {
                 // Nothing changed since the parent restic compared with, which may be one a run cut off before its
-                // record was saved. Restic chooses it as this folder's latest snapshot (host "sprava", same absolute path)
-                // not dated in the future (a clock that was ahead); the same rule finds it here.
+                // record was saved. Restic chooses it as this folder's latest snapshot (this Mac's host, same absolute
+                // path) not dated in the future (a clock that was ahead); the same rule finds it here.
                 let path = realpath(folder.path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? Self.realPath(folder)
                 if let parent = try r.snapshots(tag: "binder:\(id)")
-                    .filter({ $0.hostname == "sprava" && $0.paths == [path] && ($0.date ?? .distantFuture) <= started })
+                    .filter({ $0.hostname == r.host && $0.paths == [path] && ($0.date ?? .distantFuture) <= started })
                     .max(by: { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }) {
                     rec.snapshot = parent.id
                 }
@@ -85,16 +85,20 @@ extension Backup {
         try save(st)
     }
 
-    /// Weekly forget and prune per binder, by the retention rule; offloaded snapshots are always kept.
+    /// Weekly forget and prune per binder, by the retention rule; offloaded snapshots are always kept. Only this Mac's
+    /// snapshots, and those of Macs whose repository it took over, are forgotten: never another Mac's, nor those taken
+    /// before D44, whose Mac cannot be told (decisions.md D44).
     public func applyRetention(now: Date = Date()) throws {
         let s = try settings()
         var st = try state()
+        guard let mac = s.mac else { throw Failure(message: "the backup folder is not yet marked as this Mac's; the next backup run marks it") }
+        let hosts = ([mac] + (s.formerMacs ?? [])).map(Self.host)
         // Sprava's own state snapshots follow the same rule as the binders', so a capture attachment deleted long ago
         // does not stay in them for ever.
         let tags = st.binders.keys.sorted().map { "binder:\($0)" } + ["sprava-state"]
         func apply(_ r: Restic) throws {
             for tag in tags {
-                try r.forget(tag: tag, keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
+                try r.forget(tag: tag, hosts: hosts, keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
                              keepMonthly: s.keepMonthly, keepYearly: s.keepYearly, prune: false)
             }
             try r.prune()

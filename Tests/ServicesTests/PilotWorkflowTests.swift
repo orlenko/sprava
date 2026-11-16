@@ -178,7 +178,7 @@ private let pilotHasRestic = Restic.locate() != nil
         let key = "INVENTED-PILOT-KEY-AAAAA-BBBBB"
         let mirror = base.appendingPathComponent("mirror/Sprava Backup", isDirectory: true)
         let backup = Backup(support: support, key: key, uploadCheck: { _ in .uploaded }, hubSpool: base.appendingPathComponent("spool"))
-        try backup.setUp(primary: mirror, iCloudKeychain: false)
+        try backup.setUp(primary: mirror, iCloudKeychain: false, deviceID: "dev")
         try ok([("command", .str("backup_request")), ("kind", .str("drill")), ("binder", .string(folder.path))])
         let context = JobContext(support: support, commands: commands, rows: { Shelf.rows(registry: nil, picked: [folder]) },
                                  commandQueue: nil, log: { _ in })

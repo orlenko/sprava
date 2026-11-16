@@ -68,6 +68,8 @@ extension Backup {
         public var forgetting: [Forgetting] = []
         /// The second backup's last structure check (nil: none yet, or no second backup).
         public var lastSecondCheck: String? = nil
+        /// The last run stopped at a repository another Mac writes to, or at settings made on another Mac.
+        public var otherMac: OtherMac? = nil
     }
 
     public func status(checkUpload: Bool = true) -> Status {
@@ -84,6 +86,6 @@ extension Backup {
                       upload: checkUpload ? settings.primary.map { uploadCheck(URL(fileURLWithPath: $0)) } : nil,
                       lastCheck: state.lastCheck, lastDrill: state.lastDrill, offloaded: state.offloaded.count,
                       pending: state.offloads.count, stateError: stateError, settingsError: settingsError,
-                      forgetting: state.forgetting, lastSecondCheck: state.lastSecondCheck)
+                      forgetting: state.forgetting, lastSecondCheck: state.lastSecondCheck, otherMac: state.otherMac)
     }
 }

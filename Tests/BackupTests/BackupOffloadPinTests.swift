@@ -56,8 +56,8 @@ extension Backup.OffloadProgress {
                        uploadCheck: { _ in waiting?.on == true ? .waiting(2) : .uploaded }, secondLocationCheck: { _ in true },
                        removeFolder: { try FileManager.default.moveItem(at: $0, to: trash.appendingPathComponent(UUID().uuidString)) },
                        hubSpool: e.base.appendingPathComponent("spool", isDirectory: true))
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
-        if second { try b.setSecond(e.second) }
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
+        if second { try b.setSecond(e.second, deviceID: "dev") }
         return b
     }
 
@@ -71,7 +71,7 @@ extension Backup.OffloadProgress {
         let e = try env()
         let b = try configured(e, second: false)
         #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
-        try b.setSecond(e.second)
+        try b.setSecond(e.second, deviceID: "dev")
         #expect(throws: Backup.Failure.self) { _ = try b.offload(e.folder, deviceID: "another-mac", confirmOpenItems: true, nameCollides: { _ in false }, now: now) }
         #expect(try b.state().offloads.isEmpty)
     }
@@ -260,7 +260,7 @@ extension Backup.OffloadProgress {
         let id = try Backup.backupID(e.folder)
         #expect(try pinned(b, e.primary, id).count == 1)
         waiting.on = false
-        try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false)
+        try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false, deviceID: "dev")
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try pinned(b, e.primary, id).isEmpty)
         #expect(try b.state().offloads[id] == nil)
@@ -371,7 +371,7 @@ extension Backup.OffloadProgress {
         b.atStep = nil
         // The second backup's disk is replaced: an empty repository at the same path.
         try FileManager.default.removeItem(at: e.second)
-        try b.setSecond(e.second)
+        try b.setSecond(e.second, deviceID: "dev")
         #expect(try pinned(b, e.second, id).isEmpty)
         let record = try #require(try b.continueOffload(id, now: now, nameCollides: { _ in false }).record)
         #expect(try pinned(b, e.second, id) == [try #require(record.secondSnapshot)])
@@ -388,7 +388,7 @@ extension Backup.OffloadProgress {
         b.atStep = nil
         // The mirror is made again empty at its own path: the recorded snapshot is gone.
         try FileManager.default.removeItem(at: e.primary)
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
         #expect(try b.state().offloads[id] == nil)
         #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now).record != nil)

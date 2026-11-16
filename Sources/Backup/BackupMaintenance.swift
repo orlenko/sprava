@@ -15,9 +15,9 @@ extension Backup {
         public var stateSnapshot = false
         public var retention = false
         public var checked = false
-        /// What failed apart from the binders, by name (`backup_settings`, `backup_state`, `backup_key`, `offload`,
-        /// `state_snapshot`, `retention`, `check`): each also counts in `failed` and stays due, so the next run tries
-        /// it again.
+        /// What failed apart from the binders, by name (`backup_settings`, `backup_state`, `backup_key`, `other_mac`,
+        /// `offload`, `state_snapshot`, `retention`, `check`): each also counts in `failed` and stays due, so the next
+        /// run tries it again.
         public var failedParts: [String] = []
         /// Folders not backed up because they hold another binder's backup id (`SharedBackupID`); each also counts in
         /// `failed`.
@@ -59,8 +59,25 @@ extension Backup {
             fail("backup_key")
             return m
         }
-        guard let st = try? state() else {
+        guard var st = try? state() else {
             fail("backup_state")
+            return m
+        }
+        // A repository another Mac writes to, or settings made on another Mac: nothing runs, nothing is pruned, and
+        // Backup's status says why until the person takes the backups over (decisions.md D44).
+        do {
+            try confirmThisMac(deviceID)
+            if st.otherMac != nil {
+                st.otherMac = nil
+                try save(st)
+            }
+        } catch let other as OtherMac {
+            st.otherMac = other
+            try? save(st)
+            fail("other_mac")
+            return m
+        } catch {
+            fail("other_mac")
             return m
         }
         // An offload interrupted while its binder was leaving is finished here, whatever became of its request.

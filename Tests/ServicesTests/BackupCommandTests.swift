@@ -141,7 +141,7 @@ import Testing
         let c = commands()
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-backup-job-\(UUID().uuidString)")
         let backup = Backup(support: c.support, key: "TEST-KEY-AAAAA-BBBBB", uploadCheck: { _ in .uploaded })
-        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
         let folder = try adopted(c)
         _ = try call(c, [("command", .str("backup_request")), ("kind", .str("backup_now")), ("binder", .string(folder.path))])
         var told: [String] = []
@@ -154,6 +154,29 @@ import Testing
         #expect(BackupJob.run(context(c, rows: [folder]), backup: backup, now: later) { _, _, _ in }
             == .error(code: "backup_requests_unreadable", culprit: nil))
         #expect(backup.status(checkUpload: false).binders.first?.at == ISOTime.string(later))
+    }
+
+    /// A folder another Mac writes to is answered with its name, so the page can offer to take it over; the status
+    /// offers a folder of this Mac's own and says when a run stopped at another Mac's (decisions.md D44).
+    @Test(.enabled(if: hasRestic)) func anotherMacsFolderIsAnsweredAndShownInTheStatus() throws {
+        let c = commands()
+        let status = try call(c, [("command", .str("backup_status"))])
+        #expect(status["default_primary"]?.stringValue?.contains("/com~apple~CloudDocs/Sprava Backup/") == true)
+        #expect(status["other_mac"] == .null)
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-backup-other-\(UUID().uuidString)")
+        let mirror = base.appendingPathComponent("icloud/Sprava Backup/Invented Studio")
+        try FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
+        try Data(#"{"mac":"0123456789abcdef","name":"Invented Studio"}"#.utf8).write(to: mirror.appendingPathComponent("sprava-mac.json"))
+        let answer = try call(c, [("command", .str("backup_setup")), ("key", .str("INVNT-KEYAA-KEYBB")), ("primary", .string(mirror.path))])
+        #expect(answer["other_mac"]?["repository"] == .str("primary") && answer["other_mac"]?["name"] == .str("Invented Studio"))
+        #expect(try Backup(support: c.support, key: nil).settings().primary == nil)
+        // A run that stopped at another Mac's repository is in the status until the backups are taken over.
+        let backup = Backup(support: c.support, key: "TEST-KEY-AAAAA-BBBBB", uploadCheck: { _ in .uploaded })
+        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup/Invented Laptop"), iCloudKeychain: false, deviceID: "laptop")
+        _ = backup.maintain(rows: [], deviceID: "dev", nameCollides: { _ in false }, now: now)
+        let stopped = try call(c, [("command", .str("backup_status"))])
+        #expect(stopped["other_mac"]?["repository"] == .str("settings"))
+        #expect(stopped["other_mac"]?["message"]?.stringValue?.contains("made on another Mac") == true)
     }
 
     /// A value set on one thread and read on another.
@@ -300,8 +323,8 @@ import Testing
             return .uploaded
         }, secondLocationCheck: { _ in true }, removeFolder: { _ in removed.value = true },
                             hubSpool: base.appendingPathComponent("spool"))
-        try backup.setUp(primary: base.appendingPathComponent("icloud/Mirror"), iCloudKeychain: false)
-        try backup.setSecond(base.appendingPathComponent("external/Second"))
+        try backup.setUp(primary: base.appendingPathComponent("icloud/Mirror"), iCloudKeychain: false, deviceID: "dev")
+        try backup.setSecond(base.appendingPathComponent("external/Second"), deviceID: "dev")
         _ = try call(c, [("command", .str("backup_request")), ("kind", .str("offload")),
                          ("binder", .str(folder.path)), ("confirm_open_items", .bool(true)), ("confirmation_digest", .str(try Backup.offloadConfirmationDigest(in: folder)))])
         stall.value = true
@@ -334,9 +357,9 @@ import Testing
         var backup = Backup(support: c.support, key: "TEST-KEY-AAAAA-BBBBB", uploadCheck: { _ in .uploaded }, secondLocationCheck: { _ in true },
                             removeFolder: { try FileManager.default.moveItem(at: $0, to: trash.appendingPathComponent(UUID().uuidString)) },
                             hubSpool: spool)
-        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
         let second = base.appendingPathComponent("external/Sprava Second").path
-        try backup.setSecond(URL(fileURLWithPath: second, isDirectory: true))
+        try backup.setSecond(URL(fileURLWithPath: second, isDirectory: true), deviceID: "dev")
         let folder = try adopted(c)
         try ShelfStore(supportDirectory: c.support).add(folder)
         let id = try Backup.backupID(folder)
@@ -354,7 +377,7 @@ import Testing
             do {
                 try BackupStateLock.of(c.support).command {
                     started.value = true
-                    try job.setSecond(base.appendingPathComponent("elsewhere/Sprava Second"))
+                    try job.setSecond(base.appendingPathComponent("elsewhere/Sprava Second"), deviceID: "dev")
                 }
                 changed.value = "changed"
             } catch { changed.value = "\(error)" }

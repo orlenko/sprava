@@ -127,7 +127,7 @@ import Testing
         let folder = try makeTeka(fixture: "sprava-v0")
         try TekaStore(folder: folder).adopt(survey: JSONObject(), owner: JSONObject([(key: "device", value: .str("dev"))]), now: now)
         let backup = Backup(support: support, key: "TEST-KEY-AAAAA-BBBBB", uploadCheck: { _ in .uploaded }, secondLocationCheck: { _ in true })
-        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+        try backup.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
         let queue = BackupRequests(support: support)
         for kind in ["backup_now", "drill"] {
             let r = try queue.enqueue(request(kind, binder: folder.path), now: now)

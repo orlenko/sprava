@@ -45,8 +45,8 @@ import Testing
     /// A Backup with the mirror and the second backup set up.
     func configured(_ e: Env) throws -> Backup {
         let b = backup(e)
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
-        try b.setSecond(e.second)
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
+        try b.setSecond(e.second, deviceID: "dev")
         return b
     }
 
@@ -60,7 +60,7 @@ import Testing
         let b = Backup(support: base.appendingPathComponent("support"), key: "TEST-KEY-AAAAA-BBBBB", resticBinary: binary,
                        uploadCheck: { _ in .uploaded })
         do {
-            try b.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false)
+            try b.setUp(primary: base.appendingPathComponent("icloud/Sprava Backup"), iCloudKeychain: false, deviceID: "dev")
             Issue.record("set up with a restic it cannot read")
         } catch let failure as Backup.Failure {
             #expect(failure.message.contains("cannot be read to check it"))
@@ -77,8 +77,8 @@ import Testing
         try data.write(to: b.settingsURL)
         chmod(b.settingsURL.path, 0o000)
         defer { chmod(b.settingsURL.path, 0o600) }
-        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false) }
-        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second) }
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev") }
+        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second, deviceID: "dev") }
         chmod(b.settingsURL.path, 0o600)
         #expect(try Data(contentsOf: b.settingsURL) == data)
     }
@@ -93,7 +93,7 @@ import Testing
         let iCloud = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Invented Second")
         for folder in [e.primary, e.primary.appendingPathComponent("sub"), e.primary.deletingLastPathComponent(), iCloud] {
-            #expect(throws: Backup.Failure.self) { try b.setSecond(folder) }
+            #expect(throws: Backup.Failure.self) { try b.setSecond(folder, deviceID: "dev") }
         }
         #expect(try b.settings().second == nil)
         #expect(!FileManager.default.fileExists(atPath: iCloud.path))
@@ -101,7 +101,7 @@ import Testing
 
     @Test(.enabled(if: hasRestic)) func aPrimaryOutsideICloudIsNeverSavedAsTheMirror() throws {
         let e = try env()
-        #expect(throws: Backup.Failure.self) { try backup(e, upload: .notInICloud).setUp(primary: e.primary, iCloudKeychain: false) }
+        #expect(throws: Backup.Failure.self) { try backup(e, upload: .notInICloud).setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev") }
         #expect(try backup(e).settings().primary == nil)
         // The repository setup made there is taken away again.
         #expect(!FileManager.default.fileExists(atPath: e.primary.path))
@@ -111,8 +111,8 @@ import Testing
         let e = try env()
         let b = try configured(e)
         let before = try b.settings()
-        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.second.appendingPathComponent("new-primary"), iCloudKeychain: false) }
-        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.second.deletingLastPathComponent(), iCloudKeychain: false) }
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.second.appendingPathComponent("new-primary"), iCloudKeychain: false, deviceID: "dev") }
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.second.deletingLastPathComponent(), iCloudKeychain: false, deviceID: "dev") }
         #expect(try b.settings() == before)
     }
 
@@ -126,11 +126,11 @@ import Testing
         var stale = try b.settings()
         stale.resticSHA256 = String(repeating: "0", count: 64)
         try b.save(stale)
-        try refusing.setUp(primary: e.primary, iCloudKeychain: false)
+        try refusing.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
         #expect(try b.settings().resticSHA256 == Restic.sha256(of: try #require(Restic.locate())))
         // A new mirror still needs the second backup to be independent of it.
         #expect(throws: Backup.Failure.self) {
-            try refusing.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false)
+            try refusing.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false, deviceID: "dev")
         }
         try FileManager.default.moveItem(at: away, to: e.second)
     }
@@ -145,7 +145,7 @@ import Testing
         let id = try Backup.backupID(e.folder)
         // The mirror's folder is gone; setup again at the same path makes an empty one.
         try FileManager.default.removeItem(at: e.primary)
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
         var st = try b.state()
         #expect(st.binders[id]?.snapshot == nil && st.binders[id]?.at == nil && st.lastCheck == nil)
         #expect(st.stateSnapshotAt == nil && st.lastForget == nil)
@@ -154,7 +154,7 @@ import Testing
         st.offloaded = [Backup.Offloaded(backupID: id, name: "Invented", originalPath: e.folder.path, snapshot: "0123abcd",
                                          bytes: 1, at: ISOTime.string(now), summary: "invented", documents: [], openItemsConfirmed: 0)]
         try b.save(st)
-        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second) }
+        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second, deviceID: "dev") }
         #expect(!FileManager.default.fileExists(atPath: e.second.appendingPathComponent("config").path))
     }
 
@@ -172,19 +172,20 @@ import Testing
                                          bytes: 1, at: ISOTime.string(now), summary: "invented", documents: [], openItemsConfirmed: 0)]
         try b.save(st)
         #expect(throws: Backup.Failure.self) {
-            try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false)
+            try b.setUp(primary: e.base.appendingPathComponent("icloud/Another Mirror"), iCloudKeychain: false, deviceID: "dev")
         }
-        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false) }
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev") }
         // A record with no second copy recorded cannot be checked in a second backup either.
         var s = Backup.Settings()
         s.primary = e.primary.path
         s.resticSHA256 = Restic.sha256(of: try #require(Restic.locate()))
+        s.mac = Backup.macMark("dev")
         try b.save(s)
-        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second) }
+        #expect(throws: Backup.Failure.self) { try b.setSecond(e.second, deviceID: "dev") }
         try? FileManager.default.removeItem(at: b.settingsURL)
         st.offloaded = []
         try b.save(st)
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
         st = try b.state()
         #expect(st.binders[id]?.at == nil && st.binders[id]?.snapshot == nil && st.lastCheck == nil)
     }
@@ -192,11 +193,11 @@ import Testing
     @Test(.enabled(if: hasRestic)) func aWrongKeyNeverReplacesTheWorkingMirror() throws {
         let e = try env()
         let b = backup(e)
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
         let other = e.base.appendingPathComponent("other/Sprava Backup")
         try Backup(support: e.base.appendingPathComponent("support2"), key: "OTHER-KEY-CCCCC",
-                   uploadCheck: { _ in .uploaded }).setUp(primary: other, iCloudKeychain: false)
-        #expect(throws: (any Error).self) { try backup(e, key: "WRONG-KEY-DDDDD").setUp(primary: other, iCloudKeychain: false) }
+                   uploadCheck: { _ in .uploaded }).setUp(primary: other, iCloudKeychain: false, deviceID: "dev")
+        #expect(throws: (any Error).self) { try backup(e, key: "WRONG-KEY-DDDDD").setUp(primary: other, iCloudKeychain: false, deviceID: "dev") }
         #expect(try b.settings().primary == e.primary.standardizedFileURL.path)
     }
 
@@ -209,7 +210,7 @@ import Testing
         try b.drill(e.folder, repository: .second, now: now)
         let id = try Backup.backupID(e.folder)
         let moved = e.base.appendingPathComponent("icloud/Sprava Backup Moved")
-        try b.setUp(primary: moved, iCloudKeychain: false)
+        try b.setUp(primary: moved, iCloudKeychain: false, deviceID: "dev")
         #expect(try b.state().binders[id]?.repositories.contains(e.primary.standardizedFileURL.path) == true)
         // The binder's last snapshot is in the old mirror: in the new one it is due, and not shown as backed up.
         #expect(try b.state().binders[id]?.snapshot == nil && b.state().binders[id]?.at == nil && b.state().binders[id]?.error == nil)
@@ -218,11 +219,11 @@ import Testing
         #expect(checked.lastCheck == nil && checked.lastReadData == nil && checked.readDataPart == 0 && checked.lastDrill == nil)
         #expect(checked.lastSecondDrill == ISOTime.string(now))
         #expect(checked.lastSecondCheck == ISOTime.string(now) && checked.secondReadDataPart == 1)
-        try b.setSecond(e.base.appendingPathComponent("external/Another Second"))
+        try b.setSecond(e.base.appendingPathComponent("external/Another Second"), deviceID: "dev")
         checked = try b.state()
         #expect(checked.lastSecondCheck == nil && checked.lastSecondReadData == nil && checked.secondReadDataPart == 0)
         #expect(checked.lastSecondDrill == nil)
-        try b.setSecond(e.second)
+        try b.setSecond(e.second, deviceID: "dev")
 
         // An offloaded binder's pinned snapshots are its only copies: no repository moves away from them yet.
         var st = try b.state()
@@ -230,8 +231,8 @@ import Testing
                                          bytes: 1, at: ISOTime.string(now), summary: "invented", documents: [], openItemsConfirmed: 0)]
         try b.save(st)
         let settings = try b.settings()
-        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false) }
-        #expect(throws: Backup.Failure.self) { try b.setSecond(e.base.appendingPathComponent("external/Another Second")) }
+        #expect(throws: Backup.Failure.self) { try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev") }
+        #expect(throws: Backup.Failure.self) { try b.setSecond(e.base.appendingPathComponent("external/Another Second"), deviceID: "dev") }
         #expect(try b.settings() == settings)
     }
 
@@ -438,6 +439,8 @@ import Testing
         var settings = Backup.Settings()
         settings.primary = base.appendingPathComponent("mirror").path
         settings.resticSHA256 = Restic.sha256(of: binary)
+        settings.mac = Backup.macMark("dev")
+        settings.formerMacs = ["0123456789abcdef"]
         try b.save(settings)
         var st = Backup.State()
         st.binders["0123456789abcdef0123456789abcdef"] = .init()
@@ -450,6 +453,10 @@ import Testing
         #expect(lines.filter { $0.hasPrefix("forget ") }.count == 3)
         #expect(lines.contains { $0.hasPrefix("forget ") && $0.contains("sprava-state") })
         #expect(lines.filter { $0.hasPrefix("forget ") }.allSatisfy { !$0.contains("--prune") })
+        // Only this Mac's snapshots and a taken-over Mac's are forgotten (decisions.md D44).
+        #expect(lines.filter { $0.hasPrefix("forget ") }.allSatisfy {
+            $0.contains("--host sprava-\(Backup.macMark("dev")) --host sprava-0123456789abcdef") && !$0.contains("--host sprava ")
+        })
         #expect(lines.filter { $0.hasPrefix("prune ") }.count == 1)
         #expect(try b.state().lastForget == ISOTime.string(now))
     }

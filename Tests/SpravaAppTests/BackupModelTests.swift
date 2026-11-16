@@ -90,4 +90,30 @@ import Testing
         #expect(folder == .str("/Invented/Second"))
         #expect(model.secondPath == "/Invented/Second")
     }
+
+    /// A folder another Mac writes to is offered for taking over, never taken over by itself; the choice sends the
+    /// same setup again with it (decisions.md D44). Before setup, the folder offered is the runtime's own default.
+    @Test func anotherMacsFolderIsTakenOverOnlyByChoice() async throws {
+        var setups: [JSONValue] = []
+        let model = BackupModel(client: RuntimeClient(answer: { text in
+            let r = try JSONParser.parse(text).value
+            if r["command"] == .str("backup_setup") {
+                setups.append(r)
+                return r["take_over"] == .bool(true) ? #"{"ok":true}"#
+                    : #"{"ok":true,"other_mac":{"repository":"primary","name":"Invented Studio","message":"this backup folder belongs to another Mac"}}"#
+            }
+            return #"{"ok":true,"configured":false,"default_primary":"/Invented/iCloud/Sprava Backup/Invented Laptop"}"#
+        }))
+        await model.load()
+        #expect(model.primary == "/Invented/iCloud/Sprava Backup/Invented Laptop")
+        model.typedKey = "invented-key-0000"
+        await model.setUp()
+        #expect(model.otherMac == BackupModel.OtherMac(message: "this backup folder belongs to another Mac", retry: .setup))
+        #expect(model.typedKey == "invented-key-0000" && setups.count == 1)
+        await model.load()
+        #expect(model.otherMac != nil)
+        await model.takeOver()
+        #expect(setups.last?["take_over"] == .bool(true) && setups.last?["key"] == .str("invented-key-0000"))
+        #expect(model.otherMac == nil && model.typedKey.isEmpty)
+    }
 }

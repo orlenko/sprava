@@ -16,15 +16,20 @@ final class BackupModel: ObservableObject, RuntimePage {
     /// The states of a request the backup job has yet to finish (`BackupRequests.pending`).
     static let pendingStates: Set<String> = ["queued", "running", "waiting_for_icloud"]
 
-    /// The default mirror, the same folder as `Backup.defaultPrimary`: the app does not link the Backup target.
-    static var defaultPrimary: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/Sprava Backup", isDirectory: true).path
+    /// A backup folder another Mac writes to (decisions.md D44), and what taking it over retries: the setup or the
+    /// second backup the runtime refused, or the configured backups a run stopped at.
+    struct OtherMac: Equatable {
+        enum Retry: Equatable { case setup, second(String), configured }
+        let message: String
+        let retry: Retry
     }
 
     /// Nil until the runtime has answered once: the page offers no setup before it knows backup is not set up.
     @Published var configured: Bool?
-    @Published var primary = BackupModel.defaultPrimary
+    /// The setup folder: the stored one once set up, else the runtime's default (a folder of this Mac's own in iCloud
+    /// Drive, `Backup.defaultPrimary`) until the person chooses another.
+    @Published var primary = ""
+    @Published var otherMac: OtherMac?
     @Published var secondPath: String?
     @Published var upload: String?
     @Published var lastCheck: String?
@@ -66,6 +71,10 @@ final class BackupModel: ObservableObject, RuntimePage {
             let r = try await client.global("backup_status", timeout: 10)
             configured = r["configured"] == .bool(true)
             if let p = r["primary"]?.stringValue { primary = p }
+            else if primary.isEmpty, let p = r["default_primary"]?.stringValue { primary = p }
+            // A run stopped at another Mac's backup; a refused setup or second backup stays until it is answered.
+            if let m = r["other_mac"]?["message"]?.stringValue { otherMac = OtherMac(message: m, retry: .configured) }
+            else if otherMac?.retry == .configured { otherMac = nil }
             secondPath = r["second_path"]?.stringValue
             pendingKey = r["pending_key"] == .bool(true)
             upload = r["upload"]?.stringValue
@@ -111,19 +120,23 @@ final class BackupModel: ObservableObject, RuntimePage {
     }
 
     /// Step 2: the key typed back (or one from an earlier setup) and the mirror. The runtime checks the folder is
-    /// in iCloud and makes the repository, which can take a few minutes.
-    func setUp() async {
+    /// in iCloud and makes the repository, which can take a few minutes. A folder another Mac writes to is refused,
+    /// and offered for taking over (`takeOver`); the key stays typed for that.
+    func setUp(takeOver: Bool = false) async {
         guard !working, !typedKey.isEmpty else { return }
         working = true
         defer { working = false }
         do {
-            _ = try await client.global("backup_setup", [("key", .string(typedKey)), ("primary", .string(primary)),
-                                                          ("icloud_keychain", .bool(keepInICloudKeychain))], timeout: 300)
+            // Sent only when the person chose it, so an ordinary setup asks for nothing more.
+            let r = try await client.global("backup_setup", [("key", .string(typedKey)), ("primary", .string(primary)),
+                                                              ("icloud_keychain", .bool(keepInICloudKeychain))]
+                                                + (takeOver ? [("take_over", .bool(true))] : []), timeout: 300)
+            if refused(r, retry: .setup) { return await load() }
             newKey = nil
             typedKey = ""
-            message = "Backup is set up. The first backups start within the hour."
+            message = keyUnavailable ? "The backup key is in use again." : "Backup is set up. The first backups start within the hour."
         } catch {
-            message = "Backup is not set up: \(error)"
+            message = keyUnavailable ? "The backup key was not used: \(error)" : "Backup is not set up: \(error)"
         }
         await load()
     }
@@ -132,31 +145,56 @@ final class BackupModel: ObservableObject, RuntimePage {
     /// the same mirror, which opens the repository with it before saving anything: a wrong key changes nothing. This
     /// explicit save is the one time macOS may ask to let Sprava use the key.
     func reenterKey() async {
-        guard !working, keyUnavailable, !typedKey.isEmpty else { return }
-        working = true
-        defer { working = false }
-        do {
-            _ = try await client.global("backup_setup", [("key", .string(typedKey)), ("primary", .string(primary)),
-                                                          ("icloud_keychain", .bool(keepInICloudKeychain))], timeout: 300)
-            typedKey = ""
-            message = "The backup key is in use again."
-        } catch {
-            message = "The backup key was not used: \(error)"
-        }
-        await load()
+        guard keyUnavailable else { return }
+        await setUp()
     }
 
-    func setSecond(_ path: String) async {
+    func setSecond(_ path: String, takeOver: Bool = false) async {
         guard !working else { return }
         working = true
         defer { working = false }
         do {
-            _ = try await client.global("backup_second", [("folder", .string(path))], timeout: 300)
+            let r = try await client.global("backup_second", [("folder", .string(path))] + (takeOver ? [("take_over", .bool(true))] : []),
+                                            timeout: 300)
+            if refused(r, retry: .second(path)) { return await load() }
             message = "The second backup is set."
         } catch {
             message = "The second backup was not set: \(error)"
         }
         await load()
+    }
+
+    /// Whether the runtime answered that another Mac writes to the folder; the page then offers to take it over.
+    private func refused(_ r: JSONObject, retry: OtherMac.Retry) -> Bool {
+        guard let m = r["other_mac"]?["message"]?.stringValue else {
+            if otherMac?.retry == retry { otherMac = nil }
+            return false
+        }
+        otherMac = OtherMac(message: m, retry: retry)
+        message = nil
+        return true
+    }
+
+    /// The person confirmed taking over the folder another Mac wrote to: the refused setup or second backup is sent
+    /// again with that choice, or the configured backups are marked as this Mac's.
+    func takeOver() async {
+        guard let other = otherMac else { return }
+        switch other.retry {
+        case .setup: await setUp(takeOver: true)
+        case .second(let path): await setSecond(path, takeOver: true)
+        case .configured:
+            guard !working else { return }
+            working = true
+            defer { working = false }
+            do {
+                _ = try await client.global("backup_take_over", timeout: 300)
+                otherMac = nil
+                message = "This Mac continues the backups. The other Mac stops writing to them at its next run."
+            } catch {
+                message = "The backups were not taken over: \(error)"
+            }
+            await load()
+        }
     }
 
     /// A drill the backup job has not finished yet, this page's or one queued before.
@@ -270,6 +308,7 @@ struct BackupView: View {
     @ObservedObject var model: BackupModel
     /// The Shelf's binders; a drill can restore any that Sprava keeps here.
     var rows: [ShelfRow] = []
+    @State private var confirmingTakeOver = false
 
     var drillable: [ShelfRow] { rows.filter { !$0.archived && $0.teka.isAdopted && !$0.teka.writesBlocked } }
 
@@ -279,6 +318,7 @@ struct BackupView: View {
             VStack(alignment: .leading, spacing: 28) {
             if let message = model.message { Text(message).foregroundStyle(.orange) }
             if let error = model.stateError { Text("Backup records cannot be read: \(error)").foregroundStyle(.red) }
+            if let other = model.otherMac { otherMac(other) }
             switch model.configured {
             case nil: Text("Asking Sprava's background part…").foregroundStyle(.secondary)
             // Set up, but the key cannot be read: type it again, never a new setup that would make a new key.
@@ -350,6 +390,26 @@ struct BackupView: View {
                 }
             }
             if model.working { ProgressView().controlSize(.small) }
+        }
+    }
+
+    /// A folder another Mac writes to (decisions.md D44). Taking it over is a choice the person confirms; a refused
+    /// setup or second backup can instead be answered with another folder.
+    func otherMac(_ other: BackupModel.OtherMac) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(other.message.prefix(1).uppercased() + other.message.dropFirst() + ".")
+                .foregroundStyle(NoticeLevel.broken.color).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Take Over\u{2026}") { confirmingTakeOver = true }
+                if other.retry != .configured { Button("Choose Another Folder") { model.otherMac = nil } }
+            }
+        }
+        .confirmationDialog("Continue these backups from this Mac?", isPresented: $confirmingTakeOver) {
+            Button("Take Over") { Task { await model.takeOver() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose this only if the other Mac no longer backs up here, such as when this Mac replaces it. The other "
+                 + "Mac stops writing to this folder at its next run. Its snapshots stay, and follow this Mac's retention from now on.")
         }
     }
 

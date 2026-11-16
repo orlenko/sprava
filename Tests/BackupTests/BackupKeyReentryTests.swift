@@ -26,14 +26,14 @@ import Testing
     @Test(.enabled(if: hasRestic)) func aKeyTypedAgainMustOpenTheExistingRepositoryBeforeAnythingChanges() throws {
         let support = try folder(), mirror = try folder().appendingPathComponent("Sprava Backup", isDirectory: true)
         let right = "INVNT-RIGHT-AAAAA-BBBBB", wrong = "INVNT-WRONG-AAAAA-BBBBB"
-        try Backup(support: support, key: right, uploadCheck: { _ in .uploaded }).setUp(primary: mirror, iCloudKeychain: false)
+        try Backup(support: support, key: right, uploadCheck: { _ in .uploaded }).setUp(primary: mirror, iCloudKeychain: false, deviceID: "dev")
         try Backup(support: support, key: nil, resticBinary: nil).recordICloudKeychainChecked(false)
         let settings = try Backup(support: support, key: nil, resticBinary: nil).settings()
         #expect(throws: (any Error).self) {
-            try Backup(support: support, key: wrong, uploadCheck: { _ in .uploaded }).setUp(primary: mirror, iCloudKeychain: false)
+            try Backup(support: support, key: wrong, uploadCheck: { _ in .uploaded }).setUp(primary: mirror, iCloudKeychain: false, deviceID: "dev")
         }
         #expect(try Backup(support: support, key: nil, resticBinary: nil).settings() == settings)
-        try Backup(support: support, key: right, uploadCheck: { _ in .uploaded }).setUp(primary: mirror, iCloudKeychain: false)
+        try Backup(support: support, key: right, uploadCheck: { _ in .uploaded }).setUp(primary: mirror, iCloudKeychain: false, deviceID: "dev")
         #expect(try Backup(support: support, key: nil, resticBinary: nil).settings().primary == mirror.standardizedFileURL.path)
     }
 }

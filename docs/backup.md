@@ -37,9 +37,31 @@ changed since the restore (section 6.4).
 ### 3.1 One repository in iCloud Drive
 
 Sprava keeps one restic repository in a folder of the person's iCloud Drive, by default
-`iCloud Drive/Sprava Backup/`. Everything inside is encrypted by restic before it is written, names and
+`iCloud Drive/Sprava Backup/<this Mac's name>/`. Everything inside is encrypted by restic before it is written, names and
 folder structure included. iCloud and anyone who reaches the iCloud account see only the number of files,
-their sizes and when they change.
+their sizes and when they change, and the folder's name.
+
+### 3.1.1 One Mac per repository (D44)
+
+Two Macs signed in to one Apple ID see one iCloud Drive. Each Mac running Sprava with its own binders keeps its own
+repository; were two to share one, one Mac's weekly forget and prune could remove the other's snapshots.
+
+- The default folder carries the Mac's name as System Settings shows it ("/" and ":" replaced, a leading dot
+  dropped). It is chosen once, at setup, and kept in the settings: renaming the Mac later moves nothing. A folder
+  inside another repository (such as `Sprava Backup/` itself, the default before D44) is refused.
+- Each repository, the second backup's too, holds `sprava-mac.json`, which restic ignores: a digest of this Mac's
+  device id and the Mac's name. Setup refuses a repository whose file names another Mac, and says which. Before
+  every run, and before every restic command on a configured repository, Sprava reads it again: one that names another
+  Mac stops the run before anything is backed up or pruned, and the Backup page says so. A repository with no such
+  file (set up before D44) is marked at the next run; one that is away is left until it is back.
+- Snapshots carry a host of this Mac's own (`sprava-` and the digest), and `forget` keeps to it with `--host`: another
+  Mac's snapshots are never forgotten, whatever the file says. Snapshots taken before D44 carry the host `sprava`, on
+  every Mac alike, and are never forgotten automatically.
+- A new Mac that replaces an old one may continue its backups: the Backup page offers "Take Over", which the person
+  confirms. The repository is then marked as the new Mac's, the old Mac stops writing to it at its next run, and the
+  old Mac's snapshots follow the new Mac's retention. A second backup that was away then is marked at the first run
+  after it is back. Restoring from another Mac's repository only reads it, and needs
+  no takeover; the restore commands (§6.2) are to be built that way.
 
 One repository for everything, rather than one per binder: deduplication works across binders, and the
 cloud folder reveals nothing about how many binders exist or which is which.

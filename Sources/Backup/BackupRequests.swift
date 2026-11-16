@@ -137,6 +137,8 @@ public struct BackupRequests: Sendable {
         do {
             guard let path = r.binder else { throw Backup.Failure(message: "the request names no binder") }
             let folder = URL(fileURLWithPath: path, isDirectory: true)
+            // Only into repositories that name this Mac (decisions.md D44).
+            try backup.confirmThisMac(deviceID)
             switch r.kind {
             case "offload":
                 switch try backup.offload(folder, deviceID: deviceID, confirmOpenItems: r.confirmOpenItems && r.confirmationDigest != nil,

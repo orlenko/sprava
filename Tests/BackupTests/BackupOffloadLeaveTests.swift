@@ -63,8 +63,8 @@ import Testing
                            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(UUID().uuidString))
                        },
                        hubSpool: e.spool)
-        try b.setUp(primary: e.primary, iCloudKeychain: false)
-        try b.setSecond(e.second)
+        try b.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
+        try b.setSecond(e.second, deviceID: "dev")
         return b
     }
 
