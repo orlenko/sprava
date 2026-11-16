@@ -525,12 +525,13 @@ Each line names what replaced the entry; its old text is in git history.
 - **D42 decided (2026-11-16, the author: "sites allowed per binder with a prompt"; amends D23).** A binder's Claude
   reaches the web: WebSearch on Anthropic's side, and WebFetch and the commands it runs (curl, scripts) through Sprava's
   proxy. The first time a host is used in a binder the connection is held and the conversation asks: Allow once (this
-  turn), Always for this binder, Deny (this turn); no answer in 2 minutes is a Deny. The hosts allowed always are listed
-  per binder in the app, each with Remove. Every new host asks, before untrusted text as after: Sprava cannot tell when a
-  session has read untrusted text (its binder's own files and earlier turns' pages are already in it), and one rule is
-  easier to trust, so D23's "once a turn has read untrusted text" is gone. Commands may now use the proxy for the
-  binder's hosts; the model's host stays the agent process's alone. The turn's summary lists each host with the bytes
-  each way; the proxy passes TLS unread, so not what was sent. Why: the author asked a binder's Claude to read an
+  turn), Always for this binder, Deny (this turn); no answer in 2 minutes is a Deny, and after three noes a turn stops
+  asking. A host allowed when Claude asked to read it is asked about again the first time a command uses it, since a
+  command can send it files. The hosts allowed always are listed per binder in the app, each with Remove. Every new host
+  asks, before untrusted text as after: Sprava cannot tell when a session has read untrusted text (its binder's own files
+  and earlier turns' pages are already in it), and one rule is easier to trust, so D23's "once a turn has read untrusted
+  text" is gone. The model's host stays the agent process's alone. The turn's summary lists each host with the bytes
+  each way; the proxy passes TLS unread past the server name, so not what was sent. Why: the author asked a binder's Claude to read an
   invoicing service's API documentation and write billing scripts, and it could not reach the web. Not chosen: full
   internet per binder, which asks nothing, so a steered command could send binder files to any host unseen. The cost of
   the pick: a host the person allowed can receive anything a command sends it, documents included. Secrets for scripts

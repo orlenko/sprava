@@ -1083,77 +1083,113 @@ billing scripts (expenses, and conversion at an official daily exchange rate). I
   A client asks with `CONNECT host:443` and never resolves the name itself. A program that ignores these variables fails
   to connect: the sandbox refuses name lookups and every outbound port but the proxy's.
 
+**One listener per session.** Today one proxy serves the runtime and remembers one agent process. Each binder agent
+session gets its own listener instead, made with the session's driver and stopped with it; the sandbox profile already
+names its port, so the kernel decides which binder a connection belongs to, and the listener knows that binder's sites.
+The runtime runs one conversation at a time, so this costs one port.
+
 **What the proxy checks, per connection, in this order.** A failed check answers 403 and closes.
 
-1. **Who holds the connection.** The kernel names the process holding the other end (as built). The agent process may
-   reach the model hosts and the binder's sites. A process inside that session's sandbox (`AgentContainment`'s marker)
-   may reach the binder's sites only, never a model host: with someone else's API key, a command could upload a document
-   to another account there. Any other process is refused.
-2. **The request.** `CONNECT` to port 443 only; plain `http://` is refused, and the agent is told to use https. The host
-   is a name in lower-case ASCII (an international name in its `xn--` form, which is also how the prompt shows it), with
-   at least two labels and at most 253 bytes. An IP address, `localhost`, and names under `local`, `localhost`,
-   `internal` and `home.arpa` are refused without asking.
-3. **The vendor's hosts.** Any host under `anthropic.com`, `claude.ai` or `claude.com` other than the model hosts is
-   refused without asking, for the agent and commands alike. The CLI's background traffic is already off; whatever is
-   left of it must not become prompts, and a person would allow a familiar name.
-4. **The binder's sites and this turn's answers.** A host on the binder's list, or allowed once in this turn, passes; a
-   host denied in this turn is refused without asking again; any other host is held and asked about.
-5. **Where the name leads.** The proxy resolves the host itself, refuses it if any address is loopback, private,
-   link-local, shared (100.64.0.0/10), multicast or unspecified, and connects to an address it checked. So a site cannot
-   point its name at the person's router or at a service on this Mac.
+1. **Who holds the connection.** The kernel names the process holding the other end. As built, only the agent process
+   is looked for. New: when it is not the agent, the proxy looks through the processes in that session's sandbox
+   (`AgentContainment`'s marker) for the one that holds it. The agent may reach the model hosts and the binder's sites. A
+   command may reach the binder's sites that allow commands (below), never a model host: with someone else's API key, a
+   command could upload a document to another account there. Any other process is refused.
+2. **The request.** `CONNECT` to port 443 only; plain `http://` is refused, and the agent is told to use https.
+3. **The name, in one form.** Every later check, the lists, this turn's answers and the summary use one form of the host:
+   lower-case ASCII, labels of letters, digits and hyphens, an international name in its `xn--` form (which is also how
+   the prompt shows it); at least two labels, none empty, so no trailing dot; at most 253 bytes; a last label that is not
+   all digits, so `127.1` is not a name. `localhost` and names under `local`, `localhost`, `internal` and `home.arpa` are
+   refused without asking.
+4. **The vendor's hosts.** A host that is `anthropic.com`, `claude.ai` or `claude.com`, or ends in a dot and one of
+   them, is refused without asking, for the agent and commands alike, unless it is a model host and the agent asks. The
+   CLI's background traffic is already off; whatever is left of it must not become prompts, and a person would allow a
+   familiar name.
+5. **The binder's sites and this turn's answers.** A host on the binder's list for this caller, or allowed once in this
+   turn, passes; a host denied in this turn is refused without asking again; any other host is held and asked about.
+6. **Where the name leads.** The proxy resolves the host itself and accepts it only if every address is ordinary public
+   unicast, then connects to an address it checked, so a site cannot point its name at the person's router or at a
+   service on this Mac. IPv4 refuses `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`,
+   `192.0.2/24`, `192.88.99/24`, `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24` and everything from `224/4`
+   up. IPv6 accepts only `2000::/3`, less `2001::/23`, `2001:db8::/32`, `2002::/16` and `3fff::/20`, so mapped,
+   unique-local, site-local and link-local addresses are refused. A NAT64 address (`64:ff9b::/96`), which an IPv6-only
+   network gives, is judged by the IPv4 address inside it; the local NAT64 prefix `64:ff9b:1::/48` is refused.
+7. **Where the TLS goes.** Before connecting, the proxy reads the client's first TLS record, a ClientHello, and requires
+   its server name to be the `CONNECT` host. A hello with no name, with encrypted client hello, or split over records
+   is refused. Without this, a command could `CONNECT` to an allowed host and name any other site served from the same
+   addresses, a model host included, since large networks pick the site by that name. The rest passes unread.
 
 **The hold.** A held connection gets no answer yet. The runtime adds a question to the running turn, and `chat_poll`,
 which the app sends every 750 ms during a turn, carries it: an id, the host, and whether Claude or a command asked. The
-conversation shows it in place of the turn's activity line:
+conversation shows it in place of the turn's activity line, the host whole and never cut short:
 
-> Claude wants to reach docs.example-invoicing.test. **Allow once** · **Always for this binder** · **Deny**
+> Claude wants to read docs.example-invoicing.test. **Allow once** · **Always for this binder** · **Deny**
 
-or "A command Claude ran wants to reach api.example-invoicing.test." The tap goes back as `chat_site_answer` (the request
-id, the question id, and `once`, `always` or `deny`).
+or, for a command, "A command Claude ran wants to reach api.example-invoicing.test. It could send this binder's files
+there." The tap goes back as `chat_site_answer` (the request id, the question id, and `once`, `always` or `deny`).
 
 - **Once** allows the host for the rest of this turn; **Always** adds it to the binder's sites; **Deny** refuses it for
   the rest of this turn without asking again. Every held connection to that host then goes on or is refused.
-- **One question at a time.** Connections to the same host wait on one question. Other new hosts wait in line, at most 8;
-  a ninth is refused at once.
-- **Two minutes, then no.** A question with no answer after 2 minutes refuses its connections, and the host counts as
-  denied for the turn. That stays under the turn's inactivity limit of 5 minutes, so a held request never ends the turn.
-  A client that gives up sooner fails sooner; an answer given later still counts for the next attempt in the turn.
-- **Only where the person is.** Only a turn the person started in the conversation asks. In any other turn (closing
-  notes, anything else no one is watching) a host not on the list is refused without asking.
+- **For Claude, or for its commands too.** A grant records who asked. Allowed when Claude asked (WebFetch, which only
+  reads), it lets Claude alone; when a command later uses that host, the question comes again with the command's
+  wording. Allowed when a command asked, it lets both. Reading a service's documentation does not make it an upload
+  target unasked.
+- **One question at a time.** Connections to the same host wait on one question. Other new hosts wait in line, at most 4;
+  a fifth is refused at once.
+- **Two minutes from when it is shown.** A question with no answer 2 minutes after the app first shows it refuses its
+  connections, and the host counts as denied for the turn.
+- **Three noes end the asking.** After 3 denials or unanswered questions in a turn, every new host is refused without
+  asking until the turn ends, and the turn's line says so. A steered script cycling through names cannot wear the person
+  down with prompts.
+- **Only while the person watches.** A question is asked only when the app polled this turn in the last 5 seconds; any
+  other time (the window closed, closing notes, anything else no one is watching) a host not on the list is refused at
+  once.
 - **Stop** on the turn refuses everything held.
+- **Timings.** The CLI's Bash tool ends a command after 2 minutes by default, as long as a hold, so the launch sets
+  `BASH_DEFAULT_TIMEOUT_MS` to 4 minutes, under the turn's inactivity limit of 5. Some clients give up sooner (pip after
+  15 seconds); the policy tells the agent to run a command again after the person answers, since the answer counts for
+  the rest of the turn.
 
 **The binder's sites.** `Brains` keeps them beside the connection's consent in `brains/read-scopes.sqlite`: one row per
-connection and host, with the time it was added, at most 200 per binder. Changing the sharing choices keeps the list;
-disconnecting Claude from the binder clears it. The binder's Claude settings show "Sites Claude may reach", each with
-Remove, through `chat_sites` and `chat_site_remove`. A removal stops new connections; one already open runs until it
-closes, and the turn's end closes those its commands held.
+connection and host, with whether commands may use it and the time it was added, at most 200 per binder. Changing the
+sharing choices keeps the list; disconnecting Claude from the binder clears it. The binder's Claude settings show "Sites
+Claude may reach", each marked "Claude reads" or "Claude and its commands", with Remove, through `chat_sites` and
+`chat_site_remove`. A removal stops new connections; one already open runs until it closes, and the turn's end closes
+those its commands held.
 
 **The summary.** The proxy counts, per turn and host: who reached it, the connections, the bytes each way, and how it was
 allowed (always, once, denied, no answer). The turn's line says "reached 2 sites" and opens to that list, with searches
 counted beside it ("searched the web 3 times"). The list is kept with the turn's record in
-`binder-store/conversation.sqlite`; logs and the heartbeat carry counts only, never a host. The proxy passes TLS unread,
-so it can say how much went, never a path, a method or what was sent. Reading inside TLS would need a certificate
-authority of Sprava's trusted inside the sandbox; 18.3.2 weighs that for secrets alone.
+`binder-store/conversation.sqlite`; logs and the heartbeat carry counts only, never a host. The proxy reads only the
+ClientHello and passes the rest of TLS unread, so it can say how much went, never a path, a method or what was sent.
+Reading inside TLS would need a certificate authority of Sprava's trusted inside the sandbox; 18.3.2 weighs that for
+secrets alone.
 
 **What the agent is told.** The launch policy gains a paragraph: the web is reachable through WebSearch, WebFetch and
 commands over https; each new site waits for the person's tap; a 403 from the proxy means the person declined or did not
-answer, so do not retry that host in the turn, and say what was needed and why; send a site only what the task needs.
+answer, so do not retry that host in the turn unless the person allowed it since, and say what was needed and why; send
+a site only what the task needs.
 
-**What it costs.** An allowed host can receive whatever a command sends it, binder documents included; the summary shows
-how much went, not what. A page Claude reads can steer it; the prompt is the check on where data goes, and the person
-sees the host before anything leaves for it. A prompt names a host, never a URL: the proxy never sees one.
+**What it costs.** A host allowed for commands can receive whatever a command sends it, binder documents included; the
+summary shows how much went, not what. A page Claude reads can steer it; the prompt is the check on where data goes, and
+the person sees the host before anything leaves for it. A prompt names a host, never a URL: the proxy never sees one.
 
 **Order**, one PR each:
 
 1. This design.
-2. The proxy (`Brains`, tier B): the checks above, the sites store, a hold that asks through an interface `Services`
-   supplies and refuses on timeout, and the per-turn counts. Until the next PR, nothing answers, so a new host is
-   refused at once, as today.
-3. The question in the conversation and the sites list (`Services` handlers, `SpravaApp/Binder/Chat`).
-4. WebSearch and WebFetch in `allowedTools`, the proxy variables for commands, the policy paragraph and the summary line
-   (`Brains`, tier B). Checked then on the installed CLI: WebFetch goes through `HTTPS_PROXY`; commands keep the
-   variables under `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`; curl and Homebrew's python verify certificates inside the sandbox
-   (Homebrew's `etc/ca-certificates` may need a read rule).
+2. The proxy's checks (`Brains`, tier B): one listener per session, telling a command from the agent, the name form,
+   the vendor rule, the address rule and the ClientHello check, with an empty sites list, so every new host is refused at
+   once as today. The model-host path every turn uses changes here (the proxy resolves and checks addresses itself), so
+   it lands alone.
+3. The sites store, the hold behind an interface `Services` supplies, the timeouts and the per-turn counts (`Brains`,
+   tier B). Still nothing answers, so nothing new passes.
+4. The question in the conversation and the sites list (`Services` handlers, `SpravaApp/Binder/Chat`).
+5. WebSearch and WebFetch in `allowedTools`, the proxy variables and `BASH_DEFAULT_TIMEOUT_MS` for commands, the policy
+   paragraph and the summary line (`Brains`, tier B). Checked then on the installed CLI: WebFetch goes through
+   `HTTPS_PROXY`; commands keep the variables under `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`; curl and Homebrew's python
+   verify certificates inside the sandbox (Homebrew's `etc/ca-certificates` may need a read rule). A client that checks
+   certificates through the system (Go tools such as `gh`, Swift tools) needs `com.apple.trustd`, which the sandbox
+   closes; opening it is a sandbox change argued in its own PR, if it is needed at all.
 
 ### 18.3.2 Secrets for scripts (designed, not built)
 
@@ -1162,17 +1198,20 @@ conversation or a file in the binder, and from there it is in the transcript, th
 and its backups.
 
 **Where it is kept.** The person adds a secret in the binder's Claude settings: a name (`EXAMPLE_INVOICING_KEY`), the
-value in a secure field, and the hosts it may be sent to, chosen from the binder's sites. Sprava keeps it in the Keychain,
+value in a secure field, the one header it goes in (`Authorization` by default), and the hosts it may be sent to,
+chosen from the binder's sites that allow commands. Sprava keeps it in the Keychain,
 service `org.sprava.binder-secrets`, not synchronized, one item per connection and name: data-protection when
 provisioned, the login Keychain for ad-hoc builds (A20). The binder holds no copy, so its history and backups hold none
 either. Disconnecting Claude from the binder deletes its secrets; on another Mac they are entered again. Claude never
 sees a value: its policy lists the names and their hosts.
 
 **Commands get a placeholder, never the value.** The sandbox's environment carries
-`EXAMPLE_INVOICING_KEY=sprava-secret-<random, per session>`, and a script puts it where the key goes, in a header. For a
-host a secret is bound to, the proxy stops passing TLS through: it ends the client's TLS with a certificate it mints for
-that host from Sprava's own authority, replaces the placeholder with the value in the request's header values, and opens
-its own TLS to the real host, verifying it as any client would. It offers HTTP/1.1 alone and sends `Connection: close`,
+`EXAMPLE_INVOICING_KEY=sprava-secret-<random, per session>`, and a script puts it in the secret's header. For a host a
+secret is bound to, the proxy stops passing TLS through: it ends the client's TLS with a certificate it mints for that
+host from Sprava's own authority, and opens its own TLS to the real host, verifying it as any client would. It replaces
+the placeholder only in the secret's own header, only where the value is the whole placeholder or `Bearer ` and the
+placeholder, and refuses a request whose head carries the placeholder anywhere else (another header, the path). Otherwise a steered script could put it in a header the service logs, stores or shows, and read the value
+back. It offers HTTP/1.1 alone and sends `Connection: close`,
 so it reads one request head per connection. The authority's key stays in the Keychain. Its certificate is trusted only
 inside the sandbox, through `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` naming a
 bundle in the session's home (the system's roots plus Sprava's), never in the system's trust settings. Every other host
