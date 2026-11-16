@@ -92,6 +92,8 @@ extension IntakeWatcher {
             args.set("document", .object(document))
             ops[0].set("args", .object(args))
         }
+        // Where and under what name the person's instructions file it (docs/binder-instructions.md §4.1).
+        ops = Self.following(doc, ops, in: folder)
         // The clerk's items are redacted as the file is private (capture-event-v0 §3.3).
         let event = CaptureEvent(raw: JSONObject([(key: "id", value: .string(e.id)), (key: "sensitivity", value: .str(isPrivate ? "private" : "unmarked")),
                                                   (key: "source", value: .obj([("app", .str("sprava.intake")), ("kind", .string(e.reading.kind))]))]),
@@ -104,6 +106,11 @@ extension IntakeWatcher {
 
         var provenance = tier0.raw["provenance"]?.objectValue ?? JSONObject()
         provenance.set("reading", .object(doc.json))
+        let notes = Self.instructionsNotes(doc)
+        if !notes.isEmpty, var intake = provenance["intake"]?.objectValue {
+            intake.set("notes", .array((intake["notes"]?.arrayValue ?? []) + notes.map(JSONValue.string)))
+            provenance.set("intake", .object(intake))
+        }
         if isPrivate { provenance.set("private", .bool(true)) }
         if !doc.escalate.isEmpty { provenance.set("escalate", .array(doc.escalate.map(JSONValue.string))) }
         if !built.already.isEmpty { provenance.set("already_in_binder", .array(built.already.map(JSONValue.string))) }
