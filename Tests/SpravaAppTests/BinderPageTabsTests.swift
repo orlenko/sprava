@@ -137,7 +137,7 @@ import Testing
     @Test func thePageOpensAtToDosAndOpeningCardsReturnsThere() {
         let workspace = BinderWorkspaceSelection()
         #expect(workspace.pageTab == .todos)
-        #expect(BinderWorkspaceSelection.PageTab.allCases.map(\.rawValue) == ["To-dos", "Explore", "History"])
+        #expect(BinderWorkspaceSelection.PageTab.allCases.map(\.rawValue) == ["To-dos", "Explore", "History", "Instructions"])
         workspace.pageTab = .history
         // Cards are on the To-dos tab: a card opened from Today must not land on a tab that hides it.
         workspace.showCards(in: URL(fileURLWithPath: "/invented/kitchen-reno"))
@@ -171,7 +171,7 @@ import Testing
         let (window, host) = host(f.page, NSSize(width: 900, height: 900))
         defer { window.orderOut(nil) }
         await settle(host)
-        #expect(try tabs(host) == (["To-dos", "Explore", "History"], 0))
+        #expect(try tabs(host) == (["To-dos", "Explore", "History", "Instructions"], 0))
         #expect(!fields(host).contains("Find a document by title or path"))
 
         f.workspace.pageTab = .explore

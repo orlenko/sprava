@@ -410,6 +410,7 @@ struct ShelfView: View {
     @StateObject private var binderConversation = ClaudeBinderConversation()
     @StateObject private var binderWorkspace = BinderWorkspaceSelection()
     @StateObject private var binderActions = BinderActions()
+    @StateObject private var binderInstructions = BinderInstructionsModels()
     @StateObject private var drafts = DraftRegistry()
     /// Every window uses the Shelf's editor, so none can remove another window's open draft.
     var itemEditor: ItemEditor { model.itemEditor }
@@ -488,7 +489,8 @@ struct ShelfView: View {
                             page: model.counts[row.folder]?.page ?? NowPage(items: [], log: [], today: model.today, timeZone: .current),
                             reload: { model.refresh() }, health: model.health, note: binderNote, rows: model.rows, editor: itemEditor, conversation: binderConversation,
                             openBrains: { model.openSettings(.assistant) }, actions: binderActions,
-                            documents: model.documents.model(for: row.folder), todoAdd: binderTodos.model(for: row.folder), workspace: binderWorkspace)
+                            documents: model.documents.model(for: row.folder), todoAdd: binderTodos.model(for: row.folder), workspace: binderWorkspace,
+                            instructions: binderInstructions.model(for: row.folder))
                 } else {
                     ContentUnavailableView {
                         Label("No binders yet", systemImage: "books.vertical")
@@ -512,7 +514,7 @@ struct ShelfView: View {
             }
             model.openSettings = { [openSettings] in openSettings() }
             drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
-            drafts.track(binderTodos); drafts.track(binderActions); drafts.track(binderConversation)
+            drafts.track(binderTodos); drafts.track(binderActions); drafts.track(binderConversation); drafts.track(binderInstructions)
         }
         .task {
             while !Task.isCancelled {
