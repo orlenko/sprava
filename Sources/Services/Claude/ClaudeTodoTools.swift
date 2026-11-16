@@ -155,7 +155,10 @@ final class ClaudeTodoTools: @unchecked Sendable {
                 try commands.replaceTurnNotes(text, folder: folder) { before, after in try history.noteNotesChange(before: before, after: after, turn: turn) }
             }
         } catch let refusal as Refusal { throw refusal }
-        catch { throw Refusal.invalid("The Notes could not be changed here. Nothing changed; tell the person.") }
+        // The keeper's own reason, in its plain words, so the agent can tell the person why.
+        catch let refused as TekaStore.Refused { throw Refusal.invalid("The Notes were not saved: \(refused.reason). Nothing changed; tell the person.") }
+        catch let failure as Commands.Failure { throw Refusal.invalid("The Notes were not saved: \(failure.message). Nothing changed; tell the person.") }
+        catch { throw Refusal.invalid("The Notes could not be saved because of an error writing DASHBOARD.md. Nothing changed; tell the person.") }
         return .obj([("ok", .bool(true))])
     }
 

@@ -72,8 +72,14 @@ import Testing
 
     @Test func notesRefuseWhatCouldDoHarmAndChangeNothing() throws {
         let s = try pSetup()
+        // A dashboard kept by hand is left alone, and the agent is told why in words it can pass on.
+        let url = s.folder.appendingPathComponent("DASHBOARD.md"), hand = "# Invented hand-kept dashboard\n\nBalance: invented\n"
+        try Data(hand.utf8).write(to: url)
         let handKept = try Turn(s)
-        if !DashboardKeeper(folder: s.folder).isSwitched { #expect(handKept.call("update_notes", [("text", .str("Invented"))]).refused) }
+        let refused = handKept.call("update_notes", [("text", .str("Invented"))])
+        #expect(refused.refused && refused.content["message"]?.stringValue?.contains("kept by hand") == true, "\(refused.content)")
+        #expect(try String(contentsOf: url, encoding: .utf8) == hand)
+        #expect(!DashboardKeeper(folder: s.folder).isSwitched)
         _ = try keptDashboard(s)
         let turn = try Turn(s), before = try notes(s)
         #expect(turn.call("update_notes", [("text", .str(String(repeating: "x", count: ClaudeTodoTools.maximumNotesBytes + 1)))]).refused)
@@ -92,6 +98,53 @@ import Testing
         #expect(throws: Blocked.self) { try keeper.replaceNotes(with: "Invented") { _, _ in throw Blocked() } }
         #expect(try notes(s) == before)
         _ = turn
+    }
+
+    /// A binder made the way New Binder makes it, with the tools of a turn in it.
+    private func freshBinder() throws -> (folder: URL, tools: ClaudeAppTools, history: TurnHistory, turn: UUID) {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-fresh-\(UUID().uuidString)")
+        let parent = base.appendingPathComponent("binders"), support = base.appendingPathComponent("support")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let commands = Commands(support: support, deviceID: "dev")
+        let request = JSONWriter.compact(.obj([("command", .str("create_binder")), ("parent", .string(parent.path)),
+                                               ("name", .str("invented-start")), ("template", .str("blank"))]))
+        let r = try JSONParser.parse(commands.handle(request, now: pNow, today: today)).value
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let folder = URL(fileURLWithPath: try #require(r["binder"]?.stringValue))
+        let store = try ConversationTurnStore(at: support.appendingPathComponent("turns.sqlite"))
+        let record = try store.accept(conversationID: UUID(), requestID: try #require(UUID(uuidString: UUIDv7.make())), text: "Invented request")
+        let history = TurnHistory(support: support, binder: UUID())
+        let writer = ClaudeTodoWriter(); writer.attach(commands: commands, queue: DispatchQueue(label: "invented-writer"))
+        let made = ClaudeTodoTools(folder: folder, record: record, history: history, writer: writer, search: { _, _ in .init(sources: [], incomplete: 0) })
+        return (folder, try #require(made).appTools, history, record.turnID)
+    }
+
+    /// The first turn in a new binder keeps its notes: the dashboard is rendered at creation (binder-v0 §7.1).
+    @Test func theFirstNotesInANewBinderAreSaved() throws {
+        let fresh = try freshBinder()
+        let url = fresh.folder.appendingPathComponent("DASHBOARD.md")
+        #expect(DashboardKeeper(folder: fresh.folder).isSwitched)
+        #expect(Dashboard.split(try String(contentsOf: url, encoding: .utf8)).1 == "## Notes\n\n")
+        let answer = fresh.tools.call("update_notes", .init([(key: "text", value: .str("Starting: invented first steps."))]))
+        #expect(!answer.refused, "\(answer.content)")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(Dashboard.split(text).1 == "## Notes\n\nStarting: invented first steps.\n")
+        #expect(!Dashboard.editedOutsideNotes(text))
+        #expect(try fresh.history.notesChange(forTurn: fresh.turn) != nil)
+    }
+
+    /// A binder created before creation rendered the dashboard has none at all: the first notes render it, then go into it.
+    @Test func notesInABinderWithNoDashboardRenderItFirst() throws {
+        let fresh = try freshBinder()
+        let url = fresh.folder.appendingPathComponent("DASHBOARD.md")
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.removeItem(at: fresh.folder.appendingPathComponent(".sprava/dashboard.json"))
+        let answer = fresh.tools.call("update_notes", .init([(key: "text", value: .str("Invented: waiting on the clerk."))]))
+        #expect(!answer.refused, "\(answer.content)")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(Dashboard.split(text).1 == "## Notes\n\nInvented: waiting on the clerk.\n")
+        #expect(!Dashboard.editedOutsideNotes(text))
+        #expect(DashboardKeeper(folder: fresh.folder).isSwitched)
     }
 
     @Test func searchReturnsPassagesWithinABound() throws {

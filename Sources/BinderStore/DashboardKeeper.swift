@@ -91,8 +91,16 @@ public struct DashboardKeeper: Sendable {
 
     /// Replaces the Notes section and nothing else, for a binder whose dashboard Sprava keeps. `noting` runs before the write with
     /// the section as it was and as it will be, and a throw from it changes nothing. It can run again if the file changed meanwhile.
-    public func replaceNotes(with body: String, now: Date = Date(), noting: (_ before: String, _ after: String) throws -> Void) throws {
-        guard try load()?.switched == true else { throw TekaStore.Refused(reason: "DASHBOARD.md is kept by hand in this binder") }
+    /// A binder with no `DASHBOARD.md` at all, as one created before creation rendered it, has nothing kept by hand to protect:
+    /// its dashboard is rendered first (binder-v0 §7.1), and the Notes go into it. A hand-kept file is left alone.
+    public func replaceNotes(with body: String, now: Date = Date(), today: CalendarDate? = nil,
+                             noting: (_ before: String, _ after: String) throws -> Void) throws {
+        if try load()?.switched != true {
+            guard try found() == nil else {
+                throw TekaStore.Refused(reason: "this binder's DASHBOARD.md is kept by hand, so Sprava does not write its Notes; the person can choose Let Sprava Keep It in the binder's Settings")
+            }
+            try switchOn(today: today ?? .today(now: now), now: now)
+        }
         try Self.checkWritable(Teka.read(folder))
         try rewrite(now: now) { found -> (text: String?, result: Void) in
             guard let found, case let (above, before?) = Dashboard.split(found) else {
