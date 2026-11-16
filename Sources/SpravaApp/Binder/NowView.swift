@@ -28,6 +28,8 @@ struct NowView: View {
     @ObservedObject var documents = FiledDocuments()
     @ObservedObject var todoAdd = TodoModel()
     @ObservedObject var workspace = BinderWorkspaceSelection()
+    /// The Instructions tab's model for this binder, kept by the window so a draft outlives the page.
+    @ObservedObject var instructions = InstructionsModel()
     /// Makes the model behind the email intake notice; a test hands in one with a stand-in runtime.
     var emailIntake: () -> EmailIntakeModel = { EmailIntakeModel() }
     @State private var wideTodos = false
@@ -126,7 +128,7 @@ struct NowView: View {
         .padding(.vertical, 4)
     }
 
-    /// To-dos, Explore and History, one at a time under a segmented control (issue #593). The choice is the window's, so a
+    /// To-dos, Explore, History and Instructions, one at a time under a segmented control (issue #593). The choice is the window's, so a
     /// reload, a poll, an edit or the conversation beside it never resets it.
     var project: some View {
         VStack(spacing: 0) {
@@ -144,6 +146,8 @@ struct NowView: View {
                         Text(line).foregroundStyle(actions.historyRead == .failed ? .orange : .secondary)
                     }
                 }
+            case .instructions:
+                InstructionsSection(model: instructions, folder: row.folder, writable: row.teka.isAdopted && !row.teka.writesBlocked)
             }
         }
         .measuringTodoWidth($wideTodos)
@@ -233,7 +237,7 @@ struct BinderPageTabs: View {
         .accessibilityLabel("Binder page section")
         // Also said of the whole control, in case a segment's own label is not passed on to VoiceOver.
         .accessibilityHint(cards > 0 ? Self.spoken(.todos, cards: cards) : "")
-        .frame(maxWidth: 340)
+        .frame(maxWidth: 440)
         .frame(maxWidth: .infinity)
     }
 }

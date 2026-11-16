@@ -85,12 +85,16 @@ public struct TurnHistory: Sendable {
     }
 
     /// The folder's own state and the files one writer owns are not the conversation's to version; `.sprava` holds the
-    /// op log, whose Undo already covers them. `.DS_Store` is noise that Finder rewrites.
+    /// op log, whose Undo already covers them. `.DS_Store` is noise that Finder rewrites. The top-level `AGENTS.md` and
+    /// `CLAUDE.md` are closed to the conversation's writes, so a change to them is the person's, made while a turn ran,
+    /// and the turn's Undo must never take it back (docs/binder-instructions.md §3).
     private static func firstFolder(_ folded: String) -> String { folded.split(separator: "/", maxSplits: 1).first.map(String.init) ?? folded }
 
     static func excluded(_ path: String) -> Bool {
         let folded = DocumentPaths.fold(path)
         if firstFolder(folded) == ".sprava" || folded == "catalog.json" || folded == "dashboard.md" { return true }
+        // As the sandbox names them, case and all: a name it does not close stays the turn's to undo.
+        if path == "AGENTS.md" || path == "CLAUDE.md" { return true }
         return (folded as NSString).lastPathComponent == ".ds_store"
     }
 

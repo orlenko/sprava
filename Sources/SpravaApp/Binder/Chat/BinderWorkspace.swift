@@ -26,7 +26,7 @@ final class BinderWorkspaceSelection: ObservableObject {
     }
 
     /// The parts of Project, one at a time, so the documents and history are not below a long to-do list (issue #593).
-    enum PageTab: String, CaseIterable, Hashable { case todos = "To-dos", explore = "Explore", history = "History" }
+    enum PageTab: String, CaseIterable, Hashable { case todos = "To-dos", explore = "Explore", history = "History", instructions = "Instructions" }
     /// One choice for the window, kept through reloads, polls, edits and other binders: a tab is picked for a task, such as finding
     /// a document, that often goes on in the next binder. A new window, so each launch, starts at To-dos.
     @Published var pageTab: PageTab = .todos

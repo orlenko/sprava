@@ -19,6 +19,8 @@ extension Commands {
         "switch_dashboard": { c, _, r, now, today in try c.switchDashboard(r, now: now, today: today) },
         "create_binder": { c, _, r, now, today in try c.createBinder(r, now: now, today: today) },
         "history": { c, _, r, now, today in try c.history(r, now: now, today: today) },
+        "save_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
+        "undo_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
     ]
 
     /// The template library belongs to the app, so these requests have no binder or binder expunge guard.
