@@ -109,7 +109,8 @@ import Testing
         let r = try source("acme", acme, """
         [{"id":"acme-2026-020","title":"Monthly Acme fee","status":"open","priority":"normal","due":"2026-10-14","recurrence":{"freq":"monthly","day":14}}]
         """)
-        #expect(TodoBoard([r], today: today).entries(.overdue).allSatisfy { !$0.closable })
+        // A repeating to-do is closed like any other since 2026-11-15: its Done moves it on (decisions.md F3).
+        #expect(TodoBoard([r], today: today).entries(.overdue).allSatisfy { $0.closable })
     }
 
     @Test func completingSendsTheBinderPagesOpAndUndoTakesItBack() async throws {

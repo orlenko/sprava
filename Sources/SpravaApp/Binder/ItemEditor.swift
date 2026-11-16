@@ -1,4 +1,5 @@
 import BinderFormat
+import BinderStore
 import Foundation
 import SpravaKit
 
@@ -15,7 +16,22 @@ final class ItemEditor: ObservableObject, DraftOwner {
         let item: Item
         let id: JSONValue
         var title: String
-        var due: CalendarDate?
+        var due: CalendarDate? {
+            // A repeat chosen in this row follows the date it was chosen from; one the item already had stays as it was.
+            didSet {
+                guard let due, let rule = recurrence, repeatFollowsDate else { return }
+                switch rule {
+                case .monthly: recurrence = RepeatWords.monthly(from: due)
+                case .yearly: recurrence = RepeatWords.yearly(from: due)
+                }
+            }
+        }
+        /// The repeat as set in the row (binder-v0 §5.4); nil for none. A rule this version cannot read is never offered
+        /// to change and never written (`Item.repeatUnreadable`).
+        var recurrence: Recurrence.Rule?
+        /// Whether the person chose monthly or yearly in this row, so the repeat follows the row's date; false for none and
+        /// for the repeat the item already had. Kept apart from the rule itself: a date can make a chosen rule equal the old one.
+        var repeatFollowsDate = false
         var details: String
         var priority: Priority
         var status: ItemStatus
@@ -29,14 +45,49 @@ final class ItemEditor: ObservableObject, DraftOwner {
         var waiting: Bool { status == .waiting || status == .blocked }
         var validation: String? {
             if unreadDate { return "Sprava could not read that date. Try tomorrow, fri, nov 12 or 2031-02-03." }
+            if recurrence != nil, due == nil { return "A to-do that repeats needs a due date. Add one, or set Repeats to Never." }
             return waitingValidation
+        }
+        /// Whether the row changes the item's repeat.
+        var repeatChanged: Bool { !item.repeatUnreadable && recurrence != item.repeatRule }
+
+        /// The Repeats menu's choice: none, the repeat the item has, or monthly or yearly from the row's date.
+        enum RepeatChoice: String { case never, kept, monthly, yearly }
+        var repeatChoice: RepeatChoice {
+            switch recurrence {
+            case nil: .never
+            case let rule? where !repeatFollowsDate && rule == item.repeatRule: .kept
+            case .monthly?: .monthly
+            case .yearly?: .yearly
+            }
+        }
+        /// The Repeats menu: Never, the item's own repeat, and, when `offersNew`, monthly and yearly from the row's date.
+        /// The choice made is always listed, so the menu never shows a value it does not hold.
+        func repeatOptions(offersNew: Bool) -> [(String, String)] {
+            var options = [("Never", RepeatChoice.never.rawValue)]
+            if let kept = item.repeatRule { options.append((RepeatWords.choice(kept), RepeatChoice.kept.rawValue)) }
+            let chosen = repeatChoice
+            for (choice, fromDue) in [(RepeatChoice.monthly, due.map(RepeatWords.monthly)), (.yearly, due.map(RepeatWords.yearly))] {
+                let rule = chosen == choice ? recurrence : (offersNew ? fromDue : nil)
+                if let rule, rule != item.repeatRule || chosen == choice { options.append((RepeatWords.choice(rule), choice.rawValue)) }
+            }
+            return options
+        }
+        /// The item as it is once the row's change is saved, for the Done that follows a save: it names the saved date.
+        var saved: Item {
+            guard var object = item.object else { return item }
+            if let due { object.set("due", .string(due.description)) } else { _ = object.remove("due") }
+            if repeatChanged {
+                if let recurrence { object.set("recurrence", recurrence.json) } else { _ = object.remove("recurrence") }
+            }
+            return Item(raw: .object(object), index: item.index)
         }
         private var waitingValidation: String? {
             waiting && (waitingOn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || followUp == nil)
                 ? "Enter who you are waiting on and a follow-up date before saving." : nil
         }
         var dirty: Bool {
-            unreadDate || title != item.object?["title"]?.stringValue || due != item.due
+            unreadDate || title != item.object?["title"]?.stringValue || due != item.due || repeatChanged
                 || details != (item.object?["details"]?.stringValue ?? "") || priority != (item.priority ?? .normal)
                 || status != item.status || (waiting && (waitingOn != (item.waitingOn ?? "") || followUp != item.followUpAt))
         }
@@ -49,6 +100,9 @@ final class ItemEditor: ObservableObject, DraftOwner {
                 if details.isEmpty { unset.append(.str("details")) } else { set.set("details", .string(details)) }
             }
             if priority != (item.priority ?? .normal) { set.set("priority", .string(priority.rawValue)) }
+            if repeatChanged {
+                if let recurrence { set.set("recurrence", recurrence.json) } else { unset.append(.str("recurrence")) }
+            }
             if !set.entries.isEmpty { args.set("set", .object(set)) }
             if !unset.isEmpty { args.set("unset", .array(unset)) }
             if status != item.status || (waiting && (waitingOn != (item.waitingOn ?? "") || followUp != item.followUpAt)) {
@@ -118,7 +172,7 @@ final class ItemEditor: ObservableObject, DraftOwner {
     }
 
     private func open(_ item: Item, _ id: JSONValue, in folder: URL) {
-        rows[folder] = Row(item: item, id: id, title: item.object?["title"]?.stringValue ?? "", due: item.due,
+        rows[folder] = Row(item: item, id: id, title: item.object?["title"]?.stringValue ?? "", due: item.due, recurrence: item.repeatRule,
                            details: item.object?["details"]?.stringValue ?? "", priority: item.priority ?? .normal,
                            status: item.status, waitingOn: item.waitingOn ?? "", followUp: item.followUpAt)
     }
@@ -163,6 +217,19 @@ final class ItemEditor: ObservableObject, DraftOwner {
         }
     }
     func setWaitingOn(_ value: String, in folder: URL) { edit(in: folder) { $0.waitingOn = value } }
+    /// Sets the row's repeat from the Repeats menu. Monthly and yearly take the day from the row's date; with no date
+    /// they wait for one, and the row says so.
+    func setRepeat(_ choice: Row.RepeatChoice, in folder: URL) {
+        edit(in: folder) { row in
+            guard !row.item.repeatUnreadable else { return }
+            switch choice {
+            case .never: row.recurrence = nil; row.repeatFollowsDate = false
+            case .kept: row.recurrence = row.item.repeatRule; row.repeatFollowsDate = false
+            case .monthly: row.recurrence = row.due.map(RepeatWords.monthly) ?? row.recurrence; row.repeatFollowsDate = row.recurrence != nil
+            case .yearly: row.recurrence = row.due.map(RepeatWords.yearly) ?? row.recurrence; row.repeatFollowsDate = row.recurrence != nil
+            }
+        }
+    }
     func setFollowUp(_ value: CalendarDate?, in folder: URL) {
         edit(in: folder) { $0.followUp = value; $0.dateTyped = nil; $0.unreadDate = false }
     }
@@ -236,7 +303,8 @@ final class ItemEditor: ObservableObject, DraftOwner {
         guard !saving.contains(folder), !actions.busy, actions.serves(folder), let row = rows[folder] else { return nil }
         if op == "complete", row.change != nil || row.validation != nil {
             return save(in: folder, actions, reload: reload, then: { [weak self] in
-                self?.close(row.item, as: op, in: folder, actions, reload: reload)
+                // The Done names the date just saved: a repeating item checks it against its due date.
+                self?.close(row.saved, as: op, in: folder, actions, reload: reload)
             })
         }
         return close(row.item, as: op, in: folder, actions, reload: reload)

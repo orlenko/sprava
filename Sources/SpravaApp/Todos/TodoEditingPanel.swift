@@ -15,7 +15,9 @@ struct TodoEditingPanel: View {
                 ItemEditFields(actions: actions, editor: editor, folder: target.folder, reload: refresh)
             }
             if let message = actions.message { Text(message).foregroundStyle(.orange) }
-            if let change = actions.history.first {
+            if actions.moved != nil {
+                MovedLine(actions: actions, folder: target.folder, reload: refresh)
+            } else if let change = actions.history.first {
                 HStack {
                     Text(change.line).lineLimit(2)
                     if change.undoable && !change.undone {
@@ -30,6 +32,22 @@ struct TodoEditingPanel: View {
         Task {
             await actions.loadReview(target.folder)
             await reload()
+        }
+    }
+}
+
+/// Where the last Done moved a repeating to-do, with its Undo: "Done: … Next: December 15. Undo".
+struct MovedLine: View {
+    @ObservedObject var actions: BinderActions
+    let folder: URL
+    let reload: () -> Void
+
+    var body: some View {
+        if let moved = actions.moved {
+            HStack {
+                Text(moved.line).lineLimit(2)
+                Button("Undo") { actions.undoMoved(folder, reload: reload) }.buttonStyle(.link).disabled(actions.busy)
+            }
         }
     }
 }
