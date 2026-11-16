@@ -126,6 +126,25 @@ import Testing
         #expect(editor.row(in: folder)?.validation == nil && editor.row(in: folder)?.change?["set"]?["recurrence"] == nil)
     }
 
+    /// A repeat chosen in the row keeps following the date even when one date makes it the item's old rule (cloud review).
+    @Test func aChosenRepeatFollowsTheDatePastTheOldRule() {
+        let item = Item(raw: .obj([("id", .str("rent-3")), ("title", .str("Pay the invented rent")), ("due", .str("2030-03-20")),
+                                   ("recurrence", Recurrence.Rule.monthly(day: 15).json)]), index: 0)
+        let folder = URL(fileURLWithPath: "/Invented/flat", isDirectory: true)
+        let editor = ItemEditor()
+        editor.begin(item, in: folder, BinderActions(client: StandInRuntime().client), reload: {})
+        editor.setRepeat(.monthly, in: folder)
+        #expect(editor.row(in: folder)?.recurrence == .monthly(day: 20))
+        editor.setDue(CalendarDate(year: 2030, month: 3, day: 15), in: folder)
+        editor.setDue(CalendarDate(year: 2030, month: 3, day: 22), in: folder)
+        #expect(editor.row(in: folder)?.recurrence == .monthly(day: 22))
+        #expect(editor.row(in: folder)?.change?["set"]?["recurrence"] == Recurrence.Rule.monthly(day: 22).json)
+        // Keeping the item's own repeat stops the following.
+        editor.setRepeat(.kept, in: folder)
+        editor.setDue(CalendarDate(year: 2030, month: 3, day: 25), in: folder)
+        #expect(editor.row(in: folder)?.recurrence == .monthly(day: 15) && editor.row(in: folder)?.repeatChoice == .kept)
+    }
+
     @Test func theWordsOfARepeat() {
         #expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 31].map(RepeatWords.ordinal)
             == ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "31st"])

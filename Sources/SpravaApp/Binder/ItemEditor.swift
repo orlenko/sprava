@@ -19,7 +19,7 @@ final class ItemEditor: ObservableObject, DraftOwner {
         var due: CalendarDate? {
             // A repeat chosen in this row follows the date it was chosen from; one the item already had stays as it was.
             didSet {
-                guard let due, let rule = recurrence, rule != item.repeatRule else { return }
+                guard let due, let rule = recurrence, repeatFollowsDate else { return }
                 switch rule {
                 case .monthly: recurrence = RepeatWords.monthly(from: due)
                 case .yearly: recurrence = RepeatWords.yearly(from: due)
@@ -29,6 +29,9 @@ final class ItemEditor: ObservableObject, DraftOwner {
         /// The repeat as set in the row (binder-v0 §5.4); nil for none. A rule this version cannot read is never offered
         /// to change and never written (`Item.repeatUnreadable`).
         var recurrence: Recurrence.Rule?
+        /// Whether the person chose monthly or yearly in this row, so the repeat follows the row's date; false for none and
+        /// for the repeat the item already had. Kept apart from the rule itself: a date can make a chosen rule equal the old one.
+        var repeatFollowsDate = false
         var details: String
         var priority: Priority
         var status: ItemStatus
@@ -53,7 +56,7 @@ final class ItemEditor: ObservableObject, DraftOwner {
         var repeatChoice: RepeatChoice {
             switch recurrence {
             case nil: .never
-            case let rule? where rule == item.repeatRule: .kept
+            case let rule? where !repeatFollowsDate && rule == item.repeatRule: .kept
             case .monthly?: .monthly
             case .yearly?: .yearly
             }
@@ -220,10 +223,10 @@ final class ItemEditor: ObservableObject, DraftOwner {
         edit(in: folder) { row in
             guard !row.item.repeatUnreadable else { return }
             switch choice {
-            case .never: row.recurrence = nil
-            case .kept: row.recurrence = row.item.repeatRule
-            case .monthly: row.recurrence = row.due.map(RepeatWords.monthly) ?? row.recurrence
-            case .yearly: row.recurrence = row.due.map(RepeatWords.yearly) ?? row.recurrence
+            case .never: row.recurrence = nil; row.repeatFollowsDate = false
+            case .kept: row.recurrence = row.item.repeatRule; row.repeatFollowsDate = false
+            case .monthly: row.recurrence = row.due.map(RepeatWords.monthly) ?? row.recurrence; row.repeatFollowsDate = row.recurrence != nil
+            case .yearly: row.recurrence = row.due.map(RepeatWords.yearly) ?? row.recurrence; row.repeatFollowsDate = row.recurrence != nil
             }
         }
     }
