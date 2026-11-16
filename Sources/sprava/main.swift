@@ -32,7 +32,7 @@ usage: sprava shelf [--archived]          every binder: state, last change, over
        sprava dev <command> <folder> ...  development only, on invented copies: adopt, proposals,
                                           approve <id>, reject <id>, complete <item-id>, drop <item-id>,
                                           shelve (onto the development Shelf), add <title> (due today),
-                                          undo <op-id>.
+                                          repeat <item-id> (monthly on the day it is due), undo <op-id>.
                                           Refuses any folder in lifeproj's registry or on Sprava's
                                           Shelf, or owned by the installed Sprava. Uses its own
                                           state and device id (the support folder plus "-dev").

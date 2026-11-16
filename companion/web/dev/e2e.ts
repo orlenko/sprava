@@ -18,6 +18,15 @@ import { parseArgs } from 'node:util';
 import { startLocalRelay, type LocalRelay } from './local-relay.ts';
 import { day, StandInOwner, type Decision } from './stand-in-owner.ts';
 
+/** The next date of a repeat monthly on the day of `due` (YYYY-MM-DD), counted from that date: next month's same day,
+ *  or its last day when it is shorter (binder-v0 §5.4). */
+function nextMonthly(due: string): string {
+    const [year, month, date] = due.split('-').map(Number) as [number, number, number];
+    const [y, m] = month === 12 ? [year + 1, 1] : [year, month + 1];
+    const last = new Date(y, m, 0).getDate();
+    return `${y}-${String(m).padStart(2, '0')}-${String(Math.min(date, last)).padStart(2, '0')}`;
+}
+
 /** What the script needs from the Mac. Each step names the Mac request that will carry it. */
 interface MacSide {
     /** `configure` and `claim`, then a first publish. */
@@ -39,6 +48,12 @@ interface MacSide {
     changeBeforePublishing?(title: string): Promise<void>;
     /** Only a real Mac: Undo, as the app offers it, of the change a phone's Done made; whether the to-do is open again. */
     undoPhoneDone?(title: string): Promise<boolean>;
+    /** Only a real Mac: a new to-do due today that repeats monthly on today's day, published. */
+    addRepeating?(title: string): Promise<void>;
+    /** Only a real Mac: the open to-do's due date, or undefined once it is closed. */
+    due?(title: string): string | undefined;
+    /** Only a real Mac: Undo, as the app offers it, of the phone's Done that moved a repeating to-do on. */
+    undoPhoneRepeat?(title: string): Promise<void>;
     /** Only a real Mac: Remove the paired phone, then one job run; the account epoch the Mac is at. */
     removePhone?(which: number): Promise<void>;
     epoch?(): Promise<number>;
@@ -187,6 +202,21 @@ class DevPhoneMac implements MacSide {
         if (!op) throw new Error(`No phone Done for ${title} in the op log.`);
         await this.run(['dev', 'undo', this.binder, op.id]);
         return this.catalog().open_items.some((i: any) => i.title === title);
+    }
+    async addRepeating(title: string) {
+        await this.run(['dev', 'add', this.binder, title]);
+        const item = this.catalog().open_items.find((i: any) => i.title === title);
+        if (!item) throw new Error(`No to-do ${title} on the Mac.`);
+        await this.run(['dev', 'repeat', this.binder, item.id]);
+        await this.run(['dev-phone', 'run']);
+    }
+    due(title: string) { return this.catalog().open_items.find((i: any) => i.title === title)?.due as string | undefined; }
+    async undoPhoneRepeat(title: string) {
+        const item = this.catalog().open_items.find((i: any) => i.title === title);
+        const ops = readFileSync(join(this.binder, '.sprava', 'ops.ndjson'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+        const op = ops.find((o: any) => o.op === 'complete' && String(o.note ?? '').startsWith('companion:') && o.args?.id === item?.id);
+        if (!op) throw new Error(`No phone Done for ${title} in the op log.`);
+        await this.run(['dev', 'undo', this.binder, op.id]);
     }
     async removePhone(which: number) {
         const reply = await this.phone({ command: 'companion_device_remove', device_id: this.paired[which] });
@@ -412,6 +442,28 @@ try {
         step('a stale Done became a card on the Mac, and the phone says so');
     }
 
+    if (mac.addRepeating && mac.due && mac.undoPhoneRepeat) {
+        // A to-do repeating monthly on today's day: Done on the phone moves it to next month's, and it stays open.
+        const title = 'Invented monthly fee';
+        await mac.addRepeating(title);
+        await phone.click('Refresh');
+        await phone.wait(`document.querySelector('#binder-view').textContent.includes(${JSON.stringify(title)})`, 'the repeating to-do');
+        const today = mac.due(title)!;
+        await phone.click('Done', '#binder-view', title);
+        await phone.wait(`document.querySelector('#pending').textContent.includes('Done #4 · Sent')`, 'the Done on the repeating to-do sent');
+        await mac.drain();
+        const next = nextMonthly(today);
+        if (mac.due(title) !== next) throw new Error(`The repeating to-do is due ${mac.due(title) ?? 'nowhere'}, not ${next}.`);
+        await phone.click('Refresh');
+        // Today shows what is due today, and the to-do is now due next month: it leaves Today, open on the Mac.
+        await phone.wait(`!document.querySelector('#pending').textContent.includes('Done #4') &&
+            !document.querySelector('#binder-view').textContent.includes(${JSON.stringify(title)})`, 'the outcome, and the to-do off Today');
+        step(`Done on the phone moved a repeating to-do from ${today} to ${next}`);
+        await mac.undoPhoneRepeat(title);
+        if (mac.due(title) !== today) throw new Error('Undo on the Mac did not put the date back.');
+        step('Undo on the Mac put its date back');
+    }
+
     const firstLog: string[] = [];
     if (mac.removePhone && mac.keys && mac.epoch && mac.deletionPending) {
         second = await Phone.open(values.chrome);
@@ -442,7 +494,7 @@ try {
             step('the relay deletion of the removed phone waits for its pace; the next run makes it');
             // In that window the relay still takes the removed phone's requests; the Mac must never apply one.
             await phone.click('Done', '#binder-view', 'Invented to-do added on the Mac');
-            await phone.wait(`document.querySelector('#pending').textContent.includes('Done #4 · Sent')`, 'the removed phone’s Done sent');
+            await phone.wait(`document.querySelector('#pending').textContent.includes('Done #5 · Sent')`, 'the removed phone’s Done sent');
             await new Promise(resolve => setTimeout(resolve, 3000));
             await mac.drain();
             if (await mac.deletionPending!(0)) throw new Error('The next run did not delete the removed phone on the relay.');
