@@ -562,7 +562,9 @@ Each line names what replaced the entry; its old text is in git history.
   kept; renaming the Mac later moves nothing. Each repository holds a small file naming the Mac that writes to it by a
   digest of its device id. Setup refuses a repository that names another Mac; a run that finds one stops before
   anything is backed up or pruned, and the Backup page says so. Retention forgets only this Mac's snapshots (restic's
-  `--host`), never another Mac's, nor those taken before D44, whose Mac cannot be told. Continuing another Mac's backups
+  `--host`), never another Mac's. Snapshots taken before D44 share one host, so their Mac cannot be told: the Mac that
+  first marks a repository set up before D44 adopts those in it, and a takeover hands them on (the lead's follow-up,
+  2026-11-16); elsewhere they are never forgotten. Continuing another Mac's backups
   from this one (a new Mac replacing an old one) is a choice the person confirms on the Backup page. Not chosen: leaving
   it to the person to pick separate folders.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.

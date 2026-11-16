@@ -86,17 +86,18 @@ extension Backup {
     }
 
     /// Weekly forget and prune per binder, by the retention rule; offloaded snapshots are always kept. Only this Mac's
-    /// snapshots, and those of Macs whose repository it took over, are forgotten: never another Mac's, nor those taken
-    /// before D44, whose Mac cannot be told (decisions.md D44).
+    /// snapshots, and those of Macs whose repository it took over, are forgotten: never another Mac's. Those taken
+    /// before D44, whose Mac cannot be told, only in a repository whose they are (`adoptsLegacy`; decisions.md D44).
     public func applyRetention(now: Date = Date()) throws {
         let s = try settings()
         var st = try state()
         guard let mac = s.mac else { throw Failure(message: "the backup folder is not yet marked as this Mac's; the next backup run marks it") }
-        let hosts = ([mac] + (s.formerMacs ?? [])).map(Self.host)
+        let macs = ([mac] + (s.formerMacs ?? [])).map(Self.host)
         // Sprava's own state snapshots follow the same rule as the binders', so a capture attachment deleted long ago
         // does not stay in them for ever.
         let tags = st.binders.keys.sorted().map { "binder:\($0)" } + ["sprava-state"]
         func apply(_ r: Restic) throws {
+            let hosts = macs + (Self.adoptsLegacy(s, r.repository) ? [Self.legacyHost] : [])
             for tag in tags {
                 try r.forget(tag: tag, hosts: hosts, keepLast: s.keepLast, keepWithinDays: s.keepWithinDays,
                              keepMonthly: s.keepMonthly, keepYearly: s.keepYearly, prune: false)

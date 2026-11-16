@@ -19,6 +19,9 @@ extension Backup {
         /// Repositories the person took over while they were away (a second backup's disk): the first run after each is
         /// back marks it as this Mac's, once. A Mac in `formerMacs` alone never grants that.
         public var pendingTakeOver: [String]?
+        /// Repositories whose snapshots from before D44 (host `sprava`) this Mac adopted: it marked them first, or
+        /// took them over from a Mac that had. Its retention covers those snapshots there.
+        public var legacy: [String]?
         public var keepLast = 30
         public var keepWithinDays = 90
         public var keepMonthly = 24
@@ -275,6 +278,7 @@ extension Backup.Settings {
         mac = try c.decodeIfPresent(String.self, forKey: .mac)
         formerMacs = try c.decodeIfPresent([String].self, forKey: .formerMacs)
         pendingTakeOver = try c.decodeIfPresent([String].self, forKey: .pendingTakeOver)
+        legacy = try c.decodeIfPresent([String].self, forKey: .legacy)
         keepLast = try c.decodeIfPresent(Int.self, forKey: .keepLast) ?? 30
         keepWithinDays = try c.decodeIfPresent(Int.self, forKey: .keepWithinDays) ?? 90
         keepMonthly = try c.decodeIfPresent(Int.self, forKey: .keepMonthly) ?? 24
