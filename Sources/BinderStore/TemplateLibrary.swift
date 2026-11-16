@@ -1,3 +1,4 @@
+import BinderFormat
 import Darwin
 import Foundation
 import SpravaKit
@@ -16,8 +17,11 @@ public struct TemplateLibrary: Sendable {
         guard let root = Bundle.module.url(forResource: "ProjectTemplates", withExtension: nil),
               key.wholeMatch(of: /[a-z0-9][a-z0-9-]{0,63}/) != nil else { throw BinderTemplate.Invalid() }
         let at = root.appendingPathComponent(key)
+        let instructions = at.appendingPathComponent("instructions.md")
         return try BinderTemplate(data: Data(contentsOf: at.appendingPathComponent("template.json")),
-                                  guide: String(contentsOf: at.appendingPathComponent("PROJECT.md"), encoding: .utf8))
+                                  guide: String(contentsOf: at.appendingPathComponent("PROJECT.md"), encoding: .utf8),
+                                  instructions: FileManager.default.fileExists(atPath: instructions.path)
+                                      ? String(contentsOf: instructions, encoding: .utf8) : nil)
     }
 
     public func read() throws -> [BinderTemplate] {
@@ -27,7 +31,16 @@ public struct TemplateLibrary: Sendable {
                   case .ok(let data) = try child.read("template.json", limit: 64 * 1024),
                   case .ok(let bytes) = try child.read("PROJECT.md", limit: 32 * 1024),
                   let guide = String(data: bytes, encoding: .utf8) else { throw BinderTemplate.Invalid() }
-            let template = try BinderTemplate(data: data, guide: guide)
+            // `instructions.md` is optional: a library seeded before templates carried it has none (§5).
+            let instructions: String?
+            switch try child.read("instructions.md", limit: BinderInstructions.maxBytes) {
+            case .ok(let bytes):
+                guard let text = String(data: bytes, encoding: .utf8) else { throw BinderTemplate.Invalid() }
+                instructions = text
+            case .missing: instructions = nil
+            default: throw BinderTemplate.Invalid()
+            }
+            let template = try BinderTemplate(data: data, guide: guide, instructions: instructions)
             guard template.key == name else { throw BinderTemplate.Invalid() }
             return template
         }
@@ -56,6 +69,7 @@ public struct TemplateLibrary: Sendable {
             guard let child = try staged.directory(name, create: true) else { throw BinderTemplate.Invalid() }
             try child.write(try JSONEncoder().encode(template.manifest), to: "template.json")
             try child.write(Data(template.guide.utf8), to: "PROJECT.md")
+            if let instructions = template.instructions { try child.write(Data(instructions.utf8), to: "instructions.md") }
         }
         do { return try owner.publishDirectory(stagedName, to: owner, as: "templates") }
         catch {

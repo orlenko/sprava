@@ -22,7 +22,7 @@ extension ShelfModel {
     /// Built separately so the confirmation and field validation can be checked without opening a modal.
     static func binderDialog(empty: URL?, year: Int, parent: URL, templates: [BinderTemplate]) -> (NSAlert, NewBinderFields) {
         let alert = NSAlert()
-        let shape = "Review the folders, checklist and project guide below. This binder keeps its own copy."
+        let shape = "Review the folders, checklist, project guide and instructions below. This binder keeps its own copy."
         if let empty {
             alert.messageText = "Make \u{201C}\(empty.lastPathComponent)\u{201D} a new binder?"
             alert.informativeText = "The folder is empty. Pick a starting point and a name. \(shape)"
@@ -153,6 +153,7 @@ final class NewBinderFields: NSObject, NSTextFieldDelegate {
         preview.string = template.description(chosen) + "\n\nFolders\n" + template.folders.joined(separator: ", ")
             + "\n\nStarter checklist\n" + (template.checklist.isEmpty ? "No checklist." : template.checklist.map { "• " + $0 }.joined(separator: "\n"))
             + "\n\nProject guide\n" + template.projectGuide(chosen)
+            + (template.instructions.map { "\n\nInstructions (the binder's own; Sprava's reader of new documents follows them)\n" + $0 } ?? "")
     }
 
     private func showYear() {

@@ -64,6 +64,17 @@ extension BinderInstructions {
         return after
     }
 
+    /// Writes a new binder's first instructions, from the template the person chose (docs/binder-instructions.md §5), and
+    /// records them as accepted, since the person saw them in the preview. Only where there is no `AGENTS.md` yet; no Undo.
+    public static func start(_ text: String, in folder: URL) throws {
+        guard fits(text) else { throw Refused.tooLong }
+        guard case .success(let own) = parse(text), own.section.isEmpty else { throw Refused.markersInText }
+        guard try !current(folder).exists else { throw Refused.changed }
+        let state = try stateDirectory(folder)
+        try write(text, section: "", text: text, to: folder.appendingPathComponent(fileName))
+        try Record(accepted: digest(text), undoAfter: nil, slot: nil, previousAccepted: false).write(state)
+    }
+
     /// Puts back the person's part the last save replaced, under the current Sprava section, while the part is still as
     /// that save left it. No size bound: the replaced text may be a long old manual the person just trimmed. It is
     /// accepted only if it was before that save. One level: the record of the save is cleared.

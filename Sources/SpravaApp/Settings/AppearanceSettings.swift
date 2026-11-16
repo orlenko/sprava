@@ -106,7 +106,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Project templates").font(.headline)
                 Button("Open Templates Folder") { Task { await binderLocation.openTemplates() } }
-                Text("Each template has a template.json file and a PROJECT.md guide. Copy or edit one for any project. Changes appear next time you open New Binder.")
+                Text("Each template has a template.json file, a PROJECT.md guide and, if you like, an instructions.md for the new binder's instructions. Copy or edit one for any project. Changes appear next time you open New Binder.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let message = binderLocation.templateMessage { Text(message).font(.caption).foregroundStyle(.orange) }
             }
