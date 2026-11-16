@@ -8,7 +8,7 @@ import SpravaKit
 /// Only authenticated app controls may enable/disable; every queued read revalidates its generation
 /// and physical folder. Native context must be stopped/cleared before changing or disabling consent.
 package final class ClaudeReadConnections: Sendable {
-    package enum Refused: Error, Equatable { case unsafeFolder, notABinder, inactive, changed, damagedState, tooManyConnections }
+    package enum Refused: Error, Equatable { case unsafeFolder, notABinder, inactive, changed, damagedState, tooManyConnections, tooManySites }
     package struct Connection: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
         package let id: UUID
         package let generation: UUID
@@ -19,7 +19,7 @@ package final class ClaudeReadConnections: Sendable {
         package var description: String { "<private Claude read connection>" }
         package var debugDescription: String { description }
     }
-    private let state: StateStore
+    let state: StateStore
     private static let schema = StateStore.Schema(version: 1, statements: [
         """
         CREATE TABLE claude_read_connections (
@@ -39,6 +39,7 @@ package final class ClaudeReadConnections: Sendable {
         // Beside the connections, so one made before this table is simply one that never allowed file changes.
         try state.write { t in
             try t.execute("CREATE TABLE IF NOT EXISTS claude_file_consents (id TEXT PRIMARY KEY NOT NULL, generation TEXT NOT NULL) STRICT")
+            try t.execute(Self.sitesTable)
         }
     }
 
@@ -135,13 +136,17 @@ package final class ClaudeReadConnections: Sendable {
                                 .text(UUID().uuidString), .text(connection.id.uuidString), .text(connection.generation.uuidString)) == 1 else {
                 throw Refused.changed
             }
+            try t.execute("DELETE FROM claude_allowed_sites WHERE id = ?", .text(connection.id.uuidString))
         }
     }
 
     /// Account replacement is not consent to send an existing binder to a different account.
     /// The runtime fences all sessions first; the person then enables each binder again.
     package func disableAll() throws {
-        _ = try state.write { try $0.execute("UPDATE claude_read_connections SET enabled = 0, generation = ?", .text(UUID().uuidString)) }
+        try state.write { t in
+            try t.execute("UPDATE claude_read_connections SET enabled = 0, generation = ?", .text(UUID().uuidString))
+            try t.execute("DELETE FROM claude_allowed_sites")
+        }
     }
 
     private static let columns = "id, generation, folder_instance, folder, documents, intake, enabled"

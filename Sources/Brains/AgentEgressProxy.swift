@@ -14,14 +14,12 @@ package final class AgentEgressProxy: @unchecked Sendable {
     package static let modelHosts: Set<String> = ["api.anthropic.com"]
     /// Who holds a connection: the agent process, or a command it ran, inside its session's sandbox.
     package enum Caller: Sendable, Equatable { case agent, command }
-    /// Whether the binder lets `caller` reach `host`, a name in its one form other than a model or vendor host.
-    package typealias Sites = @Sendable (_ host: String, _ caller: Caller) -> Bool
 
     private let allowed: Set<String>
     private let upstreamPort: UInt16
     private let resolve: @Sendable (String) -> [NWEndpoint.Host]?
     private let lock = NSLock()
-    private var agent: (pid: pid_t, session: UUID?, sites: Sites)?
+    private var agent: (pid: pid_t, session: UUID?, gate: AgentSiteGate?)?
     private let queue = DispatchQueue(label: "sprava.agent-egress")
     private let listener: NWListener
     package private(set) var port: UInt16 = 0
@@ -55,10 +53,11 @@ package final class AgentEgressProxy: @unchecked Sendable {
 
     package func stop() { listener.cancel() }
 
-    /// The one agent that may use the proxy from now on, the session whose sandbox holds its commands, and the binder's
-    /// sites. The runtime runs one conversation with tools at a time. Without a session, its commands are never found.
-    package func authorize(_ pid: pid_t, session: UUID? = nil, sites: @escaping Sites = { _, _ in false }) {
-        lock.withLock { agent = (pid, session, sites) }
+    /// The one agent that may use the proxy from now on, the session whose sandbox holds its commands, and the turn's gate
+    /// to the binder's sites. The runtime runs one conversation with tools at a time. Without a session, its commands are
+    /// never found; without a gate, no site is reached.
+    package func authorize(_ pid: pid_t, session: UUID? = nil, gate: AgentSiteGate? = nil) {
+        lock.withLock { agent = (pid, session, gate) }
     }
 
     /// Whether `pid` holds the local end of a TCP connection from `port`.
@@ -78,20 +77,21 @@ package final class AgentEgressProxy: @unchecked Sendable {
         return false
     }
 
-    /// Who holds the client's end, with the binder's sites, or nil: the agent itself, else a process in its session's sandbox.
-    private func caller(of client: NWConnection) -> (Caller, Sites)? {
+    /// Who holds the client's end, with the turn's gate, or nil: the agent itself, else a process in its session's sandbox.
+    private func caller(of client: NWConnection) -> (Caller, AgentSiteGate?)? {
         guard case .hostPort(_, let port) = client.endpoint, let agent = lock.withLock({ agent }) else { return nil }
-        if Self.holdsConnection(agent.pid, fromPort: port.rawValue) { return (.agent, agent.sites) }
+        if Self.holdsConnection(agent.pid, fromPort: port.rawValue) { return (.agent, agent.gate) }
         guard let session = agent.session else { return nil }
         let command = AgentContainment.running(session: session).contains { $0 != agent.pid && Self.holdsConnection($0, fromPort: port.rawValue) }
-        return command ? (.command, agent.sites) : nil
+        return command ? (.command, agent.gate) : nil
     }
 
-    /// Whether `caller` may reach `host`: a model host for the agent alone, nothing else of the vendor's, and the binder's sites.
-    func admits(_ host: String, _ caller: Caller, sites: Sites) -> Bool {
-        if allowed.contains(host) { return caller == .agent }
-        if Self.isVendor(host) { return false }
-        return sites(host, caller)
+    /// Whether `caller` may reach `host`: a model host for the agent alone, nothing else of the vendor's, and the binder's
+    /// sites as the turn's gate decides, perhaps after asking the person. `done` gets the gate's counter for a site.
+    func admit(_ host: String, _ caller: Caller, gate: AgentSiteGate?, _ done: @escaping @Sendable (Bool, AgentSiteGate?) -> Void) {
+        if allowed.contains(host) { done(caller == .agent, nil); return }
+        guard !Self.isVendor(host), let gate else { done(false, nil); return }
+        gate.decide(host, caller) { done($0, gate) }
     }
 
     /// One per runtime: every binder's agent shares the same wall, told which agent and session it serves.
@@ -123,7 +123,21 @@ package final class AgentEgressProxy: @unchecked Sendable {
     }
 
     private func answer(_ client: NWConnection, head: Data, rest: Data) {
-        guard let host = Self.host(of: head), let (caller, sites) = caller(of: client), admits(host, caller, sites: sites) else { refuse(client); return }
+        guard let host = Self.host(of: head), let (caller, gate) = caller(of: client) else { refuse(client); return }
+        admit(host, caller, gate: gate) { [weak self] allowed, counter in
+            guard let self else { client.cancel(); return }
+            self.queue.async {
+                guard allowed else { self.refuse(client); return }
+                var count: Count?
+                if let counter { count = { sent, received in counter.count(host, caller, sent: sent, received: received) } }
+                self.reach(client, host: host, rest: rest, count: count)
+            }
+        }
+    }
+
+    typealias Count = @Sendable (_ sent: Int, _ received: Int) -> Void
+
+    private func reach(_ client: NWConnection, host: String, rest: Data, count: Count?) {
         let resolve = self.resolve
         // A name lookup can take seconds; it never holds up another connection.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -131,13 +145,13 @@ package final class AgentEgressProxy: @unchecked Sendable {
             guard let self else { client.cancel(); return }
             self.queue.async {
                 guard let addresses, !addresses.isEmpty else { self.refuse(client); return }
-                self.open(client, host: host, addresses: addresses[...], rest: rest)
+                self.open(client, host: host, addresses: addresses[...], rest: rest, count: count)
             }
         }
     }
 
     /// Connects to the checked addresses in turn, then lets the client speak, and passes its hello on only if it names `host`.
-    private func open(_ client: NWConnection, host: String, addresses: ArraySlice<NWEndpoint.Host>, rest: Data) {
+    private func open(_ client: NWConnection, host: String, addresses: ArraySlice<NWEndpoint.Host>, rest: Data, count: Count?) {
         guard let address = addresses.first, let port = NWEndpoint.Port(rawValue: upstreamPort) else { client.cancel(); return }
         let server = NWConnection(host: address, port: port, using: .tcp)
         final class Phase: @unchecked Sendable { var ready = false }
@@ -147,11 +161,11 @@ package final class AgentEgressProxy: @unchecked Sendable {
             case .ready where !phase.ready:
                 phase.ready = true
                 client.send(content: Data("HTTP/1.1 200 Connection established\r\n\r\n".utf8), completion: .contentProcessed { _ in
-                    self?.passHello(client, to: server, host: host, rest)
+                    self?.passHello(client, to: server, host: host, rest, count: count)
                 })
             case .waiting where !phase.ready, .failed where !phase.ready:
                 server.stateUpdateHandler = nil; server.cancel()
-                self?.open(client, host: host, addresses: addresses.dropFirst(), rest: rest)
+                self?.open(client, host: host, addresses: addresses.dropFirst(), rest: rest, count: count)
             case .failed, .cancelled:
                 client.cancel()
             default: break
@@ -166,34 +180,36 @@ package final class AgentEgressProxy: @unchecked Sendable {
         server.start(queue: queue)
     }
 
-    private func passHello(_ client: NWConnection, to server: NWConnection, host: String, _ soFar: Data) {
+    private func passHello(_ client: NWConnection, to server: NWConnection, host: String, _ soFar: Data, count: Count?) {
         switch Self.serverName(inHello: soFar) {
         case .name(let name) where name == host:
             server.send(content: soFar, completion: .contentProcessed { [weak self] sent in
                 guard sent == nil else { client.cancel(); server.cancel(); return }
-                self?.pipe(client, to: server); self?.pipe(server, to: client)
+                count?(soFar.count, 0)
+                self?.pipe(client, to: server) { count?($0, 0) }; self?.pipe(server, to: client) { count?(0, $0) }
             })
         case .incomplete where soFar.count < Self.helloLimit:
             client.receive(minimumIncompleteLength: 1, maximumLength: Self.helloLimit - soFar.count) { [weak self] data, _, done, error in
                 guard let self, let data, !data.isEmpty, error == nil else { client.cancel(); server.cancel(); return }
                 if done { client.cancel(); server.cancel(); return }
-                self.passHello(client, to: server, host: host, soFar + data)
+                self.passHello(client, to: server, host: host, soFar + data, count: count)
             }
         default:
             client.cancel(); server.cancel()
         }
     }
 
-    private func pipe(_ from: NWConnection, to: NWConnection) {
+    private func pipe(_ from: NWConnection, to: NWConnection, passed: @escaping @Sendable (Int) -> Void = { _ in }) {
         from.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, done, error in
             if let data, !data.isEmpty {
+                passed(data.count)
                 to.send(content: data, completion: .contentProcessed { sent in
-                    if sent != nil { from.cancel(); to.cancel() } else if !done && error == nil { self?.pipe(from, to: to) } else { from.cancel(); to.cancel() }
+                    if sent != nil { from.cancel(); to.cancel() } else if !done && error == nil { self?.pipe(from, to: to, passed: passed) } else { from.cancel(); to.cancel() }
                 })
             } else if done || error != nil {
                 from.cancel(); to.cancel()
             } else {
-                self?.pipe(from, to: to)
+                self?.pipe(from, to: to, passed: passed)
             }
         }
     }
