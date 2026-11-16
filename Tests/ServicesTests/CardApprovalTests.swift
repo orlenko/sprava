@@ -109,9 +109,9 @@ import Testing
 
     // 12. A time-zone change after today's summary time sends today's summary at once.
 
-    // 15. Since 2026-11-15 the person sets a repeat, checked against binder-v0 §5.4, once the runtime has checked that
-    // lifeproj cannot reach the binder; until it does, none is set. Dismissed is still not set.
-    @Test func aRepeatWaitsForTheLifeprojCheck() throws {
+    // 15. Since 2026-11-15 the person sets a repeat, checked against binder-v0 §5.4, on a binder lifeproj cannot reach
+    // (RepeatReachTests). Dismissed is still not set.
+    @Test func thePersonSetsAWellFormedRepeat() throws {
         let root = try scratch()
         let f = try binder(root, name: "tax", catalog: lifeproj(name: "tax", items: [item("a-1")]))
         let c = Commands(support: root.appendingPathComponent("support"), deviceID: "dev")
@@ -121,9 +121,7 @@ import Testing
                         ("args", .obj([("id", .str("a-1")), ("set", .obj([("recurrence", .obj([("freq", .str("monthly")), ("day", .int(day))]))]))]))])
         }
         #expect(try repeats(32)["ok"] == .bool(false))
-        let refused = try repeats(1)
-        #expect(refused["ok"] == .bool(false))
-        #expect(refused["error"]?.stringValue?.contains("lifeproj") == true, "\(refused)")
+        #expect(try repeats(1)["ok"] == .bool(true))
     }
 }
 

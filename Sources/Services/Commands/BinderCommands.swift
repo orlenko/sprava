@@ -307,18 +307,24 @@ extension Commands {
         var extra: [(String, JSONValue)] = []
         if let c = r["compensates"] { extra.append(("compensates", c)) }
         let store = TekaStore(folder: f, client: client)
+        store.repeatsRefusal = Self.repeatsRefusal(f)
         let body = TekaStore.OpBody(op: op, args: args, actor: actor, extra: extra)
         let bodies = op == "edit_item" ? try Self.itemEdit(args, actor: actor) : [body]
         // An item the person adds names itself `$new:1`; its id is minted under the binder's lock (binder-v0 §5.6).
         let applied = op == "add_item" ? try store.applyMinting(bodies, now: now) : try store.apply(bodies, now: now)
         try recordDigests(store.createdProposals, in: f)
-        return JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
+        var reply = JSONObject([(key: "op", value: applied.first?["id"] ?? .null)])
+        // A Done on a repeating to-do moved it on: the app says to which date, as the store worked it out.
+        if let next = applied.first?["args"]?["next_due"] { reply.set("next_due", next) }
+        return reply
     }
 
     func undo(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
         let f = try folder(r)
         guard case .string(let opID)? = r["op_id"] else { throw Failure(message: "undo needs op_id") }
         let store = TekaStore(folder: f, client: client)
+        // An undo that brings a repeat back is a new repeat for lifeproj's drain (binder-v0 §8.1).
+        store.repeatsRefusal = Self.repeatsRefusal(f)
         let outcome = try store.undoChange(opID: opID, now: now)
         try recordDigests(store.createdProposals, in: f)
         // Fields changed again since the undone change keep their newer values; the app names them (binder-v0 §6.10).
