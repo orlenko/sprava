@@ -167,7 +167,8 @@
   of the file is free for the person (amended by D33: not for the binder's Claude). `DASHBOARD.md` is rendered as binder-v0 §7.1 says, and an
   imported binder's hand-kept dashboard text moves into its Notes section. The files are not part of the format;
   nothing in them is executed by Sprava, and their text is data, never instructions, for the clerk (binder-v0
-  §3.4). Recommended with it: Sprava's section says to propose through Sprava, never to edit `catalog.json` by
+  §3.4), except the person's part of `AGENTS.md`, which the clerk reads as the person's filing guidance within
+  D43's limits (amended by D43). Recommended with it: Sprava's section says to propose through Sprava, never to edit `catalog.json` by
   hand, to write `DASHBOARD.md` only below `## Notes`, and to run no lifeproj command; an imported binder's old
   `CLAUDE.md` and `AGENTS.md` are saved byte for byte in `.sprava/adopted/` and not carried into the new files.
 - **F15 open (2026-10-13).** The format's promise to lifeproj readers. After an import lifeproj no longer touches
@@ -507,7 +508,7 @@ Each line names what replaced the entry; its old text is in git history.
   shared, Sprava asks Claude (Sonnet) one question about each intake document as it arrives: who wrote it, who is asked
   to do what, and what falls to the person. Its answer replaces the clerk's to-dos and summary on the card, labelled as
   Claude's. The call has no tools, runs on the binder's own connection, and sends only that document's text with code's
-  verdict on whether the person wrote it, never the person's addresses. This changes when intake text leaves the Mac, not
+  verdict on whether the person wrote it, never the person's addresses (amended by D43: the person's instructions go as written). This changes when intake text leaves the Mac, not
   what may leave: the binder's Claude may already read it. Code checks every item as it checks the clerk's (the quoted
   words are in the text, the title comes from them, dates resolve), and the person approves every card. Without Claude,
   without intake shared, past 100 calls in a day, or when a call fails or runs out of time, the on-device clerk stays.
@@ -536,6 +537,24 @@ Each line names what replaced the entry; its old text is in git history.
   internet per binder, which asks nothing, so a steered command could send binder files to any host unseen. The cost of
   the pick: a host the person allowed can receive anything a command sends it, documents included. Secrets for scripts
   are designed, not built (conversation.md §18.3.2).
+- **D43 decided (2026-11-16, the author: "go with your picks on all four").** The lead's pick, over keeping `AGENTS.md`
+  edited by hand: an Instructions editor in the app, intake filing that follows it, and templates carrying a starting
+  text, so that several generic binders can each handle intake their own way and keep their work and state where the
+  person says. The person writes a binder's mission and basic rules on an Instructions tab of the binder's Project
+  surface, and they live in the person's part of the binder's `AGENTS.md`, outside Sprava's marker lines (F14); no new
+  file. The runtime saves them atomically, keeps Sprava's section as found, refuses when the file changed since the page
+  read it, keeps the replaced file for one Undo, and records the saved text as accepted; a conversation turn's Undo never
+  touches `AGENTS.md`. This amends F14: the accepted person's part is the person's filing guidance for the reader of
+  intake documents (Claude under D40, or the on-device clerk); text changed outside the app is followed only once the
+  person saves or confirms it on the tab. The reader may take from it which folder (one of the binder's own, one the
+  text writes out whole, or either plus one new last segment), how to name the file (never as a key file), and what goes
+  on the to-do list; never anything that widens what leaves the Mac, names a path outside the binder, runs anything, or
+  changes privacy, disclosure or the need for the person's OK on the card. Code checks every proposed op as before.
+  Claude gets the instructions only where the binder's connection allows file changes, checked again before the call
+  leaves, so it may already read `AGENTS.md`; this amends D40 for the person's own addresses written in them. Sprava's
+  section, `CLAUDE.md`, `DASHBOARD.md` and documents stay data. An imported binder's old manuals are brought in only
+  by a button that copies them into the editor for the person to review. A template may carry a starting text, written
+  at creation and accepted with it. Design: `docs/binder-instructions.md`.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
