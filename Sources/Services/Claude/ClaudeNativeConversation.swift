@@ -12,7 +12,7 @@ enum ClaudeNativeConversation {
         let reach = binder.flatMap { folder in proxy.map { ClaudeReadLaunch.Reach(folder: folder, proxyPort: $0.port) } }
         let prepared = try ClaudeReadLaunch.prepare(program: program, support: support, connectionID: connection, sessionID: session,
                                                    credential: credential, policy: policy, reach: reach, appTools: appTools, model: model, onSpawn: { pid in
-            proxy?.authorize(pid) // sandbox-exec becomes the CLI, keeping this pid.
+            proxy?.authorize(pid, session: session) // sandbox-exec becomes the CLI, keeping this pid.
             try onSpawn(pid)
         })
         try await ClaudeReadAccount.verify(prepared)

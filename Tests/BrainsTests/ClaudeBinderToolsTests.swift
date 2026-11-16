@@ -271,17 +271,15 @@ import Testing
         #expect(sleeper.isRunning)
     }
 
-    @Test func theProxyPassesOnlyAnAllowedHostsTLSPort() {
-        func target(_ line: String) -> String? {
-            AgentEgressProxy.target(of: Data((line + "\r\nHost: x").utf8), allowed: AgentEgressProxy.modelHosts)
-        }
+    @Test func theProxyPassesOnlyATLSPortsHostInItsOneForm() {
+        func target(_ line: String) -> String? { AgentEgressProxy.host(of: Data((line + "\r\nHost: x").utf8)) }
         #expect(target("CONNECT api.anthropic.com:443 HTTP/1.1") == "api.anthropic.com")
         #expect(target("CONNECT API.anthropic.com:443 HTTP/1.1") == "api.anthropic.com")
         #expect(target("CONNECT api.anthropic.com:80 HTTP/1.1") == nil)
-        #expect(target("CONNECT example.invalid:443 HTTP/1.1") == nil)
-        #expect(target("CONNECT api.anthropic.com.example.invalid:443 HTTP/1.1") == nil)
+        #expect(target("CONNECT api.anthropic.com.:443 HTTP/1.1") == nil)
         #expect(target("GET http://api.anthropic.com/ HTTP/1.1") == nil)
         #expect(target("CONNECT api.anthropic.com:443") == nil)
+        #expect(target("CONNECT  api.anthropic.com:443 HTTP/1.1") == nil)
     }
 
     @Test func theProxyRefusesAnOtherHostOnTheWire() async throws {
@@ -326,13 +324,13 @@ import Testing
         listener.start(queue: .global()); defer { listener.cancel() }
         #expect(ready.wait(timeout: .now() + 5) == .success)
         let port = try #require(listener.port?.rawValue)
-        let proxy = try AgentEgressProxy(allowed: ["localhost"], upstreamPort: port); defer { proxy.stop() }
+        let proxy = try AgentEgressProxy(allowed: ["model.example.test"], upstreamPort: port, resolve: { _ in [.ipv4(.loopback)] }); defer { proxy.stop() }
         // Nobody authorized, then someone else authorized: a command holding a good host and any key still gets nowhere.
-        #expect(try connectStatus(proxy: proxy, host: "localhost") == "403")
+        #expect(try connectStatus(proxy: proxy, host: "model.example.test") == "403")
         proxy.authorize(getpid())
-        #expect(try connectStatus(proxy: proxy, host: "localhost") == "403")
+        #expect(try connectStatus(proxy: proxy, host: "model.example.test") == "403")
         // The authorized process itself gets through, to an allowed host only.
-        #expect(try connectFromHere(proxy: proxy, host: "localhost").contains("200"))
+        #expect(try connectFromHere(proxy: proxy, host: "model.example.test").contains("200"))
         #expect(try connectFromHere(proxy: proxy, host: "example.invalid").contains("403"))
     }
 

@@ -1053,7 +1053,10 @@ binder, under a `sandbox-exec` profile, once the person ticks "Let Claude change
 needs both sharing choices since the tools can read the whole folder; no earlier connection has this consent, and only a
 binder with it keeps a history. It may read but not write `.sprava`, `catalog.json`, `DASHBOARD.md`, `AGENTS.md` and `CLAUDE.md`. Outbound
 connections are allowed to one loopback port only, Sprava's proxy, which so far passes `api.anthropic.com` and refuses
-every other host, so web access and its domain prompt are still to come. Only the agent process itself may use the proxy,
+every other host, so web access and its domain prompt are still to come. The proxy already applies 18.3.1's checks: the
+name in one form, the vendor's hosts, public addresses only, and a ClientHello naming the `CONNECT` host; and it tells
+a command in the agent's sandbox from the agent, though the binder's sites, the only hosts a command could reach, are
+still empty. Only the agent process itself may reach the model host,
 checked with the kernel for each connection, so a command cannot upload to another account on that host, and commands
 cannot read the person's token: it reaches the agent by pipe, in no process's environment. Its shell runs only `rm`, `rmdir`, `mv`, `cp`, `mkdir` and `ls`, held by two walls: the CLI refuses anything else,
 including a compound or substitution that reaches anything else, and the operating system runs nothing else but the CLI
@@ -1083,10 +1086,9 @@ billing scripts (expenses, and conversion at an official daily exchange rate). I
   A client asks with `CONNECT host:443` and never resolves the name itself. A program that ignores these variables fails
   to connect: the sandbox refuses name lookups and every outbound port but the proxy's.
 
-**One listener per session.** Today one proxy serves the runtime and remembers one agent process. Each binder agent
-session gets its own listener instead, made with the session's driver and stopped with it; the sandbox profile already
-names its port, so the kernel decides which binder a connection belongs to, and the listener knows that binder's sites.
-The runtime runs one conversation at a time, so this costs one port.
+**One agent at a time.** One proxy serves the runtime. The runtime runs one conversation with tools at a time, and each
+agent it starts tells the proxy its process, its session (whose sandbox holds its commands) and its binder's sites, so
+the proxy knows which binder a connection belongs to without a listener per session.
 
 **What the proxy checks, per connection, in this order.** A failed check answers 403 and closes.
 
@@ -1177,7 +1179,7 @@ the person sees the host before anything leaves for it. A prompt names a host, n
 **Order**, one PR each:
 
 1. This design.
-2. The proxy's checks (`Brains`, tier B): one listener per session, telling a command from the agent, the name form,
+2. The proxy's checks (`Brains`, tier B): the session told with the agent, telling a command from the agent, the name form,
    the vendor rule, the address rule and the ClientHello check, with an empty sites list, so every new host is refused at
    once as today. The model-host path every turn uses changes here (the proxy resolves and checks addresses itself), so
    it lands alone.
