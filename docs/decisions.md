@@ -523,7 +523,7 @@ Each line names what replaced the entry; its old text is in git history.
   marks each private one. Attachments are at most 18 MiB together, before encoding. The binder's conversation may propose
   a draft, and it still needs the person's approval on a card before anything is appended. Not chosen: a local `.eml`
   opened in Mail, which would not reach the person's other devices.
-- **D42 decided (2026-11-16, the author: "sites allowed per binder with a prompt"; amends D23).** A binder's Claude
+- **D42 decided (2026-11-16, the author: "go with your picks on all four", which took the lead's pick, sites allowed per binder with a prompt; amends D23).** A binder's Claude
   reaches the web: WebSearch on Anthropic's side, and WebFetch and the commands it runs (curl, scripts) through Sprava's
   proxy. The first time a host is used in a binder the connection is held and the conversation asks: Allow once (this
   turn), Always for this binder, Deny (this turn); no answer in 2 minutes is a Deny, and after three noes a turn stops
