@@ -22,6 +22,8 @@ public actor ClaudeConversationRuntime {
         var activity: @Sendable () -> ClaudeTurnActivity? = { nil }
         /// Gives the agent's proxy this turn's gate to the binder's sites (conversation.md 18.3.1).
         var useSites: @Sendable (AgentSiteGate) -> Void = { _ in }
+        /// How many times the turn that just ended searched the web.
+        var searches: @Sendable () -> Int = { 0 }
     }
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
@@ -44,6 +46,8 @@ public actor ClaudeConversationRuntime {
     let connections: ClaudeReadConnections
     private var exports = ConversationExport()
     private let receipts: ConversationTurnStore
+    /// What each turn reached on the web, for its summary line.
+    nonisolated let turnSites: ClaudeTurnSites
     private let state: ClaudeConversationState
     private let accounts: ClaudeAccountsState
     private let chooser: @Sendable (String) -> ClaudeAccountChooser.Outcome
@@ -96,6 +100,7 @@ public actor ClaudeConversationRuntime {
         }
         connections = try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite"))
         receipts = try ConversationTurnStore(at: support.appendingPathComponent("binder-store/conversation.sqlite"))
+        turnSites = try ClaudeTurnSites(at: support.appendingPathComponent("runtime/turn-sites.sqlite"))
         state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
         accounts = try ClaudeAccountsState(at: support.appendingPathComponent("runtime/claude-accounts.sqlite"))
         self.chooser = chooser
@@ -336,14 +341,14 @@ public actor ClaudeConversationRuntime {
             } catch { preparing.remove(id); throw error }
             // Filed, so the clearing below can lose nothing.
             configuring = true; defer { configuring = false }
-            try await fence(id); try receipts.clear(conversationID: id)
+            try await fence(id); try receipts.clear(conversationID: id); try turnSites.clear(conversation: id)
             return .init([(key: "path", value: .str(path))])
         }
         if command == "chat_history" || command == "chat_clear" {
             guard let id = try connections.savedID(for: folder) else { return .init([(key: "turns", value: .array([]))]) }
             if command == "chat_clear" {
                 configuring = true; defer { configuring = false }
-                try await fence(id); try receipts.clear(conversationID: id); return .init()
+                try await fence(id); try receipts.clear(conversationID: id); try turnSites.clear(conversation: id); return .init()
             }
             let records = try receipts.history(conversationID: id)
             var chosen: [JSONValue] = [], bytes = 0
@@ -543,6 +548,7 @@ public actor ClaudeConversationRuntime {
                 if context.used >= limit { longConversations.insert(scope.id) } else { longConversations.remove(scope.id) }
             }
             if reach != nil { await recordTurn(record, scope: scope, history: turnHistory) }
+            noteSites(record, gate: gate, driver: made)
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
@@ -573,6 +579,7 @@ public actor ClaudeConversationRuntime {
             }
             if !signal.stopped { noteFailure(of: record.requestID, error, account: used ?? failedAccountName); failedAccountName = nil }
             if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
+            noteSites(record, gate: gate, driver: driver)
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
         }
@@ -818,10 +825,13 @@ public actor ClaudeConversationRuntime {
         if r.phase == .failed, let account = failureAccounts[r.requestID] { fields.append(("account", .str(account))) }
         let history = TurnHistory(support: support, binder: r.conversationID)
         let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID), notes = try? history.notesChange(forTurn: r.turnID)
+        let sites = try? turnSites.line(turn: r.turnID)
         if entry != nil || todos != nil || notes != nil {
-            let summary = [entry?.summary, todos?.summary, notes == nil ? nil : "Updated the notes"].compactMap { $0 }.joined(separator: ". ")
+            let summary = [entry?.summary, todos?.summary, notes == nil ? nil : "Updated the notes", sites].compactMap { $0 }.joined(separator: ". ")
             fields.append(("changes", .obj([("summary", .str(summary)), ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true && notes?.undone ?? true)),
                                             ("undoable", .bool(todos != nil || notes != nil || entry?.unrecorded == false))])))
+        } else if let sites {
+            fields.append(("changes", .obj([("summary", .str(sites)), ("undone", .bool(false)), ("undoable", .bool(false))])))
         }
         return .obj(fields)
     }
