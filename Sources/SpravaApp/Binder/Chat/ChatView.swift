@@ -154,6 +154,7 @@ private struct EntryView: View {
                 Label { Text(verbatim: activity) } icon: { ProgressView().controlSize(.small) }
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if let question = entry.siteQuestion { SiteQuestionView(question: question, entry: entry, chat: chat) }
             ForEach(Array(entry.changes.enumerated()), id: \.offset) { _, change in
                 HStack(spacing: 8) {
                     Text(verbatim: change.summary).font(.callout)

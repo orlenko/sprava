@@ -20,6 +20,8 @@ public actor ClaudeConversationRuntime {
         let hash: String
         var context: @Sendable () -> (used: Int, window: Int?)? = { nil }
         var activity: @Sendable () -> ClaudeTurnActivity? = { nil }
+        /// Gives the agent's proxy this turn's gate to the binder's sites (conversation.md 18.3.1).
+        var useSites: @Sendable (AgentSiteGate) -> Void = { _ in }
     }
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
@@ -39,7 +41,7 @@ public actor ClaudeConversationRuntime {
     /// Why a turn failed, for as long as this process runs; a failed turn from before a restart has no reason to give.
     private var failureReasons: [UUID: String] = [:]
     private let support: URL
-    private let connections: ClaudeReadConnections
+    let connections: ClaudeReadConnections
     private var exports = ConversationExport()
     private let receipts: ConversationTurnStore
     private let state: ClaudeConversationState
@@ -64,18 +66,19 @@ public actor ClaudeConversationRuntime {
     private let admission: AgentSessionAdmission
     private let available: @Sendable (URL) throws -> Bool
     private var lifecycleTicket: UUID?
-    private final class StopSignal: @unchecked Sendable {
+    final class StopSignal: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false
         func stop() { lock.withLock { value = true } }
         var stopped: Bool { lock.withLock { value } }
     }
-    private struct Active {
+    struct Active {
         let request: UUID; let turn: UUID; let signal: StopSignal; let task: Task<Void, Never>
         var driver: Driver?
         var indexing = true
+        var gate: AgentSiteGate?
     }
-    private var active: [UUID: Active] = [:]
+    var active: [UUID: Active] = [:]
     /// Intake readings under way (decisions.md D40), by their own home id, so a withdrawal can stop them.
     private struct Reading { let scope: UUID; let signal: StopSignal; var driver: Driver? }
     private var readings: [UUID: Reading] = [:]
@@ -205,7 +208,7 @@ public actor ClaudeConversationRuntime {
         return try ClaudeIntakeReading.answer(reply)
     }
 
-    public static let commands: Set<String> = ["claude_status", "claude_configure", "claude_disconnect", "claude_token_save", "claude_token_remove", "claude_chooser_set", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_closing_notes", "chat_file_and_clear", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
+    public static let commands: Set<String> = ["chat_site_answer", "chat_sites", "chat_site_remove", "claude_status", "claude_configure", "claude_disconnect", "claude_token_save", "claude_token_remove", "claude_chooser_set", "claude_binder", "claude_enable", "claude_disable", "chat_send", "chat_closing_notes", "chat_file_and_clear", "chat_poll", "chat_history", "chat_export", "chat_undo", "chat_stop", "chat_clear"]
 
     public func respond(_ text: String) async -> String {
         guard text.utf8.count <= 5 * 1024 * 1024,
@@ -360,10 +363,14 @@ public actor ClaudeConversationRuntime {
                 reply.set("activity", .str(doing))
                 reply.set("steps", .int(activity.steps))
             }
+            if let current = active[id], current.turn == record.turnID, let question = current.gate?.question() {
+                reply.set("site_question", Self.siteQuestionJSON(question))
+            }
             return reply
         }
         guard let scope = try connections.connection(for: folder) else { throw Refused.notConnected }
         _ = try currentFolder(scope)
+        if command == "chat_sites" || command == "chat_site_remove" { return try sites(command, request, scope: scope) }
         if command == "claude_disable" {
             configuring = true; defer { configuring = false }
             try await fence(scope.id); try await stopReadings(scope.id); try connections.disable(scope); return .init()
@@ -383,7 +390,7 @@ public actor ClaudeConversationRuntime {
         if command == "chat_stop" {
             guard request["turn_id"]?.stringValue.flatMap(UUID.init(uuidString:)) == record.turnID else { throw Refused.invalidRequest }
             if let current = active[scope.id], current.turn == record.turnID {
-                current.signal.stop(); current.driver?.stop()
+                current.signal.stop(); current.gate?.end(); current.driver?.stop()
                 if current.indexing {
                     // A sandboxed document reader may finish the file it already received. No more
                     // sources are read and no model is started; its slot stays held until it finishes.
@@ -395,6 +402,7 @@ public actor ClaudeConversationRuntime {
             } else if preparing.contains(scope.id) { throw Refused.busy }
             return .init()
         }
+        if command == "chat_site_answer" { return answerSite(request, scope: scope, turn: record.turnID) }
         return recordJSON(record).objectValue!
     }
 
@@ -480,7 +488,8 @@ public actor ClaudeConversationRuntime {
     private func run(scope: ClaudeReadConnections.Connection, record: ConversationTurnStore.Record,
                      session: ClaudeConversationState.Session, lease: AgentSessionAdmission.Lease,
                      account: ClaudeConversationState.Account, tried: Set<String>, signal: StopSignal) async {
-        var keep = false, driver: Driver?, used: String?
+        var keep = false, driver: Driver?, used: String?, gate: AgentSiteGate?
+        defer { gate?.end() }
         var mayRelease = true
         let turnHistory = TurnHistory(support: support, binder: scope.id)
         do {
@@ -518,6 +527,11 @@ public actor ClaudeConversationRuntime {
                 try state.spawned(session, pid: pid)
             })
             driver = made; active[scope.id]?.driver = made
+            if reach != nil {
+                // Only a turn the person sent asks about a new site; the closing turn of a conversation never does.
+                let made = siteGate(scope: scope, asks: record.text != Self.closingLine)
+                gate = made; driver?.useSites(made); active[scope.id]?.gate = made
+            }
             guard !signal.stopped else { throw Refused.stopped }
             // prepare verifies Anthropic's signature for each launch; a normal Claude update may
             // change its binary hash without disconnecting the person's enabled account.

@@ -60,6 +60,11 @@ package final class AgentEgressProxy: @unchecked Sendable {
         lock.withLock { agent = (pid, session, gate) }
     }
 
+    /// The turn's gate for the agent `pid`, once the runtime has made it; a later agent's gate is never replaced.
+    package func use(_ gate: AgentSiteGate, for pid: pid_t) {
+        lock.withLock { if agent?.pid == pid { agent?.gate = gate } }
+    }
+
     /// Whether `pid` holds the local end of a TCP connection from `port`.
     static func holdsConnection(_ pid: pid_t, fromPort port: UInt16) -> Bool {
         let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
