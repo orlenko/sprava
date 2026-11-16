@@ -1052,11 +1052,14 @@ As built (`ClaudeReadLaunch.sandbox`, `AgentEgressProxy`): the agent has Read, W
 binder, under a `sandbox-exec` profile, once the person ticks "Let Claude change and delete files" when connecting, which
 needs both sharing choices since the tools can read the whole folder; no earlier connection has this consent, and only a
 binder with it keeps a history. It may read but not write `.sprava`, `catalog.json`, `DASHBOARD.md`, `AGENTS.md` and `CLAUDE.md`. Outbound
-connections are allowed to one loopback port only, Sprava's proxy, which so far passes `api.anthropic.com` and refuses
-every other host, so web access and its domain prompt are still to come. The proxy already applies 18.3.1's checks: the
+connections are allowed to one loopback port only, Sprava's proxy, which passes `api.anthropic.com` to the agent and the
+binder's sites as below, and refuses every other host. The proxy applies 18.3.1's checks: the
 name in one form, the vendor's hosts, public addresses only, and a ClientHello naming the `CONNECT` host; and it tells
 a command in the agent's sandbox from the agent. The binder's sites are kept and a turn's gate (`AgentSiteGate`) holds,
-asks, times out and counts as above, but the runtime does not give the proxy a gate yet, so no site is reached. Only the agent process itself may reach the model host,
+asks, times out and counts as above. Each turn of a binder with file changes allowed has its gate; its question shows on
+the reply with Allow once, Always for this binder and Deny, and the binder's Claude settings list its sites with Remove.
+A command the agent runs can reach a site the person allowed for commands; WebSearch and WebFetch, the policy paragraph
+and the summary line are still to come. Only the agent process itself may reach the model host,
 checked with the kernel for each connection, so a command cannot upload to another account on that host, and commands
 cannot read the person's token: it reaches the agent by pipe, in no process's environment. Its shell runs only `rm`, `rmdir`, `mv`, `cp`, `mkdir` and `ls`, held by two walls: the CLI refuses anything else,
 including a compound or substitution that reaches anything else, and the operating system runs nothing else but the CLI

@@ -84,6 +84,9 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     }, interrupt: { [weak self] binder, turn in
         guard let self else { throw ChatCommandFailure.unavailable }
         try await self.interrupt(binder: binder, turn: turn)
+    }, answerSite: { [weak self] binder, turn, question, answer in
+        guard let self else { throw ChatCommandFailure.unavailable }
+        try await self.answerSite(binder: binder, turn: turn, question: question, answer: answer)
     })
     lazy var chat: BinderChat = makeChat()
     private func makeChat() -> BinderChat {
@@ -249,6 +252,7 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                 guard let self else { continuation.finish(); return }
                 let began = ContinuousClock.now
                 var shown = Self.activityLine(doing: nil, steps: 0, elapsed: .zero)
+                var asked: ChatSiteQuestion?
                 continuation.yield(.activity(shown))
                 defer { continuation.finish() }
                 while !Task.isCancelled {
@@ -277,6 +281,8 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
                                                          steps: value["steps"]?.numberValue?.safeInteger.map { Int(clamping: $0) } ?? 0,
                                                          elapsed: began.duration(to: .now))
                             if line != shown { shown = line; continuation.yield(.activity(line)) }
+                            let question = Self.siteQuestion(value)
+                            if question != asked { asked = question; continuation.yield(.siteQuestion(question)) }
                         default: throw ChatCommandFailure.unavailable
                         }
                         try await Task.sleep(for: .milliseconds(750))
@@ -299,6 +305,17 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
     }
     private func forgetPending(_ turn: SavedTurn, in folder: URL) {
         if pending[folder]?.turnID == turn.turnID { pending[folder] = nil }
+    }
+    private func answerSite(binder: String, turn: UUID, question: UUID, answer: ChatSiteAnswer) async throws {
+        guard let folder = scopes.first(where: { $0.value == binder })?.key, let request = requests[turn] else { throw ChatCommandFailure.unavailable }
+        _ = try await client.command("chat_site_answer", binder: folder, [("request_id", .str(request.uuidString)), ("question_id", .str(question.uuidString)),
+                                                                            ("answer", .str(answer.rawValue))], timeout: 30)
+    }
+    /// The question a running turn waits on, as `chat_poll` carries it.
+    nonisolated static func siteQuestion(_ value: JSONObject) -> ChatSiteQuestion? {
+        guard let question = value["site_question"], let id = question["id"]?.stringValue.flatMap(UUID.init(uuidString:)),
+              let host = question["host"]?.stringValue, (1...253).contains(host.utf8.count) else { return nil }
+        return ChatSiteQuestion(id: id, host: host, byCommand: question["by_command"] == .bool(true))
     }
     private func interrupt(binder: String, turn: UUID) async throws {
         guard let folder = scopes.first(where: { $0.value == binder })?.key, let request = requests[turn] else { throw ChatCommandFailure.unavailable }

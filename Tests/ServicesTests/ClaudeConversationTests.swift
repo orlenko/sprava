@@ -34,6 +34,8 @@ import Testing
         var reaches: [URL?] = []
         /// The to-do tools the latest launch was given.
         var appTools: ClaudeAppTools?
+        /// The latest turn's gate to the binder's sites.
+        var gate: AgentSiteGate?
         func driver(policy: String, session: UUID = UUID()) -> ClaudeConversationRuntime.Driver {
             let hash = lock.withLock { policies.append(policy); sessions.append(session); return self.hash }
             let originalPolicy = lock.withLock {
@@ -50,7 +52,7 @@ import Testing
                 while lock.withLock({ hold && !stopped }) { try await Task.sleep(for: .milliseconds(10)) }
                 return lock.withLock { stopped ? nil : reply }
             }, stop: { [self] in lock.withLock { stopped = true } }, exited: { [self] in lock.withLock { !running } }, hash: hash, context: { [self] in lock.withLock { contextUsed } },
-               activity: { [self] in lock.withLock { running ? activity : nil } })
+               activity: { [self] in lock.withLock { running ? activity : nil } }, useSites: { [self] gate in lock.withLock { self.gate = gate } })
         }
     }
     struct Fixture {

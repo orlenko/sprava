@@ -21,11 +21,24 @@ public enum ChatCommandFailure: Error, Sendable, Equatable {
 }
 public enum ChatTurnCompletion: Sendable, Equatable { case replied, interrupted }
 
+/// A running turn's question about a site new to the binder (conversation.md 18.3.1). The host is for this binder's
+/// page only, never logging, notifications or the heartbeat.
+public struct ChatSiteQuestion: Sendable, Equatable {
+    public let id: UUID
+    public let host: String
+    /// A command Claude ran asked, not Claude reading: a command can send the binder's files there.
+    public let byCommand: Bool
+    public init(id: UUID, host: String, byCommand: Bool) { self.id = id; self.host = host; self.byCommand = byCommand }
+}
+public enum ChatSiteAnswer: String, Sendable, Equatable { case once, always, deny }
+
 /// Text is for this binder's UI only, never logging, notifications or the heartbeat (§3.3).
 /// End-of-stream without finished/failed is an incomplete turn, never a successful reply.
 public enum ChatReplyEvent: Sendable, Equatable {
     case textDelta(String)
     case activity(String)
+    /// The question the turn waits on now, or nil once there is none.
+    case siteQuestion(ChatSiteQuestion?)
     case binderChanged(ChatBinderChange)
     case finished(ChatTurnCompletion)
     case failed(ChatCommandFailure)
@@ -49,12 +62,14 @@ public struct ChatTurn: Sendable {
 public struct ChatCommands: Sendable {
     public typealias Send = @Sendable (ChatSendRequest) async throws -> ChatTurn
     public typealias Interrupt = @Sendable (_ binderID: String, _ turnID: UUID) async throws -> Void
+    public typealias AnswerSite = @Sendable (_ binderID: String, _ turnID: UUID, _ question: UUID, _ answer: ChatSiteAnswer) async throws -> Void
     public static let maximumLineBytes = 4 * 1024 * 1024
     public static let maximumAttachments = 64
     private let sendLine: Send
     private let interruptTurn: Interrupt
-    public init(send: @escaping Send, interrupt: @escaping Interrupt) {
-        sendLine = send; interruptTurn = interrupt
+    private let answerSiteQuestion: AnswerSite?
+    public init(send: @escaping Send, interrupt: @escaping Interrupt, answerSite: AnswerSite? = nil) {
+        sendLine = send; interruptTurn = interrupt; answerSiteQuestion = answerSite
     }
     public func send(_ request: ChatSendRequest) async throws -> ChatTurn {
         guard Self.validID(request.binderID), request.text.utf8.count <= Self.maximumLineBytes,
@@ -73,6 +88,11 @@ public struct ChatCommands: Sendable {
     public func interrupt(binderID: String, turnID: UUID) async throws {
         guard Self.validID(binderID) else { throw ChatCommandFailure.invalidRequest }
         try await perform { try await interruptTurn(binderID, turnID) }
+    }
+    /// The person's tap on a running turn's question about a site.
+    public func answerSite(binderID: String, turnID: UUID, question: UUID, answer: ChatSiteAnswer) async throws {
+        guard Self.validID(binderID), let answerSiteQuestion else { throw ChatCommandFailure.invalidRequest }
+        try await perform { try await answerSiteQuestion(binderID, turnID, question, answer) }
     }
     private static func validID(_ id: String) -> Bool {
         !id.isEmpty && id.utf8.count <= 1024 && !id.contains("/") && !id.contains("\\") &&

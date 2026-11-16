@@ -78,6 +78,7 @@ struct ConversationSettings: View {
                     Button("Disconnect / change sharing") { Task { await model.disconnect() } }.disabled(model.busy)
                     Button("Clear conversation\u{2026}", role: .destructive) { model.askToClear = true }.disabled(model.busy)
                 }
+                if let folder = model.folder { BinderSitesList(client: model.client, folder: folder) }
             }
         } else {
             Text("Not connected. Connect it from this binder's conversation.").foregroundStyle(.secondary)

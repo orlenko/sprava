@@ -10,9 +10,12 @@ enum ClaudeNativeConversation {
                        onSpawn: @escaping @Sendable (Int32) throws -> Void) async throws -> ClaudeConversationRuntime.Driver {
         let proxy = try binder.map { _ in try AgentEgressProxy.shared() }
         let reach = binder.flatMap { folder in proxy.map { ClaudeReadLaunch.Reach(folder: folder, proxyPort: $0.port) } }
+        // The turn's gate to the binder's sites may come before or after the agent starts; either way the proxy gets it.
+        final class Sites: @unchecked Sendable { let lock = NSLock(); var pid: Int32?; var gate: AgentSiteGate? }
+        let sites = Sites()
         let prepared = try ClaudeReadLaunch.prepare(program: program, support: support, connectionID: connection, sessionID: session,
                                                    credential: credential, policy: policy, reach: reach, appTools: appTools, model: model, onSpawn: { pid in
-            proxy?.authorize(pid, session: session) // sandbox-exec becomes the CLI, keeping this pid.
+            sites.lock.withLock { sites.pid = pid; proxy?.authorize(pid, session: session, gate: sites.gate) } // sandbox-exec becomes the CLI, keeping this pid.
             try onSpawn(pid)
         })
         try await ClaudeReadAccount.verify(prepared)
@@ -26,6 +29,8 @@ enum ClaudeNativeConversation {
             case .interrupted: return nil
             }
         }, stop: { runner.stop() }, exited: { runner.processExitConfirmed }, hash: prepared.programHash, context: { runner.lastContext },
-                     activity: { runner.currentActivity })
+                     activity: { runner.currentActivity }, useSites: { gate in
+            sites.lock.withLock { sites.gate = gate; if let pid = sites.pid { proxy?.use(gate, for: pid) } }
+        })
     }
 }

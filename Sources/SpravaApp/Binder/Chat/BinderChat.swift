@@ -34,6 +34,8 @@ final class BinderChat: ObservableObject {
         var state: State
         /// What the binder is doing now, shown while it replies.
         var activity: String?
+        /// A site new to the binder that the reply waits on the person to allow or refuse.
+        var siteQuestion: ChatSiteQuestion?
         var changes: [ChatBinderChange] = []
         /// A person's line: the request id a retry repeats. A reply: the request id of the line it answers.
         var requestID: UUID?
@@ -262,6 +264,8 @@ final class BinderChat: ObservableObject {
                 }
             case .activity(let doing):
                 update(reply, in: key) { $0.activity = Self.prefix(of: doing, bytes: Self.maximumChangeBytes) }
+            case .siteQuestion(let question):
+                update(reply, in: key) { $0.siteQuestion = question }
             case .binderChanged(let change):
                 update(reply, in: key) { entry in
                     guard entry.changes.count < Self.maximumChanges else { entry.changesCut = true; return }
@@ -278,7 +282,7 @@ final class BinderChat: ObservableObject {
             if ended { break }
         }
         if !ended { update(reply, in: key) { $0.state = .incomplete; $0.problem = .lostTouch } }
-        update(reply, in: key) { $0.activity = nil }
+        update(reply, in: key) { $0.activity = nil; $0.siteQuestion = nil }
         if threads[key]?.turn == turn.turnID {
             threads[key]?.turn = nil
             threads[key]?.stopping = false
@@ -327,6 +331,20 @@ final class BinderChat: ObservableObject {
         guard let folder, actions(for: entry).contains(.checkReply), let requestID = entry.requestID, let binder = binderID(folder),
               let turn = reattach?(binder, requestID, entry.id, folder) else { return }
         resume(turn, in: folder)
+    }
+
+    /// The person's tap on the question a reply waits on. The question goes at once; the next poll shows any that follows.
+    func answer(_ question: ChatSiteQuestion, _ answer: ChatSiteAnswer, in entry: Entry) async {
+        guard let folder, let commands, let binder = binderID(folder), let turn = shown.turn else { return }
+        let key = key(folder)
+        update(entry.id, in: key) { if $0.siteQuestion == question { $0.siteQuestion = nil } }
+        do {
+            try await commands.answerSite(binderID: binder, turnID: turn, question: question.id, answer: answer)
+        } catch {
+            // Shown again, so the person can answer before it times out: polling repeats only a question that changed.
+            update(entry.id, in: key) { if $0.siteQuestion == nil, $0.state == .replying { $0.siteQuestion = question } }
+            threads[key]?.message = "Could not pass on your answer: \(Self.words(error))"
+        }
     }
 
     /// Asks the binder to stop the turn running on the page shown. Changes already made keep their Undo.
