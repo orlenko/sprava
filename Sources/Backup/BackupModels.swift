@@ -11,6 +11,14 @@ extension Backup {
         /// may remain (`BackupKey.Stored`). Kept here so the warning outlives a lost reply or a relaunch.
         public var iCloudKeychainUnchecked: Bool?
         public var resticSHA256: String?
+        /// The Mac that writes to these repositories (`macMark`), set at setup; each repository's marker names it too
+        /// (decisions.md D44). Nil in settings made before D44, until the next run marks the repositories.
+        public var mac: String?
+        /// Macs whose repositories this Mac took over: their snapshots follow this Mac's retention.
+        public var formerMacs: [String]?
+        /// Repositories the person took over while they were away (a second backup's disk): the first run after each is
+        /// back marks it as this Mac's, once. A Mac in `formerMacs` alone never grants that.
+        public var pendingTakeOver: [String]?
         public var keepLast = 30
         public var keepWithinDays = 90
         public var keepMonthly = 24
@@ -129,6 +137,9 @@ extension Backup {
         }
         /// Tombstones of finished forgetting requests no longer shown: which deletion, in which binder, at which path.
         var forgotten: [Forgotten] = []
+        /// Set when a run found a repository another Mac writes to, or settings made on another Mac: nothing more runs
+        /// until the person takes the backups over or sets backup up again. Backup's status shows it.
+        var otherMac: OtherMac?
 
         struct Forgotten: Codable, Equatable {
             var request: String
@@ -261,6 +272,9 @@ extension Backup.Settings {
         iCloudKeychain = try c.decodeIfPresent(Bool.self, forKey: .iCloudKeychain) ?? false
         iCloudKeychainUnchecked = try c.decodeIfPresent(Bool.self, forKey: .iCloudKeychainUnchecked)
         resticSHA256 = try c.decodeIfPresent(String.self, forKey: .resticSHA256)
+        mac = try c.decodeIfPresent(String.self, forKey: .mac)
+        formerMacs = try c.decodeIfPresent([String].self, forKey: .formerMacs)
+        pendingTakeOver = try c.decodeIfPresent([String].self, forKey: .pendingTakeOver)
         keepLast = try c.decodeIfPresent(Int.self, forKey: .keepLast) ?? 30
         keepWithinDays = try c.decodeIfPresent(Int.self, forKey: .keepWithinDays) ?? 90
         keepMonthly = try c.decodeIfPresent(Int.self, forKey: .keepMonthly) ?? 24
@@ -291,6 +305,7 @@ extension Backup.State {
         forgetting = try c.decodeIfPresent([Backup.Forgetting].self, forKey: .forgetting) ?? []
         forgotten = try c.decodeIfPresent([Forgotten].self, forKey: .forgotten) ?? []
         reassigning = try c.decodeIfPresent([String: Reassignment].self, forKey: .reassigning) ?? [:]
+        otherMac = try c.decodeIfPresent(Backup.OtherMac.self, forKey: .otherMac)
         for record in offloaded {
             rememberRepositories([record.repository, record.secondRepository], for: record.backupID)
         }

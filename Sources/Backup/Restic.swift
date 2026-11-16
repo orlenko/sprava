@@ -21,10 +21,14 @@ public struct Restic: Sendable {
         public var description: String { message }
     }
 
-    public init(binary: URL, repository: URL, key: String, support: URL, expectedSHA256: String? = nil) {
+    /// The host this Mac's snapshots carry (`Backup.host`), and the one restic picks a run's parent by.
+    public let host: String
+
+    public init(binary: URL, repository: URL, key: String, support: URL, expectedSHA256: String? = nil, host: String = "sprava") {
         self.binary = binary
         self.repository = repository
         self.key = key
+        self.host = host
         self.expectedSHA256 = expectedSHA256 ?? Self.sha256(of: binary)
         cacheDir = support.appendingPathComponent("backup/cache", isDirectory: true)
         runDir = support.appendingPathComponent("backup/run", isDirectory: true)
@@ -205,7 +209,7 @@ public struct Restic: Sendable {
     /// saves each entry's permission bits and extended attributes (Finder tags and comments, resource forks) by
     /// default, and `restore` writes them back; no `--exclude-xattr` is ever passed (`Backup.manifest` compares them).
     public func backup(_ folder: URL, tags: [String], excludes: [String], skipIfUnchanged: Bool = true) throws -> BackupResult {
-        var args = ["backup", ".", "--host", "sprava", "--json", "--pack-size", "64"]
+        var args = ["backup", ".", "--host", host, "--json", "--pack-size", "64"]
         for t in tags { args += ["--tag", t] }
         for e in excludes { args += ["--exclude", e] }
         if skipIfUnchanged { args.append("--skip-if-unchanged") }
@@ -232,7 +236,7 @@ public struct Restic: Sendable {
         public var bytes: Int64? = nil
         /// The paths restic backed up (absolute: a binder's folder), which with the host choose a run's parent.
         public var paths: [String] = []
-        /// The host restic recorded; Sprava's runs use "sprava".
+        /// The host restic recorded: the Mac's own (`Backup.host`), or "sprava" for a run before D44.
         public var hostname: String = ""
 
         /// `time` as a date ("2026-10-09T00:59:52.345658-04:00"; restic writes nanoseconds, which ISO8601DateFormatter
@@ -316,9 +320,15 @@ public struct Restic: Sendable {
         try checked(["copy", snapshot], otherKey: (source.repository, source.key))
     }
 
-    public func forget(tag: String, keepLast: Int, keepWithinDays: Int, keepMonthly: Int, keepYearly: Int, prune: Bool = true) throws {
+    /// Forgets only snapshots of `hosts` (this Mac's, and those of Macs whose repository it took over): another Mac's
+    /// snapshots in the same repository are never touched, whatever its marker says (decisions.md D44).
+    public func forget(tag: String, hosts: [String], keepLast: Int, keepWithinDays: Int, keepMonthly: Int, keepYearly: Int,
+                       prune: Bool = true) throws {
+        // No host would mean every host to restic.
+        guard !hosts.isEmpty else { throw Failure(message: "restic forget: no host named") }
         var args = ["forget", "--tag", tag, "--group-by", "tags", "--keep-last", String(keepLast), "--keep-within", "\(keepWithinDays)d",
                     "--keep-monthly", String(keepMonthly), "--keep-yearly", String(keepYearly), "--keep-tag", "offloaded"]
+        for host in hosts { args += ["--host", host] }
         if prune { args.append("--prune") }
         try checked(args)
     }

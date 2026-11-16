@@ -11,7 +11,7 @@ import Testing
         defer { release.signal() }
         let original = Backup(support: support, key: "INVENTED-KEY", uploadCheck: { _ in release.wait(); return .notInICloud })
         let backup = BackupUploadGate.bounded(original, patience: 0.02)
-        #expect(throws: Backup.Failure.self) { try backup.setUp(primary: repository, iCloudKeychain: false) }
+        #expect(throws: Backup.Failure.self) { try backup.setUp(primary: repository, iCloudKeychain: false, deviceID: "dev") }
         #expect(try backup.settings().primary == nil)
         release.signal()
         #expect(BackupUploadGate.of(repository).ended.wait(timeout: .now() + 5) == .success)

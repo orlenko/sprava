@@ -13,10 +13,17 @@ extension Commands {
         "backup_new_key": { _, _, _, _, _ in try Commands.backupNewKey() },
         "backup_setup": { c, _, r, _, _ in try c.backupSetup(r) },
         "backup_second": { c, _, r, _, _ in try c.backupSecond(r) },
+        "backup_take_over": { c, _, _, _, _ in try c.backupTakeOver() },
         "backup_request": { c, _, r, now, _ in try c.backupRequest(r, now: now) },
     ]
 
     static func optional(_ text: String?) -> JSONValue { text.map(JSONValue.string) ?? .null }
+
+    /// A repository another Mac writes to, as the Backup page shows it and offers to take it over (decisions.md D44).
+    static func otherMac(_ other: Backup.OtherMac?) -> JSONValue {
+        guard let other else { return .null }
+        return .obj([("repository", .string(other.repository)), ("name", optional(other.name)), ("message", .string(other.description))])
+    }
 
     /// Whether this runtime can reach iCloud Keychain (`BackupKey.iCloudKeychainAvailable`). It depends only on how the
     /// runtime is signed, which does not change while it runs, so the Keychain is asked once, not at every status read.
@@ -46,6 +53,9 @@ extension Commands {
         return JSONObject([
             (key: "configured", value: .bool(st.configured)), (key: "second", value: .bool(st.secondConfigured)),
             (key: "primary", value: Self.optional(s.primary)), (key: "second_path", value: Self.optional(s.second)),
+            // A folder of this Mac's own, named once here and kept by setup: renaming the Mac later moves nothing.
+            (key: "default_primary", value: .string(Backup.defaultPrimary().path)),
+            (key: "other_mac", value: Self.otherMac(st.otherMac)),
             (key: "pending_key", value: .bool(BackupKey.loadPending() != nil)), (key: "upload", value: upload),
             // An unattended read that found no key: after an update of an ad-hoc build, or with the Keychain locked.
             // Set up (a mirror and a pinned restic on record) but with no key, which `configured` also requires.
@@ -99,9 +109,17 @@ extension Commands {
         // One change of the backup's state at a time with the backup job (`BackupStateLock`). The repository opens with
         // this key before anything is saved, so a wrong key changes nothing; this is also how a key re-entered after an
         // update is checked. iCloud Keychain counts as unchecked until a store reaches it.
-        try BackupStateLock.of(support).command {
-            try BackupUploadGate.bounded(backup).setUp(primary: URL(fileURLWithPath: primaryPath, isDirectory: true), iCloudKeychain: icloud)
-            try backup.recordICloudKeychainChecked(false)
+        // A folder another Mac writes to is answered, not thrown, so the page can offer to take it over; the key stays
+        // pending for that second try.
+        let takeOver = r["take_over"] == .bool(true)
+        do {
+            try BackupStateLock.of(support).command {
+                try BackupUploadGate.bounded(backup).setUp(primary: URL(fileURLWithPath: primaryPath, isDirectory: true), iCloudKeychain: icloud,
+                                                           deviceID: deviceID, takeOver: takeOver)
+                try backup.recordICloudKeychainChecked(false)
+            }
+        } catch let other as Backup.OtherMac {
+            return JSONObject([(key: "other_mac", value: Self.otherMac(other))])
         }
         let stored = try BackupKey.store(key, inICloudKeychain: icloud)
         if stored.cloudChecked { try BackupStateLock.of(support).command { try backup.recordICloudKeychainChecked(true) } }
@@ -112,9 +130,21 @@ extension Commands {
     func backupSecond(_ r: JSONObject) throws -> JSONObject {
         guard case .string(let path)? = r["folder"], path.hasPrefix("/") else { throw Failure(message: "backup_second needs folder") }
         try refuseBackupRepositoryOverlap(URL(fileURLWithPath: path))
-        try BackupStateLock.of(support).command {
-            try BackupUploadGate.bounded(Backup(support: support)).setSecond(URL(fileURLWithPath: path, isDirectory: true))
+        do {
+            try BackupStateLock.of(support).command {
+                try BackupUploadGate.bounded(Backup(support: support)).setSecond(URL(fileURLWithPath: path, isDirectory: true), deviceID: deviceID,
+                                                                                 takeOver: r["take_over"] == .bool(true))
+            }
+        } catch let other as Backup.OtherMac {
+            return JSONObject([(key: "other_mac", value: Self.otherMac(other))])
         }
+        return JSONObject()
+    }
+
+    /// The person chose to continue, from this Mac, the backups another Mac wrote to (or whose settings came from
+    /// it): each repository is marked as this Mac's, and that Mac stops writing to it at its next run.
+    func backupTakeOver() throws -> JSONObject {
+        try BackupStateLock.of(support).command { try Backup(support: support).takeOver(deviceID) }
         return JSONObject()
     }
 

@@ -74,26 +74,24 @@ extension Backup {
         settings.primary != nil && settings.resticSHA256 != nil && key != nil
     }
 
-    /// The default mirror: a folder in the person's iCloud Drive.
-    public static var defaultPrimary: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Mobile Documents/com~apple~CloudDocs/Sprava Backup", isDirectory: true)
-    }
-
-    /// Restic for the repository at `path`, pinned by saved settings or by `candidate` before those are saved.
-    func engine(_ path: String?, settings candidate: Settings? = nil) throws -> Restic {
+    /// Restic for the repository at `path`, pinned by saved settings or by `candidate` before those are saved. A
+    /// configured repository must name this Mac (`requireMark`); only setup and taking over, which mark it, pass
+    /// `marked: false`. Snapshots it takes carry this Mac's host.
+    func engine(_ path: String?, settings candidate: Settings? = nil, marked: Bool = true) throws -> Restic {
         guard let path, let key else { throw Failure(message: "backup is not set up") }
         guard let binary = resticBinary else { throw Failure(message: "restic is missing from this installation") }
+        let s = try candidate ?? settings()
         // Sprava never runs a binary it did not set up (architecture 3.5): settings without a pin, such as older
         // ones, trust nothing until setup runs again and pins the restic it checked.
-        guard let pinned = try (candidate ?? settings()).resticSHA256 else {
+        guard let pinned = s.resticSHA256 else {
             throw Failure(message: "restic has not been checked since backup was set up; set it up again to trust it")
         }
         guard Restic.sha256(of: binary) == pinned else {
             throw Failure(message: "restic changed since backup was set up; set it up again to trust the new one")
         }
+        if marked { try requireMark(path, s) }
         return Restic(binary: binary, repository: URL(fileURLWithPath: path, isDirectory: true), key: key,
-                      support: support, expectedSHA256: pinned)
+                      support: support, expectedSHA256: pinned, host: s.mac.map(Self.host) ?? Self.legacyHost)
     }
 }
 

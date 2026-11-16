@@ -7,7 +7,7 @@ import SpravaKit
 /// approvals, MCP calls or captures; it touches no binder. Each request is registered with the watchdog while it
 /// runs, so one that hangs is named, and past twice its budget and ten minutes ends the process for launchd to restart.
 public final class RequestQueues: @unchecked Sendable {
-    public static let repositoryCommands: Set<String> = ["peek", "backup_setup", "backup_second"]
+    public static let repositoryCommands: Set<String> = ["peek", "backup_setup", "backup_second", "backup_take_over"]
     /// The watchdog's keys and budgets: 15 seconds for a write, ten minutes for a peek, and 90 seconds for
     /// one Phone claim attempt (at most three bounded 30-second relay calls).
     public static let budgets: [String: Duration] = ["app_request": .seconds(15), "app_backup_request": .seconds(600),

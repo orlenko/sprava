@@ -126,7 +126,7 @@ extension BackupOffloadLeaveTests {
         #expect(try b.offload(e.folder, deviceID: "dev", confirmOpenItems: true, nameCollides: { _ in false }, now: now) == .waitingForICloud(3))
         let checkpointed = try #require(try b.state().offloads[id]?.secondSnapshot)
         // The second backup is replaced while the binder waits to leave; the copy the checkpoint names stays pinned.
-        try b.setSecond(e.base.appendingPathComponent("external/Another Second"))
+        try b.setSecond(e.base.appendingPathComponent("external/Another Second"), deviceID: "dev")
         waiting.on = false
         b.atStep = nil
         _ = try b.continueOffload(id, now: now, nameCollides: { _ in false })
@@ -208,7 +208,7 @@ extension BackupOffloadLeaveTests {
         b.atStep = nil
         // The second backup is replaced while it waits (allowed while the binder is here), then the binder is moved
         // away: the copy its record names is not in the second backup now.
-        try b.setSecond(e.base.appendingPathComponent("external/Another Second"))
+        try b.setSecond(e.base.appendingPathComponent("external/Another Second"), deviceID: "dev")
         try FileManager.default.moveItem(at: e.folder, to: e.base.appendingPathComponent("Elsewhere", isDirectory: true))
         waiting.on = false
         #expect(throws: Backup.Failure.self) { _ = try b.continueOffload(id, now: now, nameCollides: { _ in false }) }
