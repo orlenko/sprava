@@ -170,7 +170,8 @@ extension Backup {
                 guard Self.holdsRepository(url) else { break }
                 Self.adoptLegacy(&s, url)
                 unmarked.append(url)
-            case let marker? where marker.mac == mine: break
+            // This Mac's own; one that says it adopted the old snapshots counts even if saving that here was cut off.
+            case let marker? where marker.mac == mine: if marker.legacy == true { Self.adoptLegacy(&s, url) }
             // A repository the person took over while it was away: that choice, once. A marker that names a Mac this
             // one took over earlier grants nothing by itself: the person may have handed the backups back since.
             case let marker? where pending:

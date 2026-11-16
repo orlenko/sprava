@@ -142,6 +142,12 @@ import Testing
         #expect(try b.settings().mac == Backup.macMark("dev"))
         #expect(try Backup.readMarker(e.primary) == Backup.Marker(mac: Backup.macMark("dev"), name: Backup.thisMacName(), legacy: true))
         #expect(try b.settings().legacy == [e.primary.standardizedFileURL.path])
+        // Stopped after the marker was written and before the settings were saved: the next run takes it from the marker.
+        s = try b.settings()
+        s.legacy = nil
+        try b.save(s)
+        #expect(maintain(b, e).failed == 0)
+        #expect(try b.settings().legacy == [e.primary.standardizedFileURL.path])
     }
 
     /// The Mac that first marks a repository set up before D44 adopts its snapshots from then (host `sprava`): its
