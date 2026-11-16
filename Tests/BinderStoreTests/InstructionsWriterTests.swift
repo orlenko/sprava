@@ -95,6 +95,31 @@ import Testing
         #expect(back.text == "One.\n" && back.isAccepted)
     }
 
+    @Test func textHoldingSpravasMarkersIsRefused() throws {
+        let folder = try binder()
+        let section = "<!-- sprava:begin -->\nPropose through Sprava.\n<!-- sprava:end -->\n"
+        try Data(section.utf8).write(to: folder.appendingPathComponent("AGENTS.md"))
+        for pasted in ["<!-- sprava:begin -->\nOld.\n<!-- sprava:end -->\n", "Stray\n<!-- sprava:end -->\n"] {
+            #expect(throws: BinderInstructions.Refused.markersInText) {
+                try BinderInstructions.save(pasted, expected: BinderInstructions.digest(""), in: folder)
+            }
+        }
+        #expect(try agents(folder) == section)
+    }
+
+    /// A save cut short after it kept its backup, before AGENTS.md changed, leaves the earlier save's Undo whole.
+    @Test func aSaveCutShortKeepsTheEarlierUndo() throws {
+        let folder = try binder()
+        try BinderInstructions.save("A.\n", expected: BinderInstructions.digest(""), in: folder)
+        try BinderInstructions.save("B.\n", expected: BinderInstructions.digest("A.\n"), in: folder)
+        // What the next save writes first, into the slot the record does not name; then it stops.
+        let record = BinderInstructions.Record(folder)
+        let other = BinderInstructions.slots.first { $0 != record.slot }!
+        try Data("B.\n".utf8).write(to: folder.appendingPathComponent(".sprava/" + other))
+        try BinderInstructions.undoLastSave(in: folder)
+        #expect(try agents(folder) == "A.\n")
+    }
+
     @Test func aTurnsUndoLeavesTheManualsAlone() {
         #expect(TurnHistory.excluded("AGENTS.md") && TurnHistory.excluded("CLAUDE.md"))
         #expect(!TurnHistory.excluded("notes/AGENTS.md") && !TurnHistory.excluded("agents-notes.md"))

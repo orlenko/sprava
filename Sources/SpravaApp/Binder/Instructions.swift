@@ -15,8 +15,14 @@ final class InstructionsModel: ObservableObject, DraftOwner {
         var id: String { name }
     }
 
-    /// What the page read: the instructions, or why they are shown but not saved over.
-    @Published private(set) var read: Result<BinderInstructions, BinderInstructions.Problem>?
+    /// The instructions the text being edited started from: the digest a save checks against. Kept through a failed read,
+    /// so a draft stays a draft whatever happens to the file.
+    @Published private(set) var found: BinderInstructions?
+    /// The last read that succeeded; differs from `found` when the file changed under a draft.
+    @Published private(set) var latest: BinderInstructions?
+    /// Why the last read failed, shown with the editor; nil after one that succeeded.
+    @Published private(set) var problem: BinderInstructions.Problem?
+    @Published private(set) var loaded = false
     @Published var text = ""
     @Published private(set) var oldManuals: [OldManual] = []
     @Published var message: String?
@@ -37,23 +43,38 @@ final class InstructionsModel: ObservableObject, DraftOwner {
         }.value
     }
 
-    var found: BinderInstructions? { if case .success(let found)? = read { found } else { nil } }
-    var edited: Bool { found.map { text != $0.text } ?? false }
+    var edited: Bool { found.map { text != $0.text } ?? !text.isEmpty }
+    /// The file changed elsewhere since the draft began: a save will be refused until the person reverts.
+    var changedUnderDraft: Bool { edited && latest != nil && latest?.text != found?.text }
+    /// The text holds one of Sprava's marker lines, which a save refuses.
+    var holdsMarkers: Bool { if case .success(let own) = BinderInstructions.parse(text), own.section.isEmpty { false } else { true } }
     var draftState: DraftState { DraftState(hasChanges: edited, saving: busy) }
     var fits: Bool { BinderInstructions.fits(text) }
     /// The text tells agents to run lifeproj, which turns repeats off in the binder (`Adoption.lifeprojCanReach`).
     var namesLifeproj: Bool { text.range(of: #"lifeproj\s+(publish|drain)"#, options: .regularExpression) != nil }
 
-    /// Reads the binder again. The text being edited is replaced only when it has no change, so a reload never loses a draft.
+    /// Reads the binder again. The text being edited, and what it started from, are replaced only when it has no change,
+    /// so a reload or a failed read never loses a draft.
     func load(_ folder: URL, replacing: Bool = false) async {
         let (read, manuals) = await reader(folder)
         let keep = edited && !replacing
-        self.read = read
+        loaded = true
         oldManuals = manuals
-        if !keep, case .success(let found) = read { text = found.text }
+        switch read {
+        case .failure(let problem): self.problem = problem
+        case .success(let now):
+            problem = nil
+            latest = now
+            if !keep { found = now; text = now.text }
+        }
     }
 
-    func revert() { if let found { text = found.text } }
+    /// Drops the draft for the text last read.
+    func revert() {
+        guard let base = latest ?? found else { return }
+        found = base
+        text = base.text
+    }
 
     /// Appends an old manual's text for the person to read and trim; nothing is saved until they save.
     func copyIn(_ manual: OldManual) {
@@ -116,12 +137,11 @@ struct InstructionsSection: View {
                 .foregroundStyle(.secondary)
             Text("When this binder is connected to Claude with file changes allowed, these instructions go to Claude with each new document from intake.")
                 .font(.caption).foregroundStyle(.secondary)
-            switch model.read {
-            case nil: ProgressView().frame(maxWidth: .infinity)
-            case .failure(let problem)?:
-                Text(problem.description).foregroundStyle(.orange)
-            case .success(let found)?:
+            if let problem = model.problem { Text(problem.description).foregroundStyle(.orange) }
+            if let found = model.found {
                 editor(found)
+            } else if !model.loaded {
+                ProgressView().frame(maxWidth: .infinity)
             }
             if let message = model.message { Text(message).foregroundStyle(.orange) }
         }
@@ -133,8 +153,14 @@ struct InstructionsSection: View {
         TextEditor(text: $model.text)
             .font(.body.monospaced())
             .frame(minHeight: 220, maxHeight: .infinity)
-            .disabled(!writable)
+            .disabled(!writable || model.busy)
             .accessibilityLabel("Instructions")
+        if model.changedUnderDraft {
+            Text("AGENTS.md changed elsewhere since you started editing, so Save will be refused. Copy your text, then Revert to see the new one.").foregroundStyle(.orange)
+        }
+        if model.holdsMarkers {
+            Text("Your text holds a line Sprava keeps for its own part of AGENTS.md (\(BinderInstructions.begin) or \(BinderInstructions.end)). Remove it to save.").foregroundStyle(.orange)
+        }
         if !model.fits {
             Text("Instructions are at most \(BinderInstructions.maxCharacters) characters. Shorten them to save.").foregroundStyle(.orange)
         }
@@ -148,7 +174,7 @@ struct InstructionsSection: View {
             HStack {
                 Button("Save") { Task { await model.save(folder) } }
                     .keyboardShortcut("s", modifiers: .command)
-                    .disabled(!model.edited || !model.fits || model.busy)
+                    .disabled(!model.edited || !model.fits || model.holdsMarkers || model.busy)
                 Button("Revert") { model.revert() }.disabled(!model.edited || model.busy)
                 if !found.isAccepted, !model.edited, !found.text.isEmpty {
                     Button("Use this text") { Task { await model.save(folder, useThisText: true) } }.disabled(model.busy)
@@ -160,7 +186,7 @@ struct InstructionsSection: View {
                 Button("Reload") { Task { await model.load(folder) } }.disabled(model.busy)
             }
             ForEach(model.oldManuals) { manual in
-                Button("Copy in the old \(manual.name)") { model.copyIn(manual) }
+                Button("Copy in the old \(manual.name)") { model.copyIn(manual) }.disabled(model.busy)
                     .help("Adds the instructions this binder had before it was imported, for you to read, trim and save.")
             }
         } else {

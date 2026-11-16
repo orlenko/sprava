@@ -12,6 +12,7 @@ extension BinderInstructions {
         case tooLong
         case nothingToUndo
         case notAdopted
+        case markersInText
         case file(Problem)
 
         public var description: String {
@@ -20,10 +21,15 @@ extension BinderInstructions {
             case .tooLong: "Instructions are at most \(BinderInstructions.maxCharacters) characters. Shorten them to save."
             case .nothingToUndo: "There is no save to undo: AGENTS.md changed since the last save, or it was undone already."
             case .notAdopted: "This binder has no .sprava folder, so its instructions cannot be saved here."
+            case .markersInText: "Your text holds a line Sprava keeps for its own part of AGENTS.md (\(BinderInstructions.begin) or \(BinderInstructions.end)). Remove it to save."
             case .file(let problem): problem.description
             }
         }
     }
+
+    /// The two files a save's backup alternates between: a save writes the one the record does not name, so a save cut
+    /// short never overwrites the backup the record still offers for Undo.
+    static let slots = [(previousPath as NSString).lastPathComponent, "instructions-previous-2.md"]
 
     /// Writes `text` as the person's part when the part on disk still has the digest `expected`, and records it as
     /// accepted. Saving the same text writes only the acceptance, so an empty text where there is no file makes none. The
@@ -31,15 +37,18 @@ extension BinderInstructions {
     @discardableResult
     public static func save(_ text: String, expected: String, in folder: URL) throws -> String {
         guard fits(text) else { throw Refused.tooLong }
+        // Marker lines of Sprava's own in the text would make a file that no longer reads.
+        guard case .success(let own) = parse(text), own.section.isEmpty else { throw Refused.markersInText }
         let found = try current(folder)
         guard found.digest == expected else { throw Refused.changed }
         let state = try stateDirectory(folder)
+        let record = Record(folder)
         let after = digest(text)
         guard found.text != text else {
-            try writeRecord(state, accepted: after, undoAfter: found.undoAfter, previousAccepted: previousAccepted(folder))
+            try record.with(accepted: after).write(state)
             return after
         }
-        // The file as it was, whole, before anything changes: a crash after this leaves the old file in place.
+        // The file as it was, whole, into the slot the record does not name, before anything else changes.
         let agents = folder.appendingPathComponent(fileName)
         let before: Data
         switch SafeFile.read(agents, under: folder, limit: fileLimit) {
@@ -48,9 +57,10 @@ extension BinderInstructions {
         case .refused(let why): throw Refused.file(.refused(why))
         case .unreadable(let why): throw Refused.file(.unreadable(why))
         }
-        try state.write(before, to: (previousPath as NSString).lastPathComponent)
-        try AtomicFile.write(Data(found.contents(with: text).utf8), to: agents, mode: 0o644)
-        try writeRecord(state, accepted: after, undoAfter: after, previousAccepted: found.isAccepted)
+        let slot = record.slot == slots[0] ? slots[1] : slots[0]
+        try state.write(before, to: slot)
+        try write(found.contents(with: text), section: found.section, text: text, to: agents)
+        try Record(accepted: after, undoAfter: after, slot: slot, previousAccepted: found.isAccepted).write(state)
         return after
     }
 
@@ -62,8 +72,10 @@ extension BinderInstructions {
         let found = try current(folder)
         guard found.canUndo else { throw Refused.nothingToUndo }
         let state = try stateDirectory(folder)
+        let record = Record(folder)
+        guard let slot = record.slot, slots.contains(slot) else { throw Refused.nothingToUndo }
         let previous: String
-        switch try state.read((previousPath as NSString).lastPathComponent, limit: fileLimit) {
+        switch try state.read(slot, limit: fileLimit) {
         case .ok(let data):
             guard let contents = String(data: data, encoding: .utf8) else { throw Refused.file(.notText) }
             switch parse(contents) {
@@ -74,10 +86,19 @@ extension BinderInstructions {
         case .refused(let why): throw Refused.file(.refused(why))
         case .unreadable(let why): throw Refused.file(.unreadable(why))
         }
-        try AtomicFile.write(Data(found.contents(with: previous).utf8), to: folder.appendingPathComponent(fileName), mode: 0o644)
+        try write(found.contents(with: previous), section: found.section, text: previous, to: folder.appendingPathComponent(fileName))
         let after = digest(previous)
-        try writeRecord(state, accepted: previousAccepted(folder) ? after : nil, undoAfter: nil, previousAccepted: false)
+        try Record(accepted: record.previousAccepted ? after : nil, undoAfter: nil, slot: record.slot, previousAccepted: false).write(state)
         return after
+    }
+
+    /// Writes a file only when it reads back as exactly that section and that text.
+    static func write(_ contents: String, section: String, text: String, to file: URL) throws {
+        guard case .success(let back) = parse(contents), back.text == text,
+              back.section.trimmingCharacters(in: .newlines) == section.trimmingCharacters(in: .newlines) else {
+            throw Refused.file(.ambiguousMarkers)
+        }
+        try AtomicFile.write(Data(contents.utf8), to: file, mode: 0o644)
     }
 
     static func current(_ folder: URL) throws -> BinderInstructions {
@@ -92,17 +113,44 @@ extension BinderInstructions {
         return state
     }
 
-    /// Whether the text the last save replaced had been accepted; false when unknown.
-    static func previousAccepted(_ folder: URL) -> Bool {
-        guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(recordPath), under: folder, limit: 64 * 1024),
-              let value = try? JSONParser.parse(data).value else { return false }
-        return value["previous_accepted"] == .bool(true)
-    }
+    /// Sprava's record, `.sprava/instructions.json`, as the writer keeps it. One missing or unreadable is empty: nothing
+    /// accepted and no Undo.
+    struct Record {
+        var accepted: String?
+        var undoAfter: String?
+        /// Which of `slots` holds the file the last save replaced.
+        var slot: String?
+        var previousAccepted = false
 
-    static func writeRecord(_ state: StateDirectory, accepted: String?, undoAfter: String?, previousAccepted: Bool) throws {
-        let record = JSONValue.obj([("accepted", accepted.map(JSONValue.string) ?? .null),
-                                    ("undo_after", undoAfter.map(JSONValue.string) ?? .null),
-                                    ("previous_accepted", .bool(previousAccepted))])
-        try state.write(Data(JSONWriter.pretty(record).utf8), to: (recordPath as NSString).lastPathComponent)
+        init(accepted: String?, undoAfter: String?, slot: String?, previousAccepted: Bool) {
+            self.accepted = accepted
+            self.undoAfter = undoAfter
+            self.slot = slot
+            self.previousAccepted = previousAccepted
+        }
+
+        init(_ folder: URL) {
+            let (accepted, undoAfter) = BinderInstructions.record(folder)
+            self.accepted = accepted
+            self.undoAfter = undoAfter
+            guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(recordPath), under: folder, limit: 64 * 1024),
+                  let value = try? JSONParser.parse(data).value else { return }
+            slot = value["undo_slot"]?.stringValue.flatMap { slots.contains($0) ? $0 : nil }
+            previousAccepted = value["previous_accepted"] == .bool(true)
+        }
+
+        func with(accepted: String) -> Record {
+            var r = self
+            r.accepted = accepted
+            return r
+        }
+
+        func write(_ state: StateDirectory) throws {
+            let record = JSONValue.obj([("accepted", accepted.map(JSONValue.string) ?? .null),
+                                        ("undo_after", undoAfter.map(JSONValue.string) ?? .null),
+                                        ("undo_slot", slot.map(JSONValue.string) ?? .null),
+                                        ("previous_accepted", .bool(previousAccepted))])
+            try state.write(Data(JSONWriter.pretty(record).utf8), to: (recordPath as NSString).lastPathComponent)
+        }
     }
 }

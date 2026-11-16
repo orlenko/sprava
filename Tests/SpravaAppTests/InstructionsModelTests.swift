@@ -10,6 +10,7 @@ import Testing
     final class Binder: @unchecked Sendable {
         var instructions = BinderInstructions(exists: true, section: "", text: "Old rule.\n")
         var sent: [JSONValue] = []
+        var fail = false
     }
 
     func model(_ binder: Binder) -> InstructionsModel {
@@ -49,7 +50,36 @@ import Testing
         binder.instructions = BinderInstructions(exists: true, section: "", text: "Changed elsewhere.\n")
         await model.load(folder)
         #expect(model.text == "My draft.\n")
-        #expect(model.found?.text == "Changed elsewhere.\n")
+        #expect(model.latest?.text == "Changed elsewhere.\n" && model.found?.text == "Old rule.\n")
+    }
+
+    @Test func aFailedReadKeepsTheDraftAndWhatItStartedFrom() async {
+        let binder = Binder()
+        let model = InstructionsModel(client: RuntimeClient(answer: { _ in #"{"ok":true}"# }),
+                                      reader: { _ in (binder.fail ? .failure(.ambiguousMarkers) : .success(binder.instructions), []) })
+        await model.load(folder)
+        model.text = "My draft.\n"
+        binder.fail = true
+        await model.load(folder)
+        #expect(model.problem == .ambiguousMarkers)
+        #expect(model.text == "My draft.\n" && model.edited && model.draftState.hasChanges)
+        #expect(model.found?.text == "Old rule.\n")
+    }
+
+    @Test func aChangeUnderADraftIsSaidAndRevertTakesIt() async {
+        let binder = Binder()
+        let model = model(binder)
+        await model.load(folder)
+        model.text = "My draft.\n"
+        binder.instructions = BinderInstructions(exists: true, section: "", text: "Changed elsewhere.\n")
+        await model.load(folder)
+        #expect(model.changedUnderDraft)
+        // The save still checks against what the draft started from, so the runtime refuses it.
+        #expect(model.found?.digest == BinderInstructions.digest("Old rule.\n"))
+        model.revert()
+        #expect(model.text == "Changed elsewhere.\n" && !model.edited && !model.changedUnderDraft)
+        model.text = "<!-- sprava:begin -->\nx\n<!-- sprava:end -->\n"
+        #expect(model.holdsMarkers)
     }
 
     @Test func useThisTextConfirmsTheTextOnDisk() async throws {
