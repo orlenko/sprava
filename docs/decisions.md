@@ -110,6 +110,13 @@
   occurrence; completing advances it, dismissing ends it), `created_at` and `updated_at` (optional), `provenance`
   (optional: source event ids, who proposed it, who approved). `due` survives on a waiting item; "overdue"
   applies only when `status` is open.
+  **Recurrence brought into Sprava (2026-11-15, by the owner).** The person sets and removes `recurrence`; no clerk,
+  brain or drained change does. Done names the occurrence it completes (`occurrence_due`) and records
+  `next_due = next_after(max(due, today))`; the guard refuses a Done for an occurrence the item has already moved
+  past, so one Done never advances a series twice. The hub rule: no repeats on a binder lifeproj can still reach
+  (binder-v0 §8.1), since lifeproj's drain closes a recurring item for good; on a binder Sprava owns, Sprava is the
+  only drainer, and a hub check-off without `due` waits rather than advancing the item (binder-v0 §8.3). Dismissal
+  stays as before.
 - **F4 recommended.** One bucket taxonomy for the Now page, the roll-up and the brief: Overdue · Today · Next 7
   days · Later · No deadline · Nudge (waiting or blocked with `follow_up_at` today or earlier) · Waiting ·
   Recently closed (7 days).

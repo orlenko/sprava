@@ -23,6 +23,11 @@ public final class CompanionOperationTransaction {
         }
         let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
         var args = body.args
+        if body.op == "complete", let id = args["id"] {
+            // The phone names the occurrence it saw; the next date is worked out here, as for a Done in the app.
+            try Recurrence.fillNextDue(&args, item: state.catalog["open_items"]?.arrayValue?.first(where: { $0["id"] == id })?.objectValue,
+                                       at: at)
+        }
         if ["complete", "drop"].contains(body.op) {
             if args["closed_at"] == nil { args.set("closed_at", .string(at)) }
             if args["source"] == nil { args.set("source", .string("user")) }

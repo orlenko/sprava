@@ -58,21 +58,27 @@ public enum Adoption {
         s.set("documents_missing_fields", .int(docs.filter { d in ["id", "title", "path"].contains { d[$0] == nil } }.count))
         let modules = moduleFolders.filter { fm.fileExists(atPath: folder.appendingPathComponent($0.value).path) }.map(\.key).sorted()
         s.set("modules_found", .array(modules.map(JSONValue.string)))
-        // lifeproj reaches the binder when it is registered, equipped, or when the binder's agent notes tell an
-        // agent to run lifeproj's publish or drain.
-        let notes = ["CLAUDE.md", "AGENTS.md"].compactMap { readInside(folder, $0, limit: 1024 * 1024) }
-            .map { withoutAddendum(String(decoding: $0, as: UTF8.self)) }
-        let notesRunLifeproj = notes.contains { text in
-            text.range(of: #"lifeproj\s+(publish|drain)"#, options: .regularExpression) != nil
-        }
-        s.set("lifeproj_can_reach", .bool(inRegistry || notesRunLifeproj
-                                          || fm.fileExists(atPath: folder.appendingPathComponent("catalog_check.py").path)))
+        s.set("lifeproj_can_reach", .bool(lifeprojCanReach(folder, inRegistry: inRegistry)))
         let settings = readInside(folder, ".claude/settings.json", limit: 1024 * 1024).map { String(decoding: $0, as: UTF8.self) } ?? ""
         s.set("hooks_may_send_data", .bool(settings.contains("\"hooks\"")))
         s.set("credentials_files", .int(["scripts/mail/.env", "intake/mail/.env"].filter { fm.fileExists(atPath: folder.appendingPathComponent($0).path) }.count))
         s.set("old_email_intake_layout", .bool(fm.fileExists(atPath: folder.appendingPathComponent("intake/mail/state.json").path)))
         s.set("synced_location", .bool(syncedLocation(folder)))
         return s
+    }
+
+    /// Whether lifeproj can reach the binder (binder-v0 §8.1): it is in lifeproj's registry, holds lifeproj's
+    /// `catalog_check.py`, or its agent notes, without Sprava's addendum, tell an agent to run lifeproj's publish or
+    /// drain. Read at adoption for the survey, and again before the person sets a repeat, which lifeproj's drain would
+    /// end for good.
+    public static func lifeprojCanReach(_ folder: URL, inRegistry: Bool) -> Bool {
+        if inRegistry { return true }
+        let notes = ["CLAUDE.md", "AGENTS.md"].compactMap { readInside(folder, $0, limit: 1024 * 1024) }
+            .map { withoutAddendum(String(decoding: $0, as: UTF8.self)) }
+        let notesRunLifeproj = notes.contains { text in
+            text.range(of: #"lifeproj\s+(publish|drain)"#, options: .regularExpression) != nil
+        }
+        return notesRunLifeproj || FileManager.default.fileExists(atPath: folder.appendingPathComponent("catalog_check.py").path)
     }
 
     /// A file of the binder, read for the survey without leaving the binder (binder-v0 §3.6): a link is followed

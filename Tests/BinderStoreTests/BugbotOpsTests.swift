@@ -76,15 +76,18 @@ import Testing
         _ = try TransactionGuard.check([guardLine("add_log_entry", .obj([("entry", .obj([("action", .str("offloaded"))]))]), actor: user)], on: catalog)
     }
 
-    @Test func recurrenceIsNotRemovedInThisVersion() throws {   // p8-RD
+    @Test func onlyThePersonRemovesARepeat() throws {   // p8-RD, since 2026-11-15
         let catalog = try v0Catalog()
         let brain = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("sprava/0.1"))])
-        for actor in [brain, user] {
-            let line = guardLine("update_item", .obj([("id", .str("estate-example-2026-010")), ("unset", .array([.str("recurrence")]))]), actor: actor)
-            #expect {
-                try TransactionGuard.check([line], on: catalog)
-            } throws: { ($0 as? TransactionGuard.Rejection)?.description.contains("recurrence") == true }
+        func unset(_ actor: JSONObject) -> JSONObject {
+            guardLine("update_item", .obj([("id", .str("estate-example-2026-010")), ("unset", .array([.str("recurrence")]))]), actor: actor)
         }
+        #expect {
+            try TransactionGuard.check([unset(brain)], on: catalog)
+        } throws: { ($0 as? TransactionGuard.Rejection)?.description.contains("repeat") == true }
+        let (after, _) = try TransactionGuard.check([unset(user)], on: catalog)
+        let item = after["open_items"]?.arrayValue?.first { $0["id"] == .str("estate-example-2026-010") }
+        #expect(item?["recurrence"] == nil && item?["due"] == .str("2026-11-14"))   // a one-off on its current date
     }
 
     @Test func closureFieldsHaveLogEntryTypes() throws {   // p8-Re
