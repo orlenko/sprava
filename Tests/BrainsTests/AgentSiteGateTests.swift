@@ -19,6 +19,7 @@ import Testing
         private let lock = NSLock(); private var hosts: [String: Bool] = [:]
         var all: [String: Bool] { lock.withLock { hosts } }
         func add(_ host: String, _ caller: AgentEgressProxy.Caller) -> Bool { lock.withLock { hosts[host] = (hosts[host] ?? false) || caller == .command }; return true }
+        func remove(_ host: String) { lock.withLock { hosts[host] = nil } }
         func has(_ host: String, _ caller: AgentEgressProxy.Caller) -> Bool { lock.withLock { hosts[host].map { $0 || caller == .agent } ?? false } }
     }
 
@@ -123,6 +124,27 @@ import Testing
         #expect(behind.result == nil)
         #expect(gate.answer(next.id, .once))
         #expect(behind.wait() == true)
+    }
+
+    @Test func aWaitingQuestionEndsOnceThePersonStopsWatching() throws {
+        let gate = AgentSiteGate(asks: true, timeout: 0.2, watchWindow: 0.1, listed: { _, _ in false }, remember: { _, _ in true })
+        _ = gate.question()
+        let first = ask(gate, "a.example.test"), behind = ask(gate, "b.example.test")
+        #expect(try #require(gate.question()).host == "a.example.test")
+        for _ in 0..<6 { usleep(50_000); _ = gate.question() } // watched while the one behind it is first timed
+        #expect(first.wait() == false)
+        #expect(behind.wait() == false)
+    }
+
+    @Test func removingAKeptSiteCountsWithinTheTurn() throws {
+        let kept = Kept(), gate = Self.gate(kept: kept)
+        _ = gate.question()
+        let held = ask(gate, "docs.example.test")
+        #expect(gate.answer(try #require(gate.question()).id, .always))
+        #expect(held.wait() == true)
+        kept.remove("docs.example.test")
+        #expect(ask(gate, "docs.example.test").result == nil) // asked again, not let through
+        #expect(try #require(gate.question()).host == "docs.example.test")
     }
 
     @Test func atMostFourQuestionsWaitAndTheEndRefusesThem() {

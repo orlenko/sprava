@@ -116,6 +116,7 @@ package final class AgentSiteGate: @unchecked Sendable {
     /// `answer` nil: no answer in time.
     @discardableResult
     private func settle(_ id: UUID, _ answer: Answer?) -> Bool {
+        var again = false
         let outcome = lock.withLock { () -> (Held, Answer?)? in
             guard let index = held.firstIndex(where: { $0.question.id == id }) else { return nil }
             if answer == nil {
@@ -124,19 +125,23 @@ package final class AgentSiteGate: @unchecked Sendable {
                 if let shown = held[index].shown {
                     guard at.timeIntervalSince(shown) >= timeout - 0.001 else { return nil }
                 } else {
-                    guard unwatched, at.timeIntervalSince(held[index].asked) >= timeout - 0.001 else { return nil }
+                    guard unwatched, at.timeIntervalSince(held[index].asked) >= timeout - 0.001 else { again = true; return nil }
                 }
             }
             return (held.remove(at: index), answer)
         }
-        guard let (item, answer) = outcome else { return false }
+        guard let (item, answer) = outcome else {
+            if again { expire(id) } // Looked at again later, so it cannot be held for ever once the person stops watching.
+            return false
+        }
         let host = item.question.host, commands = item.question.caller == .command
         var kept = false
         if answer == .always { kept = remember(host, item.question.caller) }
         let refusedOnes: [(String, Caller, @Sendable (Bool) -> Void)] = lock.withLock {
             switch answer {
             case .once?, .always?:
-                granted[host] = (granted[host] ?? false) || commands
+                // A kept Always is read from the list each time, so removing it there counts in this turn too.
+                if !kept { granted[host] = (granted[host] ?? false) || commands }
                 return []
             case .deny?, nil:
                 denied.insert(host); noes += 1
