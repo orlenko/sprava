@@ -1,3 +1,4 @@
+import BinderFormat
 import Foundation
 import SpravaKit
 
@@ -144,6 +145,10 @@ public enum BinderCreator {
                                                             owner: owner, now: now)
         guard let state = try StateDirectory.open(folder.appendingPathComponent(".sprava")) else { throw BinderTemplate.Invalid() }
         try state.write(Data(JSONWriter.pretty(template.json).utf8), to: "template.json")
+        // The template's starting instructions become the binder's own, accepted: the person read them in the preview.
+        if let instructions = template.instructions, !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try BinderInstructions.start(instructions, in: folder)
+        }
         // The dashboard is Sprava's own file here, rendered at creation (binder-v0 §7.1), so its Notes can be kept at once.
         try DashboardKeeper(folder: folder, impl: client).switchOn(today: today, now: now)
 
