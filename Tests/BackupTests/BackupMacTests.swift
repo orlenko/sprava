@@ -140,7 +140,52 @@ import Testing
         #expect(throws: Backup.Failure.self) { try b.applyRetention(now: now) }
         #expect(maintain(b, e).failed == 0)
         #expect(try b.settings().mac == Backup.macMark("dev"))
-        #expect(try Backup.readMarker(e.primary)?.mac == Backup.macMark("dev"))
+        #expect(try Backup.readMarker(e.primary) == Backup.Marker(mac: Backup.macMark("dev"), name: Backup.thisMacName(), legacy: true))
+        #expect(try b.settings().legacy == [e.primary.standardizedFileURL.path])
+        // Stopped after the marker was written and before the settings were saved: the next run takes it from the marker.
+        s = try b.settings()
+        s.legacy = nil
+        try b.save(s)
+        #expect(maintain(b, e).failed == 0)
+        #expect(try b.settings().legacy == [e.primary.standardizedFileURL.path])
+    }
+
+    /// The Mac that first marks a repository set up before D44 adopts its snapshots from then (host `sprava`): its
+    /// retention covers them, never another Mac's; a takeover hands them on with the rest.
+    @Test(.enabled(if: hasRestic)) func theMacThatMarksAnOlderRepositoryAdoptsItsOldSnapshots() throws {
+        let e = try env()
+        let studio = backup(e, "studio")
+        try studio.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "dev")
+        // A repository made here is new: nothing from before D44 to adopt.
+        #expect(try studio.settings().legacy == nil && Backup.readMarker(e.primary)?.legacy == nil)
+        var s = try studio.settings()
+        s.keepLast = 1
+        try studio.save(s)
+        try studio.backUp(e.folder, now: now)
+        let id = try Backup.backupID(e.folder)
+        let r = try studio.engine(e.primary.path)
+        for (host, day) in [(Backup.legacyHost, 1), (Backup.legacyHost, 2), (Backup.legacyHost, 3),
+                            ("sprava-0123456789abcdef", 1), ("sprava-0123456789abcdef", 2)] {
+            try r.checked(["backup", ".", "--host", host, "--tag", "sprava", "--tag", "binder:\(id)", "--time",
+                           "2020-01-0\(day) 12:00:00", "-q"], cwd: e.folder)
+        }
+        // As the repository was before D44: no marker, and settings that name no Mac.
+        try FileManager.default.removeItem(at: e.primary.appendingPathComponent(Backup.markerName))
+        s = try studio.settings()
+        s.mac = nil
+        try studio.save(s)
+        func count(_ host: String) throws -> Int { try r.snapshots(tag: "binder:\(id)").filter { $0.hostname == host }.count }
+        let m = maintain(studio, e)
+        #expect(m.failed == 0 && m.retention)
+        #expect(try Backup.readMarker(e.primary)?.legacy == true)
+        // restic keeps January 2020's last and the oldest while the monthly and yearly counts are not reached.
+        #expect(try count(Backup.legacyHost) == 2)
+        #expect(try count("sprava-0123456789abcdef") == 2)
+        // Taken over, they go with the rest.
+        let laptop = backup(e, "laptop")
+        try laptop.setUp(primary: e.primary, iCloudKeychain: false, deviceID: "laptop", takeOver: true)
+        #expect(try laptop.settings().legacy == [e.primary.standardizedFileURL.path])
+        #expect(try Backup.readMarker(e.primary)?.legacy == true && Backup.readMarker(e.primary)?.mac == Backup.macMark("laptop"))
     }
 
     @Test func aRepositoryInsideAnotherIsRefused() throws {

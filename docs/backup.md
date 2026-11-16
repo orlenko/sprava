@@ -56,7 +56,9 @@ repository; were two to share one, one Mac's weekly forget and prune could remov
   file (set up before D44) is marked at the next run; one that is away is left until it is back.
 - Snapshots carry a host of this Mac's own (`sprava-` and the digest), and `forget` keeps to it with `--host`: another
   Mac's snapshots are never forgotten, whatever the file says. Snapshots taken before D44 carry the host `sprava`, on
-  every Mac alike, and are never forgotten automatically.
+  every Mac alike. The Mac that first marks a repository set up before D44 (a run, or setup at it) adopts those in
+  it: its retention covers them from then on, and the file says so (`"legacy": true`), so a takeover hands them on.
+  In any other repository they are never forgotten automatically.
 - A new Mac that replaces an old one may continue its backups: the Backup page offers "Take Over", which the person
   confirms. The repository is then marked as the new Mac's, the old Mac stops writing to it at its next run, and the
   old Mac's snapshots follow the new Mac's retention. A second backup that was away then is marked at the first run

@@ -60,7 +60,7 @@ extension Backup {
                 : "the backup mirror must be in iCloud Drive; nothing was changed")
         }
         // Marked only once the key opened it (or it was made here) and it is in iCloud Drive.
-        if marker?.mac != mine { try Self.writeMarker(mine, into: r.repository) }
+        try Self.mark(r.repository, as: mine, found: marker, fresh: fresh, in: &s)
         guard changing || fresh else { return try save(s) }
         let previous = try state()
         var st = previous
@@ -117,7 +117,7 @@ extension Backup {
         if fresh || (oldSecond != nil && changing) { try refuseMovingOffloadedBinders() }
         if !fresh, oldSecond == nil { try refuseMissingPins(in: second) { $0.secondSnapshot } }
         if fresh { try second.initRepository(copyingParametersFrom: (primary.repository, primary.key)) } else { _ = try second.snapshots() }
-        if marker?.mac != mine { try Self.writeMarker(mine, into: second.repository) }
+        try Self.mark(second.repository, as: mine, found: marker, fresh: fresh, in: &s)
         guard changing || fresh else { return try save(s) }
         let previous = try state()
         var st = previous
@@ -128,6 +128,16 @@ extension Backup {
         st.secondReadDataPart = 0
         st.lastSecondDrill = nil
         try saveTogether(st, s, previous: previous)
+    }
+
+    /// Marks a repository setup accepted as this Mac's. An existing one set up before D44 (no marker yet) brings its
+    /// snapshots from before D44 into this Mac's retention, as a run that marks it does; so does one whose marker says
+    /// its Mac had adopted them (a takeover, or this Mac's own after its settings were lost).
+    static func mark(_ repository: URL, as mine: String, found marker: Marker?, fresh: Bool, in s: inout Settings) throws {
+        if !fresh, marker == nil || marker?.legacy == true { adoptLegacy(&s, repository) }
+        let legacy = adoptsLegacy(s, repository)
+        guard marker?.mac != mine || (marker?.legacy == true) != legacy else { return }
+        try writeMarker(mine, into: repository, legacy: legacy)
     }
 
     /// Saves the state for a new repository, then the settings naming it. If the settings cannot be saved, the

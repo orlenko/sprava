@@ -12,9 +12,20 @@ extension Backup {
     /// The file in a repository's folder that names the Mac writing to it. restic ignores files it does not know.
     static let markerName = "sprava-mac.json"
 
-    /// The host restic recorded before D44, on every Mac alike. Retention never forgets such snapshots: which Mac
-    /// took them cannot be told.
+    /// The host restic recorded before D44, on every Mac alike: which Mac took such a snapshot cannot be told. The Mac
+    /// that first marks a repository set up before D44 adopts them there, and its retention covers them from then on;
+    /// a takeover hands them on with the rest (the marker's `legacy`). Elsewhere they are never forgotten.
     static let legacyHost = "sprava"
+
+    /// Whether this Mac's retention in `repository` covers the snapshots taken before D44.
+    static func adoptsLegacy(_ s: Settings, _ repository: URL) -> Bool {
+        (s.legacy ?? []).contains(repository.standardizedFileURL.path)
+    }
+
+    static func adoptLegacy(_ s: inout Settings, _ repository: URL) {
+        guard !adoptsLegacy(s, repository) else { return }
+        s.legacy = (s.legacy ?? []) + [repository.standardizedFileURL.path]
+    }
 
     /// This Mac in a repository and in its snapshots' host: a digest of its device id, which says nothing else.
     public static func macMark(_ deviceID: String) -> String {
@@ -24,10 +35,12 @@ extension Backup {
     /// The host this Mac's snapshots carry.
     static func host(_ mark: String) -> String { "sprava-" + mark }
 
-    /// What the marker holds: the Mac's mark, and its name as the person knows it, for the message another Mac shows.
+    /// What the marker holds: the Mac's mark, its name as the person knows it, for the message another Mac shows, and
+    /// whether that Mac adopted the repository's snapshots from before D44, which a takeover then hands on.
     struct Marker: Codable, Equatable {
         var mac: String
         var name: String
+        var legacy: Bool? = nil
     }
 
     /// The repository is another Mac's, or this Mac's backup settings were made on another Mac.
@@ -98,14 +111,15 @@ extension Backup {
         }
         guard count <= 4096, let marker = try? JSONDecoder().decode(Marker.self, from: Data(buffer[0..<count])),
               marker.mac.wholeMatch(of: /[0-9a-f]{16}/) != nil else { throw unreadable }
-        return Marker(mac: marker.mac, name: cleanName(marker.name))
+        return Marker(mac: marker.mac, name: cleanName(marker.name), legacy: marker.legacy == true ? true : nil)
     }
 
-    static func writeMarker(_ mark: String, into repository: URL) throws {
+    /// Marks `repository` as the Mac `mark`'s, saying whether that Mac adopted its snapshots from before D44.
+    static func writeMarker(_ mark: String, into repository: URL, legacy: Bool) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         do {
-            try AtomicFile.write(try encoder.encode(Marker(mac: mark, name: thisMacName())),
+            try AtomicFile.write(try encoder.encode(Marker(mac: mark, name: thisMacName(), legacy: legacy ? true : nil)),
                                  to: repository.appendingPathComponent(markerName), mode: 0o644)
         } catch {
             throw Failure(message: "the backup folder could not be marked as this Mac's (\(error)); nothing was changed")
@@ -139,9 +153,9 @@ extension Backup {
     }
 
     /// Before a run: the settings were made on this Mac, and each configured repository names it. A repository with
-    /// no marker yet (one set up before D44) is marked as this Mac's now; so is one the person took over while it was
-    /// away (`pendingTakeOver`), once. One that is away is left for when it is back. Anything else throws `OtherMac`
-    /// and changes nothing.
+    /// no marker yet (one set up before D44) is marked as this Mac's now, and this Mac adopts its snapshots from before
+    /// D44; so is one the person took over while it was away (`pendingTakeOver`), once. One that is away is left for
+    /// when it is back. Anything else throws `OtherMac` and changes nothing.
     public func confirmThisMac(_ deviceID: String) throws {
         let saved = try settings()
         var s = saved
@@ -152,12 +166,17 @@ extension Backup {
             let path = url.standardizedFileURL.path
             let pending = (s.pendingTakeOver ?? []).contains(path)
             switch try Self.readMarker(url) {
-            case nil: if Self.holdsRepository(url) { unmarked.append(url) }
-            case let marker? where marker.mac == mine: break
+            case nil:
+                guard Self.holdsRepository(url) else { break }
+                Self.adoptLegacy(&s, url)
+                unmarked.append(url)
+            // This Mac's own; one that says it adopted the old snapshots counts even if saving that here was cut off.
+            case let marker? where marker.mac == mine: if marker.legacy == true { Self.adoptLegacy(&s, url) }
             // A repository the person took over while it was away: that choice, once. A marker that names a Mac this
             // one took over earlier grants nothing by itself: the person may have handed the backups back since.
             case let marker? where pending:
                 s.formerMacs = Array(Set((s.formerMacs ?? []) + [marker.mac])).sorted()
+                if marker.legacy == true { Self.adoptLegacy(&s, url) }
                 unmarked.append(url)
             case let marker?: throw OtherMac(repository: role, name: marker.name)
             }
@@ -166,7 +185,8 @@ extension Backup {
                 if s.pendingTakeOver?.isEmpty == true { s.pendingTakeOver = nil }
             }
         }
-        for url in unmarked { try Self.writeMarker(mine, into: url) }
+        // The markers first: settings that adopt what no marker says would not hand it on at a takeover.
+        for url in unmarked { try Self.writeMarker(mine, into: url, legacy: Self.adoptsLegacy(s, url)) }
         if s.mac == nil { s.mac = mine }
         if s != saved { try save(s) }
     }
@@ -185,7 +205,8 @@ extension Backup {
 
     /// Takes over the configured repositories after the person chose to (Settings › Backup): each that is here is
     /// marked as this Mac's, the Mac it named stops writing to it at its next run, and that Mac's snapshots join this
-    /// Mac's in retention. The key must open each first. A second backup that is away is taken over at the first run
+    /// Mac's in retention, with those from before D44 if that Mac had adopted them. The key must open each first. A
+    /// second backup that is away is taken over at the first run
     /// after it is back (`pendingTakeOver`), whatever Mac its marker names then.
     public func takeOver(_ deviceID: String) throws {
         var s = try settings()
@@ -200,10 +221,13 @@ extension Backup {
                 continue
             }
             _ = try engine(url.path, settings: s, marked: false).snapshots()
-            if let marker = try Self.readMarker(url), marker.mac != mine { former.insert(marker.mac) }
+            if let marker = try Self.readMarker(url), marker.mac != mine {
+                former.insert(marker.mac)
+                if marker.legacy == true { Self.adoptLegacy(&s, url) }
+            }
             marking.append(url)
         }
-        for url in marking { try Self.writeMarker(mine, into: url) }
+        for url in marking { try Self.writeMarker(mine, into: url, legacy: Self.adoptsLegacy(s, url)) }
         s.mac = mine
         s.formerMacs = former.isEmpty ? nil : former.sorted()
         s.pendingTakeOver = pending.isEmpty ? nil : pending
