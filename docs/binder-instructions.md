@@ -116,8 +116,9 @@ Only choices about filing this document in this binder:
   (`freePath`), so the card never collides with a file already in that folder. A folder is taken when it passes
   the document path rules (binder-v0 §4.3: relative, no hidden or reserved segment, not under `intake/`), has at
   most four segments, and is one of these: a folder of the binder's own (below); a path the instructions write
-  out whole, matched case-insensitively with nothing but spaces, punctuation other than `/ - _ .`, or the text's
-  ends on either side; or one of those two plus one new last segment ("bills" written, `bills/Hydro`
+  out whole, matched case-insensitively with nothing but spaces, punctuation other than `/ - _`, or the text's
+  ends on either side, where a dot joins only when a letter or digit follows it ("go in bills." names `bills`,
+  "bills.pdf" does not); or one of those two plus one new last segment ("bills" written, `bills/Hydro`
   taken). A document cannot make the reader invent a folder anywhere else.
 - **How the file is named.** A file name without its extension. Code keeps the original's extension, makes the
   name safe (`DocumentPaths.safeName`), and adds ` (2)` and so on when it is taken. A name that would make the
