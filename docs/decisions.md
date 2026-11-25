@@ -570,8 +570,9 @@ Each line names what replaced the entry; its old text is in git history.
 - **D45 decided (2026-11-25, the author: "1a").** The binder's Claude keeps the document record for what a drop does
   not cover. Drag and drop stays the way documents arrive ("this should not be a problem at all, as long as we're able
   to drag and drop documents directly into the app"). The conversation gets tools to catalogue a file it wrote in the
-  binder, rename or refile a document, correct a record and add a log entry, each an op through the guard, classed for
-  the person's turn (D3) and undone with the turn. `catalog.json` stays closed to its file tools. Not chosen: leaving
+  binder, rename or refile a document, correct a record and add a log entry, each an op through the guard, applied in
+  the turn as the to-do tools are (D32) and undone with it; this amends D3's classes for these ops. Whether a log
+  entry is undone is open. `catalog.json` stays closed to its file tools. Not chosen: leaving
   every catalog change to a drop or the person's own hand (`docs/plan-2026-11-25.md`, Track D).
 - **D46 decided (2026-11-25, the author: "Why can't we learn? We should be able to learn"; "2a" twice).** A binder
   learns from its work. Its Claude proposes a rule with a tool; the proposal is a card (Accept, Edit, Dismiss), never
@@ -590,8 +591,9 @@ Each line names what replaced the entry; its old text is in git history.
   per-binder plugins loaded at run time; development sessions reading the binder (Track I).
 - **D48 decided (2026-11-25, the author: "we should be able to read back the draft and figure out what we're sending
   or have sent"; "3a").** The outgoing mail exporter reads a placed draft back and compares it with what was approved;
-  finds the sent copy, compares it, files it, logs it and sets the to-do waiting, with Undo; and marks a draft that has
-  gone stale. It searches the Sent folder only for drafts it placed. Sending stays the person's (D13, D41). Not chosen:
+  finds the sent copy, compares it, and offers to file it, log it and set the to-do waiting; and marks a draft that has
+  gone stale. It searches the Sent folder only for drafts it placed; this amends D41, which allowed no IMAP command
+  beyond placing. What it does on a match is a card. Sending stays the person's (D13, D41). Not chosen:
   importing all sent mail (Track M).
 - **D49 recommended (2026-11-25, the lead, answering the author's "Do you have a specific suggestion to implement this
   as a feature?").** Reading coverage, the page and legibility part of D17: the OCR step keeps its confidence; code
