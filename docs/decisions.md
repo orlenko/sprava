@@ -567,6 +567,37 @@ Each line names what replaced the entry; its old text is in git history.
   2026-11-16); elsewhere they are never forgotten. Continuing another Mac's backups
   from this one (a new Mac replacing an old one) is a choice the person confirms on the Backup page. Not chosen: leaving
   it to the person to pick separate folders.
+- **D45 decided (2026-11-25, the author: "1a").** The binder's Claude keeps the document record for what a drop does
+  not cover. Drag and drop stays the way documents arrive ("this should not be a problem at all, as long as we're able
+  to drag and drop documents directly into the app"). The conversation gets tools to catalogue a file it wrote in the
+  binder, rename or refile a document, correct a record and add a log entry, each an op through the guard, classed for
+  the person's turn (D3) and undone with the turn. `catalog.json` stays closed to its file tools. Not chosen: leaving
+  every catalog change to a drop or the person's own hand (`docs/plan-2026-11-25.md`, Track D).
+- **D46 decided (2026-11-25, the author: "Why can't we learn? We should be able to learn"; "2a" twice).** A binder
+  learns from its work. Its Claude proposes a rule with a tool; the proposal is a card (Accept, Edit, Dismiss), never
+  applied in the turn. Accept appends the rule, dated, under a `## Learned rules` heading in the person's part of
+  `AGENTS.md`, by D43's save path, where the person can edit it. This amends D11: a rule learned from a correction goes
+  to the person's part as plain words, through the same card, where D11 put it in Sprava's section in a fixed grammar.
+  Claude still cannot write `AGENTS.md`. Not chosen: Claude editing Instructions itself; a separate list Sprava keeps
+  (Track L).
+- **D47 decided (2026-11-25, the author: "3a+b as iteration"; "1a" for the export).** Automation grows by iteration.
+  A binder automates itself with scripts its Claude writes and runs in a turn (D36). What recurs, or what it cannot
+  do, becomes a suggestion: a card the person approves in the source binder, which then lands in a built-in
+  Improvements binder. The author: "The Sprava itself could have a binder for its self-improvement features", distinct
+  from General, which is the quick list for what belongs to no large binder. Sprava adds candidates from counts alone.
+  An Export button writes the approved suggestions to a file for the development loop; development sessions never read
+  the Improvements binder. A release then ships the add-on as a built-in importer or exporter (P17). Not chosen:
+  per-binder plugins loaded at run time; development sessions reading the binder (Track I).
+- **D48 decided (2026-11-25, the author: "we should be able to read back the draft and figure out what we're sending
+  or have sent"; "3a").** The outgoing mail exporter reads a placed draft back and compares it with what was approved;
+  finds the sent copy, compares it, files it, logs it and sets the to-do waiting, with Undo; and marks a draft that has
+  gone stale. It searches the Sent folder only for drafts it placed. Sending stays the person's (D13, D41). Not chosen:
+  importing all sent mail (Track M).
+- **D49 recommended (2026-11-25, the lead, answering the author's "Do you have a specific suggestion to implement this
+  as a feature?").** Reading coverage, the page and legibility part of D17: the OCR step keeps its confidence; code
+  grades each page good, poor or unreadable; the filing card, Explore and a per-binder list show what was not fully
+  read, and the person can mark a page as read by them or type what it says; every search result names the documents
+  it could not read; a folder marked "keep as is" is never carded. Waiting for the author's go (Track E).
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
