@@ -376,27 +376,35 @@ public enum Adoption {
 
     struct NothingToFix: Error {}
 
-    /// Applies the mechanical fix of each item in `ids`, one batch per item. Each fix is built from the item as read
-    /// under the lock, after outside edits were absorbed, so a value someone wrote after the survey (a follow-up date,
-    /// say) is seen and never overwritten. Each is guarded on its own, so one the guard refuses never blocks the
-    /// others or the proposals. Any other failure (a disk error, a busy or unreadable binder) throws, so the adoption
-    /// stops with its unfinished marker in place and is finished by running it again.
+    /// Applies the mechanical fix of every item in `ids` that needs one, in one write. The fixes are built from the items
+    /// as read under the lock, after outside edits were absorbed, so a value someone wrote after the survey (a follow-up
+    /// date, say) is seen and never overwritten, and an id two items came to share is left alone. Each fix is judged by
+    /// the guard on its own first, so one the guard refuses never blocks the others or the proposals; its item gets a
+    /// repair card. The catalog and the history are read a fixed number of times however many items there are. Any other
+    /// failure (a disk error, a busy or unreadable binder) throws, so the adoption stops with its unfinished marker in
+    /// place and is finished by running it again.
     static func applyMechanicalFixes(store: TekaStore, ids: [JSONValue], today: CalendarDate, actor: JSONObject,
                                      now: Date) throws -> [JSONObject] {
-        var mechanical: [JSONObject] = []
-        for id in ids {
-            do {
-                mechanical += try store.apply(building: { catalog, _ in
-                    let found = (catalog["open_items"]?.arrayValue ?? []).filter { $0["id"] == id }
-                    guard found.count == 1, case .object(let o) = found[0],
-                          let body = mechanicalFix(o, today: today, actor: actor) else { throw NothingToFix() }
-                    return [body]
-                }, now: now)
-            } catch is NothingToFix {
-            } catch is TransactionGuard.Rejection {
-            }
+        let wanted = Set(ids)
+        do {
+            return try store.apply(building: { catalog, log in
+                let items = catalog["open_items"]?.arrayValue ?? []
+                var holders: [JSONValue: Int] = [:]
+                for item in items { if let id = item["id"] { holders[id, default: 0] += 1 } }
+                let fixes = items.compactMap { item -> TekaStore.OpBody? in
+                    guard case .object(let o) = item, let id = o["id"], wanted.contains(id), holders[id] == 1 else { return nil }
+                    return mechanicalFix(o, today: today, actor: actor)
+                }
+                let taken = store.eachAccepted(fixes, on: catalog, log: log, now: now)
+                guard !taken.isEmpty else { throw NothingToFix() }
+                return taken
+            }, now: now)
+        } catch is NothingToFix {
+            return []
+        } catch is TransactionGuard.Rejection {
+            // Fixes the guard took one by one and refuses together: none is applied, and the items get repair cards.
+            return []
         }
-        return mechanical
     }
 
     /// The lossless fixes of binder-v0 §9.4 step 3 for one item, as one `update_item`; nil when it needs none. Every
