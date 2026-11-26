@@ -5,6 +5,7 @@ extension Extractor.Page {
         var fields = JSONObject([("text", .str(text)), ("method", .str(method.rawValue))])
         if let confidence { fields.set("confidence", .number(JSONNumber(text: String(confidence)))) }
         if let area { fields.set("area", .number(JSONNumber(text: String(area)))) }
+        if incompleteCoverage { fields.set("incomplete_coverage", .bool(true)) }
         return .object(fields)
     }
 
@@ -19,6 +20,8 @@ extension Extractor.Page {
         if json["area"] != nil {
             guard let area, area.isFinite, area > 0 else { return nil }
         }
-        self.init(text: text, method: method, confidence: confidence, area: area)
+        let incomplete = json["incomplete_coverage"]
+        guard incomplete == nil || incomplete == .bool(true) || incomplete == .bool(false) else { return nil }
+        self.init(text: text, method: method, confidence: confidence, area: area, incompleteCoverage: incomplete == .bool(true))
     }
 }

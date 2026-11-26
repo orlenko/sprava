@@ -23,7 +23,11 @@ extension Extractor {
             let bounds = page.bounds(for: .mediaBox)
             let area = Double(bounds.width * bounds.height)
             var reading: Page
-            if layer.count >= 20 {
+            // A selectable text overlay can be arbitrarily long while the photographed text
+            // underneath is missing. Any image resource (including tiled scans) warrants reading
+            // the rendered page. Pure text pages retain their exact text without OCR.
+            let mixed = !layer.isEmpty && page.pageRef.map { drawsImagePast(0, $0) } == true
+            if layer.count >= 20 && !mixed {
                 layerPages += 1
                 reading = Page(text: layer, method: .textLayer, confidence: nil)
             } else {
@@ -34,6 +38,10 @@ extension Extractor {
                 guard let recognized = recognizedPage(image) else { return held(i, "could not be read by OCR") }
                 if !recognized.text.isEmpty { ocrFound = true }
                 reading = recognized
+                if mixed && !recognized.text.localizedCaseInsensitiveContains(layer) {
+                    reading.text = recognized.text.isEmpty ? layer : layer + "\n" + recognized.text
+                    if recognized.text.isEmpty { reading.incompleteCoverage = true }
+                }
             }
             if area.isFinite && area > 0 { reading.area = area }
             readings.append(reading)
@@ -242,7 +250,9 @@ extension Extractor {
             abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.01 ? $0.boundingBox.midY > $1.boundingBox.midY : $0.boundingBox.minX < $1.boundingBox.minX
         }.compactMap { $0.topCandidates(1).first }
         let confidence = lines.isEmpty ? nil : lines.reduce(0.0) { $0 + Double($1.confidence) } / Double(lines.count)
-        return Page(text: lines.map(\.string).joined(separator: "\n"), method: .ocr, confidence: confidence)
+        var page = Page(text: lines.map(\.string).joined(separator: "\n"), method: .ocr, confidence: confidence)
+        if !lines.isEmpty { page.incompleteCoverage = hasUnrecognizedInk(image, lines: lines) }
+        return page
     }
 }
 
