@@ -30,6 +30,8 @@ public enum Extractor {
         /// decode to a comma or a quote that reads as address syntax (issue #598).
         public var fromHeader: String? = nil
         public var toHeader: String? = nil
+        /// Message-IDs in the References and In-Reply-To headers of the original email.
+        public var threadIDs: [String] = []
         public struct Attachment: Sendable, Equatable {
             public var name: String
             public var data: Data
