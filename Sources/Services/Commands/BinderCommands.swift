@@ -88,6 +88,9 @@ extension Commands {
                                     (key: "open_items", value: .array(item.map { [$0] } ?? []))])
             return Proposal.describe(op, catalog: small)
         }
+        let hasDrafts = listed.contains { $0.0.state == "proposed" && $0.0.raw["provenance"]?["draft"] != nil }
+        let connections = hasDrafts ? try? BinderIMAPConnections(support: support) : nil
+        let connection = try? connections?.configuration(for: f)
         return JSONObject([(key: "proposals", value: .array(listed.filter { $0.0.state == "proposed" }.map { p, digest in
             var o = JSONObject()
             o.set("id", .string(p.id))
@@ -98,6 +101,21 @@ extension Commands {
             o.set("verified", .bool(digests[key(f, p.id)] == digest))
             o.set("lines", .array(p.ops.map { .string(description($0)) }))
             var notes = p.cardNotes
+            if digests[key(f, p.id)] == digest, let draft = DraftCard(p),
+               let created = ISOTime.date(p.raw["created_at"]?.stringValue) {
+                let minutes = max(0, Int(now.timeIntervalSince(created) / 60))
+                let (amount, unit) = minutes < 60 ? (minutes, "minute") : minutes < 1440 ? (minutes / 60, "hour") : (minutes / 1440, "day")
+                var age = minutes == 0 ? "Draft written just now." : "Draft written \(amount) \(unit)\(amount == 1 ? "" : "s") ago."
+                let ids = [draft.inReplyTo].compactMap { $0 } + draft.references.prefix(64)
+                if !ids.isEmpty {
+                    if let connection, connection.enabled,
+                       p.raw["provenance"]?["draft_connection"]?.stringValue == connection.id.uuidString,
+                       let count = try? connections?.arrivals(in: connection.id, matching: Array(ids), since: created) {
+                        age += " " + (count == 1 ? "1 message has" : "\(count) messages have") + " arrived in this thread since then."
+                    } else { age += " The thread count is unavailable." }
+                }
+                notes.append(age)
+            }
             let changed = p.changedSince(catalog: catalog)
             if !changed.isEmpty {
                 notes.insert("needs a look: changed since this card was made: " + changed.joined(separator: ", "), at: 0)

@@ -1,5 +1,6 @@
 import BinderFormat
 import Clerk
+import CryptoKit
 import Darwin
 import Foundation
 import SpravaKit
@@ -38,7 +39,18 @@ public final class BinderIMAPConnections: Sendable {
         "CREATE TABLE imap_imports (connection TEXT NOT NULL, validity INTEGER NOT NULL, uid INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY(connection, validity, uid)) STRICT"
     ])
     public convenience init(support: URL) throws { try self.init(support: support, hash: IMAPNativeFetch.programHash) }
-    package init(support: URL, hash: @escaping @Sendable () throws -> String) throws { self.hash = hash; state = try StateStore.open(support.appendingPathComponent("capture/imap.sqlite"), schema: Self.schema) }
+    package init(support: URL, hash: @escaping @Sendable () throws -> String) throws {
+        self.hash = hash
+        state = try StateStore.open(support.appendingPathComponent("capture/imap.sqlite"), schema: Self.schema)
+        try state.write { t in
+            try t.execute("""
+                CREATE TABLE IF NOT EXISTS imap_threads(
+                    connection TEXT, token TEXT, message TEXT, arrival REAL NOT NULL,
+                    PRIMARY KEY(connection, token, message)
+                ) STRICT
+                """)
+        }
+    }
 
     /// At most this many other addresses per connection.
     public static let maxOwnAddresses = 16
@@ -107,7 +119,8 @@ public final class BinderIMAPConnections: Sendable {
         try state.read { try $0.rows("SELECT path FROM imap_imports WHERE connection = ? AND validity = ? AND uid = ?",
                                      .text(connection.uuidString), .integer(Int64(validity)), .integer(Int64(uid))).first?.first?.text }
     }
-    public func recordImport(_ connection: UUID, validity: UInt32, uid: UInt32, path: String) throws {
+    public func recordImport(_ connection: UUID, validity: UInt32, uid: UInt32, path: String,
+                             messageID: String? = nil, threadIDs: [String] = [], now: Date = Date()) throws {
         guard DocumentPaths.isIntake(path), !DocumentPaths.isKeyFile(path) else { throw Refused.invalidConfiguration }
         try state.write { t in
             let old = try t.rows("SELECT path FROM imap_imports WHERE connection = ? AND validity = ? AND uid = ?",
@@ -115,8 +128,36 @@ public final class BinderIMAPConnections: Sendable {
             guard old == nil || old == path else { throw Refused.damagedState }
             try t.execute("INSERT OR IGNORE INTO imap_imports VALUES (?, ?, ?, ?)", .text(connection.uuidString),
                           .integer(Int64(validity)), .integer(Int64(uid)), .text(path))
+            guard old == nil else { return }
+            let message = messageID.flatMap(Self.threadToken) ?? "uid-\(validity)-\(uid)"
+            let tokens = Set((threadIDs.prefix(64) + [messageID].compactMap { $0 }).compactMap(Self.threadToken))
+            for token in tokens {
+                try t.execute("INSERT OR IGNORE INTO imap_threads VALUES(?,?,?,?)", .text(connection.uuidString),
+                              .text(token), .text(message), .real(now.timeIntervalSince1970))
+            }
         }
     }
+    private static func threadToken(_ id: String) -> String? {
+        guard (5...250).contains(id.utf8.count), id.first == "<", id.last == ">", id.contains("@") else { return nil }
+        return SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Count distinct messages arriving in this binder's intake after the draft was written.
+    /// Only hashed Message-IDs are kept alongside the existing import receipts.
+    public func arrivals(in connection: UUID, matching references: [String], since: Date) throws -> Int {
+        let tokens = Set(references.prefix(65).compactMap(Self.threadToken))
+        guard !tokens.isEmpty else { return 0 }
+        let encoded = String(decoding: try JSONEncoder().encode(tokens), as: UTF8.self)
+        return try state.read { t in
+            guard let n = try t.rows("""
+                SELECT COUNT(DISTINCT message) FROM imap_threads
+                WHERE connection=? AND token IN (SELECT value FROM json_each(?)) AND arrival>?
+                """, .text(connection.uuidString), .text(encoded), .real(since.timeIntervalSince1970)).first?.first?.integer
+            else { throw Refused.damagedState }
+            return Int(n)
+        }
+    }
+
     private static func decode(_ row: [StateValue]) throws -> Configuration {
         guard row.count == 1, let data = row[0].blob, data.count <= 16 * 1024,
               let value = try? JSONDecoder().decode(Configuration.self, from: data),
