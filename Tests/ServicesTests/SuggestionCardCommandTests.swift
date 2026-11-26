@@ -97,6 +97,25 @@ import Testing
         #expect(added["ok"] == .bool(true), "\(added)")
         #expect(try send(s, card.id)["ok"] == .bool(true))
         #expect(Teka.read(improvements).catalog?["open_items"]?.arrayValue?.count == 1 && cards(s).isEmpty)
+        #expect(Teka.read(improvements).catalog?["open_items"]?.arrayValue?.first?["details"] == .string(fields.note))
+    }
+
+    // The same, when the person changed the text before trying again: the to-do holds what they approved last.
+    @Test func aSendTriedAgainWithAnEditWritesTheEdit() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        #expect(!suggest(turn).refused)
+        let (card, fields) = try #require(cards(s).first)
+        let made = try req(s.commands, [("command", .str("improvements_binder")), ("parent", .string(parent(s).path)), ("create_parent", .bool(true))])
+        let improvements = URL(fileURLWithPath: try #require(made["binder"]?.stringValue))
+        let added = try req(s.commands, [("command", .str("apply")), ("binder", .string(improvements.path)), ("op", .str("add_item")),
+            ("args", .obj([("item", .obj([("id", .str("$new:1")), ("title", .string(fields.title)), ("status", .str("open")), ("priority", .str("normal")),
+                                          ("no_deadline", .bool(true)), ("details", .string(fields.note)), ("suggestion_card", .string(card.id))]))]))])
+        #expect(added["ok"] == .bool(true), "\(added)")
+        let edited = fields.note + "\nIt should also skip tasks already closed.\n"
+        let sent = try send(s, card.id, text: .string(edited))
+        #expect(sent["ok"] == .bool(true), "\(sent)")
+        let items = Teka.read(improvements).catalog?["open_items"]?.arrayValue ?? []
+        #expect(items.count == 1 && items.first?["details"] == .string(edited) && cards(s).isEmpty)
     }
 
     @Test func onlyACardSpravaWroteIsSentAndAnEditIsHeldToTheRules() throws {

@@ -19,7 +19,8 @@ extension Commands {
     /// and the card is applied in the binder it came from, where it leaves a log entry with none of the text.
     ///
     /// The to-do comes first: a card applied with nothing sent would lose what the person approved. The to-do carries
-    /// the card's id, so an approval tried again after the to-do was written adds no second one. Answers
+    /// the card's id, so an approval tried again after the to-do was written adds no second one; when the person
+    /// changed the text before trying again, the to-do is given the text they approved last. Answers
     /// `{improvements}`, the Improvements binder's folder.
     func sendSuggestion(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
         let f = try folder(r)
@@ -46,12 +47,18 @@ extension Commands {
             guard let path = try builtInBinder(.improvements, r, now: now, today: today)["binder"]?.stringValue else { throw Failure(message: "no folder") }
             improvements = URL(fileURLWithPath: path, isDirectory: true)
         } catch { throw Failure(message: "The Improvements binder could not be used, so nothing was sent: \(error)") }
-        let already = Teka.read(improvements).catalog?["open_items"]?.arrayValue?.contains { $0["suggestion_card"] == .string(id) } == true
-        if !already {
+        let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
+        let store = TekaStore(folder: improvements, client: client)
+        if let sent = Teka.read(improvements).catalog?["open_items"]?.arrayValue?.first(where: { $0["suggestion_card"] == .string(id) }) {
+            // An earlier try wrote the to-do and stopped before the card was marked. What the person approves now is
+            // what the to-do holds: an edit made since then is written, never dropped.
+            if sent["details"] != .string(text), let item = sent["id"] {
+                _ = try store.apply([.init(op: "update_item", args: .init([(key: "id", value: item), (key: "set", value: .obj([("details", .string(text))]))]), actor: actor)], now: now)
+            }
+        } else {
             let item = JSONValue.obj([("id", .str("$new:1")), ("title", .string(card.title)), ("status", .str("open")), ("priority", .str("normal")),
                                       ("no_deadline", .bool(true)), ("details", .string(text)), ("suggestion_card", .string(id))])
-            let actor = JSONObject([(key: "kind", value: .str("user")), (key: "client", value: .string(client))])
-            _ = try TekaStore(folder: improvements, client: client).applyMinting([.init(op: "add_item", args: .init([(key: "item", value: item)]), actor: actor)], now: now)
+            _ = try store.applyMinting([.init(op: "add_item", args: .init([(key: "item", value: item)]), actor: actor)], now: now)
         }
         _ = try TekaStore(folder: f, client: client).approve(proposal, edited: nil, now: now)
         try recordDigests([id], in: f)
