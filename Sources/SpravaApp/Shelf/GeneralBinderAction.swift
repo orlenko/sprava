@@ -56,6 +56,14 @@ extension ShelfModel {
         } catch { operationNote = "The suggestions were not exported: \(error)" }
     }
 
+    /// Once when the app starts: this build may have built a suggestion the person sent, and the runtime then puts a
+    /// closing card in Improvements (decisions.md D47). A failure is left for the next start.
+    func closeBuiltSuggestions() async {
+        guard let reply = try? await client.global("close_built_suggestions"), (reply["cards"]?.numberValue?.safeInteger ?? 0) > 0 else { return }
+        snapshotGeneration &+= 1
+        await refreshAndWait(afterChanges: true)
+    }
+
     /// The save panel for Export: a Markdown file, named by the day, wherever the person puts it.
     static func chooseExportFile() -> URL? {
         let panel = NSSavePanel()

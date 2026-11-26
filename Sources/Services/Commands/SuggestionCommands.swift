@@ -1,5 +1,6 @@
 import BinderFormat
 import BinderStore
+import CryptoKit
 import Foundation
 import Shelf
 import SpravaKit
@@ -71,16 +72,23 @@ extension Commands {
 /// backticks in the text, so the text is never cut short or rendered as anything but itself. The text is every byte
 /// between the line that opens the block and the one line break before the line that closes it: that line break is
 /// always added, so a text that ends in a line break and the same text without it export differently, and each comes
-/// back exactly.
+/// back exactly. Above the block is the suggestion's code, which the issue made from it keeps: a release that builds
+/// the suggestion names that code (`BuiltSuggestions`), and this Mac then offers to close the to-do.
 enum SuggestionExport {
-    static func markdown(_ suggestions: [(title: String, text: String)], on day: CalendarDate) -> String {
+    /// A short name for one suggestion, from the id of the card that made it: the same at every export, and nothing
+    /// of its text.
+    static func code(card: String) -> String {
+        "S-" + SHA256.hash(data: Data(card.utf8)).map { String(format: "%02x", $0) }.joined().prefix(10)
+    }
+
+    static func markdown(_ suggestions: [(title: String, text: String, code: String)], on day: CalendarDate) -> String {
         var out = "# Suggestions for Sprava\n\nExported \(day). \(suggestions.count == 1 ? "1 suggestion" : "\(suggestions.count) suggestions").\n"
         for suggestion in suggestions {
             var longest = 0, run = 0
             for character in suggestion.text { run = character == "`" ? run + 1 : 0; longest = max(longest, run) }
             let fence = String(repeating: "`", count: max(3, longest + 1))
             let title = suggestion.title.split(whereSeparator: \.isNewline).joined(separator: " ")
-            out += "\n## \(title)\n\n\(fence)text\n\(suggestion.text)\n\(fence)\n"
+            out += "\n## \(title)\n\nCode: `\(suggestion.code)`\n\n\(fence)text\n\(suggestion.text)\n\(fence)\n"
         }
         return out
     }
@@ -129,10 +137,10 @@ extension Commands {
         }
         let teka = Teka.read(improvements)
         guard let catalog = teka.catalog else { throw Failure(message: "The Improvements binder cannot be read. Nothing was exported.") }
-        let suggestions = (catalog["open_items"]?.arrayValue ?? []).compactMap { item -> (title: String, text: String)? in
-            guard item["suggestion_card"]?.stringValue != nil, item["status"] != .str("done"), item["status"] != .str("dropped"),
+        let suggestions = (catalog["open_items"]?.arrayValue ?? []).compactMap { item -> (title: String, text: String, code: String)? in
+            guard let card = item["suggestion_card"]?.stringValue, item["status"] != .str("done"), item["status"] != .str("dropped"),
                   let title = item["title"]?.stringValue, let text = item["details"]?.stringValue else { return nil }
-            return (title, text)
+            return (title, text, SuggestionExport.code(card: card))
         }
         guard !suggestions.isEmpty else { throw Failure(message: "There are no open suggestions in Improvements to export.") }
         // For the person alone: the text can hold a script, and the folder picked may be a shared one. The file is

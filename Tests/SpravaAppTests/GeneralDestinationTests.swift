@@ -116,4 +116,17 @@ import Testing
         await shelf.exportSuggestions(choose: { URL(fileURLWithPath: "/tmp/invented-exports/suggestions.md") })
         #expect(shelf.operationNote?.hasPrefix("The suggestions were not exported:") == true)
     }
+
+    /// At its start the app asks the runtime to put closing cards on suggestions this build built; a failure is left.
+    @Test func theAppAsksOnceForClosingCards() async throws {
+        let support = try temporaryFolder(), runtime = StandInRuntime()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let shelf = ShelfModel(support: support, client: runtime.client)
+        runtime.answers["close_built_suggestions"] = { _ in #"{"ok":false,"error":"Invented failure"}"# }
+        await shelf.closeBuiltSuggestions()
+        #expect(shelf.operationNote == nil)
+        runtime.answers["close_built_suggestions"] = { _ in #"{"ok":true,"cards":1}"# }
+        await shelf.closeBuiltSuggestions()
+        #expect(runtime.sent.map { $0["command"]?.stringValue } == ["close_built_suggestions", "close_built_suggestions"])
+    }
 }

@@ -615,7 +615,15 @@ Each line names what replaced the entry; its old text is in git history.
   reading it starts nothing) and it is one a card may carry. At a script's 5th counted turn, and once more at its
   25th, Sprava writes a suggestion card of its own for it (`ClaudeScriptRuns`), with the script's text, for the
   person to edit, send or dismiss like any other. Not counted yet: commands the sandbox refused and files held,
-  since nothing reports either by code today. Closing a suggestion with a release's note is not built yet.
+  since nothing reports either by code today.
+  Closing with a release (`BuiltSuggestions`, `close_built_suggestions`): Export writes a code above each
+  suggestion's text, `S-` and ten hex digits from the id of the card that made it, and the issue made from it keeps
+  the code. The change that builds a suggestion adds a line to the table in `BuiltSuggestions`: the code and the
+  release's note. When the app starts it sends `close_built_suggestions`; for each open to-do in Improvements whose
+  code this build lists, the runtime writes a card there, "Built into Sprava: <title>", that closes the to-do as done
+  with the note. The person approves it; a card they rejected does not come back. The author chose nothing here
+  beyond "closed with the release's note": the card, in place of closing without asking, is this note's choice,
+  because only the person's own acts and approved cards change a binder.
 - **D48 decided (2026-11-25, the author: "we should be able to read back the draft and figure out what we're sending
   or have sent"; "3a").** The outgoing mail exporter reads a placed draft back and compares it with what was approved;
   finds the sent copy, compares it, and offers to file it, log it and set the to-do waiting; and marks a draft that has

@@ -207,10 +207,13 @@ import Testing
         let exported = try export(s, file.path)
         #expect(exported["ok"] == .bool(true) && exported["count"] == .int(2), "\(exported)")
         let text = try String(contentsOf: file, encoding: .utf8)
-        #expect(text.hasPrefix("# Suggestions for Sprava\n\nExported \(CalendarDate.today()). 2 suggestions.\n\n## Import tasks from a hosted board\n\n`````text\n"))
+        // Each has its code above its text: the same at every export, from the card's id alone.
+        let code = SuggestionExport.code(card: first.0.id)
+        #expect(code.hasPrefix("S-") && code.count == 12 && code != SuggestionExport.code(card: second.0.id))
+        #expect(text.hasPrefix("# Suggestions for Sprava\n\nExported \(CalendarDate.today()). 2 suggestions.\n\n## Import tasks from a hosted board\n\nCode: `\(code)`\n\n`````text\n"))
         // Exactly the approved text, between a fence longer than any run of backticks in it.
         #expect(text.contains("`````text\n" + edited + "\n`````\n"))
-        #expect(text.contains("## Export to-dos to a calendar\n\n```text\n" + second.1.note + "\n```\n"))
+        #expect(text.contains("## Export to-dos to a calendar\n\nCode: `\(SuggestionExport.code(card: second.0.id))`\n\n```text\n" + second.1.note + "\n```\n"))
         // The file is the person's alone, new or replaced.
         #expect(try mode(file) == 0o600)
         #expect(!text.contains("private note") && !text.contains("Not for export"))
@@ -234,7 +237,7 @@ import Testing
 
     /// A text that ends in a line break and the same text without it export differently, and each comes back exactly.
     @Test func theExportKeepsWhetherTheTextEndsInALineBreak() throws {
-        func exported(_ text: String) -> String { SuggestionExport.markdown([(title: "An invented title", text: text)], on: CalendarDate.today()) }
+        func exported(_ text: String) -> String { SuggestionExport.markdown([(title: "An invented title", text: text, code: "S-0000000000")], on: CalendarDate.today()) }
         /// The text of the one block: after the line that opens it, up to the line break before the line that closes it.
         func block(_ markdown: String) throws -> String {
             let lines = markdown.components(separatedBy: "\n")
@@ -274,5 +277,58 @@ import Testing
         #expect(try Data(contentsOf: improvements.appendingPathComponent("catalog.json")) == catalog)
         #expect(!FileManager.default.fileExists(atPath: improvements.appendingPathComponent("suggestions.md").path))
         #expect(try export(s, out.appendingPathComponent("suggestions.md").path)["count"] == .int(1))
+    }
+
+    func waiting(_ c: Commands, in folder: URL) throws -> [JSONValue] {
+        (try req(c, [("command", .str("proposals")), ("binder", .string(folder.path))])["proposals"]?.arrayValue ?? []).filter { $0["state"] == .str("proposed") }
+    }
+
+    // Plan Track I, step 6: a suggestion a release built is closed with the release's note, on a card the person approves.
+    @Test func aBuiltSuggestionGetsAClosingCardThePersonApproves() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        // Before any suggestion was sent: nothing to close, and no Improvements binder is made for it.
+        let note = "The hosted board importer does this now: Settings, Importers."
+        #expect(try s.commands.closeBuiltSuggestions(now: Date(), built: [.init(code: "S-0000000000", note: note)])["cards"] == .int(0))
+        #expect(!FileManager.default.fileExists(atPath: parent(s).path))
+        #expect(!suggest(turn).refused)
+        #expect(!suggest(turn, title: "Export to-dos to a calendar").refused)
+        var improvements: URL?
+        var codes: [String: String] = [:]
+        for (card, fields) in cards(s) {
+            improvements = URL(fileURLWithPath: try #require(try send(s, card.id)["improvements"]?.stringValue))
+            codes[fields.title] = SuggestionExport.code(card: card.id)
+        }
+        let folder = try #require(improvements)
+        // This build built nothing, as the command the app sends finds; then a build that built one of the two.
+        #expect(try req(s.commands, [("command", .str("close_built_suggestions"))])["cards"] == .int(0))
+        let built: [BuiltSuggestions.Built] = [.init(code: try #require(codes["Import tasks from a hosted board"]), note: note), .init(code: "S-0000000000", note: "Another")]
+        #expect(try s.commands.closeBuiltSuggestions(now: Date(), built: built)["cards"] == .int(1))
+        let card = try #require(try waiting(s.commands, in: folder).first)
+        #expect(card["title"] == .str("Built into Sprava: Import tasks from a hosted board") && card["verified"] == .bool(true))
+        // Nothing is closed until the person approves, and a second start writes no second card.
+        #expect(Teka.read(folder).catalog?["open_items"]?.arrayValue?.count == 2)
+        #expect(try s.commands.closeBuiltSuggestions(now: Date(), built: built)["cards"] == .int(0))
+        #expect(try waiting(s.commands, in: folder).count == 1)
+        let approved = try req(s.commands, [("command", .str("approve")), ("binder", .string(folder.path)), ("proposal", try #require(card["id"])), ("digest", try #require(card["digest"]))])
+        #expect(approved["ok"] == .bool(true), "\(approved)")
+        let catalog = try #require(Teka.read(folder).catalog)
+        #expect(catalog["open_items"]?.arrayValue?.map { $0["title"] } == [.str("Export to-dos to a calendar")])
+        let closed = try #require(catalog["processing_log"]?.arrayValue?.last { $0["action"] == .str("done") })
+        #expect(closed["title"] == .str("Import tasks from a hosted board") && closed["note"] == .string(note))
+        #expect(try s.commands.closeBuiltSuggestions(now: Date(), built: built)["cards"] == .int(0))
+    }
+
+    @Test func aClosingCardThePersonRejectedDoesNotComeBack() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        #expect(!suggest(turn).refused)
+        let (made, _) = try #require(cards(s).first)
+        let folder = URL(fileURLWithPath: try #require(try send(s, made.id)["improvements"]?.stringValue))
+        let built: [BuiltSuggestions.Built] = [.init(code: SuggestionExport.code(card: made.id), note: "Built in.")]
+        #expect(try s.commands.closeBuiltSuggestions(now: Date(), built: built)["cards"] == .int(1))
+        let card = try #require(try waiting(s.commands, in: folder).first)
+        let rejected = try req(s.commands, [("command", .str("reject")), ("binder", .string(folder.path)), ("proposal", try #require(card["id"])), ("digest", try #require(card["digest"]))])
+        #expect(rejected["ok"] == .bool(true), "\(rejected)")
+        #expect(try s.commands.closeBuiltSuggestions(now: Date(), built: built)["cards"] == .int(0))
+        #expect(try waiting(s.commands, in: folder).isEmpty && Teka.read(folder).catalog?["open_items"]?.arrayValue?.count == 1)
     }
 }

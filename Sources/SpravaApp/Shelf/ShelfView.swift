@@ -529,6 +529,7 @@ struct ShelfView: View {
             binderActions.builtInParent = { [model] in model.builtInParent() }
             binderActions.builtInUsed = { [model] folder in model.builtInMade(folder) }
         }
+        .task { await model.closeBuiltSuggestions() }
         .task {
             while !Task.isCancelled {
                 await inbox.load()
