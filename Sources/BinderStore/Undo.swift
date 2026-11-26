@@ -10,7 +10,10 @@ public enum Undo {
 
     /// The ops `compensate` can reverse; every other op records a fact or is corrected by another op (binder-v0 §6.10).
     public static func supported(_ op: JSONObject) -> Bool {
-        ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop", "move_document", "update_document"]
+        // A filing recorded where the file already was is undone by removing the record. One that took the file from
+        // intake/ is not: returning it needs the intake hold (binder-v0 §6.9), which this version does not keep.
+        if op["op"] == .str("file_document") { return op["args"]?["from"] == nil }
+        return ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop", "move_document", "update_document"]
             .contains(op["op"]?.stringValue ?? "")
     }
 
@@ -121,6 +124,10 @@ public enum Undo {
 
         case "update_document":
             return try documentCompensation(target, catalog: catalog, opLog: opLog, stateBefore: stateBefore, stateAfter: stateAfter)
+
+        case "file_document":
+            guard let stateAfter else { throw Unsupported(message: "the record as the filing left it is unknown") }
+            return try filingCompensation(target, catalog: catalog, stateAfter: stateAfter)
 
         case "update_item":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
@@ -280,6 +287,9 @@ public enum Undo {
             }
             return Compensation(op: "reopen", args: JSONObject([(key: "id", value: closedID), (key: "item", value: .object(item))]),
                                 expect: nil, kept: [])
+
+        case "unfile_document":
+            throw Unsupported(message: "file the document again to bring its record back; it gets a new id")
 
         case let other:
             throw Unsupported(message: "\(other ?? "this op") records a fact and cannot be undone")

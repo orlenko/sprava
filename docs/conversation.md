@@ -304,7 +304,9 @@ Three ops for documents (binder-v0 §6.3, §6.9, §6.10): `move_document` moves 
 without replacing anything; `unfile_document` moves a file this implementation filed, its bytes unchanged, back
 into `intake/` and removes its record, the id never reused. Every invocation records the durable intake hold of
 5.3 before the file moves; it is not limited to Undo. It is the undo of `file_document`, so Undo returns the file
-held. `transfer_document` moves a filed file to another binder Sprava owns, named by its admitted `binder_id`:
+held. As built: only the form without `to`, which removes the record of a document that was filed where its file
+already was and leaves the file there, with nothing held. Returning a file to `intake/` waits for the intake hold, so
+a filing that took its file from `intake/` has no Undo yet. `transfer_document` moves a filed file to another binder Sprava owns, named by its admitted `binder_id`:
 the op is logged in the source binder first, the file is placed in the destination's `intake/` without
 replacing anything (a rename on one volume, else a copy checked by SHA-256 before it takes its name), the source
 is removed last, and the destination files it as a drop, in one batch whose id is the transfer id. After a crash

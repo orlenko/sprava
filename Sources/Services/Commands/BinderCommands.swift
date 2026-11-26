@@ -403,7 +403,8 @@ extension Commands {
             o.set("origin", op["actor"]?["origin"] ?? .null)
             o.set("line", .string(Proposal.describe(op, catalog: catalog)))
             o.set("undone", .bool(undone.contains(op["id"]?.stringValue ?? "")))
-            // The same list Undo.compensate handles, so a filing is never offered as undoable (binder-v0 §6.10).
+            // The same list Undo.compensate handles, so a filing that took its file from intake/ is never offered as
+            // undoable, and one recorded where the file already was is (binder-v0 §6.10).
             o.set("undoable", .bool(Undo.supported(op) && op["compensates"] == nil))
             return .object(o)
         }))])

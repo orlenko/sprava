@@ -136,7 +136,7 @@ public enum TransactionGuard {
         case "update_item", "set_status", "dismiss", "undismiss", "complete":
             return args["id"].map { [("open_items", $0)] } ?? []
         case "file_document": return args["document"]?["id"].map { [("documents", $0)] } ?? []
-        case "update_document", "move_document": return args["id"].map { [("documents", $0)] } ?? []
+        case "update_document", "move_document", "unfile_document": return args["id"].map { [("documents", $0)] } ?? []
         default: return []
         }
     }
@@ -184,6 +184,18 @@ public enum TransactionGuard {
             if [doc?["path"], args?["from"]].contains(where: { $0?.stringValue.map(DocumentPaths.isKeyFile) == true }) {
                 problems.append("file_document: a key or credential file is never filed")
             }
+        }
+        // Unfiling removes a record and keeps the whole of it in the op (binder-v0 §6.3). It is the person's own
+        // correction or Undo, never a model's or a card's. Returning the file to intake/ (`to`) needs the intake hold
+        // (§6.9), which this version does not keep, so only the form that leaves the file where it is is applied.
+        if type == "unfile_document" {
+            let from = args?["from"]?.stringValue ?? ""
+            if kind != "user" { problems.append("unfile_document is applied only by the user") }
+            if args?["to"] != nil { problems.append("unfile_document: returning a file to intake/ needs the intake hold, which this version does not keep") }
+            if !DocumentPaths.isSafe(from) { problems.append("unfile_document: from breaks the path rules") }
+            if DocumentPaths.isKeyFile(from) { problems.append("unfile_document: a key or credential file is never unfiled") }
+            if (args?["sha256"]?.stringValue ?? "").wholeMatch(of: /[0-9a-f]{64}/) == nil { problems.append("unfile_document: sha256 is required") }
+            if args?["document"]?.objectValue == nil { problems.append("unfile_document: document, the record as removed, is required") }
         }
         // A move takes a filed file from a path the filing rules allow to another such path, by more than letter case,
         // since a volume that ignores case holds both names in one file; a record found naming catalog.json, the op

@@ -68,4 +68,29 @@ extension Undo {
         if !absent.isEmpty { expect.set("absent", .array(absent)) }
         return Compensation(op: "update_document", args: undo, expect: expect.entries.isEmpty ? nil : expect, kept: kept)
     }
+
+    /// The undo of a filing recorded where the file already was (`file_document` without `from`): `unfile_document`
+    /// in place, which removes the record and leaves the file where it is, an ordinary file of the binder as it was
+    /// before (binder-v0 §6.10). Nothing is held, since automatic filing reads only intake/. Refused when the filing
+    /// took the file from intake/ (returning it there needs the intake hold), when the record is gone, and when the
+    /// record is not as the filing left it: a record corrected or moved since holds the person's later work, and
+    /// that is undone first or the record is corrected by hand.
+    static func filingCompensation(_ target: JSONObject, catalog: JSONObject, stateAfter: JSONObject) throws -> Compensation {
+        let args = target["args"]?.objectValue ?? JSONObject()
+        guard args["from"] == nil else {
+            throw Unsupported(message: "this filing took the file from intake/, and this version cannot return it there; correct or move the document instead")
+        }
+        guard let id = args["document"]?["id"] else { throw Unsupported(message: "no document id") }
+        let records = (catalog["documents"]?.arrayValue ?? []).filter { $0["id"] == id }
+        guard records.count == 1, case .object(let record) = records[0] else { throw Unsupported(message: "the document's record is gone") }
+        guard stateAfter["documents"]?.arrayValue?.first(where: { $0["id"] == id }) == .object(record) else {
+            throw Unsupported(message: "the record changed since the document was filed; correct it instead")
+        }
+        guard case .string(let path)? = record["path"], case .string(let sha)? = record["sha256"] else {
+            throw Unsupported(message: "the record has no path and digest to check its file by")
+        }
+        let unfile = JSONObject([(key: "id", value: id), (key: "from", value: .string(path)), (key: "sha256", value: .string(sha)),
+                                 (key: "document", value: .object(record))])
+        return Compensation(op: "unfile_document", args: unfile, expect: nil, kept: [])
+    }
 }
