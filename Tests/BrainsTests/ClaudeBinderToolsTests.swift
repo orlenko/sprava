@@ -461,6 +461,17 @@ import Testing
             ("bash -lc 'cd sub && python3 scripts/b.py'", ["scripts/b.py"]),
             ("python3 -c \"import os; os.system('scripts/a.sh')\"", []),
             ("python3 'my scripts/a.py'", []),
+            // An interpreter told only to check the file, or given code or a module in its place, starts nothing.
+            ("bash -n scripts/check-tiles.sh", []),
+            ("sh -nv scripts/a.sh; zsh -xn scripts/a.sh; bash -o noexec scripts/a.sh; bash -nc 'scripts/a.sh'", []),
+            ("node --check tools/e.js; node -c tools/e.js; ruby -c tools/f.rb; perl -wc tools/g.pl; php -l tools/h.php", []),
+            ("python3 -m py_compile scripts/a.py; python3 -m compileall scripts; swift -typecheck tools/i.swift", []),
+            ("python3 -c 'print(1)' scripts/a.py; node -e 'x' tools/e.js; osascript -e 'beep' tools/j.scpt", []),
+            // The same interpreters running the file, as controls.
+            ("bash scripts/check-tiles.sh", ["scripts/check-tiles.sh"]),
+            ("bash -euo pipefail scripts/a.sh; zsh -x scripts/b.sh; bash5 -x scripts/c.sh", ["scripts/a.sh", "scripts/b.sh", "scripts/c.sh"]),
+            ("node tools/e.js; ruby -w tools/f.rb; perl -w tools/g.pl; php tools/h.php; python3 -u scripts/a.py",
+             ["tools/e.js", "tools/f.rb", "tools/g.pl", "tools/h.php", "scripts/a.py"]),
         ]
         for (command, expected) in cases { #expect(ClaudeTurnActivity.started(by: command) == expected, "\(command)") }
         #expect(ClaudeTurnActivity.started(by: "sh " + String(repeating: "a", count: 301) + ".sh").isEmpty)
