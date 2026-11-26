@@ -21,6 +21,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         let editable: [Editable]
         /// A filing card whose source could not tell how the document reached the person (adaptation-layer §3.3).
         var asksChannel = false
+        var pageCoverage: BinderPageCoverage?
+        var attachmentCoverage: [BinderPageCoverage] = []
         /// What the card shows first; see `CardReview`.
         var review = CardReview()
     }
@@ -252,6 +254,11 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                                 return Editable(index: Int(i), title: e["title"]?.stringValue ?? "", due: e["due"]?.stringValue ?? "",
                                                 priority: e["priority"]?.stringValue ?? "normal", waitingOn: e["waiting_on"]?.stringValue)
                             })
+                if card.verified, let intake = p["intake"], let name = intake["name"]?.stringValue,
+                   DocumentPaths.isIntake("intake/" + name), !DocumentPaths.isKeyFile(name) {
+                    card.pageCoverage = BinderPageCoverage(record: intake, path: "intake/" + name)
+                    card.attachmentCoverage = BinderPageCoverage.attachments(in: intake)
+                }
                 card.asksChannel = p["intake"]?["obtained"]?["channel"] == .str("other")
                 card.review = CardReview(p["review"])
                 return card
