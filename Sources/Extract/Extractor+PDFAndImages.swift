@@ -23,10 +23,10 @@ extension Extractor {
             let bounds = page.bounds(for: .mediaBox)
             let area = Double(bounds.width * bounds.height)
             var reading: Page
-            // A stamp above a scanned body is a text layer too. Inspect the pixels when the
-            // sparse layer shares the page with a substantial picture.
-            let mixed = !layer.isEmpty && Double(layer.count) < max(160, area / 3_000)
-                && page.pageRef.map { drawsImagePast(64_000, $0) } == true
+            // A selectable text overlay can be arbitrarily long while the photographed text
+            // underneath is missing. Any image resource (including tiled scans) warrants reading
+            // the rendered page. Pure text pages retain their exact text without OCR.
+            let mixed = !layer.isEmpty && page.pageRef.map { drawsImagePast(0, $0) } == true
             if layer.count >= 20 && !mixed {
                 layerPages += 1
                 reading = Page(text: layer, method: .textLayer, confidence: nil)

@@ -5,50 +5,57 @@ extension Extractor {
     /// Vision's confidence describes recognized words. Compare their bounds to the marks on the
     /// page as well, so an isolated sharp heading does not vouch for the rest of a damaged scan.
     static func hasUnrecognizedInk(_ image: CGImage, lines: [VNRecognizedText]) -> Bool {
-        let scale = 384.0 / Double(max(image.width, image.height))
-        let width = max(1, Int((Double(image.width) * scale).rounded()))
-        let height = max(1, Int((Double(image.height) * scale).rounded()))
-        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                  bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue), let data = ctx.data else { return true }
-        let pixels = UnsafeMutableBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: width * height)
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        ctx.setFillColor(gray: 1, alpha: 1)
-        ctx.fill(bounds)
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: bounds)
-        // Count the area of a mark, independently of its darkness. Blur spreads a dark
-        // stroke into a broad pale shape. Use the local paper brightness on tinted scans.
-        var total = 0
-        for y in stride(from: 0, to: height, by: 24) {
-            let rows = y..<min(y + 24, height)
-            for x in stride(from: 0, to: width, by: 24) {
-                let columns = x..<min(x + 24, width)
-                var paper: UInt8 = 0
-                for row in rows {
-                    for col in columns { paper = max(paper, pixels[row * width + col]) }
-                }
-                for row in rows {
-                    for col in columns {
-                        let index = row * width + col
-                        let marked = Int(paper) - Int(pixels[index]) >= 8
-                        pixels[index] = marked ? 0 : 255
-                        if marked { total += 1 }
-                    }
-                }
-            }
+        // Examine local evidence at the source resolution. Downsampling a pale glyph into its
+        // background, or dividing its ink by all the dark words on the page, can erase it.
+        let width = image.width, height = image.height
+        guard width > 0, height > 0, width <= 8_000_000 / height else { return true }
+        let gray = CGColorSpaceCreateDeviceGray()
+        func bitmap() -> CGContext? {
+            CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+                      space: gray, bitmapInfo: CGImageAlphaInfo.none.rawValue)
         }
+        guard let original = bitmap(), let mask = bitmap(), let source = original.data, let marked = mask.data else { return true }
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        original.setFillColor(gray: 1, alpha: 1)
+        original.fill(bounds)
+        original.draw(image, in: bounds)
+        mask.setFillColor(gray: 0, alpha: 1)
+        mask.fill(bounds)
+        mask.setFillColor(gray: 1, alpha: 1)
+        let scale = CGAffineTransform(scaleX: bounds.width, y: bounds.height)
         var words = 0
         for line in lines {
             for word in line.string.split(whereSeparator: { $0.isWhitespace }) {
                 words += 1
-                guard words <= 4_096 else { return true }
-                guard let box = try? line.boundingBox(for: word.startIndex..<word.endIndex) else { continue }
-                let rect = box.boundingBox.applying(CGAffineTransform(scaleX: bounds.width, y: bounds.height))
-                ctx.fill(rect.insetBy(dx: -1, dy: -1))
+                guard words <= 4_096, let box = try? line.boundingBox(for: word.startIndex..<word.endIndex) else { return true }
+                let rect = box.boundingBox.applying(scale)
+                mask.fill(rect.insetBy(dx: -2, dy: -2))
             }
         }
-        let remaining = pixels.count { $0 < 128 }
-        return remaining >= 40 && remaining > total / 5
+        let pixels = source.assumingMemoryBound(to: UInt8.self)
+        let covered = marked.assumingMemoryBound(to: UInt8.self)
+        // A residual patch of visible texture in *any* neighborhood prevents a good grade.
+        // The criterion is local and independent of how much recognized text surrounds it.
+        for y in stride(from: 0, to: height, by: 16) {
+            let rows = y..<min(y + 16, height)
+            for x in stride(from: 0, to: width, by: 16) {
+                let columns = x..<min(x + 16, width)
+                var light: UInt8 = 0
+                for row in rows {
+                    for col in columns { light = max(light, pixels[row * width + col]) }
+                }
+                var unexplained = 0
+                for row in rows {
+                    for col in columns {
+                        let index = row * width + col
+                        if covered[index] == 0 && Int(light) - Int(pixels[index]) >= 2 {
+                            unexplained += 1
+                            if unexplained >= 8 { return true }
+                        }
+                    }
+                }
+            }
+        }
+        return false
     }
 }

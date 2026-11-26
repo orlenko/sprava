@@ -4,7 +4,7 @@ import CoreText
 import Testing
 @testable import Extract
 
-@Suite struct PageGradeTests {
+@Suite(.serialized) struct PageGradeTests {
     @Test func aSharpHeadingDoesNotCertifyABlurredBody() throws {
         let heading = Fixtures.textImage(["Garden plan"], width: 1200, height: 150)
         let lines = (1...13).map { "Water the invented garden bed number " + String($0) }
@@ -24,16 +24,70 @@ import Testing
         #expect(clear.pageReadings.map(\.grade) == [.good])
     }
 
-    @Test func aStampOnAScanDoesNotHideTheBody() {
+    @Test func paleUnrecognizedWritingBelowDarkTextNeedsInspection() throws {
+        let first = Fixtures.textImage(["Orchard notes", "Count the pears", "Record the rows"], width: 1000, height: 260)
+        let second = Fixtures.textImage((1...6).map { "Count invented trees in the orchard row " + String($0) }, width: 1000, height: 440)
+        let ctx = try #require(CGContext(data: nil, width: 1000, height: 700, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: 1000, height: 700))
+        ctx.draw(first, in: CGRect(x: 0, y: 440, width: 1000, height: 260))
+        let page = CIImage(cgImage: second)
+        let pale = try #require(CIContext().createCGImage(page.clampedToExtent().applyingGaussianBlur(sigma: 5), from: page.extent))
+        ctx.setAlpha(0.15)
+        ctx.draw(pale, in: CGRect(x: 0, y: 0, width: 1000, height: 440))
+        let reading = Extractor.extract(Fixtures.png(try #require(ctx.makeImage())), name: "orchard.png")
+        #expect(reading.text.localizedCaseInsensitiveContains("pears"))
+        #expect(!reading.text.contains("row 6"))
+        #expect(reading.pageReadings.first?.grade == .poor)
+    }
+
+    @Test func missingPaleWordsBetweenReadWordsDoNotGetAGoodGrade() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 480)
+        let columns = ["Orchard", "meadow", "willow", "garden", "maple", "lantern"]
+        func layer(pale: Bool) throws -> CGImage {
+            let ctx = try #require(CGContext(data: nil, width: 1000, height: 480, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            if !pale { ctx.setFillColor(gray: 1, alpha: 1); ctx.fill(bounds) }
+            for row in 0..<8 {
+                for (col, word) in columns.enumerated() where (col + row).isMultiple(of: 2) == pale {
+                    ctx.textPosition = CGPoint(x: 20 + 163 * col, y: 32 + 57 * row)
+                    let text = NSAttributedString(string: word, attributes: [.font: NSFont.systemFont(ofSize: 26),
+                        .foregroundColor: CGColor(gray: pale ? 0.82 : 0, alpha: 1)])
+                    CTLineDraw(CTLineCreateWithAttributedString(text), ctx)
+                }
+            }
+            return try #require(ctx.makeImage())
+        }
+        let ink = CIImage(cgImage: try layer(pale: true)).applyingGaussianBlur(sigma: 3)
+        let combined = ink.composited(over: CIImage(cgImage: try layer(pale: false)))
+        let image = try #require(CIContext().createCGImage(combined, from: bounds))
+        let reading = Extractor.extract(Fixtures.png(image), name: "orchard-words.png")
+        #expect(!reading.text.isEmpty)
+        #expect(reading.text.split(whereSeparator: { $0.isWhitespace }).count < 40)
+        #expect(reading.pageReadings.first?.grade == .poor)
+    }
+
+    @Test(arguments: [false, true]) func aStampOnAScanDoesNotHideTheBody(tiled: Bool) throws {
         let bytes = NSMutableData()
         var box = CGRect(x: 0, y: 0, width: 612, height: 792)
         let pdf = CGContext(consumer: CGDataConsumer(data: bytes as CFMutableData)!, mediaBox: &box, nil)!
         pdf.beginPDFPage(nil)
-        pdf.draw(Fixtures.textImage(["Greenhouse doors open at noon", "Water the seedlings before sunset"]),
-                 in: CGRect(x: 15, y: 200, width: 580, height: 280))
-        let stamp = "Invented greenhouse archive reference for the coming spring season"
+        let image = Fixtures.textImage(["Greenhouse doors open at noon", "Water the seedlings before sunset"])
+        let frame = CGRect(x: 15, y: 200, width: 580, height: 280)
+        if tiled {
+            for y in stride(from: 0, to: image.height, by: 24) {
+                let height = min(24, image.height - y)
+                let strip = try #require(image.cropping(to: CGRect(x: 0, y: y, width: image.width, height: height)))
+                let scale = frame.height / CGFloat(image.height)
+                pdf.draw(strip, in: CGRect(x: frame.minX, y: frame.maxY - CGFloat(y + height) * scale,
+                                           width: frame.width, height: CGFloat(height) * scale))
+            }
+        } else { pdf.draw(image, in: frame) }
+        let stamp = String(repeating: "Invented greenhouse archive reference. ", count: tiled ? 2 : 11)
         pdf.textPosition = CGPoint(x: 30, y: 700)
-        CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: stamp, attributes: [.font: NSFont.systemFont(ofSize: 14)])), pdf)
+        CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: stamp, attributes: [.font: NSFont.systemFont(ofSize: 2.5)])), pdf)
         pdf.endPDFPage()
         pdf.closePDF()
         let reading = Extractor.extract(bytes as Data, name: "archive.pdf")
