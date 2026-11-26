@@ -515,6 +515,9 @@ struct ShelfView: View {
             model.openSettings = { [openSettings] in openSettings() }
             drafts.track(model); drafts.track(inbox); drafts.track(todo); drafts.track(binderNote); drafts.track(itemEditor)
             drafts.track(binderTodos); drafts.track(binderActions); drafts.track(binderConversation); drafts.track(binderInstructions)
+            // Improvements is made where General is: the chosen binders folder, or the default one.
+            binderActions.builtInParent = { [model] in model.builtInParent() }
+            binderActions.builtInUsed = { [model] folder in model.builtInMade(folder) }
         }
         .task {
             while !Task.isCancelled {

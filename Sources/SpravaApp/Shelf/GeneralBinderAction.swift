@@ -27,6 +27,21 @@ extension ShelfModel {
         return try await task.value
     }
 
+    /// Where a built-in binder is made on its first use: the binders folder the person chose, or the default one,
+    /// which is then created.
+    func builtInParent() -> (parent: URL, create: Bool) {
+        let chosen = binderParent()
+        return (chosen ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Sprava", isDirectory: true), chosen == nil)
+    }
+
+    /// A built-in binder the runtime made or reused outside `ensureGeneral`: its folder settles the default location
+    /// as General's does, and the Shelf is read again so the binder shows.
+    func builtInMade(_ folder: URL) {
+        generalParentUsed(folder.deletingLastPathComponent())
+        snapshotGeneration &+= 1
+        Task { await refreshAndWait(afterChanges: true) }
+    }
+
     func openGeneral() {
         Task {
             do { selection = try await ensureGeneral(); operationNote = nil }

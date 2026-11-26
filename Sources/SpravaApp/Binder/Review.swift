@@ -64,6 +64,12 @@ struct ReviewCard: View {
                 DraftFields(draft: draft) { file in Task { await actions.showInFinder(file, section.folder) } }
             }
             if let rules = review.rules { RulesFields(rules: rules) }
+            if let suggestion = review.suggestion {
+                SuggestionFields(suggestion: suggestion, edit: actions.rules[card.id].map { typed in
+                    Binding(get: { actions.rules[card.id] ?? typed }, set: { actions.setRule(card.id, $0) })
+                })
+                .disabled(locked)
+            }
             if let rule = review.rule {
                 RuleFields(rule: rule, edit: actions.rules[card.id].map { typed in
                     Binding(get: { actions.rules[card.id] ?? typed }, set: { actions.setRule(card.id, $0) })
@@ -368,6 +374,36 @@ struct RuleFields: View {
             if !rule.reason.isEmpty {
                 Text("Why").font(.caption).foregroundStyle(.secondary)
                 Text(verbatim: rule.reason).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// A suggestion for Sprava (decisions.md D47): its title and the whole text that would go to the Improvements binder,
+/// as inert text in a box that scrolls, since a script can be long. While the person edits it, the text is an editor.
+struct SuggestionFields: View {
+    let suggestion: CardReview.Suggestion
+    var edit: Binding<String>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: suggestion.title).font(.headline).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if let script = suggestion.script {
+                Text(verbatim: "With the text of \(script)").font(.caption).foregroundStyle(.secondary)
+            }
+            if let edit {
+                TextEditor(text: edit)
+                    .font(.body.monospaced())
+                    .frame(height: 240)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            } else {
+                ScrollView {
+                    Text(verbatim: suggestion.text).font(.body.monospaced()).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 280)
+                .padding(6)
+                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
             }
         }
     }

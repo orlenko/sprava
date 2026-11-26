@@ -162,6 +162,69 @@ import Testing
         }
     }
 
+    /// A suggestion card shows its whole text; its buttons are Send to Improvements, Edit and Dismiss (decisions.md D47).
+    @Test func aSuggestionCardSaysSendEditDismiss() {
+        let v = JSONValue.obj([("kind", .str("suggestion")), ("suggestion", .obj([("title", .str("Import tasks from a hosted board")),
+            ("text", .str("What was attempted:\nPulled the board.\n")), ("script", .str("scripts/pull-board.py"))]))])
+        let review = CardReview(v)
+        #expect(review.suggestion == CardReview.Suggestion(title: "Import tasks from a hosted board", text: "What was attempted:\nPulled the board.\n", script: "scripts/pull-board.py"))
+        let shown = card(review)
+        #expect(shown.action(editing: nil)?.title == "Send to Improvements" && shown.editTitle == "Edit" && shown.declineTitle == "Dismiss")
+        #expect(shown.declineHelp.hasPrefix("Nothing is sent."))
+        let foreign = card(review, verified: false)
+        #expect(foreign.shown.suggestion == nil && foreign.action(editing: nil) == nil && foreign.editTitle == nil)
+        #expect(card(CardReview(.obj([("kind", .str("suggestion"))]))).action(editing: nil) == nil)
+    }
+
+    /// Sending uses the suggestion's own command, says where Improvements goes on its first use, and carries the
+    /// person's edit exactly as typed, only when they made one.
+    @Test func sendingASuggestionCarriesThePersonsEditAndWhereImprovementsGoes() async throws {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-1","state":"proposed","title":"A suggestion for Sprava","digest":"d1","verified":true,"review":{"kind":"suggestion","suggestion":{"title":"Import tasks","text":"What was attempted:\nPulled the board.\n"}}}]}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        runtime.answers["send_suggestion"] = { _ in #"{"ok":true,"improvements":"/tmp/invented-binders/improvements"}"# }
+        let actions = BinderActions(client: runtime.client)
+        actions.builtInParent = { (URL(fileURLWithPath: "/tmp/invented-binders"), false) }
+        var made: [URL] = []
+        actions.builtInUsed = { made.append($0) }
+        let folder = URL(fileURLWithPath: "/tmp/invented-kitchen")
+        await actions.load(folder, adopted: true)
+        let shown = try #require(actions.cards.first)
+        // As shown: no text is sent, and the parent always is.
+        #expect(actions.suggestionSending(shown).map(\.0) == ["proposal", "digest", "parent", "create_parent"])
+        #expect(actions.startEditing(shown) && actions.rules["p-1"] == "What was attempted:\nPulled the board.\n")
+        #expect(!actions.draftState.hasChanges)
+        #expect(actions.setRule("p-1", "What was attempted:\nPulled the board every Monday.\n"))
+        #expect(actions.draftState.hasChanges)
+        await actions.approve(shown, folder, reload: {})?.value
+        let sent = try #require(runtime.sent.last { $0["command"]?.stringValue == "send_suggestion" })
+        #expect(sent["proposal"] == .str("p-1") && sent["digest"] == .str("d1") && sent["text"] == .str("What was attempted:\nPulled the board every Monday.\n"))
+        #expect(sent["parent"] == .str("/tmp/invented-binders") && sent["create_parent"] == .bool(false))
+        #expect(runtime.sent.allSatisfy { $0["command"]?.stringValue != "approve" })
+        #expect(actions.rules["p-1"] == nil && actions.confirmation?.contains("Improvements") == true)
+        #expect(made == [URL(fileURLWithPath: "/tmp/invented-binders/improvements", isDirectory: true)])
+    }
+
+    /// The suggestion draws as text in a box that scrolls, and as an editor while edited. With SPRAVA_RENDER_ARTIFACTS_DIR set, it saves what it drew.
+    @Test func aSuggestionCardDraws() throws {
+        let text = "What was attempted:\nPulled the board's open tasks into to-dos.\n\nWhat stood in the way, or keeps being repeated:\nThe same script is run by hand every week.\n\nThe script scripts/pull-board.py, as it was when this was suggested:\n\n" + (1...30).map { "print('line \($0) of the invented script')" }.joined(separator: "\n") + "\n"
+        let suggestion = CardReview.Suggestion(title: "Import tasks from a hosted board", text: text, script: "scripts/pull-board.py")
+        for (name, edit) in [("suggestion-card-light", nil as Binding<String>?), ("suggestion-card-editing-light", .constant(text))] {
+            let host = NSHostingView(rootView: SuggestionFields(suggestion: suggestion, edit: edit).padding(12).frame(width: 520))
+            host.frame = NSRect(x: 0, y: 0, width: 520, height: 380)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            #expect(bitmap.pixelsWide > 0)
+            if let directory = ProcessInfo.processInfo.environment["SPRAVA_RENDER_ARTIFACTS_DIR"] {
+                let destination = URL(fileURLWithPath: directory, isDirectory: true)
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                try #require(bitmap.representation(using: .png, properties: [:])).write(to: destination.appendingPathComponent("\(name).png"))
+            }
+        }
+    }
+
     /// Accept sends the rule's own command, with the person's edit only when they made one.
     @Test func acceptingARuleSendsItsOwnCommandWithThePersonsEdit() async throws {
         let runtime = StandInRuntime()

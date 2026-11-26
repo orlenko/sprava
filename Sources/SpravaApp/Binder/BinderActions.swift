@@ -44,8 +44,16 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @Published private(set) var folders: [String: String] = [:]
     @Published private(set) var channels: [String: String] = [:]
     @Published private(set) var said: [String: String] = [:]
-    /// The person's edit of a proposed rule, by card id, while they are changing it (decisions.md D46).
+    /// The person's edit of a card's one text, by card id, while they are changing it: a proposed rule (decisions.md
+    /// D46), or a suggestion's text (D47).
     @Published private(set) var rules: [String: String] = [:]
+    /// Where the Improvements binder is made on its first use, as General is: the binders folder the person chose, or
+    /// the default one, which is then created. The Shelf supplies it.
+    var builtInParent: @MainActor () -> (parent: URL, create: Bool) = {
+        (FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Sprava", isDirectory: true), true)
+    }
+    /// Told the Improvements binder's folder once a suggestion was sent, so the Shelf shows it.
+    var builtInUsed: @MainActor (URL) -> Void = { _ in }
     /// The cards whose approval or rejection the runtime is carrying out. The request already holds the card's
     /// edits, so the card stays locked until the runtime answers: an edit made meanwhile would be dropped with
     /// the ones sent once the approval is accepted.
@@ -237,7 +245,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         return Draft(description: typed, editing: editing, folders: folders, channels: channels, said: said, rules: rules,
                      originalItems: Dictionary(cards.map { ($0.id, $0.editable) }, uniquingKeysWith: { first, _ in first }),
                      originalFolders: Dictionary(cards.compactMap { card in card.folder.map { (card.id, $0) } }, uniquingKeysWith: { first, _ in first }),
-                     originalRules: Dictionary(cards.compactMap { card in card.review.rule.map { (card.id, $0.text) } }, uniquingKeysWith: { first, _ in first }))
+                     originalRules: Dictionary(cards.compactMap { card in (card.review.rule?.text ?? card.review.suggestion?.text).map { (card.id, $0) } },
+                                               uniquingKeysWith: { first, _ in first }))
     }
 
     /// The cards and the history only: the page's timer calls this, so it never overwrites the description being
@@ -391,6 +400,14 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
                               self?.confirm(card.review.rules != nil ? "Replaced the learned rules in this binder\u{2019}s Instructions."
                                                 : "Added the rule to this binder\u{2019}s Instructions.") })
         }
+        // A suggestion has its own command too, which carries the text to the Improvements binder (decisions.md D47).
+        if card.verified, card.review.kind == .suggestion {
+            return settle(card, "send_suggestion", folder, suggestionSending(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
+                          onReply: { [weak self] reply in
+                              self?.confirm("Sent to your Improvements binder.")
+                              if let path = reply["improvements"]?.stringValue, path.hasPrefix("/") { self?.builtInUsed(URL(fileURLWithPath: path, isDirectory: true)) }
+                          })
+        }
         return settle(card, "approve", folder, approval(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
                onReply: { [weak self] in self?.confirm(CardReview.approvedLine($0)) })
     }
@@ -432,9 +449,24 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             rules[card.id] = rule.text
             return true
         }
+        if card.verified, card.review.kind == .suggestion, let suggestion = card.review.suggestion {
+            guard isChangeable(card.id), rules[card.id] == nil else { return false }
+            rules[card.id] = suggestion.text
+            return true
+        }
         guard isChangeable(card.id), editing[card.id] == nil else { return false }
         editing[card.id] = card.editable
         return true
+    }
+
+    /// The send request for a suggestion card: the person's edit when it differs, exactly as typed, and where the
+    /// Improvements binder goes if this is its first use.
+    func suggestionSending(_ card: Card) -> [(String, JSONValue)] {
+        let (parent, create) = builtInParent()
+        var fields: [(String, JSONValue)] = [("proposal", .string(card.id)), ("digest", .string(card.digest)),
+                                             ("parent", .string(parent.path)), ("create_parent", .bool(create))]
+        if let edit = rules[card.id], edit != card.review.suggestion?.text { fields.append(("text", .string(edit))) }
+        return fields
     }
 
     /// Sets the person's edit of a proposed rule; false when the card is locked or not being edited.

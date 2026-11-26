@@ -4,7 +4,15 @@ import SpravaKit
 
 /// What a review card says first, as the runtime reads it from the card (`Proposal.review`).
 struct CardReview: Equatable {
-    enum Kind: String { case filing, change, manual, plain, draft, rule }
+    enum Kind: String { case filing, change, manual, plain, draft, rule, suggestion }
+
+    /// A suggestion for Sprava itself (decisions.md D47): its title and the whole text that would go to Improvements.
+    struct Suggestion: Equatable {
+        var title: String
+        var text: String
+        /// The script whose text the card carries, by its path in the binder.
+        var script: String?
+    }
 
     /// A rule proposed for the binder's instructions (decisions.md D46): the rule and its reason, shown whole.
     struct Rule: Equatable {
@@ -78,6 +86,7 @@ struct CardReview: Equatable {
     var draft: Draft?
     var rule: Rule?
     var rules: Rules?
+    var suggestion: Suggestion?
 
     init() {}
 
@@ -115,6 +124,9 @@ struct CardReview: Equatable {
         }
         if kind == .rule, let r = v["rules"], let proposed = r["proposed"]?.arrayValue?.compactMap(\.stringValue), !proposed.isEmpty {
             rules = Rules(now: r["now"]?.arrayValue?.compactMap(\.stringValue) ?? [], proposed: proposed, reason: r["reason"]?.stringValue ?? "")
+        }
+        if kind == .suggestion, let s = v["suggestion"], let text = s["text"]?.stringValue {
+            suggestion = Suggestion(title: s["title"]?.stringValue ?? "", text: text, script: s["script"]?.stringValue)
         }
         if kind == .draft, let d = v["draft"] {
             draft = Draft(to: strings(d["to"]), cc: strings(d["cc"]), subject: d["subject"]?.stringValue ?? "", body: d["body"]?.stringValue ?? "",
@@ -177,6 +189,8 @@ extension BinderActions.Card {
         if review.kind == .draft { return review.draft == nil ? nil : ("Put in Drafts", true) }
         // A rule is accepted as shown, or as the person changed it.
         if review.kind == .rule { return review.rule != nil ? ("Accept", true) : review.rules != nil ? ("Replace the rules", true) : nil }
+        // A suggestion is sent as shown, or as the person changed it.
+        if review.kind == .suggestion { return review.suggestion == nil ? nil : ("Send to Improvements", true) }
         let skipped = Set((edits ?? []).filter { !$0.include }.map(\.index))
         let files = review.files.count
         let todos = review.todos.filter { !skipped.contains($0.index) }.count
@@ -200,13 +214,14 @@ extension BinderActions.Card {
     var declineTitle: String {
         if !verified { return "Clear it away" }
         if review.fromIntake { return "Leave in intake" }
-        if review.kind == .rule { return "Dismiss" }
+        if review.kind == .rule || review.kind == .suggestion { return "Dismiss" }
         return review.kind == .manual ? "Reject this card" : "Don\u{2019}t do this"
     }
 
     /// What the decline button does, for its tooltip.
     var declineHelp: String {
         shown.fromIntake ? "Nothing is filed. The file stays in intake, and Sprava asks again only if the file changes."
+            : shown.kind == .suggestion ? "Nothing is sent. Nothing in the binder changes."
             : shown.rules != nil ? "The rules stay as they are. Nothing in the binder changes."
             : shown.kind == .rule ? "The rule is not added. Nothing in the binder changes."
             : "Nothing in the binder changes."
@@ -215,6 +230,7 @@ extension BinderActions.Card {
     /// What the edit button says; nil when there is nothing to change.
     var editTitle: String? {
         if verified, review.kind == .rule, review.rule != nil { return "Edit" }
+        if verified, review.kind == .suggestion, review.suggestion != nil { return "Edit" }
         guard verified, review.kind != .manual, !editable.isEmpty else { return nil }
         return review.todos.isEmpty ? "Change first" : "Change to-dos first"
     }
