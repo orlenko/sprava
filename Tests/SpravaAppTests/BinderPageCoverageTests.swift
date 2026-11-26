@@ -12,6 +12,14 @@ import SpravaKit
         #expect(report.grades == [.good, .poor, .unreadable] && report.sha256 == "fixture")
     }
 
+    @Test func aPersonalTranscriptionClosesTheGapButAnEmptyMarkDoesNot() {
+        var report = BinderPageCoverage(path: "garden.pdf", grades: [.poor, .unreadable], problem: nil, sha256: "invented")
+        report.personMarks = [1: true, 2: false]
+        #expect(report.hasGaps && report.unresolved == [1] && report.summary == "1 page needs a look")
+        report.personMarks[2] = true
+        #expect(!report.hasGaps)
+    }
+
     @Test func aFilingCardCanOpenOnlyASafeGradedAttachment() {
         func record(_ name: String) -> JSONValue {
             .obj([("name", .str(name)), ("sha256", .str("fixture")), ("page_grades", .array([.str("unreadable")]))])
