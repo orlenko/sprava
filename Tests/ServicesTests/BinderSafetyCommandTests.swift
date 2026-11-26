@@ -345,6 +345,30 @@ import Testing
         #expect(Set(Teka.read(folder).findings.map(\.location)) == ["open_items[2]", "open_items[3]"])
     }
 
+    // Found in the dry run: a to-do already marked done that has no date was on the shared card and on the card that
+    // closes the done ones. Once it was closed, the shared card could not be approved as offered. It is now asked for
+    // no date, so the two cards can be approved in either order.
+    @Test(arguments: [true, false]) func aDoneToDoWithNoDateIsOnlyOnTheClosingCard(closingFirst: Bool) throws {
+        let c = commands()
+        let name = "attic-sample"
+        let catalog = """
+        {"meta": {"schema_version": 2, "name": "\(name)"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "\(name)-2026-001", "title": "Invented chore", "status": "open", "priority": "normal"},
+                        {"id": "\(name)-2026-002", "title": "Invented finished chore", "status": "done", "priority": "normal"},
+                        {"id": "\(name)-2026-003", "title": "Invented second chore", "status": "open", "priority": "normal"}]}
+        """
+        let (folder, listed) = try adoptCatalog(c, name: name, catalog)
+        let shared = try #require(listed.first { $0["title"] == .str("Keep these 2 to-dos with no deadline, or give any of them a date") })
+        let closing = try #require(listed.first { $0["title"] == .str("Close 1 item(s) already marked done") })
+        #expect(listed.count == 2)
+        for card in closingFirst ? [closing, shared] : [shared, closing] {
+            let r = try approve(c, folder, card)
+            #expect(r["ok"] == .bool(true), "\(r)")
+        }
+        #expect(Teka.read(folder).findings.isEmpty)
+        #expect(try cards(c, folder).contains { $0["title"] == .str("Stamp this binder as binder v0") })
+    }
+
     // A card holds at most a hundred of them, so a binder with hundreds still lists its cards.
     @Test func hundredsOfDatelessToDosAreSplitAcrossCardsThatCanBeListed() throws {
         let c = commands()

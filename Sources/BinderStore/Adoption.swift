@@ -248,7 +248,8 @@ public enum Adoption {
         let findings = towardV0 ? ItemRules.check(items: repairItems, log: fixed["processing_log"]?.arrayValue ?? [], v0: true)
                                 : afterFixes.findings
         proposals += repairCards(findings.map { ($0.code, $0.location, $0.field) }, items: repairItems, today: today,
-                                 actor: importActor, now: now, closures: heldBack)
+                                 actor: importActor, now: now, closures: heldBack,
+                                 closing: Set(closeOps.compactMap { $0["args"]?["id"] }))
 
         // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4) under
         // the next free legacy name (§9.5); with none free, no migration is offered. A core key that is not an array
@@ -308,7 +309,7 @@ public enum Adoption {
     /// and one whose item has no other finding gets a card of its own asking for the title.
     static func repairCards(_ findings: [(code: RuleFinding.Code, location: String, field: String?)], items: [JSONValue],
                             today: CalendarDate, actor: JSONObject, now: Date,
-                            closures: [JSONValue: JSONObject] = [:]) -> [Proposal] {
+                            closures: [JSONValue: JSONObject] = [:], closing: Set<JSONValue> = []) -> [Proposal] {
         let handled: Set<RuleFinding.Code> = [.doneInOpenItems, .reusedID, .duplicateID]
         var ids: [JSONValue: Int] = [:]
         for item in items { if let id = item["id"] { ids[id, default: 0] += 1 } }
@@ -351,6 +352,9 @@ public enum Adoption {
             let codes = Set(findings.filter { $0.location == finding.location && !handled.contains($0.code) }.map(\.code))
             let followUpSupplied = !codes.contains(.waitingWithoutFollowUp) || set["follow_up_at"] != nil
             if codes.contains(.dateless), codes.isSubset(of: [.dateless, .waitingWithoutFollowUp]), followUpSupplied, close == nil {
+                // An item the closing card closes (`closing`) is asked for no date: closing it takes it off the list,
+                // and a card that still named it could no longer be approved as offered once it was closed.
+                if closing.contains(id) { continue }
                 set.set("no_deadline", .bool(true))
                 var op = JSONObject([(key: "op", value: .str("update_item")),
                                      (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
