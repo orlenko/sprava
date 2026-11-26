@@ -9,6 +9,22 @@ enum IMAPDraftReadSource {
     }
 
     static let tail = #"""
+from email.message import EmailMessage
+
+
+class BoundedMessage(EmailMessage):
+    """The feed parser creates a fresh message for every MIME part, including nested ones."""
+    def set_raw(self, name, value):
+        # The parser supplies an unfolded name and the raw (possibly folded) value, before
+        # decoding structured fields or looking for a multipart boundary. Count each entity
+        # independently so body text and attachment bytes do not count as headers.
+        used = getattr(self, "_raw_header_bytes", 0) + len(name) + len(value) + 4
+        if used > 65536:
+            raise ValueError("MIME part headers exceed the comparison limit")
+        self._raw_header_bytes = used
+        super().set_raw(name, value)
+
+
 def result(status, differences=()):
     return {"status": status, "differences": list(differences)}
 
@@ -54,7 +70,7 @@ def read_one(session, folder, approved):
     if data.find(b"\r\n\r\n", 0, 65540) < 0 and data.find(b"\n\n", 0, 65538) < 0:
         return result("unreadable")
     try:
-        message = BytesParser(policy=policy.default).parsebytes(bytes(data))
+        message = BytesParser(_class=BoundedMessage, policy=policy.default).parsebytes(bytes(data))
         if message.get_all("Message-ID", []) != [message_id] or any(len(message.get_all(h, [])) > 1 for h in ("Subject", "To", "Cc", "Bcc")):
             return result("unreadable")
         # Only a plain body and simple attachments can be called equivalent to the draft Sprava builds.

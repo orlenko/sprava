@@ -120,6 +120,13 @@ compare({"2": other}, "missing", [], [])
 compare({"3": raw, "4": raw}, "ambiguous", [], [])
 assert m["read_one"](Session({"3": raw}, size_offset=-2), "Drafts", approved)["status"] == "unreadable"
 compare({"3": raw.replace(b"Subject: Invented", b"Subject: " + b"x" * 65536)}, "unreadable", [], ["3"])
+mixed = (raw.split(b"\r\n\r\n")[0] + b'\r\nContent-Type: multipart/mixed; boundary="seed"\r\n\r\n'
+         b'--seed\r\nContent-Type: text/plain\r\n\r\nBody.\r\n--seed\r\n'
+         b'Content-Disposition: attachment; filename="seed.txt"\r\n'
+         b'Content-Type: text/plain; name="seed.txt"\r\n\r\nPear\r\n--seed--\r\n')
+compare({"3": mixed}, "matched", ["attachments"], ["3"])
+large_part = mixed.replace(b'name="seed.txt"\r\n\r\n', b'name="seed.txt"; note="' + b'p' * 65536 + b'"\r\n\r\n')
+compare({"3": large_part}, "unreadable", [], ["3"])
 Path("verified").write_text("match/change/missing/ambiguous")
 """#
 
