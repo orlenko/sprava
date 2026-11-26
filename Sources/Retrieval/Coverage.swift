@@ -33,6 +33,16 @@ public struct DocumentCoverage: Sendable, Equatable, Codable {
 
 /// What a search looked through: the honest negative of §9.2 says this, never "the documents do not say".
 public struct Coverage: Sendable, Equatable {
+    public struct Gap: Sendable, Equatable {
+        public let path: String
+        public let pages: [Int]
+        public init(path: String, pages: [Int]) {
+            self.path = path.utf8.count <= 4096 && BinderIndex.excluded(path) == nil ? path : "Excluded catalog document"
+            self.pages = pages
+        }
+    }
+    /// Paths come from the current catalog's typed IDs or the consented intake manifest.
+    public var namedGaps: [Gap] = []
     public var documents: [DocumentCoverage] = []
     /// Documents the catalog lists that the index has not seen yet.
     public var notYetIndexed: [String] = []

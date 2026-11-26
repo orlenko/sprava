@@ -133,14 +133,31 @@ final class ClaudeTodoTools: @unchecked Sendable {
         }
         let found: ClaudeBinderContext.Found
         do { found = try search(query, 12) } catch { throw Refusal.invalid("The search could not run. Use Grep and Read instead.") }
-        var bytes = 0, results: [JSONValue] = []
+        let offset: Int
+        if let value = args["coverage_offset"] {
+            guard let n = value.numberValue?.safeInteger, n >= 0, n <= found.gaps.count else { throw Refusal.invalid("Use the returned coverage offset to continue the list.") }
+            offset = Int(n)
+        } else { offset = 0 }
+        var bytes = 256, details: [JSONValue] = [], results: [JSONValue] = []
+        for gap in found.gaps.dropFirst(offset) {
+            let value = JSONValue.obj([("path", .str(gap.path)), ("pages", .array(gap.pages.map(JSONValue.int)))])
+            let size = JSONWriter.compact(value).utf8.count + 1
+            guard bytes + size <= Self.maximumSearchBytes / 2 else { break }
+            bytes += size
+            details.append(value)
+        }
         for source in found.sources {
             let value = JSONValue.obj([("path", .str(source.path)), ("page", source.page.map(JSONValue.int) ?? .null), ("text", .str(String(source.text.prefix(8_000))))])
             let count = JSONWriter.compact(value).utf8.count
             if bytes + count > Self.maximumSearchBytes { break }
             bytes += count; results.append(value)
         }
-        return .obj([("results", .array(results)), ("sources_not_fully_read", .int(found.incomplete))])
+        var response = JSONObject([(key: "results", value: .array(results)), (key: "sources_not_fully_read", value: .int(found.incomplete)),
+                                   (key: "incomplete_documents", value: .array(details)), (key: "unnamed_documents", value: .int(found.incomplete - details.count))])
+        let next = offset + details.count
+        if next < found.gaps.count, next > offset { response.set("next_coverage_offset", .int(next)) }
+        if found.sources.isEmpty { response.set("search_result", .str("No matching passage was found in the readable text.")) }
+        return .object(response)
     }
 
     private func updateNotes(_ args: JSONObject) throws -> JSONValue {
@@ -354,7 +371,8 @@ final class ClaudeTodoTools: @unchecked Sendable {
     ]
     static let tools: [ClaudeAppTools.Tool] = [
         .init(name: "search_binder", description: "Searches this binder's documents and intake, inside PDFs and scans too. Returns passages with their path and page.",
-              schema: schema([("query", .obj([("type", .str("string")), ("description", .str("Words to look for; any of them matches."))]))], required: ["query"])),
+              schema: schema([("query", .obj([("type", .str("string")), ("description", .str("Words to look for; any of them matches."))])),
+                              ("coverage_offset", .obj([("type", .str("integer")), ("description", .str("Use next_coverage_offset from the last result to list further incomplete documents."))]))], required: ["query"])),
         .init(name: "update_notes", description: "Replaces the whole Notes section of DASHBOARD.md at once. Other sections cannot change.",
               schema: schema([("text", .obj([("type", .str("string")), ("description", .str("The section's whole new text, without its heading."))]))], required: ["text"])),
         .init(name: "propose_email_draft",

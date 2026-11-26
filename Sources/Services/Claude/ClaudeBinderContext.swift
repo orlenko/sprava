@@ -28,6 +28,20 @@ struct ClaudeBinderContext: Sendable {
     struct Found: Sendable {
         let sources: [Source]
         let incomplete: Int
+        var gaps: [Coverage.Gap] = []
+        var coverageLine: String? {
+            guard incomplete > 0 else { return nil }
+            var names: [String] = [], bytes = 0
+            for gap in gaps {
+                let label = gap.path + (gap.pages.isEmpty ? "" : " (page " + gap.pages.prefix(8).map(String.init).joined(separator: ", ") + (gap.pages.count > 8 ? ", …)" : ")"))
+                bytes += label.utf8.count
+                guard bytes <= 4096 else { break }
+                names.append(label)
+            }
+            let more = incomplete - names.count
+            let detail = names.joined(separator: ", ") + (more > 0 && !names.isEmpty ? " and \(more) more" : "")
+            return "\(incomplete) document\(incomplete == 1 ? "" : "s") not fully read" + (detail.isEmpty ? "." : ": " + detail + ".")
+        }
     }
 
     /// One search of the binder's index, PDFs included, for a session whose scope is the whole binder.
@@ -45,7 +59,7 @@ struct ClaudeBinderContext: Sendable {
             guard let path = path(of: p, records: records, documents: true, intake: true) else { continue }
             sources.append(Source(id: "S\(sources.count + 1)", path: path, page: p.page, revision: p.revision, text: p.text))
         }
-        return Found(sources: sources, incomplete: result.coverage.notYetIndexed.count + result.coverage.documents.filter { !$0.isComplete || !$0.pagesKnown }.count)
+        return Found(sources: sources, incomplete: result.coverage.notYetIndexed.count + result.coverage.documents.filter { !$0.isComplete || !$0.pagesKnown }.count, gaps: result.coverage.namedGaps)
     }
 
     private static func refreshedIndex(folder: URL, support: URL, teka: Teka, intake: Bool, reader: ScopedReader,

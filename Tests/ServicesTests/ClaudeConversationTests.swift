@@ -61,6 +61,7 @@ import Testing
         let runtime: ClaudeConversationRuntime
         let engine: Engine
         init(chooser: Choice? = nil, onRead: @escaping @Sendable (URL, @Sendable () -> Bool) throws -> Void = { _, _ in },
+             search: @escaping ClaudeConversationRuntime.SearchBinder = { _, _, _, _ in .init(sources: [], incomplete: 0) },
              available: @escaping @Sendable (URL) throws -> Bool = { _ in true }) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-claude-runtime-\(UUID())")
             try AtomicFile.makePrivateFolder(root)
@@ -78,7 +79,7 @@ import Testing
                 try onRead(folder, cancelled)
                 return .init(data: .obj([("fresh_query", .str(query)), ("documents", .bool(documents)), ("intake", .bool(intake))]),
                       sources: [.init(id: "S1", path: "documents/bylaw.txt", page: 2, revision: "invented-r1", text: "Pets require written permission.")])
-            }, chooser: { [chooser] _ in chooser?.next() ?? .failed }, available: available)
+            }, search: search, chooser: { [chooser] _ in chooser?.next() ?? .failed }, available: available)
         }
         final class Choice: @unchecked Sendable {
             private let lock = NSLock(); private var outcome: ClaudeAccountChooser.Outcome; private var count = 0
@@ -103,6 +104,36 @@ import Testing
             throw ClaudeConversationRuntime.Refused.unavailable
         }
         func connect(files: Bool = true) async throws { try await configure(); _ = try await request("claude_enable", [("documents", .bool(true)), ("intake", .bool(true)), ("files", .bool(files))]) }
+    }
+
+    @Test func aSearchMissNamesTheMissingDocumentInTheToolAndTheTurn() async throws {
+        let f = try Fixture(search: { folder, query, limit, cancelled in
+            try ClaudeBinderContext.search(folder: folder, support: folder.deletingLastPathComponent().appendingPathComponent("support"),
+                                           query: query, limit: limit, reader: HelperDocumentReader(binder: folder, reader: .inProcess), cancelled: cancelled)
+        })
+        let setup = try pSetup()
+        f.runtime.todoWriter.attach(commands: setup.commands, queue: DispatchQueue(label: "invented-search"))
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        try AtomicFile.makePrivateFolder(f.folder.appendingPathComponent(".sprava"))
+        let catalog = #"{"meta":{"name":"workshop","schema_version":2},"open_items":[],"documents":[{"id":"invented","path":"documents/greenhouse.pdf","title":"Greenhouse rules"}],"processing_log":[]}"#
+        try Data(catalog.utf8).write(to: f.folder.appendingPathComponent("catalog.json"))
+        try await f.connect()
+        let engine = f.engine
+        engine.lock.withLock {
+            engine.act = {
+                let result = engine.lock.withLock { engine.appTools }?.call("search_binder", .init([(key: "query", value: .str("moonflower"))]))
+                #expect(result?.content["search_result"] == .str("No matching passage was found in the readable text."))
+                #expect(result?.content["incomplete_documents"]?.arrayValue?.first?["path"] == .str("documents/greenhouse.pdf"))
+            }
+        }
+        let request = UUID()
+        let turn = try await f.send(request, "Look for moonflower.")
+        let result = try await f.completed(request)
+        #expect(result["changes"]?["summary"] == .str("1 document not fully read: documents/greenhouse.pdf."))
+        #expect(result["changes"]?["undoable"] == .bool(false))
+        _ = try await f.request("chat_clear")
+        let id = try #require(turn["turn_id"]?.stringValue.flatMap(UUID.init(uuidString:)))
+        #expect(try f.runtime.turnSites.coverageLine(turn: id) == nil)
     }
 
     @Test func enableDoesNotInventAccountOrScopeAndOnlyUsesTheFixedSetupCanary() async throws {

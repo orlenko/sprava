@@ -37,18 +37,27 @@ extension BinderIndex {
         if intake {
             c.intakeManifestIndexed = try !db.rows("SELECT 1 FROM sources WHERE kind = 'intake-manifest' AND key = ''").isEmpty
         }
+        let records = teka.map(Self.documents(in:)) ?? []
+        let paths = Dictionary(records.map { ($0.id, $0.path) }, uniquingKeysWith: { first, _ in first })
+        func append(_ coverage: DocumentCoverage, path: String?) {
+            c.documents.append(coverage)
+            if let path, !coverage.isComplete || !coverage.pagesKnown {
+                let pages = Set((coverage.pagesPoor ?? []) + coverage.pagesIllegible + coverage.pagesFailed.map(\.page))
+                c.namedGaps.append(.init(path: path, pages: pages.sorted()))
+            }
+        }
         var seen = Set<PassageSource>()
         for row in try db.rows("SELECT kind, key, coverage FROM sources") {
             guard let kind = row[0].text, let key = row[1].text, let source = PassageSource(kind: kind, key: key) else { continue }
             seen.insert(source)
             switch source {
             case .document(let id):
-                c.documents.append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
-                                   ?? DocumentCoverage(document: id.description, notIndexed: "its coverage cannot be read"))
+                append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
+                                   ?? DocumentCoverage(document: id.description, notIndexed: "its coverage cannot be read"), path: paths[id])
             case .intake(let path):
                 if intake {
-                    c.documents.append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
-                        ?? DocumentCoverage(document: "intake:\(path)", notIndexed: "its coverage cannot be read"))
+                    append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
+                        ?? DocumentCoverage(document: "intake:\(path)", notIndexed: "its coverage cannot be read"), path: path)
                 }
             case .openItem: c.openItems += 1
             case .closedItem: c.closedItems += 1
@@ -62,9 +71,12 @@ extension BinderIndex {
             if translations { c.translationLanguages = languages } else { c.languages = languages }
         }
         if let teka, teka.catalog != nil {
-            c.notYetIndexed = Self.documents(in: teka).filter { !seen.contains(.document($0.id)) }.map(\.id.description)
+            let missing = records.filter { !seen.contains(.document($0.id)) }
+            c.notYetIndexed = missing.map(\.id.description)
+            c.namedGaps += missing.map { .init(path: $0.path, pages: []) }
             c.catalogChecked = true
         }
+        c.namedGaps.sort { $0.path < $1.path }
         return c
     }
 
