@@ -179,7 +179,7 @@ import Testing
         let writer = ClaudeTodoWriter(); writer.attach(commands: s.commands, queue: DispatchQueue(label: "invented-writer"))
         let made = ClaudeTodoTools(folder: s.folder, record: record, history: TurnHistory(support: s.support, binder: UUID()), writer: writer)
         let tools = try #require(made), before = try notes(s)
-        #expect(Set(tools.appTools.tools.map(\.name)) == ["list_todos", "add_todo", "edit_todo", "complete_todo", "remove_todo", "propose_email_draft"])
+        #expect(Set(tools.appTools.tools.map(\.name)) == ["list_todos", "add_todo", "edit_todo", "complete_todo", "remove_todo", "propose_email_draft", "propose_rule"])
         let attaching = tools.appTools.call("propose_email_draft", .init([(key: "to", value: .array([.str("a@example.com")])), (key: "subject", value: .str("x")),
                                                                           (key: "body", value: .str("x")), (key: "attachments", value: .array([.str("documents/a.txt")]))]))
         #expect(attaching.refused && attaching.content["message"]?.stringValue?.contains("does not share the binder's documents") == true)

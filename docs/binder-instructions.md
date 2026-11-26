@@ -193,8 +193,11 @@ again, so an accept cut short and tried again writes the rule once. Accepting is
 
 Known limits. Undo last save is one level: a second accept ends the first one's Undo, and an older rule is
 removed by editing the text. An accepted rule is followed wherever the instructions are, by the reader of new
-documents and by the conversation, so the card is where the person decides. The tool that proposes a rule, the
-card in the app and replacing the whole section are still to come (`docs/plan-2026-11-25.md`, Track L).
+documents and by the conversation, so the card is where the person decides.
+
+The conversation proposes a rule with `propose_rule` (`docs/conversation.md` 8.1), which writes the card and changes
+nothing else. The card in the app and replacing the whole section are still to come (`docs/plan-2026-11-25.md`,
+Track L).
 
 ## 5. Templates carry a starting text
 

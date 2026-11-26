@@ -53,7 +53,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
     private var known: [String: String]
     private var changes = 0
     private var searches = 0
-    private var drafts = 0
+    private var drafts = 0, rules = 0
     static let maximumDrafts = 5
     private let search: (@Sendable (String, Int) throws -> ClaudeBinderContext.Found)?
     static let wholeBinderTools: Set<String> = ["search_binder", "update_notes"]
@@ -105,6 +105,16 @@ final class ClaudeTodoTools: @unchecked Sendable {
         if name == "list_todos" { return try lock.withLock { try list() } }
         if name == "search_binder" { return try searchBinder(args) }
         if name == "propose_email_draft" { return try lock.withLock { try proposeDraft(args) } }
+        if name == ClaudeRuleTool.name {
+            return try lock.withLock {
+                guard rules < ClaudeRuleTool.maximumPerTurn else {
+                    throw Refusal.invalid("This turn has proposed as many rules as one turn may (\(ClaudeRuleTool.maximumPerTurn)). Tell the person.")
+                }
+                let result = try ClaudeRuleTool.propose(args, folder: folder, writer: writer)
+                rules += 1
+                return result
+            }
+        }
         return try lock.withLock {
             guard changes < Self.maximumChanges else { throw Refusal.tooMany }
             let result: JSONValue
@@ -368,6 +378,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
                   ("in_reply_to", .obj([("type", .str("string")), ("description", .str("The Message-ID of the email this answers, when it answers one."))])),
                   ("references", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))]))])),
               ], required: ["to", "subject", "body"])),
+        ClaudeRuleTool.tool,
         .init(name: "list_todos", description: "Lists this binder's open to-dos with their ids, as they are now.", schema: schema([], required: [])),
         .init(name: "add_todo", description: "Adds one to-do to this binder at once. Returns its id.", schema: schema(fields, required: ["title"])),
         .init(name: "edit_todo", description: "Changes the named fields of one open to-do at once.", schema: schema([id] + fields, required: ["id"])),
