@@ -87,6 +87,29 @@ import Testing
         #expect(ClaudeFilingCorrections.read(in: s.folder, now: now.addingTimeInterval(91 * 86_400)).isEmpty)
     }
 
+    /// A binder whose `.sprava` is a link to another binder's sends none of that binder's paths to its Claude.
+    @Test func aLinkedStateFolderLeaksNoOtherBindersCorrections() throws {
+        let s = try setup()
+        _ = try file(s, "Notice one.pdf", folder: "notices", at: now)
+        let first = try record(s, "notices/Notice one.pdf")
+        let moved = try call(s, [("command", .str("apply")), ("binder", .string(s.folder.path)), ("op", .str("move_document")),
+            ("args", .obj([("id", first["id"]!), ("from", .str("notices/Notice one.pdf")), ("path", .str("private/Notice one.pdf")),
+                           ("sha256", first["sha256"]!)]))], at: now)
+        #expect(moved["ok"] == .bool(true))
+        #expect(ClaudeFilingCorrections.read(in: s.folder, now: now).count == 2)
+
+        let other = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-corrections-linked-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: s.folder.appendingPathComponent("catalog.json"), to: other.appendingPathComponent("catalog.json"))
+        try FileManager.default.createSymbolicLink(at: other.appendingPathComponent(".sprava"), withDestinationURL: s.folder.appendingPathComponent(".sprava"))
+        #expect(ClaudeFilingCorrections.read(in: other, now: now).isEmpty)
+        // Nor through a log that is itself a link.
+        let third = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-corrections-linked-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: third.appendingPathComponent(".sprava"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: third.appendingPathComponent(".sprava/ops.ndjson"), withDestinationURL: s.folder.appendingPathComponent(".sprava/ops.ndjson"))
+        #expect(ClaudeFilingCorrections.read(in: third, now: now).isEmpty)
+    }
+
     private func line(_ id: String, _ op: String, at: Date, actor: String, args: [(String, JSONValue)], extra: [(String, JSONValue)] = []) -> JSONObject {
         JSONObject([(key: "id", value: .string(id)), (key: "op", value: .string(op)), (key: "at", value: .string(ISOTime.string(at, timeZone: TimeZone(identifier: "UTC")!))),
                     (key: "actor", value: .obj([("kind", .string(actor))])), (key: "args", value: .obj(args))] + extra.map { (key: $0.0, value: $0.1) })

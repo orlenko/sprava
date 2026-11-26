@@ -27,8 +27,13 @@ enum ClaudeFilingCorrections {
     private static let maximumText = 300
 
     /// The corrections of the last `earlierDays`, oldest first. Empty when the log cannot be read.
+    ///
+    /// What is read here goes to a brain, so it is read from the binder's folder down with no link anywhere on the way:
+    /// a binder whose `.sprava` is a link to another binder's would otherwise send that binder's paths. Cards are read
+    /// through `ProposalStore`, which takes `.sprava` and `.sprava/proposals` only as real folders.
     static func read(in folder: URL, now: Date = Date()) -> [Correction] {
-        guard let log = try? TekaStore(folder: folder).readOpLog().ops else { return [] }
+        guard case .ok(let data) = SafeFile.read(folder.appendingPathComponent(".sprava/ops.ndjson"), under: folder, limit: TekaStore.opLogLimit),
+              let log = try? TekaStore.opLog(data).ops else { return [] }
         return corrections(in: log, now: now) { try? ProposalStore.load($0, in: folder, expectedDigest: nil) }
     }
 
