@@ -74,10 +74,11 @@ public enum TransactionGuard {
         }
         if stamped {
             let documents = catalog["documents"]?.arrayValue ?? []
+            let holders = idCounts(documents)
             for doc in documents {
                 guard case .object(let d) = doc else { continue }
                 for field in ["id", "title", "path"] where !ItemRules.isTruthy(d[field]) {
-                    result.insert(Violation(array: "documents", recordKey: recordKey(doc, in: documents),
+                    result.insert(Violation(array: "documents", recordKey: recordKey(doc, holders: holders),
                                             rule: "missing-field:\(field)"))
                 }
             }
@@ -85,9 +86,17 @@ public enum TransactionGuard {
         return result
     }
 
+    /// How many records of an array hold each id. Counted once for the array, so keying its records stays linear in
+    /// its length however many of them break a rule.
+    static func idCounts(_ array: [JSONValue]) -> [JSONValue: Int] {
+        var counts: [JSONValue: Int] = [:]
+        for entry in array { if let id = entry["id"] { counts[id, default: 0] += 1 } }
+        return counts
+    }
+
     /// A record's key: its id when that id is unique in the array, else the hash of the whole record.
-    static func recordKey(_ value: JSONValue, in array: [JSONValue]) -> String {
-        if let id = value["id"], array.filter({ $0["id"] == id }).count == 1 { return canonicalText(id) }
+    static func recordKey(_ value: JSONValue, holders: [JSONValue: Int]) -> String {
+        if let id = value["id"], holders[id] == 1 { return canonicalText(id) }
         return (try? Canonical.hash(value)) ?? "?"
     }
 
@@ -96,10 +105,11 @@ public enum TransactionGuard {
     static func itemViolations(_ findings: [(code: RuleFinding.Code, location: String, field: String?)],
                                items: [JSONValue]) -> Set<Violation> {
         var result = Set<Violation>()
+        let holders = idCounts(items)
         for finding in findings where finding.code != .duplicateID {
             let rule = finding.code.rawValue + (finding.field.map { ":" + $0 } ?? "")
             if let index = itemIndex(finding.location) {
-                let key = items.indices.contains(index) ? recordKey(items[index], in: items) : "?"
+                let key = items.indices.contains(index) ? recordKey(items[index], holders: holders) : "?"
                 result.insert(Violation(array: "open_items", recordKey: key, rule: rule))
             } else {
                 let array = String(finding.location.prefix { $0 != "[" })

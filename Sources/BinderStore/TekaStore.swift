@@ -250,37 +250,9 @@ public final class TekaStore {
         }
     }
 
-    func applyOnce(_ build: (JSONObject, [JSONObject]) throws -> [OpBody], batch: String?, now: Date) throws -> [JSONObject] {
-        var (catalog, hash, _) = try readCatalog()
-        var log = try readOpLog().ops
-        guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
-        try Self.refuseUnknownLevel(catalog)
-        try Self.refuseUnknownOps(log)
-        if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
-            log.append(contentsOf: absorbed)
-        }
-        if case .rolledForward = lastAbsorbed {
-            (catalog, hash, _) = try readCatalog()
-        }
-        // The chain must hold before anything is appended: the head of the log is the catalog found.
-        guard log.last?["after_hash"]?.stringValue == hash else { throw ChangedWhileWriting() }
-        let bodies = try build(catalog, log)
-        if let why = repeatsRefusal, bodies.contains(where: Self.writesRepeat) { throw Refused(reason: why) }
-        // A rename records the folder's new basename, the name the reader compares with (binder-v0 §3.1, §6.3).
-        for body in bodies where body.op == "rename_teka" {
-            guard let name = body.args["name"]?.stringValue,
-                  name.precomposedStringWithCanonicalMapping == folder.lastPathComponent.precomposedStringWithCanonicalMapping else {
-                throw Refused(reason: "a rename sets the binder's name to its folder's name; rename the folder first")
-            }
-        }
-        // A broken stamp blocks every write until the person approves its repair (binder-v0 §9.6).
-        if CatalogLevel.classify(catalog) == .brokenStamp, !Self.isStampRepair(bodies) {
-            throw Refused(reason: "the catalog's stamp is broken (meta.format_version); nothing is written until its repair is approved")
-        }
-
-        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
-        // Every write of several ops is one batch, so recovery sees all of it as the trailing write (binder-v0 §6.9).
-        let batch = batch ?? (bodies.count > 1 ? UUIDv7.make(now: now) : nil)
+    /// The op lines of `bodies` as they would be written, without their hashes: each with a new id, the time, its actor
+    /// and what a closure needs filled in from the catalog as it is now.
+    func opLines(_ bodies: [OpBody], on catalog: JSONObject, batch: String?, at: String, now: Date) throws -> [JSONObject] {
         var lines: [JSONObject] = []
         for (seq, var body) in bodies.enumerated() {
             // An applied op carries every value its effect needs (binder-v0 §6.3): a closure's time and source are
@@ -322,6 +294,56 @@ public final class TekaStore {
             if let note = body.extra.first(where: { $0.0 == "note" })?.1 { line.set("note", note) }
             lines.append(line)
         }
+        return lines
+    }
+
+    /// Those of `bodies` the guard takes one after another, each judged alone on the catalog the ones before it leave. A
+    /// batch of them is then a batch the guard takes, where one refused body would have refused every other with it.
+    /// Nothing is written.
+    func eachAccepted(_ bodies: [OpBody], on catalog: JSONObject, log: [JSONObject], now: Date) -> [OpBody] {
+        let knownIDs = Set(IDMint.usedIDs(opLog: log))
+        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        var state = catalog
+        return bodies.filter { body in
+            guard let lines = try? opLines([body], on: state, batch: nil, at: at, now: now),
+                  let next = try? TransactionGuard.check(lines, on: state, knownIDs: knownIDs).catalog else { return false }
+            state = next
+            return true
+        }
+    }
+
+    func applyOnce(_ build: (JSONObject, [JSONObject]) throws -> [OpBody], batch: String?, now: Date) throws -> [JSONObject] {
+        var (catalog, hash, _) = try readCatalog()
+        var log = try readOpLog().ops
+        guard !log.isEmpty else { throw Refused(reason: "this binder has not been adopted") }
+        try Self.refuseUnknownLevel(catalog)
+        try Self.refuseUnknownOps(log)
+        if let absorbed = try absorbOutsideEdits(catalog: catalog, hash: hash, log: log, now: now) {
+            log.append(contentsOf: absorbed)
+        }
+        if case .rolledForward = lastAbsorbed {
+            (catalog, hash, _) = try readCatalog()
+        }
+        // The chain must hold before anything is appended: the head of the log is the catalog found.
+        guard log.last?["after_hash"]?.stringValue == hash else { throw ChangedWhileWriting() }
+        let bodies = try build(catalog, log)
+        if let why = repeatsRefusal, bodies.contains(where: Self.writesRepeat) { throw Refused(reason: why) }
+        // A rename records the folder's new basename, the name the reader compares with (binder-v0 §3.1, §6.3).
+        for body in bodies where body.op == "rename_teka" {
+            guard let name = body.args["name"]?.stringValue,
+                  name.precomposedStringWithCanonicalMapping == folder.lastPathComponent.precomposedStringWithCanonicalMapping else {
+                throw Refused(reason: "a rename sets the binder's name to its folder's name; rename the folder first")
+            }
+        }
+        // A broken stamp blocks every write until the person approves its repair (binder-v0 §9.6).
+        if CatalogLevel.classify(catalog) == .brokenStamp, !Self.isStampRepair(bodies) {
+            throw Refused(reason: "the catalog's stamp is broken (meta.format_version); nothing is written until its repair is approved")
+        }
+
+        let at = ISOTime.string(now, timeZone: TimeZone(identifier: "UTC")!)
+        // Every write of several ops is one batch, so recovery sees all of it as the trailing write (binder-v0 §6.9).
+        let batch = batch ?? (bodies.count > 1 ? UUIDv7.make(now: now) : nil)
+        var lines = try opLines(bodies, on: catalog, batch: batch, at: at, now: now)
         let knownIDs = Set(IDMint.usedIDs(opLog: log))
         let (result, hashes) = try TransactionGuard.check(lines, on: catalog, knownIDs: knownIDs)
         // Nothing is written that would then block every write: a level this version does not know, or a stamp left

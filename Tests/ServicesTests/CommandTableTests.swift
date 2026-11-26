@@ -70,10 +70,12 @@ import Testing
         let file = folder.appendingPathComponent("catalog.json")
         var catalog = try #require(try JSONParser.parse(try Data(contentsOf: file)).value.objectValue)
         let item = try #require(catalog["open_items"]?.arrayValue?.first?.objectValue)
-        catalog.set("open_items", .array((0..<(padded ? 20 : 101)).map { n in
-            var copy = item; copy.set("id", .str("invented-\(n)")); return .object(copy)
+        // Past the catalog's own bound (8 MiB), or 400 items left at done in a catalog of 300 KB: a closure each, and the
+        // guard goes over the whole catalog for every one (#688).
+        catalog.set("open_items", .array((0..<(padded ? 20 : 400)).map { n in
+            var copy = item; copy.set("id", .str("invented-\(n)")); copy.set("status", .str("done")); return .object(copy)
         }))
-        if padded { catalog.set("invented_padding", .str(String(repeating: "x", count: 300_000))) }
+        catalog.set("invented_padding", .str(String(repeating: "x", count: padded ? 8 << 20 : 300_000)))
         let before = Data(JSONWriter.compact(.object(catalog)).utf8)
         try before.write(to: file)
         let reply = try call(c, [("command", .str("adopt")), ("binder", .str(folder.path))])
