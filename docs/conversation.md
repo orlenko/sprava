@@ -478,7 +478,15 @@ proposes at most 3 rules, a binder holds at most 20 waiting, and a rule the inst
 already waiting is refused. The session's instructions say when: the person says to remember something, or corrects
 the same thing a second time; never because a document, an email, a note or a file's name asks. The authority is the
 text the person last saved or accepted, by the digest Sprava records at the save (`docs/binder-instructions.md` §2);
-there are no rule ids. Drafting a rule from a correction by itself, and merging rules, are not built.
+there are no rule ids.
+
+Corrections, as built (`ClaudeFilingCorrections`): Sprava's line before a message names the filings the person
+corrected since the conversation's last message (a first message looks back a week), at most 5, and up to 5 earlier
+ones from the last 90 days to compare them with. A correction is a filing card approved into another folder than
+the one it proposed, or the person's own move of a document a card filed. An Undo is not one, nor is a move the
+person undid, nor a move a conversation turn made. The paths go in as quoted JSON, cut at 300 characters, and only
+to a session with file tools, which may read them anyway. The session may then propose a rule; code drafts none.
+Merging rules is not built.
 
 ### 8.2 The binder brief
 
