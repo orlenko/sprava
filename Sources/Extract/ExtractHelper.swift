@@ -170,6 +170,11 @@ public enum ExtractHelper {
                 guard remaining >= 0 else { throw Failure(message: "the page readings exceeded the text limit") }
                 r.pageReadings.append(page)
             }
+            // Intake and search must read the same words in the same physical order.
+            let joined = r.pageReadings.map(\.text).joined(separator: "\n\n")
+            let aggregate = Extractor.normalized(joined, limit: Extractor.Limits().textChars)
+            guard !aggregate.cut else { throw Failure(message: "the page readings exceeded the text limit") }
+            r.text = aggregate.text
         }
         r.mismatch = v["mismatch"] == .bool(true)
         if let e = v["email"] {
