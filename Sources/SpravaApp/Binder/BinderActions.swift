@@ -364,13 +364,43 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         alert.messageText = "Adopt this binder?"
         alert.informativeText = """
         Sprava adds a hidden .sprava folder and a .teka.lock file, saves a copy of catalog.json as found, \
-        and fills in follow-up dates for items waiting on someone (each marked as filled in). Everything else \
+        and fills in what needs no judgement: follow-up dates for items waiting on someone, dates written in \
+        another form, and a title for a document record that has none (each old value is kept). Everything else \
         arrives as cards for you to approve. Nothing else in the folder changes.
         """
         alert.addButton(withTitle: "Adopt")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         run("adopt", folder, [("in_registry", .bool(inRegistry))], then: reload)
+    }
+
+    /// The person's rename after a folder was renamed or copied (binder-v0 §3.1): only they know which it was, and what
+    /// becomes of the old name follows from the answer (`use_folder_name`).
+    func useFolderName(_ folder: URL, catalogName: String, reload: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Use the folder\u{2019}s name for this binder?"
+        alert.informativeText = """
+        This binder\u{2019}s catalog calls it \u{201C}\(catalogName)\u{201D}, and its folder is named \u{201C}\(folder.lastPathComponent)\u{201D}. \
+        Sprava sets the binder\u{2019}s name to the folder\u{2019}s. What happens to the old name depends on how this came about.
+
+        Renamed: it is the same binder under a new name. What was addressed to the old name is still collected for 30 days.
+
+        A copy: another binder still uses the old name. Nothing is collected under it here.
+        """
+        alert.addButton(withTitle: "It was renamed")
+        alert.addButton(withTitle: "It is a copy")
+        alert.addButton(withTitle: "Cancel")
+        guard let former = Self.formerNameChoice(alert.runModal()) else { return }
+        run("use_folder_name", folder, [("former", .string(former))], then: reload)
+    }
+
+    /// What the rename alert's answer says of the old name; nil for Cancel.
+    nonisolated static func formerNameChoice(_ response: NSApplication.ModalResponse) -> String? {
+        switch response {
+        case .alertFirstButtonReturn: "renamed"
+        case .alertSecondButtonReturn: "copy"
+        default: nil
+        }
     }
 
     /// Approves a card with what the person set on it; nil when the card already has a request pending.
