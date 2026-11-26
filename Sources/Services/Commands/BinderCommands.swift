@@ -19,6 +19,34 @@ extension Commands {
         "switch_dashboard": { c, _, r, now, today in try c.switchDashboard(r, now: now, today: today) },
         "create_binder": { c, _, r, now, today in try c.createBinder(r, now: now, today: today) },
         "history": { c, _, r, now, today in try c.history(r, now: now, today: today) },
+        "page_reading": { c, _, r, _, _ in
+            guard let id = r["document_id"], ItemID(id) != nil, let path = r["path"]?.stringValue,
+                  let revision = r["revision"]?.stringValue,
+                  PersonPageReading(revision: revision, page: 1, text: "") != nil else {
+                throw Failure(message: "The page could not be identified.")
+            }
+            let matches = (Teka.read(try c.folder(r)).catalog?["documents"]?.arrayValue ?? []).filter { $0["id"] == id }
+            guard matches.count == 1, let doc = matches.first, doc["path"] == .str(path),
+                  let entries = PersonPageReading.list(in: doc) else { throw Failure(message: "Reopen the filed document before editing this page.") }
+            let current = entries.filter { $0.revision == revision }
+            guard let raw = r["page"] else {
+                let marks = current.map { JSONValue.obj([("page", .int($0.page)), ("searchable", .bool($0.searchable))]) }
+                return JSONObject([(key: "marks", value: .array(marks))])
+            }
+            guard let number = raw.numberValue?.safeInteger else { throw Failure(message: "The page number could not be read.") }
+            let entry = current.first { $0.page == Int(number) }
+            return JSONObject([(key: "text", value: entry.map { .str($0.text) } ?? .null)])
+        },
+        "save_page_reading": { c, _, r, now, _ in
+            guard let id = r["document_id"], let path = r["path"]?.stringValue,
+                  let revision = r["revision"]?.stringValue, let page = r["page"]?.numberValue?.safeInteger,
+                  let text = r["text"]?.stringValue, let expected = r["expected"], expected == .null || expected.stringValue != nil,
+                  let reading = PersonPageReading(revision: revision, page: Int(page), text: text) else {
+                throw Failure(message: "The page reading could not be saved with these details.")
+            }
+            try TekaStore(folder: c.folder(r), client: c.client).savePageReading(reading, documentID: id, path: path, expected: expected.stringValue, now: now)
+            return JSONObject()
+        },
         "save_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
         "undo_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
     ]
