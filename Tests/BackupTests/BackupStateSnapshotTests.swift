@@ -16,7 +16,8 @@ import Testing
         let schema = StateStore.Schema(version: 1, statements: [])
         let writer = try StateStore.open(database, schema: schema)
         try writer.write { try $0.setDocument(["invented-before"], key: "value") }
-        for path in ["Captures/invented.sqlite", "Captures/invented.log", "runtime/jobs.log", "runtime/jobs.log.1", "mcp/audit/invented.log"] {
+        for path in ["Captures/invented.sqlite", "Captures/invented.log", "runtime/jobs.log", "runtime/jobs.log.1", "mcp/audit/invented.log",
+                     "capture/placed-drafts/records.sqlite", "capture/placed-drafts/records.sqlite-wal"] {
             let file = support.appendingPathComponent(path)
             try AtomicFile.makePrivateFolder(file.deletingLastPathComponent())
             try Data("invented bytes".utf8).write(to: file)
@@ -47,6 +48,7 @@ import Testing
             #expect(!FileManager.default.fileExists(atPath: copy.appendingPathComponent("mcp/audit").path))
             #expect(!FileManager.default.fileExists(atPath: copy.appendingPathComponent("mcp/mcp.sock").path))
             #expect(!FileManager.default.fileExists(atPath: copy.appendingPathComponent("backup/run").path))
+            #expect(!FileManager.default.fileExists(atPath: copy.appendingPathComponent("capture/placed-drafts").path))
             for path in ["Captures/invented.sqlite", "Captures/invented.log"] {
                 #expect(try Data(contentsOf: copy.appendingPathComponent(path)) == Data("invented bytes".utf8))
             }
