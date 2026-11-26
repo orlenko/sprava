@@ -592,6 +592,14 @@ Each line names what replaced the entry; its old text is in git history.
   As built so far (2026-11-26): the built-in binders are a short list in `Shelf` (`BuiltInBinder.Kind`: General, then
   Improvements), each bound by its own key in the one store and made on first use by `general_binder` or
   `improvements_binder`. Either stays on this Mac's Shelf: it is never removed, transferred or offloaded.
+  The suggestion (`SuggestionCard`, `ClaudeSuggestionTool`): the conversation's `suggest_improvement` writes a card
+  in its own binder with a title, what was attempted, what stood in the way, and a script's text when one is named.
+  A script is read when the card is made: a path inside the binder with no hidden segment and no link on the way,
+  under `scripts/` or named as a script, never under `intake/`, never a key file, at most 32 KiB. The card lists as
+  kind `suggestion` with the whole text, and warns when the text looks like it holds a key. `send_suggestion` is the
+  person's approval: the text, or their edit of it, becomes an open to-do in Improvements (made then, on first use),
+  and the source binder keeps a log entry with none of the text. The ordinary approve refuses the card. Counts,
+  Export and closing with a release are not built yet.
 - **D48 decided (2026-11-25, the author: "we should be able to read back the draft and figure out what we're sending
   or have sent"; "3a").** The outgoing mail exporter reads a placed draft back and compares it with what was approved;
   finds the sent copy, compares it, and offers to file it, log it and set the to-do waiting; and marks a draft that has

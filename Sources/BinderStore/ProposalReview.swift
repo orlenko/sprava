@@ -64,6 +64,20 @@ extension Proposal {
             out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
             return out
         }
+        // A suggestion for Sprava (decisions.md D47) shows the whole text that would go to Improvements, as inert text.
+        if let suggestion = SuggestionCard(self) {
+            out.set("kind", .str("suggestion"))
+            var fields: [(String, JSONValue)] = [("title", .string(suggestion.title)), ("text", .string(suggestion.note))]
+            if let script = suggestion.script { fields.append(("script", .string(script.path))) }
+            out.set("suggestion", .obj(fields))
+            var warnings = ["Sending adds this text to your Improvements binder as a to-do. Read it first: it should hold nothing from this binder that you would not put in an issue."]
+            if SuggestionCard.looksLikeItHoldsAKey(suggestion.note) {
+                warnings.insert("This text holds what looks like a key or a password. Take it out before sending.", at: 0)
+            }
+            out.set("warnings", Self.strings(warnings))
+            out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
+            return out
+        }
         // An email draft (decisions.md D41) shows every field it would carry out of the Mac, as inert text.
         if let d = provenance?["draft"]?.objectValue {
             func strings(_ key: String) -> JSONValue { .array((d[key]?.arrayValue ?? []).filter { $0.stringValue != nil }) }

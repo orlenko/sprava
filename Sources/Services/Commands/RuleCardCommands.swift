@@ -8,6 +8,8 @@ import SpravaKit
 struct RuleCardRecord {
     let file: URL
     init(support: URL) { file = support.appendingPathComponent("learning/rule-cards.json") }
+    /// The same record for another kind of card Sprava writes, in a file of its own.
+    init(file: URL) { self.file = file }
 
     func contains(_ key: String) -> Bool { keys().contains(key) }
 
