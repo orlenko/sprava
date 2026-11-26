@@ -74,6 +74,22 @@ import Testing
         #expect(answer.refused && cards(s).count == 1, "\(answer.content)")
     }
 
+    // The binder's cards are read within a bound before one is added: past it nothing is loaded and no card is written.
+    @Test func aCardCollectionPastItsBoundIsNotLoadedAndGetsNoCard() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        #expect(!propose(turn, rule).refused)
+        let files = try FileManager.default.contentsOfDirectory(atPath: s.folder.appendingPathComponent(".sprava/proposals").path).count
+        let args = JSONObject([(key: "rule", value: .str("Keep receipts for a year.")), (key: "reason", value: .str("You said so.")), (key: "about", value: .str("filing"))])
+        #expect(throws: ClaudeTodoTools.Refusal.self) {
+            _ = try ClaudeRuleTool.propose(args, folder: s.folder, writer: turn.writer, maximumCards: files - 1)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: s.folder.appendingPathComponent(".sprava/proposals").path).count == files)
+        #expect(cards(s).count == 1)
+        // Within the bound it is proposed.
+        _ = try ClaudeRuleTool.propose(args, folder: s.folder, writer: turn.writer, maximumCards: files)
+        #expect(cards(s).count == 2)
+    }
+
     @Test func oneTurnProposesFewRules() throws {
         let s = try pSetup(), turn = try Turn(s)
         for index in 0..<ClaudeRuleTool.maximumPerTurn { #expect(!propose(turn, "Invented rule \(index).").refused) }

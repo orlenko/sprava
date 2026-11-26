@@ -16,7 +16,9 @@ enum ClaudeRuleTool {
     /// Rule cards that may wait in one binder; past it the person settles some first.
     static let maximumWaiting = 20
 
-    static func propose(_ args: JSONObject, folder: URL, writer: ClaudeTodoWriter) throws -> JSONValue {
+    /// `maximumCards` bounds how many card files the binder may hold for the waiting rules to be read at all: decided
+    /// cards stay in the folder, and a collection past the bound is never loaded (architecture 4.6).
+    static func propose(_ args: JSONObject, folder: URL, writer: ClaudeTodoWriter, maximumCards: Int = ProposalStore.maximumEntries) throws -> JSONValue {
         guard let rule = args["rule"]?.stringValue, let reason = args["reason"]?.stringValue else {
             throw Refusal.invalid("Give the rule, one line, and the reason for it. Nothing was proposed.")
         }
@@ -32,7 +34,11 @@ enum ClaudeRuleTool {
                    LearnedRules.adding(card.rule, on: CalendarDate.today(), to: instructions.text) == instructions.text {
                     throw Refusal.invalid("This binder's instructions already hold that rule. Nothing was proposed.")
                 }
-                let waiting = ProposalStore.list(in: folder).map(\.0).filter { $0.state == "proposed" }.compactMap(RuleCard.init)
+                let listed: [(Proposal, String)]
+                do { listed = try ProposalStore.boundedList(in: folder, maxEntries: maximumCards) } catch {
+                    throw Refusal.invalid("This binder's cards are too many or cannot be read safely, so none was added. Tell the person; nothing was proposed.")
+                }
+                let waiting = listed.map(\.0).filter { $0.state == "proposed" }.compactMap(RuleCard.init)
                 guard !waiting.contains(where: { $0.rule == card.rule }) else {
                     throw Refusal.invalid("That rule is already on a card, waiting for the person. Nothing was proposed.")
                 }
