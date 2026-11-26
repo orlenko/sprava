@@ -51,7 +51,7 @@ struct ClaudeBinderContext: Sendable {
         guard teka.catalog != nil, !Teka.expungePending(in: folder) else { throw Unavailable() }
         let scoped = ScopedReader(base: reader, documents: true, intake: true, cancelled: cancelled)
         let (index, _) = try refreshedIndex(folder: folder, support: support, teka: teka, intake: true, reader: scoped, cancelled: cancelled)
-        let result = try index.search(searchTerms(query), limit: limit, teka: teka, intake: true)
+        let result = try index.search(searchTerms(query), limit: limit, teka: teka, intake: true, keptFiles: true)
         let records = teka.catalog?["documents"]?.arrayValue ?? []
         var sources: [Source] = []
         for hit in result.hits {
@@ -70,6 +70,9 @@ struct ClaudeBinderContext: Sendable {
             index = existing; try index.refresh(teka: teka, reader: reader)
         } else { index = try BinderIndex.rebuild(binder: folder, teka: teka, reader: reader, trust: trust) }
         guard !cancelled() else { throw Unavailable() }
+        if reader.documents {
+            try index.refreshKeptFolders(KeptFolders(support: support), teka: teka, reader: reader, cancelled: cancelled)
+        }
         let paths = intake ? try intakePaths(folder) : []
         if intake { try index.refreshIntake(paths: paths, reader: reader) }
         guard !cancelled() else { throw Unavailable() }
@@ -84,6 +87,7 @@ struct ClaudeBinderContext: Sendable {
             guard documents, let record = records.first(where: { ItemID($0["id"]) == id }) else { return nil }
             return record["path"]?.stringValue
         case .intake(let value): return intake ? value : nil
+        case .keptFile(let path): return documents ? path : nil
         case .openItem(let id): return "catalog.json#item:" + id.description
         case .closedItem(let id): return "catalog.json#closed-item:" + id.description
         case .log, .personLine: return nil
@@ -98,7 +102,7 @@ struct ClaudeBinderContext: Sendable {
         guard teka.catalog != nil, !Teka.expungePending(in: folder) else { throw Unavailable() }
         let scoped = ScopedReader(base: reader, documents: documents, intake: intake, cancelled: cancelled)
         let (index, paths) = try refreshedIndex(folder: folder, support: support, teka: teka, intake: intake, reader: scoped, cancelled: cancelled)
-        let result = try index.search(searchTerms(query), limit: 50, teka: teka, intake: intake)
+        let result = try index.search(searchTerms(query), limit: 50, teka: teka, intake: intake, keptFiles: documents)
         var sources: [Source] = []
         var seen = Set<String>()
         // Intake is exclusively an intake-owner surface, even if a catalog calls it a document.

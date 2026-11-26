@@ -30,6 +30,7 @@ extension BinderIndex {
         for source in indexed.keys where current[source] == nil && !listed.contains(source) {
             if case .personLine = source { continue }
             if case .intake = source { continue }
+            if case .keptFile = source { continue }
             try remove(source)
         }
         for record in records { try update(record, reader: reader, indexed: indexed[.document(record.id)]) }
@@ -68,7 +69,10 @@ extension BinderIndex {
         }
         guard let now = reader.revision(of: record) else {
             coverage.notIndexed = "the file cannot be read now"
-            return try replace(source, revision: "unreadable", language: "und", cuts: [], coverage: coverage)
+            let names: [Cut]
+            if case .keptFile(let path) = source { names = Self.cut((path as NSString).lastPathComponent, page: nil) }
+            else { names = [] }
+            return try replace(source, revision: "unreadable", language: "und", cuts: names, coverage: coverage)
         }
         if now == indexed { return }
         let read = reader.read(record)
@@ -78,6 +82,7 @@ extension BinderIndex {
         coverage.notes = read.notes
         coverage.pagesPoor = read.poorPages
         var cuts: [Cut] = []
+        if case .keptFile(let path) = source { cuts = Self.cut((path as NSString).lastPathComponent, page: nil) }
         for (number, page) in read.pages {
             if number == nil { coverage.pagesKnown = false }
             switch page {
@@ -89,7 +94,7 @@ extension BinderIndex {
             }
         }
         // Past a cap the rest is left out, and the coverage says so.
-        let others = try db.rows("SELECT coalesce(sum(bytes), 0) FROM passages WHERE kind IN ('document', 'intake') AND NOT (kind = ? AND key = ?)",
+        let others = try db.rows("SELECT coalesce(sum(bytes), 0) FROM passages WHERE kind IN ('document', 'intake', 'kept-file') AND NOT (kind = ? AND key = ?)",
                                  .text(source.kind), .text(source.key)).first?.first?.integer ?? 0
         var room = Int64(Self.maxIndexTextBytes) - others, kept = 0
         while kept < min(cuts.count, Self.maxPassagesPerSource), Int64(cuts[kept].text.utf8.count) <= room {
@@ -128,7 +133,7 @@ extension BinderIndex {
         var out: [PassageSource: String] = [:]
         // Keep old source keys for removals, but refresh document coverage written before page grading.
         for row in try db.rows("""
-            SELECT kind, key, CASE WHEN kind IN ('document', 'intake') AND json_valid(coverage)
+            SELECT kind, key, CASE WHEN kind IN ('document', 'intake', 'kept-file') AND json_valid(coverage)
                 AND json_type(coverage, '$.pagesPoor') IS NULL THEN '' ELSE revision END FROM sources
             """) {
             if let kind = row[0].text, let key = row[1].text, let source = PassageSource(kind: kind, key: key) { out[source] = row[2].text ?? "" }
