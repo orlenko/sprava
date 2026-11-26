@@ -779,7 +779,8 @@ An undo is computed against the record as it is now, field by field, never appli
 | `move_document` | `move_document` back, `from` and `path` swapped, when the record's `path` is still the op's `path`. Otherwise the person decides. |
 | `unfile_document` | `file_document` of the held file at `to`, the removed `document` under a newly minted id with `provenance.refiled_from` set to the old id, applied only on the person's explicit choice in the app, which also releases the hold. |
 | `transfer_document` | `transfer_document` back, from the destination, of the record its transfer batch filed. |
-| `update_document`, `set_meta` | the same op, restoring the earlier values |
+| `update_document` | `update_document` that restores the earlier values, field by field as for `update_item`: a field changed since keeps its newer value. Refused when it would remove `title` or `path`, and, once the record changed since, when it would touch `sensitivity` or `sensitivity` itself changed. A restored `path` needs its file there, as any recorded path does. |
+| `set_meta` | the same op, restoring the earlier values |
 | `set_disclosure` | `set_disclosure` back. What the hub already received is not recalled (section 5.5). |
 | `rename_teka` | No op undoes it. Rename the folder back and apply `rename_teka` again. |
 | `add_log_entry`, `external_edit`, `import_snapshot`, `migrate`, `abort`, `expunge` | Cannot be undone; they record facts. The change an external edit made can be reversed with ordinary ops. |

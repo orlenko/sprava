@@ -10,7 +10,7 @@ public enum Undo {
 
     /// The ops `compensate` can reverse; every other op records a fact or is corrected by another op (binder-v0 §6.10).
     public static func supported(_ op: JSONObject) -> Bool {
-        ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop", "move_document"]
+        ["add_item", "update_item", "set_status", "dismiss", "undismiss", "complete", "drop", "move_document", "update_document"]
             .contains(op["op"]?.stringValue ?? "")
     }
 
@@ -118,6 +118,9 @@ public enum Undo {
                                    (key: "sha256", value: sha)])
             return Compensation(op: "move_document", args: back, expect: JSONObject([(key: "set", value: .obj([("path", .string(path))]))]),
                                 kept: [])
+
+        case "update_document":
+            return try documentCompensation(target, catalog: catalog, opLog: opLog, stateBefore: stateBefore, stateAfter: stateAfter)
 
         case "update_item":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }
@@ -283,10 +286,12 @@ public enum Undo {
         }
     }
 
-    /// The fields of open item `id` that the ops after `log[index]` changed at any step, starting from `state`, the
-    /// catalog just after it; aborted ops never took effect and are skipped. A later op that was undone, and the op
-    /// that undid it, cancel out and count for nothing. Nil when a step cannot be applied.
-    static func writes(after index: Int, in log: [JSONObject], from state: JSONObject, item id: JSONValue) -> Set<String>? {
+    /// The fields of open item `id` (or, with `list` "documents", of that document record) that the ops after
+    /// `log[index]` changed at any step, starting from `state`, the catalog just after it; aborted ops never took
+    /// effect and are skipped. A later op that was undone, and the op that undid it, cancel out and count for nothing.
+    /// Nil when a step cannot be applied.
+    static func writes(after index: Int, in log: [JSONObject], from state: JSONObject, item id: JSONValue,
+                       list: String = "open_items") -> Set<String>? {
         let aborted = Set(log.filter { $0["op"] == .str("abort") }.flatMap { $0["args"]?["ops"]?.arrayValue ?? [] }.compactMap(\.stringValue))
         let later = log.dropFirst(index + 1).filter { !aborted.contains($0["id"]?.stringValue ?? "") }
         let laterIDs = Set(later.compactMap { $0["id"]?.stringValue })
@@ -295,7 +300,7 @@ public enum Undo {
             guard let undone = op["compensates"]?.stringValue, laterIDs.contains(undone), let id = op["id"]?.stringValue else { continue }
             cancelled.formUnion([undone, id])
         }
-        func item(_ c: JSONObject) -> JSONObject? { c["open_items"]?.arrayValue?.first { $0["id"] == id }?.objectValue }
+        func item(_ c: JSONObject) -> JSONObject? { c[list]?.arrayValue?.first { $0["id"] == id }?.objectValue }
         var state = state, fields = Set<String>()
         for op in later {
             let next: JSONObject
@@ -310,19 +315,25 @@ public enum Undo {
             if !cancelled.contains(op["id"]?.stringValue ?? "") {
                 for key in Set((was?.keys ?? []) + (now?.keys ?? [])) where was?[key] != now?[key] { fields.insert(key) }
                 // A value written again unchanged, such as an approved proposal that sets the same date, is a choice too.
-                if op["args"]?["id"] == id { fields.formUnion(named(op)) }
+                if op["args"]?["id"] == id, documentOps.contains(op["op"]?.stringValue ?? "") == (list == "documents") {
+                    fields.formUnion(named(op))
+                }
             }
             state = next
         }
         return fields
     }
 
-    /// The item fields `op` writes by name, whatever their values were: an edit's `set` and `unset`, a status with the
-    /// waiting fields it is given.
+    /// The ops whose `args.id` names a document record, not an open item: the two lists may hold the same id.
+    static let documentOps: Set<String> = ["update_document", "move_document"]
+
+    /// The fields `op` writes by name, whatever their values were: an edit's `set` and `unset`, a status with the
+    /// waiting fields it is given, a move's `path`.
     static func named(_ op: JSONObject) -> [String] {
         let args = op["args"]?.objectValue ?? JSONObject()
         switch op["op"]?.stringValue {
-        case "update_item": return (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+        case "move_document": return ["path"]
+        case "update_item", "update_document": return (args["set"]?.objectValue?.keys ?? []) + (args["unset"]?.arrayValue?.compactMap(\.stringValue) ?? [])
         case "set_status": return ["status"] + ["waiting_on", "follow_up_at", "expected_by"].filter { args[$0] != nil }
         default: return []
         }
