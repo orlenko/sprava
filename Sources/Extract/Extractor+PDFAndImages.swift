@@ -12,7 +12,7 @@ extension Extractor {
         if doc.isEncrypted && doc.isLocked { return Result(kind: "pdf", text: "", textFrom: "parsed", problem: "the PDF is protected by a password") }
         let count = doc.pageCount
         guard count <= limits.pages else { return Result(kind: "pdf", text: "", textFrom: "parsed", pages: count, problem: "more pages than the limit (\(count))") }
-        var parts: [String] = []
+        var readings: [Page] = []
         var layerPages = 0, ocrFound = false
         // A page that does not open, draw or go through OCR holds the whole file: the other pages alone are not the
         // document. A page whose OCR ran and found nothing is read, and empty.
@@ -20,23 +20,28 @@ extension Extractor {
         for i in 0..<count {
             guard let page = doc.page(at: i) else { return held(i, "of the PDF does not open") }
             let layer = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let bounds = page.bounds(for: .mediaBox)
+            let area = Double(bounds.width * bounds.height)
+            var reading: Page
             if layer.count >= 20 {
                 layerPages += 1
-                parts.append(layer)
+                reading = Page(text: layer, method: .textLayer, confidence: nil)
             } else {
                 // An image the page draws is decoded whole, whatever the page's size: one declared past the pixel
                 // limit holds the file before drawing.
                 if let ref = page.pageRef, drawsImagePast(limits.pixels, ref) { return held(i, "holds a picture larger than the pixel limit") }
                 guard let image = render(page, maxPixels: limits.pixels) else { return held(i, "has no text layer and cannot be drawn for OCR (too large, or empty)") }
-                guard let text = ocr(image) else { return held(i, "could not be read by OCR") }
-                if !text.isEmpty { ocrFound = true }
-                parts.append(text)
+                guard let recognized = recognizedPage(image) else { return held(i, "could not be read by OCR") }
+                if !recognized.text.isEmpty { ocrFound = true }
+                reading = recognized
             }
+            if area.isFinite && area > 0 { reading.area = area }
+            readings.append(reading)
         }
         // One of the contract's values (adaptation-layer §3): any text that came from OCR makes the reading `ocr`, so
         // the card asks for its names and numbers to be checked; a blank page that OCR found empty changes nothing.
         let from = ocrFound || (layerPages == 0 && count > 0) ? "ocr" : "text-layer"
-        return Result(kind: "pdf", text: parts.joined(separator: "\n\n"), textFrom: from, pages: count)
+        return pagedResult(kind: "pdf", readings: readings, from: from)
     }
 
     /// Whether a page draws an image declared past `limit` pixels: inline in its content, among the XObjects and
@@ -186,7 +191,7 @@ extension Extractor {
         }
         let count = CGImageSourceGetCount(src)
         guard count <= limits.pages else { return Result(kind: "image", text: "", textFrom: "ocr", pages: count, problem: "more pages than the limit (\(count))") }
-        var parts: [String] = []
+        var readings: [Page] = []
         for i in 0..<count {
             // The size a page declares is checked before it is decoded: a small file can declare a huge picture.
             guard let pixels = declaredPixels(src, i), pixels <= Double(limits.pixels) else {
@@ -197,12 +202,18 @@ extension Extractor {
             guard let img = CGImageSourceCreateImageAtIndex(src, i, nil) else {
                 return Result(kind: "image", text: "", textFrom: "ocr", pages: count, problem: "page \(i + 1) of the image does not open")
             }
-            guard let text = ocr(img) else {
+            guard let reading = recognizedPage(img) else {
                 return Result(kind: "image", text: "", textFrom: "ocr", pages: count, problem: "page \(i + 1) of the image could not be read by OCR")
             }
-            parts.append(text)
+            readings.append(reading)
         }
-        return Result(kind: "image", text: parts.joined(separator: "\n\n"), textFrom: "ocr", pages: count)
+        return pagedResult(kind: "image", readings: readings, from: "ocr")
+    }
+
+    private static func pagedResult(kind: String, readings: [Page], from: String) -> Result {
+        var result = Result(kind: kind, text: readings.map(\.text).joined(separator: "\n\n"), textFrom: from, pages: readings.count)
+        result.pageReadings = readings
+        return result
     }
 
     /// The pixels a picture's header declares, read without decoding it; nil when it declares no size.
@@ -215,6 +226,10 @@ extension Extractor {
 
     /// The text Vision finds in an image, empty when it finds none; nil when recognition itself failed.
     public static func ocr(_ image: CGImage) -> String? {
+        recognizedPage(image)?.text
+    }
+
+    private static func recognizedPage(_ image: CGImage) -> Page? {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -225,8 +240,9 @@ extension Extractor {
         // Reading order: top to bottom, then left to right.
         let lines = observations.sorted {
             abs($0.boundingBox.midY - $1.boundingBox.midY) > 0.01 ? $0.boundingBox.midY > $1.boundingBox.midY : $0.boundingBox.minX < $1.boundingBox.minX
-        }.compactMap { $0.topCandidates(1).first?.string }
-        return lines.joined(separator: "\n")
+        }.compactMap { $0.topCandidates(1).first }
+        let confidence = lines.isEmpty ? nil : lines.reduce(0.0) { $0 + Double($1.confidence) } / Double(lines.count)
+        return Page(text: lines.map(\.string).joined(separator: "\n"), method: .ocr, confidence: confidence)
     }
 }
 

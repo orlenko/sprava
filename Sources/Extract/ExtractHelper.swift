@@ -199,6 +199,17 @@ public enum ExtractHelper {
         var r = Extractor.Result(kind: v["kind"]?.stringValue ?? "unknown", text: v["text"]?.stringValue ?? "",
                                  textFrom: v["text_from"]?.stringValue ?? "parsed", pages: v["pages"]?.numberValue?.safeInteger.map(Int.init),
                                  problem: v["problem"]?.stringValue)
+        if let field = v["page_readings"] {
+            guard let pages = field.arrayValue, pages.count == r.pages, pages.count <= Extractor.Limits().pages,
+                  r.problem == nil else { throw Failure(message: "the reader returned invalid page readings") }
+            var remaining = Extractor.Limits().textChars
+            for entry in pages {
+                guard let page = Extractor.Page(json: entry) else { throw Failure(message: "the reader returned an invalid page") }
+                remaining -= page.text.unicodeScalars.count
+                guard remaining >= 0 else { throw Failure(message: "the page readings exceeded the text limit") }
+                r.pageReadings.append(page)
+            }
+        }
         r.mismatch = v["mismatch"] == .bool(true)
         if let e = v["email"] {
             r.email = Extractor.Email(subject: e["subject"]?.stringValue, from: e["from"]?.stringValue, to: e["to"]?.stringValue,

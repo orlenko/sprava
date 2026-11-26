@@ -4,11 +4,23 @@ import Foundation
 /// The runtime runs them in the sandboxed `sprava-extract` helper, which has no file and no network access; the
 /// bytes arrive on standard input.
 public enum Extractor {
+    /// A page of a completed document reading, in original page order. Blank pages keep their place.
+    public struct Page: Sendable, Equatable {
+        public enum Method: String, Sendable { case textLayer = "text-layer", ocr }
+        public var text: String
+        public let method: Method
+        /// Mean confidence of Vision's top candidate for each recognized line.
+        public let confidence: Double?
+        /// Area of a PDF page in square points, for judging the density of its text layer.
+        public var area: Double?
+    }
+
     public struct Result: Sendable, Equatable {
         public var kind: String              // text, pdf, image, document, email
         public var text: String
         public var textFrom: String          // entered, text-layer, ocr, parsed
         public var pages: Int?
+        public var pageReadings: [Page] = []
         public var email: Email?
         public var problem: String?          // set when the file is held for the person
         public var mismatch: Bool = false    // the name says one type, the bytes another
@@ -132,6 +144,13 @@ public enum Extractor {
         result.text = text
         // A reading stopped by the text limit is held, never passed on as if it were whole (adaptation-layer §2).
         if cut, result.problem == nil { result.problem = "longer than the text limit (\(limits.textChars) characters); only the start was read" }
+        if cut {
+            result.pageReadings = []
+        } else {
+            for index in result.pageReadings.indices {
+                result.pageReadings[index].text = normalize(result.pageReadings[index].text, limit: limits.textChars)
+            }
+        }
         result.mismatch = nameMismatch(name, sniffed)
         return result
     }

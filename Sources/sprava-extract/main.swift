@@ -22,6 +22,7 @@ o.set("kind", .string(r.kind))
 o.set("text", .string(r.text))
 o.set("text_from", .string(r.textFrom))
 if let pages = r.pages { o.set("pages", .int(pages)) }
+if !r.pageReadings.isEmpty { o.set("page_readings", .array(r.pageReadings.map(\.json))) }
 if let problem = r.problem { o.set("problem", .string(problem)) }
 if r.mismatch { o.set("mismatch", .bool(true)) }
 if let e = r.email {
