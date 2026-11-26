@@ -47,6 +47,11 @@ public struct Teka: Sendable {
         }
     }
 
+    /// Whether adoption would take this folder as it is: a readable binder nothing has adopted, with nothing that blocks
+    /// every write. A name that differs from the folder's, as a copied or renamed binder has, blocks publishing only,
+    /// so it does not stand in the way (binder-v0 §3.1, §9.4).
+    public var canBeAdopted: Bool { !isAdopted && state >= .needsAttention && !writesBlocked }
+
     /// A stamped binder without a valid `meta.disclosure` has no level that says what may leave it, so nothing does.
     public var federationBlocked: Bool {
         writesBlocked || (states[.needsAttention] ?? []).contains { $0 == Self.nameDiffers || $0 == Self.noDisclosure }
