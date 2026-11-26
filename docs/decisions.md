@@ -595,11 +595,12 @@ Each line names what replaced the entry; its old text is in git history.
   gone stale. It searches the Sent folder only for drafts it placed; this amends D41, which allowed no IMAP command
   beyond placing. What it does on a match is a card. Sending stays the person's (D13, D41). Not chosen:
   importing all sent mail (Track M).
-- **D49 recommended (2026-11-25, the lead, answering the author's "Do you have a specific suggestion to implement this
-  as a feature?").** Reading coverage, the page and legibility part of D17: the OCR step keeps its confidence; code
+- **D49 decided (2026-11-26, the author: "go with a", the whole of it; proposed by the lead on 2026-11-25, answering
+  "Do you have a specific suggestion to implement this as a feature?").** Reading coverage, the page and legibility part of D17: the OCR step keeps its confidence; code
   grades each page good, poor or unreadable; the filing card, Explore and a per-binder list show what was not fully
   read, and the person can mark a page as read by them or type what it says; every search result names the documents
-  it could not read; a folder marked "keep as is" is never carded. Waiting for the author's go (Track E).
+  it could not read; a folder marked "keep as is" is never carded. Not chosen: leaving out the person's typed
+  reading of a page, the largest part (Track E).
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
