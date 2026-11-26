@@ -113,10 +113,13 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         var rules: [String: String] = [:]
         var originalItems: [String: [Editable]] = [:]
         var originalFolders: [String: String] = [:]
+        /// Each rule card's rule as proposed, so an edit opened and left as it was is not unsaved work.
+        var originalRules: [String: String] = [:]
         var isEmpty: Bool { description == nil && editing.isEmpty && folders.isEmpty && channels.isEmpty && said.isEmpty && rules.isEmpty }
         var hasChanges: Bool {
             description != nil || editing.contains { $0.value != originalItems[$0.key] }
                 || folders.contains { $0.value != originalFolders[$0.key] } || !channels.isEmpty || !said.isEmpty
+                || rules.contains { $0.value != originalRules[$0.key] }
         }
     }
     /// The drafts of the binders left behind, by folder, so returning to one brings its drafts back.
@@ -233,7 +236,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         let typed = settingsLoaded ? (description == savedDescription ? nil : description) : descriptionDraft
         return Draft(description: typed, editing: editing, folders: folders, channels: channels, said: said, rules: rules,
                      originalItems: Dictionary(cards.map { ($0.id, $0.editable) }, uniquingKeysWith: { first, _ in first }),
-                     originalFolders: Dictionary(cards.compactMap { card in card.folder.map { (card.id, $0) } }, uniquingKeysWith: { first, _ in first }))
+                     originalFolders: Dictionary(cards.compactMap { card in card.folder.map { (card.id, $0) } }, uniquingKeysWith: { first, _ in first }),
+                     originalRules: Dictionary(cards.compactMap { card in card.review.rule.map { (card.id, $0.text) } }, uniquingKeysWith: { first, _ in first }))
     }
 
     /// The cards and the history only: the page's timer calls this, so it never overwrites the description being
