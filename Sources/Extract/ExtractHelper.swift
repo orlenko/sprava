@@ -201,13 +201,19 @@ public enum ExtractHelper {
                                  problem: v["problem"]?.stringValue)
         r.mismatch = v["mismatch"] == .bool(true)
         if let e = v["email"] {
+            var seen = Set<String>()
+            let threadIDs = (e["thread_ids"]?.arrayValue ?? []).prefix(64).compactMap { value -> String? in
+                guard let id = value.stringValue, Extractor.validThreadID(id), seen.insert(id).inserted else { return nil }
+                return id
+            }
             r.email = Extractor.Email(subject: e["subject"]?.stringValue, from: e["from"]?.stringValue, to: e["to"]?.stringValue,
                                       date: e["date"]?.stringValue, messageID: e["message_id"]?.stringValue,
                                       attachments: (e["attachments"]?.arrayValue ?? []).compactMap { a in
                                           guard let n = a["name"]?.stringValue, let d = a["data"]?.stringValue.flatMap({ Data(base64Encoded: $0) }) else { return nil }
                                           return .init(name: n, data: d)
                                       },
-                                      fromHeader: e["from_header"]?.stringValue, toHeader: e["to_header"]?.stringValue)
+                                      fromHeader: e["from_header"]?.stringValue, toHeader: e["to_header"]?.stringValue,
+                                      threadIDs: threadIDs)
         }
         return r
     }

@@ -30,6 +30,7 @@ if let e = r.email {
                    ("from_header", e.fromHeader), ("to_header", e.toHeader)] {
         if let v { em.set(k, .string(v)) }
     }
+    if !e.threadIDs.isEmpty { em.set("thread_ids", .array(e.threadIDs.map(JSONValue.string))) }
     em.set("attachments", .array(e.attachments.map { .obj([("name", .string($0.name)), ("data", .string($0.data.base64EncodedString()))]) }))
     o.set("email", .object(em))
 }

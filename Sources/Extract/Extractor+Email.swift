@@ -40,11 +40,33 @@ extension Extractor {
         let text = walk(headers: headers, body: body, attachments: &attachments, state: &state, depth: 0)?.text ?? ""
         let email = Email(subject: headers["subject"].map(decodeWords), from: headers["from"].map(decodeWords), to: headers["to"].map(decodeWords),
                           date: headers["date"], messageID: headers["message-id"], attachments: attachments,
-                          fromHeader: headers["from"].map(whole), toHeader: headers["to"].map(whole))
+                          fromHeader: headers["from"].map(whole), toHeader: headers["to"].map(whole),
+                          threadIDs: threadIDs(references: headers["references"], reply: headers["in-reply-to"]))
         // Parts past the nesting or part limits were not read, so the message is held rather than passed on as whole.
         let problem = state.tooDeep ? "its parts nest deeper than \(maxDepth) levels; the deeper ones were not read"
             : state.tooMany ? "it has more than \(limits.parts) parts; the later ones were not read" : nil
         return Result(kind: "email", text: text, textFrom: "parsed", email: email, problem: problem)
+    }
+
+    /// Keep complete, bounded Message-ID tokens. Prose and an oversized header supply no thread evidence.
+    static func threadIDs(references: String?, reply: String?) -> [String] {
+        var found: [String] = []
+        var seen = Set<String>()
+        for field in [reply, references].compactMap({ $0 }) where field.utf8.count <= 16_384 {
+            let separated = field.replacingOccurrences(of: "><", with: "> <")
+            for token in separated.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," }) {
+                guard found.count < 64 else { return found }
+                let id = String(token)
+                guard validThreadID(id) else { continue }
+                if seen.insert(id).inserted { found.append(id) }
+            }
+        }
+        return found
+    }
+
+    static func validThreadID(_ id: String) -> Bool {
+        id.utf8.count <= 250 && id.utf8.allSatisfy { (33...126).contains($0) }
+            && id.wholeMatch(of: /<[^<>@\s]+@[^<>@\s]+>/) != nil
     }
 
     /// What a walk through one message found past its limits, and how many parts it has met so far.
@@ -60,7 +82,13 @@ extension Extractor {
             if line.first == " " || line.first == "\t", let k = last { headers[k, default: ""] += " " + line.trimmingCharacters(in: .whitespaces); continue }
             guard let colon = line.firstIndex(of: ":") else { continue }
             let k = line[..<colon].lowercased()
-            headers[k] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if (k == "references" || k == "in-reply-to"), headers[k] != nil {
+                // A repeated field shares its predecessors' budget. An oversized field stays ineligible.
+                if headers[k]!.utf8.count <= 16_384 { headers[k, default: ""] += " " + value }
+            } else {
+                headers[k] = value
+            }
             last = k
         }
         return (headers, blank.map { String(s[$0.upperBound...]) } ?? "")

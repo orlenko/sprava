@@ -65,6 +65,31 @@ enum Fixtures {
 }
 
 @Suite struct ExtractorTests {
+    @Test func onlyEmailHeadersSupplyBoundedThreadIDs() {
+        let text = "Message-ID: <current@example.invalid>\r\nReferences: <root@example.invalid>\r\n <parent@example.invalid>\r\n"
+            + "In-Reply-To: <parent@example.invalid>\r\nSubject: invented\r\n\r\nReferences: <body@example.invalid>\r\n"
+        let mail = Extractor.extract(Data(text.utf8), name: "message.eml")
+        #expect(mail.email?.threadIDs == ["<parent@example.invalid>", "<root@example.invalid>"])
+        #expect(Extractor.threadIDs(references: String(repeating: "x", count: 17_000), reply: "invalid").isEmpty)
+    }
+
+    @Test func repeatedHeadersAndAdjacentReferencesKeepTheirOrder() {
+        let mail = "Subject: invented\r\nReferences: <a@x><b@x>, <c@x>\r\nReferences: <b@x> <d@x>\r\n\r\nbody"
+        #expect(Extractor.eml(Data(mail.utf8)).email?.threadIDs == ["<a@x>", "<b@x>", "<c@x>", "<d@x>"])
+    }
+
+    @Test func helperReplyKeepsOnlyDistinctCompleteThreadIDs() throws {
+        let helper = try BugbotHelperAndHTMLTests().stub(#"""
+        cat >/dev/null
+        cat <<'JSON'
+        {"kind":"email","email":{"thread_ids":["<first@x>","bad","<a\nb@x>","<q\u202ex@x>","<first@x>","<last@x>"]}}
+        JSON
+        """#)
+        defer { try? FileManager.default.removeItem(at: helper.deletingLastPathComponent()) }
+        let result = try ExtractHelper.launch(helper, data: Data(), name: "invented.eml", timeout: 10)
+        #expect(result.email?.threadIDs == ["<first@x>", "<last@x>"])
+    }
+
     @Test func aPDFTextLayerIsReadOnEveryPage() {
         let r = Extractor.extract(Fixtures.pdf(["Notice of assessment for the invented year", "Balance owing: 1,234.56 dollars"], scanned: false), name: "notice.pdf")
         #expect(r.kind == "pdf" && r.textFrom == "text-layer" && r.pages == 1)
