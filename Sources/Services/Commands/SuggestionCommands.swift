@@ -65,3 +65,74 @@ extension Commands {
         return JSONObject([(key: "improvements", value: .string(improvements.path))])
     }
 }
+
+/// The approved suggestions as one Markdown file for the development loop (decisions.md D47): each one's title as a
+/// heading and its text, exactly as the person approved it, inside a fenced block. The fence is longer than any run of
+/// backticks in the text, so the text is never cut short or rendered as anything but itself.
+enum SuggestionExport {
+    static func markdown(_ suggestions: [(title: String, text: String)], on day: CalendarDate) -> String {
+        var out = "# Suggestions for Sprava\n\nExported \(day). \(suggestions.count == 1 ? "1 suggestion" : "\(suggestions.count) suggestions").\n"
+        for suggestion in suggestions {
+            var longest = 0, run = 0
+            for character in suggestion.text { run = character == "`" ? run + 1 : 0; longest = max(longest, run) }
+            let fence = String(repeating: "`", count: max(3, longest + 1))
+            let title = suggestion.title.split(whereSeparator: \.isNewline).joined(separator: " ")
+            out += "\n## \(title)\n\n\(fence)text\n\(suggestion.text)\(suggestion.text.hasSuffix("\n") ? "" : "\n")\(fence)\n"
+        }
+        return out
+    }
+}
+
+extension Commands {
+    /// `export_suggestions`: `{path}`. Writes the suggestions that are open to-dos in the Improvements binder to the
+    /// Markdown file at `path`, which the person picked in a save panel: an absolute path ending in `.md`, in a folder
+    /// that exists. Only to-dos a suggestion card made are written, never the binder's other to-dos, and nothing in the
+    /// binder changes. Answers `{count, path}`.
+    func exportSuggestions(_ r: JSONObject, today: CalendarDate) throws -> JSONObject {
+        guard let path = r["path"]?.stringValue, path.hasPrefix("/"), !path.contains("\0"), path.utf8.count <= 4_096 else {
+            throw Failure(message: "Export needs the file to write, as a full path.")
+        }
+        let file = URL(fileURLWithPath: path).standardizedFileURL
+        guard file.pathExtension.lowercased() == "md" else { throw Failure(message: "Export writes a Markdown file; give it a name ending in .md.") }
+        // The folder as it physically is, every link on the way followed, so the checks below and the write name the
+        // same place.
+        func physical(_ folder: URL) -> String? {
+            guard let resolved = realpath(folder.path, nil) else { return nil }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+        var info = stat()
+        guard let parent = physical(file.deletingLastPathComponent()), stat(parent, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+            throw Failure(message: "The folder to export into does not exist.")
+        }
+        let target = URL(fileURLWithPath: parent, isDirectory: true).appendingPathComponent(file.lastPathComponent)
+        // Never over something that is not an ordinary file, and never through a link.
+        if lstat(target.path, &info) == 0, info.st_mode & S_IFMT != S_IFREG {
+            throw Failure(message: "There is something at that name that is not an ordinary file. Choose another name; nothing was written.")
+        }
+        let improvements: URL?
+        do { improvements = try BuiltInBinder(.improvements, support: support).folder() }
+        catch { throw Failure(message: "\(error) Nothing was exported.") }
+        guard let improvements else { throw Failure(message: "There are no suggestions yet: none has been sent to Improvements.") }
+        // Sprava never writes a suggestion file into a binder, on the Shelf or not, where it would arrive as a document,
+        // nor into its own state: no folder above the file holds a catalog.json or is the support folder.
+        let own = physical(support)
+        var above = URL(fileURLWithPath: parent, isDirectory: true)
+        while above.path != "/" {
+            if above.path == own || lstat(above.appendingPathComponent("catalog.json").path, &info) == 0 {
+                throw Failure(message: "Choose a folder outside your binders and Sprava's own folder; nothing was written.")
+            }
+            above = above.deletingLastPathComponent()
+        }
+        let teka = Teka.read(improvements)
+        guard let catalog = teka.catalog else { throw Failure(message: "The Improvements binder cannot be read. Nothing was exported.") }
+        let suggestions = (catalog["open_items"]?.arrayValue ?? []).compactMap { item -> (title: String, text: String)? in
+            guard item["suggestion_card"]?.stringValue != nil, item["status"] != .str("done"), item["status"] != .str("dropped"),
+                  let title = item["title"]?.stringValue, let text = item["details"]?.stringValue else { return nil }
+            return (title, text)
+        }
+        guard !suggestions.isEmpty else { throw Failure(message: "There are no open suggestions in Improvements to export.") }
+        try AtomicFile.write(Data(SuggestionExport.markdown(suggestions, on: today).utf8), to: target, mode: 0o644)
+        return JSONObject([(key: "count", value: .int(suggestions.count)), (key: "path", value: .string(target.path))])
+    }
+}

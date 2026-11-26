@@ -27,10 +27,13 @@ struct ShelfPresentation: Sendable {
     let todos: TodoBoard
     /// The row that is General, found through its binding: it can be called general-2, or anything after a rename.
     let general: URL?
+    /// The row that is Improvements, found the same way.
+    let improvements: URL?
 
-    init(snapshot: ShelfSnapshot.Snapshot, today: CalendarDate, counts: [URL: ShelfCounts], general: URL? = nil) {
+    init(snapshot: ShelfSnapshot.Snapshot, today: CalendarDate, counts: [URL: ShelfCounts], general: URL? = nil, improvements: URL? = nil) {
         self.snapshot = snapshot
         self.general = general
+        self.improvements = improvements
         self.today = today
         self.counts = counts
         todos = TodoBoard(snapshot.rows.compactMap { row in

@@ -72,6 +72,24 @@ public struct BuiltInBinder: Sendable {
         }
     }
 
+    /// The binder's folder when it was made and is still the folder it was bound to; nil when it was never made. Never
+    /// creates state or a binder. A folder that is missing or was replaced throws, as `ensure` does.
+    public func folder() throws -> URL? {
+        guard try StateDirectory.open(database.deletingLastPathComponent()) != nil else { return nil }
+        var info = stat()
+        guard lstat(database.path, &info) == 0 else {
+            if errno == ENOENT { return nil }
+            throw Unavailable(title: kind.title)
+        }
+        let store = try StateStore.open(database, schema: Self.schema)
+        return try store.read { transaction in
+            guard let binding = try transaction.document(Binding.self, key: kind.rawValue) else { return nil }
+            let folder = URL(fileURLWithPath: binding.path, isDirectory: true)
+            guard (try? Binding(folder)) != nil, binding.matches(folder) else { throw Unavailable(title: kind.title) }
+            return folder
+        }
+    }
+
     /// Path and physical identity both count, so an alias cannot retire a built-in binder. Damaged state throws;
     /// lifecycle callers must refuse the operation before stopping sessions or deleting their history.
     public func protects(_ folder: URL) throws -> Bool {

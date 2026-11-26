@@ -21,10 +21,14 @@ final class ShelfModel: ObservableObject, DraftOwner {
     @Published private(set) var waiting = WaitingCards()
     /// The row that is General, once it exists.
     @Published private(set) var general: URL?
-    /// The Shelf as the sidebar lists it: General last, whatever its place among recent binders.
-    var shelfRows: [ShelfRow] { Self.generalLast(rows, general: general) }
-    nonisolated static func generalLast(_ rows: [ShelfRow], general: URL?) -> [ShelfRow] {
-        rows.filter { $0.folder != general } + rows.filter { $0.folder == general }
+    /// The row that is Improvements, once a suggestion was sent there.
+    @Published private(set) var improvements: URL?
+    /// The Shelf as the sidebar lists it: the built-in binders last, Improvements then General, whatever their place
+    /// among recent binders.
+    var shelfRows: [ShelfRow] { Self.generalLast(rows, general: general, improvements: improvements) }
+    nonisolated static func generalLast(_ rows: [ShelfRow], general: URL?, improvements: URL? = nil) -> [ShelfRow] {
+        rows.filter { $0.folder != general && $0.folder != improvements } + rows.filter { $0.folder == improvements && $0.folder != general }
+            + rows.filter { $0.folder == general }
     }
     /// The binder opened is recorded at once (the Shelf's own UI state, `recent.json`); the Shelf reorders on its
     /// next refresh, so the row never jumps away under the pointer.
@@ -119,7 +123,9 @@ final class ShelfModel: ObservableObject, DraftOwner {
                 // A binding that cannot be read only leaves General where it was; opening it reports the problem.
                 let binding = GeneralBinder(support: support)
                 let general = snapshot.rows.first { (try? binding.protects($0.folder)) == true }?.folder
-                return ShelfPresentation(snapshot: snapshot, today: today, counts: counts, general: general)
+                let second = BuiltInBinder(.improvements, support: support)
+                let improvements = snapshot.rows.first { (try? second.protects($0.folder)) == true }?.folder
+                return ShelfPresentation(snapshot: snapshot, today: today, counts: counts, general: general, improvements: improvements)
             }
             guard let self else { return }
             defer { refreshTask = nil }
@@ -133,6 +139,7 @@ final class ShelfModel: ObservableObject, DraftOwner {
             counts = prepared.counts
             todos = prepared.todos
             general = prepared.general
+            improvements = prepared.improvements
             snapshotNote = prepared.snapshot.note
             if selection == nil || (!pages.contains(selection!) && !rows.contains(where: { $0.folder == selection })) { selection = landing }
             waiting = waiting.keeping(rows)
@@ -438,6 +445,9 @@ struct ShelfView: View {
                             .tag(row.folder)
                             .contextMenu {
                                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([row.folder]) }
+                                if row.folder == model.improvements {
+                                    Button("Export Suggestions\u{2026}") { Task { await model.exportSuggestions() } }
+                                }
                                 if row.source == .picked {
                                     Button("Remove from Shelf") { Task { await model.removeFromShelf(row) } }
                                 }

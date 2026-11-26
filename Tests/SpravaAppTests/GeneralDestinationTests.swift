@@ -99,4 +99,21 @@ import Testing
         #expect(host.fittingSize.width <= 500 && host.fittingSize.height <= 480)
         window.orderOut(nil)
     }
+
+    /// Export sends the file the person picked and says how many suggestions went; a cancelled panel sends nothing.
+    @Test func exportSendsThePickedFileAndSaysHowMany() async throws {
+        let support = try temporaryFolder(), runtime = StandInRuntime()
+        defer { try? FileManager.default.removeItem(at: support) }
+        runtime.answers["export_suggestions"] = { _ in #"{"ok":true,"count":2,"path":"/tmp/invented-exports/suggestions.md"}"# }
+        let shelf = ShelfModel(support: support, client: runtime.client)
+        await shelf.exportSuggestions(choose: { nil })
+        #expect(runtime.sent.isEmpty && shelf.operationNote == nil)
+        await shelf.exportSuggestions(choose: { URL(fileURLWithPath: "/tmp/invented-exports/suggestions.md") })
+        #expect(runtime.sent.map { $0["command"]?.stringValue } == ["export_suggestions"])
+        #expect(runtime.sent.last?["path"] == .str("/tmp/invented-exports/suggestions.md"))
+        #expect(shelf.operationNote == "Exported 2 suggestions to suggestions.md.")
+        runtime.answers["export_suggestions"] = { _ in #"{"ok":false,"error":"Invented failure"}"# }
+        await shelf.exportSuggestions(choose: { URL(fileURLWithPath: "/tmp/invented-exports/suggestions.md") })
+        #expect(shelf.operationNote?.hasPrefix("The suggestions were not exported:") == true)
+    }
 }

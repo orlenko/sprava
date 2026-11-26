@@ -171,4 +171,78 @@ import Testing
         let session = ClaudeConversationPolicy.session(todos: true)
         #expect(session.contains("suggest_improvement") && !ClaudeConversationPolicy.session(todos: false).contains("suggest_improvement"))
     }
+
+    func export(_ s: PSetup, _ path: String) throws -> JSONValue {
+        try req(s.commands, [("command", .str("export_suggestions")), ("path", .string(path))])
+    }
+
+    // Done when (plan Track I): the exported file holds exactly the approved text.
+    @Test func theExportedFileHoldsExactlyTheApprovedText() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        try script(s, "scripts/pull-board.py", "print('pull')\necho ```fenced``` and ````more````\n")
+        let out = s.support.deletingLastPathComponent().appendingPathComponent("exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let file = out.appendingPathComponent("suggestions.md")
+        // Before any suggestion was sent there is nothing to export, and no Improvements binder is made for it.
+        let none = try export(s, file.path)
+        #expect(none["ok"] == .bool(false) && none["error"]?.stringValue?.contains("no suggestions yet") == true)
+        #expect(!FileManager.default.fileExists(atPath: parent(s).path) && !FileManager.default.fileExists(atPath: file.path))
+
+        #expect(!suggest(turn, script: "scripts/pull-board.py").refused)
+        #expect(!suggest(turn, title: "Export to-dos to a calendar").refused)
+        let made = cards(s)
+        let first = try #require(made.first { $0.1.script != nil }), second = try #require(made.first { $0.1.script == nil })
+        let edited = first.1.note.replacingOccurrences(of: "every week", with: "every Monday")
+        let sent = try send(s, first.0.id, text: .string(edited))
+        #expect(sent["ok"] == .bool(true), "\(sent)")
+        #expect(try send(s, second.0.id)["ok"] == .bool(true))
+        let improvements = URL(fileURLWithPath: try #require(sent["improvements"]?.stringValue))
+        // A to-do the person added to Improvements by hand is theirs, not a suggestion: it is never exported.
+        let own = try req(s.commands, [("command", .str("apply")), ("binder", .string(improvements.path)), ("op", .str("add_item")),
+            ("args", .obj([("item", .obj([("id", .str("$new:1")), ("title", .str("A private note to self")), ("status", .str("open")),
+                                          ("priority", .str("normal")), ("no_deadline", .bool(true)), ("details", .str("Not for export."))]))]))])
+        #expect(own["ok"] == .bool(true), "\(own)")
+        let before = try Data(contentsOf: improvements.appendingPathComponent("catalog.json"))
+
+        let exported = try export(s, file.path)
+        #expect(exported["ok"] == .bool(true) && exported["count"] == .int(2), "\(exported)")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(text.hasPrefix("# Suggestions for Sprava\n\nExported \(CalendarDate.today()). 2 suggestions.\n\n## Import tasks from a hosted board\n\n`````text\n"))
+        // Exactly the approved text, between a fence longer than any run of backticks in it.
+        #expect(text.contains("`````text\n" + edited + "`````\n"))
+        #expect(text.contains("## Export to-dos to a calendar\n\n```text\n" + second.1.note + "```\n"))
+        #expect(!text.contains("private note") && !text.contains("Not for export"))
+        // Nothing in the binder changed, and a second export replaces the file.
+        #expect(try Data(contentsOf: improvements.appendingPathComponent("catalog.json")) == before)
+        #expect(try export(s, file.path)["ok"] == .bool(true))
+        #expect(try String(contentsOf: file, encoding: .utf8) == text)
+    }
+
+    @Test func exportWritesOnlyAMarkdownFileOutsideTheBinders() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        #expect(!suggest(turn).refused)
+        let (card, _) = try #require(cards(s).first)
+        let improvements = URL(fileURLWithPath: try #require(try send(s, card.id)["improvements"]?.stringValue))
+        let out = s.support.deletingLastPathComponent().appendingPathComponent("exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: out.appendingPathComponent("taken.md"), withIntermediateDirectories: true)
+        // A binder Sprava was never shown, with a folder inside it.
+        let stray = out.appendingPathComponent("stray-binder/papers", isDirectory: true)
+        try FileManager.default.createDirectory(at: stray, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: out.appendingPathComponent("stray-binder/catalog.json"))
+        try FileManager.default.createSymbolicLink(at: out.appendingPathComponent("link.md"), withDestinationURL: improvements.appendingPathComponent("catalog.json"))
+        try FileManager.default.createSymbolicLink(at: out.appendingPathComponent("into-binder"), withDestinationURL: improvements)
+        let catalog = try Data(contentsOf: improvements.appendingPathComponent("catalog.json"))
+        for path in ["suggestions.md", out.appendingPathComponent("suggestions.txt").path, out.appendingPathComponent("missing/suggestions.md").path,
+                     out.appendingPathComponent("taken.md").path, out.appendingPathComponent("link.md").path,
+                     out.appendingPathComponent("into-binder/suggestions.md").path,
+                     improvements.appendingPathComponent("suggestions.md").path, s.folder.appendingPathComponent("suggestions.md").path,
+                     s.support.appendingPathComponent("suggestions.md").path, stray.appendingPathComponent("suggestions.md").path] {
+            let refused = try export(s, path)
+            #expect(refused["ok"] == .bool(false), "\(path)")
+        }
+        #expect(try req(s.commands, [("command", .str("export_suggestions"))])["ok"] == .bool(false))
+        #expect(try Data(contentsOf: improvements.appendingPathComponent("catalog.json")) == catalog)
+        #expect(!FileManager.default.fileExists(atPath: improvements.appendingPathComponent("suggestions.md").path))
+        #expect(try export(s, out.appendingPathComponent("suggestions.md").path)["count"] == .int(1))
+    }
 }

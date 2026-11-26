@@ -12,6 +12,7 @@ extension Commands {
         "shelf_remove": { c, _, r, _, _ in try c.shelfRemove(r) },
         "general_binder": { c, _, r, now, today in try c.builtInBinder(.general, r, now: now, today: today) },
         "improvements_binder": { c, _, r, now, today in try c.builtInBinder(.improvements, r, now: now, today: today) },
+        "export_suggestions": { c, _, r, _, today in try c.exportSuggestions(r, today: today) },
     ]
 
     func shelfAdd(_ r: JSONObject) throws -> JSONObject {

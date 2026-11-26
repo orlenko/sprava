@@ -79,8 +79,13 @@ struct GeneralBinderTests {
         #expect(try BuiltInBinder.kind(of: general, support: support) == .general)
         #expect(try BuiltInBinder.kind(of: improvements, support: support) == .improvements)
         #expect(try BuiltInBinder.kind(of: root.appendingPathComponent("other"), support: support) == nil)
+        // Its folder can be read without making anything.
+        #expect(try BuiltInBinder(.improvements, support: support).folder() == improvements.resolvingSymlinksInPath())
+        #expect(try BuiltInBinder(.general, support: root.appendingPathComponent("no-support")).folder() == nil)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("no-support").path))
         // A missing one says which.
         try FileManager.default.removeItem(at: improvements)
+        #expect(throws: BuiltInBinder.Unavailable.self) { try BuiltInBinder(.improvements, support: support).folder() }
         #expect { try BuiltInBinder(.improvements, support: support).ensure { improvements } } throws: { "\($0)".hasPrefix("Improvements\u{2019}s folder is missing") }
     }
 }

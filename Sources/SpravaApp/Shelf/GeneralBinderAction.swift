@@ -1,4 +1,7 @@
+import AppKit
+import BinderFormat
 import Foundation
+import UniformTypeIdentifiers
 import SpravaKit
 
 extension ShelfModel {
@@ -40,6 +43,27 @@ extension ShelfModel {
         generalParentUsed(folder.deletingLastPathComponent())
         snapshotGeneration &+= 1
         Task { await refreshAndWait(afterChanges: true) }
+    }
+
+    /// Export (decisions.md D47): the person picks where the file goes, the runtime writes the suggestions that are
+    /// open in Improvements to it, and the Shelf says how many. `choose` is the save panel; a test supplies its own.
+    func exportSuggestions(choose: @MainActor () -> URL? = ShelfModel.chooseExportFile) async {
+        guard let file = choose() else { return }
+        do {
+            let reply = try await client.global("export_suggestions", [("path", .string(file.path))])
+            let count = reply["count"]?.numberValue?.safeInteger ?? 0
+            operationNote = "Exported \(count == 1 ? "1 suggestion" : "\(count) suggestions") to \(file.lastPathComponent)."
+        } catch { operationNote = "The suggestions were not exported: \(error)" }
+    }
+
+    /// The save panel for Export: a Markdown file, named by the day, wherever the person puts it.
+    static func chooseExportFile() -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Export Suggestions"
+        panel.nameFieldStringValue = "sprava-suggestions-\(CalendarDate.today()).md"
+        panel.allowedContentTypes = [.init(filenameExtension: "md") ?? .plainText]
+        panel.canCreateDirectories = true
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     func openGeneral() {
