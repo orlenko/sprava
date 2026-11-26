@@ -73,7 +73,10 @@ def header_id(response):
 def approved_fields(message):
     # Decode the approved wire copy, including an approval queued by an earlier build.
     # This input is Sprava's own plain-text draft with optional base64 attachments.
-    draft = BytesParser(policy=policy.default).parsebytes(message)
+    return message_fields(BytesParser(policy=policy.default).parsebytes(message))
+
+
+def message_fields(draft):
     parts = list(draft.iter_parts()) if draft.is_multipart() else [draft]
     def digest(data):
         return hashlib.sha256(data).hexdigest()
@@ -82,9 +85,10 @@ def approved_fields(message):
     # already removes the delimiter's CRLF.
     if not draft.is_multipart() and text.endswith(b"\r\n"):
         text = text[:-2]
+    text = text.decode(parts[0].get_content_charset() or "us-ascii").replace("\r\n", "\n").encode("utf-8")
     return {"messageID": str(draft["Message-ID"]), "to": [a.addr_spec for a in draft["To"].addresses] if "To" in draft else [],
             "cc": [a.addr_spec for a in draft["Cc"].addresses] if "Cc" in draft else [], "subject": str(draft["Subject"] or ""),
-            "bodyHash": digest(text.replace(b"\r\n", b"\n")),
+            "bodyHash": digest(text),
             "attachmentHashes": [digest(part.get_payload(decode=True)) for part in parts[1:]]}
 
 

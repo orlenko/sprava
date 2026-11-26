@@ -140,12 +140,12 @@ struct NowView: View {
             case .todos: List { todos }
             case .explore: List { FiledDocumentsSection(row: row, model: documents, reload: refresh) }
             case .history:
-                List {
+                BinderHistoryList(folder: row.folder, client: actions.client, adopted: row.teka.isAdopted) {
                     HistorySection(actions: actions, folder: row.folder, reload: refresh)
                     if let line = Self.historyLine(actions.historyRead, empty: actions.history.isEmpty) {
                         Text(line).foregroundStyle(actions.historyRead == .failed ? .orange : .secondary)
                     }
-                }
+                }.id(row.folder)
             case .instructions:
                 InstructionsSection(model: instructions, folder: row.folder, writable: row.teka.isAdopted && !row.teka.writesBlocked)
             }

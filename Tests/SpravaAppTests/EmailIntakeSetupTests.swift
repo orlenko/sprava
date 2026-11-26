@@ -1,6 +1,7 @@
 import Foundation
 @testable import SpravaApp
 import SpravaKit
+import SwiftUI
 import Testing
 
 @MainActor @Suite(.serialized) struct EmailIntakeSetupTests {
@@ -18,6 +19,13 @@ import Testing
     }
     static let folder = URL(fileURLWithPath: "/invented/binder")
     static let fingerprint = String(repeating: "ab", count: 32)
+
+    @Test func historyNamesTheFieldsSpravaCompared() {
+        let value = JSONValue.obj([("id", .str("invented")), ("subject", .str("Greenhouse")),
+                                   ("status", .str("matched")), ("differences", .array([]))])
+        let row = BinderHistoryList<EmptyView>.row(value)
+        #expect(row?.line == "Recipient addresses, subject, body text and attachment contents match the approved draft.")
+    }
 
     @Test func theThreeStepsUnlockInOrderAndOnlyTheConnectionCarriesThePasswordAfterThePersonConfirms() async throws {
         let runtime = Runtime(); var authenticated = false

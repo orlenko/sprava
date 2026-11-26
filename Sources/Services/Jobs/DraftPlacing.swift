@@ -12,6 +12,10 @@ enum DraftPlacing {
     static let native: Place = { config, folder, password, message, directory in
         try IMAPDraftAppend.run(config, password: password, folder: folder, message: message, directory: directory)
     }
+    typealias ReadBack = @Sendable (BinderIMAPConnections.Configuration, String, String, IMAPDraftAppend.Approved, URL) throws -> IMAPDraftReadBack.Result
+    static let nativeReadBack: ReadBack = { config, secret, folder, approved, directory in
+        try IMAPDraftReadBack.run(config, password: secret, folder: folder, approved: approved, directory: directory)
+    }
     /// A request still `approving` this long after it was written belongs to an approval that did not finish.
     static let settleAfter: TimeInterval = 600
 
@@ -32,7 +36,7 @@ enum DraftPlacing {
 
     /// Settles requests an approval left half-done, then places the oldest ready one.
     static func run(support: URL, connections: BinderIMAPConnections, password: (IMAPAccount) throws -> String?,
-                    available: (URL) throws -> Bool, place: Place, now: Date = Date()) -> Outcome {
+                    available: (URL) throws -> Bool, place: Place, readBack: ReadBack? = nil, now: Date = Date()) -> Outcome {
         let requests = DraftRequests(support: support)
         let all = requests.all()
         // Even when every binder is away or signed out, receipts age out on the runtime tick.
@@ -96,14 +100,29 @@ enum DraftPlacing {
             guard let secret = try? password(config.account) else { continue }
             chosen = (request, config, secret)
         }
-        guard let (request, config, secret) = chosen else { return ready.isEmpty ? .none : .waiting }
+        guard let (request, config, secret) = chosen else {
+            do {
+                if let readBack, let record = try receipts.nextReadBack(at: now) {
+                    if let config = try connections.enabled().first(where: { record.belongs(to: $0) }),
+                       let folder = try? connections.current(config), try available(folder), let secret = try password(config.account) {
+                        let directory = support.appendingPathComponent("capture/draft-attempts/\(UUID().uuidString)", isDirectory: true)
+                        try AtomicFile.makePrivateFolder(directory.deletingLastPathComponent())
+                        try AtomicFile.makePrivateFolder(directory)
+                        defer { try? FileManager.default.removeItem(at: directory) }
+                        let comparison = try readBack(config, secret, record.result.folder, record.result.approved, directory)
+                        try receipts.checked(record.card, result: comparison)
+                    }
+                }
+            } catch { return .failed }
+            return ready.isEmpty ? .none : .waiting
+        }
         let attempt = support.appendingPathComponent("capture/draft-attempts/\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: attempt) }
         do {
             try AtomicFile.makePrivateFolder(attempt.deletingLastPathComponent())
             try AtomicFile.makePrivateFolder(attempt)
             let placed = try place(config, config.draftsFolder, secret, try requests.message(id: request.id), attempt)
-            try receipts.record(request, connection: config.id, result: placed, at: now)
+            try receipts.record(request, connection: config, result: placed, at: now)
             try requests.remove(id: request.id)
             return placed.present ? .present : .placed
         } catch let refused as IMAPDraftAppend.Refused {
