@@ -17,6 +17,9 @@ public struct DocumentCoverage: Sendable, Equatable, Codable {
     public var pagesFromOCR: [Int] = []
     /// Nil for an index made before readings were graded.
     public var pagesPoor: [Int]?
+    /// Pages checked by the person, including marks with no supplied text.
+    public var pagesCheckedByPerson: [Int]?
+    public var pagesWithPersonText: [Int]?
     public var pagesFailed: [PageProblem] = []
     public var pagesIllegible: [Int] = []
     /// False when the reader gave the text as one block, so its passages carry no page number.
