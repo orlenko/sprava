@@ -15,6 +15,7 @@ final class FiledDocuments: ObservableObject, DraftOwner {
         let path: String
         let documentID: JSONValue?
         let sha256: String?
+        var hasPageReadings = false
         var pageCoverage: BinderPageCoverage? = nil
     }
 
@@ -26,7 +27,8 @@ final class FiledDocuments: ObservableObject, DraftOwner {
     @Published private(set) var destination = ""
     @Published private(set) var moving = false
     private var removing = false
-    var draftState: DraftState { DraftState(hasChanges: editing.map { destination != $0.path } ?? false, saving: moving) }
+    let pageEditor: PersonPageEditor
+    var draftState: DraftState { DraftState(hasChanges: editing.map { destination != $0.path } ?? false, saving: moving).merging(pageEditor.draftState) }
     private var folder: URL?
     private var generation = 0
     private let disk = ShelfDiskWorker(queue: DispatchQueue(label: "sprava.document-location", qos: .utility))
@@ -38,6 +40,7 @@ final class FiledDocuments: ObservableObject, DraftOwner {
          reveal: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
          openFolder: @escaping @MainActor (URL) -> Void = { _ = NSWorkspace.shared.open($0) }) {
         self.client = client
+        self.pageEditor = PersonPageEditor(client: client)
         self.reveal = reveal
         self.openFolder = openFolder
     }
@@ -63,7 +66,7 @@ final class FiledDocuments: ObservableObject, DraftOwner {
             let title = value["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             return Record(id: index, title: title.flatMap { $0.isEmpty ? nil : $0 } ?? (path as NSString).lastPathComponent,
                           path: path, documentID: value["id"], sha256: value["sha256"]?.stringValue,
-                          pageCoverage: BinderPageCoverage(record: value, path: path))
+                          hasPageReadings: value["person_page_readings"] != nil, pageCoverage: BinderPageCoverage(record: value, path: path))
         }
     }
 
@@ -101,7 +104,7 @@ final class FiledDocuments: ObservableObject, DraftOwner {
     }
 
     func beginRemoval() -> Bool {
-        guard editing == nil, !moving else { return false }
+        guard editing == nil, !moving, pageEditor.page == nil else { return false }
         removing = true
         return true
     }
@@ -163,7 +166,7 @@ struct FiledDocumentsSection: View {
                     TextField("Find a document by title or path", text: $model.query)
                     openFolder
                 }
-                FiledCoverageList(model: coverage, records: model.records, folder: row.folder)
+                FiledCoverageList(model: coverage, records: model.records, folder: row.folder, editor: row.teka.isAdopted && !row.teka.writesBlocked ? model.pageEditor : nil, reload: reload)
                 let matches = model.matches
                 if matches.isEmpty { Text("No matching documents.").foregroundStyle(.secondary) }
                 ForEach(Array(matches.prefix(100))) { record in
