@@ -15,12 +15,19 @@ public actor BinderIMAPRuntime {
     /// The setup checks, replaceable in tests so no test reaches a server.
     public struct Checks: Sendable {
         let probe: @Sendable (IMAPAccount) throws -> IMAPServerCheck.Answer
-        let folders: @Sendable (IMAPAccount, String) throws -> [String]
+        let listing: @Sendable (IMAPAccount, String) throws -> IMAPServerCheck.FolderListing
         public init(probe: @escaping @Sendable (IMAPAccount) throws -> IMAPServerCheck.Answer,
-                    folders: @escaping @Sendable (IMAPAccount, String) throws -> [String]) { self.probe = probe; self.folders = folders }
+                    folders: @escaping @Sendable (IMAPAccount, String) throws -> [String]) {
+            self.init(probe: probe, listing: { try .init(names: folders($0, $1)) })
+        }
+        init(probe: @escaping @Sendable (IMAPAccount) throws -> IMAPServerCheck.Answer,
+             listing: @escaping @Sendable (IMAPAccount, String) throws -> IMAPServerCheck.FolderListing) {
+            self.probe = probe
+            self.listing = listing
+        }
         static func native(_ support: URL) -> Checks {
             Checks(probe: { try IMAPServerCheck.probe($0, support: support) },
-                   folders: { try IMAPServerCheck.folders($0, password: $1, support: support) })
+                   listing: { try IMAPServerCheck.folderListing($0, password: $1, support: support) })
         }
     }
     private final class Cancellation: @unchecked Sendable {
@@ -84,11 +91,13 @@ public actor BinderIMAPRuntime {
                 // The Drafts folder the person chose, when the server marks none (issue #623); absent or empty: the marked one.
                 let drafts = r["drafts_folder"]
                 guard drafts == nil || drafts == .null || drafts?.stringValue != nil else { throw IMAPIntakeImport.Refused.unavailable }
+                let sent = r["sent_folder"]
+                guard sent == nil || sent == .null || sent?.stringValue != nil else { throw IMAPIntakeImport.Refused.unavailable }
                 if let password = r["password"]?.stringValue { try passwords.store(password, for: account) }
                 guard try passwords.read(account) != nil else { throw Refusal(message: "Enter the account's password, then connect again.") }
                 let value = try connections.configure(folder: folder, account: account, mailbox: mailbox,
                     sender: r["sender"]?.stringValue ?? "", subject: r["subject"]?.stringValue ?? "", search: r["search"]?.stringValue ?? "",
-                    includeExisting: r["include_existing"] != .bool(false), ownAddresses: own, draftsFolder: drafts?.stringValue)
+                    includeExisting: r["include_existing"] != .bool(false), ownAddresses: own, draftsFolder: drafts?.stringValue, sentFolder: sent?.stringValue)
                 start(value)
             case "imap_password":
                 guard let value = try connections.configuration(for: folder), value.enabled, try available(folder),
@@ -133,7 +142,8 @@ public actor BinderIMAPRuntime {
                        ("pin", value.account.pin.map { .str($0) } ?? .null), ("user", .str(value.account.user)),
                        ("mailbox", .str(value.mailbox)), ("sender", .str(value.sender)), ("subject", .str(value.subject)), ("search", .str(value.search)),
                        ("include_existing", .bool(value.includeExisting)), ("own_addresses", .array(value.ownAddresses.map { .str($0) })),
-                       ("drafts_folder", value.draftsFolder.map { .str($0) } ?? .null)]
+                       ("drafts_folder", value.draftsFolder.map { .str($0) } ?? .null),
+                       ("sent_folder", value.sentFolder.map { .str($0) } ?? .null)]
         }
         return JSONWriter.compact(.obj(fields))
     }
@@ -169,8 +179,9 @@ public actor BinderIMAPRuntime {
         }
         let checks = self.checks
         do {
-            let names = try await Task.detached(priority: .userInitiated) { try checks.folders(account, password) }.value
-            return JSONWriter.compact(.obj([("ok", .bool(true)), ("folders", .array(names.map { .str($0) }))]))
+            let listing = try await Task.detached(priority: .userInitiated) { try checks.listing(account, password) }.value
+            return JSONWriter.compact(.obj([("ok", .bool(true)), ("folders", .array(listing.names.map { .str($0) })),
+                                            ("marked_sent", listing.markedSent.map { .str($0) } ?? .null)]))
         } catch IMAPIntakeImport.Refused.authentication {
             throw Refusal(message: account.isLoopback
                 ? "The bridge refused this username or password. Use the password the bridge shows for this account, not your mail account's own password."

@@ -2,7 +2,10 @@ import Foundation
 
 /// App-owned read-only raw-message exporter. Runs isolated stdlib only; no legacy MIME conversion.
 enum IMAPExporterSource {
-    static let script = #"""
+    // Keep the exporter bytes stable: configured accounts pin this script together with the interpreter.
+    static let script = preamble + "\n\n\n" + folderNames + "\n\n\n" + workerMain
+
+    static let preamble = #"""
 """Sprava's isolated, read-only IMAP worker: probes a server, lists its folders, or exports complete raw EML.
 Credentials arrive on stdin, never argv, environment or a file. No profiles, imported code, shell, logs,
 message parsing, flags or server mutations.
@@ -214,8 +217,9 @@ def decoded_name(value):
 
 
 LISTED = re.compile(rb'\(([^)]*)\) (?:NIL|"(?:[^"\\]|\\.)*") ?(.*)$')
+"""#
 
-
+    private static let folderNames = #"""
 def folders(session, credentials):
     authenticate(session, credentials)
     names = []
@@ -245,8 +249,9 @@ def folders(session, credentials):
             raise ValueError("folder limit")
     unique = sorted(set(names), key=lambda name: (name.upper() != "INBOX", name.casefold()))
     return unique
+"""#
 
-
+    static let workerMain = #"""
 def atomic(path, data):
     temporary = path.with_name(path.name + ".pending")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

@@ -24,28 +24,7 @@ class NoDrafts(Exception):
     pass
 
 
-def listed(session):
-    for item in checked(*session.list()):
-        head, literal = (item[0], item[1]) if isinstance(item, tuple) else (item, None)
-        if not isinstance(head, bytes) or not head.strip() or head.strip() == b")":
-            continue
-        match = LISTED.match(head)
-        if not match:
-            raise ValueError("unreadable folder list")
-        raw = literal if literal is not None else match.group(2)
-        if raw.startswith(b'"'):
-            if len(raw) < 2 or not raw.endswith(b'"'):
-                raise ValueError("unreadable folder name")
-            raw = re.sub(rb'\\(.)', rb'\1', raw[1:-1])
-        try:
-            name = decoded_name(raw.decode("utf-8"))
-        except ValueError:
-            continue
-        flags = match.group(1).lower().split()
-        # As the exporter's folder list: no unselectable, missing, overlong or control-character names.
-        if b"\\noselect" in flags or b"\\nonexistent" in flags or not name or len(name) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in name):
-            continue
-        yield flags, name
+\#(IMAPFolderListingSource.listed)
 
 
 def drafts_folder(session, chosen):

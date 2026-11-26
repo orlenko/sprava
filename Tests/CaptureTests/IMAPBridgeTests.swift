@@ -27,8 +27,15 @@ import Testing
         let answer = try IMAPServerCheck.probe(account, support: support)
         #expect(answer.result == .untrusted); #expect(answer.fingerprint == expected)
         let pinned = try #require(IMAPAccount(host: "127.0.0.1", port: port, security: .startTLS, pin: answer.fingerprint, user: "member@example.invalid"))
-        #expect(try IMAPServerCheck.folders(pinned, password: "invented-bridge-password", support: support)
-                == ["INBOX", "Folders/Archive", "Labels/Invented \u{03BB}", "Labels/Workshop"])
+        let listing = try IMAPServerCheck.folderListing(pinned, password: "invented-bridge-password", support: support)
+        #expect(listing.names == ["INBOX", "Folders/Archive", "Labels/Invented λ", "Labels/Workshop"])
+        #expect(listing.markedSent == "Labels/Invented λ")
+        for count in ["0", "2"] {
+            try Data(count.utf8).write(to: root.appendingPathComponent("marks"))
+            let ambiguous = try IMAPServerCheck.folderListing(pinned, password: "invented-bridge-password", support: support)
+            #expect(ambiguous.markedSent == nil)
+            #expect(ambiguous.names == listing.names)
+        }
         #expect(throws: IMAPIntakeImport.Refused.authentication) { try IMAPServerCheck.folders(pinned, password: "wrong", support: support) }
         let changed = try #require(IMAPAccount(host: "127.0.0.1", port: port, security: .startTLS, pin: String(repeating: "0", count: 64), user: "member@example.invalid"))
         #expect(throws: IMAPIntakeImport.Refused.untrusted) { try IMAPServerCheck.folders(changed, password: "invented-bridge-password", support: support) }
@@ -36,7 +43,7 @@ import Testing
             try IMAPServerCheck.folders(account.signing(in: "member@example.invalid")!, password: "invented-bridge-password", support: support)
         }
         // Only the right pin with the right password ever reached LOGIN.
-        #expect(try String(contentsOf: root.appendingPathComponent("logins"), encoding: .utf8) == "ok\nrefused\n")
+        #expect(try String(contentsOf: root.appendingPathComponent("logins"), encoding: .utf8) == "ok\nok\nok\nrefused\n")
     }
 
     static func run(_ tool: String, _ arguments: [String], in directory: URL) throws {
@@ -48,6 +55,7 @@ import Testing
 
     static let bridge = #"""
 import socket, ssl, sys, threading
+from pathlib import Path
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain("cert.pem", "key.pem")
 lock = threading.Lock()
 def serve(connection):
@@ -74,9 +82,11 @@ def serve(connection):
             with lock, open("logins", "a") as log: log.write("ok\n" if accepted else "refused\n")
             send(tag + (" OK signed in" if accepted else " NO [AUTHENTICATIONFAILED] invented refusal"))
         elif command == "LIST" and secure:
-            for name in ["INBOX", "Folders/Archive", "Labels/Workshop", "Labels/Invented &A7s-"]:
-                send('* LIST (\\HasNoChildren) "/" "' + name + '"')
-            send('* LIST (\\Noselect) "/" "Labels"'); send(tag + " OK listed")
+            marks = int(Path("marks").read_text()) if Path("marks").exists() else 1
+            for i, name in enumerate(["Labels/Invented &A7s-", "Folders/Archive", "INBOX", "Labels/Workshop"]):
+                flags = "\\SeNt" if i < marks else "\\HasNoChildren"
+                send('* LIST (' + flags + ') "/" "' + name + '"')
+            send('* LIST (\\Sent \\Noselect) "/" "Labels"'); send(tag + " OK listed")
         elif command == "LOGOUT":
             send("* BYE"); send(tag + " OK bye"); return
         else:

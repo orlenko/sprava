@@ -133,17 +133,18 @@ import Testing
     @Test func theDraftsFolderIsChosenFromTheListAndSentWithTheConnection() async throws {
         let runtime = Runtime()
         let saved = "\"host\":\"mail.example.invalid\",\"port\":993,\"security\":\"tls\",\"user\":\"member@example.invalid\",\"mailbox\":\"INBOX\""
-        runtime.answers["imap_status"] = "{\"ok\":true,\"installed\":true,\"enabled\":true,\(saved),\"drafts_folder\":\"Brouillons\"}"
-        runtime.answers["imap_folders"] = "{\"ok\":true,\"folders\":[\"INBOX\",\"Brouillons\",\"Archive/Drafts\"]}"
+        runtime.answers["imap_status"] = "{\"ok\":true,\"installed\":true,\"enabled\":true,\(saved),\"drafts_folder\":\"Brouillons\",\"sent_folder\":\"Posted\"}"
+        runtime.answers["imap_folders"] = "{\"ok\":true,\"folders\":[\"INBOX\",\"Brouillons\",\"Archive/Drafts\",\"Posted\"]}"
         runtime.answers["imap_configure"] = runtime.answers["imap_status"]
         let model = EmailIntakeModel(client: runtime.client, authenticate: {})
         await model.show(Self.folder)
         #expect(model.status.draftsFolder == "Brouillons")
         model.beginChange()
-        #expect(model.draftsFolder == "Brouillons")
+        #expect(model.draftsFolder == "Brouillons" && model.sentFolder == "Posted")
         await model.signIn()
         await model.connect()
         #expect(runtime.last("imap_configure")?["drafts_folder"] == .str("Brouillons"))
+        #expect(runtime.last("imap_configure")?["sent_folder"] == .str("Posted"))
         model.beginChange()
         model.draftsFolder = "Archive/Drafts"
         await model.signIn()
@@ -152,10 +153,31 @@ import Testing
         // Back to the folder the server marks: signing in again keeps that choice, even with the saved folder listed.
         model.beginChange()
         model.draftsFolder = nil
+        model.sentFolder = nil
         await model.signIn()
         #expect(model.draftsFolder == nil)
         await model.connect()
         #expect(runtime.last("imap_configure")?["drafts_folder"] == .null)
+        #expect(runtime.last("imap_configure")?["sent_folder"] == .null)
+    }
+
+    @Test func serverMarkedSentSupersedesAManualFallbackAndIsNeverSavedAsOne() async throws {
+        let runtime = Runtime()
+        let saved = "\"host\":\"mail.example.invalid\",\"port\":993,\"security\":\"tls\",\"user\":\"member@example.invalid\",\"mailbox\":\"INBOX\""
+        runtime.answers["imap_status"] = "{\"ok\":true,\"installed\":true,\"enabled\":true,\(saved),\"sent_folder\":\"Old\"}"
+        runtime.answers["imap_folders"] = #"{"ok":true,"folders":["INBOX","Old","Enviados"],"marked_sent":"Enviados"}"#
+        runtime.answers["imap_configure"] = runtime.answers["imap_status"]
+        let model = EmailIntakeModel(client: runtime.client, authenticate: {})
+        await model.show(Self.folder)
+        model.beginChange()
+        await model.signIn()
+        #expect(model.markedSent == "Enviados")
+        #expect(model.sentFolder == nil)
+        await model.connect()
+        #expect(runtime.last("imap_configure")?["sent_folder"] == .null)
+        model.beginChange()
+        model.user = "other@example.invalid"
+        #expect(model.markedSent == nil && model.sentFolder == nil)
     }
 
     /// A folder the account no longer lists is not kept as the Drafts folder.

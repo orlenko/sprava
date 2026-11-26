@@ -61,6 +61,7 @@ struct EmailIntakeSection: View {
             Text(verbatim: s.mailbox ?? "").font(.headline)
             Text(verbatim: "\(s.user ?? "") · \(s.host ?? ""):\(s.port.map(String.init) ?? "") \(s.security?.label ?? "")")
                 .foregroundStyle(.secondary)
+            if let sent = s.sentFolder { Text(verbatim: "Sent folder: \(sent)").foregroundStyle(.secondary) }
             if let drafts = s.draftsFolder { Text(verbatim: "Drafts go to \(drafts)").foregroundStyle(.secondary) }
         }
         if s.needsPassword {
@@ -201,6 +202,17 @@ struct EmailIntakeSection: View {
                 }
                 .frame(maxWidth: 420)
                 Text("Drafts you approve go here. Choose one if the server marks no Drafts folder, or more than one.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let marked = model.markedSent {
+                LabeledContent("Sent folder", value: marked)
+            } else {
+                Picker("Sent folder", selection: $model.sentFolder) {
+                    Text("Choose later").tag(String?.none)
+                    ForEach(folders, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                }
+                .frame(maxWidth: 420)
+                Text("Choose where this account keeps sent mail. The server did not identify a single Sent folder.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
