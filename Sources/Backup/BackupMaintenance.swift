@@ -16,7 +16,7 @@ extension Backup {
         public var retention = false
         public var checked = false
         /// What failed apart from the binders, by name (`backup_settings`, `backup_state`, `backup_key`, `other_mac`,
-        /// `offload`, `state_snapshot`, `retention`, `check`): each also counts in `failed` and stays due, so the next
+        /// `repository_lock`, `offload`, `state_snapshot`, `retention`, `check`): each also counts in `failed` and stays due, so the next
         /// run tries it again.
         public var failedParts: [String] = []
         /// Folders not backed up because they hold another binder's backup id (`SharedBackupID`); each also counts in
@@ -79,6 +79,11 @@ extension Backup {
         } catch {
             fail("other_mac")
             return m
+        }
+        let mark = Self.macMark(deviceID)
+        for (_, repository) in repositories(configured) {
+            do { try recoverAbandonedLocks(in: repository, mark: mark) }
+            catch { fail("repository_lock") }
         }
         // An offload interrupted while its binder was leaving is finished here, whatever became of its request.
         for (id, job) in st.offloads.sorted(by: { $0.key < $1.key }) where job.stage == "leaving" {
