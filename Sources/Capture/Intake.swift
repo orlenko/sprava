@@ -425,6 +425,7 @@ public struct IntakeWatcher: Sendable {
 
         var ops: [JSONObject] = []
         var number = 0
+        var attachmentCoverage: [JSONValue] = []
         // A key or credential file is never filed (binder-v0 §3.3): the card holds it, it never moves it, so the card
         // stays one the person can approve.
         for (index, name) in ([file.name] + file.attachments).enumerated() where !DocumentPaths.isKeyFile(name) {
@@ -444,6 +445,14 @@ public struct IntakeWatcher: Sendable {
             } else if index > 0 {
                 document.set("kind", .str("attachment"))
             }
+            let grades = index == 0 ? reading?.pageGrades : reading?.attachmentPageGrades[fileSHA]
+            if let grades, !grades.isEmpty {
+                let values = JSONValue.array(grades.map { .str($0.rawValue) })
+                document.set("page_grades", values)
+                if index > 0, grades.contains(where: { $0 != .good }) {
+                    attachmentCoverage.append(.obj([("name", .str(name)), ("sha256", .str(fileSHA)), ("page_grades", values)]))
+                }
+            }
             document.set("source", .string(isMail ? "intake/mail" : "intake/"))
             // Other people's material is private by default (adaptation-layer §2.8; capture-event-v0 §3.3): the filed
             // copy is recorded redacted, and the person may change that on the card.
@@ -458,10 +467,12 @@ public struct IntakeWatcher: Sendable {
         var intake = JSONObject([(key: "name", value: .string(file.name)), (key: "bytes", value: .int(file.size)),
                                  (key: "modified", value: .string(Self.day(file.mtime))), (key: "sha256", value: .string(sha))])
         if !file.attachments.isEmpty { intake.set("attachments", .int(file.attachments.count)) }
+        if !attachmentCoverage.isEmpty { intake.set("attachment_coverage", .array(attachmentCoverage)) }
         intake.set("obtained", .object(obtained))
         if let r = reading {
             intake.set("kind", .string(r.kind))
             intake.set("text_from", .string(r.textFrom))
+            if !r.pageGrades.isEmpty { intake.set("page_grades", .array(r.pageGrades.map { .str($0.rawValue) })) }
             if let pages = r.pages { intake.set("pages", .int(pages)) }
             if let held = r.held { intake.set("held", .string(held)) }
             if !r.notes.isEmpty { intake.set("notes", .array(r.notes.map(JSONValue.string))) }

@@ -2,6 +2,7 @@ import BinderFormat
 import BinderStore
 import Capture
 import CaptureTestSupport
+import CoreGraphics
 import Darwin
 import Foundation
 @testable import Services
@@ -128,6 +129,28 @@ import Testing
             .write(to: mail.appendingPathComponent(base + ".md"))
         try Data("Subject: \(subject)\n\nInvented original of \(base).\n".utf8)
             .write(to: attachments.appendingPathComponent(IntakeWatcher.mailOriginalName))
+    }
+
+    @Test func blankMailAttachmentKeepsItsPhysicalPageAfterFiling() throws {
+        let s = try setup()
+        defer { try? FileManager.default.removeItem(at: s.folder); try? FileManager.default.removeItem(at: s.commands.support) }
+        try dropMail(s, "garden", subject: "Invented planting plan")
+        let file = s.folder.appendingPathComponent("intake/mail/garden attachments/plan.pdf")
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdf = try #require(CGContext(file as CFURL, mediaBox: &box, nil))
+        pdf.beginPDFPage(nil)
+        pdf.endPDFPage()
+        pdf.closePDF()
+        try card(s)
+        let proposed = try #require(open(s).first)
+        let listed = try call(s, [("command", .str("proposals")), ("binder", .str(s.folder.path))])
+        let entry = try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .str(proposed.id) })
+        let attachment = try #require(entry["intake"]?["attachment_coverage"]?.arrayValue?.first)
+        #expect(attachment["page_grades"] == .array([.str("unreadable")]))
+        #expect(try approve(s, proposed, folder: "documents")["ok"] == .bool(true))
+        let filed = Teka.read(s.folder).catalog?["documents"]?.arrayValue?.first { $0["path"] == .str("documents/plan.pdf") }
+        #expect(filed?["page_grades"] == .array([.str("unreadable")]))
+        #expect(filed?["sha256"] == attachment["sha256"])
     }
 
     func card(_ s: Setup) throws {

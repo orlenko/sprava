@@ -15,6 +15,7 @@ final class FiledDocuments: ObservableObject, DraftOwner {
         let path: String
         let documentID: JSONValue?
         let sha256: String?
+        var pageCoverage: BinderPageCoverage? = nil
     }
 
     @Published private(set) var records: [Record] = []
@@ -61,7 +62,8 @@ final class FiledDocuments: ObservableObject, DraftOwner {
             guard let path = value["path"]?.stringValue else { return nil }
             let title = value["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             return Record(id: index, title: title.flatMap { $0.isEmpty ? nil : $0 } ?? (path as NSString).lastPathComponent,
-                          path: path, documentID: value["id"], sha256: value["sha256"]?.stringValue)
+                          path: path, documentID: value["id"], sha256: value["sha256"]?.stringValue,
+                          pageCoverage: BinderPageCoverage(record: value, path: path))
         }
     }
 
@@ -146,6 +148,8 @@ struct FiledDocumentsSection: View {
         Button("Open Binder Folder") { model.open(row.folder) }
     }
 
+    @StateObject private var coverage = FiledPageChecks()
+
     var body: some View {
         Section("Filed documents") {
             if model.records.isEmpty {
@@ -159,6 +163,7 @@ struct FiledDocumentsSection: View {
                     TextField("Find a document by title or path", text: $model.query)
                     openFolder
                 }
+                FiledCoverageList(model: coverage, records: model.records, folder: row.folder)
                 let matches = model.matches
                 if matches.isEmpty { Text("No matching documents.").foregroundStyle(.secondary) }
                 ForEach(Array(matches.prefix(100))) { record in
@@ -166,6 +171,9 @@ struct FiledDocumentsSection: View {
                         VStack(alignment: .leading) {
                             Text(verbatim: record.title)
                             Text(verbatim: record.path).font(.caption).foregroundStyle(.secondary)
+                            if let report = coverage.current(record, folder: row.folder), report.hasGaps {
+                                Text(report.summary).font(.caption).foregroundStyle(.orange)
+                            }
                         }
                         Spacer()
                         Button("Show in Finder") { Task { await model.showInFinder(record, in: row.folder) } }.disabled(model.busy)

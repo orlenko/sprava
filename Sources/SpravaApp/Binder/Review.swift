@@ -60,6 +60,13 @@ struct ReviewCard: View {
                     Text(verbatim: "\u{201C}\(begins)\u{201D}").textSelection(.enabled)
                 }
             }
+            if let coverage = card.pageCoverage {
+                PageIssueLinks(coverage: coverage, folder: section.folder)
+            }
+            ForEach(card.attachmentCoverage, id: \.path) { attachment in
+                Text(verbatim: (attachment.path as NSString).lastPathComponent)
+                PageIssueLinks(coverage: attachment, folder: section.folder)
+            }
             if let draft = review.draft {
                 DraftFields(draft: draft) { file in Task { await actions.showInFinder(file, section.folder) } }
             }

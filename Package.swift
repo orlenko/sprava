@@ -73,7 +73,7 @@ let package = Package(
         // A sandboxed command-line tool needs an embedded Info.plist, or the sandbox stops it at launch.
         .executableTarget(name: "sprava", dependencies: ["Services", "Brains", "Hub", "Capture", "Clerk", "Extract", "Shelf",
                                                          "BinderStore", "BinderFormat", "SpravaKit"]),
-        .executableTarget(name: "SpravaApp", dependencies: ["Services", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
+        .executableTarget(name: "SpravaApp", dependencies: ["Extract", "Services", "Shelf", "BinderStore", "BinderFormat", "SpravaKit"]),
         .testTarget(name: "SpravaAppTests", dependencies: ["SpravaApp", "Services", "Shelf", "SpravaTestSupport", "SpravaKit"]),
         .executableTarget(name: "sprava-runtime", dependencies: ["Services", "Backup", "Brains", "Clerk", "Capture", "Shelf", "BinderStore", "SpravaKit"]),
         .executableTarget(name: "sprava-mcp", dependencies: ["Brains", "SpravaKit"]),
