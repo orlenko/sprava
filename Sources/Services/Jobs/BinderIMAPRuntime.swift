@@ -11,7 +11,7 @@ import SpravaKit
 /// binder instructions. Timers reuse this owner; model/MCP requests cannot reach its command door.
 public actor BinderIMAPRuntime {
     public static let commands: Set<String> = ["imap_status", "imap_probe", "imap_folders", "imap_configure", "imap_password", "imap_disable", "imap_sync",
-                                               "imap_drafts", "imap_draft_retry", "imap_draft_discard"]
+                                               "imap_draft_history", "imap_drafts", "imap_draft_retry", "imap_draft_discard"]
     /// The setup checks, replaceable in tests so no test reaches a server.
     public struct Checks: Sendable {
         let probe: @Sendable (IMAPAccount) throws -> IMAPServerCheck.Answer
@@ -34,6 +34,7 @@ public actor BinderIMAPRuntime {
     private let passwords: IMAPPasswords
     private let checks: Checks
     private let fetch: IMAPIntakeImport.Fetch?
+    private let readBack: DraftPlacing.ReadBack?
     private let place: DraftPlacing.Place
     /// The draft being placed now, if any (integrations.md §5.2).
     private var placing: Task<DraftPlacing.Outcome, Never>?
@@ -47,7 +48,7 @@ public actor BinderIMAPRuntime {
     private var changing = false
     public init(support: URL, log: @escaping @Sendable (String) -> Void = { _ in }) throws {
         self.support = support; connections = try BinderIMAPConnections(support: support); fetch = nil; reader = .located()
-        place = DraftPlacing.native; self.log = log
+        readBack = DraftPlacing.nativeReadBack; place = DraftPlacing.native; self.log = log
         passwords = IMAPPasswords(); checks = .native(support)
         available = { try ListedBinder.accepts($0, support: support) }
     }
@@ -55,7 +56,7 @@ public actor BinderIMAPRuntime {
          available: @escaping @Sendable (URL) throws -> Bool = { _ in true }, reader: ExtractHelper.Reader = .inProcess,
          place: @escaping DraftPlacing.Place = { _, _, _, _, _ in throw IMAPIntakeImport.Refused.unavailable }, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.support = support; self.connections = connections; self.passwords = passwords; self.fetch = fetch; self.available = available; self.reader = reader
-        self.place = place; self.log = log
+        self.readBack = nil; self.place = place; self.log = log
         self.checks = checks ?? Checks(probe: { _ in throw IMAPIntakeImport.Refused.unavailable }, folders: { _, _ in throw IMAPIntakeImport.Refused.unavailable })
     }
     public func respond(_ text: String) async -> String {
@@ -99,6 +100,18 @@ public actor BinderIMAPRuntime {
                 let account = try connections.configuration(for: folder)?.account
                 try await retire(folder)
                 if let account, try !connections.enabled().contains(where: { $0.account.sharesPassword(with: account) }) { passwords.remove(account) }
+            case "imap_draft_history":
+                guard try available(folder) else { throw IMAPIntakeImport.Refused.unavailable }
+                var rows: [JSONValue] = []
+                if let config = try connections.configuration(for: folder),
+                   FileManager.default.fileExists(atPath: support.appendingPathComponent("capture/placed-drafts").path) {
+                    rows = try PlacedDrafts(support: support).comparisons(for: config, at: Date()).map { item in
+                        .obj([("id", .str(item.card)), ("subject", .str(String(item.subject.prefix(160)))),
+                              ("status", .str(item.result?.status.rawValue ?? "pending")),
+                              ("differences", .array((item.result?.differences ?? []).map { .str($0.rawValue) }))])
+                    }
+                }
+                return JSONWriter.compact(.obj([("ok", .bool(true)), ("placements", .array(rows))]))
             case "imap_drafts":
                 return try drafts(folder)
             case "imap_draft_retry", "imap_draft_discard":
@@ -219,9 +232,9 @@ public actor BinderIMAPRuntime {
     /// Starts placing the next approved draft unless one is under way (integrations.md §5.2).
     private func placeDrafts(now: Date) {
         guard placing == nil, !changing else { return }
-        let support = self.support, connections = self.connections, passwords = self.passwords, available = self.available, place = self.place
+        let support = self.support, connections = self.connections, passwords = self.passwords, available = self.available, place = self.place, readBack = self.readBack
         let task = Task.detached(priority: .utility) {
-            DraftPlacing.run(support: support, connections: connections, password: { try passwords.read($0) }, available: available, place: place, now: now)
+            DraftPlacing.run(support: support, connections: connections, password: { try passwords.read($0) }, available: available, place: place, readBack: readBack, now: now)
         }
         placing = task
         Task {

@@ -173,6 +173,31 @@ import Testing
         #expect(try history.record(for: pending) == nil)
     }
 
+    @Test func readBackUsesThePlacedFolderAndReportsOnlyToItsConnection() throws {
+        let (c, folder, connections) = try setup()
+        let (card, digest) = try card(c, folder)
+        _ = try approve(c, folder, card, digest)
+        let placer = Placer()
+        #expect(run(c, connections, placer) == .placed)
+        let config = try #require(try connections.configuration(for: folder))
+        let history = try PlacedDrafts(support: c.support)
+        #expect(try history.comparisons(for: config, at: now).first?.result == nil)
+        let filtered = try connections.configure(folder: folder, account: config.account, mailbox: "Invented receipts", subject: "garden")
+        #expect(filtered.id != config.id)
+        #expect(try history.comparisons(for: filtered, at: now).first?.card == card.id)
+        _ = DraftPlacing.run(support: c.support, connections: connections, password: { _ in "invented" }, available: { _ in true },
+                             place: { try placer.place($0, $1, $2, $3, $4) }, readBack: { _, _, target, approved, _ in
+            #expect(target == "Drafts" && approved.messageID == DraftCard.messageID(card: card.id))
+            return .init(status: .matched, differences: [.recipients])
+        }, now: now)
+        let comparison = try #require(try history.comparisons(for: filtered, at: now).first)
+        #expect(comparison.result == .init(status: .matched, differences: [.recipients]))
+        #expect(placer.messages.count == 1)
+        let next = try #require(IMAPAccount(host: "mail.example.invalid", port: 993, security: .tls, user: "other@example.invalid"))
+        let changed = try connections.configure(folder: folder, account: next, mailbox: "INBOX")
+        #expect(try history.comparisons(for: changed, at: now).isEmpty)
+    }
+
     @Test func anUnavailableReceiptStoreLeavesTheApprovedMessageAndShowsWhy() throws {
         let (c, folder, connections) = try setup()
         let (card, digest) = try card(c, folder)

@@ -15,13 +15,22 @@ import Testing
     }
 
     @Test func theWorkerAppendsOnceToTheDraftsFolderAndOnlyThat() throws {
+        try verify(worker: IMAPDraftSource.script, harness: Self.harness, result: "marked/append/once/chosen/none/two/invalid/only")
+    }
+
+    @Test func readBackChecksOnlyAnExactMessageIDAndNamesTheChangedFields() throws {
+        try verify(worker: IMAPDraftReadSource.script, harness: Self.readBackHarness, result: "match/change/missing/ambiguous")
+    }
+
+    func verify(worker: String, harness: String, result: String) throws {
         guard let program = try? IMAPNativeFetch.installedProgram() else { return } // Optional installed dependency.
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-imap-draft-" + UUID().uuidString)
         try AtomicFile.makePrivateFolder(root)
+        defer { try? FileManager.default.removeItem(at: root) }
         let home = try IMAPNativeFetch.physical(root)
         let state = try #require(try StateDirectory.open(home))
-        try state.write(Data(IMAPDraftSource.script.utf8), to: "draft.py")
-        try state.write(Data(Self.harness.utf8), to: "harness.py")
+        try state.write(Data(worker.utf8), to: "draft.py")
+        try state.write(Data(harness.utf8), to: "harness.py")
         try state.write(Data(IMAPNativeFetch.profile(program: program, home: home).utf8), to: "sandbox.sb")
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         process.arguments = ["-f", home.appendingPathComponent("sandbox.sb").path, try IMAPNativeFetch.physical(program).path, "-I", "-S", "-B",
@@ -35,7 +44,7 @@ import Testing
         if process.isRunning { process.terminate() }
         process.waitUntilExit()
         #expect(process.terminationReason == .exit && process.terminationStatus == 0)
-        #expect(try String(contentsOf: home.appendingPathComponent("verified"), encoding: .utf8) == "marked/append/once/chosen/none/two/invalid/only")
+        #expect(try String(contentsOf: home.appendingPathComponent("verified"), encoding: .utf8) == result)
     }
 
     /// What is refused before any worker runs: an empty or oversized message, a malformed Message-ID or folder, and a
@@ -70,6 +79,49 @@ import Testing
         }
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("draft.eml").path))
     }
+
+    static let readBackHarness = #"""
+import re, runpy, sys
+from pathlib import Path
+m = runpy.run_path(sys.argv[1], run_name="fixture")
+msg_id = "<draft-1@sprava.invalid>"
+raw = b"Message-ID: <draft-1@sprava.invalid>\r\nTo: one@example.invalid\r\nSubject: Invented\r\n\r\nBody.\r\n"
+approved = m["approved_fields"](raw)
+class Session:
+    def __init__(self, items, size_offset=0):
+        self.items, self.read, self.size_offset = items, [], size_offset
+    def select(self, folder, readonly):
+        assert folder == '"Drafts"' and readonly
+        return "OK", [b"1"]
+    def uid(self, op, *args):
+        if op == "SEARCH":
+            assert args == (None, "HEADER", "Message-ID", '"<draft-1@sprava.invalid>"')
+            return "OK", [" ".join(self.items).encode()]
+        assert op == "FETCH"
+        uid, query = args
+        data = self.items[uid]
+        if "HEADER.FIELDS" in query:
+            return "OK", [(b"header", data.split(b"\r\n")[0] + b"\r\n\r\n"), b")"]
+        self.read.append(uid)
+        if query == "(RFC822.SIZE)":
+            return "OK", [b"1 (UID " + uid.encode() + b" RFC822.SIZE " + str(len(data) + self.size_offset).encode() + b")"]
+        chunk = re.fullmatch(r"\(BODY\.PEEK\[\]<([0-9]+)\.([0-9]+)>\)", query)
+        assert chunk
+        start, count = map(int, chunk.groups())
+        return "OK", [(b"literal", data[start:start+count]), b")"]
+def compare(items, expected, differences, body_uids):
+    session = Session(items)
+    assert m["read_one"](session, "Drafts", approved) == {"status": expected, "differences": differences}
+    assert set(session.read) == set(body_uids)
+other = raw.replace(b"draft-1@", b"rewritten@")
+compare({"2": other, "3": raw}, "matched", [], ["3"])
+compare({"3": raw.replace(b"one@example.invalid", b"one@example.invalid, two@example.invalid")}, "matched", ["recipients"], ["3"])
+compare({"2": other}, "missing", [], [])
+compare({"3": raw, "4": raw}, "ambiguous", [], [])
+assert m["read_one"](Session({"3": raw}, size_offset=-2), "Drafts", approved)["status"] == "unreadable"
+compare({"3": raw.replace(b"Subject: Invented", b"Subject: " + b"x" * 65536)}, "unreadable", [], ["3"])
+Path("verified").write_text("match/change/missing/ambiguous")
+"""#
 
     static let harness = #"""
 import io, sys, runpy, json

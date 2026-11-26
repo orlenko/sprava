@@ -29,7 +29,7 @@ final class RuntimeClient {
     /// reach the runtime is sent once more on a new connection: the first may have been made before the runtime was
     /// there, or kept from a runtime since restarted.
     static let reads: Set<String> = ["ping", "unfiled", "readings", "binder_settings", "proposals", "history",
-                                     "list_clients", "backup_status", "claude_status", "claude_binder", "chat_history", "imap_status",
+                                     "list_clients", "backup_status", "claude_status", "claude_binder", "chat_history", "imap_status", "imap_draft_history",
                                      "companion_status", "companion_devices", "companion_binder_status"]
 
     static func isRead(_ request: JSONObject) -> Bool {

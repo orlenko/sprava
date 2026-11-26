@@ -20,7 +20,7 @@ public final class BinderIMAPConnections: Sendable {
         public let includeExisting: Bool
         public let programHash: String
         public var enabled: Bool
-        fileprivate let instance: String
+        let instance: String
         /// The person's other addresses, lower case; absent in a row written before they could be given.
         fileprivate let otherAddresses: [String]?
         /// Addresses the person writes from besides the account's own name, so their own mail proposes no to-dos.
