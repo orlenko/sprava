@@ -1291,7 +1291,13 @@ call, naming the turn, applied only to a record as the turn found it, counted in
 line. Undo reverses them first, each on its own, a move taking its file back; one changed since, or whose file is no
 longer as the move left it, stays and is named. They reach no `sensitivity`, no key file, and no path the filing rules
 close. This amends 6.1 for these two ops on a person's turn: they apply at once whichever conversation filed the
-document, as D32 did for to-dos. Filing a file the agent wrote and adding a log entry are still to come. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
+document, as D32 did for to-dos.
+
+`add_log_entry` adds one line to the binder's log (`add_log_entry`), about a filed document when the call names one. The
+entry is text only, one line, never a closure, and a turn adds at most 10. A log entry records a fact and no op undoes
+it (binder-v0 6.10), so it stays when the turn is undone; the turn's line says "which Undo keeps", and a turn that only
+added entries offers no Undo. The agent is told to add one only when the person asks. Filing a file the agent wrote is
+still to come. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
 MCP server (type `sdk`, checked on 2.1.316 under `--safe-mode --restricted`), so no program, socket or token joins the
 sandbox, and a command the agent runs cannot call them. The other tools of this section are still to come.
 

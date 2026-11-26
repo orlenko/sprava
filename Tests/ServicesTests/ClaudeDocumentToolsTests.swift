@@ -157,6 +157,56 @@ import Testing
         #expect(record(other)?["path"] == .str("letters/letter.pdf"))
     }
 
+    func log(_ s: PSetup) -> [JSONObject] { Teka.read(s.folder).catalog?["processing_log"]?.arrayValue?.compactMap(\.objectValue) ?? [] }
+
+    // The author, 2026-11-26: "Log entry stays, logs are for traceability."
+    @Test func aLogEntryIsAddedAtOnceAndStaysWhenTheTurnIsUndone() throws {
+        let s = try filed(), turn = try Turn(s)
+        let count = log(s).count
+        let answer = turn.call("add_log_entry", [("entry", .str("Phoned the invented office; they confirmed the letter arrived")), ("document", .str("documents/letter.pdf"))])
+        #expect(!answer.refused, "\(answer.content)")
+        let entry = try #require(log(s).last)
+        #expect(log(s).count == count + 1)
+        #expect(entry["action"] == .str("Phoned the invented office; they confirmed the letter arrived") && entry["document"] == Self.doc)
+        let op = try #require(turn.ops.last)
+        #expect(op["op"] == .str("add_log_entry") && op["actor"]?["kind"] == .str("brain") && op["approved_by"] == .str("user"))
+        #expect(op["conversation"]?["turn"] == .str(turn.record.turnID.uuidString.lowercased()))
+        #expect(entry["op_id"] == op["id"] && entry["id"] == nil)
+        // The turn's line says the entry stays, and a turn that did nothing else offers no Undo.
+        let noted = try #require(try turn.history.documentChanges(forTurn: turn.record.turnID))
+        #expect(noted.summary == "Logged 1 entry, which Undo keeps: Phoned the invented office; they confirmed the letter arrived")
+        #expect(!noted.undoable)
+
+        // With a correction in the same turn, Undo takes the correction back and keeps the entry.
+        #expect(!turn.call("edit_document", [("document", Self.doc), ("title", .str("Invented notice"))]).refused)
+        #expect(try turn.history.documentChanges(forTurn: turn.record.turnID)?.undoable == true)
+        #expect(try undo(turn).isEmpty)
+        #expect(record(s)?["title"] == .str("Invented letter"))
+        #expect(log(s).contains { $0["op_id"] == op["id"] })
+    }
+
+    @Test func aLogEntryIsOneLineAboutAKnownDocumentAndATurnAddsFew() throws {
+        let s = try filed(), turn = try Turn(s)
+        let count = log(s).count, ops = turn.ops.count
+        let bad: [[(String, JSONValue)]] = [
+            [], [("entry", .str(""))], [("entry", .str("two\nlines"))], [("entry", .str(String(repeating: "e", count: 513)))], [("entry", .int(3))],
+            [("entry", .obj([("action", .str("done")), ("id", .str("board-1"))]))],   // never a closure: the entry is text only
+            [("entry", .str("Invented note")), ("document", .bool(true))],
+        ]
+        for fields in bad {
+            let answer = turn.call("add_log_entry", fields)
+            #expect(answer.refused && answer.content["error"] == .str("invalid"), "\(fields): \(answer.content)")
+        }
+        let absent = turn.call("add_log_entry", [("entry", .str("Invented note")), ("document", .str("documents/absent.pdf"))])
+        #expect(absent.refused && absent.content["error"] == .str("not_found"))
+        #expect(log(s).count == count && turn.ops.count == ops)
+
+        for index in 0..<ClaudeDocumentTools.maximumLogEntries { #expect(!turn.call("add_log_entry", [("entry", .str("Invented note \(index)"))]).refused) }
+        let over = turn.call("add_log_entry", [("entry", .str("One too many"))])
+        #expect(over.refused && !log(s).contains { $0["action"] == .str("One too many") })
+        #expect(log(s).count == count + ClaudeDocumentTools.maximumLogEntries)
+    }
+
     @Test func aSessionThatSharesNoDocumentsHasNoDocumentTools() throws {
         let s = try filed(), turn = try Turn(s)
         let narrow = try #require(ClaudeTodoTools(folder: s.folder, record: turn.record, history: turn.history, writer: turn.writer, search: nil))

@@ -9,7 +9,8 @@ import SpravaKit
 /// move back, not the file entry's.
 extension TurnHistory {
     public struct DocumentChange: Codable, Equatable, Sendable {
-        public enum Verb: String, Codable, Sendable { case corrected, moved }
+        /// `logged` is a log entry the turn added: it records a fact and stays when the turn is undone (binder-v0 §6.10).
+        public enum Verb: String, Codable, Sendable { case corrected, moved, logged }
         public let verb: Verb
         public let title: String
         public let opIDs: [String]
@@ -26,13 +27,18 @@ extension TurnHistory {
         public var changes: [DocumentChange]
         public var undone = false
 
-        /// One line for the conversation: each kind of change with its count, and up to three titles.
+        /// Whether Undo has anything to reverse here: a log entry stays.
+        public var undoable: Bool { changes.contains { $0.verb != .logged } }
+
+        /// One line for the conversation: each kind of change with its count, and up to three titles. A log entry is said
+        /// to stay, so the turn's Undo promises nothing it does not do.
         public var summary: String {
-            let kinds: [(DocumentChange.Verb, String)] = [(.corrected, "Corrected"), (.moved, "Moved")]
+            let kinds: [(DocumentChange.Verb, String)] = [(.corrected, "Corrected"), (.moved, "Moved"), (.logged, "Logged")]
             return kinds.compactMap { verb, word -> String? in
                 let titles = changes.filter { $0.verb == verb }.map(\.title)
                 guard !titles.isEmpty else { return nil }
                 let names = titles.prefix(3).joined(separator: ", ") + (titles.count > 3 ? ", …" : "")
+                if verb == .logged { return "Logged \(titles.count) entr\(titles.count == 1 ? "y" : "ies"), which Undo keeps: \(names)" }
                 return "\(word) \(titles.count) document\(titles.count == 1 ? "" : "s"): \(names)"
             }.joined(separator: ". ")
         }

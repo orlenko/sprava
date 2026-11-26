@@ -12,7 +12,10 @@ import SpravaKit
 /// and calls in here.
 final class ClaudeDocumentTools: @unchecked Sendable {
     typealias Refusal = ClaudeTodoTools.Refusal
-    static let names: Set<String> = ["edit_document", "move_document"]
+    static let names: Set<String> = ["edit_document", "move_document", "add_log_entry"]
+    /// A log entry cannot be taken back, so a turn adds few.
+    static let maximumLogEntries = 10
+    private var logged = 0
 
     private let folder: URL, record: ConversationTurnStore.Record, history: TurnHistory, writer: ClaudeTodoWriter
     /// Document records by id, in the catalog's compact form of it, each as a hash of the record as this turn found or left it.
@@ -34,6 +37,7 @@ final class ClaudeDocumentTools: @unchecked Sendable {
         switch name {
         case "edit_document": return try edit(args)
         case "move_document": return try move(args)
+        case "add_log_entry": return try log(args)
         default: throw Refusal.invalid("No such tool.")
         }
     }
@@ -85,6 +89,29 @@ final class ClaudeDocumentTools: @unchecked Sendable {
         return .obj([("ok", .bool(true)), ("title", .str(title)), ("path", .str(path))])
     }
 
+    /// One line in the binder's log, about a filed document when one is named. The log records facts and is never undone
+    /// (binder-v0 §6.10): the entry stays when the turn is undone, and the turn's line says so.
+    private func log(_ args: JSONObject) throws -> JSONValue {
+        guard logged < Self.maximumLogEntries else {
+            throw Refusal.invalid("This turn has added as many log entries as one turn may (\(Self.maximumLogEntries)). Nothing was added; tell the person.")
+        }
+        guard let given = args["entry"] else { throw Refusal.invalid("Give the entry: one line saying what happened. Nothing was added.") }
+        let text = try Self.line(given, "A log entry", bytes: 512)
+        var entry = JSONObject([(key: "action", value: .string(text))])
+        // Naming a document needs no revision: nothing of its record changes.
+        if let named = args["document"], named != .null {
+            guard named.stringValue != nil || named.numberValue?.safeInteger != nil else { throw Refusal.invalid("Name the document by its path or by its id from catalog.json. Nothing was added.") }
+            let documents = Self.documents(folder)
+            var found = documents.filter { $0["id"] == named }
+            if found.isEmpty, let path = named.stringValue { found = documents.filter { $0["path"]?.stringValue.map(DocumentPaths.fold) == DocumentPaths.fold(path) } }
+            guard found.count == 1, let id = found[0]["id"] else { throw Refusal.documentNotFound }
+            entry.set("document", id)
+        }
+        try write("add_log_entry", JSONObject([(key: "entry", value: .object(entry))]), expect: nil, change: { .init(verb: .logged, title: text, opIDs: $0) })
+        logged += 1
+        return .obj([("ok", .bool(true)), ("message", .str("The entry is in the binder's log. It stays there if the person undoes this turn."))])
+    }
+
     // MARK: - Reading and writing
 
     /// The record a call names, by its id or by its path, and the hash this turn holds for it. A path that several records
@@ -108,7 +135,7 @@ final class ClaudeDocumentTools: @unchecked Sendable {
         if let document = Self.documents(folder).first(where: { $0["id"] == id }), let hash = try? Canonical.hash(.object(document)) { known[JSONWriter.compact(id)] = hash }
     }
 
-    private func write(_ op: String, _ args: JSONObject, expect: String, change: @escaping ([String]) -> TurnHistory.DocumentChange) throws {
+    private func write(_ op: String, _ args: JSONObject, expect: String?, change: @escaping ([String]) -> TurnHistory.DocumentChange) throws {
         let (folder, turn, request, history) = (self.folder, record.turnID, record.requestID, self.history)
         do {
             try writer.perform { commands in
@@ -131,7 +158,7 @@ final class ClaudeDocumentTools: @unchecked Sendable {
         guard let record = try history.documentChanges(forTurn: turn), !record.undone else { return [] }
         return try writer.perform { commands in
             var left: [String] = []
-            for change in record.changes.reversed() {
+            for change in record.changes.reversed() where change.verb != .logged {
                 for op in change.opIDs.reversed() where try !commands.undoTurnOp(op, folder: folder, leavingRefused: true) {
                     if !left.contains(change.title) { left.append(change.title) }
                 }
@@ -166,6 +193,10 @@ final class ClaudeDocumentTools: @unchecked Sendable {
                               ("date", .obj([("type", .array([.str("string"), .str("null")])), ("description", .str("The document's own date, YYYY-MM-DD, or null for none."))])),
                               ("kind", .obj([("type", .array([.str("string"), .str("null")])), ("description", .str("Such as letter, invoice, notice, contract; or null for none."))]))],
                              required: ["document"])),
+        .init(name: "add_log_entry", description: "Adds one line to this binder's log, saying what happened. It cannot be taken back: it stays when the turn is undone.",
+              schema: schema([("entry", .obj([("type", .str("string")), ("description", .str("One line: what happened, in plain words."))])),
+                              ("document", .obj([("type", .array([.str("string"), .str("integer")])), ("description", .str("Optional: the filed document the entry is about, by path or id."))]))],
+                             required: ["entry"])),
         .init(name: "move_document", description: "Renames or refiles one filed document at once: moves its file to the new path and its record with it. Never replaces a file.",
               schema: schema([document, ("path", .obj([("type", .str("string")), ("description", .str("The new path from the binder's top, file name included."))]))],
                              required: ["document", "path"])),

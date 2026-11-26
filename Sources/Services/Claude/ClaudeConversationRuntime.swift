@@ -320,9 +320,10 @@ public actor ClaudeConversationRuntime {
                 let files = try history.entry(forTurn: turn)
                 let documentsLeft = documents == nil ? [] : try ClaudeDocumentTools.undo(turn: turn, folder: folder, history: history, writer: writer)
                 // What the app says of the documents when the files then stay as they are.
-                let documentFields: [(key: String, value: JSONValue)] = documents == nil ? [] : [
+                // A turn that only added log entries has no document change to undo: the entries stay (binder-v0 §6.10).
+                let documentFields: [(key: String, value: JSONValue)] = documents?.undoable != true ? [] : [
                     (key: "documents_undone", value: .bool(documentsLeft.isEmpty)), (key: "documents_left", value: .array(documentsLeft.prefix(20).map { .str($0) }))]
-                if (todos == nil && notes == nil && documents == nil) || files?.unrecorded == false {
+                if (todos == nil && notes == nil && documents?.undoable != true) || files?.unrecorded == false {
                     switch try history.undo(turn: turn, in: folder) {
                     case .undone: break
                     case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))] + documentFields)
@@ -841,7 +842,7 @@ public actor ClaudeConversationRuntime {
             let summary = [entry?.summary, documents?.summary, todos?.summary, notes == nil ? nil : "Updated the notes", sites].compactMap { $0 }.joined(separator: ". ")
             fields.append(("changes", .obj([("summary", .str(summary)),
                                             ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true && notes?.undone ?? true && documents?.undone ?? true)),
-                                            ("undoable", .bool(todos != nil || notes != nil || documents != nil || entry?.unrecorded == false))])))
+                                            ("undoable", .bool(todos != nil || notes != nil || documents?.undoable == true || entry?.unrecorded == false))])))
         } else if let sites {
             fields.append(("changes", .obj([("summary", .str(sites)), ("undone", .bool(false)), ("undoable", .bool(false))])))
         }
