@@ -3,6 +3,19 @@ import Testing
 @testable import Extract
 
 @Suite struct PageReadingsTests {
+    @Test func aggregateTextComesFromThePhysicalPages() throws {
+        let helper = try BugbotHelperAndHTMLTests().stub(#"""
+        cat >/dev/null
+        cat <<'JSON'
+        {"kind":"pdf","text":"unrelated aggregate","pages":3,"page_readings":[{"text":"First page","method":"text-layer"},{"text":"","method":"ocr"},{"text":"Last page","method":"text-layer"}]}
+        JSON
+        """#)
+        defer { try? FileManager.default.removeItem(at: helper.deletingLastPathComponent()) }
+        let reading = try ExtractHelper.launch(helper, data: Data(), name: "invented.pdf", timeout: 10)
+        #expect(reading.pageReadings.map(\.text) == ["First page", "", "Last page"])
+        #expect(reading.text == "First page\n\nLast page")
+    }
+
     @Test func mixedPDFKeepsPageOrderBlankPagesAndRecognitionConfidence() throws {
         let document = PDFDocument()
         for (index, page) in [
