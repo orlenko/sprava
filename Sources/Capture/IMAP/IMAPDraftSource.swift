@@ -15,9 +15,12 @@ enum IMAPDraftSource {
     static var script: String { shared + "\n\n" + tail }
 
     static let tail = #"""
+from email import policy
+from email.parser import BytesParser
+
 DRAFT_LIMIT = 32 * 1024 * 1024
 MESSAGE_ID = re.compile(r"<[\x21-\x3b\x3d\x3f-\x7e]{1,250}@[\x21-\x3b\x3d\x3f-\x7e]{1,250}>")
-APPENDUID = re.compile(rb"\[APPENDUID \d+ (\d+)\]")
+APPENDUID = re.compile(rb"\[APPENDUID \d+ ([1-9][0-9]{0,9})\]")
 
 
 class NoDrafts(Exception):
@@ -67,6 +70,24 @@ def header_id(response):
     return values[0].decode("ascii", "replace") if len(values) == 1 else None
 
 
+def approved_fields(message):
+    # Decode the approved wire copy, including an approval queued by an earlier build.
+    # This input is Sprava's own plain-text draft with optional base64 attachments.
+    draft = BytesParser(policy=policy.default).parsebytes(message)
+    parts = list(draft.iter_parts()) if draft.is_multipart() else [draft]
+    def digest(data):
+        return hashlib.sha256(data).hexdigest()
+    text = parts[0].get_payload(decode=True)
+    # A final CRLF terminates the body of a single-part message. The multipart parser
+    # already removes the delimiter's CRLF.
+    if not draft.is_multipart() and text.endswith(b"\r\n"):
+        text = text[:-2]
+    return {"messageID": str(draft["Message-ID"]), "to": [a.addr_spec for a in draft["To"].addresses] if "To" in draft else [],
+            "cc": [a.addr_spec for a in draft["Cc"].addresses] if "Cc" in draft else [], "subject": str(draft["Subject"] or ""),
+            "bodyHash": digest(text.replace(b"\r\n", b"\n")),
+            "attachmentHashes": [digest(part.get_payload(decode=True)) for part in parts[1:]]}
+
+
 def place(session, credentials, chosen, message, message_id):
     if not MESSAGE_ID.fullmatch(message_id) or not 0 < len(message) <= DRAFT_LIMIT:
         raise ValueError("invalid draft")
@@ -77,7 +98,10 @@ def place(session, credentials, chosen, message, message_id):
     # A retry finds the draft it placed before by its Message-ID, and places nothing again.
     checked(*session.select(mailbox_name(folder), readonly=True))
     found = checked(*session.uid("SEARCH", None, "HEADER", "Message-ID", quoted(message_id)))
-    uids = [int(value) for value in b" ".join(part for part in found if isinstance(part, bytes)).split()]
+    uids = b" ".join(part for part in found if isinstance(part, bytes)).split()
+    if len(uids) > 20 or any(not re.fullmatch(rb"[1-9][0-9]{0,9}", value) or int(value) > 4294967295 for value in uids):
+        raise ValueError("cannot identify an earlier placement")
+    uids = [int(value) for value in uids]
     # SEARCH HEADER matches a part of the header, and some servers match words: each candidate's own Message-ID must
     # be this one exactly, or it is another draft.
     for uid in uids[:20]:
@@ -86,7 +110,8 @@ def place(session, credentials, chosen, message, message_id):
             return {"folder": folder, "uid": uid, "present": True}
     response = checked(*session.append(mailbox_name(folder), "(\\Draft)", None, message))
     match = APPENDUID.search(b" ".join(part for part in response if isinstance(part, bytes)))
-    return {"folder": folder, "uid": int(match.group(1)) if match else None, "present": False}
+    uid = int(match.group(1)) if match else None
+    return {"folder": folder, "uid": uid if uid is not None and uid <= 4294967295 else None, "present": False}
 
 
 def main():
@@ -106,9 +131,12 @@ def main():
     if draft.is_symlink() or not draft.is_file() or draft.stat().st_size > DRAFT_LIMIT:
         raise ValueError("invalid draft")
     message = draft.read_bytes()
+    approved = approved_fields(message)
     session = connect(args.host, args.port, args.starttls, args.pin)
     try:
-        atomic(Path("result.json"), json.dumps(place(session, account, args.folder, message, args.message_id)).encode())
+        result = place(session, account, args.folder, message, args.message_id)
+        result["approved"] = approved
+        atomic(Path("result.json"), json.dumps(result, ensure_ascii=False).encode())
     finally:
         try:
             session.logout()

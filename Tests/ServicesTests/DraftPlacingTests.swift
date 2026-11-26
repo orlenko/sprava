@@ -101,7 +101,12 @@ import Testing
                 if let failure { throw failure }
                 messages.append(message)
                 folders.append(folder)
-                return .init(folder: "Drafts", uid: 7, present: false)
+                let header = String(decoding: message, as: UTF8.self).components(separatedBy: "\r\n")
+                    .first { $0.hasPrefix("Message-ID: ") } ?? ""
+                let approved = IMAPDraftAppend.Approved(messageID: String(header.dropFirst("Message-ID: ".count)), to: ["supplier@example.com"],
+                                                       cc: [], subject: "Invoice for October", bodyHash: String(repeating: "0", count: 64),
+                                                       attachmentHashes: [])
+                return .init(folder: "Drafts", uid: 7, present: false, approved: approved)
             }
         }
     }
@@ -142,6 +147,47 @@ import Testing
         // Each attempt's private folder is gone afterwards.
         let attempts = (try? FileManager.default.contentsOfDirectory(atPath: c.support.appendingPathComponent("capture/draft-attempts").path)) ?? []
         #expect(attempts.isEmpty)
+    }
+
+    @Test func aReceiptOutlivesQueueCleanupAndExpiresWithoutAMailConnection() throws {
+        let (c, folder, connections) = try setup()
+        let (card, approval) = try card(c, folder)
+        _ = try approve(c, folder, card, approval)
+        let requests = DraftRequests(support: c.support)
+        let pending = try #require(requests.all().first)
+        let message = try requests.message(id: card.id)
+        let placer = Placer()
+        #expect(run(c, connections, placer) == .placed)
+        let history = try PlacedDrafts(support: c.support)
+        let receipt = try #require(try history.record(for: pending))
+        #expect(receipt.placedAt == now && receipt.account == pending.account && receipt.binder == pending.binder)
+        #expect(receipt.result.approved.messageID == DraftCard.messageID(card: card.id))
+        #expect(receipt.result.folder == "Drafts" && receipt.result.uid == 7)
+        #expect(!String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self).contains("Could you send"))
+
+        // Restore the post-commit, pre-cleanup state, then return with an expired receipt and no password.
+        try requests.begin(id: card.id, binder: folder, account: pending.account, message: message, now: now)
+        try requests.ready(id: card.id)
+        #expect(run(c, connections, placer, password: nil, at: now.addingTimeInterval(PlacedDrafts.lifetime)) == .none)
+        #expect(requests.all().isEmpty && placer.messages.count == 1)
+        #expect(try history.record(for: pending) == nil)
+    }
+
+    @Test func anUnavailableReceiptStoreLeavesTheApprovedMessageAndShowsWhy() throws {
+        let (c, folder, connections) = try setup()
+        let (card, digest) = try card(c, folder)
+        _ = try approve(c, folder, card, digest)
+        let receipts = c.support.appendingPathComponent("capture/placed-drafts")
+        try AtomicFile.makePrivateFolder(receipts)
+        try AtomicFile.write(Data("invented unreadable receipt store".utf8), to: receipts.appendingPathComponent("records.sqlite"))
+        let requests = DraftRequests(support: c.support)
+        let message = try requests.message(id: card.id)
+        let placer = Placer()
+        #expect(run(c, connections, placer) == .failed)
+        let entry = try #require(requests.all().first)
+        #expect(entry.state == .failed && entry.failure?.contains("Placement history") == true)
+        #expect(placer.messages.isEmpty)
+        #expect(try requests.message(id: card.id) == message)
     }
 
     @Test func aFailureThatWillNotPassWaitsForThePersonAndOneThatMayIsTriedAgain() throws {

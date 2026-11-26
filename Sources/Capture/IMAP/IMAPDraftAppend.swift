@@ -6,13 +6,36 @@ import SpravaKit
 /// isolated Python under the same sandbox, the password on stdin only, and the message in a private folder.
 /// Sprava never sends mail; this places a draft the person sends from their own mail program.
 public enum IMAPDraftAppend {
-    public struct Placed: Equatable, Sendable {
+    public struct Approved: Codable, Equatable, Sendable {
+        public let messageID: String
+        public let to: [String]
+        public let cc: [String]
+        public let subject: String
+        public let bodyHash: String
+        public let attachmentHashes: [String]
+        public init(messageID: String, to: [String], cc: [String], subject: String, bodyHash: String, attachmentHashes: [String]) {
+            self.messageID = messageID
+            self.to = to
+            self.cc = cc
+            self.subject = subject
+            self.bodyHash = bodyHash
+            self.attachmentHashes = attachmentHashes
+        }
+    }
+
+    public struct Placed: Equatable, Sendable, Codable {
         /// The folder it is in, and its UID there when the server said (`UIDPLUS`).
         public let folder: String
         public let uid: UInt32?
         /// It was there already, from an earlier attempt: nothing was appended.
         public let present: Bool
-        public init(folder: String, uid: UInt32?, present: Bool) { self.folder = folder; self.uid = uid; self.present = present }
+        public let approved: Approved
+        public init(folder: String, uid: UInt32?, present: Bool, approved: Approved) {
+            self.folder = folder
+            self.uid = uid
+            self.present = present
+            self.approved = approved
+        }
     }
 
     public enum Refused: Error, Equatable {
@@ -45,11 +68,10 @@ public enum IMAPDraftAppend {
                                                 script: IMAPDraftSource.script, name: "imap-draft.py", cancelled: cancelled)
         if status == 23 { throw Refused.noDraftsFolder }
         try IMAPNativeFetch.check(status)
-        guard case .ok(let data) = SafeFile.read(home.appendingPathComponent("result.json"), limit: 8192),
-              let value = try? JSONParser.parse(data).value, let placed = value["folder"]?.stringValue,
-              case .bool(let present) = value["present"] ?? .null else { throw IMAPIntakeImport.Refused.unavailable }
-        let uid = value["uid"]?.numberValue?.safeInteger.flatMap { $0 > 0 && $0 <= Int64(UInt32.max) ? UInt32($0) : nil }
-        return Placed(folder: placed, uid: uid, present: present)
+        guard case .ok(let data) = SafeFile.read(home.appendingPathComponent("result.json"), limit: Self.limit),
+              let result = try? JSONDecoder().decode(Placed.self, from: data),
+              result.approved.messageID == messageID else { throw IMAPIntakeImport.Refused.unavailable }
+        return result
     }
 
     /// The message's one `Message-ID`, from its header block, when it is a single well-formed `<left@right>`: what a
