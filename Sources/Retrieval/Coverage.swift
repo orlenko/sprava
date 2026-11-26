@@ -15,6 +15,8 @@ public struct DocumentCoverage: Sendable, Equatable, Codable {
     public var pagesRead: [Int] = []
     /// Pages whose text came from OCR: their names and numbers may need checking against the page.
     public var pagesFromOCR: [Int] = []
+    /// Nil for an index made before readings were graded.
+    public var pagesPoor: [Int]?
     public var pagesFailed: [PageProblem] = []
     public var pagesIllegible: [Int] = []
     /// False when the reader gave the text as one block, so its passages carry no page number.
@@ -26,7 +28,7 @@ public struct DocumentCoverage: Sendable, Equatable, Codable {
     /// What else the reader left out, such as a message's attachments.
     public var notes: [String] = []
 
-    public var isComplete: Bool { notIndexed == nil && pagesFailed.isEmpty && pagesIllegible.isEmpty && !cut && notes.isEmpty }
+    public var isComplete: Bool { notIndexed == nil && (pagesPoor ?? []).isEmpty && pagesFailed.isEmpty && pagesIllegible.isEmpty && !cut && notes.isEmpty }
 }
 
 /// What a search looked through: the honest negative of §9.2 says this, never "the documents do not say".

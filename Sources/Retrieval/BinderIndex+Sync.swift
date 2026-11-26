@@ -76,6 +76,7 @@ extension BinderIndex {
         coverage.language = read.language
         coverage.notIndexed = read.problem
         coverage.notes = read.notes
+        coverage.pagesPoor = read.poorPages
         var cuts: [Cut] = []
         for (number, page) in read.pages {
             if number == nil { coverage.pagesKnown = false }
@@ -125,7 +126,11 @@ extension BinderIndex {
     /// Every source's revision, person lines included.
     func indexedRevisions() throws -> [PassageSource: String] {
         var out: [PassageSource: String] = [:]
-        for row in try db.rows("SELECT kind, key, revision FROM sources") {
+        // Keep old source keys for removals, but refresh document coverage written before page grading.
+        for row in try db.rows("""
+            SELECT kind, key, CASE WHEN kind IN ('document', 'intake') AND json_valid(coverage)
+                AND json_type(coverage, '$.pagesPoor') IS NULL THEN '' ELSE revision END FROM sources
+            """) {
             if let kind = row[0].text, let key = row[1].text, let source = PassageSource(kind: kind, key: key) { out[source] = row[2].text ?? "" }
         }
         return out

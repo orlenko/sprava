@@ -84,6 +84,8 @@ public struct DocumentText: Sendable {
     public var language: String
     /// Pages in order, from 1; one page numbered nil when the reader cannot tell pages apart.
     public var pages: [(number: Int?, page: Page)]
+    /// Pages with searchable text whose recognition or text layer was weak.
+    public var poorPages: [Int] = []
     /// Why nothing of the document was read.
     public var problem: String?
     /// What else the reader left out, such as a message's attachments.
