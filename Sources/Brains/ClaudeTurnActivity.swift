@@ -62,13 +62,33 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
 
     private static let shells: Set<String> = ["bash", "sh", "zsh"]
 
+    /// Whether an option makes this interpreter run nothing from the file it is given: a check of its syntax
+    /// (`bash -n`, `node --check`, `ruby -c`, `perl -c`, `php -l`, `swift -typecheck`), or code or a module given in
+    /// the file's place (`python -c`, `python -m`, `node -e`, `perl -e`). An option not known here is taken as
+    /// harmless, and a file then counts; one wrongly listed only loses a count.
+    private static func startsNothing(_ interpreter: String, _ option: String) -> Bool {
+        switch interpreter {
+        case "bash", "sh", "zsh":
+            // A cluster of short options with n in it (-n, -nv, -xn) is noexec.
+            return option.hasPrefix("--") ? ["--dump-strings", "--dump-po-strings"].contains(option) : option.contains("n") || option.contains("D")
+        case "python": return ["-c", "-m"].contains(option)
+        case "node": return ["-c", "--check", "-e", "--eval", "-p", "--print"].contains(option)
+        case "ruby", "perl": return ["-c", "-wc", "-cw", "-e", "-E"].contains(option)
+        case "php": return ["-l", "--syntax-check", "-r"].contains(option)
+        case "swift": return ["-typecheck", "-parse", "-frontend", "-e"].contains(option)
+        case "osascript": return option == "-e"
+        default: return false
+        }
+    }
+
     /// The files a shell command starts: in each part between `;`, `|`, `&`, a line break or a parenthesis, the first
     /// word when it is a path, or the first word after an interpreter that is no option. The shell's quotes are
     /// respected, so a separator or a space inside quotes belongs to its word: `echo 'a; scripts/a.sh'` starts
     /// nothing. A shell given `-c` and a quoted command is read once more, so `bash -c "scripts/a.sh"` is found.
-    /// A path with a space in it is left out, so an interpreter's quoted code is never taken for one.
+    /// A path with a space in it is left out, so an interpreter's quoted code is never taken for one. An interpreter
+    /// told only to check the file (`bash -n scripts/a.sh`), or given code or a module in its place, starts nothing.
     /// Reading the model's own command by rule, never running or expanding anything; the result is at most a count.
-    static func started(by command: String, nested: Bool = false) -> [String] {
+    package static func started(by command: String, nested: Bool = false) -> [String] {
         var found: [String] = []
         var parts: [[String]] = [[]], word = "", open = false, quote: Character?
         func end() { if open { parts[parts.count - 1].append(word); word = ""; open = false } }
@@ -96,13 +116,33 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
             guard let first = words.first else { continue }
             let program = (first as NSString).lastPathComponent, rest = words.dropFirst()
             var candidate: String? = first
-            if interpreters.contains(program) || interpreters.contains(where: { program.hasPrefix($0) && program.dropFirst($0.count).allSatisfy { $0.isNumber || $0 == "." } }) {
-                if shells.contains(program), !nested, let option = rest.firstIndex(where: { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.hasSuffix("c") }),
-                   let inner = rest[rest.index(after: option)...].first {
+            // The interpreter's name without a version: python3.12 is python, bash5 is bash.
+            let base = interpreters.contains(program) ? program
+                : interpreters.filter { program.hasPrefix($0) && program.dropFirst($0.count).allSatisfy { $0.isNumber || $0 == "." } }.max { $0.count < $1.count }
+            if let base = base.map({ $0 == "python3" ? "python" : $0 }) {
+                // The options before the file decide whether it runs: one that only checks it, or that takes code or a
+                // module in the file's place, starts nothing from a path.
+                candidate = nil
+                var index = rest.startIndex, inner: String?
+                while index < rest.endIndex {
+                    let word = rest[index]
+                    index = rest.index(after: index)
+                    guard word.hasPrefix("-") else { candidate = word; break }
+                    if startsNothing(base, word) { break }
+                    guard shells.contains(base), !word.hasPrefix("--") else { continue }
+                    if word.hasSuffix("o") {
+                        // `-o name` sets an option: noexec reads the script and runs none of it.
+                        if index < rest.endIndex, rest[index] == "noexec" { break }
+                        if index < rest.endIndex { index = rest.index(after: index) }
+                    } else if word.hasSuffix("c") {
+                        if index < rest.endIndex { inner = rest[index] }
+                        break
+                    }
+                }
+                if let inner, !nested {
                     for path in started(by: inner, nested: true) where !found.contains(path) && found.count < maximumRan { found.append(path) }
                     continue
                 }
-                candidate = rest.first { !$0.hasPrefix("-") }
             } else if !first.contains("/") {
                 candidate = nil
             }

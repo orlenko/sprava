@@ -61,6 +61,22 @@ import Testing
         #expect(f.cards.count == 1)
     }
 
+    /// A script only checked for its syntax was not started: no count and no card, however many turns do it. The same
+    /// turns running it are the control. Found by the independent check.
+    @Test func aScriptOnlyCheckedIsNeverCounted() throws {
+        let f = try Fixture()
+        try f.script("scripts/check-tiles.sh", "echo 'check the invented tiles'\n")
+        for command in ["bash -n scripts/check-tiles.sh", "sh -nv scripts/check-tiles.sh", "bash -o noexec scripts/check-tiles.sh",
+                        "cat scripts/check-tiles.sh", "bash -n ./scripts/check-tiles.sh && echo ok"] {
+            for _ in 1...6 { f.note(ClaudeTurnActivity.started(by: command)) }
+        }
+        #expect(try f.counts.read(f.s.folder).isEmpty)
+        #expect(f.cards.isEmpty)
+        for _ in 1...5 { f.note(ClaudeTurnActivity.started(by: "bash scripts/check-tiles.sh")) }
+        #expect(try f.counts.read(f.s.folder)[ImprovementCounts.script("scripts/check-tiles.sh")] == 5)
+        #expect(f.cards.count == 1)
+    }
+
     @Test func onlyAScriptTheBinderHoldsIsCountedAndTheCountsHoldNoPath() throws {
         let f = try Fixture()
         try f.script("notes.txt", "not a script\n")
