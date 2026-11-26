@@ -13,6 +13,8 @@ public enum Extractor {
         public let confidence: Double?
         /// Area of a PDF page in square points, for judging the density of its text layer.
         public var area: Double?
+        /// Visible marks remain outside the words recognized on a scan.
+        public var incompleteCoverage = false
     }
 
     public struct Result: Sendable, Equatable {

@@ -1,4 +1,5 @@
 import BinderFormat
+import CryptoKit
 import Foundation
 import NaturalLanguage
 import SpravaKit
@@ -9,6 +10,10 @@ public struct IntakeReading: Sendable, Equatable {
     public var kind: String                 // text, pdf, image, document, email, unknown
     public var textFrom: String             // text-layer, ocr, parsed
     public var pages: Int?
+    /// One grade per page of the primary file, in physical page order.
+    public var pageGrades: [Extractor.Page.Grade] = []
+    /// Grades of attachments by the digest of the exact bytes sent to the reader. Duplicate names are common in mail.
+    public var attachmentPageGrades: [String: [Extractor.Page.Grade]] = [:]
     public var text: String
     /// Set when the file is held for the person instead of read (§4.5).
     public var held: String?
@@ -48,11 +53,12 @@ public struct IntakeReading: Sendable, Equatable {
         var r = IntakeReading(kind: result.email != nil ? "email" : result.kind, textFrom: result.textFrom, pages: result.pages,
                               text: result.text, held: result.problem, channel: result.email != nil ? "email" : channel)
         r.mismatch = result.mismatch
+        r.pageGrades = result.pageReadings.map(\.grade)
         if let e = result.email {
             r.subject = e.subject; r.from = e.from; r.to = e.to; r.date = e.date; r.fromHeader = e.fromHeader; r.toHeader = e.toHeader
         }
         // Each attachment is read when its turn comes, so no more are read, or held in memory, once the reading is full.
-        var parts: [(String, () throws -> Extractor.Result)] = []
+        var parts: [(String, () throws -> Data)] = []
         for a in result.email?.attachments ?? [] {
             // The helper drops a leading dot from an attachment's name, so `.netrc` arrives as `netrc`.
             if DocumentPaths.isKeyFile(a.name) || DocumentPaths.isKeyFile("." + a.name) {
@@ -60,12 +66,12 @@ public struct IntakeReading: Sendable, Equatable {
                 r.notes.append("attachment \u{201C}\(a.name)\u{201D} looks like a key or credential file and was not read")
                 continue
             }
-            parts.append((a.name, { try ExtractHelper.run(a.data, name: a.name, reader: reader) }))
+            parts.append((a.name, { a.data }))
         }
         // A file's name is made safe before it enters the text, as one inside a message is: no line break, control
         // or direction mark.
         for url in attachments {
-            parts.append((DocumentPaths.safeName(url.lastPathComponent), { try ExtractHelper.run(url, under: binder, reader: reader) }))
+            parts.append((DocumentPaths.safeName(url.lastPathComponent), { try ExtractHelper.bytes(url, under: binder, reader: reader) }))
         }
         // The text cap holds for the whole reading, the message and its attachments together (adaptation-layer §2):
         // what passes it is cut, the rest is not read, and the card is held as the message alone would be.
@@ -79,10 +85,26 @@ public struct IntakeReading: Sendable, Equatable {
         for (name, read) in parts {
             r.attachments.append(name)
             if full { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: the reading reached the text limit"); continue }
-            switch Result(catching: read) {
+            let result = Result {
+                let data = try read()
+                let part = try ExtractHelper.run(data, name: name, reader: reader)
+                let digest = part.pageReadings.isEmpty ? nil : SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                return (part, digest)
+            }
+            switch result {
             case .failure(let error): r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: \(error)")
-            case .success(let a):
+            case .success(let (a, digest)):
                 if let problem = a.problem { r.notes.append("attachment \u{201C}\(name)\u{201D} was not read: \(problem)"); continue }
+                if let digest {
+                    let grades = a.pageReadings.map(\.grade)
+                    r.attachmentPageGrades[digest] = grades
+                    let gaps = grades.indices.filter { grades[$0] != .good }
+                    if !gaps.isEmpty {
+                        let pages = gaps.prefix(5).map { String($0 + 1) }.joined(separator: ", ")
+                        let more = gaps.count > 5 ? " and \(gaps.count - 5) more" : ""
+                        r.notes.append("Check attachment “\(name)”, page(s) \(pages)\(more).")
+                    }
+                }
                 if a.textFrom == "ocr" { r.textFrom = "ocr" }
                 if a.mismatch { r.notes.append("attachment \u{201C}\(name)\u{201D} is not the kind of file its name says") }
                 // A forwarded message's own attachments are not read here; a note says so, never silence.
@@ -151,6 +173,14 @@ public struct IntakeReading: Sendable, Equatable {
         o.set("kind", .string(kind))
         o.set("text_from", .string(textFrom))
         if let pages { o.set("pages", .int(pages)) }
+        if !pageGrades.isEmpty { o.set("page_grades", .array(pageGrades.map { .str($0.rawValue) })) }
+        if !attachmentPageGrades.isEmpty {
+            var records = JSONObject()
+            for (digest, grades) in attachmentPageGrades.sorted(by: { $0.key < $1.key }) {
+                records.set(digest, .array(grades.map { .str($0.rawValue) }))
+            }
+            o.set("attachment_page_grades", .object(records))
+        }
         o.set("text", .string(text))
         if let held { o.set("held", .string(held)) }
         if !notes.isEmpty { o.set("notes", .array(notes.map(JSONValue.string))) }
@@ -165,6 +195,18 @@ public struct IntakeReading: Sendable, Equatable {
         guard let kind = o["kind"]?.stringValue, let text = o["text"]?.stringValue else { return nil }
         self.init(kind: kind, textFrom: o["text_from"]?.stringValue ?? "parsed", pages: o["pages"]?.numberValue?.safeInteger.map(Int.init),
                   text: text, held: o["held"]?.stringValue, channel: o["channel"]?.stringValue ?? "other")
+        if let list = o["page_grades"]?.arrayValue, list.count == pages, list.count <= Extractor.Limits().pages {
+            let grades = list.compactMap { $0.stringValue.flatMap(Extractor.Page.Grade.init(rawValue:)) }
+            if grades.count == list.count { pageGrades = grades }
+        }
+        if let records = o["attachment_page_grades"]?.objectValue {
+            for (digest, entry) in records.entries {
+                guard digest.utf8.count == 64, digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                      let list = entry.arrayValue, !list.isEmpty, list.count <= Extractor.Limits().pages else { continue }
+                let grades = list.compactMap { $0.stringValue.flatMap(Extractor.Page.Grade.init(rawValue:)) }
+                if grades.count == list.count { attachmentPageGrades[digest] = grades }
+            }
+        }
         notes = o["notes"]?.arrayValue?.compactMap(\.stringValue) ?? []
         mismatch = o["mismatch"] == .bool(true)
         subject = o["subject"]?.stringValue; from = o["from"]?.stringValue; to = o["to"]?.stringValue; date = o["date"]?.stringValue

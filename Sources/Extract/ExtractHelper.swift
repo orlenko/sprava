@@ -33,11 +33,15 @@ public enum ExtractHelper {
     /// in its intake): the file is opened from it down, and one outside it is refused. It is never guessed from the
     /// file's path, which a link below the binder could shape.
     public static func run(_ file: URL, under root: URL, reader: Reader, timeout: TimeInterval = 180) throws -> Extractor.Result {
+        return try run(bytes(file, under: root, reader: reader), name: file.lastPathComponent, reader: reader, timeout: timeout)
+    }
+
+    static func bytes(_ file: URL, under root: URL, reader: Reader) throws -> Data {
         if reader == .missing { throw Self.missing }
         // Never through a link, which could lead a harmless name to a credential file, and never anything but a
         // regular file of this user within the size limit, so a FIFO or a device cannot stall the read.
         switch read(file, under: root, limit: Extractor.Limits().bytes) {
-        case .ok(let data): return try run(data, name: file.lastPathComponent, reader: reader, timeout: timeout)
+        case .ok(let data): return data
         case .refused(let why): throw Failure(message: "the file was not opened: it is \(why)")
         case .missing: throw Failure(message: "the file is not there")
         case .unreadable(let why): throw Failure(message: "the file cannot be read now (\(why))")
@@ -166,7 +170,9 @@ public enum ExtractHelper {
         let deadline = Date() + timeout
         try task.run()
         let delivery = Delivery(), delivered = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        // The caller blocks reading the answer. Its input writer must still run when other
+        // callers occupy the shared worker pool, or a healthy helper can time out waiting for EOF.
+        Thread.detachNewThread {
             do { try writer.write(contentsOf: data) } catch { delivery.failed = true }
             try? writer.close()
             delivered.signal()
