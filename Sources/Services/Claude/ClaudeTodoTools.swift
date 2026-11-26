@@ -24,12 +24,12 @@ public final class ClaudeTodoWriter: @unchecked Sendable {
 /// more than `maximumChanges`. A refusal changes nothing and comes back as a reason code the agent can tell the person.
 final class ClaudeTodoTools: @unchecked Sendable {
     enum Refusal: Error, Equatable {
-        case invalid(String), notFound, changedSince, tooMany, unavailable, refused
+        case invalid(String), notFound, changedSince, documentNotFound, documentChangedSince, tooMany, unavailable, refused
         var code: String {
             switch self {
             case .invalid: "invalid"
-            case .notFound: "not_found"
-            case .changedSince: "changed_since"
+            case .notFound, .documentNotFound: "not_found"
+            case .changedSince, .documentChangedSince: "changed_since"
             case .tooMany: "too_many"
             case .unavailable, .refused: "not_saved"
             }
@@ -39,7 +39,9 @@ final class ClaudeTodoTools: @unchecked Sendable {
             case .invalid(let why): why
             case .notFound: "No open to-do has that id. It may be closed already. Nothing changed."
             case .changedSince: "This to-do changed since this turn started, probably by the person. Nothing changed; tell them."
-            case .tooMany: "This turn has made as many to-do changes as one turn may (\(ClaudeTodoTools.maximumChanges)). Nothing more changed; tell the person."
+            case .documentNotFound: "No filed document has that path or id. Nothing changed."
+            case .documentChangedSince: "This document's record changed since this turn started, probably by the person. Nothing changed; tell them."
+            case .tooMany: "This turn has made as many changes as one turn may (\(ClaudeTodoTools.maximumChanges)). Nothing more changed; tell the person."
             case .unavailable, .refused: "Sprava could not save this. Nothing changed; tell the person."
             }
         }
@@ -56,7 +58,9 @@ final class ClaudeTodoTools: @unchecked Sendable {
     private var drafts = 0
     static let maximumDrafts = 5
     private let search: (@Sendable (String, Int) throws -> ClaudeBinderContext.Found)?
-    static let wholeBinderTools: Set<String> = ["search_binder", "update_notes"]
+    static let wholeBinderTools: Set<String> = ClaudeDocumentTools.names.union(["search_binder", "update_notes"])
+    /// The document tools, for a session that shares the binder's documents.
+    private let documents: ClaudeDocumentTools?
     static let maximumSearches = 40, maximumSearchBytes = 64 * 1024, maximumNotesBytes = 32 * 1024
 
     /// Nil, and so no tools, when nothing can write or the to-dos cannot be read.
@@ -64,6 +68,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
           search: (@Sendable (String, Int) throws -> ClaudeBinderContext.Found)? = nil) {
         guard writer.attached, let items = Self.openItems(folder) else { return nil }
         self.folder = folder; self.record = record; self.history = history; self.writer = writer; self.search = search
+        documents = search == nil ? nil : ClaudeDocumentTools(folder: folder, record: record, history: history, writer: writer)
         known = [:]
         for item in items {
             if let id = ItemID(item["id"])?.description, let hash = try? Canonical.hash(.object(item)) { known[id] = hash }
@@ -114,6 +119,9 @@ final class ClaudeTodoTools: @unchecked Sendable {
             case "complete_todo": result = try close(args, op: "complete", verb: .completed)
             case "remove_todo": result = try close(args, op: "drop", verb: .removed)
             case "update_notes": result = try updateNotes(args)
+            case _ where ClaudeDocumentTools.names.contains(name):
+                guard let documents else { throw Refusal.invalid("No such tool.") }
+                result = try documents.handle(name, args)
             default: throw Refusal.invalid("No such tool.")
             }
             changes += 1
@@ -373,5 +381,5 @@ final class ClaudeTodoTools: @unchecked Sendable {
         .init(name: "edit_todo", description: "Changes the named fields of one open to-do at once.", schema: schema([id] + fields, required: ["id"])),
         .init(name: "complete_todo", description: "Marks one open to-do done at once.", schema: schema([id], required: ["id"])),
         .init(name: "remove_todo", description: "Removes one open to-do from the list at once, recording it as cancelled.", schema: schema([id], required: ["id"])),
-    ]
+    ] + ClaudeDocumentTools.tools
 }
