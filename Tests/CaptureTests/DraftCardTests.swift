@@ -46,7 +46,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: folder) }
         let requests = DraftRequests(support: folder), id = UUID().uuidString
         let prefix = String(repeating: "a", count: 314)
-        try requests.begin(id: id, binder: folder, account: "invented", message: Data(), subject: prefix + "\u{202E}🔔🇨🇦")
+        try requests.begin(id: id, binder: folder, account: "invented", message: Data(), subject: prefix + "\u{202E}\u{2028}🔔🇨🇦")
         #expect(requests.all().first?.subject == prefix + "🔔")
     }
 

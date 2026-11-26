@@ -211,7 +211,9 @@ import Testing
         _ = try t.approve(c, folder, card, digest)
         let moved = folder.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
         try FileManager.default.moveItem(at: folder, to: moved)
-        try AtomicFile.makePrivateFolder(folder)
+        try FileManager.default.copyItem(at: moved, to: folder)
+        let originalConfig = try #require(try connections.configuration(for: moved))
+        _ = try connections.configure(folder: folder, account: originalConfig.account, mailbox: "INBOX")
         let runtime = BinderIMAPRuntime(support: c.support, connections: connections, passwords: BinderIMAPRuntimeTests.passwords(),
                                        fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
         func call(_ name: String, _ target: URL) async throws -> JSONValue {
@@ -222,8 +224,12 @@ import Testing
         #expect(try await call("imap_draft_retry", folder)["ok"] == .bool(false))
         #expect(try await call("imap_drafts", moved)["drafts"]?.arrayValue?.first?["id"] == .str(card.id))
         let placer = DraftPlacingTests.Placer()
-        #expect(t.run(c, connections, placer) == .waiting && placer.messages.isEmpty)
-        #expect(DraftRequests(support: c.support).all().first?.state == .ready)
+        #expect(try await call("imap_draft_reconnect", folder)["ok"] == .bool(false))
+        #expect(t.run(c, connections, placer) == .placed && placer.messages.count == 1)
+        let (next, nextDigest) = try t.card(c, moved)
+        let approved = try t.approve(c, moved, next, nextDigest)
+        try #require(approved["ok"] == .bool(true), "\(approved)")
+        #expect(t.run(c, connections, placer) == .placed && placer.messages.count == 2)
     }
 
     @Test func aRestoredCopyCanExplicitlyReconnectItsOwnAppliedDraft() async throws {

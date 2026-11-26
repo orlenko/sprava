@@ -38,8 +38,7 @@ enum DraftPlacing {
         var enabled: [BinderIMAPConnections.Configuration]?
         func location(_ request: DraftRequests.Request) -> URL? {
             guard request.binderInstance != nil else { return nil }
-            let saved = URL(fileURLWithPath: request.binder, isDirectory: true)
-            if request.belongs(to: saved) { return saved }
+            if case .found(let owner) = request.ownerLocation { return owner }
             // A binder may have moved and been reconnected. Only its own physical folder qualifies.
             if enabled == nil { enabled = (try? connections.enabled()) ?? [] }
             return enabled?.first { request.belongs(to: $0.folder) }?.folder
@@ -67,7 +66,9 @@ enum DraftPlacing {
             }
             // It was approved for one account: if the binder's connection is another now, it goes nowhere until the
             // person approves it again.
-            guard request.belongs(to: config.folder), DraftRequests.account(of: config.account) == request.account else {
+            // configuration(for:) looks up the current physical directory identity; its saved
+            // connection path can still name the location it had when the person connected.
+            guard DraftRequests.account(of: config.account) == request.account else {
                 try? requests.failed(id: request.id, reason: "account changed")
                 continue
             }

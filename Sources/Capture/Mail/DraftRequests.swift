@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SpravaKit
 
@@ -25,6 +26,28 @@ public struct DraftRequests: Sendable {
         public func belongs(to folder: URL) -> Bool {
             guard let binderInstance else { return false }
             return (try? BinderIMAPConnections.folderIdentity(folder.resolvingSymlinksInPath())) == binderInstance
+        }
+
+        /// Locate the approved physical directory after a rename, even when another binder now uses its old name.
+        /// On mounted local macOS volumes, volfs resolves a file ID without searching the shelf or opening binders.
+        public enum OwnerLocation { case found(URL), missing, unknown }
+        public var ownerLocation: OwnerLocation {
+            let saved = URL(fileURLWithPath: binder, isDirectory: true)
+            if belongs(to: saved) { return .found(saved) }
+            guard let binderInstance else { return .unknown }
+            let fields = binderInstance.split(separator: ":")
+            guard fields.count == 4, let device = Int32(fields[0]), let inode = UInt64(fields[1]) else { return .unknown }
+            let volume = "/.vol/\(device)"
+            var info = stat()
+            // volfs addresses the volume root by its HFS/APFS root directory ID, 2.
+            guard stat(volume + "/2", &info) == 0, info.st_dev == device else { return .unknown }
+            let fd = open("\(volume)/\(inode)", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard fd >= 0 else { return errno == ENOENT || errno == ENOTDIR ? .missing : .unknown }
+            defer { close(fd) }
+            var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(fd, F_GETPATH, &path) == 0 else { return .unknown }
+            let current = URL(fileURLWithPath: String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self), isDirectory: true)
+            return belongs(to: current) ? .found(current) : .unknown
         }
 
         public var state: State
@@ -70,7 +93,7 @@ public struct DraftRequests: Sendable {
             let size = character.utf8.count
             guard used + size <= 320 else { break }
             if character.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0.value != 0x200D
-                || $0.properties.isBidiControl }) { continue }
+                || CharacterSet.newlines.contains($0) || $0.properties.isBidiControl }) { continue }
             output.append(character)
             used += size
         }

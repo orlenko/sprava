@@ -242,7 +242,10 @@ public actor BinderIMAPRuntime {
     /// The destination must already contain the exact approved card and use the same account.
     /// An unrelated binder at a reused path has neither authority to see the label nor a recovery action.
     private func canReconnect(_ request: DraftRequests.Request, to folder: URL) -> Bool {
-        guard !request.belongs(to: folder), !request.belongs(to: URL(fileURLWithPath: request.binder)),
+        if request.binderInstance != nil {
+            guard case .missing = request.ownerLocation else { return false }
+        }
+        guard !request.belongs(to: folder),
               (try? available(folder)) == true,
               let config = try? connections.configuration(for: folder), config.enabled,
               DraftRequests.account(of: config.account) == request.account else { return false }
