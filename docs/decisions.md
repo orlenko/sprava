@@ -571,8 +571,8 @@ Each line names what replaced the entry; its old text is in git history.
   not cover. Drag and drop stays the way documents arrive ("this should not be a problem at all, as long as we're able
   to drag and drop documents directly into the app"). The conversation gets tools to catalogue a file it wrote in the
   binder, rename or refile a document, correct a record and add a log entry, each an op through the guard, applied in
-  the turn as the to-do tools are (D32) and undone with it; this amends D3's classes for these ops. Whether a log
-  entry is undone is open. `catalog.json` stays closed to its file tools. Not chosen: leaving
+  the turn as the to-do tools are (D32) and undone with it; this amends D3's classes for these ops. A log
+  entry stays when its turn is undone, and the turn's line says so (the author, 2026-11-26: "logs are for traceability"). `catalog.json` stays closed to its file tools. Not chosen: leaving
   every catalog change to a drop or the person's own hand (`docs/plan-2026-11-25.md`, Track D).
 - **D46 decided (2026-11-25, the author: "Why can't we learn? We should be able to learn"; "2a" twice).** A binder
   learns from its work. Its Claude proposes a rule with a tool; the proposal is a card (Accept, Edit, Dismiss), never
