@@ -319,6 +319,32 @@ import Testing
         #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
     }
 
+    // A waiting to-do with no date was refused its follow-up date at adoption, since that alone did not make it valid.
+    // It lacks only a date all the same, so it joins the shared card, which gives it both.
+    @Test func aWaitingToDoWithNoDateJoinsTheSharedCard() throws {
+        let c = commands()
+        let name = "shed-sample"
+        let catalog = """
+        {"meta": {"schema_version": 2, "name": "\(name)"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "\(name)-2026-001", "title": "Invented chore", "status": "open", "priority": "normal"},
+                        {"id": "\(name)-2026-002", "title": "Invented wait", "status": "waiting", "priority": "normal", "waiting_on": "an invented office"},
+                        {"id": "\(name)-2026-003", "title": "Invented repeat", "status": "open", "priority": "normal", "recurrence": {"freq": "monthly", "day": 5}},
+                        {"id": "\(name)-2026-004", "title": "Invented wait with an unreadable follow-up", "status": "waiting", "priority": "normal",
+                         "waiting_on": "an invented office", "follow_up_at": "tomorrow"}]}
+        """
+        let (folder, listed) = try adoptCatalog(c, name: name, catalog)
+        let shared = try #require(listed.first { $0["title"] == .str("Keep these 2 to-dos with no deadline, or give any of them a date") })
+        // A repeat needs a real date, and a follow-up date that cannot be read is the person's to settle: each keeps
+        // a card of its own, so the shared card can be approved as offered.
+        #expect(listed.count == 3 && listed.filter { $0["title"] == .str("Fill in what this item is missing") }.count == 2)
+        #expect(try approve(c, folder, shared)["ok"] == .bool(true))
+        let wait = try #require(Teka.read(folder).items.first { $0.idText == "\(name)-2026-002" }?.object)
+        #expect(wait["no_deadline"] == .bool(true) && wait["follow_up_at"]?.stringValue != nil)
+        #expect(wait["derived"] == .array([.str("follow_up_at")]))
+        // Only the repeat still breaks a rule.
+        #expect(Set(Teka.read(folder).findings.map(\.location)) == ["open_items[2]", "open_items[3]"])
+    }
+
     // A card holds at most a hundred of them, so a binder with hundreds still lists its cards.
     @Test func hundredsOfDatelessToDosAreSplitAcrossCardsThatCanBeListed() throws {
         let c = commands()

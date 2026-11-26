@@ -344,9 +344,16 @@ public enum Adoption {
                 set.set(aside.key, aside.value)
             }
             let close = closures[id]
-            if missing == [RuleFinding.Code.dateless.rawValue], close == nil, set.entries.isEmpty {
+            // An item that lacks only a date, or a date and the follow-up date code derives for a waiting item (the
+            // mechanical fix was refused while the item had no date), goes on the shared card with that follow-up.
+            // Judged by the findings' codes: a follow-up date that is there but unreadable is another finding, which
+            // the person settles on the item's own card. The follow-up must be one this card supplies.
+            let codes = Set(findings.filter { $0.location == finding.location && !handled.contains($0.code) }.map(\.code))
+            let followUpSupplied = !codes.contains(.waitingWithoutFollowUp) || set["follow_up_at"] != nil
+            if codes.contains(.dateless), codes.isSubset(of: [.dateless, .waitingWithoutFollowUp]), followUpSupplied, close == nil {
+                set.set("no_deadline", .bool(true))
                 var op = JSONObject([(key: "op", value: .str("update_item")),
-                                     (key: "args", value: .obj([("id", id), ("set", .obj([("no_deadline", .bool(true))]))]))])
+                                     (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
                 op.set("card", .obj([("flags", .array([.str("it has no date: approving keeps it with no deadline, unless you give it one")]))]))
                 dateless.append(op)
                 continue
@@ -384,8 +391,10 @@ public enum Adoption {
             let title = (group.count == 1 ? "Keep this to-do with no deadline, or give it a date"
                                           : "Keep these \(group.count) to-dos with no deadline, or give any of them a date")
                 + (parts > 1 ? " (part \(start / perCard + 1) of \(parts))" : "")
+            // What approval checks the items no longer lack: the date, and a waiting item's follow-up date.
             return Proposal.make(title: title, actor: actor, ops: group,
-                                 provenance: JSONObject([(key: "repair", value: .array([.string(RuleFinding.Code.dateless.rawValue)]))]), now: now)
+                                 provenance: JSONObject([(key: "repair", value: .array([.string(RuleFinding.Code.dateless.rawValue), .str("follow_up_at")]))]),
+                                 now: now)
         }
     }
 
