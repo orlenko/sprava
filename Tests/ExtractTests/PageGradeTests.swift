@@ -24,6 +24,30 @@ import Testing
         #expect(clear.pageReadings.map(\.grade) == [.good])
     }
 
+    @Test func fullyReadWordsOnAnEnlargedScanKeepAGoodGrade() throws {
+        var paper = CGRect(x: 0, y: 0, width: 640, height: 820)
+        let bitmap = try #require(CGContext(data: nil, width: 640, height: 820, bitsPerComponent: 8, bytesPerRow: 0,
+                                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        bitmap.setFillColor(gray: 1, alpha: 1)
+        bitmap.fill(paper)
+        bitmap.setFillColor(gray: 0, alpha: 1)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 22, nil)
+        let lines = ["Greenhouse handbook, section 1.", "Water the trays each morning.", "Count the trays before closing the garden."]
+        for (index, line) in lines.enumerated() {
+            bitmap.textPosition = CGPoint(x: 30, y: 700 - 50 * index)
+            CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: line, attributes: [.font: font])), bitmap)
+        }
+        let bytes = NSMutableData()
+        let pdf = try #require(CGContext(consumer: CGDataConsumer(data: bytes as CFMutableData)!, mediaBox: &paper, nil))
+        pdf.beginPDFPage(nil)
+        pdf.draw(try #require(bitmap.makeImage()), in: paper)
+        pdf.endPDFPage()
+        pdf.closePDF()
+        let reading = Extractor.extract(bytes as Data, name: "handbook.pdf")
+        #expect(lines.allSatisfy { reading.text.contains($0) })
+        #expect(reading.pageReadings.map(\.grade) == [.good])
+    }
+
     @Test func paleUnrecognizedWritingBelowDarkTextNeedsInspection() throws {
         let first = Fixtures.textImage(["Orchard notes", "Count the pears", "Record the rows"], width: 1000, height: 260)
         let second = Fixtures.textImage((1...6).map { "Count invented trees in the orchard row " + String($0) }, width: 1000, height: 440)

@@ -29,7 +29,10 @@ extension Extractor {
                 words += 1
                 guard words <= 4_096, let box = try? line.boundingBox(for: word.startIndex..<word.endIndex) else { return true }
                 let rect = box.boundingBox.applying(scale)
-                mask.fill(rect.insetBy(dx: -2, dy: -2))
+                // Vision estimates word bounds. Allow the same small fraction of a glyph at
+                // each resolution for serifs, punctuation and resampling around its edges.
+                let margin = max(2, rect.height / 8)
+                mask.fill(rect.insetBy(dx: -margin, dy: -margin))
             }
         }
         let pixels = source.assumingMemoryBound(to: UInt8.self)
