@@ -21,6 +21,21 @@ func ids(_ page: NowPage, _ bucket: Bucket) -> [String] { page.items[bucket, def
         #expect(page.closed.isEmpty)
     }
 
+    // #689: a copied or renamed lifeproj binder reads "needs attention" for its name alone, and was never offered Adopt.
+    @Test func aBinderWhoseFolderNameDiffersCanStillBeAdopted() throws {
+        #expect(Teka.read(try makeTeka(fixture: "lifeproj-v2-live")).canBeAdopted)
+        let renamed = Teka.read(try makeTeka(fixture: "lifeproj-v2-live", folderName: "invented-copy"))
+        #expect(renamed.state == .needsAttention && renamed.reasons.contains("the folder name differs from meta.name"))
+        #expect(renamed.canBeAdopted)
+        // What blocks every write still blocks adoption: here, a catalog that is a link.
+        let linked = try makeTeka(fixture: "lifeproj-v2-live") { folder in
+            let catalog = folder.appendingPathComponent("catalog.json"), moved = folder.appendingPathComponent("moved.json")
+            try FileManager.default.moveItem(at: catalog, to: moved)
+            try FileManager.default.createSymbolicLink(at: catalog, withDestinationURL: moved)
+        }
+        #expect(!Teka.read(linked).canBeAdopted)
+    }
+
     @Test func liveLifeprojV2NeedsMigrationAndKeepsDoneItemsVisible() throws {
         let teka = Teka.read(try makeTeka(fixture: "lifeproj-v2-live"))
         #expect(teka.level == .lifeprojV2)

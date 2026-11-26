@@ -108,7 +108,7 @@ struct NowView: View {
                             .accessibilityLabel("This binder's settings")
                     }
                 }
-                if !teka.isAdopted, teka.state >= .needsMigration {
+                if teka.canBeAdopted {
                     Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
                         .disabled(actions.busy)
                 }
