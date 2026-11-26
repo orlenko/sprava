@@ -1298,8 +1298,14 @@ document, as D32 did for to-dos.
 `add_log_entry` adds one line to the binder's log (`add_log_entry`), about a filed document when the call names one. The
 entry is text only, one line, never a closure, and a turn adds at most 10. A log entry records a fact and no op undoes
 it (binder-v0 6.10), so it stays when the turn is undone; the turn's line says "which Undo keeps", and a turn that only
-added entries offers no Undo. The agent is told to add one only when the person asks. Filing a file the agent wrote is
-still to come. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
+added entries offers no Undo. The agent is told to add one only when the person asks.
+
+`file_document` catalogues a file that already sits in the binder, where it is (`file_document` without `from`): one the
+agent wrote, such as a summary or a brief, or one the person names. Nothing moves, the record is private as everything
+a conversation adds is, and a file in `intake/` is never filed this way: what arrives is filed by the person's drop.
+The turn's Undo removes the record (`unfile_document` in place, binder-v0 6.10) and then, as for any file the turn
+wrote, the file. A record whose file changed after it was filed stays and is named, so the agent is told to finish
+writing before it files. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
 MCP server (type `sdk`, checked on 2.1.316 under `--safe-mode --restricted`), so no program, socket or token joins the
 sandbox, and a command the agent runs cannot call them. The other tools of this section are still to come.
 

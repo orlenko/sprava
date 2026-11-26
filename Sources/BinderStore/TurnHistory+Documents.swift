@@ -10,7 +10,7 @@ import SpravaKit
 extension TurnHistory {
     public struct DocumentChange: Codable, Equatable, Sendable {
         /// `logged` is a log entry the turn added: it records a fact and stays when the turn is undone (binder-v0 §6.10).
-        public enum Verb: String, Codable, Sendable { case corrected, moved, logged }
+        public enum Verb: String, Codable, Sendable { case corrected, moved, filed, logged }
         public let verb: Verb
         public let title: String
         public let opIDs: [String]
@@ -33,7 +33,7 @@ extension TurnHistory {
         /// One line for the conversation: each kind of change with its count, and up to three titles. A log entry is said
         /// to stay, so the turn's Undo promises nothing it does not do.
         public var summary: String {
-            let kinds: [(DocumentChange.Verb, String)] = [(.corrected, "Corrected"), (.moved, "Moved"), (.logged, "Logged")]
+            let kinds: [(DocumentChange.Verb, String)] = [(.filed, "Filed"), (.corrected, "Corrected"), (.moved, "Moved"), (.logged, "Logged")]
             return kinds.compactMap { verb, word -> String? in
                 let titles = changes.filter { $0.verb == verb }.map(\.title)
                 guard !titles.isEmpty else { return nil }

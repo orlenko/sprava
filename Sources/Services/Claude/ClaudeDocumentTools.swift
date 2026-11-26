@@ -12,7 +12,7 @@ import SpravaKit
 /// and calls in here.
 final class ClaudeDocumentTools: @unchecked Sendable {
     typealias Refusal = ClaudeTodoTools.Refusal
-    static let names: Set<String> = ["edit_document", "move_document", "add_log_entry"]
+    static let names: Set<String> = ["file_document", "edit_document", "move_document", "add_log_entry"]
     /// A log entry cannot be taken back, so a turn adds few.
     static let maximumLogEntries = 10
     private var logged = 0
@@ -36,13 +36,47 @@ final class ClaudeDocumentTools: @unchecked Sendable {
     func handle(_ name: String, _ args: JSONObject) throws -> JSONValue {
         switch name {
         case "edit_document": return try edit(args)
+        case "file_document": return try file(args)
         case "move_document": return try move(args)
         case "add_log_entry": return try log(args)
         default: throw Refusal.invalid("No such tool.")
         }
     }
 
-    // MARK: - The two changes
+    // MARK: - The changes
+
+    /// Catalogues a file that already sits in the binder, where it is: one the agent wrote this turn, or one the person
+    /// names. Nothing moves. The record is private, as everything a conversation adds is. A file in intake/ is not filed
+    /// here: what arrives is filed by the person's drop. Undone with the turn: the record goes and the file is the
+    /// turn's file Undo's to settle (binder-v0 §6.10).
+    private func file(_ args: JSONObject) throws -> JSONValue {
+        guard let path = args["path"]?.stringValue, path.utf8.count <= 1_024 else { throw Refusal.invalid("Give the file's path, from the binder's top. Nothing was filed.") }
+        guard let given = args["title"] else { throw Refusal.invalid("Give the document a title, one line. Nothing was filed.") }
+        let title = try Self.line(given, "A title", bytes: 512)
+        var fields: [(String, JSONValue)] = [("id", .str("$new:1")), ("title", .string(title)), ("path", .string(path))]
+        if let value = args["date"], value != .null {
+            guard let text = value.stringValue, CalendarDate.strict(text) != nil else { throw Refusal.invalid("A document's date is YYYY-MM-DD. Nothing was filed.") }
+            fields.append(("date", .string(text)))
+        }
+        if let value = args["kind"], value != .null { fields.append(("kind", .string(try Self.line(value, "A kind", bytes: 64)))) }
+        // The guard and the store check all of this again under the binder's lock; these are here for a reason the agent can pass on.
+        guard !DocumentPaths.isKeyFile(path) else { throw Refusal.invalid("A key or credential file is never filed. Nothing was filed.") }
+        guard DocumentPaths.isSafe(path) else {
+            throw Refusal.invalid("That file cannot be filed where it is. What sits in intake/ is filed by the person's drop, and scripts/, chapters/ and the other reserved folders and names hold no documents. Nothing was filed.")
+        }
+        guard !Self.documents(folder).contains(where: { $0["path"]?.stringValue.map(DocumentPaths.fold) == DocumentPaths.fold(path) }) else {
+            throw Refusal.invalid("That file is already filed. Use edit_document to correct its record. Nothing was filed.")
+        }
+        guard DocumentPaths.plainFile(path, in: folder), let sha = DocumentPaths.sha256(of: folder.appendingPathComponent(path)) else {
+            throw Refusal.invalid("No file Sprava can read is at that path. Write the file first, then file it. Nothing was filed.")
+        }
+        fields += [("sha256", .string(sha)), ("sensitivity", .str("private"))]
+        try write("file_document", JSONObject([(key: "document", value: .obj(fields))]), expect: nil, change: { .init(verb: .filed, title: title, opIDs: $0, to: path) })
+        // The record as filed is this turn's, so the turn can correct or move it afterwards.
+        let filed = Self.documents(folder).first { $0["path"] == .string(path) }
+        if let id = filed?["id"] { remember(id) }
+        return .obj([("ok", .bool(true)), ("title", .string(title)), ("path", .string(path)), ("id", filed?["id"] ?? .null)])
+    }
 
     private func edit(_ args: JSONObject) throws -> JSONValue {
         let (id, document, hash) = try find(args["document"])
@@ -188,6 +222,12 @@ final class ClaudeDocumentTools: @unchecked Sendable {
     private static let document: (String, JSONValue) = ("document", .obj([("type", .array([.str("string"), .str("integer")])),
         ("description", .str("The filed document: its path from the binder's top, or its id from catalog.json."))]))
     static let tools: [ClaudeAppTools.Tool] = [
+        .init(name: "file_document", description: "Catalogues one file that already sits in this binder, where it is, at once: a file you wrote, or one the person names. Never a file in intake/.",
+              schema: schema([("path", .obj([("type", .str("string")), ("description", .str("The file's path from the binder's top."))])),
+                              ("title", .obj([("type", .str("string")), ("description", .str("One line."))])),
+                              ("date", .obj([("type", .str("string")), ("description", .str("The document's own date, YYYY-MM-DD."))])),
+                              ("kind", .obj([("type", .str("string")), ("description", .str("Such as summary, brief, letter, notes."))]))],
+                             required: ["path", "title"])),
         .init(name: "edit_document", description: "Corrects the record of one filed document at once: its title, date or kind. The file is not touched.",
               schema: schema([document, ("title", .obj([("type", .str("string")), ("description", .str("One line."))])),
                               ("date", .obj([("type", .array([.str("string"), .str("null")])), ("description", .str("The document's own date, YYYY-MM-DD, or null for none."))])),

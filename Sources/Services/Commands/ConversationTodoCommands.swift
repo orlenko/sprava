@@ -18,7 +18,8 @@ extension Commands {
         if let expect { extra.append(("expect", .obj([("record", .str(expect))]))) }
         let store = TekaStore(folder: f, client: client)
         let body = TekaStore.OpBody(op: op, args: args, actor: actor, extra: extra)
-        let applied = op == "add_item" ? try store.applyMinting([body], now: now) : try store.apply([body], now: now)
+        // A new to-do and a newly filed document get their ids here.
+        let applied = ["add_item", "file_document"].contains(op) ? try store.applyMinting([body], now: now) : try store.apply([body], now: now)
         try recordDigests(store.createdProposals, in: f)
         return applied
     }

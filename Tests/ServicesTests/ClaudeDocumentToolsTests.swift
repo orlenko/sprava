@@ -157,6 +157,90 @@ import Testing
         #expect(record(other)?["path"] == .str("letters/letter.pdf"))
     }
 
+    func filedAt(_ s: PSetup, _ path: String) -> JSONObject? {
+        Teka.read(s.folder).catalog?["documents"]?.arrayValue?.first { $0["path"] == .string(path) }?.objectValue
+    }
+    func write(_ s: PSetup, _ path: String, _ text: String) throws {
+        let url = s.folder.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+    }
+
+    // Done when (plan Track D): "file the summary you wrote" changes the catalog in one turn, and Undo puts it back.
+    @Test func aSummaryTheTurnWroteIsFiledAndUndoPutsItAllBack() throws {
+        let s = try filed(), turn = try Turn(s)
+        try turn.history.record(s.folder)   // The baseline a turn with file tools starts from.
+        let before = Teka.read(s.folder).catalog?["documents"]
+        try write(s, "summaries/summary.md", "An invented summary")
+        let answer = turn.call("file_document", [("path", .str("summaries/summary.md")), ("title", .str("Invented summary")), ("date", .str("2026-04-02")), ("kind", .str("summary"))])
+        #expect(!answer.refused, "\(answer.content)")
+        let record = try #require(filedAt(s, "summaries/summary.md"))
+        #expect(record["title"] == .str("Invented summary") && record["date"] == .str("2026-04-02") && record["kind"] == .str("summary"))
+        #expect(record["sensitivity"] == .str("private"))
+        #expect(record["sha256"] == DocumentPaths.sha256(of: s.folder.appendingPathComponent("summaries/summary.md")).map(JSONValue.string))
+        #expect(record["id"]?.stringValue?.hasPrefix("$new") == false && answer.content["id"] == record["id"])
+        let op = try #require(turn.ops.last)
+        #expect(op["op"] == .str("file_document") && op["args"]?["from"] == nil)
+        #expect(op["actor"]?["kind"] == .str("brain") && op["approved_by"] == .str("user"))
+        #expect(op["conversation"]?["turn"] == .str(turn.record.turnID.uuidString.lowercased()))
+        #expect(try turn.history.documentChanges(forTurn: turn.record.turnID)?.summary == "Filed 1 document: Invented summary")
+        // The record is the turn's own, so the turn can correct it afterwards.
+        #expect(!turn.call("edit_document", [("document", .str("summaries/summary.md")), ("kind", .str("brief"))]).refused)
+
+        let entry = try #require(try turn.history.record(s.folder, turn: turn.record.turnID))
+        #expect(entry.summary == "Added 1 file: summaries/summary.md")
+        #expect(try undo(turn).isEmpty)
+        #expect(filedAt(s, "summaries/summary.md") == nil && exists(s, "summaries/summary.md"))   // The record first; the file is the file Undo's.
+        #expect(try turn.history.undo(turn: turn.record.turnID, in: s.folder) == .undone)
+        #expect(!exists(s, "summaries/summary.md"))
+        #expect(Teka.read(s.folder).catalog?["documents"] == before)
+    }
+
+    @Test func aFileThatWasThereBeforeIsFiledWhereItIsAndUndoLeavesIt() throws {
+        let s = try filed()
+        try write(s, "notes/meeting.md", "Invented meeting notes")
+        let turn = try Turn(s)
+        #expect(!turn.call("file_document", [("path", .str("notes/meeting.md")), ("title", .str("Invented meeting notes"))]).refused)
+        #expect(filedAt(s, "notes/meeting.md") != nil)
+        #expect(try undo(turn).isEmpty)
+        #expect(filedAt(s, "notes/meeting.md") == nil && exists(s, "notes/meeting.md"))
+    }
+
+    @Test func whatCannotBeFiledIsRefusedAndChangesNothing() throws {
+        let s = try filed(), turn = try Turn(s)
+        try write(s, "intake/arrived.pdf", "an invented arrival")
+        try write(s, "scripts/tool.py", "print('invented')")
+        try write(s, "keys/id_ed25519", "invented")
+        try write(s, "notes/meeting.md", "Invented meeting notes")
+        let before = Teka.read(s.folder).catalog?["documents"], count = turn.ops.count
+        let title = ("title", JSONValue.str("Invented"))
+        let bad: [[(String, JSONValue)]] = [
+            [("path", .str("intake/arrived.pdf")), title],   // what arrives is filed by a drop
+            [("path", .str("scripts/tool.py")), title], [("path", .str("catalog.json")), title], [("path", .str("AGENTS.md")), title],   // reserved
+            [("path", .str("keys/id_ed25519")), title],   // a key file's name
+            [("path", .str("../outside.md")), title], [("path", .str("/tmp/outside.md")), title],   // outside the binder
+            [("path", .str("documents/letter.pdf")), title], [("path", .str("Documents/Letter.pdf")), title],   // already filed
+            [("path", .str("notes/absent.md")), title], [("path", .str("notes")), title],   // no file there
+            [("path", .str("notes/meeting.md"))], [("path", .str("notes/meeting.md")), ("title", .str("two\nlines"))],
+            [("path", .str("notes/meeting.md")), title, ("date", .str("spring"))], [title],
+        ]
+        for fields in bad {
+            let answer = turn.call("file_document", fields)
+            #expect(answer.refused && answer.content["error"] == .str("invalid"), "\(fields): \(answer.content)")
+        }
+        #expect(Teka.read(s.folder).catalog?["documents"] == before && turn.ops.count == count)
+        #expect(try turn.history.documentChanges(forTurn: turn.record.turnID) == nil)
+    }
+
+    @Test func aFiledFileChangedAfterwardsKeepsItsRecordWhenTheTurnIsUndone() throws {
+        let s = try filed(), turn = try Turn(s)
+        try write(s, "summaries/summary.md", "An invented summary")
+        #expect(!turn.call("file_document", [("path", .str("summaries/summary.md")), ("title", .str("Invented summary"))]).refused)
+        try write(s, "summaries/summary.md", "An invented summary, with more")
+        #expect(try undo(turn) == ["Invented summary"])
+        #expect(filedAt(s, "summaries/summary.md") != nil && exists(s, "summaries/summary.md"))
+    }
+
     func log(_ s: PSetup) -> [JSONObject] { Teka.read(s.folder).catalog?["processing_log"]?.arrayValue?.compactMap(\.objectValue) ?? [] }
 
     // The author, 2026-11-26: "Log entry stays, logs are for traceability."
