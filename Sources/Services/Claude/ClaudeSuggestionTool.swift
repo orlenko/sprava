@@ -16,7 +16,10 @@ enum ClaudeSuggestionTool {
     /// Suggestion cards that may wait in one binder; past it the person settles some first.
     static let maximumWaiting = 10
 
-    static func suggest(_ args: JSONObject, folder: URL, writer: ClaudeTodoWriter, maximumCards: Int = ProposalStore.maximumEntries) throws -> JSONValue {
+    /// `counted` is true for the card Sprava makes of its own from counts (`ClaudeScriptRuns`): its actor is Sprava,
+    /// with no model.
+    static func suggest(_ args: JSONObject, folder: URL, writer: ClaudeTodoWriter, maximumCards: Int = ProposalStore.maximumEntries,
+                        counted: Bool = false) throws -> JSONValue {
         guard let title = args["title"]?.stringValue, let attempted = args["attempted"]?.stringValue, let obstacle = args["obstacle"]?.stringValue else {
             throw Refusal.invalid("Give a title, what was attempted, and what stood in the way or keeps being repeated. Nothing was suggested.")
         }
@@ -36,7 +39,10 @@ enum ClaudeSuggestionTool {
         let card = SuggestionCard(title: title, attempted: attempted, obstacle: obstacle, script: script)
         do {
             try writer.perform { commands in
-                let made = try card.proposal(actor: JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))]))
+                let actor = counted
+                    ? JSONObject([(key: "kind", value: .str("clerk")), (key: "client", value: .string(commands.client)), (key: "model", value: .str("none"))])
+                    : JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))])
+                let made = try card.proposal(actor: actor)
                 let listed: [(Proposal, String)]
                 do { listed = try ProposalStore.boundedList(in: folder, maxEntries: maximumCards) } catch {
                     throw Refusal.invalid("This binder's cards are too many or cannot be read safely, so none was added. Tell the person; nothing was suggested.")

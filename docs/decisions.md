@@ -607,8 +607,15 @@ Each line names what replaced the entry; its old text is in git history.
   one line break is always added before the closing fence, so whether the text ends in a line break survives. The
   file is written for the person alone (mode 0600), also when it replaces one.
   Only to-dos a suggestion card made are written. The file is never written inside a binder or Sprava's own folder,
-  over anything but an ordinary file, or through a link, and nothing in Improvements changes. Counts and closing with
-  a release are not built yet.
+  over anything but an ordinary file, or through a link, and nothing in Improvements changes.
+  Counts (`ImprovementCounts`, `runtime/improvement-counts.sqlite`): at a turn's end Sprava adds, for that binder,
+  the sites refused in the turn and the scripts its commands started. A binder is kept as a hash of its folder's
+  path and a script as a hash of its path, so the counts hold no path, host, command or text. A script counts once
+  a turn, when a command starts it (the first word of a part of the command, or what an interpreter is given;
+  reading it starts nothing) and it is one a card may carry. At a script's 5th counted turn, and once more at its
+  25th, Sprava writes a suggestion card of its own for it (`ClaudeScriptRuns`), with the script's text, for the
+  person to edit, send or dismiss like any other. Not counted yet: commands the sandbox refused and files held,
+  since nothing reports either by code today. Closing a suggestion with a release's note is not built yet.
 - **D48 decided (2026-11-25, the author: "we should be able to read back the draft and figure out what we're sending
   or have sent"; "3a").** The outgoing mail exporter reads a placed draft back and compares it with what was approved;
   finds the sent copy, compares it, and offers to file it, log it and set the to-do waiting; and marks a draft that has

@@ -440,6 +440,35 @@ import Testing
         #expect(activity.searches == 1 && activity.doing == "Reading a web page" && activity.steps == 2)
     }
 
+    /// The files a command starts are found by rule, for counting script runs (decisions.md D47): the first word of a
+    /// part when it is a path, or what an interpreter is given. Reading a script, or adding it to git, starts nothing.
+    @Test func theFilesACommandStartsAreFoundByRule() {
+        let cases: [(String, [String])] = [
+            ("python3 scripts/pull-board.py --since 2026-01-01", ["scripts/pull-board.py"]),
+            ("cd reports && ./make.sh; echo done", ["make.sh"]),
+            ("TOKEN=invented nohup bash -x scripts/a.sh | tee out.txt", ["scripts/a.sh"]),
+            ("bash -c \"scripts/b.sh --all\"", ["scripts/b.sh"]),
+            ("/usr/bin/python3 /invented/binder/scripts/c.py", ["/invented/binder/scripts/c.py"]),
+            ("python3.12 tools/d.py\n(node tools/e.js)", ["tools/d.py", "tools/e.js"]),
+            ("cat scripts/pull-board.py", []),
+            ("git add scripts/pull-board.py && git commit -m x", []),
+            ("shasum scripts/pull-board.py; ssh host.example.test", []),
+            ("$HOME/x.sh; ~/y.sh; -z; ls -la", []),
+            ("scripts/a.sh; ./scripts/a.sh", ["scripts/a.sh"]),
+        ]
+        for (command, expected) in cases { #expect(ClaudeTurnActivity.started(by: command) == expected, "\(command)") }
+        #expect(ClaudeTurnActivity.started(by: "sh " + String(repeating: "a", count: 301) + ".sh").isEmpty)
+        // A turn keeps each once, and no more than its bound.
+        var activity = ClaudeTurnActivity()
+        func bash(_ command: String) -> JSONValue { .obj([("type", .str("tool_use")), ("name", .str("Bash")), ("input", .obj([("command", .string(command))]))]) }
+        activity.saw([bash("python3 scripts/pull-board.py"), bash("python3 scripts/pull-board.py --again"), bash("ls")])
+        #expect(activity.ran == ["scripts/pull-board.py"])
+        activity.saw((0..<40).map { bash("sh scripts/n\($0).sh") })
+        #expect(activity.ran.count == ClaudeTurnActivity.maximumRan)
+        activity.saw([.obj([("type", .str("tool_use")), ("name", .str("Bash")), ("input", .obj([("command", .int(7))]))])])
+        #expect(activity.ran.count == ClaudeTurnActivity.maximumRan)
+    }
+
     /// The status line follows the tools, and what it takes from a tool's input is one short line.
     @Test func aTurnsActivityFollowsItsTools() throws {
         var frames = try started(["Bash", "Read", "Edit", "Grep"])

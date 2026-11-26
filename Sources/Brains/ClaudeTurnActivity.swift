@@ -10,6 +10,10 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
     package private(set) var steps = 0
     /// WebSearch calls this turn, for its summary line.
     package private(set) var searches = 0
+    /// The files this turn's commands started, as the commands wrote them, each once: the caller checks each against
+    /// the binder and counts the scripts among them (decisions.md D47). Kept for the turn, never logged.
+    package private(set) var ran: [String] = []
+    static let maximumRan = 20
 
     package init() {}
 
@@ -18,6 +22,9 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
             if block["type"] == .str("tool_use"), let name = block["name"]?.stringValue {
                 steps += 1
                 if name == "WebSearch" { searches += 1 }
+                if name == "Bash", let command = block["input"]?["command"]?.stringValue {
+                    for path in Self.started(by: command) where ran.count < Self.maximumRan && !ran.contains(path) { ran.append(path) }
+                }
                 doing = Self.words(tool: name, input: block["input"])
             } else if block["type"] == .str("text") {
                 doing = "Writing"
@@ -48,6 +55,41 @@ package struct ClaudeTurnActivity: Sendable, Equatable {
         case _ where tool.contains(ClaudeAppTools.server): return "Updating the to-dos"
         default: return "Working"
         }
+    }
+
+    private static let interpreters: Set<String> = ["python", "python3", "bash", "sh", "zsh", "node", "ruby", "perl", "swift", "osascript", "php"]
+    private static let wrappers: Set<String> = ["time", "nohup", "exec", "command", "env"]
+
+    /// The files a shell command starts: in each part between `;`, `|`, `&`, a line break or a parenthesis, the first
+    /// word when it is a path, or the first word after an interpreter that is no option. Words are split at spaces
+    /// with their quotes taken off, so a path with a space in it is missed, and `bash -c "scripts/a.sh"` is found.
+    /// Reading the model's own command by rule, never running or expanding anything; the result is at most a count.
+    static func started(by command: String) -> [String] {
+        var found: [String] = []
+        let text = String(String.UnicodeScalarView(command.unicodeScalars.prefix(8_000)))
+        for part in text.split(whereSeparator: { ";|&()\n\r".contains($0) }) {
+            var words = part.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`")) }[...]
+            func assignment(_ word: String) -> Bool {
+                guard let equals = word.firstIndex(of: "="), equals != word.startIndex else { return false }
+                return word[..<equals].allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+            }
+            while let first = words.first, assignment(first) || wrappers.contains(first) { words = words.dropFirst() }
+            guard let first = words.first else { continue }
+            let program = (first as NSString).lastPathComponent
+            var candidate: String? = first
+            if interpreters.contains(program) || interpreters.contains(where: { program.hasPrefix($0) && program.dropFirst($0.count).allSatisfy { $0.isNumber || $0 == "." } }) {
+                candidate = words.dropFirst().first { !$0.hasPrefix("-") }
+            } else if !first.contains("/") {
+                candidate = nil
+            }
+            guard var path = candidate else { continue }
+            while path.hasPrefix("./") { path.removeFirst(2) }
+            guard !path.isEmpty, path.utf8.count <= 300, !path.hasPrefix("-"), !path.hasPrefix("~"), !path.contains("$"),
+                  !found.contains(path) else { continue }
+            found.append(path)
+            if found.count == maximumRan { break }
+        }
+        return found
     }
 
     private static let limitBeforeCleaning = 400

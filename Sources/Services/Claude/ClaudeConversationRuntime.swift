@@ -24,6 +24,8 @@ public actor ClaudeConversationRuntime {
         var useSites: @Sendable (AgentSiteGate) -> Void = { _ in }
         /// How many times the turn that just ended searched the web.
         var searches: @Sendable () -> Int = { 0 }
+        /// The files the turn that just ended started with its commands, as the commands wrote them.
+        var ran: @Sendable () -> [String] = { [] }
     }
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
@@ -48,6 +50,7 @@ public actor ClaudeConversationRuntime {
     private let receipts: ConversationTurnStore
     /// What each turn reached on the web, for its summary line.
     nonisolated let turnSites: ClaudeTurnSites
+    nonisolated let improvementCounts: ImprovementCounts
     private let state: ClaudeConversationState
     private let accounts: ClaudeAccountsState
     private let chooser: @Sendable (String) -> ClaudeAccountChooser.Outcome
@@ -101,6 +104,7 @@ public actor ClaudeConversationRuntime {
         connections = try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite"))
         receipts = try ConversationTurnStore(at: support.appendingPathComponent("binder-store/conversation.sqlite"))
         turnSites = try ClaudeTurnSites(at: support.appendingPathComponent("runtime/turn-sites.sqlite"))
+        improvementCounts = try ImprovementCounts(at: support.appendingPathComponent("runtime/improvement-counts.sqlite"))
         state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
         accounts = try ClaudeAccountsState(at: support.appendingPathComponent("runtime/claude-accounts.sqlite"))
         self.chooser = chooser
@@ -495,7 +499,7 @@ public actor ClaudeConversationRuntime {
     private func run(scope: ClaudeReadConnections.Connection, record: ConversationTurnStore.Record,
                      session: ClaudeConversationState.Session, lease: AgentSessionAdmission.Lease,
                      account: ClaudeConversationState.Account, tried: Set<String>, signal: StopSignal) async {
-        var keep = false, driver: Driver?, used: String?, gate: AgentSiteGate?
+        var keep = false, driver: Driver?, used: String?, gate: AgentSiteGate?, counted = false
         defer { gate?.end() }
         var mayRelease = true
         let turnHistory = TurnHistory(support: support, binder: scope.id)
@@ -551,6 +555,7 @@ public actor ClaudeConversationRuntime {
             }
             if reach != nil { await recordTurn(record, scope: scope, history: turnHistory) }
             noteSites(record, gate: gate, driver: made)
+            counted = true; await noteCounts(scope: scope, gate: gate, driver: made)
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
@@ -582,6 +587,7 @@ public actor ClaudeConversationRuntime {
             if !signal.stopped { noteFailure(of: record.requestID, error, account: used ?? failedAccountName); failedAccountName = nil }
             if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
             noteSites(record, gate: gate, driver: driver)
+            if !counted { await noteCounts(scope: scope, gate: gate, driver: driver) }
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
         }
