@@ -27,6 +27,29 @@ import Testing
                                                                                                 .init(path: "documents/notice.txt", isPrivate: false)],
                           inReplyTo: "<thread-1@example.com>", references: ["<thread-1@example.com>"])
 
+    @Test func aLongUnicodeLabelKeepsAnApprovedRequestReadable() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let requests = DraftRequests(support: support)
+        let id = UUID().uuidString
+        try AtomicFile.makePrivateFolder(support)
+        let subject = "e" + String(repeating: "\u{0301}", count: 40_000)
+        try requests.begin(id: id, binder: support, account: "invented", message: Data(), subject: subject)
+        try requests.ready(id: id)
+        let request = try #require(requests.all().first)
+        #expect(request.state == .ready && (request.subject?.utf8.count ?? 0) <= 323)
+    }
+
+    @Test func aDisplayLabelKeepsWholeCharactersAndOmitsDirectionalControls() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try AtomicFile.makePrivateFolder(folder)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let requests = DraftRequests(support: folder), id = UUID().uuidString
+        let prefix = String(repeating: "a", count: 314)
+        try requests.begin(id: id, binder: folder, account: "invented", message: Data(), subject: prefix + "\u{202E}🔔🇨🇦")
+        #expect(requests.all().first?.subject == prefix + "🔔")
+    }
+
     @Test func theCardIsOneLogEntryWithTheFieldsAndMarksPrivateDocuments() throws {
         let (_, catalog) = try binder()
         let p = try draft.proposal(actor: actor, catalog: catalog, now: now)
@@ -100,13 +123,16 @@ import Testing
         let support = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-draft-requests-\(UUID())")
         let requests = DraftRequests(support: support)
         let id = UUIDv7.make(now: now)
-        let binder = URL(fileURLWithPath: "/invented/binder")
+        let binder = support.appendingPathComponent("invented-binder")
+        try AtomicFile.makePrivateFolder(binder)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let instance = try BinderIMAPConnections.folderIdentity(binder)
         try requests.begin(id: id, binder: binder, account: "me@mail.example.invalid:993", message: Data("Message-ID: <a@b>\r\n\r\nx".utf8), now: now)
-        #expect(requests.all() == [.init(id: id, binder: "/invented/binder", state: .approving, failure: nil, created: now, account: "me@mail.example.invalid:993")])
+        #expect(requests.all() == [.init(id: id, binder: binder.standardizedFileURL.path, binderInstance: instance, state: .approving, failure: nil, created: now, account: "me@mail.example.invalid:993")])
         try requests.ready(id: id)
         #expect(requests.all().first?.state == .ready)
         try requests.failed(id: id, reason: "no drafts folder")
-        #expect(requests.all().first == .init(id: id, binder: "/invented/binder", state: .failed, failure: "no drafts folder", created: now, account: "me@mail.example.invalid:993"))
+        #expect(requests.all().first == .init(id: id, binder: binder.standardizedFileURL.path, binderInstance: instance, state: .failed, failure: "no drafts folder", created: now, account: "me@mail.example.invalid:993"))
         #expect(try requests.message(id: id) == Data("Message-ID: <a@b>\r\n\r\nx".utf8))
         // Private: the folder and its files are the person's alone.
         var info = stat()
