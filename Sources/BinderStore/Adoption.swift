@@ -302,7 +302,7 @@ public enum Adoption {
     static func itemIndex(_ location: String) -> Int? { TransactionGuard.itemIndex(location) }
 
     /// One repair card per item that breaks its level's rules: a migration cannot invent a date or a party, so the
-    /// person fills them in on the card (binder-v0 §9.4 step 4). Closures and shared ids are handled elsewhere, and a
+    /// person fills them in on the card (binder-v0 §9.4 step 4). The items that lack only a date share cards. Closures and shared ids are handled elsewhere, and a
     /// finding about anything but an open item makes no card here.
     /// `closures` are closures held back until their item is repaired: each goes on its item's card, after the repair,
     /// and one whose item has no other finding gets a card of its own asking for the title.
@@ -314,6 +314,8 @@ public enum Adoption {
         for item in items { if let id = item["id"] { ids[id, default: 0] += 1 } }
         var repaired = Set<String>()
         var cards: [Proposal] = []
+        // Items that lack nothing but a date share cards (`datelessCards`): an old binder holds dozens of them.
+        var dateless: [JSONObject] = []
         for finding in findings where !handled.contains(finding.code) {
             guard let index = itemIndex(finding.location), items.indices.contains(index),
                   case .object(let o) = items[index], let id = o["id"], ids[id] == 1,
@@ -341,14 +343,22 @@ public enum Adoption {
                let aside = try? keepAside("title", in: &titled, becoming: nil), set[aside.key] == nil {
                 set.set(aside.key, aside.value)
             }
+            let close = closures[id]
+            if missing == [RuleFinding.Code.dateless.rawValue], close == nil, set.entries.isEmpty {
+                var op = JSONObject([(key: "op", value: .str("update_item")),
+                                     (key: "args", value: .obj([("id", id), ("set", .obj([("no_deadline", .bool(true))]))]))])
+                op.set("card", .obj([("flags", .array([.str("it has no date: approving keeps it with no deadline, unless you give it one")]))]))
+                dateless.append(op)
+                continue
+            }
             var op = JSONObject([(key: "op", value: .str("update_item")),
                                  (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
             op.set("card", .obj([("flags", .array([.string("fill in what is missing: " + missing.joined(separator: ", "))]))]))
-            let close = closures[id]
             cards.append(Proposal.make(title: close == nil ? "Fill in what this item is missing" : "Fill in what this item is missing, then close it",
                                        actor: actor, ops: [op] + (close.map { [$0] } ?? []),
                                        provenance: JSONObject([(key: "repair", value: .array(missing.map(JSONValue.string)))]), now: now))
         }
+        cards += datelessCards(dateless, actor: actor, now: now)
         let placed = Set(cards.flatMap { $0.ops.filter { $0["op"] == .str("complete") }.compactMap { $0["args"]?["id"] } })
         for (id, close) in closures.sorted(by: { JSONWriter.compact($0.key) < JSONWriter.compact($1.key) }) where !placed.contains(id) {
             var set = JSONObject()
@@ -361,6 +371,22 @@ public enum Adoption {
                                        provenance: JSONObject([(key: "repair", value: .array([.str("title")]))]), now: now))
         }
         return cards
+    }
+
+    /// The cards for the items that lack nothing but a date: each op keeps its item with no deadline, so approving the
+    /// card settles all of them, and the person may give any of them a date on the card first. An old binder holds
+    /// dozens of such items, and a card for each made dozens of cards. A card holds at most `perCard` items, well
+    /// inside what one card may hold (each op also carries its item's fingerprint); past that the cards are numbered.
+    static func datelessCards(_ ops: [JSONObject], actor: JSONObject, now: Date, perCard: Int = 100) -> [Proposal] {
+        let parts = (ops.count + perCard - 1) / perCard
+        return stride(from: 0, to: ops.count, by: perCard).map { start in
+            let group = Array(ops[start..<min(start + perCard, ops.count)])
+            let title = (group.count == 1 ? "Keep this to-do with no deadline, or give it a date"
+                                          : "Keep these \(group.count) to-dos with no deadline, or give any of them a date")
+                + (parts > 1 ? " (part \(start / perCard + 1) of \(parts))" : "")
+            return Proposal.make(title: title, actor: actor, ops: group,
+                                 provenance: JSONObject([(key: "repair", value: .array([.string(RuleFinding.Code.dateless.rawValue)]))]), now: now)
+        }
     }
 
     /// The derived follow-up date of a waiting or blocked item (binder-v0 §5.3): the day after `expected_by`, else a
