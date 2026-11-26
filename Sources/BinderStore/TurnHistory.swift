@@ -139,7 +139,7 @@ public struct TurnHistory: Sendable {
         if let turn, let moved = try? documentChanges(forTurn: turn)?.changes.compactMap({ change in
             change.from.flatMap { from in change.to.map { (from: from, to: $0) } }
         }), !moved.isEmpty {
-            changes = Self.withoutMoves(changes, moves: moved)
+            changes = Self.withoutMoves(changes, moves: moved, existed: Set(known.keys.map(DocumentPaths.fold)))
         }
         guard !changes.isEmpty else { return nil }
         let entry = Entry(id: UUID(), turn: turn, at: now, changes: changes, undone: false, recordsChanged: recordsChanged)

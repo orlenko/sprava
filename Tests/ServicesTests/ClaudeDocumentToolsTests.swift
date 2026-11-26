@@ -196,6 +196,22 @@ import Testing
         #expect(Teka.read(s.folder).catalog?["documents"] == before)
     }
 
+    // A file the turn made, filed and then moved: the move's Undo takes it back to where it was made, and the file Undo finds it there.
+    @Test func aFileTheTurnMadeFiledAndMovedIsUndoneWhole() throws {
+        let s = try filed(), turn = try Turn(s)
+        try turn.history.record(s.folder)
+        let before = Teka.read(s.folder).catalog?["documents"]
+        try write(s, "summary.md", "An invented summary")
+        #expect(!turn.call("file_document", [("path", .str("summary.md")), ("title", .str("Invented summary"))]).refused)
+        #expect(!turn.call("move_document", [("document", .str("summary.md")), ("path", .str("summaries/2026/summary.md"))]).refused)
+        let entry = try #require(try turn.history.record(s.folder, turn: turn.record.turnID))
+        #expect(entry.summary == "Added 1 file: summary.md")
+        #expect(try undo(turn).isEmpty)
+        #expect(exists(s, "summary.md") && !exists(s, "summaries/2026/summary.md"))
+        #expect(try turn.history.undo(turn: turn.record.turnID, in: s.folder) == .undone)
+        #expect(!exists(s, "summary.md") && Teka.read(s.folder).catalog?["documents"] == before)
+    }
+
     @Test func aFileThatWasThereBeforeIsFiledWhereItIsAndUndoLeavesIt() throws {
         let s = try filed()
         try write(s, "notes/meeting.md", "Invented meeting notes")

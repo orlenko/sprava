@@ -93,9 +93,11 @@ extension TurnHistory {
     /// The move's Undo is the op's: it takes the file back with its record. So a file the turn only moved is no change
     /// here, and one it also edited is a change at the path it came from. The turn's Undo reverses the document ops
     /// first; a move that could not go back leaves its file where this entry does not expect it, which is a conflict that
-    /// changes nothing. A pair that does not look like a plain move (something else now at the old path, or already at
-    /// the new one before the turn) is left as it was recorded.
-    static func withoutMoves(_ changes: [Change], moves: [(from: String, to: String)]) -> [Change] {
+    /// changes nothing. A file the turn made and then moved (`existed`, the paths before the turn, does not hold where it
+    /// came from) is a new file at the path it was made at, where the move's Undo puts it back. A pair that does not look
+    /// like a plain move (something else now at the old path, or already at the new one before the turn) is left as it
+    /// was recorded.
+    static func withoutMoves(_ changes: [Change], moves: [(from: String, to: String)], existed: Set<String> = []) -> [Change] {
         // Where each moved file ended, by folded path, and the path it started from: a file moved twice is one move.
         var origin: [String: String] = [:]
         for move in moves {
@@ -105,9 +107,14 @@ extension TurnHistory {
         var result = changes
         for (final, original) in origin.sorted(by: { $0.key < $1.key }) where DocumentPaths.fold(original) != final {
             guard let there = result.firstIndex(where: { DocumentPaths.fold($0.path) == final }), result[there].before == nil,
-                  let after = result[there].after,
-                  let here = result.firstIndex(where: { DocumentPaths.fold($0.path) == DocumentPaths.fold(original) }), result[here].after == nil,
-                  let before = result[here].before else { continue }
+                  let after = result[there].after else { continue }
+            guard let here = result.firstIndex(where: { DocumentPaths.fold($0.path) == DocumentPaths.fold(original) }) else {
+                // Nothing changed at the path it came from. When nothing was there before the turn either, the turn made
+                // the file there: it is a new file at that path.
+                if !existed.contains(DocumentPaths.fold(original)) { result[there].path = original }
+                continue
+            }
+            guard result[here].after == nil, let before = result[here].before else { continue }
             result[here].after = after
             let same = before.sameContent(as: after)
             result = result.enumerated().filter { $0.offset != there && !(same && $0.offset == here) }.map(\.element)
