@@ -198,11 +198,14 @@ final class ClaudeTodoTools: @unchecked Sendable {
         let id: String
         do {
             id = try writer.perform { commands -> String in
-                guard (try? BinderIMAPConnections(support: commands.support).configuration(for: folder)) != nil else {
+                guard let connection = try? BinderIMAPConnections(support: commands.support).configuration(for: folder) else {
                     throw Refusal.invalid("This binder has no email connection, so a draft has nowhere to go. Tell the person; nothing was proposed.")
                 }
-                let card = try draft.proposal(actor: JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))]),
+                var card = try draft.proposal(actor: JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))]),
                                               catalog: Teka.read(folder).catalog)
+                var provenance = card.raw["provenance"]?.objectValue ?? JSONObject()
+                provenance.set("draft_connection", .str(connection.id.uuidString))
+                card.raw.set("provenance", .object(provenance))
                 try ProposalStore.save(card, in: folder)
                 try commands.trustProposals([card.id], in: folder)
                 try commands.recordDraftCard(card.id, in: folder)

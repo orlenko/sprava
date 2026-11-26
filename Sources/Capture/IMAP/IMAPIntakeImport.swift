@@ -120,7 +120,8 @@ public enum IMAPIntakeImport {
             }
             guard try canPublish() else { throw Refused.unavailable }; _ = try connections.current(config)
             try mail.createImmutable(data, to: base + ".md")
-            try connections.recordImport(config.id, validity: validity, uid: uid, path: "intake/mail/" + base + ".md")
+            try connections.recordImport(config.id, validity: validity, uid: uid, path: "intake/mail/" + base + ".md",
+                                         messageID: email.messageID, threadIDs: email.threadIDs)
             count += 1
         }
         return count

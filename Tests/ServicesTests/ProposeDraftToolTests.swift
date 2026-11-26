@@ -36,6 +36,34 @@ import Testing
         #expect(DraftRequests(support: s.support).all().isEmpty)
     }
 
+    @Test func waitingDraftDisplaysItsAgeAndOnlyLaterMailOnItsThread() throws {
+        let s = try pSetup(); try connect(s)
+        let turn = try Turn(s)
+        let root = "<thread@example.invalid>"
+        let answer = turn.call("propose_email_draft", fields + [("in_reply_to", .str(root))])
+        let id = try #require(answer.content["card"]?.stringValue)
+        let proposal = try ProposalStore.load(id, in: s.folder, expectedDigest: nil)
+        let written = try #require(ISOTime.date(proposal.raw["created_at"]?.stringValue))
+        let connections = try BinderIMAPConnections(support: s.support)
+        let config = try #require(try connections.configuration(for: s.folder))
+        try connections.recordImport(config.id, validity: 8, uid: 4, path: "intake/mail/new.md",
+                                     messageID: "<new@example.invalid>", threadIDs: [root], now: written.addingTimeInterval(80))
+        let request = JSONWriter.compact(.obj([("command", .str("proposals")), ("binder", .str(s.folder.path))]))
+        let response = try JSONParser.parse(s.commands.handle(request, now: written.addingTimeInterval(7200), today: today)).value
+        let row = try #require(response["proposals"]?.arrayValue?.first { $0["id"] == .str(id) })
+        #expect(row["notes"]?.arrayValue?.contains(.str("Draft written 2 hours ago. 1 message has arrived in this thread since then.")) == true)
+        try connections.disable(folder: s.folder)
+        func notes() throws -> [JSONValue]? {
+            try JSONParser.parse(s.commands.handle(request, now: written.addingTimeInterval(7200), today: today))
+                .value["proposals"]?.arrayValue?.first { $0["id"] == .str(id) }?["notes"]?.arrayValue
+        }
+        let unavailable = JSONValue.str("Draft written 2 hours ago. The thread count is unavailable.")
+        #expect(try notes()?.contains(unavailable) == true)
+        let replacement = try #require(IMAPAccount(host: "other.example.invalid", port: 993, security: .tls, user: "reader@example.invalid"))
+        _ = try BinderIMAPConnections(support: s.support, hash: { "fixture" }).configure(folder: s.folder, account: replacement, mailbox: "INBOX")
+        #expect(try notes()?.contains(unavailable) == true)
+    }
+
     @Test func whatCannotBeAnEmailOrHasNowhereToGoIsRefused() throws {
         let s = try pSetup()
         let turn = try Turn(s)

@@ -10,6 +10,23 @@ import Testing
 @Suite(.serialized) struct IMAPDraftsFolderTests {
     typealias Fixture = BinderIMAPTests.Fixture
 
+    @Test func threadArrivalsCountDistinctMessagesOnlyInTheDraftsConnectionAfterItWasWritten() throws {
+        let f = try Fixture()
+        let conn = f.configuration.id, start = Date(timeIntervalSince1970: 1000)
+        func arrived(_ uid: UInt32, _ id: String, _ seconds: TimeInterval) throws {
+            try f.store.recordImport(conn, validity: 1, uid: uid, path: "intake/mail/invented-\(uid).md",
+                                     messageID: id, threadIDs: ["<root@example.invalid>", "<parent@example.invalid>"],
+                                     now: start.addingTimeInterval(seconds))
+        }
+        try arrived(1, "<first@example.invalid>", -60)
+        try arrived(2, "<second@example.invalid>", 60)
+        try arrived(3, "<second@example.invalid>", 80)
+        let refs = ["<root@example.invalid>", "<parent@example.invalid>"]
+        #expect(try f.store.arrivals(in: conn, matching: refs, since: start) == 1)
+        #expect(try f.store.arrivals(in: UUID(), matching: refs, since: start) == 0)
+        #expect(try f.store.arrivals(in: conn, matching: ["<other@example.invalid>"], since: start) == 0)
+    }
+
     @Test func theChosenFolderIsKeptAndKeepsTheCursor() throws {
         let f = try Fixture()
         #expect(f.configuration.draftsFolder == nil)
