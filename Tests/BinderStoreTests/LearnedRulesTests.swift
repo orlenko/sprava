@@ -34,6 +34,17 @@ import Testing
         #expect(LearnedRules.adding(rule, on: day, to: nested) == nested + "- 2026-11-26: \(rule)\n")
     }
 
+    @Test func aFenceOfAnotherMarkOrAShorterOneDoesNotCloseABlock() {
+        // The heading shown inside a four-mark block that itself holds a three-mark fence, and inside a tilde block that
+        // holds backticks, is text: the rule goes under a new heading at the end.
+        for block in ["````\n```\n## Learned rules\n```\n````\n", "~~~\n```\n## Learned rules\n~~~\n", "```text\n## Learned rules\n``` not a close\n```\n"] {
+            #expect(LearnedRules.adding(rule, on: day, to: block) == block + "\n## Learned rules\n\n- 2026-11-26: \(rule)\n", "\(block.debugDescription)")
+        }
+        // After a block that closed, a heading is a heading again.
+        let after = "```\nexample\n```\n\n## Learned rules\n\n- 2026-10-01: Keep receipts.\n"
+        #expect(LearnedRules.adding(rule, on: day, to: after) == after + "- 2026-11-26: \(rule)\n")
+    }
+
     @Test func aRuleAlreadyThereIsNotAddedAgain() {
         let once = LearnedRules.adding(rule, on: day, to: "Bills go in bills.\n")
         #expect(LearnedRules.adding(rule, on: day, to: once) == once)

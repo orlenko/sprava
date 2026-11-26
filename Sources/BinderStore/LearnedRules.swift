@@ -38,7 +38,8 @@ public enum LearnedRules {
 
     /// The person's part with the rule added as the last line under the heading, which is added at the end when it is
     /// not there. A part that already holds this rule under the heading, on any date, comes back as it is, so an
-    /// accept that is tried again adds nothing twice. Lines keep their bytes; a heading inside a fenced block is text.
+    /// accept that is tried again adds nothing twice. Lines keep their bytes; a heading inside a fenced block is text,
+    /// and a block left open runs to the end, as it does when the text is shown.
     public static func adding(_ rule: String, on day: CalendarDate, to text: String) -> String {
         var lines = text.components(separatedBy: "\n")
         // The text's last line break leaves an empty last element; it is put back at the end.
@@ -46,11 +47,20 @@ public enum LearnedRules {
         if endsWithBreak { lines.removeLast() }
         if text.isEmpty { lines = [] }
         func bare(_ line: String) -> String { line.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r")) }
-        var fenced = false, start: Int?, end: Int?
+        // A fenced block opens with three or more of one mark and closes with a line of at least as many of the same
+        // mark and nothing else, so a fence of the other mark, or a shorter one, inside it is text.
+        var fence: (mark: Character, count: Int)?, start: Int?, end: Int?
         for (n, line) in lines.enumerated() {
             let b = bare(line)
-            if b.hasPrefix("```") || b.hasPrefix("~~~") { fenced.toggle(); continue }
-            guard !fenced else { continue }
+            if let mark = b.first, mark == "`" || mark == "~" {
+                let count = b.prefix(while: { $0 == mark }).count
+                if let open = fence {
+                    if mark == open.mark, count >= open.count, count == b.count { fence = nil }
+                    continue
+                }
+                if count >= 3 { fence = (mark, count); continue }
+            }
+            guard fence == nil else { continue }
             if start == nil, b == heading { start = n; continue }
             // The section ends at the next heading of its level or above.
             if start != nil, end == nil, b.hasPrefix("# ") || b.hasPrefix("## ") || b == "#" || b == "##" { end = n }
