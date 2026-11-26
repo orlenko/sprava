@@ -67,4 +67,37 @@ import Testing
         #expect(!BinderInstructions.oldManuals(second).contains { $0.name == "CLAUDE.md" })
         #expect(Teka.read(second).isAdopted)
     }
+
+    // Review of #692: a binder can arrive with `.sprava/adopted/manuals` already there as a link to a folder outside it.
+    // The copies would have been written through the link, over a file of the same name there.
+    @Test func aLinkWhereTheCopiesGoIsRefusedAndNothingOutsideIsWritten() throws {
+        let folder = try makeTeka(fixture: "lifeproj-v2-live")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("invented-outside-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sentinel = outside.appendingPathComponent("AGENTS.md.saved")
+        try Data("an invented file that must stay as it is".utf8).write(to: sentinel)
+        try Data("# Invented binder\n".utf8).write(to: folder.appendingPathComponent("AGENTS.md"))
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".sprava/adopted"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent(".sprava/adopted/manuals"), withDestinationURL: outside)
+
+        #expect(throws: (any Error).self) { try adopt(folder) }
+        #expect(try Data(contentsOf: sentinel) == Data("an invented file that must stay as it is".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path) == ["AGENTS.md.saved"])
+        #expect(!Teka.read(folder).isAdopted)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".sprava/ops.ndjson").path))
+
+        // A plain file there is refused the same way; a real folder is used.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(".sprava/adopted/manuals"))
+        try Data("not a folder".utf8).write(to: folder.appendingPathComponent(".sprava/adopted/manuals"))
+        #expect(throws: (any Error).self) { try adopt(folder) }
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(".sprava/adopted/manuals"))
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".sprava/adopted/manuals"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent(".sprava/adopted/manuals/AGENTS.md.saved"), withDestinationURL: sentinel)
+        try adopt(folder)
+        // A link at the copy's own name is replaced by the copy; what it pointed to is untouched.
+        #expect(try Data(contentsOf: sentinel) == Data("an invented file that must stay as it is".utf8))
+        #expect(BinderInstructions.oldManuals(folder).first?.text == "# Invented binder\n")
+    }
 }

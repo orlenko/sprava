@@ -82,7 +82,8 @@ public final class TekaStore {
         if lstat(spravaDir.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR {
             throw Refused(reason: ".sprava is not a regular folder; a repair must be approved first")
         }
-        for name in ["torn", "proposals", "adopted", "conversation"] {
+        // `adopted/manuals` is written at adoption, into a folder that may have come with the binder.
+        for name in ["torn", "proposals", "adopted", "adopted/manuals", "conversation"] {
             let url = spravaDir.appendingPathComponent(name)
             if lstat(url.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR { throw Refused(reason: ".sprava/\(name) is not a regular folder") }
         }
@@ -403,7 +404,8 @@ public final class TekaStore {
             }
             // The manuals found at the top are copied aside, and the originals stay (binder-v0 §9.4 step 2), so the
             // Instructions page can offer the old text (`BinderInstructions.oldManuals`). Only a regular file of this
-            // user inside the binder, of a size the page can read, is copied: a link is never followed.
+            // user inside the binder, of a size the page can read, is copied: a link is never followed. The folder
+            // they go to is a real folder or absent (`checkContainment`, under this lock), never a link out of the binder.
             for name in ["AGENTS.md", "CLAUDE.md"] {
                 guard case .ok(let found) = SafeFile.read(folder.appendingPathComponent(name), under: folder,
                                                           limit: BinderInstructions.fileLimit) else { continue }
