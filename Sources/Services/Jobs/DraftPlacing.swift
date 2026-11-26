@@ -35,7 +35,35 @@ enum DraftPlacing {
                     available: (URL) throws -> Bool, place: Place, now: Date = Date()) -> Outcome {
         let requests = DraftRequests(support: support)
         let all = requests.all()
-        for request in all where request.state == .approving && now.timeIntervalSince(request.created) > settleAfter {
+        // Even when every binder is away or signed out, receipts age out on the runtime tick.
+        let receipts: PlacedDrafts
+        guard !all.isEmpty || FileManager.default.fileExists(atPath: support.appendingPathComponent("capture/placed-drafts").path)
+        else { return .none }
+        let historyFailure = "Placement history could not be verified. Check the local history store, then try again."
+        var conflicts = Set<String>()
+        do {
+            receipts = try PlacedDrafts(support: support)
+            // A durable receipt proves placement even if the server copy has since been sent or moved.
+            // Clean up before expiring receipts, independently of passwords and current account settings.
+            for request in all {
+                do {
+                    if try receipts.record(for: request) != nil {
+                        try requests.remove(id: request.id, ifCreated: request.created)
+                    }
+                } catch DraftRequests.Refused.exists {
+                    conflicts.insert(request.id)
+                    if request.state == .ready { try requests.failed(id: request.id, reason: historyFailure) }
+                }
+            }
+            try receipts.expire(at: now)
+        } catch {
+            // Without the receipt we cannot know whether an earlier APPEND succeeded.
+            for request in all where request.state == .ready {
+                try? requests.failed(id: request.id, reason: historyFailure)
+            }
+            return .failed
+        }
+        for request in all where !conflicts.contains(request.id) && request.state == .approving && now.timeIntervalSince(request.created) > settleAfter {
             let folder = URL(fileURLWithPath: request.binder, isDirectory: true)
             guard (try? available(folder)) == true else { continue }
             switch approved(request.id, in: folder) {
@@ -75,6 +103,7 @@ enum DraftPlacing {
             try AtomicFile.makePrivateFolder(attempt.deletingLastPathComponent())
             try AtomicFile.makePrivateFolder(attempt)
             let placed = try place(config, config.draftsFolder, secret, try requests.message(id: request.id), attempt)
+            try receipts.record(request, connection: config.id, result: placed, at: now)
             try requests.remove(id: request.id)
             return placed.present ? .present : .placed
         } catch let refused as IMAPDraftAppend.Refused {

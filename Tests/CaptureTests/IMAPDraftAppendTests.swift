@@ -77,6 +77,20 @@ from pathlib import Path
 m = runpy.run_path(sys.argv[1], run_name="fixture")
 credentials = {"user": "member@example.invalid", "password": "invented"}
 message = b"Message-ID: <draft-1@sprava.invalid>\r\nSubject: Invented\r\n\r\nInvented body.\r\n"
+# Hash the approved decoded bytes, independent of line wrapping and transfer encoding.
+from hashlib import sha256
+fields = m["approved_fields"](message)
+assert fields["bodyHash"] == sha256(b"Invented body.").hexdigest()
+assert fields["messageID"] == "<draft-1@sprava.invalid>" and fields["subject"] == "Invented"
+multi = (b"To: One <one@example.invalid>\r\nCc: two@example.invalid\r\nMessage-ID: <m@example.invalid>\r\n"
+         b"Subject: =?UTF-8?B?Q2Fmw6k=?=\r\nContent-Type: multipart/mixed; boundary=abc\r\n\r\n"
+         b"--abc\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n"
+         b"Line =3D one\r\nsecond\r\n--abc\r\nContent-Type: application/octet-stream\r\n"
+         b"Content-Transfer-Encoding: base64\r\n\r\nAAH/\r\n--abc--\r\n")
+fields = m["approved_fields"](multi)
+assert fields == {"messageID": "<m@example.invalid>", "to": ["one@example.invalid"], "cc": ["two@example.invalid"],
+                  "subject": "Café", "bodyHash": sha256(b"Line = one\nsecond").hexdigest(),
+                  "attachmentHashes": [sha256(bytes([0, 1, 255])).hexdigest()]}
 done = []
 class Session:
     capabilities = ("IMAP4REV1",)
@@ -110,6 +124,11 @@ marked = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Drafts) "/" "Br
 s = Session(marked)
 assert m["place"](s, credentials, "", message, "<draft-1@sprava.invalid>") == {"folder": "Brouillons été", "uid": 3955, "present": False}
 assert s.calls == ["LIST", 'EXAMINE "Brouillons &AOk-t&AOk-"', "SEARCH", 'APPEND "Brouillons &AOk-t&AOk-"']
+class MissingUID(Session):
+    def append(self, *args):
+        super().append(*args)
+        return "OK", [b"[APPENDUID 38505 4294967296] APPEND completed"]
+assert m["place"](MissingUID(marked), credentials, "", message, "<draft-1@sprava.invalid>")["uid"] is None
 done.append("marked/append")
 s = Session(marked, b"17", {"17": b"Message-ID: <draft-1@sprava.invalid>\r\n\r\n"})
 assert m["place"](s, credentials, "", message, "<draft-1@sprava.invalid>") == {"folder": "Brouillons été", "uid": 17, "present": True}
