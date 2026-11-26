@@ -70,15 +70,31 @@ extension BinderIndex {
             coverage.notIndexed = "the file cannot be read now"
             return try replace(source, revision: "unreadable", language: "und", cuts: [], coverage: coverage)
         }
-        if now == indexed { return }
+        if record.cacheKey(revision: now) == indexed { return }
         let read = reader.read(record)
         coverage.revision = read.revision
         coverage.language = read.language
         coverage.notIndexed = read.problem
         coverage.notes = read.notes
         coverage.pagesPoor = read.poorPages
+        let readings = Dictionary(record.readings(for: read.revision).map { ($0.page, $0) }, uniquingKeysWith: { first, _ in first })
         var cuts: [Cut] = []
         for (number, page) in read.pages {
+            if let number, let reading = readings[number] {
+                coverage.pagesCheckedByPerson = (coverage.pagesCheckedByPerson ?? []) + [number]
+                if reading.searchable {
+                    coverage.pagesWithPersonText = (coverage.pagesWithPersonText ?? []) + [number]
+                    // Each passage carries its attribution even when a long transcription is split.
+                    cuts += Self.cut(reading.text, page: number).map { ($0.page, $0.span, "Person’s reading: " + $0.text) }
+                }
+                let hard: Bool
+                if case .read = page { hard = read.poorPages.contains(number) } else { hard = true }
+                if hard {
+                    coverage.pagesPoor?.removeAll { $0 == number }
+                    if reading.searchable { coverage.pagesRead.append(number) } else { coverage.pagesIllegible.append(number) }
+                    continue
+                }
+            }
             if number == nil { coverage.pagesKnown = false }
             switch page {
             case .read(let text, let from):
@@ -99,14 +115,14 @@ extension BinderIndex {
         if kept < cuts.count, coverage.notIndexed == nil {
             if kept == 0 { coverage.notIndexed = "the index is full" } else { coverage.cut = true }
         }
-        try replace(source, revision: read.revision, language: read.language, cuts: Array(cuts.prefix(kept)), coverage: coverage)
+        try replace(source, revision: read.revision, language: read.language, cuts: Array(cuts.prefix(kept)), coverage: coverage, cacheKey: record.cacheKey(revision: read.revision))
     }
 
     /// `documents[]` records with an id and a path.
     static func documents(in teka: Teka) -> [DocumentRecord] {
         (teka.catalog?["documents"]?.arrayValue ?? []).compactMap { d in
             guard let id = ItemID(d["id"]), let path = d["path"]?.stringValue else { return nil }
-            return DocumentRecord(id: id, path: path)
+            return DocumentRecord(id: id, path: path, readings: PersonPageReading.list(in: d) ?? [])
         }
     }
 
@@ -136,12 +152,12 @@ extension BinderIndex {
         return out
     }
 
-    func replace(_ source: PassageSource, revision: String, language: String, cuts: [Cut], coverage: DocumentCoverage? = nil) throws {
+    func replace(_ source: PassageSource, revision: String, language: String, cuts: [Cut], coverage: DocumentCoverage? = nil, cacheKey: String? = nil) throws {
         let json = try coverage.map { StateValue.text(String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) } ?? .null
         let kind = StateValue.text(source.kind), key = StateValue.text(source.key)
         try db.transaction {
             try removeRows(source)
-            try db.execute("INSERT INTO sources (kind, key, revision, coverage) VALUES (?, ?, ?, ?)", kind, key, .text(revision), json)
+            try db.execute("INSERT INTO sources (kind, key, revision, coverage) VALUES (?, ?, ?, ?)", kind, key, .text(cacheKey ?? revision), json)
             for cut in cuts.prefix(Self.maxPassagesPerSource) {
                 try insert([kind, key, cut.page.map { .integer(Int64($0)) } ?? .null, .integer(Int64(cut.span.lowerBound)),
                             .integer(Int64(cut.span.upperBound)), .text(revision), .text(language), .text(cut.text), .null, .null])

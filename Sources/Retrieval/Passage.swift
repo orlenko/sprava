@@ -99,7 +99,15 @@ public struct DocumentText: Sendable {
 /// One record of `documents[]` as the index reads it.
 public struct DocumentRecord: Sendable {
     public let id: ItemID, path: String
-    public init(id: ItemID, path: String) { self.id = id; self.path = path }
+    public let readings: [PersonPageReading]
+    public init(id: ItemID, path: String, readings: [PersonPageReading] = []) {
+        self.id = id; self.path = path; self.readings = readings
+    }
+    func readings(for revision: String) -> [PersonPageReading] { readings.filter { $0.revision == revision } }
+    func cacheKey(revision: String) -> String {
+        let active = readings(for: revision)
+        return active.isEmpty ? revision : revision + "/" + BinderIndex.revision(of: .array(active.map(\.json)))
+    }
 }
 
 /// Reads a binder's documents for the index, through the sandboxed helper in the runtime.
