@@ -2,12 +2,33 @@ import Darwin
 import Foundation
 import SpravaKit
 
-/// The one built-in ordinary binder (D26). Reading its binding never creates state or a binder.
-public struct GeneralBinder: Sendable {
+/// A built-in ordinary binder (D26, D47): one of a short list, each made on its first use and kept on this Mac's
+/// Shelf. Reading its binding never creates state or a binder.
+public struct BuiltInBinder: Sendable {
+    /// The built-in binders, in the order they are listed: General for what has no binder yet, Improvements for what
+    /// the binders could not do or keep doing by hand.
+    public enum Kind: String, CaseIterable, Sendable {
+        case general, improvements
+        /// The name the person reads.
+        public var title: String { self == .general ? "General" : "Improvements" }
+        /// The folder name a new one is given, made free among the binders beside it.
+        public var folderName: String { rawValue }
+    }
+
+    public let kind: Kind
     private let database: URL
     private static let schema = StateStore.Schema(version: 1, statements: [])
 
-    public init(support: URL) { database = support.appendingPathComponent("shelf/general.sqlite") }
+    /// Every built-in binder's binding lives in one store, by the kind's name; General's key is the one it always had.
+    public init(_ kind: Kind = .general, support: URL) {
+        self.kind = kind
+        database = support.appendingPathComponent("shelf/general.sqlite")
+    }
+
+    /// The built-in binder `folder` is, if any. Damaged state throws, as `protects` does.
+    public static func kind(of folder: URL, support: URL) throws -> Kind? {
+        try Kind.allCases.first { try BuiltInBinder($0, support: support).protects(folder) }
+    }
 
     private struct Binding: Codable {
         let path: String
@@ -31,7 +52,8 @@ public struct GeneralBinder: Sendable {
     }
 
     public struct Unavailable: Error, CustomStringConvertible {
-        public var description: String { "General's folder is missing or has changed. Restore its original folder before using General again; no replacement was created." }
+        public var title = "General"
+        public var description: String { "\(title)\u{2019}s folder is missing or has changed. Restore its original folder before using \(title) again; no replacement was created." }
     }
 
     /// Serialized across runtime/CLI processes. Creation accepts no user content: only the committed binding
@@ -39,30 +61,33 @@ public struct GeneralBinder: Sendable {
     public func ensure(create: () throws -> URL) throws -> URL {
         let store = try StateStore.open(database, schema: Self.schema)
         return try store.write { transaction in
-            if let binding = try transaction.document(Binding.self, key: "general") {
+            if let binding = try transaction.document(Binding.self, key: kind.rawValue) {
                 let folder = URL(fileURLWithPath: binding.path, isDirectory: true)
-                guard (try? Binding(folder)) != nil, binding.matches(folder) else { throw Unavailable() }
+                guard (try? Binding(folder)) != nil, binding.matches(folder) else { throw Unavailable(title: kind.title) }
                 return folder
             }
             let folder = try create().resolvingSymlinksInPath().standardizedFileURL
-            try transaction.setDocument(Binding(folder), key: "general")
+            try transaction.setDocument(Binding(folder), key: kind.rawValue)
             return folder
         }
     }
 
-    /// Path and physical identity both count, so an alias cannot retire General. Damaged state throws;
+    /// Path and physical identity both count, so an alias cannot retire a built-in binder. Damaged state throws;
     /// lifecycle callers must refuse the operation before stopping sessions or deleting their history.
     public func protects(_ folder: URL) throws -> Bool {
         guard try StateDirectory.open(database.deletingLastPathComponent()) != nil else { return false }
         var info = stat()
         guard lstat(database.path, &info) == 0 else {
             if errno == ENOENT { return false }
-            throw Unavailable()
+            throw Unavailable(title: kind.title)
         }
         let store = try StateStore.open(database, schema: Self.schema)
         return try store.read { transaction in
-            guard let binding = try transaction.document(Binding.self, key: "general") else { return false }
+            guard let binding = try transaction.document(Binding.self, key: kind.rawValue) else { return false }
             return folder.standardizedFileURL.path == binding.path || binding.matches(folder)
         }
     }
 }
+
+/// General, the first built-in binder, by the name its callers know.
+public typealias GeneralBinder = BuiltInBinder

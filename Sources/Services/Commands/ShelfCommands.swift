@@ -10,7 +10,8 @@ extension Commands {
     static let shelfCommands: [String: Handler] = [
         "shelf_add": { c, _, r, _, _ in try c.shelfAdd(r) },
         "shelf_remove": { c, _, r, _, _ in try c.shelfRemove(r) },
-        "general_binder": { c, _, r, now, today in try c.generalBinder(r, now: now, today: today) },
+        "general_binder": { c, _, r, now, today in try c.builtInBinder(.general, r, now: now, today: today) },
+        "improvements_binder": { c, _, r, now, today in try c.builtInBinder(.improvements, r, now: now, today: today) },
     ]
 
     func shelfAdd(_ r: JSONObject) throws -> JSONObject {
