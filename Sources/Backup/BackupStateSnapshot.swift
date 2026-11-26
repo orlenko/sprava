@@ -59,7 +59,7 @@ extension Backup {
     }
 
     private static func omittedStatePath(_ path: String) -> Bool {
-        if ["backup/cache", "backup/run", "backup/verify", "backup/peek", "mcp/audit", "mcp/mcp.sock"].contains(path) { return true }
+        if ["capture/placed-drafts", "backup/cache", "backup/run", "backup/verify", "backup/peek", "mcp/audit", "mcp/mcp.sock"].contains(path) { return true }
         let name = (path as NSString).lastPathComponent
         if name == ".teka.lock" || name == ".DS_Store" || (name.hasPrefix(".") && name.hasSuffix(".tmp")) { return true }
         for log in ["runtime/jobs.log", "runtime/lease-refusals.log"] {
