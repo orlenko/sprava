@@ -44,6 +44,8 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     @Published private(set) var folders: [String: String] = [:]
     @Published private(set) var channels: [String: String] = [:]
     @Published private(set) var said: [String: String] = [:]
+    /// The person's edit of a proposed rule, by card id, while they are changing it (decisions.md D46).
+    @Published private(set) var rules: [String: String] = [:]
     /// The cards whose approval or rejection the runtime is carrying out. The request already holds the card's
     /// edits, so the card stays locked until the runtime answers: an edit made meanwhile would be dropped with
     /// the ones sent once the approval is accepted.
@@ -108,9 +110,10 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         var folders: [String: String] = [:]
         var channels: [String: String] = [:]
         var said: [String: String] = [:]
+        var rules: [String: String] = [:]
         var originalItems: [String: [Editable]] = [:]
         var originalFolders: [String: String] = [:]
-        var isEmpty: Bool { description == nil && editing.isEmpty && folders.isEmpty && channels.isEmpty && said.isEmpty }
+        var isEmpty: Bool { description == nil && editing.isEmpty && folders.isEmpty && channels.isEmpty && said.isEmpty && rules.isEmpty }
         var hasChanges: Bool {
             description != nil || editing.contains { $0.value != originalItems[$0.key] }
                 || folders.contains { $0.value != originalFolders[$0.key] } || !channels.isEmpty || !said.isEmpty
@@ -168,6 +171,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
             self.folder = folder
             let kept = drafts.removeValue(forKey: folder) ?? Draft()
             cards = []; history = []; historyRead = .reading; intakeCopies = []; editing = kept.editing; folders = kept.folders; channels = kept.channels; said = kept.said
+            rules = kept.rules
             description = ""; savedDescription = ""; descriptionDraft = kept.description
             filing = false; settingsLoaded = false; message = nil; showPreview = false; copied = false; moved = nil; repeatsOff = nil
             confirm(nil)
@@ -227,7 +231,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// What the person has set in the binder shown and not yet saved or approved.
     private var draft: Draft {
         let typed = settingsLoaded ? (description == savedDescription ? nil : description) : descriptionDraft
-        return Draft(description: typed, editing: editing, folders: folders, channels: channels, said: said,
+        return Draft(description: typed, editing: editing, folders: folders, channels: channels, said: said, rules: rules,
                      originalItems: Dictionary(cards.map { ($0.id, $0.editable) }, uniquingKeysWith: { first, _ in first }),
                      originalFolders: Dictionary(cards.compactMap { card in card.folder.map { (card.id, $0) } }, uniquingKeysWith: { first, _ in first }))
     }
@@ -376,7 +380,12 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// Approves a card with what the person set on it; nil when the card already has a request pending.
     @discardableResult
     func approve(_ card: Card, _ folder: URL, reload: @escaping () -> Void) -> Task<Void, Never>? {
-        settle(card, "approve", folder, approval(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
+        // A proposed rule has its own command, which writes the rule into the binder's instructions (decisions.md D46).
+        if card.verified, card.review.kind == .rule {
+            return settle(card, "accept_rule", folder, ruleAcceptance(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
+                          onReply: { [weak self] _ in self?.confirm("Added the rule to this binder\u{2019}s Instructions.") })
+        }
+        return settle(card, "approve", folder, approval(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
                onReply: { [weak self] in self?.confirm(CardReview.approvedLine($0)) })
     }
 
@@ -412,9 +421,32 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// Opens a card's items for editing; false when the card is locked or already open.
     @discardableResult
     func startEditing(_ card: Card) -> Bool {
+        if card.verified, card.review.kind == .rule, let rule = card.review.rule {
+            guard isChangeable(card.id), rules[card.id] == nil else { return false }
+            rules[card.id] = rule.text
+            return true
+        }
         guard isChangeable(card.id), editing[card.id] == nil else { return false }
         editing[card.id] = card.editable
         return true
+    }
+
+    /// Sets the person's edit of a proposed rule; false when the card is locked or not being edited.
+    @discardableResult
+    func setRule(_ card: String, _ value: String) -> Bool {
+        guard isChangeable(card), rules[card] != nil else { return false }
+        rules[card] = value
+        return true
+    }
+
+    /// The accept request for a rule card: the person's edit when they made one, as one line without space around it.
+    /// It stays until the runtime accepts it, so a refused edit is still there to fix.
+    func ruleAcceptance(_ card: Card) -> [(String, JSONValue)] {
+        var fields: [(String, JSONValue)] = [("proposal", .string(card.id)), ("digest", .string(card.digest))]
+        if let edit = rules[card.id]?.trimmingCharacters(in: .whitespacesAndNewlines), edit != card.review.rule?.text {
+            fields.append(("rule", .string(edit)))
+        }
+        return fields
     }
 
     /// Changes one item of a card being edited; false when the card is locked, or its edits were dropped.
@@ -495,12 +527,12 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
     /// on that card has nowhere left to go, so they are told; it is never dropped without a word.
     private func noticeDraftsLost(from before: [Card]) {
         // By the drafts themselves: coming back to a binder restores them with no card shown yet.
-        let drafts = Set(editing.keys).union(folders.keys).union(channels.keys).union(said.keys)
+        let drafts = Set(editing.keys).union(folders.keys).union(channels.keys).union(said.keys).union(rules.keys)
         // A card the person decided is not one that went away by itself.
         let gone = drafts.filter { id in !cards.contains { $0.id == id } && isChangeable(id) }
         guard !gone.isEmpty else { return }
         for id in gone {
-            editing[id] = nil; folders[id] = nil; channels[id] = nil; said[id] = nil
+            editing[id] = nil; folders[id] = nil; channels[id] = nil; said[id] = nil; rules[id] = nil
         }
         let named = before.first { gone.contains($0.id) }.map { "The card for \u{201C}\($0.shown.heading ?? $0.title)\u{201D}" }
         message = (named ?? "A card you were changing") + " went away because its document is already filed or its file changed. What you typed on it was not used."
@@ -516,6 +548,7 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         folders[card.id] = nil
         channels[card.id] = nil
         said[card.id] = nil
+        rules[card.id] = nil
     }
 
     @discardableResult

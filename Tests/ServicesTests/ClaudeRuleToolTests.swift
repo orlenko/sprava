@@ -47,6 +47,29 @@ import Testing
         #expect(try BinderInstructions.read(s.folder).get().text == "## Learned rules\n\n- \(CalendarDate.today()): \(rule)\n")
     }
 
+    // What the app is given to show: the rule and its reason whole, and nothing of a card that only looks like one.
+    @Test func theCardListsAsARuleWithItsTextAndReason() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        #expect(!propose(turn, rule).refused)
+        let (card, _) = try #require(cards(s).first)
+        func shown(_ id: String) throws -> JSONValue? {
+            try req(s.commands, [("command", .str("proposals")), ("binder", .string(s.folder.path))])["proposals"]?.arrayValue?.first { $0["id"] == .string(id) }
+        }
+        let review = try #require(try shown(card.id)?["review"])
+        #expect(review["kind"] == .str("rule"))
+        #expect(review["rule"] == .obj([("text", .string(rule)), ("reason", .str("You said to remember it.")), ("about", .str("filing"))]))
+        #expect(review["warnings"]?.arrayValue?.first?.stringValue?.contains("Instructions") == true)
+        // A card that carries a rule beside another op is not a rule card.
+        var raw = card.raw
+        raw.set("id", .string(UUIDv7.make()))
+        raw.set("ops", .array([.object(card.ops[0]), .object(card.ops[0])]))
+        let other = Proposal(raw: raw)
+        try ProposalStore.save(other, in: s.folder)
+        try s.commands.trustProposals([other.id], in: s.folder)
+        #expect(try shown(other.id)?["review"]?["kind"] != .str("rule"))
+        #expect(try shown(other.id)?["review"]?["rule"] == nil)
+    }
+
     @Test func whatIsNotARuleIsRefusedAndMakesNoCard() throws {
         let s = try pSetup(), turn = try Turn(s)
         let bad = ["", "two\nlines", String(repeating: "r", count: 501), "ends the section \(BinderInstructions.end)", "<!-- sprava-managed v0 -->",

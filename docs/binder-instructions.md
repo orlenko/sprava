@@ -196,8 +196,13 @@ removed by editing the text. An accepted rule is followed wherever the instructi
 documents and by the conversation, so the card is where the person decides.
 
 The conversation proposes a rule with `propose_rule` (`docs/conversation.md` 8.1), which writes the card and changes
-nothing else. The card in the app and replacing the whole section are still to come (`docs/plan-2026-11-25.md`,
-Track L).
+nothing else.
+
+The card in the app shows the rule and its reason whole, as plain text, with what the rule is about and one line
+saying what accepting does. Its buttons are Accept, Edit and Dismiss. Edit turns the rule into a field; Accept then
+sends the person's text, which is checked as a proposed rule is. Dismiss rejects the card and adds nothing. A card
+Sprava did not write shows no rule and can only be cleared away. Replacing the whole section is still to come
+(`docs/plan-2026-11-25.md`, Track L).
 
 ## 5. Templates carry a starting text
 

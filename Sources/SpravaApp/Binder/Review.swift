@@ -63,6 +63,12 @@ struct ReviewCard: View {
             if let draft = review.draft {
                 DraftFields(draft: draft) { file in Task { await actions.showInFinder(file, section.folder) } }
             }
+            if let rule = review.rule {
+                RuleFields(rule: rule, edit: actions.rules[card.id].map { typed in
+                    Binding(get: { actions.rules[card.id] ?? typed }, set: { actions.setRule(card.id, $0) })
+                })
+                .disabled(locked)
+            }
             if !review.files.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(review.files) { file in
@@ -120,7 +126,7 @@ struct ReviewCard: View {
                     Button(action.title) { actions.approve(card, section.folder, reload: section.reload) }
                         .disabled(!action.enabled || actions.busy || locked)
                 }
-                if let edit = card.editTitle, edits == nil {
+                if let edit = card.editTitle, edits == nil, actions.rules[card.id] == nil {
                     Button(edit) { actions.startEditing(card) }.disabled(locked)
                 }
                 Button(card.declineTitle) { actions.reject(card, section.folder, reload: section.reload) }
@@ -335,6 +341,33 @@ struct KeepingRows: View {
                 HStack { Spacer(); Button("Close") { actions.showPreview = false }.keyboardShortcut(.defaultAction) }.padding()
             }
             .frame(width: 720, height: 560)
+        }
+    }
+}
+
+/// A rule proposed for the binder's instructions (decisions.md D46): the rule and its reason whole, as inert text, so
+/// nothing a model wrote is rendered as anything but text. While the person edits it, the rule is a field.
+struct RuleFields: View {
+    let rule: CardReview.Rule
+    var edit: Binding<String>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: rule.caption).font(.caption).foregroundStyle(.secondary)
+            if let edit {
+                TextField("The rule, one line", text: edit, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...6)
+            } else {
+                Text(verbatim: rule.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            }
+            if !rule.reason.isEmpty {
+                Text("Why").font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: rule.reason).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

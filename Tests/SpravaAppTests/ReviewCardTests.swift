@@ -119,6 +119,69 @@ import Testing
         }
     }
 
+    /// A rule card shows the rule and its reason whole; its buttons are Accept, Edit and Dismiss (decisions.md D46).
+    @Test func aRuleCardSaysAcceptEditDismiss() {
+        let v = JSONValue.obj([("kind", .str("rule")), ("rule", .obj([("text", .str("Notices from the building manager go in notices/.")),
+            ("reason", .str("You said to remember it.")), ("about", .str("filing"))]))])
+        let review = CardReview(v)
+        #expect(review.rule == CardReview.Rule(text: "Notices from the building manager go in notices/.", reason: "You said to remember it.", about: "filing"))
+        #expect(review.rule?.caption == "Proposed rule for filing")
+        let shown = card(review)
+        #expect(shown.action(editing: nil)?.title == "Accept" && shown.action(editing: nil)?.enabled == true)
+        #expect(shown.editTitle == "Edit" && shown.declineTitle == "Dismiss" && shown.declineHelp.contains("not added"))
+        // A card Sprava did not write shows no rule and offers nothing to carry out or change.
+        let foreign = card(review, verified: false)
+        #expect(foreign.shown.rule == nil && foreign.action(editing: nil) == nil && foreign.editTitle == nil && foreign.declineTitle == "Clear it away")
+        // A rule card with no rule the app can read offers nothing to accept.
+        #expect(card(CardReview(.obj([("kind", .str("rule"))]))).action(editing: nil) == nil)
+    }
+
+    /// Accept sends the rule's own command, with the person's edit only when they made one.
+    @Test func acceptingARuleSendsItsOwnCommandWithThePersonsEdit() async throws {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["proposals"] = { _ in #"{"ok":true,"proposals":[{"id":"p-1","state":"proposed","title":"A rule for filing","digest":"d1","verified":true,"review":{"kind":"rule","rule":{"text":"Notices go in notices/.","reason":"You said so.","about":"filing"}}}]}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        runtime.answers["accept_rule"] = { _ in #"{"ok":true,"digest":"0"}"# }
+        let actions = BinderActions(client: runtime.client)
+        let folder = URL(fileURLWithPath: "/tmp/invented-kitchen")
+        await actions.load(folder, adopted: true)
+        let shown = try #require(actions.cards.first)
+        // As shown: no edit is sent.
+        #expect(actions.ruleAcceptance(shown).map(\.0) == ["proposal", "digest"])
+        #expect(!actions.setRule("p-1", "typed before Edit"))
+        #expect(actions.startEditing(shown) && actions.rules["p-1"] == "Notices go in notices/.")
+        #expect(!actions.startEditing(shown))
+        // An edit that changes nothing but the space around it is not an edit.
+        #expect(actions.setRule("p-1", " Notices go in notices/. "))
+        #expect(actions.ruleAcceptance(shown).count == 2)
+        #expect(actions.setRule("p-1", "Building notices go in notices/2026/.\n"))
+        await actions.approve(shown, folder, reload: {})?.value
+        let sent = try #require(runtime.sent.last { $0["command"]?.stringValue == "accept_rule" })
+        #expect(sent["proposal"] == .str("p-1") && sent["digest"] == .str("d1") && sent["rule"] == .str("Building notices go in notices/2026/."))
+        #expect(runtime.sent.allSatisfy { $0["command"]?.stringValue != "approve" })
+        #expect(actions.rules["p-1"] == nil && actions.confirmation?.contains("Instructions") == true)
+    }
+
+    /// The rule and its reason draw as text, and as a field while edited. With SPRAVA_RENDER_ARTIFACTS_DIR set, it saves what it drew.
+    @Test func aRuleCardDraws() throws {
+        let rule = CardReview.Rule(text: "Notices from the building manager go in notices/, named by the date on the notice.",
+                                   reason: "You asked me to remember where the building manager's notices go.", about: "filing")
+        for (name, edit) in [("rule-card-light", nil as Binding<String>?), ("rule-card-editing-light", .constant(rule.text))] {
+            let host = NSHostingView(rootView: RuleFields(rule: rule, edit: edit).padding(12).frame(width: 520))
+            host.frame = NSRect(x: 0, y: 0, width: 520, height: 200)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            #expect(bitmap.pixelsWide > 0)
+            if let directory = ProcessInfo.processInfo.environment["SPRAVA_RENDER_ARTIFACTS_DIR"] {
+                let destination = URL(fileURLWithPath: directory, isDirectory: true)
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                try #require(bitmap.representation(using: .png, properties: [:])).write(to: destination.appendingPathComponent("\(name).png"))
+            }
+        }
+    }
+
     @Test func declineSaysWhatHappensToTheFile() {
         let filed = card(filing(files: ["a.eml"]))
         #expect(filed.declineTitle == "Leave in intake")
