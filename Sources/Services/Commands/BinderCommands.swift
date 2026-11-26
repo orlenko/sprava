@@ -21,6 +21,7 @@ extension Commands {
         "history": { c, _, r, now, today in try c.history(r, now: now, today: today) },
         "save_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
         "undo_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
+        "accept_rule": { c, _, r, now, today in try c.acceptRule(r, now: now, today: today) },
     ]
 
     /// The template library belongs to the app, so these requests have no binder or binder expunge guard.
@@ -224,6 +225,11 @@ extension Commands {
             // An email draft (D41): its message is built now, from the documents as they are, and kept in a request
             // written before the approval and made ready after, so an approved draft is always placed and an
             // unapproved one never is (integrations.md §5.2).
+            // A rule card (D46) is accepted by `accept_rule`, which writes the rule: approving it here would apply the
+            // card and write nothing.
+            guard proposal.raw["provenance"]?["rule"] == nil else {
+                throw Failure(message: "this card proposes a rule for the binder's instructions; accept it on its own card. Nothing was changed")
+            }
             let draft = DraftCard(proposal)
             if proposal.raw["provenance"]?["draft"] != nil {
                 guard draft != nil, DraftCardRecord(support: support).contains(key(f, id)) else {
