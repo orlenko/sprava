@@ -111,6 +111,30 @@ import Testing
         #expect(documents(other).contains { $0["id"] == kept["id"] })
     }
 
+    // The record reads as the filing left it, yet the person chose that title twice since: their later choice stays.
+    @Test func aRecordChangedAndChangedBackByHandIsNotRemoved() throws {
+        let (folder, store, op, record) = try filedInPlace()
+        func retitle(_ title: String) throws {
+            _ = try store.apply([.init(op: "update_document", args: JSONObject([(key: "id", value: record["id"] ?? .null),
+                (key: "set", value: .obj([("title", .string(title))]))]), actor: user)], now: now)
+        }
+        try retitle("Draft")
+        try retitle("Invented summary")
+        #expect(documents(folder).contains { $0 == record })
+        #expect(refusal { _ = try store.undoChange(opID: op, now: now) }.contains("changed since"))
+        #expect(documents(folder).contains { $0 == record } && exists(folder))
+
+        // A move away and a move back by hand count the same.
+        let (other, second, filing, kept) = try filedInPlace()
+        let sha = try #require(kept["sha256"])
+        for (from, to) in [(path, "summaries/renamed.md"), ("summaries/renamed.md", path)] {
+            _ = try second.apply([.init(op: "move_document", args: JSONObject([(key: "id", value: kept["id"] ?? .null), (key: "from", value: .string(from)),
+                (key: "path", value: .string(to)), (key: "sha256", value: sha)]), actor: user)], now: now)
+        }
+        #expect(refusal { _ = try second.undoChange(opID: filing, now: now) }.contains("changed since"))
+        #expect(documents(other).contains { $0 == kept })
+    }
+
     @Test func theGuardHoldsTheOpToTheRecordAsItIsAndToThePerson() throws {
         let (folder, store, _, record) = try filedInPlace()
         let count = try store.readOpLog().ops.count

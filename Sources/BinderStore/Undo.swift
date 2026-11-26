@@ -127,7 +127,7 @@ public enum Undo {
 
         case "file_document":
             guard let stateAfter else { throw Unsupported(message: "the record as the filing left it is unknown") }
-            return try filingCompensation(target, catalog: catalog, stateAfter: stateAfter)
+            return try filingCompensation(target, catalog: catalog, opLog: opLog, stateAfter: stateAfter)
 
         case "update_item":
             guard let id = args["id"], let before = itemBefore(id) else { throw Unsupported(message: "the item's earlier state is unknown") }

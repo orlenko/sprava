@@ -73,9 +73,10 @@ extension Undo {
     /// in place, which removes the record and leaves the file where it is, an ordinary file of the binder as it was
     /// before (binder-v0 §6.10). Nothing is held, since automatic filing reads only intake/. Refused when the filing
     /// took the file from intake/ (returning it there needs the intake hold), when the record is gone, and when the
-    /// record is not as the filing left it: a record corrected or moved since holds the person's later work, and
-    /// that is undone first or the record is corrected by hand.
-    static func filingCompensation(_ target: JSONObject, catalog: JSONObject, stateAfter: JSONObject) throws -> Compensation {
+    /// record changed since the filing: it is not as the filing left it, or a later change wrote to it that was not
+    /// undone, even one that put the same values back, or the history cannot say. Such a record holds the person's
+    /// later choice; that change is undone first, or the record is corrected by hand.
+    static func filingCompensation(_ target: JSONObject, catalog: JSONObject, opLog: [JSONObject], stateAfter: JSONObject) throws -> Compensation {
         let args = target["args"]?.objectValue ?? JSONObject()
         guard args["from"] == nil else {
             throw Unsupported(message: "this filing took the file from intake/, and this version cannot return it there; correct or move the document instead")
@@ -83,9 +84,10 @@ extension Undo {
         guard let id = args["document"]?["id"] else { throw Unsupported(message: "no document id") }
         let records = (catalog["documents"]?.arrayValue ?? []).filter { $0["id"] == id }
         guard records.count == 1, case .object(let record) = records[0] else { throw Unsupported(message: "the document's record is gone") }
-        guard stateAfter["documents"]?.arrayValue?.first(where: { $0["id"] == id }) == .object(record) else {
-            throw Unsupported(message: "the record changed since the document was filed; correct it instead")
-        }
+        let changed = Unsupported(message: "the record changed since the document was filed; correct it instead")
+        guard stateAfter["documents"]?.arrayValue?.first(where: { $0["id"] == id }) == .object(record) else { throw changed }
+        guard let index = opLog.firstIndex(where: { $0["id"] == target["id"] }),
+              let later = writes(after: index, in: opLog, from: stateAfter, item: id, list: "documents"), later.isEmpty else { throw changed }
         guard case .string(let path)? = record["path"], case .string(let sha)? = record["sha256"] else {
             throw Unsupported(message: "the record has no path and digest to check its file by")
         }
