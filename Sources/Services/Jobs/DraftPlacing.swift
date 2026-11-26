@@ -35,9 +35,16 @@ enum DraftPlacing {
                     available: (URL) throws -> Bool, place: Place, now: Date = Date()) -> Outcome {
         let requests = DraftRequests(support: support)
         let all = requests.all()
+        var enabled: [BinderIMAPConnections.Configuration]?
+        func location(_ request: DraftRequests.Request) -> URL? {
+            guard request.binderInstance != nil else { return nil }
+            if case .found(let owner) = request.ownerLocation { return owner }
+            // A binder may have moved and been reconnected. Only its own physical folder qualifies.
+            if enabled == nil { enabled = (try? connections.enabled()) ?? [] }
+            return enabled?.first { request.belongs(to: $0.folder) }?.folder
+        }
         for request in all where request.state == .approving && now.timeIntervalSince(request.created) > settleAfter {
-            let folder = URL(fileURLWithPath: request.binder, isDirectory: true)
-            guard (try? available(folder)) == true else { continue }
+            guard let folder = location(request), (try? available(folder)) == true else { continue }
             switch approved(request.id, in: folder) {
             case true?: try? requests.ready(id: request.id)
             case false?: try? requests.remove(id: request.id, ifCreated: request.created)
@@ -50,8 +57,7 @@ enum DraftPlacing {
         for request in ready where chosen == nil {
             // One that ended with no known answer lately waits its turn, and does not hold up the rest.
             if let tried = request.tried, now.timeIntervalSince(tried) < retryAfter { continue }
-            let folder = URL(fileURLWithPath: request.binder, isDirectory: true)
-            guard (try? available(folder)) == true else { continue }
+            guard let folder = location(request), (try? available(folder)) == true else { continue }
             // An unreadable connection list waits; only a binder with no connection fails.
             guard let found = try? connections.configuration(for: folder) as BinderIMAPConnections.Configuration?? else { continue }
             guard let config = found else {
@@ -60,6 +66,8 @@ enum DraftPlacing {
             }
             // It was approved for one account: if the binder's connection is another now, it goes nowhere until the
             // person approves it again.
+            // configuration(for:) looks up the current physical directory identity; its saved
+            // connection path can still name the location it had when the person connected.
             guard DraftRequests.account(of: config.account) == request.account else {
                 try? requests.failed(id: request.id, reason: "account changed")
                 continue

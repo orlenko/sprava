@@ -235,12 +235,12 @@ extension Commands {
                 guard proposal.state == "proposed" else { throw Failure(message: "this card is \(proposal.state), so nothing was approved") }
                 guard edited == nil else { throw Failure(message: "an email draft is approved as it is; nothing was approved") }
                 let (message, account) = try Self.draftMessage(draft, card: proposal.id, folder: f, support: support, now: now)
-                try DraftRequests(support: support).begin(id: proposal.id, binder: f, account: account, message: message, now: now)
+                try DraftRequests(support: support).begin(id: proposal.id, binder: f, account: account, message: message, subject: draft.subject, now: now)
             }
             // An approval that fails may still have written its batch: the request stays, and the runtime settles it
             // from the binder's log (DraftPlacing).
             let applied = try store.approve(proposal, edited: edited, now: now)
-            if draft != nil { try DraftRequests(support: support).ready(id: proposal.id) }
+            if draft != nil { try DraftRequests(support: support).ready(id: proposal.id, appliedDigest: ProposalStore.writtenDigest(proposal.id, in: f)) }
             // An adopted binder whose repairs are done is offered its stamp (binder-v0 §9.4 step 6).
             try recordDigests([id] + store.createdProposals, in: f)
             var result = JSONObject([(key: "applied", value: .int(applied.count))])

@@ -167,6 +167,7 @@ struct NowView: View {
         let teka = row.teka
         return VStack(alignment: .leading, spacing: 6) {
             if teka.isAdopted, !teka.writesBlocked {
+                FailedEmailDraftSection(folder: row.folder, client: actions.client).id(row.folder)
                 EmailIntakeAttention(folder: row.folder, model: emailIntake()) {
                     if !workspace.showsSettings(row.folder) { workspace.toggleSettings(row.folder) }
                 }

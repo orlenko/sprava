@@ -204,6 +204,78 @@ import Testing
 /// The binder's page lists its approved drafts not placed yet, and the person may try a failed one again or discard it;
 /// only a draft of that binder (integrations.md §5.2).
 @Suite(.serialized) struct DraftCommandTests {
+    @Test func aDraftStaysWithItsPhysicalBinderWhenTheOldLocationIsReused() async throws {
+        let t = DraftPlacingTests()
+        let (c, folder, connections) = try t.setup()
+        let (card, digest) = try t.card(c, folder)
+        _ = try t.approve(c, folder, card, digest)
+        let moved = folder.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.moveItem(at: folder, to: moved)
+        try FileManager.default.copyItem(at: moved, to: folder)
+        let originalConfig = try #require(try connections.configuration(for: moved))
+        _ = try connections.configure(folder: folder, account: originalConfig.account, mailbox: "INBOX")
+        let runtime = BinderIMAPRuntime(support: c.support, connections: connections, passwords: BinderIMAPRuntimeTests.passwords(),
+                                       fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
+        func call(_ name: String, _ target: URL) async throws -> JSONValue {
+            try JSONParser.parse(await runtime.respond(BinderIMAPRuntimeTests.request(name, target, [("id", .str(card.id))]))).value
+        }
+        #expect(try await call("imap_drafts", folder)["drafts"] == .array([]))
+        #expect(try await call("imap_draft_discard", folder)["ok"] == .bool(false))
+        #expect(try await call("imap_draft_retry", folder)["ok"] == .bool(false))
+        #expect(try await call("imap_drafts", moved)["drafts"]?.arrayValue?.first?["id"] == .str(card.id))
+        let placer = DraftPlacingTests.Placer()
+        #expect(try await call("imap_draft_reconnect", folder)["ok"] == .bool(false))
+        #expect(t.run(c, connections, placer) == .placed && placer.messages.count == 1)
+        let (next, nextDigest) = try t.card(c, moved)
+        let approved = try t.approve(c, moved, next, nextDigest)
+        try #require(approved["ok"] == .bool(true), "\(approved)")
+        #expect(t.run(c, connections, placer) == .placed && placer.messages.count == 2)
+    }
+
+    @Test func aRestoredCopyCanExplicitlyReconnectItsOwnAppliedDraft() async throws {
+        let t = DraftPlacingTests()
+        let (c, original, connections) = try t.setup()
+        let (card, digest) = try t.card(c, original)
+        _ = try t.approve(c, original, card, digest)
+        let config = try #require(try connections.configuration(for: original))
+        let copy = original.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.copyItem(at: original, to: copy)
+        try FileManager.default.removeItem(at: original)
+        _ = try connections.configure(folder: copy, account: config.account, mailbox: "INBOX")
+        let runtime = BinderIMAPRuntime(support: c.support, connections: connections, passwords: BinderIMAPRuntimeTests.passwords(),
+                                       fetch: { _, _, _ in throw IMAPIntakeImport.Refused.unavailable })
+        func call(_ command: String) async throws -> JSONValue {
+            try JSONParser.parse(await runtime.respond(BinderIMAPRuntimeTests.request(command, copy, [("id", .str(card.id))]))).value
+        }
+        let requests = DraftRequests(support: c.support)
+        let originalMessage = try requests.message(id: card.id)
+        #expect(try await call("imap_drafts")["drafts"]?.arrayValue?.first?["state"] == .str("reconnect"))
+        #expect(try await call("imap_draft_retry")["ok"] == .bool(false))
+        #expect(try await call("imap_draft_reconnect")["drafts"]?.arrayValue?.first?["state"] == .str("failed"))
+        let placer = DraftPlacingTests.Placer()
+        #expect(t.run(c, connections, placer) == .none && placer.messages.isEmpty)
+        #expect(try await call("imap_draft_retry")["ok"] == .bool(true))
+        #expect(t.run(c, connections, placer) == .placed && placer.messages == [originalMessage])
+    }
+
+    @Test func aRequestWithoutPhysicalOwnershipKeepsItsMessageAndWaits() async throws {
+        let t = DraftPlacingTests()
+        let (c, folder, connections) = try t.setup()
+        let (card, digest) = try t.card(c, folder)
+        _ = try t.approve(c, folder, card, digest)
+        let file = c.support.appendingPathComponent("capture/draft-requests/").appendingPathComponent(card.id).appendingPathComponent("request.json")
+        var metadata = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        metadata.removeValue(forKey: "binder_instance")
+        try AtomicFile.write(JSONSerialization.data(withJSONObject: metadata), to: file)
+        let requests = DraftRequests(support: c.support)
+        let message = try requests.message(id: card.id)
+        let entry = try #require(requests.all().first)
+        #expect(!entry.belongs(to: folder))
+        let placer = DraftPlacingTests.Placer()
+        #expect(t.run(c, connections, placer) == .waiting && placer.messages.isEmpty)
+        #expect(try requests.message(id: card.id) == message)
+    }
+
     @Test func thePageListsRetriesAndDiscardsOnlyItsOwnDrafts() async throws {
         let outer = DraftPlacingTests()
         let (c, folder, connections) = try outer.setup()
@@ -211,7 +283,7 @@ import Testing
         _ = other
         let requests = DraftRequests(support: c.support)
         let mine = UUIDv7.make(now: outer.now), theirs = UUIDv7.make(now: outer.now.addingTimeInterval(1))
-        try requests.begin(id: mine, binder: folder, account: "x", message: Data("x".utf8), now: outer.now)
+        try requests.begin(id: mine, binder: folder, account: "x", message: Data("x".utf8), subject: "Invented invoice", now: outer.now)
         try requests.failed(id: mine, reason: "no drafts folder")
         try requests.begin(id: theirs, binder: otherFolder, account: "x", message: Data("x".utf8), now: outer.now)
         let runtime = BinderIMAPRuntime(support: c.support, connections: connections, passwords: BinderIMAPRuntimeTests.passwords(),
@@ -223,6 +295,9 @@ import Testing
         #expect(listed["drafts"]?.arrayValue?.map { $0["id"] } == [.string(mine)])
         #expect(listed["drafts"]?.arrayValue?.first?["failure"] == .str("no drafts folder"))
         #expect(try await ask("imap_draft_retry", [("id", .string(mine))])["drafts"]?.arrayValue?.first?["state"] == .str("ready"))
+        #expect(listed["drafts"]?.arrayValue?.first?["subject"] == .str("Invented invoice"))
+        // A failed-row button clicked after the draft was retried leaves the ready request alone.
+        #expect(try await ask("imap_draft_discard", [("id", .string(mine)), ("if_failed", .bool(true))])["drafts"]?.arrayValue?.first?["state"] == .str("ready"))
         // Another binder's draft is never touched from this one.
         #expect(try await ask("imap_draft_discard", [("id", .string(theirs))])["ok"] == .bool(false))
         #expect(requests.all().contains { $0.id == theirs })

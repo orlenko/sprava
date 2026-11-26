@@ -19,6 +19,27 @@ import Testing
     static let folder = URL(fileURLWithPath: "/invented/binder")
     static let fingerprint = String(repeating: "ab", count: 32)
 
+    @Test func failedDraftsShowOnlyTheirBinderAndActionsUseItsCurrentRequest() async throws {
+        let runtime = Runtime()
+        let row = #"{"id":"one","state":"failed","subject":"Invented invoice","failure":"no drafts folder"}"#
+        let ready = #"{"id":"two","state":"ready"}"#
+        runtime.answers["imap_drafts"] = "{\"ok\":true,\"drafts\":[\(row),\(ready)]}"
+        runtime.answers["imap_draft_retry"] = #"{"ok":true,"drafts":[{"id":"one","state":"ready"}]}"#
+        runtime.answers["imap_draft_discard"] = #"{"ok":true,"drafts":[]}"#
+        let model = FailedEmailDrafts(client: runtime.client)
+        await model.reload(Self.folder)
+        let draft = try #require(model.drafts.first)
+        #expect(model.drafts.count == 1 && draft.label == "Invented invoice" && draft.reason == "no drafts folder")
+        await model.apply(.retry, draft: draft, folder: Self.folder)
+        #expect(model.drafts.isEmpty && runtime.last("imap_draft_retry")?["if_failed"] == .bool(true))
+        await model.reload(Self.folder)
+        let elsewhere = URL(fileURLWithPath: "/invented/elsewhere")
+        await model.apply(.discard, draft: draft, folder: elsewhere)
+        #expect(runtime.last("imap_draft_discard") == nil)
+        await model.apply(.discard, draft: draft, folder: Self.folder)
+        #expect(runtime.last("imap_draft_discard")?["id"] == .str("one") && model.drafts.isEmpty)
+    }
+
     @Test func theThreeStepsUnlockInOrderAndOnlyTheConnectionCarriesThePasswordAfterThePersonConfirms() async throws {
         let runtime = Runtime(); var authenticated = false
         runtime.answers["imap_probe"] = "{\"ok\":true,\"result\":\"ok\",\"host\":\"mail.example.invalid\",\"security\":\"tls\",\"port\":993,\"loopback\":false,\"attempts\":[]}"

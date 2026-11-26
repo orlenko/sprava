@@ -1,5 +1,6 @@
 import Backup
 import BinderFormat
+import BinderStore
 import Capture
 import Clerk
 import Foundation
@@ -11,7 +12,7 @@ import SpravaKit
 /// binder instructions. Timers reuse this owner; model/MCP requests cannot reach its command door.
 public actor BinderIMAPRuntime {
     public static let commands: Set<String> = ["imap_status", "imap_probe", "imap_folders", "imap_configure", "imap_password", "imap_disable", "imap_sync",
-                                               "imap_drafts", "imap_draft_retry", "imap_draft_discard"]
+                                               "imap_drafts", "imap_draft_retry", "imap_draft_discard", "imap_draft_reconnect"]
     /// The setup checks, replaceable in tests so no test reaches a server.
     public struct Checks: Sendable {
         let probe: @Sendable (IMAPAccount) throws -> IMAPServerCheck.Answer
@@ -101,11 +102,18 @@ public actor BinderIMAPRuntime {
                 if let account, try !connections.enabled().contains(where: { $0.account.sharesPassword(with: account) }) { passwords.remove(account) }
             case "imap_drafts":
                 return try drafts(folder)
+            case "imap_draft_reconnect":
+                let requests = DraftRequests(support: support)
+                guard placing == nil, let id = r["id"]?.stringValue, let request = requests.all().first(where: { $0.id == id }),
+                      canReconnect(request, to: folder) else { throw Refusal(message: "This draft could not be reconnected here. Refresh the draft list.") }
+                try requests.reconnect(request, to: folder)
+                return try drafts(folder)
             case "imap_draft_retry", "imap_draft_discard":
                 // Only a draft of this binder, by its card id.
                 let requests = DraftRequests(support: support)
                 guard let id = r["id"]?.stringValue, let request = requests.all().first(where: { $0.id == id }),
-                      URL(fileURLWithPath: request.binder).resolvingSymlinksInPath() == folder else { throw IMAPIntakeImport.Refused.unavailable }
+                      request.belongs(to: folder) else { throw Refusal(message: "This draft is no longer available in this binder. Refresh the draft list.") }
+                if r["if_failed"] == .bool(true), request.state != .failed { return try drafts(folder) }
                 if command == "imap_draft_retry" { if request.state == .failed { try requests.ready(id: id) } }
                 else { guard placing == nil else { throw Refusal(message: "A draft is being placed now; try again in a moment.") }; try requests.remove(id: id) }
                 return try drafts(folder)
@@ -231,11 +239,35 @@ public actor BinderIMAPRuntime {
         }
     }
 
-    /// The approved drafts of one binder that are not placed yet, in fixed words.
+    /// The destination must already contain the exact approved card and use the same account.
+    /// An unrelated binder at a reused path has neither authority to see the label nor a recovery action.
+    private func canReconnect(_ request: DraftRequests.Request, to folder: URL) -> Bool {
+        if request.binderInstance != nil {
+            guard case .missing = request.ownerLocation else { return false }
+        }
+        guard !request.belongs(to: folder),
+              (try? available(folder)) == true,
+              let config = try? connections.configuration(for: folder), config.enabled,
+              DraftRequests.account(of: config.account) == request.account else { return false }
+        let digest: String?
+        if let recorded = request.appliedDigest { digest = recorded }
+        else {
+            // Older queues can use the device's trusted digest of the applied card at its original location.
+            let records = Commands(support: support, deviceID: "")
+            digest = (try? records.loadDigests())?[records.key(URL(fileURLWithPath: request.binder), request.id)]
+        }
+        guard let digest, let card = try? ProposalStore.load(request.id, in: folder, expectedDigest: digest)
+        else { return false }
+        return card.state == "applied" && DraftCard(card) != nil
+    }
+
+    /// Private binder-page labels for owned drafts and explicit reconnection of a verified restored copy.
     private func drafts(_ folder: URL) throws -> String {
-        let mine = DraftRequests(support: support).all().filter { URL(fileURLWithPath: $0.binder).resolvingSymlinksInPath() == folder }
-        let rows: [JSONValue] = mine.map { r in
-            .obj([("id", .str(r.id)), ("state", .str(r.state.rawValue)), ("failure", r.failure.map(JSONValue.str) ?? .null)])
+        let rows: [JSONValue] = DraftRequests(support: support).all().compactMap { r in
+            let owned = r.belongs(to: folder)
+            guard owned || canReconnect(r, to: folder) else { return nil }
+            return .obj([("id", .str(r.id)), ("state", .str(owned ? r.state.rawValue : "reconnect")), ("failure", r.failure.map(JSONValue.str) ?? .null),
+                         ("subject", r.subject.map(JSONValue.str) ?? .null), ("created", .str(ISOTime.string(r.created)))])
         }
         return JSONWriter.compact(.obj([("ok", .bool(true)), ("drafts", .array(rows))]))
     }
@@ -245,7 +277,7 @@ public actor BinderIMAPRuntime {
     public func retire(_ folder: URL) async throws {
         // Its approved drafts not placed yet go nowhere while it is away: the person tries them again when it is back.
         let requests = DraftRequests(support: support)
-        for request in requests.all() where URL(fileURLWithPath: request.binder).resolvingSymlinksInPath() == folder.resolvingSymlinksInPath() {
+        for request in requests.all() where request.belongs(to: folder) {
             if request.state == .ready { try? requests.failed(id: request.id, reason: "binder put away") }
         }
         let value = try connections.configuration(for: folder)

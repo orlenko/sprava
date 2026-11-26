@@ -131,7 +131,7 @@ public final class BinderIMAPConnections: Sendable {
     private static func validFolderName(_ name: String) -> Bool {
         !name.isEmpty && name.utf8.count <= 1_024 && !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 })
     }
-    private static func folderIdentity(_ folder: URL) throws -> String {
+    static func folderIdentity(_ folder: URL) throws -> String {
         var info = stat()
         let fd = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else { throw Refused.unavailable }; defer { close(fd) }
