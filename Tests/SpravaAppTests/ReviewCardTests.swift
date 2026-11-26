@@ -136,6 +136,32 @@ import Testing
         #expect(card(CardReview(.obj([("kind", .str("rule"))]))).action(editing: nil) == nil)
     }
 
+    /// A rewrite of the rules shows both sets; it is accepted as shown or dismissed, never edited on the card.
+    @Test func aRewriteOfTheRulesSaysReplaceAndOffersNoEdit() throws {
+        let v = JSONValue.obj([("kind", .str("rule")), ("rules", .obj([("now", .array([.str("- 2026-10-01: Notices go in notices/."), .str("- 2026-10-09: Building notices go in notices/.")])),
+            ("proposed", .array([.str("Notices, the building's too, go in notices/.")])), ("reason", .str("Two rules said the same thing."))]))])
+        let review = CardReview(v)
+        #expect(review.rule == nil && review.rules?.now.count == 2 && review.rules?.proposed == ["Notices, the building's too, go in notices/."])
+        let shown = card(review)
+        #expect(shown.action(editing: nil)?.title == "Replace the rules" && shown.editTitle == nil && shown.declineTitle == "Dismiss")
+        #expect(shown.declineHelp.contains("stay as they are"))
+        #expect(card(review, verified: false).shown.rules == nil && card(review, verified: false).action(editing: nil) == nil)
+        // A rewrite with nothing to put in place offers nothing.
+        #expect(card(CardReview(.obj([("kind", .str("rule")), ("rules", .obj([("now", .array([])), ("proposed", .array([]))]))]))).action(editing: nil) == nil)
+
+        let host = NSHostingView(rootView: RulesFields(rules: try #require(review.rules)).padding(12).frame(width: 520))
+        host.frame = NSRect(x: 0, y: 0, width: 520, height: 240)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        #expect(bitmap.pixelsWide > 0)
+        if let directory = ProcessInfo.processInfo.environment["SPRAVA_RENDER_ARTIFACTS_DIR"] {
+            let destination = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to: destination.appendingPathComponent("rules-rewrite-card-light.png"))
+        }
+    }
+
     /// Accept sends the rule's own command, with the person's edit only when they made one.
     @Test func acceptingARuleSendsItsOwnCommandWithThePersonsEdit() async throws {
         let runtime = StandInRuntime()

@@ -63,6 +63,7 @@ struct ReviewCard: View {
             if let draft = review.draft {
                 DraftFields(draft: draft) { file in Task { await actions.showInFinder(file, section.folder) } }
             }
+            if let rules = review.rules { RulesFields(rules: rules) }
             if let rule = review.rule {
                 RuleFields(rule: rule, edit: actions.rules[card.id].map { typed in
                     Binding(get: { actions.rules[card.id] ?? typed }, set: { actions.setRule(card.id, $0) })
@@ -368,6 +369,36 @@ struct RuleFields: View {
                 Text("Why").font(.caption).foregroundStyle(.secondary)
                 Text(verbatim: rule.reason).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+/// A rewrite of the Learned rules section: what is there and what would replace it, both whole, as inert text.
+struct RulesFields: View {
+    let rules: CardReview.Rules
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            list("Learned rules now", rules.now)
+            list(rules.proposed.count == 1 ? "Would become this one line" : "Would become these \(rules.proposed.count) lines", rules.proposed)
+            if !rules.reason.isEmpty {
+                Text("Why").font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: rules.reason).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func list(_ title: String, _ lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: title).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(verbatim: line).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 }

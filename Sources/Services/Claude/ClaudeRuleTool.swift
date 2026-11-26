@@ -56,6 +56,53 @@ enum ClaudeRuleTool {
                      ("message", .str("The rule is on a card in this binder for the person to accept, edit or dismiss. It is not in effect until they accept it; tell them it is waiting."))])
     }
 
+    static let rewriteName = "rewrite_rules"
+
+    /// `rewrite_rules`: a card that would replace everything under Learned rules with `rules`, showing both. For rules
+    /// that repeat or disagree; it never adds one. One such card waits at a time.
+    static func rewrite(_ args: JSONObject, folder: URL, writer: ClaudeTodoWriter, maximumCards: Int = ProposalStore.maximumEntries) throws -> JSONValue {
+        guard let given = args["rules"]?.arrayValue, let reason = args["reason"]?.stringValue else {
+            throw Refusal.invalid("Give the rules as they should read, one line each, and the reason. Nothing was proposed.")
+        }
+        let rules = given.compactMap { $0.stringValue?.trimmingCharacters(in: .whitespaces) }
+        guard rules.count == given.count else { throw Refusal.invalid("Each rule is one line of text. Nothing was proposed.") }
+        do {
+            try writer.perform { commands in
+                guard case .success(let instructions) = BinderInstructions.read(folder) else {
+                    throw Refusal.invalid("This binder's instructions cannot be read. Tell the person; nothing was proposed.")
+                }
+                let made = try RulesRewrite(rules: rules, reason: reason, replaces: LearnedRules.section(of: instructions.text))
+                    .proposal(actor: JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))]))
+                guard !LearnedRules.holds(rules, in: instructions.text) else {
+                    throw Refusal.invalid("The learned rules already read that way. Nothing was proposed.")
+                }
+                let listed: [(Proposal, String)]
+                do { listed = try ProposalStore.boundedList(in: folder, maxEntries: maximumCards) } catch {
+                    throw Refusal.invalid("This binder's cards are too many or cannot be read safely, so none was added. Tell the person; nothing was proposed.")
+                }
+                guard !listed.contains(where: { $0.0.state == "proposed" && RulesRewrite($0.0) != nil }) else {
+                    throw Refusal.invalid("A rewrite of the rules is already on a card, waiting for the person. Nothing was proposed.")
+                }
+                try ProposalStore.save(made, in: folder)
+                try commands.trustProposals([made.id], in: folder)
+                try commands.recordRuleCard(made.id, in: folder)
+            }
+        } catch let refusal as Refusal { throw refusal }
+        catch let refused as RuleCard.Refused { throw Refusal.invalid(refused.description + " Nothing was proposed.") }
+        catch { throw Refusal.refused }
+        return .obj([("ok", .bool(true)),
+                     ("message", .str("The rewrite is on a card in this binder, showing the rules as they are and as they would read. Nothing changes until the person accepts it; tell them it is waiting."))])
+    }
+
+    static let rewriteTool = ClaudeAppTools.Tool(
+        name: rewriteName,
+        description: "Proposes replacing every line under Learned rules in this binder's instructions with a shorter or merged set, on a card that shows both. Nothing changes until the person accepts it. It never adds a rule.",
+        schema: .obj([("type", .str("object")), ("properties", .obj([
+            ("rules", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))])), ("minItems", .int(1)), ("maxItems", .int(LearnedRules.maxRules)),
+                            ("description", .str("Every rule as it should read afterwards, one plain line each, without its date. No more lines than there are now."))])),
+            ("reason", .obj([("type", .str("string")), ("description", .str("Why: which rules repeated or disagreed, in a sentence or two."))])),
+        ])), ("required", .array([.str("rules"), .str("reason")])), ("additionalProperties", .bool(false))]))
+
     static let tool = ClaudeAppTools.Tool(
         name: name,
         description: "Proposes one rule for this binder's instructions, on a card for the person to accept, edit or dismiss. Nothing changes until they accept it.",

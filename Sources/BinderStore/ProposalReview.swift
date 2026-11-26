@@ -55,6 +55,15 @@ extension Proposal {
             out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
             return out
         }
+        // A rewrite of the learned rules shows what is there, as it was when proposed, and what would replace it.
+        if let rewrite = RulesRewrite(self) {
+            out.set("kind", .str("rule"))
+            out.set("rules", .obj([("now", .array(rewrite.replaces.map(JSONValue.string))), ("proposed", .array(rewrite.rules.map(JSONValue.string))),
+                                   ("reason", .string(rewrite.reason))]))
+            out.set("warnings", Self.strings(["Accepting replaces everything under Learned rules in this binder\u{2019}s Instructions with the new lines. Undo last save on the Instructions tab puts the old ones back."]))
+            out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
+            return out
+        }
         // An email draft (decisions.md D41) shows every field it would carry out of the Mac, as inert text.
         if let d = provenance?["draft"]?.objectValue {
             func strings(_ key: String) -> JSONValue { .array((d[key]?.arrayValue ?? []).filter { $0.stringValue != nil }) }

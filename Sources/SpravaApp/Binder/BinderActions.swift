@@ -387,7 +387,9 @@ final class BinderActions: ObservableObject, RuntimePage, DraftOwner {
         // A proposed rule has its own command, which writes the rule into the binder's instructions (decisions.md D46).
         if card.verified, card.review.kind == .rule {
             return settle(card, "accept_rule", folder, ruleAcceptance(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
-                          onReply: { [weak self] _ in self?.confirm("Added the rule to this binder\u{2019}s Instructions.") })
+                          onReply: { [weak self] _ in
+                              self?.confirm(card.review.rules != nil ? "Replaced the learned rules in this binder\u{2019}s Instructions."
+                                                : "Added the rule to this binder\u{2019}s Instructions.") })
         }
         return settle(card, "approve", folder, approval(card), reload: reload, onSuccess: { [weak self] in self?.forget(card) },
                onReply: { [weak self] in self?.confirm(CardReview.approvedLine($0)) })

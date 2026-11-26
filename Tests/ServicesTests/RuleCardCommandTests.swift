@@ -79,6 +79,62 @@ import Testing
         #expect(try text(f) == "Bills go in bills.\n")
     }
 
+    /// A rewrite card as its tool writes it, against the section as it is now.
+    func rewrite(_ f: URL, _ c: Commands, _ rules: [String]) throws -> (id: String, digest: JSONValue) {
+        let actor = JSONObject([(key: "kind", value: .str("brain")), (key: "client", value: .str("claude"))])
+        let made = try RulesRewrite(rules: rules, reason: "Two rules said the same thing.", replaces: LearnedRules.section(of: try text(f))).proposal(actor: actor)
+        try ProposalStore.save(made, in: f)
+        try c.trustProposals([made.id], in: f)
+        try c.recordRuleCard(made.id, in: f)
+        let listed = try req(c, [("command", .str("proposals")), ("binder", .string(f.path))])
+        return (made.id, listed["proposals"]?.arrayValue?.first { $0["id"] == .string(made.id) }?["digest"] ?? .str(""))
+    }
+
+    static let two = "Bills go in bills.\n\n## Learned rules\n\n- 2026-10-01: Notices go in notices/.\n- 2026-10-09: Building notices go in notices/.\n\n## Other\n\nKept.\n"
+
+    // Plan Track L, step 6: a proposal may replace the whole section; Accept writes it and Undo last save puts it back.
+    @Test func acceptingARewriteReplacesTheSectionAndNothingElse() throws {
+        let (f, c) = try binder()
+        try save(f, c, Self.two)
+        let made = try rewrite(f, c, ["Notices, the building's too, go in notices/."])
+        // The ordinary approve never applies it, and it takes no edit.
+        let approved = try req(c, [("command", .str("approve")), ("binder", .string(f.path)), ("proposal", .string(made.id)), ("digest", made.digest)])
+        #expect(approved["ok"] == .bool(false) && state(f, made.id) == "proposed")
+        #expect(try accept(f, c, made, rule: .str("Another rule."))["ok"] == .bool(false))
+        #expect(try text(f) == Self.two)
+
+        let accepted = try accept(f, c, made)
+        #expect(accepted["ok"] == .bool(true), "\(accepted)")
+        #expect(try text(f) == "Bills go in bills.\n\n## Learned rules\n\n- \(CalendarDate.today()): Notices, the building's too, go in notices/.\n\n## Other\n\nKept.\n")
+        #expect(state(f, made.id) == "applied")
+        #expect(Teka.read(f).catalog?["processing_log"]?.arrayValue?.last?["action"] == .str("Replaced the learned rules"))
+        #expect(try req(c, [("command", .str("undo_instructions")), ("binder", .string(f.path))])["ok"] == .bool(true))
+        #expect(try text(f) == Self.two)
+    }
+
+    // The card shows what it replaces. When the section changed since, the person would replace lines they never saw.
+    @Test func aRewriteOfRulesThatChangedSinceIsRefused() throws {
+        let (f, c) = try binder()
+        try save(f, c, Self.two)
+        let made = try rewrite(f, c, ["Notices, the building's too, go in notices/."])
+        let changed = Self.two.replacingOccurrences(of: "- 2026-10-09: Building notices go in notices/.", with: "- 2026-10-09: Building notices go in notices/.\n- 2026-10-20: Receipts are kept a year.")
+        try save(f, c, changed)
+        let refused = try accept(f, c, made)
+        #expect(refused["ok"] == .bool(false) && refused["error"]?.stringValue?.contains("changed since this was proposed") == true)
+        #expect(try text(f) == changed && state(f, made.id) == "proposed")
+    }
+
+    // An accept tried again after its save (the card not yet marked) writes nothing twice and marks the card.
+    @Test func aRewriteTriedAgainAfterItsSaveOnlyMarksTheCard() throws {
+        let (f, c) = try binder()
+        try save(f, c, Self.two)
+        let made = try rewrite(f, c, ["Notices, the building's too, go in notices/."])
+        let after = LearnedRules.replacing(with: ["Notices, the building's too, go in notices/."], on: CalendarDate.strict("2026-11-02")!, in: Self.two)
+        try save(f, c, after)
+        #expect(try accept(f, c, made)["ok"] == .bool(true))
+        #expect(try text(f) == after && state(f, made.id) == "applied")
+    }
+
     @Test func aBinderWithNoInstructionsYetGetsItsFirstRule() throws {
         let (f, c) = try binder()
         #expect(try accept(f, c, try card(f, c))["ok"] == .bool(true))

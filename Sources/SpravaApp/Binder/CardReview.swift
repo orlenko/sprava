@@ -14,6 +14,13 @@ struct CardReview: Equatable {
         var caption: String { about.isEmpty ? "Proposed rule" : "Proposed rule for \(about)" }
     }
 
+    /// A rewrite of the whole Learned rules section: the lines there when it was proposed, and the lines it would leave.
+    struct Rules: Equatable {
+        var now: [String]
+        var proposed: [String]
+        var reason: String
+    }
+
     /// An email draft's fields, each shown as it would leave the Mac (decisions.md D41).
     struct Draft: Equatable {
         struct Attachment: Identifiable, Equatable {
@@ -70,6 +77,7 @@ struct CardReview: Equatable {
     var warnings: [String] = []
     var draft: Draft?
     var rule: Rule?
+    var rules: Rules?
 
     init() {}
 
@@ -104,6 +112,9 @@ struct CardReview: Equatable {
         warnings = strings(v["warnings"])
         if kind == .rule, let r = v["rule"], let text = r["text"]?.stringValue {
             rule = Rule(text: text, reason: r["reason"]?.stringValue ?? "", about: r["about"]?.stringValue ?? "")
+        }
+        if kind == .rule, let r = v["rules"], let proposed = r["proposed"]?.arrayValue?.compactMap(\.stringValue), !proposed.isEmpty {
+            rules = Rules(now: r["now"]?.arrayValue?.compactMap(\.stringValue) ?? [], proposed: proposed, reason: r["reason"]?.stringValue ?? "")
         }
         if kind == .draft, let d = v["draft"] {
             draft = Draft(to: strings(d["to"]), cc: strings(d["cc"]), subject: d["subject"]?.stringValue ?? "", body: d["body"]?.stringValue ?? "",
@@ -165,7 +176,7 @@ extension BinderActions.Card {
         // A draft is approved as it is; its button says where it goes.
         if review.kind == .draft { return review.draft == nil ? nil : ("Put in Drafts", true) }
         // A rule is accepted as shown, or as the person changed it.
-        if review.kind == .rule { return review.rule == nil ? nil : ("Accept", true) }
+        if review.kind == .rule { return review.rule != nil ? ("Accept", true) : review.rules != nil ? ("Replace the rules", true) : nil }
         let skipped = Set((edits ?? []).filter { !$0.include }.map(\.index))
         let files = review.files.count
         let todos = review.todos.filter { !skipped.contains($0.index) }.count
@@ -196,6 +207,7 @@ extension BinderActions.Card {
     /// What the decline button does, for its tooltip.
     var declineHelp: String {
         shown.fromIntake ? "Nothing is filed. The file stays in intake, and Sprava asks again only if the file changes."
+            : shown.rules != nil ? "The rules stay as they are. Nothing in the binder changes."
             : shown.kind == .rule ? "The rule is not added. Nothing in the binder changes."
             : "Nothing in the binder changes."
     }

@@ -41,12 +41,72 @@ public enum LearnedRules {
     /// accept that is tried again adds nothing twice. Lines keep their bytes; a heading inside a fenced block is text,
     /// and a block left open runs to the end, as it does when the text is shown.
     public static func adding(_ rule: String, on day: CalendarDate, to text: String) -> String {
+        var (lines, endsWithBreak, start, end) = layout(text)
+        let new = line(rule, on: day)
+        guard let start else {
+            while let last = lines.last, bare(last).isEmpty { lines.removeLast() }
+            if !lines.isEmpty { lines.append("") }
+            return (lines + [heading, "", new]).joined(separator: "\n") + "\n"
+        }
+        let stop = end ?? lines.count
+        if lines[(start + 1)..<stop].contains(where: { undated($0) == rule }) { return text }
+        // After the section's last line with text, or right under the heading after one empty line.
+        var at = stop
+        while at > start + 1, bare(lines[at - 1]).isEmpty { at -= 1 }
+        var added = at == start + 1 ? ["", new] : [new]
+        // An empty line between the rule and a heading that follows.
+        if at < lines.count || end != nil { if at == lines.count || !bare(lines[at]).isEmpty { added.append("") } }
+        lines.insert(contentsOf: added, at: at)
+        return lines.joined(separator: "\n") + (endsWithBreak || end == nil ? "\n" : "")
+    }
+
+    /// The most lines a rewrite of the section may hold.
+    public static let maxRules = 60
+
+    /// The lines with text under the heading, as written, in order; empty when the heading is not there. What a card
+    /// that replaces the section shows as what is there now, and holds to at Accept.
+    public static func section(of text: String) -> [String] {
+        let (lines, _, start, end) = layout(text)
+        guard let start else { return [] }
+        return lines[(start + 1)..<(end ?? lines.count)].map(bare).filter { !$0.isEmpty }
+    }
+
+    /// Whether the section holds exactly `rules`, each as a dated line, in order: what `replacing` leaves, on any date.
+    public static func holds(_ rules: [String], in text: String) -> Bool {
+        section(of: text).map { undated($0) } == rules.map(Optional.some)
+    }
+
+    /// The person's part with everything under the heading replaced by `rules`, each dated `day`; the heading is added
+    /// at the end when it is not there. Everything outside the section keeps its bytes.
+    public static func replacing(with rules: [String], on day: CalendarDate, in text: String) -> String {
+        var (lines, endsWithBreak, start, end) = layout(text)
+        let new = rules.map { line($0, on: day) }
+        guard let start else {
+            while let last = lines.last, bare(last).isEmpty { lines.removeLast() }
+            if !lines.isEmpty { lines.append("") }
+            return (lines + [heading, ""] + new).joined(separator: "\n") + "\n"
+        }
+        lines.replaceSubrange((start + 1)..<(end ?? lines.count), with: [""] + new + (end == nil ? [] : [""]))
+        return lines.joined(separator: "\n") + (endsWithBreak || end == nil ? "\n" : "")
+    }
+
+    private static func bare(_ line: String) -> String { line.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r")) }
+
+    /// The rule of a line written `- <date>: <rule>`; nil for any other line.
+    private static func undated(_ line: String) -> String? {
+        let b = bare(line)
+        guard b.hasPrefix("- "), let colon = b.range(of: ": "), CalendarDate.strict(String(b[b.index(b.startIndex, offsetBy: 2)..<colon.lowerBound])) != nil else { return nil }
+        return String(b[colon.upperBound...])
+    }
+
+    /// The text's lines, whether it ended with a line break, and where the section's heading and the next heading of its
+    /// level or above are. A heading inside a fenced block is text.
+    private static func layout(_ text: String) -> (lines: [String], endsWithBreak: Bool, start: Int?, end: Int?) {
         var lines = text.components(separatedBy: "\n")
         // The text's last line break leaves an empty last element; it is put back at the end.
         let endsWithBreak = lines.last == "" && lines.count > 1
         if endsWithBreak { lines.removeLast() }
         if text.isEmpty { lines = [] }
-        func bare(_ line: String) -> String { line.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r")) }
         // A fenced block opens with three or more of one mark and closes with a line of at least as many of the same
         // mark and nothing else, so a fence of the other mark, or a shorter one, inside it is text.
         var fence: (mark: Character, count: Int)?, start: Int?, end: Int?
@@ -65,26 +125,7 @@ public enum LearnedRules {
             // The section ends at the next heading of its level or above.
             if start != nil, end == nil, b.hasPrefix("# ") || b.hasPrefix("## ") || b == "#" || b == "##" { end = n }
         }
-        let new = line(rule, on: day)
-        guard let start else {
-            while let last = lines.last, bare(last).isEmpty { lines.removeLast() }
-            if !lines.isEmpty { lines.append("") }
-            return (lines + [heading, "", new]).joined(separator: "\n") + "\n"
-        }
-        let stop = end ?? lines.count
-        let suffix = ": " + rule
-        if lines[(start + 1)..<stop].contains(where: { line in
-            let b = bare(line)
-            return b.hasPrefix("- ") && b.hasSuffix(suffix) && CalendarDate.strict(String(b.dropFirst(2).dropLast(suffix.count))) != nil
-        }) { return text }
-        // After the section's last line with text, or right under the heading after one empty line.
-        var at = stop
-        while at > start + 1, bare(lines[at - 1]).isEmpty { at -= 1 }
-        var added = at == start + 1 ? ["", new] : [new]
-        // An empty line between the rule and a heading that follows.
-        if at < lines.count || end != nil { if at == lines.count || !bare(lines[at]).isEmpty { added.append("") } }
-        lines.insert(contentsOf: added, at: at)
-        return lines.joined(separator: "\n") + (endsWithBreak || end == nil ? "\n" : "")
+        return (lines, endsWithBreak, start, end)
     }
 }
 
@@ -137,5 +178,59 @@ public struct RuleCard: Sendable, Equatable {
                                (key: "about", value: .string(card.about.rawValue))])
         return Proposal.make(title: Self.title(about: card.about), actor: actor, ops: [Self.logOp(about: card.about)],
                              provenance: JSONObject([(key: "rule", value: .object(rule))]), now: now)
+    }
+}
+
+/// A rewrite of the whole `## Learned rules` section as a card proposes it (decisions.md D46; plan Track L, step 6): the
+/// lines it would leave, a reason, and the section's lines as they were when it was proposed, which the card shows
+/// beside them. Accept is refused when the section no longer holds those lines, so the person never replaces text the
+/// card did not show. Like `RuleCard`, its one op is a log entry that holds none of the text.
+public struct RulesRewrite: Sendable, Equatable {
+    public var rules: [String]
+    public var reason: String
+    public var replaces: [String]
+
+    public init(rules: [String], reason: String, replaces: [String]) {
+        self.rules = rules; self.reason = reason; self.replaces = replaces
+    }
+
+    /// The card's fields, when this proposal is exactly the card `proposal` makes from them.
+    public init?(_ proposal: Proposal) {
+        guard let r = proposal.raw["provenance"]?["rules"], let lines = r["lines"]?.arrayValue, let old = r["replaces"]?.arrayValue,
+              let reason = r["reason"]?.stringValue else { return nil }
+        let rules = lines.compactMap(\.stringValue), replaces = old.compactMap(\.stringValue)
+        guard rules.count == lines.count, replaces.count == old.count else { return nil }
+        self.init(rules: rules, reason: reason, replaces: replaces)
+        guard proposal.ops == [Self.logOp], proposal.raw["title"]?.stringValue == Self.title else { return nil }
+    }
+
+    static let title = "The learned rules, rewritten"
+
+    static var logOp: JSONObject {
+        let entry = JSONObject([(key: "action", value: .str("Replaced the learned rules"))])
+        return JSONObject([(key: "op", value: .str("add_log_entry")), (key: "args", value: .obj([("entry", .object(entry))]))])
+    }
+
+    /// The fields as a card may carry them: at least one rule and at most `LearnedRules.maxRules`, each one
+    /// `LearnedRules` takes and none twice, never more lines than it replaces, and a reason of one paragraph.
+    public func checked() throws -> RulesRewrite {
+        guard !rules.isEmpty, rules.count <= LearnedRules.maxRules else {
+            throw RuleCard.Refused(description: "A rewrite holds between 1 and \(LearnedRules.maxRules) rules.")
+        }
+        for rule in rules { if let problem = LearnedRules.problem(rule) { throw RuleCard.Refused(description: problem) } }
+        guard Set(rules).count == rules.count else { throw RuleCard.Refused(description: "A rewrite holds no rule twice.") }
+        guard replaces.count >= 2, rules.count <= replaces.count else {
+            throw RuleCard.Refused(description: "A rewrite merges or shortens the rules that are there; it never adds one. Propose a new rule by itself.")
+        }
+        let why = try RuleCard(rule: rules[0], reason: reason, about: .routine).checked().reason
+        return RulesRewrite(rules: rules, reason: why, replaces: replaces)
+    }
+
+    /// The card; the caller writes it to the binder's cards and records it as one Sprava wrote.
+    public func proposal(actor: JSONObject, now: Date = Date()) throws -> Proposal {
+        let card = try checked()
+        let fields = JSONObject([(key: "lines", value: .array(card.rules.map(JSONValue.string))), (key: "reason", value: .string(card.reason)),
+                                 (key: "replaces", value: .array(card.replaces.map(JSONValue.string)))])
+        return Proposal.make(title: Self.title, actor: actor, ops: [Self.logOp], provenance: JSONObject([(key: "rules", value: .object(fields))]), now: now)
     }
 }

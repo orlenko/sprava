@@ -53,7 +53,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
     private var known: [String: String]
     private var changes = 0
     private var searches = 0
-    private var drafts = 0, rules = 0
+    private var drafts = 0, rules = 0, rewrites = 0
     static let maximumDrafts = 5
     private let search: (@Sendable (String, Int) throws -> ClaudeBinderContext.Found)?
     static let wholeBinderTools: Set<String> = ["search_binder", "update_notes"]
@@ -112,6 +112,14 @@ final class ClaudeTodoTools: @unchecked Sendable {
                 }
                 let result = try ClaudeRuleTool.propose(args, folder: folder, writer: writer)
                 rules += 1
+                return result
+            }
+        }
+        if name == ClaudeRuleTool.rewriteName {
+            return try lock.withLock {
+                guard rewrites < 1 else { throw Refusal.invalid("This turn has already proposed a rewrite of the rules. Tell the person.") }
+                let result = try ClaudeRuleTool.rewrite(args, folder: folder, writer: writer)
+                rewrites += 1
                 return result
             }
         }
@@ -378,7 +386,7 @@ final class ClaudeTodoTools: @unchecked Sendable {
                   ("in_reply_to", .obj([("type", .str("string")), ("description", .str("The Message-ID of the email this answers, when it answers one."))])),
                   ("references", .obj([("type", .str("array")), ("items", .obj([("type", .str("string"))]))])),
               ], required: ["to", "subject", "body"])),
-        ClaudeRuleTool.tool,
+        ClaudeRuleTool.tool, ClaudeRuleTool.rewriteTool,
         .init(name: "list_todos", description: "Lists this binder's open to-dos with their ids, as they are now.", schema: schema([], required: [])),
         .init(name: "add_todo", description: "Adds one to-do to this binder at once. Returns its id.", schema: schema(fields, required: ["title"])),
         .init(name: "edit_todo", description: "Changes the named fields of one open to-do at once.", schema: schema([id] + fields, required: ["id"])),

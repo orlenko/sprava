@@ -227,7 +227,7 @@ extension Commands {
             // unapproved one never is (integrations.md §5.2).
             // A rule card (D46) is accepted by `accept_rule`, which writes the rule: approving it here would apply the
             // card and write nothing.
-            guard proposal.raw["provenance"]?["rule"] == nil else {
+            guard proposal.raw["provenance"]?["rule"] == nil, proposal.raw["provenance"]?["rules"] == nil else {
                 throw Failure(message: "this card proposes a rule for the binder's instructions; accept it on its own card. Nothing was changed")
             }
             let draft = DraftCard(proposal)
