@@ -504,7 +504,7 @@ public actor ClaudeConversationRuntime {
             let (name, credential) = try await chooseToken(ask: !session.resumed || !tried.isEmpty, tried: tried)
             used = name
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
-            let writer = todoWriter, search = searchBinder
+            let writer = todoWriter, search = searchBinder, summaries = turnSites
             let (context, reach, todos, revision) = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
@@ -516,7 +516,13 @@ public actor ClaudeConversationRuntime {
                 if tools { do { try versions.record(folder, cancelled: { signal.stopped }) } catch { tools = false } }
                 guard !signal.stopped else { throw Refused.stopped }
                 // Read before the source pack, so a to-do changed after the agent could have seen it counts as changed.
-                let wholeBinder: @Sendable (String, Int) throws -> ClaudeBinderContext.Found = { query, limit in try search(folder, query, limit, { signal.stopped }) }
+                let wholeBinder: @Sendable (String, Int) throws -> ClaudeBinderContext.Found = { query, limit in
+                    let found = try search(folder, query, limit, { signal.stopped })
+                    if let line = found.coverageLine {
+                        try summaries.noteCoverage(conversation: record.conversationID, turn: record.turnID, line: line)
+                    }
+                    return found
+                }
                 let todos = ClaudeTodoTools(folder: folder, record: record, history: versions, writer: writer, search: tools ? wholeBinder : nil)
                 // An agent with file tools finds what it needs itself; nothing of the binder is sent ahead of it.
                 let context = tools ? ClaudeBinderContext(data: .obj([]), sources: []) : try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
@@ -828,12 +834,13 @@ public actor ClaudeConversationRuntime {
         let history = TurnHistory(support: support, binder: r.conversationID)
         let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID), notes = try? history.notesChange(forTurn: r.turnID)
         let sites = try? turnSites.line(turn: r.turnID)
+        let coverage = try? turnSites.coverageLine(turn: r.turnID)
         if entry != nil || todos != nil || notes != nil {
-            let summary = [entry?.summary, todos?.summary, notes == nil ? nil : "Updated the notes", sites].compactMap { $0 }.joined(separator: ". ")
+            let summary = [entry?.summary, todos?.summary, notes == nil ? nil : "Updated the notes", sites, coverage].compactMap { $0 }.joined(separator: ". ")
             fields.append(("changes", .obj([("summary", .str(summary)), ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true && notes?.undone ?? true)),
                                             ("undoable", .bool(todos != nil || notes != nil || entry?.unrecorded == false))])))
-        } else if let sites {
-            fields.append(("changes", .obj([("summary", .str(sites)), ("undone", .bool(false)), ("undoable", .bool(false))])))
+        } else if sites != nil || coverage != nil {
+            fields.append(("changes", .obj([("summary", .str([sites, coverage].compactMap { $0 }.joined(separator: ". "))), ("undone", .bool(false)), ("undoable", .bool(false))])))
         }
         return .obj(fields)
     }

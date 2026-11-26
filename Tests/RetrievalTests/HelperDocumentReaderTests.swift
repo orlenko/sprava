@@ -45,9 +45,10 @@ import Testing
         context.closePDF()
         let reader = HelperDocumentReader(binder: fixture.binder, reader: .inProcess)
         let index = try BinderIndex.rebuild(binder: fixture.binder, teka: fixture.teka, reader: reader, trust: fixture.trust)
-        let result = try index.search("greenhouse policy")
+        let result = try index.search("greenhouse policy", teka: fixture.teka)
         let entry = try #require(result.coverage.documents.first { $0.document == billID.description })
         #expect(entry.pagesKnown && entry.pagesPoor == [2] && entry.pagesIllegible == [3])
+        #expect(result.coverage.namedGaps.first { $0.path == "bills/water-bill.pdf" }?.pages == [2, 3])
         #expect(!entry.isComplete && entry.pagesRead == [1, 2, 4, 5])
         #expect(result.hits.contains { $0.passage.source == .document(billID) && $0.passage.page == 2 })
     }

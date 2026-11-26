@@ -3,6 +3,7 @@ import BinderStore
 import Brains
 import CaptureTestSupport
 import Foundation
+import Retrieval
 @testable import Services
 import SpravaKit
 import SpravaTestSupport
@@ -168,6 +169,24 @@ import Testing
         #expect(tools.appTools.call("search_binder", .init([])).refused)
         for _ in 0..<ClaudeTodoTools.maximumSearches { _ = tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])) }
         #expect(tools.appTools.call("search_binder", .init([(key: "query", value: .str("invented"))])).refused)
+    }
+
+    @Test func aLongListOfIncompleteDocumentsCanBeContinued() throws {
+        let setup = try pSetup(), turn = try Turn(setup)
+        let pages = Array(1...2000)
+        let gaps = (1...9).map { Coverage.Gap(path: "garden/section-\($0).pdf", pages: pages) }
+        let made = ClaudeTodoTools(folder: setup.folder, record: turn.record, history: turn.history, writer: turn.writer,
+                                   search: { _, _ in .init(sources: [], incomplete: gaps.count, gaps: gaps) })
+        let tools = try #require(made).appTools
+        var args = JSONObject([(key: "query", value: .str("moonflower"))]), names: [String] = []
+        for _ in 0..<gaps.count {
+            let result = tools.call("search_binder", args).content
+            let chunk = try #require(result["incomplete_documents"]?.arrayValue)
+            names.append(contentsOf: chunk.compactMap { $0["path"]?.stringValue })
+            guard let next = result["next_coverage_offset"] else { break }
+            args.set("coverage_offset", next)
+        }
+        #expect(names == gaps.map(\.path))
     }
 
     /// A connection that shares no documents has the to-do tools, and a draft with no attachment, and nothing that reaches

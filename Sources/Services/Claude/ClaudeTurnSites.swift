@@ -11,7 +11,18 @@ final class ClaudeTurnSites: Sendable {
         "CREATE TABLE turn_sites (turn TEXT PRIMARY KEY NOT NULL, conversation TEXT NOT NULL, line TEXT NOT NULL) STRICT",
         "CREATE INDEX turn_sites_conversation ON turn_sites (conversation)"
     ])
-    init(at url: URL) throws { store = try StateStore.open(url, schema: Self.schema) }
+    init(at url: URL) throws {
+        store = try StateStore.open(url, schema: Self.schema)
+        _ = try store.write { try $0.execute("CREATE TABLE IF NOT EXISTS turn_coverage (turn TEXT PRIMARY KEY NOT NULL, conversation TEXT NOT NULL, line TEXT NOT NULL) STRICT") }
+    }
+
+    func noteCoverage(conversation: UUID, turn: UUID, line: String) throws {
+        _ = try store.write { try $0.execute("INSERT OR REPLACE INTO turn_coverage VALUES (?, ?, ?)", .text(turn.uuidString), .text(conversation.uuidString), .text(line)) }
+    }
+
+    func coverageLine(turn: UUID) throws -> String? {
+        try store.read { try $0.rows("SELECT line FROM turn_coverage WHERE turn = ?", .text(turn.uuidString)).first?.first?.text }
+    }
 
     func note(conversation: UUID, turn: UUID, uses: [AgentSiteGate.Use], searches: Int) throws {
         guard let line = Self.line(uses, searches: searches) else { return }
@@ -25,7 +36,10 @@ final class ClaudeTurnSites: Sendable {
     }
 
     func clear(conversation: UUID) throws {
-        _ = try store.write { try $0.execute("DELETE FROM turn_sites WHERE conversation = ?", .text(conversation.uuidString)) }
+        _ = try store.write { db in
+            try db.execute("DELETE FROM turn_sites WHERE conversation = ?", .text(conversation.uuidString))
+            try db.execute("DELETE FROM turn_coverage WHERE conversation = ?", .text(conversation.uuidString))
+        }
     }
 
     /// "Reached docs.example.test (Claude, 14 KB in); api.example.test (a command, 3 KB out, 1 KB in). Refused
