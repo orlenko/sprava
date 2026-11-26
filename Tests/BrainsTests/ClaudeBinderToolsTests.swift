@@ -455,6 +455,12 @@ import Testing
             ("shasum scripts/pull-board.py; ssh host.example.test", []),
             ("$HOME/x.sh; ~/y.sh; -z; ls -la", []),
             ("scripts/a.sh; ./scripts/a.sh", ["scripts/a.sh"]),
+            // The shell's quotes are respected: a separator inside them starts nothing.
+            ("echo 'example; scripts/a.sh'", []),
+            ("echo \"x | scripts/a.sh\" && git commit -m 'run; scripts/a.sh'", []),
+            ("bash -lc 'cd sub && python3 scripts/b.py'", ["scripts/b.py"]),
+            ("python3 -c \"import os; os.system('scripts/a.sh')\"", []),
+            ("python3 'my scripts/a.py'", []),
         ]
         for (command, expected) in cases { #expect(ClaudeTurnActivity.started(by: command) == expected, "\(command)") }
         #expect(ClaudeTurnActivity.started(by: "sh " + String(repeating: "a", count: 301) + ".sh").isEmpty)
