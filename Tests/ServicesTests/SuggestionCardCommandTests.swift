@@ -209,13 +209,43 @@ import Testing
         let text = try String(contentsOf: file, encoding: .utf8)
         #expect(text.hasPrefix("# Suggestions for Sprava\n\nExported \(CalendarDate.today()). 2 suggestions.\n\n## Import tasks from a hosted board\n\n`````text\n"))
         // Exactly the approved text, between a fence longer than any run of backticks in it.
-        #expect(text.contains("`````text\n" + edited + "`````\n"))
-        #expect(text.contains("## Export to-dos to a calendar\n\n```text\n" + second.1.note + "```\n"))
+        #expect(text.contains("`````text\n" + edited + "\n`````\n"))
+        #expect(text.contains("## Export to-dos to a calendar\n\n```text\n" + second.1.note + "\n```\n"))
+        // The file is the person's alone, new or replaced.
+        #expect(try mode(file) == 0o600)
         #expect(!text.contains("private note") && !text.contains("Not for export"))
         // Nothing in the binder changed, and a second export replaces the file.
         #expect(try Data(contentsOf: improvements.appendingPathComponent("catalog.json")) == before)
         #expect(try export(s, file.path)["ok"] == .bool(true))
         #expect(try String(contentsOf: file, encoding: .utf8) == text)
+        // Over a file the person had opened to others, and over one they had not: owner-only either way.
+        for before in [0o644, 0o600] as [mode_t] {
+            chmod(file.path, before)
+            #expect(try export(s, file.path)["ok"] == .bool(true))
+            #expect(try mode(file) == 0o600)
+        }
+    }
+
+    func mode(_ file: URL) throws -> mode_t {
+        var info = stat()
+        try #require(lstat(file.path, &info) == 0)
+        return info.st_mode & 0o7777
+    }
+
+    /// A text that ends in a line break and the same text without it export differently, and each comes back exactly.
+    @Test func theExportKeepsWhetherTheTextEndsInALineBreak() throws {
+        func exported(_ text: String) -> String { SuggestionExport.markdown([(title: "An invented title", text: text)], on: CalendarDate.today()) }
+        /// The text of the one block: after the line that opens it, up to the line break before the line that closes it.
+        func block(_ markdown: String) throws -> String {
+            let lines = markdown.components(separatedBy: "\n")
+            let open = try #require(lines.firstIndex { $0.hasPrefix("```") && $0.hasSuffix("text") })
+            let fence = String(lines[open].dropLast(4))
+            let close = try #require(lines.lastIndex(of: fence))
+            return lines[(open + 1)..<close].joined(separator: "\n")
+        }
+        let texts = ["print('pull')", "print('pull')\n", "print('pull')\n\n", "", "\n", "a ``` b\n````", "trailing spaces  \ne\u{301}"]
+        for text in texts { #expect(try block(exported(text)) == text, "\(text.debugDescription)") }
+        #expect(Set(texts.map(exported)).count == texts.count)
     }
 
     @Test func exportWritesOnlyAMarkdownFileOutsideTheBinders() throws {

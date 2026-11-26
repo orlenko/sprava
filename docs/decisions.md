@@ -603,7 +603,9 @@ Each line names what replaced the entry; its old text is in git history.
   Edit makes the text an editor, and an edit left unsent holds quit as other unsaved work does.
   Export (`export_suggestions`): the Improvements row's menu on the Shelf has Export Suggestions, which opens a save
   panel; the runtime writes the suggestions that are open to-dos in Improvements to that one Markdown file, each
-  title as a heading and its text, exactly as approved, in a fenced block longer than any run of backticks in it.
+  title as a heading and its text, exactly as approved, in a fenced block longer than any run of backticks in it;
+  one line break is always added before the closing fence, so whether the text ends in a line break survives. The
+  file is written for the person alone (mode 0600), also when it replaces one.
   Only to-dos a suggestion card made are written. The file is never written inside a binder or Sprava's own folder,
   over anything but an ordinary file, or through a link, and nothing in Improvements changes. Counts and closing with
   a release are not built yet.

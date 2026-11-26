@@ -68,7 +68,10 @@ extension Commands {
 
 /// The approved suggestions as one Markdown file for the development loop (decisions.md D47): each one's title as a
 /// heading and its text, exactly as the person approved it, inside a fenced block. The fence is longer than any run of
-/// backticks in the text, so the text is never cut short or rendered as anything but itself.
+/// backticks in the text, so the text is never cut short or rendered as anything but itself. The text is every byte
+/// between the line that opens the block and the one line break before the line that closes it: that line break is
+/// always added, so a text that ends in a line break and the same text without it export differently, and each comes
+/// back exactly.
 enum SuggestionExport {
     static func markdown(_ suggestions: [(title: String, text: String)], on day: CalendarDate) -> String {
         var out = "# Suggestions for Sprava\n\nExported \(day). \(suggestions.count == 1 ? "1 suggestion" : "\(suggestions.count) suggestions").\n"
@@ -77,7 +80,7 @@ enum SuggestionExport {
             for character in suggestion.text { run = character == "`" ? run + 1 : 0; longest = max(longest, run) }
             let fence = String(repeating: "`", count: max(3, longest + 1))
             let title = suggestion.title.split(whereSeparator: \.isNewline).joined(separator: " ")
-            out += "\n## \(title)\n\n\(fence)text\n\(suggestion.text)\(suggestion.text.hasSuffix("\n") ? "" : "\n")\(fence)\n"
+            out += "\n## \(title)\n\n\(fence)text\n\(suggestion.text)\n\(fence)\n"
         }
         return out
     }
@@ -132,7 +135,9 @@ extension Commands {
             return (title, text)
         }
         guard !suggestions.isEmpty else { throw Failure(message: "There are no open suggestions in Improvements to export.") }
-        try AtomicFile.write(Data(SuggestionExport.markdown(suggestions, on: today).utf8), to: target, mode: 0o644)
+        // For the person alone: the text can hold a script, and the folder picked may be a shared one. The file is
+        // written new and moved into place, so one it replaces never keeps a wider mode either.
+        try AtomicFile.write(Data(SuggestionExport.markdown(suggestions, on: today).utf8), to: target, mode: 0o600)
         return JSONObject([(key: "count", value: .int(suggestions.count)), (key: "path", value: .string(target.path))])
     }
 }
