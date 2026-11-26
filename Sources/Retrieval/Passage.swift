@@ -6,6 +6,7 @@ public enum PassageSource: Sendable, Hashable {
     case document(ItemID)
     /// An unfiled intake file, visible only when a consented binder conversation requests intake.
     case intake(String)
+    case keptFile(String)
     case openItem(ItemID)
     case closedItem(ItemID)
     /// A `processing_log[]` entry that closes nothing, keyed `#<position>`: the log is append-only, and one op may write several.
@@ -17,6 +18,7 @@ public enum PassageSource: Sendable, Hashable {
         switch self {
         case .document: "document"
         case .intake: "intake"
+        case .keptFile: "kept-file"
         case .openItem: "open-item"
         case .closedItem: "closed-item"
         case .log: "log"
@@ -30,7 +32,7 @@ public enum PassageSource: Sendable, Hashable {
         case .document(.string(let s)), .openItem(.string(let s)), .closedItem(.string(let s)): "s:" + s
         case .document(.integer(let i)), .openItem(.integer(let i)), .closedItem(.integer(let i)): "i:" + String(i)
         case .log(let k), .personLine(let k): k
-        case .intake(let path): path
+        case .intake(let path), .keptFile(let path): path
         }
     }
 
@@ -44,6 +46,7 @@ public enum PassageSource: Sendable, Hashable {
         case ("log", _): self = .log(key)
         case ("person-line", _): self = .personLine(key)
         case ("intake", _): self = .intake(key)
+        case ("kept-file", _): self = .keptFile(key)
         default: return nil
         }
     }

@@ -8,14 +8,14 @@ extension BinderIndex {
     /// matches. The person's own lines are searched only with `conversation`, which only the binder's own roles
     /// ask for (§9.1). With `teka`, documents the catalog lists and the index has not seen are named.
     public func search(_ query: String, limit: Int = 8, conversation: Bool = false, teka: Teka? = nil,
-                       intake: Bool = false) throws -> SearchResult {
-        let coverage = try coverage(conversation: conversation, teka: teka, intake: intake)
+                       intake: Bool = false, keptFiles: Bool = false) throws -> SearchResult {
+        let coverage = try coverage(conversation: conversation, teka: teka, intake: intake, keptFiles: keptFiles)
         guard let match = Self.match(query), limit > 0 else { return SearchResult(hits: [], coverage: coverage) }
         let rows = try db.rows("""
             SELECT \(Self.columns) FROM passages_fts JOIN passages p ON p.id = passages_fts.rowid
-            WHERE passages_fts MATCH ? AND (? OR p.kind != 'person-line') AND (? OR p.kind != 'intake')
+            WHERE passages_fts MATCH ? AND (? OR p.kind != 'person-line') AND (? OR p.kind != 'intake') AND (? OR p.kind != 'kept-file')
             ORDER BY bm25(passages_fts), p.id LIMIT ?
-            """, .text(match), .integer(conversation ? 1 : 0), .integer(intake ? 1 : 0), .integer(Int64(min(limit, Self.maxSearchLimit))))
+            """, .text(match), .integer(conversation ? 1 : 0), .integer(intake ? 1 : 0), .integer(keptFiles ? 1 : 0), .integer(Int64(min(limit, Self.maxSearchLimit))))
         let hits = try rows.compactMap(Self.passage).map { p in Hit(passage: p, original: try p.translationOf.flatMap { try passage(id: $0) }) }
         return SearchResult(hits: hits, coverage: coverage)
     }
@@ -30,7 +30,7 @@ extension BinderIndex {
                     .text(PassageSource.document(document).key)).compactMap(Self.passage)
     }
 
-    public func coverage(conversation: Bool = false, teka: Teka? = nil, intake: Bool = false) throws -> Coverage {
+    public func coverage(conversation: Bool = false, teka: Teka? = nil, intake: Bool = false, keptFiles: Bool = false) throws -> Coverage {
         var c = Coverage()
         c.conversation = conversation
         c.intake = intake
@@ -59,6 +59,11 @@ extension BinderIndex {
                     append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
                         ?? DocumentCoverage(document: "intake:\(path)", notIndexed: "its coverage cannot be read"), path: path)
                 }
+            case .keptFile(let path):
+                if keptFiles {
+                    append(row[2].text.flatMap { try? JSONDecoder().decode(DocumentCoverage.self, from: Data($0.utf8)) }
+                           ?? DocumentCoverage(document: path, notIndexed: "its coverage cannot be read"), path: path)
+                }
             case .openItem: c.openItems += 1
             case .closedItem: c.closedItems += 1
             case .log: c.logEntries += 1
@@ -66,7 +71,7 @@ extension BinderIndex {
             }
         }
         for translations in [false, true] {
-            let languages = try db.rows("SELECT DISTINCT language FROM passages WHERE (kind = 'document' OR (? AND kind = 'intake')) AND translation_of IS \(translations ? "NOT " : "")NULL ORDER BY language", .integer(intake ? 1 : 0))
+            let languages = try db.rows("SELECT DISTINCT language FROM passages WHERE (kind = 'document' OR (? AND kind = 'intake') OR (? AND kind = 'kept-file')) AND translation_of IS \(translations ? "NOT " : "")NULL ORDER BY language", .integer(intake ? 1 : 0), .integer(keptFiles ? 1 : 0))
                 .compactMap { $0.first?.text }
             if translations { c.translationLanguages = languages } else { c.languages = languages }
         }

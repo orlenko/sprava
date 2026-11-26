@@ -2,6 +2,7 @@ import BinderFormat
 import BinderStore
 import Clerk
 import Foundation
+import Retrieval
 import Shelf
 import SpravaKit
 
@@ -18,6 +19,17 @@ extension Commands {
     func binderSettings(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
         // The clerk's filing list: read, or set when description or filing is given (mvp.md feature 1).
         let f = try folder(r)
+        if let action = r["kept_folders"] {
+            let settings = try KeptFolders(support: support)
+            switch action.stringValue {
+            case "list": break
+            case "add", "remove":
+                guard let path = r["path"]?.stringValue else { throw Failure(message: "Choose a folder in this binder.") }
+                try settings.set(path, kept: action == .str("add"), in: f)
+            default: throw Failure(message: "Unknown folder setting.")
+            }
+            return JSONObject([(key: "folders", value: .array(try settings.selected(in: f).map(JSONValue.str)))])
+        }
         let list = FilingList(support: support)
         // Until the person saves an entry, the binder is on the list unless it is at disclosure none (FilingList+Clerk).
         let teka = Teka.read(f)
