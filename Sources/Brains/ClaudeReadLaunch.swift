@@ -10,10 +10,18 @@ import SpravaKit
 /// asking the model; without, it has no tools at all, as the setup check needs.
 package enum ClaudeReadLaunch {
     /// What a binder's agent may touch: the folder, and the one loopback port that leads out.
-    package struct Reach: Sendable {
+    package struct Reach: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
         package let folder: URL
         package let proxyPort: UInt16
-        package init(folder: URL, proxyPort: UInt16) { self.folder = folder; self.proxyPort = proxyPort }
+        /// The person's environment for this binder's commands, already cut to what `CommandVariables.passable` keeps (decisions.md D50).
+        package let variables: [String: String]
+        package init(folder: URL, proxyPort: UInt16, variables: [String: String] = [:]) {
+            self.folder = folder; self.proxyPort = proxyPort; self.variables = variables
+        }
+        /// How many variables, never a name or a value: a description can end up in an error or a log.
+        package var description: String { "Reach(folder: \(folder.path), proxyPort: \(proxyPort), variables: \(variables.count))" }
+        package var debugDescription: String { description }
+        package var customMirror: Mirror { Mirror(self, children: ["folder": folder.path, "proxyPort": proxyPort, "variables": variables.count]) }
     }
     static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
     /// The agent's shell is a whole one (decisions.md D36): what holds it is the sandbox, not a list of commands. Its programs are those
@@ -80,7 +88,9 @@ package enum ClaudeReadLaunch {
         let reach = try reach.map { reach -> Reach in
             guard let real = realpath(reach.folder.path, nil) else { throw Refused.invalidInput }
             defer { free(real) }
-            return Reach(folder: URL(fileURLWithPath: String(cString: real), isDirectory: true), proxyPort: reach.proxyPort)
+            // Checked here, before anything is written: a set that is not usable starts no session.
+            guard CommandVariables.usable(reach.variables) else { throw Refused.invalidInput }
+            return Reach(folder: URL(fileURLWithPath: String(cString: real), isDirectory: true), proxyPort: reach.proxyPort, variables: reach.variables)
         }
         guard program.isFileURL, home.isFileURL, !credential.isEmpty, credential.utf8.count <= 16_384,
               !credential.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }),
@@ -137,6 +147,12 @@ package enum ClaudeReadLaunch {
             environment["CLAUDE_CODE_OAUTH_TOKEN"] = nil
             environment["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] = String(ClaudeTurnProcess.secretDescriptor)
             environment["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] = "1"
+            // The person's environment for this binder's commands (`CommandVariables`). The scrub above takes a name
+            // that looks like a key out of what commands inherit, so it is not put in this environment: the CLI runs
+            // this file before each command instead (seen with 2.1.332 on 2026-11-27). The file is written every time,
+            // so values the person has since removed do not stay in the session's home.
+            try directory.write(Data(CommandVariables.script(reach.variables).utf8), to: "command-env.sh")
+            if !reach.variables.isEmpty { environment["CLAUDE_ENV_FILE"] = home.appendingPathComponent("command-env.sh").path }
         }
         let args = ["-f", home.appendingPathComponent("app-sandbox.sb").path, program.path,
                     "--safe-mode", "--restricted", "-p", "--input-format", "stream-json", "--output-format", "stream-json",

@@ -52,6 +52,17 @@ import Testing
         #expect(try f.allowed("echo own > \"$HOME/own.txt\""))
     }
 
+    // The person's variables (decisions.md D50) come from a file in the session's home, which a shell inside the walls
+    // can run, so a command finds one by its name. The value is invented and put together here.
+    @Test func aCommandInsideTheWallsFindsThePersonsVariables() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let value = "invented-" + String(repeating: "k", count: 12) + " it's"
+        try Data(CommandVariables.script(["EXAMPLE_SERVICE_KEY": value]).utf8).write(to: f.home.appendingPathComponent("command-env.sh"))
+        #expect(try f.allowed(". \"$HOME/command-env.sh\" && test \"$EXAMPLE_SERVICE_KEY\" = \"invented-kkkkkkkkkkkk it's\""))
+        #expect(try f.allowed(". \"$HOME/command-env.sh\" && /usr/bin/env | /usr/bin/grep -q '^EXAMPLE_SERVICE_KEY=invented-'"))
+        #expect(try !f.allowed("test -n \"$EXAMPLE_SERVICE_KEY\""))
+    }
+
     @Test func keyFilesCanBeDeletedButNotRead() throws {
         let f = try Fixture(); defer { f.clean() }
         // Through the shell's own redirection.

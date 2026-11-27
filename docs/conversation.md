@@ -1224,6 +1224,9 @@ the person sees the host before anything leaves for it. A prompt names a host, n
 
 ### 18.3.2 Secrets for scripts (designed, not built)
 
+**Set aside for now by D50 (2026-11-27).** Commands get the person's shell environment as it is (§18.3.3). What
+follows stays the design for tightening that: a value the session never sees.
+
 A billing script needs the invoicing service's API key. Without a place for it, the person pastes it into the
 conversation or a file in the binder, and from there it is in the transcript, the model's context, the binder's history
 and its backups.
@@ -1260,6 +1263,37 @@ proxy could strip exact matches from responses at the cost of reading them, to s
 (`Brains`, `SpravaApp`; tier B, secrets); the authority, minting, termination and substitution in the proxy (`Brains`,
 tier B), tested against a local TLS server on invented hosts; the placeholders, trust variables and the policy's list of
 names in the launch. No value and no authority key ever reaches a log, the heartbeat or the binder.
+
+### 18.3.3 The person's environment (D50)
+
+A script in a binder often needs what the person's terminal already has: a service's API key, a region, a tool's
+settings. A session's commands run with it.
+
+**What they get.** Every variable the person's login shell exports, except: the names Sprava sets for the session
+(`PATH`, `HOME`, `TMPDIR`, the proxy's, the developer folder), anything of the agent's own (`CLAUDE_…`, `ANTHROPIC_…`),
+what makes a shell or a program load a file first (`BASH_ENV`, `ENV`, `ZDOTDIR`, `DYLD_…`), what describes the terminal
+the values were read in (`PWD`, `TERM…`, `LC_…`, and the like), and any value that is not one line of text within
+8 KiB, which leaves out shell functions. At most 512 variables and 256 KiB, taken in the order of their names.
+
+**Where they come from.** The runtime is started by launchd and holds nothing the person's shell exports. When a
+conversation starts, Sprava starts the person's login shell, the one in their account record, as a login and interactive
+shell from a login's few variables (`HOME`, `USER`, `LOGNAME`, `SHELL`, a system `PATH`), so it reads the profile files a
+new terminal window reads. It prints its environment between two marks and is stopped; what the profile itself prints
+stays outside the marks. The answer has ten seconds and 1 MiB; at the end, in time or not, the shell and what its
+profile started are killed outright, which takes a quarter second at most. A profile that hangs or answers something
+else gives the environment read last in this run of the runtime, or none; the session then says which variable it lacks. No name and no
+value is logged.
+
+**How they arrive.** The CLI removes names that look like a credential from what its commands inherit
+(`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, which Sprava sets to keep the person's Claude sign-in from commands). So the values
+are not put in the session's environment: Sprava writes them as `export` lines to `command-env.sh` in the session's
+home, mode 0600, and names that file in `CLAUDE_ENV_FILE`; the CLI runs it before each command. The file is rewritten at
+every session start, so a variable the person removed is gone from it. The agent process does not get the values, and
+they are in no process's arguments.
+
+**The cost.** The binder's Claude can read any value (a command can print it), and a command can send one to any site
+the binder allows for commands. The walls of §18.3 are unchanged: no site the person did not allow, nothing outside the
+binder. The session is told to use a variable by its name and never to print, store or repeat a value.
 
 ### 18.4 Undo by version history
 

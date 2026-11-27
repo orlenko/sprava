@@ -7,9 +7,15 @@ enum ClaudeNativeConversation {
     /// `binder` gives the session its tools inside that folder; nil keeps it tool-free.
     static func driver(program: URL, support: URL, credential: String, connection: UUID, session: UUID,
                        policy: String, binder: URL?, appTools: ClaudeAppTools?, model: ClaudeReadLaunch.Model = .opus,
+                       environment: @escaping @Sendable () -> [String: String] = { PersonEnvironment.shared.forCommands() },
                        onSpawn: @escaping @Sendable (Int32) throws -> Void) async throws -> ClaudeConversationRuntime.Driver {
         let proxy = try binder.map { _ in try AgentEgressProxy.shared() }
-        let reach = binder.flatMap { folder in proxy.map { ClaudeReadLaunch.Reach(folder: folder, proxyPort: $0.port) } }
+        // A binder's commands run with what the person's shell exports (decisions.md D50). Asking the shell can take
+        // as long as their profile does, so it is not done on a thread the other conversations need.
+        let variables: [String: String] = binder == nil ? [:] : await withCheckedContinuation { done in
+            DispatchQueue.global(qos: .userInitiated).async { done.resume(returning: environment()) }
+        }
+        let reach = binder.flatMap { folder in proxy.map { ClaudeReadLaunch.Reach(folder: folder, proxyPort: $0.port, variables: variables) } }
         // The turn's gate to the binder's sites may come before or after the agent starts; either way the proxy gets it.
         final class Sites: @unchecked Sendable { let lock = NSLock(); var pid: Int32?; var gate: AgentSiteGate? }
         let sites = Sites()
