@@ -155,9 +155,40 @@ public enum ExtractHelper {
     /// or a process it left holding the pipe open, never wedges the caller.
     static func launch(_ helper: URL, data: Data, name: String, timeout: TimeInterval,
                        maxAnswer: Int = 2 * Extractor.Limits().bytes, grace: TimeInterval = 2) throws -> Extractor.Result {
+        let out = try reply(helper, data: data, arguments: [name], timeout: timeout, maxAnswer: maxAnswer, grace: grace)
+        guard let v = try? JSONParser.parse(out).value else { throw Failure(message: "the reader failed on this file") }
+        var r = Extractor.Result(kind: v["kind"]?.stringValue ?? "unknown", text: v["text"]?.stringValue ?? "",
+                                 textFrom: v["text_from"]?.stringValue ?? "parsed", pages: v["pages"]?.numberValue?.safeInteger.map(Int.init),
+                                 problem: v["problem"]?.stringValue)
+        if let field = v["page_readings"] {
+            guard let pages = field.arrayValue, pages.count == r.pages, pages.count <= Extractor.Limits().pages,
+                  r.problem == nil else { throw Failure(message: "the reader returned invalid page readings") }
+            var remaining = Extractor.Limits().textChars
+            for entry in pages {
+                guard let page = Extractor.Page(json: entry) else { throw Failure(message: "the reader returned an invalid page") }
+                remaining -= page.text.unicodeScalars.count
+                guard remaining >= 0 else { throw Failure(message: "the page readings exceeded the text limit") }
+                r.pageReadings.append(page)
+            }
+        }
+        r.mismatch = v["mismatch"] == .bool(true)
+        if let e = v["email"] {
+            r.email = Extractor.Email(subject: e["subject"]?.stringValue, from: e["from"]?.stringValue, to: e["to"]?.stringValue,
+                                      date: e["date"]?.stringValue, messageID: e["message_id"]?.stringValue,
+                                      attachments: (e["attachments"]?.arrayValue ?? []).compactMap { a in
+                                          guard let n = a["name"]?.stringValue, let d = a["data"]?.stringValue.flatMap({ Data(base64Encoded: $0) }) else { return nil }
+                                          return .init(name: n, data: d)
+                                      },
+                                      fromHeader: e["from_header"]?.stringValue, toHeader: e["to_header"]?.stringValue)
+        }
+        return r
+    }
+
+    static func reply(_ helper: URL, data: Data, arguments: [String], timeout: TimeInterval,
+                      maxAnswer: Int, grace: TimeInterval) throws -> Data {
         let task = Process()
         task.executableURL = helper
-        task.arguments = [name]
+        task.arguments = arguments
         task.environment = [:]
         let input = Pipe(), output = Pipe()
         task.standardInput = input
@@ -199,33 +230,9 @@ public enum ExtractHelper {
         // The helper is gone, so its end of the pipe is closed and the write has ended or fails at once; a writer
         // still stuck after a short wait is abandoned, and the file is not read.
         let whole = delivered.wait(timeout: .now() + 5) == .success && !delivery.failed
-        guard whole, task.terminationStatus == 0, let v = try? JSONParser.parse(out).value else {
+        guard whole, task.terminationStatus == 0 else {
             throw Failure(message: task.terminationReason == .uncaughtSignal ? "the reader stopped on this file" : "the reader failed on this file")
         }
-        var r = Extractor.Result(kind: v["kind"]?.stringValue ?? "unknown", text: v["text"]?.stringValue ?? "",
-                                 textFrom: v["text_from"]?.stringValue ?? "parsed", pages: v["pages"]?.numberValue?.safeInteger.map(Int.init),
-                                 problem: v["problem"]?.stringValue)
-        if let field = v["page_readings"] {
-            guard let pages = field.arrayValue, pages.count == r.pages, pages.count <= Extractor.Limits().pages,
-                  r.problem == nil else { throw Failure(message: "the reader returned invalid page readings") }
-            var remaining = Extractor.Limits().textChars
-            for entry in pages {
-                guard let page = Extractor.Page(json: entry) else { throw Failure(message: "the reader returned an invalid page") }
-                remaining -= page.text.unicodeScalars.count
-                guard remaining >= 0 else { throw Failure(message: "the page readings exceeded the text limit") }
-                r.pageReadings.append(page)
-            }
-        }
-        r.mismatch = v["mismatch"] == .bool(true)
-        if let e = v["email"] {
-            r.email = Extractor.Email(subject: e["subject"]?.stringValue, from: e["from"]?.stringValue, to: e["to"]?.stringValue,
-                                      date: e["date"]?.stringValue, messageID: e["message_id"]?.stringValue,
-                                      attachments: (e["attachments"]?.arrayValue ?? []).compactMap { a in
-                                          guard let n = a["name"]?.stringValue, let d = a["data"]?.stringValue.flatMap({ Data(base64Encoded: $0) }) else { return nil }
-                                          return .init(name: n, data: d)
-                                      },
-                                      fromHeader: e["from_header"]?.stringValue, toHeader: e["to_header"]?.stringValue)
-        }
-        return r
+        return out
     }
 }

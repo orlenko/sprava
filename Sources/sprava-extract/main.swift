@@ -16,6 +16,11 @@ while true {
     data.append(chunk)
     if data.count > limit { break }
 }
+if CommandLine.arguments.count == 4, CommandLine.arguments[2] == "--page-preview" {
+    guard let number = Int(CommandLine.arguments[3]), let preview = PagePreview.render(data, name: name, number: number) else { exit(1) }
+    FileHandle.standardOutput.write(preview.wire)
+    exit(0)
+}
 let r = Extractor.extract(data, name: name)
 var o = JSONObject()
 o.set("kind", .string(r.kind))
