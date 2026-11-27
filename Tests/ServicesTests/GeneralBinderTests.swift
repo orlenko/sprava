@@ -64,4 +64,37 @@ struct GeneralBinderCommandTests {
         #expect(result["binder"]?.stringValue?.hasSuffix("/general-2") == true)
         #expect(try String(contentsOf: existing, encoding: .utf8) == "Invented existing document")
     }
+
+    /// Improvements is the second built-in binder (D47): made on its first use beside General, an ordinary private
+    /// binder, kept on the Shelf under its own name, and never mistaken for General.
+    @Test func improvementsIsMadeOnFirstUseAndStaysOnTheShelfLikeGeneral() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("improvements-command-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("binders"), support = root.appendingPathComponent("support")
+        let commands = Commands(support: support, deviceID: "invented-device")
+        func call(_ fields: [(String, JSONValue)]) throws -> JSONValue {
+            try JSONParser.parse(commands.handle(JSONWriter.compact(.obj(fields)))).value
+        }
+        let general = try call([("command", .str("general_binder")), ("parent", .str(parent.path)), ("create_parent", .bool(true))])
+        // Asking for General never makes Improvements.
+        #expect(try ShelfStore(supportDirectory: support).readFolders().count == 1)
+        #expect(!FileManager.default.fileExists(atPath: parent.appendingPathComponent("improvements").path))
+        let first = try call([("command", .str("improvements_binder")), ("parent", .str(parent.path))])
+        #expect(first["ok"] == .bool(true), "\(first)")
+        let folder = URL(fileURLWithPath: try #require(first["binder"]?.stringValue))
+        #expect(folder.lastPathComponent == "improvements" && first["binder"] != general["binder"])
+        let teka = Teka.read(folder)
+        #expect(teka.isAdopted && !teka.writesBlocked && teka.catalog?["meta"]?["disclosure"] == .str("none"))
+        #expect(try ShelfStore(supportDirectory: support).readFolders().count == 2)
+        // Asked again, from anywhere: the same binder.
+        #expect(try call([("command", .str("improvements_binder")), ("parent", .str(root.appendingPathComponent("elsewhere").path))])["binder"] == first["binder"])
+        #expect(try call([("command", .str("general_binder")), ("parent", .str(parent.path))])["binder"] == general["binder"])
+        #expect(try BuiltInBinder.kind(of: folder, support: support) == .improvements)
+        #expect(try BuiltInBinder.kind(of: URL(fileURLWithPath: try #require(general["binder"]?.stringValue)), support: support) == .general)
+        // It stays, by its own name.
+        let removal = try call([("command", .str("shelf_remove")), ("binder", .str(folder.path))])
+        #expect(removal["ok"] == .bool(false) && removal["error"]?.stringValue?.hasPrefix("Improvements stays on this Mac") == true)
+        #expect(commands.generalRetirementRefusal(JSONWriter.compact(.obj([("command", .str("transfer")), ("binder", .str(folder.path))]))) != nil)
+        #expect(try ShelfStore(supportDirectory: support).readFolders().count == 2)
+    }
 }

@@ -77,6 +77,7 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
                     let result = Result { try perform(text, frame: frame, resume: resume, id: id) }
                     lock.withLock {
                         searched = activity?.searches ?? 0
+                        started = activity?.ran ?? []
                         activity = nil
                         if case .failure = result { replacementRequired = true }
                         if case .success(.interrupted) = result { replacementRequired = true }
@@ -100,6 +101,9 @@ package final class ClaudeReadOnlyTurn: @unchecked Sendable {
     /// How many times the last finished turn searched the web, for its summary line.
     package var lastSearches: Int { lock.withLock { searched } }
     private var searched = 0
+    /// The files the last finished turn's commands started, as written, for counting script runs.
+    package var lastRan: [String] { lock.withLock { started } }
+    private var started: [String] = []
     private var activity: ClaudeTurnActivity?
     private func requestStop(_ id: UUID) { lock.withLock { if active == id { stopped = true } } }
     private func isStopped(_ id: UUID) -> Bool { lock.withLock { active == id && stopped } }

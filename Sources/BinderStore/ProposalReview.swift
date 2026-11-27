@@ -46,6 +46,38 @@ extension Proposal {
 
         var out = JSONObject()
         let manual = ops.isEmpty || provenance?["manual_repair"] == .bool(true)
+        // A proposed rule (decisions.md D46) shows the rule and its reason whole, as inert text. Only the card `RuleCard`
+        // makes: one that holds a rule beside other ops reads as an ordinary card, which nothing applies.
+        if let rule = RuleCard(self) {
+            out.set("kind", .str("rule"))
+            out.set("rule", .obj([("text", .string(rule.rule)), ("reason", .string(rule.reason)), ("about", .string(rule.about.rawValue))]))
+            out.set("warnings", Self.strings(["Accepting adds this line to this binder\u{2019}s Instructions, under Learned rules. Claude and the reader of new documents follow it from then on. You can change or remove it on the Instructions tab."]))
+            out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
+            return out
+        }
+        // A rewrite of the learned rules shows what is there, as it was when proposed, and what would replace it.
+        if let rewrite = RulesRewrite(self) {
+            out.set("kind", .str("rule"))
+            out.set("rules", .obj([("now", .array(rewrite.replaces.map(JSONValue.string))), ("proposed", .array(rewrite.rules.map(JSONValue.string))),
+                                   ("reason", .string(rewrite.reason))]))
+            out.set("warnings", Self.strings(["Accepting replaces everything under Learned rules in this binder\u{2019}s Instructions with the new lines. Undo last save on the Instructions tab puts the old ones back."]))
+            out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
+            return out
+        }
+        // A suggestion for Sprava (decisions.md D47) shows the whole text that would go to Improvements, as inert text.
+        if let suggestion = SuggestionCard(self) {
+            out.set("kind", .str("suggestion"))
+            var fields: [(String, JSONValue)] = [("title", .string(suggestion.title)), ("text", .string(suggestion.note))]
+            if let script = suggestion.script { fields.append(("script", .string(script.path))) }
+            out.set("suggestion", .obj(fields))
+            var warnings = ["Sending adds this text to your Improvements binder as a to-do. Read it first: it should hold nothing from this binder that you would not put in an issue."]
+            if SuggestionCard.looksLikeItHoldsAKey(suggestion.note) {
+                warnings.insert("This text holds what looks like a key or a password. Take it out before sending.", at: 0)
+            }
+            out.set("warnings", Self.strings(warnings))
+            out.set("files", .array([])); out.set("todos", .array([])); out.set("changes", .array([]))
+            return out
+        }
         // An email draft (decisions.md D41) shows every field it would carry out of the Mac, as inert text.
         if let d = provenance?["draft"]?.objectValue {
             func strings(_ key: String) -> JSONValue { .array((d[key]?.arrayValue ?? []).filter { $0.stringValue != nil }) }

@@ -73,7 +73,7 @@ extension Commands {
             throw Failure(message: "an expunge in this binder was interrupted; enter the text again to finish it before anything else")
         }
         if ["approve", "reject", "apply", "undo", "switch_dashboard", "file_card", "binder_settings", "save_instructions", "undo_instructions",
-            "use_folder_name"].contains(command) {
+            "use_folder_name", "accept_rule", "send_suggestion"].contains(command) {
             let f = try folder(r)
             // Fail closed: an adopted binder accepts writes only when its owner record names this Mac.
             let adopted = FileManager.default.fileExists(atPath: f.appendingPathComponent(".sprava/ops.ndjson").path)
