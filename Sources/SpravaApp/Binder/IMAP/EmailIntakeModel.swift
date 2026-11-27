@@ -32,6 +32,7 @@ final class EmailIntakeModel: ObservableObject {
         var mailbox: String?, sender = "", subject = "", search = "", includeExisting = true
         var ownAddresses: [String] = []
         var draftsFolder: String?
+        var sentFolder: String?
         var message: String?
         var configured: Bool { host != nil }
     }
@@ -45,9 +46,10 @@ final class EmailIntakeModel: ObservableObject {
     @Published private(set) var trusted = false
     @Published private(set) var serverMessage: String?
     // Step 2
-    @Published var user = "" { didSet { if user != oldValue { folders = nil } } }
+    @Published var user = "" { didSet { if user != oldValue { folders = nil; sentFolder = nil } } }
     @Published var password = ""
-    @Published private(set) var folders: [String]?
+    @Published private(set) var folders: [String]? { didSet { markedSent = nil } }
+    @Published private(set) var markedSent: String?
     @Published private(set) var accountMessage: String?
     // Step 3
     @Published var mailbox: String?
@@ -61,6 +63,7 @@ final class EmailIntakeModel: ObservableObject {
     /// Where approved drafts go: nil for the folder the server marks as Drafts, or one the person picks when it marks
     /// none or several (issue #623).
     @Published var draftsFolder: String?
+    @Published var sentFolder: String?
     @Published private(set) var connectMessage: String?
     // Connected
     @Published private(set) var status = Status()
@@ -134,15 +137,18 @@ final class EmailIntakeModel: ObservableObject {
         activity = .signingIn; defer { activity = nil }
         accountMessage = nil
         do {
-            var fields = accountFields()
+            let identity = accountFields()
+            var fields = identity
             if !password.isEmpty { fields.append(("password", .str(password))) }
             let r = try await client.command("imap_folders", binder: folder, fields, timeout: 60)
-            guard self.folder == folder else { return }
+            guard self.folder == folder, identity.elementsEqual(accountFields(), by: ==) else { return }
             let names = (r["folders"]?.arrayValue ?? []).compactMap(\.stringValue)
             folders = names
+            if let marked = r["marked_sent"]?.stringValue, names.contains(marked) { markedSent = marked; sentFolder = nil }
             if let current = mailbox, !names.contains(current) { mailbox = nil }
             if mailbox == nil, let saved = status.mailbox, names.contains(saved) { mailbox = saved }
             // The person's choice stands, even "the one the server marks"; a folder no longer listed is no choice.
+            if let current = sentFolder, !names.contains(current) { sentFolder = nil }
             if let current = draftsFolder, !names.contains(current) { draftsFolder = nil }
             accountMessage = names.isEmpty ? "Signed in, but the account shows no folders Sprava can read." : "Signed in. \(names.count == 1 ? "1 folder" : "\(names.count) folders")."
         } catch {
@@ -160,7 +166,8 @@ final class EmailIntakeModel: ObservableObject {
             var fields = accountFields() + [("mailbox", .str(mailbox)), ("include_existing", .bool(includeExisting)),
                                             ("sender", .str(sender)), ("subject", .str(subject)), ("search", .str(search)),
                                             ("own_addresses", .array(Self.addresses(otherAddresses).map { .str($0) })),
-                                            ("drafts_folder", draftsFolder.map { .str($0) } ?? .null)]
+                                            ("drafts_folder", draftsFolder.map { .str($0) } ?? .null),
+                                            ("sent_folder", sentFolder.map { .str($0) } ?? .null)]
             if !password.isEmpty { fields.append(("password", .str(password))) }
             let r = try await client.command("imap_configure", binder: folder, fields, timeout: 20)
             guard self.folder == folder else { return }
@@ -223,20 +230,20 @@ final class EmailIntakeModel: ObservableObject {
         trusted = status.pin != nil
         folders = nil; mailbox = status.mailbox; includeExisting = status.includeExisting
         sender = status.sender; subject = status.subject; search = status.search
-        otherAddresses = status.ownAddresses.joined(separator: ", "); draftsFolder = status.draftsFolder
+        otherAddresses = status.ownAddresses.joined(separator: ", "); draftsFolder = status.draftsFolder; sentFolder = status.sentFolder
         serverMessage = nil; accountMessage = nil; connectMessage = nil
     }
 
     private func serverChanged() {
         guard !loading else { return }
-        server = nil; trusted = false; folders = nil; serverMessage = nil; accountMessage = nil
+        server = nil; trusted = false; folders = nil; sentFolder = nil; serverMessage = nil; accountMessage = nil
     }
 
     private func reset() {
         loading = true; defer { loading = false }
         host = ""; security = .tls; port = "993"; server = nil; trusted = false; serverMessage = nil
         user = ""; password = ""; folders = nil; accountMessage = nil
-        mailbox = nil; filter = ""; includeExisting = true; sender = ""; subject = ""; search = ""; otherAddresses = ""; draftsFolder = nil; connectMessage = nil
+        mailbox = nil; filter = ""; includeExisting = true; sender = ""; subject = ""; search = ""; otherAddresses = ""; draftsFolder = nil; sentFolder = nil; connectMessage = nil
         status = Status(); editing = false; pageMessage = nil; chosenByHand = false
     }
 

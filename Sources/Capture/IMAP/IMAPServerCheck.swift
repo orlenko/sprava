@@ -32,16 +32,37 @@ public enum IMAPServerCheck {
         }
     }
 
+    public struct FolderListing: Sendable {
+        public let names: [String]
+        /// The unique selectable mailbox marked as Sent, when the server identifies one.
+        public let markedSent: String?
+
+        public init(names: [String], markedSent: String? = nil) {
+            self.names = names
+            self.markedSent = markedSent
+        }
+    }
+
     /// The folders the account can open, INBOX first. Throws `authentication` when the server refuses the sign-in.
     public static func folders(_ account: IMAPAccount, password: String, support: URL) throws -> [String] {
+        try folderListing(account, password: password, support: support).names
+    }
+
+    public static func folderListing(_ account: IMAPAccount, password: String, support: URL) throws -> FolderListing {
         try inPrivateFolder(support) { home in
             try IMAPNativeFetch.check(IMAPNativeFetch.invoke(["--mode=folders"] + IMAPNativeFetch.server(account),
-                                                             input: IMAPNativeFetch.credentials(account, password), home: home))
-            guard let names = try result(home)?["folders"]?.arrayValue, names.count <= 2_000 else { throw IMAPIntakeImport.Refused.invalidExport }
-            return try names.map {
-                guard let name = $0.stringValue, !name.isEmpty, name.utf8.count <= 1_024 else { throw IMAPIntakeImport.Refused.invalidExport }
+                                                             input: IMAPNativeFetch.credentials(account, password), home: home, script: IMAPFolderListingSource.script))
+            guard let object = try result(home), let names = object["folders"]?.arrayValue, names.count <= 2_000 else { throw IMAPIntakeImport.Refused.invalidExport }
+            var marked = [String]()
+            let decoded = try names.map { row in
+                guard let fields = row.objectValue, let name = fields["name"]?.stringValue,
+                      !name.isEmpty, name.utf8.count <= 1_024, let sent = fields["sent"]?.boolValue else {
+                    throw IMAPIntakeImport.Refused.invalidExport
+                }
+                if sent { marked.append(name) }
                 return name
             }
+            return FolderListing(names: decoded, markedSent: marked.count == 1 ? marked.first : nil)
         }
     }
 

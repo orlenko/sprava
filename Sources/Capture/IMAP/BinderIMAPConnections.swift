@@ -28,6 +28,8 @@ public final class BinderIMAPConnections: Sendable {
         /// The folder approved drafts go to, chosen by the person when the server marks no single `\Drafts` folder
         /// (issue #623). Nil: the one the server marks.
         public let draftsFolder: String?
+        /// The chosen fallback when the account has no uniquely marked Sent folder.
+        public let sentFolder: String?
         public var description: String { "<private binder IMAP configuration>" }
         public var debugDescription: String { description }
     }
@@ -44,10 +46,11 @@ public final class BinderIMAPConnections: Sendable {
     public static let maxOwnAddresses = 16
 
     public func configure(folder: URL, account: IMAPAccount, mailbox: String, sender: String = "", subject: String = "", search: String = "",
-                          includeExisting: Bool = true, ownAddresses: [String] = [], draftsFolder: String? = nil) throws -> Configuration {
+                          includeExisting: Bool = true, ownAddresses: [String] = [], draftsFolder: String? = nil, sentFolder: String? = nil) throws -> Configuration {
         let folder = folder.resolvingSymlinksInPath()
         let draftsFolder = draftsFolder.flatMap { $0.isEmpty ? nil : $0 }
-        guard draftsFolder.map(Self.validFolderName) ?? true else { throw Refused.invalidConfiguration }
+        let sentFolder = sentFolder.flatMap { $0.isEmpty ? nil : $0 }
+        guard draftsFolder.map(Self.validFolderName) ?? true, sentFolder.map(Self.validFolderName) ?? true else { throw Refused.invalidConfiguration }
         // Each one a single well-formed address, kept lower case and once.
         let parsed = ownAddresses.map(MailAddress.single)
         let others = parsed.compactMap { $0 }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
@@ -67,7 +70,7 @@ public final class BinderIMAPConnections: Sendable {
             let value = Configuration(id: unchanged ? old!.id : UUID(), folder: folder, account: account,
                 mailbox: mailbox, sender: sender, subject: subject, search: search, includeExisting: includeExisting,
                 programHash: programHash, enabled: true, instance: instance, otherAddresses: others.isEmpty ? nil : others,
-                draftsFolder: draftsFolder)
+                draftsFolder: draftsFolder, sentFolder: sentFolder)
             try t.execute("INSERT OR REPLACE INTO imap_connections VALUES (?, ?)", .text(instance), .blob(try JSONEncoder().encode(value)))
             return value
         }
@@ -124,7 +127,7 @@ public final class BinderIMAPConnections: Sendable {
               !value.account.user.isEmpty, !value.mailbox.isEmpty, value.mailbox.utf8.count <= 1_024,
               value.sender.utf8.count <= 256, value.subject.utf8.count <= 256, value.search.utf8.count <= 1_024, value.programHash.utf8.count <= 128,
               value.ownAddresses.count <= maxOwnAddresses, value.ownAddresses.allSatisfy({ MailAddress.single($0) == $0 }),
-              value.draftsFolder.map(validFolderName) ?? true else { throw Refused.damagedState }
+              value.draftsFolder.map(validFolderName) ?? true, value.sentFolder.map(validFolderName) ?? true else { throw Refused.damagedState }
         return value
     }
     /// A folder name as the draft worker takes it: not empty, at most 1,024 bytes, no control characters.

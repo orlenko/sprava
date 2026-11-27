@@ -23,6 +23,18 @@ import Testing
         #expect(try f.store.configuration(for: f.folder)?.draftsFolder == nil)
     }
 
+    @Test func aManualSentFolderSurvivesRestartAndAnEmptyChoiceRestoresDiscovery() throws {
+        let f = try Fixture()
+        let chosen = try f.store.configure(folder: f.folder, account: Fixture.account, mailbox: "INBOX/Workshop", sentFolder: "Posted")
+        #expect(chosen.id == f.configuration.id)
+        let reopened = try BinderIMAPConnections(support: f.support, hash: { "invented-program-hash" })
+        #expect(try reopened.configuration(for: f.folder)?.sentFolder == "Posted")
+        #expect(throws: BinderIMAPConnections.Refused.invalidConfiguration) {
+            try f.store.configure(folder: f.folder, account: Fixture.account, mailbox: "INBOX/Workshop", sentFolder: "Posted\nMail")
+        }
+        #expect(try f.store.configure(folder: f.folder, account: Fixture.account, mailbox: "INBOX/Workshop", sentFolder: "").sentFolder == nil)
+    }
+
     @Test func aNameTheWorkerWouldRefuseIsNeverKept() throws {
         let f = try Fixture()
         for bad in ["Drafts\r\nDELETE INBOX", "Drafts\u{7F}", String(repeating: "d", count: 1_025)] {
