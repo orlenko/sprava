@@ -1264,6 +1264,14 @@ what makes a shell or a program load a file first (`BASH_ENV`, `ENV`, `ZDOTDIR`,
 the values were read in (`PWD`, `TERM…`, `LC_…`, and the like), and any value that is not one line of text within
 8 KiB, which leaves out shell functions. At most 512 variables and 256 KiB, taken in the order of their names.
 
+**Where they come from.** The runtime is started by launchd and holds nothing the person's shell exports. When a
+conversation starts, Sprava starts the person's login shell, the one in their account record, as a login and interactive
+shell from a login's few variables (`HOME`, `USER`, `LOGNAME`, `SHELL`, a system `PATH`), so it reads the profile files a
+new terminal window reads. It prints its environment between two marks and is stopped; what the profile itself prints
+stays outside the marks. Ten seconds at most, and 1 MiB. A profile that hangs or answers something else gives the
+environment read last in this run of the runtime, or none; the session then says which variable it lacks. No name and no
+value is logged.
+
 **How they arrive.** The CLI removes names that look like a credential from what its commands inherit
 (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, which Sprava sets to keep the person's Claude sign-in from commands). So the values
 are not put in the session's environment: Sprava writes them as `export` lines to `command-env.sh` in the session's
