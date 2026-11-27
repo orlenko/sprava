@@ -518,7 +518,7 @@ public actor ClaudeConversationRuntime {
             used = name
             let connections = self.connections, read = self.readContext, available = self.available, versions = turnHistory
             let writer = todoWriter, search = searchBinder
-            let (context, reach, todos, revision) = try await Task.detached(priority: .userInitiated) {
+            let (context, reach, todos, revision, corrected) = try await Task.detached(priority: .userInitiated) {
                 guard !signal.stopped else { throw Refused.stopped }
                 let folder = try connections.currentFolder(scope)
                 guard try available(folder) else { throw Refused.notConnected }
@@ -533,14 +533,18 @@ public actor ClaudeConversationRuntime {
                 let todos = ClaudeTodoTools(folder: folder, record: record, history: versions, writer: writer, search: tools ? wholeBinder : nil)
                 // An agent with file tools finds what it needs itself; nothing of the binder is sent ahead of it.
                 let context = tools ? ClaudeBinderContext(data: .obj([]), sources: []) : try read(folder, scope.documents, scope.intake, record.text, { signal.stopped })
-                return (context, tools ? folder : nil, todos, tools ? ClaudeConversationPolicy.revision(of: folder) : nil)
+                // Only a session with file tools, which may read the paths anyway, is told of the person's corrections.
+                return (context, tools ? folder : nil, todos, tools ? ClaudeConversationPolicy.revision(of: folder) : nil,
+                        tools ? ClaudeFilingCorrections.read(in: folder) : [])
             }.value
             guard !signal.stopped else { throw Refused.stopped }
             _ = try currentFolder(scope)
             let history = try receipts.history(conversationID: scope.id).filter { $0.requestID != record.requestID }
             let policy = try reach != nil ? ClaudeConversationPolicy.session(todos: todos != nil)
                 : ClaudeConversationPolicy.make(context: context, history: session.resumed ? [] : history, tools: false, todos: todos != nil)
-            let line = reach != nil ? ClaudeConversationPolicy.message(record.text, revision: revision, history: session.resumed ? [] : history.map { ($0.text, $0.reply) }) : record.text
+            let corrections = ClaudeFilingCorrections.line(corrected, since: history.last?.createdAt)
+            let line = reach != nil ? ClaudeConversationPolicy.message(record.text, revision: revision, history: session.resumed ? [] : history.map { ($0.text, $0.reply) },
+                                                                       corrections: corrections) : record.text
             active[scope.id]?.indexing = false
             let made = try await makeDriver(account.program, credential, scope.id, session.native, policy, reach, todos?.appTools, { [state] pid in
                 guard !signal.stopped else { throw Refused.stopped }
