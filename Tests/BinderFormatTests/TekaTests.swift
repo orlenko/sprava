@@ -36,6 +36,21 @@ func ids(_ page: NowPage, _ bucket: Bucket) -> [String] { page.items[bucket, def
         #expect(!Teka.read(linked).canBeAdopted)
     }
 
+    // #689: the page and the rename command ask one question of the binder, whatever else it needs.
+    @Test func aBinderSaysWhetherItsNameDiffersFromItsFolders() throws {
+        #expect(!Teka.read(try makeTeka(fixture: "lifeproj-v2-live")).nameDiffersFromFolder)
+        #expect(Teka.read(try makeTeka(fixture: "lifeproj-v2-live", folderName: "invented-copy")).nameDiffersFromFolder)
+        // A catalog with no name takes the folder's, so nothing differs.
+        let unnamed = try makeTeka(fixture: "lifeproj-v2-live", folderName: "invented-unnamed") { folder in
+            let file = folder.appendingPathComponent("catalog.json")
+            let text = try String(contentsOf: file, encoding: .utf8)
+            let name = try #require(text.firstMatch(of: /"name"\s*:\s*"[^"]*",?/))
+            try Data(text.replacingCharacters(in: name.range, with: "").utf8).write(to: file)
+        }
+        #expect(Teka.read(unnamed).catalog?["meta"]?["name"] == nil)
+        #expect(!Teka.read(unnamed).nameDiffersFromFolder)
+    }
+
     @Test func liveLifeprojV2NeedsMigrationAndKeepsDoneItemsVisible() throws {
         let teka = Teka.read(try makeTeka(fixture: "lifeproj-v2-live"))
         #expect(teka.level == .lifeprojV2)

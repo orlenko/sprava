@@ -26,6 +26,7 @@ extension Commands {
         .merging(brainCommands) { a, _ in a }
         .merging(backupCommands) { a, _ in a }
         .merging(settingsCommands) { a, _ in a }
+        .merging(renameCommands) { a, _ in a }
         .merging(shelfCommands) { a, _ in a }
         .merging(companionCommands) { a, _ in a }
 
@@ -67,11 +68,12 @@ extension Commands {
         try checkGeneralRetirement(r)
         // An interrupted expunge (binder-v0 §6.11): the cards and the op log may still hold the text being forgotten,
         // so nothing in the binder is read or changed until the expunge is repeated.
-        if Self.binderCommands[command] != nil && command != "create_binder" || command == "binder_settings",
+        if Self.binderCommands[command] != nil && command != "create_binder" || command == "binder_settings" || command == "use_folder_name",
            Teka.expungePending(in: try folder(r)) {
             throw Failure(message: "an expunge in this binder was interrupted; enter the text again to finish it before anything else")
         }
-        if ["approve", "reject", "apply", "undo", "switch_dashboard", "file_card", "binder_settings", "save_instructions", "undo_instructions"].contains(command) {
+        if ["approve", "reject", "apply", "undo", "switch_dashboard", "file_card", "binder_settings", "save_instructions", "undo_instructions",
+            "use_folder_name"].contains(command) {
             let f = try folder(r)
             // Fail closed: an adopted binder accepts writes only when its owner record names this Mac.
             let adopted = FileManager.default.fileExists(atPath: f.appendingPathComponent(".sprava/ops.ndjson").path)

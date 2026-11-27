@@ -341,6 +341,9 @@ public enum TransactionGuard {
             if let id = value["id"] { seenIDs.insert(id) }
             if let id = value["item"] { seenIDs.insert(id) }
         }
+        // What breaks a rule now. Each op is judged against the catalog the op before it left, so the violations found
+        // after one op are the ones before the next: the catalog is read once per op, not twice.
+        var current = violations(state)
         for op in ops {
             reasons += envelopeProblems(op)
             let type = op["op"]?.stringValue
@@ -360,7 +363,7 @@ public enum TransactionGuard {
             if type == "complete", op["args"]?["next_due"] != nil {
                 reasons += occurrenceProblems(op, on: state)
             }
-            let before = violations(state)
+            let before = current
             let next: JSONObject
             do {
                 next = try OpApplier.apply(op, to: state)
@@ -389,10 +392,11 @@ public enum TransactionGuard {
                 }
             }
             state = next
+            current = after
             do { hashes.append(try Canonical.hash(.object(state))) } catch { reasons.append("\(error)") }
         }
         // The catalog and the log stay readable: nothing is written that the reader would then refuse.
-        let left = violations(state)
+        let left = current
         for v in Set(leftInPlace) where left.contains(v) { reasons.append("the change leaves \(v) in place") }
         if reasons.isEmpty, ops.contains(where: { isUnsafeJSON(.object($0)) }) || isUnsafeJSON(.object(state)) {
             reasons.append("the change holds a number out of range or a repeated member name, which no reader can take back")

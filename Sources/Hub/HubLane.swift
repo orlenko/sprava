@@ -115,6 +115,19 @@ extension HubLane {
         return out
     }
 
+    /// Whether the binder holds a name's history on the hub: an unexpired former name, which it drains and whose slice
+    /// it may remove, or a slice its cursors record as written from this folder. A copy that holds either would act
+    /// for the binder it was copied from (take its completions, remove its slice), so such a binder is never treated
+    /// as a copy. Cursors or a `former_names` that cannot be read count as holding.
+    public static func holdsHubHistory(_ teka: Teka, today: CalendarDate) -> Bool {
+        if let formers = teka.catalog?["meta"]?["former_names"] {
+            guard let list = formers.arrayValue else { return true }
+            if list.contains(where: { isUnexpired($0, today: today) }) { return true }
+        }
+        guard let cursors = try? readCursors(teka.folder) else { return true }
+        return !recordedSlices(cursors, folder: teka.folder).isEmpty
+    }
+
     static func cursorsURL(_ folder: URL) -> URL { folder.appendingPathComponent(".sprava/cursors.json") }
 
     /// The cursors, for read-only callers such as the doctor: empty when they cannot be read.

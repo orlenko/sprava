@@ -52,6 +52,10 @@ public struct Teka: Sendable {
     /// so it does not stand in the way (binder-v0 §3.1, §9.4).
     public var canBeAdopted: Bool { !isAdopted && state >= .needsAttention && !writesBlocked }
 
+    /// Whether the catalog's name is not the folder's, as after the folder was renamed or copied (binder-v0 §3.1). The
+    /// binder then publishes and drains nothing, and is offered no stamp, until the person's `rename_teka`.
+    public var nameDiffersFromFolder: Bool { (states[.needsAttention] ?? []).contains(Self.nameDiffers) }
+
     /// A stamped binder without a valid `meta.disclosure` has no level that says what may leave it, so nothing does.
     public var federationBlocked: Bool {
         writesBlocked || (states[.needsAttention] ?? []).contains { $0 == Self.nameDiffers || $0 == Self.noDisclosure }
