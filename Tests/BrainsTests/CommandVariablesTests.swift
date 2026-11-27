@@ -52,6 +52,17 @@ import Testing
         #expect(try shell("EXAMPLE_SERVICE_KEY") == value && shell("EXAMPLE_REGION") == "north")
     }
 
+    // What carries the variables to the launch shows how many there are and nothing of them, however it is printed.
+    @Test func whatCarriesTheVariablesNeverShowsOne() {
+        let reach = ClaudeReadLaunch.Reach(folder: binder, proxyPort: 4242, variables: ["EXAMPLE_SERVICE_KEY": value])
+        var dumped = ""
+        dump(reach, to: &dumped)
+        for text in ["\(reach)", String(describing: reach), String(reflecting: reach), dumped, "\([reach])", "\(Optional(reach) as Any)"] {
+            #expect(!text.contains(value) && !text.contains("EXAMPLE_SERVICE_KEY"))
+        }
+        #expect("\(reach)".contains("variables: 1"))
+    }
+
     @Test func aValueReachesTheShellByteForByte() throws {
         defer { try? FileManager.default.removeItem(at: root) }
         let odd = "it's $HOME `id` \"q\" \\n ; rm -rf x # é ' ''"

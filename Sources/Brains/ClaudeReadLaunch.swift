@@ -10,7 +10,7 @@ import SpravaKit
 /// asking the model; without, it has no tools at all, as the setup check needs.
 package enum ClaudeReadLaunch {
     /// What a binder's agent may touch: the folder, and the one loopback port that leads out.
-    package struct Reach: Sendable {
+    package struct Reach: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
         package let folder: URL
         package let proxyPort: UInt16
         /// The person's environment for this binder's commands, already cut to what `CommandVariables.passable` keeps (decisions.md D50).
@@ -18,6 +18,10 @@ package enum ClaudeReadLaunch {
         package init(folder: URL, proxyPort: UInt16, variables: [String: String] = [:]) {
             self.folder = folder; self.proxyPort = proxyPort; self.variables = variables
         }
+        /// How many variables, never a name or a value: a description can end up in an error or a log.
+        package var description: String { "Reach(folder: \(folder.path), proxyPort: \(proxyPort), variables: \(variables.count))" }
+        package var debugDescription: String { description }
+        package var customMirror: Mirror { Mirror(self, children: ["folder": folder.path, "proxyPort": proxyPort, "variables": variables.count]) }
     }
     static let tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
     /// The agent's shell is a whole one (decisions.md D36): what holds it is the sandbox, not a list of commands. Its programs are those
