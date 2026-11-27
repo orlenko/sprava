@@ -82,7 +82,8 @@ public final class TekaStore {
         if lstat(spravaDir.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR {
             throw Refused(reason: ".sprava is not a regular folder; a repair must be approved first")
         }
-        for name in ["torn", "proposals", "adopted", "conversation"] {
+        // `adopted/manuals` is written at adoption, into a folder that may have come with the binder.
+        for name in ["torn", "proposals", "adopted", "adopted/manuals", "conversation"] {
             let url = spravaDir.appendingPathComponent(name)
             if lstat(url.path, &st) == 0, st.st_mode & S_IFMT != S_IFDIR { throw Refused(reason: ".sprava/\(name) is not a regular folder") }
         }
@@ -131,6 +132,11 @@ public final class TekaStore {
         case .missing: return ([], false)
         case .refused, .unreadable: throw Refused(reason: ".sprava/ops.ndjson cannot be read; it was left as it is")
         }
+        return try Self.opLog(data)
+    }
+
+    /// The complete lines of an op log's bytes, as `readOpLog` gives them: for a reader that reads the file its own way.
+    public static func opLog(_ data: Data) throws -> (ops: [JSONObject], torn: Bool) {
         var text = String(decoding: data, as: UTF8.self)
         var torn = false
         if !text.isEmpty, !text.hasSuffix("\n") {
@@ -383,9 +389,9 @@ public final class TekaStore {
 
     // MARK: - Adoption (binder-v0 §9.4 step 1)
 
-    /// Adopts the folder in place: saves byte copies of `catalog.json` and `DASHBOARD.md` under
-    /// `.sprava/adopted/`, writes the owner record, and starts the op log with an `import_snapshot`. Nothing
-    /// else in the folder changes.
+    /// Adopts the folder in place: saves byte copies of `catalog.json`, `DASHBOARD.md` and the manuals at the top
+    /// (`AGENTS.md`, `CLAUDE.md`) under `.sprava/adopted/`, writes the owner record, and starts the op log with an
+    /// `import_snapshot`. Nothing else in the folder changes.
     public func adopt(survey: JSONObject, owner: JSONObject, now: Date = Date()) throws {
         // A level this version does not know is never adopted: not even the lock file is made (binder-v0 §1.4).
         try Self.refuseUnknownLevel(try readCatalog().0)
@@ -400,6 +406,17 @@ public final class TekaStore {
             if let attrs = try? FileManager.default.attributesOfItem(atPath: dashboard.path),
                attrs[.type] as? FileAttributeType == .typeRegular {
                 try AtomicFile.write(try Data(contentsOf: dashboard), to: adopted.appendingPathComponent("DASHBOARD.md"))
+            }
+            // The manuals found at the top are copied aside, and the originals stay (binder-v0 §9.4 step 2), so the
+            // Instructions page can offer the old text (`BinderInstructions.oldManuals`). Only a regular file of this
+            // user inside the binder, of a size the page can read, is copied: a link is never followed. The folder
+            // they go to is a real folder or absent (`checkContainment`, under this lock), never a link out of the binder.
+            for name in ["AGENTS.md", "CLAUDE.md"] {
+                guard case .ok(let found) = SafeFile.read(folder.appendingPathComponent(name), under: folder,
+                                                          limit: BinderInstructions.fileLimit) else { continue }
+                let manuals = adopted.appendingPathComponent("manuals", isDirectory: true)
+                try AtomicFile.makePrivateFolder(manuals)
+                try AtomicFile.write(found, to: manuals.appendingPathComponent("\(name).saved"))
             }
             try AtomicFile.write(Data(JSONWriter.pretty(.object(owner)).utf8), to: spravaDir.appendingPathComponent("owner.json"))
             var args = JSONObject()

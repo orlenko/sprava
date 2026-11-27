@@ -135,6 +135,12 @@ public struct TurnHistory: Sendable {
             changes.append(Change(path: path, before: known[path], after: current[path]))
         }
         defer { try? prune(now: now) }
+        // The files a turn moved with its own document tools go back with those ops, not with this entry.
+        if let turn, let moved = try? documentChanges(forTurn: turn)?.changes.compactMap({ change in
+            change.from.flatMap { from in change.to.map { (from: from, to: $0) } }
+        }), !moved.isEmpty {
+            changes = Self.withoutMoves(changes, moves: moved, existed: Set(known.keys.map(DocumentPaths.fold)))
+        }
         guard !changes.isEmpty else { return nil }
         let entry = Entry(id: UUID(), turn: turn, at: now, changes: changes, undone: false, recordsChanged: recordsChanged)
         try write(entry)
@@ -404,7 +410,7 @@ public struct TurnHistory: Sendable {
     /// The catalog's documents, by hash: enough to tell whether something was filed between two records. To-dos are left
     /// out: a to-do changed during a turn, by the person or by the agent's own tools, says nothing about the turn's files,
     /// and has its own Undo.
-    private static func stamp(_ folder: URL) throws -> Data {
+    static func stamp(_ folder: URL) throws -> Data {
         guard let bytes = safeCatalog(folder) else { throw Refused.unreadable("catalog.json") }
         if let text = String(data: bytes, encoding: .utf8), let parsed = try? JSONParser.parse(text), parsed.safety.isSafe {
             return Data(SHA256.hash(data: Data(JSONWriter.compact(parsed.value["documents"] ?? .null).utf8)))

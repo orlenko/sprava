@@ -45,6 +45,17 @@ extension TekaStore {
                 }
             }
         }
+        // Unfiling in place moves nothing, and still asks that the file is the one the record describes: a record
+        // whose file changed or went is corrected, not removed (binder-v0 §6.3, §6.10).
+        for line in lines where line["op"] == .str("unfile_document") {
+            let args = line["args"]?.objectValue ?? JSONObject()
+            guard args["to"] == nil else { throw Refused(reason: "returning a document to intake/ is not built yet") }
+            guard let from = args["from"]?.stringValue, let sha = args["sha256"]?.stringValue else { continue }
+            guard !DocumentPaths.isKeyFile(from), DocumentPaths.plainFile(from, in: folder),
+                  DocumentPaths.sha256(of: folder.appendingPathComponent(from)) == sha else {
+                throw Refused(reason: "the document's file at \(from) changed or is gone since it was filed, so its record stays; correct the record instead")
+            }
+        }
         // A move takes the filed file at its record's path, with the digest the op was built on, to a free path
         // (binder-v0 §6.3, §6.9). Records may share a file (an adopted binder's paths need not be unique): a file
         // another record still names stays where it is.
