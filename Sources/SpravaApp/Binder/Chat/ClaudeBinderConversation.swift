@@ -337,19 +337,31 @@ final class ClaudeBinderConversation: ObservableObject, DraftOwner {
         do { value = try await client.command("chat_undo", binder: folder, [("turn_id", .str(turn.uuidString))], timeout: 120) }
         catch { throw UndoRefused(description: "Undo did not complete. Nothing is reported as undone; check the binder's folder.") }
         guard value["undone"] == .bool(true) else {
-            if value["records_changed"] == .bool(true) {
-                throw UndoRefused(description: "Nothing was undone: something was filed or approved during that turn. Use Undo on the History tab for that, and change the files by hand.")
-            }
-            if let left = value["todos_left"]?.arrayValue {
-                changed() // Everything else was undone.
-                let names = left.compactMap(\.stringValue).prefix(5).joined(separator: ", ")
-                let notes = value["notes_left"] == .bool(true) ? "The notes changed after that turn, so they stay as they are. " : ""
-                throw UndoRefused(description: notes + (names.isEmpty ? "" : "These to-dos changed after that turn, so they stay as they are: \(names). ") + "Everything else was undone.")
-            }
-            let names = (value["conflicts"]?.arrayValue ?? []).compactMap(\.stringValue).prefix(5).joined(separator: ", ")
-            throw UndoRefused(description: "Nothing was undone: \(names.isEmpty ? "these files" : names) changed after that turn.")
+            // The to-dos and notes are reversed last, so everything else was; the turn's document changes are reversed first.
+            if value["todos_left"] != nil || value["documents_undone"] != nil || value["documents_left"] != nil { changed() }
+            throw UndoRefused(description: Self.undoRefusal(value))
         }
         changed()
+    }
+
+    /// What to say when a turn's Undo did not undo everything. The turn's document changes are reversed first and each on
+    /// its own, so they may be undone while its files stay.
+    nonisolated static func undoRefusal(_ value: JSONObject) -> String {
+        func names(_ key: String) -> String { (value[key]?.arrayValue ?? []).compactMap(\.stringValue).prefix(5).joined(separator: ", ") }
+        let documentsLeft = names("documents_left")
+        let documents = documentsLeft.isEmpty ? "" : "These documents changed after that turn, so their records and files stay as they are: \(documentsLeft). "
+        let documentsUndone = value["documents_undone"] == .bool(true) ? "That turn's document changes were undone. " : ""
+        let nothing = value["documents_undone"] == nil ? "Nothing was undone" : value["documents_undone"] == .bool(true) ? "Its files were not undone" : "That turn's files were not undone"
+        if value["records_changed"] == .bool(true) {
+            return documentsUndone + documents + "\(nothing): something was filed or approved during that turn. Use Undo on the History tab for that, and change the files by hand."
+        }
+        if value["todos_left"] != nil {
+            let todos = names("todos_left")
+            let notes = value["notes_left"] == .bool(true) ? "The notes changed after that turn, so they stay as they are. " : ""
+            return notes + documents + (todos.isEmpty ? "" : "These to-dos changed after that turn, so they stay as they are: \(todos). ") + "Everything else was undone."
+        }
+        let files = names("conflicts")
+        return documentsUndone + documents + "\(nothing): \(files.isEmpty ? "these files" : files) changed after that turn."
     }
 
     private func history(_ folder: URL) async -> (entries: [BinderChat.Entry], note: String?) {

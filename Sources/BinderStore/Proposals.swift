@@ -161,6 +161,8 @@ public struct Proposal: Sendable {
                 + (changes.isEmpty ? "no changes" : changes.joined(separator: ", "))
         case "move_document":
             return "Move " + (args["from"]?.stringValue ?? "?") + " to " + (args["path"]?.stringValue ?? "?")
+        case "unfile_document":
+            return "Remove the record of " + (args["from"]?.stringValue ?? "?") + (args["to"] == nil ? "; the file stays where it is" : "")
         case "set_meta": return "Set " + (args["set"]?.objectValue?.keys.joined(separator: ", ") ?? "binder settings")
         case let other?: return other.replacingOccurrences(of: "_", with: " ")
         case nil: return "?"
