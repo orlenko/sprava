@@ -488,7 +488,8 @@ ones from the last 90 days to compare them with. A correction is a filing card a
 the one it proposed, or the person's own move of a document a card filed. An Undo is not one, nor is a move the
 person undid, nor a move a conversation turn made. The paths go in as quoted JSON, cut at 300 characters, and only
 to a session with file tools, which may read them anyway. The session may then propose a rule; code drafts none.
-Merging rules is not built.
+Merging rules is a card of its own: `rewrite_rules` proposes replacing every line under Learned rules, the card shows
+both sets, and nothing changes until the person accepts it (decisions.md D46).
 
 ### 8.2 The binder brief
 
