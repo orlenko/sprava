@@ -196,8 +196,21 @@ removed by editing the text. An accepted rule is followed wherever the instructi
 documents and by the conversation, so the card is where the person decides.
 
 The conversation proposes a rule with `propose_rule` (`docs/conversation.md` 8.1), which writes the card and changes
-nothing else. The card in the app and replacing the whole section are still to come (`docs/plan-2026-11-25.md`,
-Track L).
+nothing else.
+
+The card in the app shows the rule and its reason whole, as plain text, with what the rule is about and one line
+saying what accepting does. Its buttons are Accept, Edit and Dismiss. Edit turns the rule into a field; Accept then
+sends the person's text, which is checked as a proposed rule is. Dismiss rejects the card and adds nothing. A card
+Sprava did not write shows no rule and can only be cleared away.
+
+Replacing the whole section (`RulesRewrite`). When rules repeat or disagree, or the person asks to tidy them, the
+conversation proposes a rewrite with `rewrite_rules`: every rule as it should read, at most 60, never more lines
+than the section holds, and only when it holds at least two. The card shows the section's lines as they were when
+it was proposed and the lines that would replace them, with the reason; its buttons are Replace the rules and
+Dismiss, with no Edit. Accept replaces everything under the heading with the new lines, dated that day, by the same
+save, so Undo last save puts the old section back. It is refused when the section no longer holds the lines the
+card showed: the person would replace text they did not see. One rewrite waits at a time, and a turn proposes one.
+Text the person wrote under the heading that is not a rule is shown with the rest and goes with it.
 
 ## 5. Templates carry a starting text
 

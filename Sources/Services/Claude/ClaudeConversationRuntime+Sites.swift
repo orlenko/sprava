@@ -22,6 +22,18 @@ extension ClaudeConversationRuntime {
         try? turnSites.note(conversation: record.conversationID, turn: record.turnID, uses: gate.uses, searches: driver?.searches() ?? 0)
     }
 
+    /// The turn's counts by code (decisions.md D47): the scripts its commands started and the sites refused. Once per
+    /// turn, after it ended, whether it replied, failed or was stopped.
+    func noteCounts(scope: ClaudeReadConnections.Connection, gate: AgentSiteGate?, driver: Driver?) async {
+        let ran = driver?.ran() ?? []
+        let refused = Set((gate?.uses ?? []).filter { $0.connections == 0 && $0.refused > 0 }.map(\.host)).count
+        guard !ran.isEmpty || refused > 0, let folder = try? connections.currentFolder(scope) else { return }
+        let counts = improvementCounts, writer = todoWriter
+        await Task.detached(priority: .utility) {
+            ClaudeScriptRuns.note(ran, refusedHosts: refused, folder: folder, counts: counts, writer: writer)
+        }.value
+    }
+
     static func siteQuestionJSON(_ question: AgentSiteGate.Question) -> JSONValue {
         .obj([("id", .str(question.id.uuidString)), ("host", .str(question.host)), ("by_command", .bool(question.caller == .command))])
     }

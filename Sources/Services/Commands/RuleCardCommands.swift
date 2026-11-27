@@ -8,6 +8,8 @@ import SpravaKit
 struct RuleCardRecord {
     let file: URL
     init(support: URL) { file = support.appendingPathComponent("learning/rule-cards.json") }
+    /// The same record for another kind of card Sprava writes, in a file of its own.
+    init(file: URL) { self.file = file }
 
     func contains(_ key: String) -> Bool { keys().contains(key) }
 
@@ -41,6 +43,10 @@ extension Commands {
     ///
     /// Refused, with what to do: while the instructions on disk are not the ones the person last saved or confirmed (a
     /// save would accept that text too), and when the rule does not fit.
+    ///
+    /// A card that rewrites the whole section (`RulesRewrite`) is accepted here too, as shown, with no edit: everything
+    /// under the heading is replaced by its lines. It is refused when the section no longer holds the lines the card
+    /// showed as there now, unless it already holds the new ones, which is an accept tried again after its save.
     func acceptRule(_ r: JSONObject, now: Date, today: CalendarDate) throws -> JSONObject {
         let f = try folder(r)
         guard case .string(let id)? = r["proposal"], case .string(let seen)? = r["digest"] else {
@@ -53,12 +59,16 @@ extension Commands {
         guard let recorded = try loadDigests()[key(f, id)] else { throw Failure(message: "this card was not written by Sprava, so it cannot be accepted") }
         guard recorded == seen else { throw Failure(message: "this card changed since it was shown; reload it") }
         let proposal = try ProposalStore.load(id, in: f, expectedDigest: recorded)
-        guard let card = RuleCard(proposal), RuleCardRecord(support: support).contains(key(f, id)) else {
+        let card = RuleCard(proposal), rewrite = card == nil ? RulesRewrite(proposal) : nil
+        guard card != nil || rewrite != nil, RuleCardRecord(support: support).contains(key(f, id)) else {
             throw Failure(message: "this card holds no rule Sprava wrote, so it cannot be accepted; nothing was changed")
         }
         guard proposal.state == "proposed" else { throw Failure(message: "this card is \(proposal.state), so nothing was accepted") }
-        let rule = r["rule"]?.stringValue ?? card.rule
-        if let problem = LearnedRules.problem(rule) { throw Failure(message: problem + " Nothing was accepted.") }
+        let rule = r["rule"]?.stringValue ?? card?.rule
+        if let rewrite {
+            guard r["rule"] == nil else { throw Failure(message: "a rewrite of the rules is accepted as shown; change the rules on the Instructions tab. Nothing was accepted") }
+            do { _ = try rewrite.checked() } catch { throw Failure(message: "\(error) Nothing was accepted.") }
+        } else if let problem = LearnedRules.problem(rule ?? "") { throw Failure(message: problem + " Nothing was accepted.") }
 
         let instructions: BinderInstructions
         switch BinderInstructions.read(f) {
@@ -70,7 +80,19 @@ extension Commands {
         guard instructions.isAccepted || instructions.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw Failure(message: "This binder's instructions changed outside Sprava and were not confirmed. Open Instructions, read them and save; then accept this rule.")
         }
-        let text = LearnedRules.adding(rule, on: today, to: instructions.text)
+        let text: String
+        if let rewrite {
+            if LearnedRules.holds(rewrite.rules, in: instructions.text) {
+                text = instructions.text
+            } else {
+                guard LearnedRules.section(of: instructions.text) == rewrite.replaces else {
+                    throw Failure(message: "The learned rules changed since this was proposed, so the card no longer shows what it would replace. Dismiss it; nothing was changed.")
+                }
+                text = LearnedRules.replacing(with: rewrite.rules, on: today, in: instructions.text)
+            }
+        } else {
+            text = LearnedRules.adding(rule ?? "", on: today, to: instructions.text)
+        }
         guard BinderInstructions.fits(text) else {
             throw Failure(message: "This binder's instructions are full (\(BinderInstructions.maxCharacters) characters). Shorten them on the Instructions tab, then accept this rule.")
         }

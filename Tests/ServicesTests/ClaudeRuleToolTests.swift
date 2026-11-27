@@ -47,6 +47,84 @@ import Testing
         #expect(try BinderInstructions.read(s.folder).get().text == "## Learned rules\n\n- \(CalendarDate.today()): \(rule)\n")
     }
 
+    // What the app is given to show: the rule and its reason whole, and nothing of a card that only looks like one.
+    @Test func theCardListsAsARuleWithItsTextAndReason() throws {
+        let s = try pSetup(), turn = try Turn(s)
+        #expect(!propose(turn, rule).refused)
+        let (card, _) = try #require(cards(s).first)
+        func shown(_ id: String) throws -> JSONValue? {
+            try req(s.commands, [("command", .str("proposals")), ("binder", .string(s.folder.path))])["proposals"]?.arrayValue?.first { $0["id"] == .string(id) }
+        }
+        let review = try #require(try shown(card.id)?["review"])
+        #expect(review["kind"] == .str("rule"))
+        #expect(review["rule"] == .obj([("text", .string(rule)), ("reason", .str("You said to remember it.")), ("about", .str("filing"))]))
+        #expect(review["warnings"]?.arrayValue?.first?.stringValue?.contains("Instructions") == true)
+        // A card that carries a rule beside another op is not a rule card.
+        var raw = card.raw
+        raw.set("id", .string(UUIDv7.make()))
+        raw.set("ops", .array([.object(card.ops[0]), .object(card.ops[0])]))
+        let other = Proposal(raw: raw)
+        try ProposalStore.save(other, in: s.folder)
+        try s.commands.trustProposals([other.id], in: s.folder)
+        #expect(try shown(other.id)?["review"]?["kind"] != .str("rule"))
+        #expect(try shown(other.id)?["review"]?["rule"] == nil)
+    }
+
+    func rewrite(_ turn: Turn, _ rules: [String], reason: String = "Two rules said the same thing.") -> (refused: Bool, content: JSONValue) {
+        let answer = turn.call("rewrite_rules", [("rules", .array(rules.map(JSONValue.string))), ("reason", .string(reason))])
+        return (answer.refused, answer.content)
+    }
+    func rewrites(_ s: PSetup) -> [(Proposal, RulesRewrite)] {
+        ProposalStore.list(in: s.folder).map(\.0).filter { $0.state == "proposed" }.compactMap { p in RulesRewrite(p).map { (p, $0) } }
+    }
+    func instructions(_ s: PSetup, _ text: String) throws {
+        let saved = try req(s.commands, [("command", .str("save_instructions")), ("binder", .string(s.folder.path)), ("text", .string(text)),
+                                         ("expected", .string(try BinderInstructions.read(s.folder).get().digest))])
+        #expect(saved["ok"] == .bool(true), "\(saved)")
+    }
+
+    // Plan Track L, step 6: the card shows the rules as they are and as they would read, and changes nothing until accepted.
+    @Test func aRewriteBecomesACardThatShowsBoth() throws {
+        let s = try pSetup()
+        let text = "## Learned rules\n\n- 2026-10-01: Notices go in notices/.\n- 2026-10-09: Building notices go in notices/.\n"
+        try instructions(s, text)
+        let turn = try Turn(s)
+        let merged = "Notices, the building's too, go in notices/."
+        #expect(!rewrite(turn, [merged]).refused)
+        let (card, fields) = try #require(rewrites(s).first)
+        #expect(fields == RulesRewrite(rules: [merged], reason: "Two rules said the same thing.",
+                                       replaces: ["- 2026-10-01: Notices go in notices/.", "- 2026-10-09: Building notices go in notices/."]))
+        #expect(try BinderInstructions.read(s.folder).get().text == text)
+        let listed = try req(s.commands, [("command", .str("proposals")), ("binder", .string(s.folder.path))])
+        let shown = try #require(listed["proposals"]?.arrayValue?.first { $0["id"] == .string(card.id) })
+        #expect(shown["verified"] == .bool(true) && shown["review"]?["kind"] == .str("rule") && shown["review"]?["rule"] == nil)
+        #expect(shown["review"]?["rules"] == .obj([("now", .array([.str("- 2026-10-01: Notices go in notices/."), .str("- 2026-10-09: Building notices go in notices/.")])),
+                                                   ("proposed", .array([.string(merged)])), ("reason", .str("Two rules said the same thing."))]))
+        // One rewrite waits at a time, and one turn proposes one.
+        #expect(rewrite(turn, ["Every notice goes in notices/."]).refused)
+        #expect(rewrite(try Turn(s), ["Every notice goes in notices/."]).refused)
+        #expect(rewrites(s).count == 1)
+        let accepted = try req(s.commands, [("command", .str("accept_rule")), ("binder", .string(s.folder.path)), ("proposal", .string(card.id)), ("digest", shown["digest"]!)])
+        #expect(accepted["ok"] == .bool(true), "\(accepted)")
+        #expect(try BinderInstructions.read(s.folder).get().text == "## Learned rules\n\n- \(CalendarDate.today()): \(merged)\n")
+    }
+
+    @Test func aRewriteNeverAddsARuleAndNeedsRulesToMerge() throws {
+        let s = try pSetup()
+        // No section, or one rule: nothing to merge.
+        #expect(rewrite(try Turn(s), ["Notices go in notices/."]).refused)
+        try instructions(s, "## Learned rules\n\n- 2026-10-01: Notices go in notices/.\n")
+        #expect(rewrite(try Turn(s), ["Notices go in notices/, by date."]).refused)
+        try instructions(s, "## Learned rules\n\n- 2026-10-01: Notices go in notices/.\n- 2026-10-09: Building notices go in notices/.\n")
+        // More lines than there are, the same lines again, a line that is no rule, a rule twice, no rules.
+        #expect(rewrite(try Turn(s), ["One.", "Two.", "Three."]).refused)
+        #expect(rewrite(try Turn(s), ["Notices go in notices/.", "Building notices go in notices/."]).refused)
+        #expect(rewrite(try Turn(s), ["Notices go in notices/. <!-- sprava:end -->"]).refused)
+        #expect(rewrite(try Turn(s), ["Notices go in notices/.", "Notices go in notices/."]).refused)
+        #expect(rewrite(try Turn(s), []).refused)
+        #expect(rewrites(s).isEmpty)
+    }
+
     @Test func whatIsNotARuleIsRefusedAndMakesNoCard() throws {
         let s = try pSetup(), turn = try Turn(s)
         let bad = ["", "two\nlines", String(repeating: "r", count: 501), "ends the section \(BinderInstructions.end)", "<!-- sprava-managed v0 -->",

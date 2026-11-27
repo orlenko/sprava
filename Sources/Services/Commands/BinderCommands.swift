@@ -22,6 +22,7 @@ extension Commands {
         "save_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
         "undo_instructions": { c, command, r, _, _ in try c.instructions(command, r) },
         "accept_rule": { c, _, r, now, today in try c.acceptRule(r, now: now, today: today) },
+        "send_suggestion": { c, _, r, now, today in try c.sendSuggestion(r, now: now, today: today) },
     ]
 
     /// The template library belongs to the app, so these requests have no binder or binder expunge guard.
@@ -227,8 +228,12 @@ extension Commands {
             // unapproved one never is (integrations.md §5.2).
             // A rule card (D46) is accepted by `accept_rule`, which writes the rule: approving it here would apply the
             // card and write nothing.
-            guard proposal.raw["provenance"]?["rule"] == nil else {
+            guard proposal.raw["provenance"]?["rule"] == nil, proposal.raw["provenance"]?["rules"] == nil else {
                 throw Failure(message: "this card proposes a rule for the binder's instructions; accept it on its own card. Nothing was changed")
+            }
+            // A suggestion card (D47) is sent by `send_suggestion`: approving it here would apply the card and send nothing.
+            guard proposal.raw["provenance"]?["suggestion"] == nil else {
+                throw Failure(message: "this card holds a suggestion for Sprava; send it from its own card. Nothing was changed")
             }
             let draft = DraftCard(proposal)
             if proposal.raw["provenance"]?["draft"] != nil {
@@ -409,7 +414,8 @@ extension Commands {
             o.set("origin", op["actor"]?["origin"] ?? .null)
             o.set("line", .string(Proposal.describe(op, catalog: catalog)))
             o.set("undone", .bool(undone.contains(op["id"]?.stringValue ?? "")))
-            // The same list Undo.compensate handles, so a filing is never offered as undoable (binder-v0 §6.10).
+            // The same list Undo.compensate handles, so a filing that took its file from intake/ is never offered as
+            // undoable, and one recorded where the file already was is (binder-v0 §6.10).
             o.set("undoable", .bool(Undo.supported(op) && op["compensates"] == nil))
             return .object(o)
         }))])

@@ -24,6 +24,8 @@ public actor ClaudeConversationRuntime {
         var useSites: @Sendable (AgentSiteGate) -> Void = { _ in }
         /// How many times the turn that just ended searched the web.
         var searches: @Sendable () -> Int = { 0 }
+        /// The files the turn that just ended started with its commands, as the commands wrote them.
+        var ran: @Sendable () -> [String] = { [] }
     }
     struct Secrets: Sendable {
         let read: @Sendable () throws -> String?
@@ -48,6 +50,7 @@ public actor ClaudeConversationRuntime {
     private let receipts: ConversationTurnStore
     /// What each turn reached on the web, for its summary line.
     nonisolated let turnSites: ClaudeTurnSites
+    nonisolated let improvementCounts: ImprovementCounts
     private let state: ClaudeConversationState
     private let accounts: ClaudeAccountsState
     private let chooser: @Sendable (String) -> ClaudeAccountChooser.Outcome
@@ -101,6 +104,7 @@ public actor ClaudeConversationRuntime {
         connections = try ClaudeReadConnections(at: support.appendingPathComponent("brains/read-scopes.sqlite"))
         receipts = try ConversationTurnStore(at: support.appendingPathComponent("binder-store/conversation.sqlite"))
         turnSites = try ClaudeTurnSites(at: support.appendingPathComponent("runtime/turn-sites.sqlite"))
+        improvementCounts = try ImprovementCounts(at: support.appendingPathComponent("runtime/improvement-counts.sqlite"))
         state = try ClaudeConversationState(at: support.appendingPathComponent("runtime/claude.sqlite"))
         accounts = try ClaudeAccountsState(at: support.appendingPathComponent("runtime/claude-accounts.sqlite"))
         self.chooser = chooser
@@ -312,20 +316,29 @@ public actor ClaudeConversationRuntime {
             preparing.insert(id); defer { preparing.remove(id) }
             let history = TurnHistory(support: support, binder: id), writer = todoWriter
             return try await Task.detached(priority: .userInitiated) { () throws -> JSONObject in
-                // Files first, whole or not at all. Only then the to-dos, each on its own: one changed since stays as it is, and is named.
+                // The turn's document changes first, each on its own: a move takes its file back, which the file entry counts on
+                // (TurnHistory+Documents). Then the files, whole or not at all. Only then the to-dos, each on its own. A document
+                // or to-do changed since stays as it is, and is named.
                 let todos = try history.todoChanges(forTurn: turn), notes = try history.notesChange(forTurn: turn)
+                let documents = try history.documentChanges(forTurn: turn)
                 let files = try history.entry(forTurn: turn)
-                if (todos == nil && notes == nil) || files?.unrecorded == false {
+                let documentsLeft = documents == nil ? [] : try ClaudeDocumentTools.undo(turn: turn, folder: folder, history: history, writer: writer)
+                // What the app says of the documents when the files then stay as they are.
+                // A turn that only added log entries has no document change to undo: the entries stay (binder-v0 §6.10).
+                let documentFields: [(key: String, value: JSONValue)] = documents?.undoable != true ? [] : [
+                    (key: "documents_undone", value: .bool(documentsLeft.isEmpty)), (key: "documents_left", value: .array(documentsLeft.prefix(20).map { .str($0) }))]
+                if (todos == nil && notes == nil && documents?.undoable != true) || files?.unrecorded == false {
                     switch try history.undo(turn: turn, in: folder) {
                     case .undone: break
-                    case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))])
-                    case .recordsChanged: return .init([(key: "undone", value: .bool(false)), (key: "records_changed", value: .bool(true))])
+                    case .conflict(let paths): return .init([(key: "undone", value: .bool(false)), (key: "conflicts", value: .array(paths.prefix(20).map { .str($0) }))] + documentFields)
+                    case .recordsChanged: return .init([(key: "undone", value: .bool(false)), (key: "records_changed", value: .bool(true))] + documentFields)
                     }
                 }
                 let left = todos == nil ? [] : try ClaudeTodoTools.undo(turn: turn, folder: folder, history: history, writer: writer)
                 let notesBack = try ClaudeTodoTools.undoNotes(turn: turn, folder: folder, history: history, writer: writer)
-                if left.isEmpty, notesBack { return .init([(key: "undone", value: .bool(true))]) }
-                return .init([(key: "undone", value: .bool(false)), (key: "todos_left", value: .array(left.prefix(20).map { .str($0) })), (key: "notes_left", value: .bool(!notesBack))])
+                if left.isEmpty, notesBack, documentsLeft.isEmpty { return .init([(key: "undone", value: .bool(true))]) }
+                return .init([(key: "undone", value: .bool(false)), (key: "todos_left", value: .array(left.prefix(20).map { .str($0) })), (key: "notes_left", value: .bool(!notesBack)),
+                              (key: "documents_left", value: .array(documentsLeft.prefix(20).map { .str($0) }))])
             }.value
         }
         if command == "chat_file_and_clear" {
@@ -495,7 +508,7 @@ public actor ClaudeConversationRuntime {
     private func run(scope: ClaudeReadConnections.Connection, record: ConversationTurnStore.Record,
                      session: ClaudeConversationState.Session, lease: AgentSessionAdmission.Lease,
                      account: ClaudeConversationState.Account, tried: Set<String>, signal: StopSignal) async {
-        var keep = false, driver: Driver?, used: String?, gate: AgentSiteGate?
+        var keep = false, driver: Driver?, used: String?, gate: AgentSiteGate?, counted = false
         defer { gate?.end() }
         var mayRelease = true
         let turnHistory = TurnHistory(support: support, binder: scope.id)
@@ -555,6 +568,7 @@ public actor ClaudeConversationRuntime {
             }
             if reach != nil { await recordTurn(record, scope: scope, history: turnHistory) }
             noteSites(record, gate: gate, driver: made)
+            counted = true; await noteCounts(scope: scope, gate: gate, driver: made)
             _ = try currentFolder(scope)
             if let result, !signal.stopped {
                 _ = try receipts.finish(conversationID: scope.id, requestID: record.requestID, phase: .replied,
@@ -586,6 +600,7 @@ public actor ClaudeConversationRuntime {
             if !signal.stopped { noteFailure(of: record.requestID, error, account: used ?? failedAccountName); failedAccountName = nil }
             if (try? connections.allowsFileChanges(scope)) == true { await recordTurn(record, scope: scope, history: turnHistory) }
             noteSites(record, gate: gate, driver: driver)
+            if !counted { await noteCounts(scope: scope, gate: gate, driver: driver) }
             _ = try? receipts.finish(conversationID: scope.id, requestID: record.requestID,
                                      phase: signal.stopped ? .interrupted : .failed)
         }
@@ -831,11 +846,13 @@ public actor ClaudeConversationRuntime {
         if r.phase == .failed, let account = failureAccounts[r.requestID] { fields.append(("account", .str(account))) }
         let history = TurnHistory(support: support, binder: r.conversationID)
         let entry = try? history.entry(forTurn: r.turnID), todos = try? history.todoChanges(forTurn: r.turnID), notes = try? history.notesChange(forTurn: r.turnID)
+        let documents = try? history.documentChanges(forTurn: r.turnID)
         let sites = try? turnSites.line(turn: r.turnID)
-        if entry != nil || todos != nil || notes != nil {
-            let summary = [entry?.summary, todos?.summary, notes == nil ? nil : "Updated the notes", sites].compactMap { $0 }.joined(separator: ". ")
-            fields.append(("changes", .obj([("summary", .str(summary)), ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true && notes?.undone ?? true)),
-                                            ("undoable", .bool(todos != nil || notes != nil || entry?.unrecorded == false))])))
+        if entry != nil || todos != nil || notes != nil || documents != nil {
+            let summary = [entry?.summary, documents?.summary, todos?.summary, notes == nil ? nil : "Updated the notes", sites].compactMap { $0 }.joined(separator: ". ")
+            fields.append(("changes", .obj([("summary", .str(summary)),
+                                            ("undone", .bool(entry?.undone ?? true && todos?.undone ?? true && notes?.undone ?? true && documents?.undone ?? true)),
+                                            ("undoable", .bool(todos != nil || notes != nil || documents?.undoable == true || entry?.unrecorded == false))])))
         } else if let sites {
             fields.append(("changes", .obj([("summary", .str(sites)), ("undone", .bool(false)), ("undoable", .bool(false))])))
         }

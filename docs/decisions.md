@@ -574,6 +574,10 @@ Each line names what replaced the entry; its old text is in git history.
   the turn as the to-do tools are (D32) and undone with it; this amends D3's classes for these ops. A log
   entry stays when its turn is undone, and the turn's line says so (the author, 2026-11-26: "logs are for traceability"). `catalog.json` stays closed to its file tools. Not chosen: leaving
   every catalog change to a drop or the person's own hand (`docs/plan-2026-11-25.md`, Track D).
+  As built (2026-11-26): the file the conversation catalogues is filed where it sits, so its undo is `unfile_document`
+  without `to`, which removes the record and leaves the file; binder-v0 6.3 and 6.10 gained that form. Returning a file
+  to `intake/`, the undo of a filing by drop, still waits for the intake hold (binder-v0 6.9) and binder admission
+  (7.2.2), neither built.
 - **D46 decided (2026-11-25, the author: "Why can't we learn? We should be able to learn"; "2a" twice).** A binder
   learns from its work. Its Claude proposes a rule with a tool; the proposal is a card (Accept, Edit, Dismiss), never
   applied in the turn. Accept appends the rule, dated, under a `## Learned rules` heading in the person's part of
@@ -589,6 +593,41 @@ Each line names what replaced the entry; its old text is in git history.
   An Export button writes the approved suggestions to a file for the development loop; development sessions never read
   the Improvements binder. A release then ships the add-on as a built-in importer or exporter (P17). Not chosen:
   per-binder plugins loaded at run time; development sessions reading the binder (Track I).
+  As built so far (2026-11-26): the built-in binders are a short list in `Shelf` (`BuiltInBinder.Kind`: General, then
+  Improvements), each bound by its own key in the one store and made on first use by `general_binder` or
+  `improvements_binder`. Either stays on this Mac's Shelf: it is never removed, transferred or offloaded.
+  The suggestion (`SuggestionCard`, `ClaudeSuggestionTool`): the conversation's `suggest_improvement` writes a card
+  in its own binder with a title, what was attempted, what stood in the way, and a script's text when one is named.
+  A script is read when the card is made: a path inside the binder with no hidden segment and no link on the way,
+  under `scripts/` or named as a script, never under `intake/`, never a key file, at most 32 KiB. The card lists as
+  kind `suggestion` with the whole text, and warns when the text looks like it holds a key. `send_suggestion` is the
+  person's approval: the text, or their edit of it, becomes an open to-do in Improvements (made then, on first use),
+  and the source binder keeps a log entry with none of the text. The ordinary approve refuses the card. In the app
+  the card shows the title and the whole text in a box that scrolls, with Send to Improvements, Edit and Dismiss;
+  Edit makes the text an editor, and an edit left unsent holds quit as other unsaved work does.
+  Export (`export_suggestions`): the Improvements row's menu on the Shelf has Export Suggestions, which opens a save
+  panel; the runtime writes the suggestions that are open to-dos in Improvements to that one Markdown file, each
+  title as a heading and its text, exactly as approved, in a fenced block longer than any run of backticks in it;
+  one line break is always added before the closing fence, so whether the text ends in a line break survives. The
+  file is written for the person alone (mode 0600), also when it replaces one.
+  Only to-dos a suggestion card made are written. The file is never written inside a binder or Sprava's own folder,
+  over anything but an ordinary file, or through a link, and nothing in Improvements changes.
+  Counts (`ImprovementCounts`, `runtime/improvement-counts.sqlite`): at a turn's end Sprava adds, for that binder,
+  the sites refused in the turn and the scripts its commands started. A binder is kept as a hash of its folder's
+  path and a script as a hash of its path, so the counts hold no path, host, command or text. A script counts once
+  a turn, when a command starts it (the first word of a part of the command, or what an interpreter is given;
+  reading it starts nothing) and it is one a card may carry. At a script's 5th counted turn, and once more at its
+  25th, Sprava writes a suggestion card of its own for it (`ClaudeScriptRuns`), with the script's text, for the
+  person to edit, send or dismiss like any other. Not counted yet: commands the sandbox refused and files held,
+  since nothing reports either by code today.
+  Closing with a release (`BuiltSuggestions`, `close_built_suggestions`): Export writes a code above each
+  suggestion's text, `S-` and ten hex digits from the id of the card that made it, and the issue made from it keeps
+  the code. The change that builds a suggestion adds a line to the table in `BuiltSuggestions`: the code and the
+  release's note. When the app starts it sends `close_built_suggestions`; for each open to-do in Improvements whose
+  code this build lists, the runtime writes a card there, "Built into Sprava: <title>", that closes the to-do as done
+  with the note. The person approves it; a card they rejected does not come back. The author chose nothing here
+  beyond "closed with the release's note": the card, in place of closing without asking, is this note's choice,
+  because only the person's own acts and approved cards change a binder.
 - **D48 decided (2026-11-25, the author: "we should be able to read back the draft and figure out what we're sending
   or have sent"; "3a").** The outgoing mail exporter reads a placed draft back and compares it with what was approved;
   finds the sent copy, compares it, and offers to file it, log it and set the to-do waiting; and marks a draft that has

@@ -31,6 +31,6 @@ enum ClaudeNativeConversation {
         }, stop: { runner.stop() }, exited: { runner.processExitConfirmed }, hash: prepared.programHash, context: { runner.lastContext },
                      activity: { runner.currentActivity }, useSites: { gate in
             sites.lock.withLock { sites.gate = gate; if let pid = sites.pid { proxy?.use(gate, for: pid) } }
-        }, searches: { runner.lastSearches })
+        }, searches: { runner.lastSearches }, ran: { runner.lastRan })
     }
 }

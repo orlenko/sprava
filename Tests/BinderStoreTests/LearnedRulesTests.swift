@@ -96,4 +96,51 @@ import Testing
         #expect(throws: RuleCard.Refused.self) { _ = try RuleCard(rule: rule, reason: " ", about: .filing).proposal(actor: actor) }
         #expect(throws: RuleCard.Refused.self) { _ = try RuleCard(rule: rule, reason: String(repeating: "r", count: 1_001), about: .filing).proposal(actor: actor) }
     }
+
+    // Step 6: the whole section as the card shows it, and as a rewrite leaves it.
+    @Test func theSectionIsReadAndReplacedWhole() {
+        let text = "Bills go in bills.\n\n## Learned rules\n\n- 2026-10-01: Keep receipts for a year.\n  \n- 2026-10-09: Receipts are kept a year.\nA line the person wrote.\n\n## People\n\nAn invented neighbour.\n"
+        #expect(LearnedRules.section(of: text) == ["- 2026-10-01: Keep receipts for a year.", "- 2026-10-09: Receipts are kept a year.", "A line the person wrote."])
+        #expect(LearnedRules.section(of: "Bills go in bills.\n").isEmpty && LearnedRules.section(of: "## Learned rules\n").isEmpty)
+        // A heading inside a fenced block is text, so it has no section.
+        #expect(LearnedRules.section(of: "```\n## Learned rules\n- 2026-10-01: Not a rule.\n```\n").isEmpty)
+
+        let merged = ["Receipts are kept for a year.", rule]
+        #expect(LearnedRules.replacing(with: merged, on: day, in: text)
+                == "Bills go in bills.\n\n## Learned rules\n\n- 2026-11-26: Receipts are kept for a year.\n- 2026-11-26: \(rule)\n\n## People\n\nAn invented neighbour.\n")
+        // A section at the end, with and without a last line break, and no section at all.
+        #expect(LearnedRules.replacing(with: [rule], on: day, in: "## Learned rules\n\n- 2026-10-01: One.\n- 2026-10-02: Two.\n") == "## Learned rules\n\n- 2026-11-26: \(rule)\n")
+        #expect(LearnedRules.replacing(with: [rule], on: day, in: "Text.\n\n## Learned rules\n- 2026-10-01: One.") == "Text.\n\n## Learned rules\n\n- 2026-11-26: \(rule)\n")
+        #expect(LearnedRules.replacing(with: [rule], on: day, in: "Text.\n") == LearnedRules.adding(rule, on: day, to: "Text.\n"))
+
+        // What a rewrite leaves is recognised on any date, and only when the section holds exactly those rules in order.
+        let after = LearnedRules.replacing(with: merged, on: day, in: text)
+        #expect(LearnedRules.holds(merged, in: after) && LearnedRules.holds(merged, in: after.replacingOccurrences(of: "2026-11-26", with: "2026-12-01")))
+        #expect(!LearnedRules.holds(merged.reversed(), in: after) && !LearnedRules.holds([rule], in: after) && !LearnedRules.holds(merged, in: text))
+    }
+
+    @Test func aRewriteCardHoldsWhatItReplacesAndNeverAddsARule() throws {
+        let actor = JSONObject([(key: "kind", value: .str("brain"))])
+        let was = ["- 2026-10-01: Keep receipts for a year.", "- 2026-10-09: Receipts are kept a year."]
+        let card = RulesRewrite(rules: ["Receipts are kept for a year."], reason: " Two rules said the same thing. ", replaces: was)
+        let made = try card.proposal(actor: actor)
+        #expect(RulesRewrite(made) == RulesRewrite(rules: ["Receipts are kept for a year."], reason: "Two rules said the same thing.", replaces: was))
+        #expect(RuleCard(made) == nil)
+        // The card's one op is a log entry with none of the text.
+        #expect(made.ops.count == 1 && made.ops[0]["args"]?["entry"]?["action"] == .str("Replaced the learned rules"))
+        // Another op riding along, or another title, makes it no rewrite card.
+        var raw = made.raw
+        raw.set("ops", .array([.object(made.ops[0]), .object(made.ops[0])]))
+        #expect(RulesRewrite(Proposal(raw: raw)) == nil)
+        raw = made.raw; raw.set("title", .str("Something else"))
+        #expect(RulesRewrite(Proposal(raw: raw)) == nil)
+
+        func refused(_ rules: [String], replaces: [String] = was, reason: String = "Why.") -> Bool {
+            (try? RulesRewrite(rules: rules, reason: reason, replaces: replaces).proposal(actor: actor)) == nil
+        }
+        #expect(refused([]) && refused(["One.", "Two.", "Three."]) && refused(["One.", "One."]))
+        #expect(refused(["A rule\nof two lines."]) && refused(["Hidden <!-- marker -->"]) && refused(["One."], reason: ""))
+        #expect(refused(["One."], replaces: ["- 2026-10-01: The only rule."]))
+        #expect(!refused(["One.", "Two."]))
+    }
 }

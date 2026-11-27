@@ -62,4 +62,30 @@ struct GeneralBinderTests {
         #expect(throws: (any Error).self) { try GeneralBinder(support: support).protects(root.appendingPathComponent("general")) }
         #expect(try Data(contentsOf: state) == Data("damaged".utf8))
     }
+
+    /// Each built-in binder has its own binding in the one store: neither stands in for the other.
+    @Test func eachBuiltInBinderKeepsItsOwnFolder() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let support = root.appendingPathComponent("support")
+        let general = root.appendingPathComponent("general"), improvements = root.appendingPathComponent("improvements")
+        #expect(BuiltInBinder.Kind.allCases == [.general, .improvements])
+        #expect(try BuiltInBinder.kind(of: general, support: support) == nil)
+        _ = try BuiltInBinder(.general, support: support).ensure { try FileManager.default.createDirectory(at: general, withIntermediateDirectories: false); return general }
+        #expect(try !BuiltInBinder(.improvements, support: support).protects(general))
+        _ = try BuiltInBinder(.improvements, support: support).ensure { try FileManager.default.createDirectory(at: improvements, withIntermediateDirectories: false); return improvements }
+        #expect(try BuiltInBinder(.improvements, support: support).ensure { Issue.record("must reuse"); return general } == improvements.resolvingSymlinksInPath())
+        #expect(try GeneralBinder(support: support).ensure { Issue.record("must reuse"); return improvements } == general.resolvingSymlinksInPath())
+        #expect(try BuiltInBinder.kind(of: general, support: support) == .general)
+        #expect(try BuiltInBinder.kind(of: improvements, support: support) == .improvements)
+        #expect(try BuiltInBinder.kind(of: root.appendingPathComponent("other"), support: support) == nil)
+        // Its folder can be read without making anything.
+        #expect(try BuiltInBinder(.improvements, support: support).folder() == improvements.resolvingSymlinksInPath())
+        #expect(try BuiltInBinder(.general, support: root.appendingPathComponent("no-support")).folder() == nil)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("no-support").path))
+        // A missing one says which.
+        try FileManager.default.removeItem(at: improvements)
+        #expect(throws: BuiltInBinder.Unavailable.self) { try BuiltInBinder(.improvements, support: support).folder() }
+        #expect { try BuiltInBinder(.improvements, support: support).ensure { improvements } } throws: { "\($0)".hasPrefix("Improvements\u{2019}s folder is missing") }
+    }
 }
