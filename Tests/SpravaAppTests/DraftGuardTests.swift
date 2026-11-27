@@ -103,6 +103,35 @@ import Testing
         #expect(policy.permits(.quit) && runtime.sent.isEmpty)
     }
 
+    /// An edited rule is unsaved work: quitting asks first, here and after the person looks at another binder. Putting
+    /// the proposed text back makes it clean again.
+    @Test func anEditedRuleHoldsQuitUntilItIsPutBackOrAccepted() async {
+        let runtime = StandInRuntime()
+        runtime.answers["binder_settings"] = { _ in #"{"ok":true,"description":"","filing":false}"# }
+        runtime.answers["history"] = { _ in #"{"ok":true,"ops":[]}"# }
+        let listed = #"{"ok":true,"proposals":[{"id":"p-1","state":"proposed","title":"A rule for filing","digest":"d1","verified":true,"review":{"kind":"rule","rule":{"text":"Notices go in notices/.","reason":"You said so.","about":"filing"}}}]}"#
+        runtime.answers["proposals"] = { request in request["binder"] == .str("/tmp/invented-kitchen") ? listed : #"{"ok":true,"proposals":[]}"# }
+        let actions = BinderActions(client: runtime.client)
+        let registry = DraftRegistry()
+        registry.track(actions)
+        let policy = DraftGuard(registry: registry, confirm: { _, _ in false })
+        let kitchen = URL(fileURLWithPath: "/tmp/invented-kitchen"), garden = URL(fileURLWithPath: "/tmp/invented-garden")
+        await actions.load(kitchen, adopted: true)
+        guard let card = actions.cards.first else { Issue.record("no rule card listed"); return }
+        #expect(actions.startEditing(card))
+        #expect(!actions.draftState.hasChanges && policy.permits(.quit))
+        #expect(actions.setRule(card.id, "Building notices go in notices/2026/."))
+        #expect(actions.draftState.hasChanges && !policy.permits(.quit) && !policy.permits(.close))
+        // Looking at another binder keeps the edit, and it still holds quit.
+        await actions.load(garden, adopted: true)
+        #expect(actions.rules.isEmpty && actions.draftState.hasChanges && !policy.permits(.quit))
+        await actions.load(kitchen, adopted: true)
+        #expect(actions.rules[card.id] == "Building notices go in notices/2026/.")
+        #expect(actions.setRule(card.id, "Notices go in notices/."))
+        #expect(!actions.draftState.hasChanges && policy.permits(.quit))
+        #expect(runtime.sent.allSatisfy { $0["command"]?.stringValue != "accept_rule" })
+    }
+
     @Test func openingAReviewEditorIsCleanUntilItsWordsActuallyChange() {
         let runtime = StandInRuntime()
         let actions = BinderActions(client: runtime.client)

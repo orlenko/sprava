@@ -132,6 +132,11 @@ public final class TekaStore {
         case .missing: return ([], false)
         case .refused, .unreadable: throw Refused(reason: ".sprava/ops.ndjson cannot be read; it was left as it is")
         }
+        return try Self.opLog(data)
+    }
+
+    /// The complete lines of an op log's bytes, as `readOpLog` gives them: for a reader that reads the file its own way.
+    public static func opLog(_ data: Data) throws -> (ops: [JSONObject], torn: Bool) {
         var text = String(decoding: data, as: UTF8.self)
         var torn = false
         if !text.isEmpty, !text.hasSuffix("\n") {

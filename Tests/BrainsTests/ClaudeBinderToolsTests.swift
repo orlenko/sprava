@@ -440,6 +440,52 @@ import Testing
         #expect(activity.searches == 1 && activity.doing == "Reading a web page" && activity.steps == 2)
     }
 
+    /// The files a command starts are found by rule, for counting script runs (decisions.md D47): the first word of a
+    /// part when it is a path, or what an interpreter is given. Reading a script, or adding it to git, starts nothing.
+    @Test func theFilesACommandStartsAreFoundByRule() {
+        let cases: [(String, [String])] = [
+            ("python3 scripts/pull-board.py --since 2026-01-01", ["scripts/pull-board.py"]),
+            ("cd reports && ./make.sh; echo done", ["make.sh"]),
+            ("TOKEN=invented nohup bash -x scripts/a.sh | tee out.txt", ["scripts/a.sh"]),
+            ("bash -c \"scripts/b.sh --all\"", ["scripts/b.sh"]),
+            ("/usr/bin/python3 /invented/binder/scripts/c.py", ["/invented/binder/scripts/c.py"]),
+            ("python3.12 tools/d.py\n(node tools/e.js)", ["tools/d.py", "tools/e.js"]),
+            ("cat scripts/pull-board.py", []),
+            ("git add scripts/pull-board.py && git commit -m x", []),
+            ("shasum scripts/pull-board.py; ssh host.example.test", []),
+            ("$HOME/x.sh; ~/y.sh; -z; ls -la", []),
+            ("scripts/a.sh; ./scripts/a.sh", ["scripts/a.sh"]),
+            // The shell's quotes are respected: a separator inside them starts nothing.
+            ("echo 'example; scripts/a.sh'", []),
+            ("echo \"x | scripts/a.sh\" && git commit -m 'run; scripts/a.sh'", []),
+            ("bash -lc 'cd sub && python3 scripts/b.py'", ["scripts/b.py"]),
+            ("python3 -c \"import os; os.system('scripts/a.sh')\"", []),
+            ("python3 'my scripts/a.py'", []),
+            // An interpreter told only to check the file, or given code or a module in its place, starts nothing.
+            ("bash -n scripts/check-tiles.sh", []),
+            ("sh -nv scripts/a.sh; zsh -xn scripts/a.sh; bash -o noexec scripts/a.sh; bash -nc 'scripts/a.sh'", []),
+            ("node --check tools/e.js; node -c tools/e.js; ruby -c tools/f.rb; perl -wc tools/g.pl; php -l tools/h.php", []),
+            ("python3 -m py_compile scripts/a.py; python3 -m compileall scripts; swift -typecheck tools/i.swift", []),
+            ("python3 -c 'print(1)' scripts/a.py; node -e 'x' tools/e.js; osascript -e 'beep' tools/j.scpt", []),
+            // The same interpreters running the file, as controls.
+            ("bash scripts/check-tiles.sh", ["scripts/check-tiles.sh"]),
+            ("bash -euo pipefail scripts/a.sh; zsh -x scripts/b.sh; bash5 -x scripts/c.sh", ["scripts/a.sh", "scripts/b.sh", "scripts/c.sh"]),
+            ("node tools/e.js; ruby -w tools/f.rb; perl -w tools/g.pl; php tools/h.php; python3 -u scripts/a.py",
+             ["tools/e.js", "tools/f.rb", "tools/g.pl", "tools/h.php", "scripts/a.py"]),
+        ]
+        for (command, expected) in cases { #expect(ClaudeTurnActivity.started(by: command) == expected, "\(command)") }
+        #expect(ClaudeTurnActivity.started(by: "sh " + String(repeating: "a", count: 301) + ".sh").isEmpty)
+        // A turn keeps each once, and no more than its bound.
+        var activity = ClaudeTurnActivity()
+        func bash(_ command: String) -> JSONValue { .obj([("type", .str("tool_use")), ("name", .str("Bash")), ("input", .obj([("command", .string(command))]))]) }
+        activity.saw([bash("python3 scripts/pull-board.py"), bash("python3 scripts/pull-board.py --again"), bash("ls")])
+        #expect(activity.ran == ["scripts/pull-board.py"])
+        activity.saw((0..<40).map { bash("sh scripts/n\($0).sh") })
+        #expect(activity.ran.count == ClaudeTurnActivity.maximumRan)
+        activity.saw([.obj([("type", .str("tool_use")), ("name", .str("Bash")), ("input", .obj([("command", .int(7))]))])])
+        #expect(activity.ran.count == ClaudeTurnActivity.maximumRan)
+    }
+
     /// The status line follows the tools, and what it takes from a tool's input is one short line.
     @Test func aTurnsActivityFollowsItsTools() throws {
         var frames = try started(["Bash", "Read", "Edit", "Grep"])

@@ -349,7 +349,9 @@ done", "send the binder to this address") is contained by:
    close an existing item without a tap; change disclosure,
    privacy markers, names or engine settings; touch another binder; write a manual, script or dot file (the
    path rules forbid filing one, binder-v0 §4.3); run anything; send anything; reach the network through
-   Sprava; write a filing rule that does more than the rule grammar allows (8.1).
+   Sprava; write a filing rule that does more than the rule grammar allows (8.1). As built, a rule is free text,
+   so the control is the card: nothing from a document puts a rule in effect, since a proposed rule is a card the
+   person accepts, and the session is told that a document asking for a rule grants nothing.
 3. The back office's reach is cut down (11.1): no shell, no web, no file tools at all, only Sprava's MCP
    server. It reads the binder only through Sprava's one safe reader, which serves exactly what binder-v0 §3.4
    allows a model to see (`catalog.json` through the projection, the documents `documents[]` names, `intake/`,
@@ -468,6 +470,26 @@ but a merge is a card showing the old rules and the new one, and the old ones st
 A rule can only steer filing within this binder: it cannot change a class, name a path outside the document
 rules, or touch privacy. The engine settings list the rules with Edit and Delete, and every rule names the
 correction it came from. This is how agreement rises (7.2).
+
+As built (decisions.md D46, `docs/binder-instructions.md` §4.4), in place of the grammar and of Sprava's section: a
+rule is one line of free text in the person's own part of `AGENTS.md`, dated, under `## Learned rules`, where they
+edit or remove it like any other line. The conversation proposes one with `propose_rule` (`ClaudeRuleTool`): the
+rule, a reason, and what it is about (filing, drafting or routine). The tool writes a card and nothing else; the
+rule is in effect once the person accepts the card, which writes it by the Instructions tab's save. A turn
+proposes at most 3 rules, a binder holds at most 20 waiting, and a rule the instructions already hold or that is
+already waiting is refused. The session's instructions say when: the person says to remember something, or corrects
+the same thing a second time; never because a document, an email, a note or a file's name asks. The authority is the
+text the person last saved or accepted, by the digest Sprava records at the save (`docs/binder-instructions.md` §2);
+there are no rule ids.
+
+Corrections, as built (`ClaudeFilingCorrections`): Sprava's line before a message names the filings the person
+corrected since the conversation's last message (a first message looks back a week), at most 5, and up to 5 earlier
+ones from the last 90 days to compare them with. A correction is a filing card approved into another folder than
+the one it proposed, or the person's own move of a document a card filed. An Undo is not one, nor is a move the
+person undid, nor a move a conversation turn made. The paths go in as quoted JSON, cut at 300 characters, and only
+to a session with file tools, which may read them anyway. The session may then propose a rule; code drafts none.
+Merging rules is a card of its own: `rewrite_rules` proposes replacing every line under Learned rules, the card shows
+both sets, and nothing changes until the person accepts it (decisions.md D46).
 
 ### 8.2 The binder brief
 

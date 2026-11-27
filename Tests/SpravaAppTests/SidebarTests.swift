@@ -248,6 +248,8 @@ import Testing
         let listed = ShelfModel.generalLast(rows, general: rows[0].folder).map(\.folder)
         #expect(listed == [rows[1].folder, rows[2].folder, rows[0].folder])
         #expect(ShelfModel.generalLast(rows, general: nil).map(\.folder) == rows.map(\.folder))
+        // Improvements sits with General at the end, before it.
+        #expect(ShelfModel.generalLast(rows, general: rows[0].folder, improvements: rows[1].folder).map(\.folder).suffix(2) == [rows[1].folder, rows[0].folder])
     }
 
     /// General is known by its binding: creation can choose general-2, and a binder merely named general is not it.

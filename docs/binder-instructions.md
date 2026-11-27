@@ -171,11 +171,46 @@ The card names the folder as it does today and adds "Folder from your instructio
 The reading records which choices came from the instructions (`folder_from: "instructions"`,
 `name_from: "instructions"`), never their text. Logs carry only that a choice was made.
 
-### 4.4 Filing rules (D11)
+### 4.4 Learned rules (D11, amended by D46)
 
-D11's filing rules, drafted from corrections and kept in Sprava's section once accepted, are not built. When
-they are, an accepted rule wins where it and the free text disagree: it records a specific correction the
-person accepted.
+A rule the binder learns is a line the person accepted, in their own part of `AGENTS.md`, not in Sprava's
+section (D46 amends D11 in this): there they can read, edit and remove it like any other line.
+
+A rule arrives as a card (`RuleCard`): the rule, one line of at most 500 characters with no comment markers and no
+control characters; a reason; and what it is about (filing, drafting or routine). The card's one op is a log entry
+that says a rule was accepted and what it is about, never its text. Only a card Sprava itself wrote and recorded is
+accepted as a rule, and the ordinary Approve refuses it, since that would apply the card and write nothing.
+
+Accepting (`accept_rule`) writes the rule, or the person's edit of it, as `- <date>: <rule>` at the end of the
+`## Learned rules` section, which is added at the end of the person's part when it is not there. It is the
+Instructions tab's save (section 3): the digest check, one atomic write, the saved text recorded as accepted, and
+Undo last save. The save comes before the card is applied, and a rule already under the heading is not added
+again, so an accept cut short and tried again writes the rule once. Accepting is refused, with what to do:
+
+- while the person's part on disk is not the text they last saved or confirmed, since the save would record all of
+  it as accepted. The person opens Instructions and saves first;
+- when the part would pass its bound of 16,000 characters.
+
+Known limits. Undo last save is one level: a second accept ends the first one's Undo, and an older rule is
+removed by editing the text. An accepted rule is followed wherever the instructions are, by the reader of new
+documents and by the conversation, so the card is where the person decides.
+
+The conversation proposes a rule with `propose_rule` (`docs/conversation.md` 8.1), which writes the card and changes
+nothing else.
+
+The card in the app shows the rule and its reason whole, as plain text, with what the rule is about and one line
+saying what accepting does. Its buttons are Accept, Edit and Dismiss. Edit turns the rule into a field; Accept then
+sends the person's text, which is checked as a proposed rule is. Dismiss rejects the card and adds nothing. A card
+Sprava did not write shows no rule and can only be cleared away.
+
+Replacing the whole section (`RulesRewrite`). When rules repeat or disagree, or the person asks to tidy them, the
+conversation proposes a rewrite with `rewrite_rules`: every rule as it should read, at most 60, never more lines
+than the section holds, and only when it holds at least two. The card shows the section's lines as they were when
+it was proposed and the lines that would replace them, with the reason; its buttons are Replace the rules and
+Dismiss, with no Edit. Accept replaces everything under the heading with the new lines, dated that day, by the same
+save, so Undo last save puts the old section back. It is refused when the section no longer holds the lines the
+card showed: the person would replace text they did not see. One rewrite waits at a time, and a turn proposes one.
+Text the person wrote under the heading that is not a rule is shown with the rest and goes with it.
 
 ## 5. Templates carry a starting text
 
