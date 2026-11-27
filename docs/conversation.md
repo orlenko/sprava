@@ -297,14 +297,16 @@ by code in the runtime (decisions.md D3):
 | Class | What | How |
 |---|---|---|
 | A, applied with Undo | `add_item` from the person's authenticated turn (a document's obligations are suggestions, 5.1 step 3); `file_document` from this binder's `intake/`, or a new draft in `drafts/` (10); `add_log_entry` from the person's words; `update_document`, `move_document` and `unfile_document` on documents this conversation filed; `update_item`, `set_status` and `drop` on items it created in the last 24 hours (proposed) | At once, one batch per turn, reported with Undo |
-| B, one tap | `update_item`, `set_status`, `complete`, `drop`, `reopen` on other items; `update_document` on other documents; moving a document to another binder (`transfer_document`); more than 20 new items or documents in one turn (proposed) | A confirmation with the change and its source; nothing changes until Apply |
+| B, one tap | `update_item`, `set_status`, `complete`, `drop`, `reopen` on other items; `update_document` on other documents (superseded for a person's turn by 18.5: the document tools apply at once, decisions.md D45); moving a document to another binder (`transfer_document`); more than 20 new items or documents in one turn (proposed) | A confirmation with the change and its source; nothing changes until Apply |
 | C, never from the conversation | `set_disclosure` and every widening the privacy ratchet names (architecture 4.5: clearing `redact`, changing or removing `slice_title`, adding a tag to a redacted item, lowering `sensitivity`), checked before any other class, `rename_teka`, `expunge`, engine and backup settings, anything outward (sending mail, `outgoing/`, exporters, a court or tax filing), deleting a file, writing a manual, `.sprava/`, `scripts/` or a dot folder | Only the app's own controls (architecture 2.1) |
 
 Three ops for documents (binder-v0 §6.3, §6.9, §6.10): `move_document` moves a filed file within the binder
 without replacing anything; `unfile_document` moves a file this implementation filed, its bytes unchanged, back
 into `intake/` and removes its record, the id never reused. Every invocation records the durable intake hold of
 5.3 before the file moves; it is not limited to Undo. It is the undo of `file_document`, so Undo returns the file
-held. `transfer_document` moves a filed file to another binder Sprava owns, named by its admitted `binder_id`:
+held. As built: only the form without `to`, which removes the record of a document that was filed where its file
+already was and leaves the file there, with nothing held. Returning a file to `intake/` waits for the intake hold, so
+a filing that took its file from `intake/` has no Undo yet. `transfer_document` moves a filed file to another binder Sprava owns, named by its admitted `binder_id`:
 the op is logged in the source binder first, the file is placed in the destination's `intake/` without
 replacing anything (a rename on one volume, else a copy checked by SHA-256 before it takes its name), the source
 is removed last, and the destination files it as a drop, in one batch whose id is the transfer id. After a crash
@@ -478,7 +480,16 @@ proposes at most 3 rules, a binder holds at most 20 waiting, and a rule the inst
 already waiting is refused. The session's instructions say when: the person says to remember something, or corrects
 the same thing a second time; never because a document, an email, a note or a file's name asks. The authority is the
 text the person last saved or accepted, by the digest Sprava records at the save (`docs/binder-instructions.md` §2);
-there are no rule ids. Drafting a rule from a correction by itself, and merging rules, are not built.
+there are no rule ids.
+
+Corrections, as built (`ClaudeFilingCorrections`): Sprava's line before a message names the filings the person
+corrected since the conversation's last message (a first message looks back a week), at most 5, and up to 5 earlier
+ones from the last 90 days to compare them with. A correction is a filing card approved into another folder than
+the one it proposed, or the person's own move of a document a card filed. An Undo is not one, nor is a move the
+person undid, nor a move a conversation turn made. The paths go in as quoted JSON, cut at 300 characters, and only
+to a session with file tools, which may read them anyway. The session may then propose a rule; code drafts none.
+Merging rules is a card of its own: `rewrite_rules` proposes replacing every line under Learned rules, the card shows
+both sets, and nothing changes until the person accepts it (decisions.md D46).
 
 ### 8.2 The binder brief
 
@@ -1298,7 +1309,11 @@ from a git history, and a friend's Mac may have no git. Sprava records:
 Undo on a turn reverts that turn's entry alone, whole or not at all. A later change to one of its files makes it a
 conflict that names the file and changes nothing, never a silent overwrite. Undo leaves anything that arrived in
 `intake/` during the turn, and refuses a turn during which the catalog changed, or one that made a file filed since, since
-reverting files alone would leave the catalog pointing at documents that are gone. A file over 1 GiB is tracked by name
+reverting files alone would leave the catalog pointing at documents that are gone. A document change the turn made with
+Sprava's own tools (decisions.md D45) is not such a change: it is an op with its own undo, named beside the turn's file
+entry (`TurnHistory+Documents`), and a file the turn moved with its record is left out of the entry, since the op moves it
+back. Undo reverses those ops before the files; a move that could not go back leaves its file where the entry does not
+expect it, which is a conflict. A file over 1 GiB is tracked by name
 only, like a key file, and one record copies at most 20 GiB of new bytes; past that the turn runs with no tools. Key files (`DocumentPaths.isKeyFile`) are tracked by name only and never copied, so deleting a
 secret really deletes it and the summary says Undo cannot bring it back. Entries and their bytes are kept 30 days, and go
 when the binder is removed or offloaded. Each turn ends with one line in the conversation: what it changed
@@ -1325,7 +1340,28 @@ the person's message (binder-v0 §6.5), and the turn's line says what changed, w
 the turn's files first, whole or not at all, and then its to-dos one by one; a to-do changed since stays as it is and is
 named. A change applies only to a to-do as the turn found it, so one the person edited meanwhile is refused, not overwritten;
 one turn makes at most 50 changes. A to-do changed during a turn no longer stops the Undo of the turn's files: only a change
-to the catalog's documents does. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
+to the catalog's documents does.
+
+As built for documents (`ClaudeDocumentTools`, decisions.md D45), in a session with file tools: `edit_document` corrects a
+filed document's title, date or kind (`update_document`), and `move_document` renames or refiles one, its file and its
+record together (`move_document`). The document is named by its path or its id. They follow the to-do tools: one op per
+call, naming the turn, applied only to a record as the turn found it, counted in the same 50, and named on the turn's
+line. Undo reverses them first, each on its own, a move taking its file back; one changed since, or whose file is no
+longer as the move left it, stays and is named. They reach no `sensitivity`, no key file, and no path the filing rules
+close. This amends 6.1 for these two ops on a person's turn: they apply at once whichever conversation filed the
+document, as D32 did for to-dos.
+
+`add_log_entry` adds one line to the binder's log (`add_log_entry`), about a filed document when the call names one. The
+entry is text only, one line, never a closure, and a turn adds at most 10. A log entry records a fact and no op undoes
+it (binder-v0 6.10), so it stays when the turn is undone; the turn's line says "which Undo keeps", and a turn that only
+added entries offers no Undo. The agent is told to add one only when the person asks.
+
+`file_document` catalogues a file that already sits in the binder, where it is (`file_document` without `from`): one the
+agent wrote, such as a summary or a brief, or one the person names. Nothing moves, the record is private as everything
+a conversation adds is, and a file in `intake/` is never filed this way: what arrives is filed by the person's drop.
+The turn's Undo removes the record (`unfile_document` in place, binder-v0 6.10) and then, as for any file the turn
+wrote, the file. A record whose file changed after it was filed stays and is named, so the agent is told to finish
+writing before it files. The tools reach the agent over the pipe Sprava already holds to it, the CLI's in-process
 MCP server (type `sdk`, checked on 2.1.316 under `--safe-mode --restricted`), so no program, socket or token joins the
 sandbox, and a command the agent runs cannot call them. The other tools of this section are still to come.
 

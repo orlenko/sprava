@@ -264,15 +264,120 @@ import Testing
         {"meta": {"schema_version": 2, "name": "estate-sample"}, "documents": [], "processing_log": [],
          "open_items": [{"id": "estate-sample-2026-001", "title": "Ask the bank for the statement", "status": "open", "priority": "normal"}]}
         """)
-        let repair = try #require(listed.first { $0["title"] == .str("Fill in what this item is missing") })
+        let repair = try #require(listed.first { $0["title"] == .str("Keep this to-do with no deadline, or give it a date") })
         #expect(listed.count == 1)   // no stamp while the item is dateless
         #expect(repair["editable"]?.arrayValue?.first?["index"] == .int(0))
-        #expect(repair["notes"]?.arrayValue?.contains { $0.stringValue?.contains("fill in what is missing") == true } == true)
+        #expect(repair["notes"]?.arrayValue?.contains { $0.stringValue?.contains("it has no date") == true } == true)
         let r = try approve(c, folder, repair, edits: .array([.obj([("index", .int(0)), ("due", .str("2026-12-01"))])]))
         #expect(r["ok"] == .bool(true), "\(r)")
         let stamp = try #require(try cards(c, folder).first { $0["title"] == .str("Stamp this binder as binder v0") })
         #expect(try approve(c, folder, stamp)["ok"] == .bool(true))
         #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
+    }
+
+    /// An invented catalog with `dateless` to-dos that lack only a date, one with a date, and one that lacks a priority.
+    private func datelessCatalog(_ name: String, dateless: Int) -> String {
+        let items = (1...dateless).map { n in
+            #"{"id": "\#(name)-2026-\#(String(format: "%03d", n))", "title": "Invented chore \#(n)", "status": "open", "priority": "normal"}"#
+        } + [#"{"id": "\#(name)-2026-900", "title": "Invented dated chore", "status": "open", "priority": "normal", "due": "2027-01-15"}"#,
+             #"{"id": "\#(name)-2026-901", "title": "Invented chore with no priority", "status": "open", "due": "2027-01-16"}"#]
+        return #"{"meta": {"schema_version": 2, "name": "\#(name)"}, "documents": [], "processing_log": [], "open_items": ["#
+            + items.joined(separator: ", ") + "]}"
+    }
+
+    // #691: twenty to-dos with no date made twenty cards. They now share one, which keeps each with no deadline.
+    @Test func toDosThatLackOnlyADateShareOneCard() throws {
+        let c = commands()
+        let (folder, listed) = try adoptCatalog(c, name: "house-sample", datelessCatalog("house-sample", dateless: 20))
+        let shared = try #require(listed.first { $0["title"] == .str("Keep these 20 to-dos with no deadline, or give any of them a date") })
+        #expect(listed.count == 2)   // the shared card, and the card of the item with no priority
+        #expect(listed.contains { $0["title"] == .str("Fill in what this item is missing") })
+        #expect(shared["editable"]?.arrayValue?.count == 20)
+        // One of them gets a date on the card; the others are approved as offered.
+        let r = try approve(c, folder, shared, edits: .array([.obj([("index", .int(4)), ("due", .str("2027-03-01"))])]))
+        #expect(r["ok"] == .bool(true), "\(r)")
+        let items = Teka.read(folder).items
+        #expect(items.first { $0.idText == "house-sample-2026-005" }?.object?["due"] == .str("2027-03-01"))
+        #expect(items.first { $0.idText == "house-sample-2026-005" }?.object?["no_deadline"] == nil)
+        let others = items.filter { $0.idText < "house-sample-2026-021" && $0.idText != "house-sample-2026-005" }
+        #expect(others.count == 19 && others.allSatisfy { $0.object?["no_deadline"] == .bool(true) && $0.object?["due"] == nil })
+        #expect(items.first { $0.idText == "house-sample-2026-900" }?.object?["due"] == .str("2027-01-15"))
+        // The other repair still stands between the binder and its stamp.
+        #expect(try cards(c, folder).contains { $0["title"] == .str("Stamp this binder as binder v0") } == false)
+    }
+
+    @Test func approvingTheSharedCardAsOfferedLeadsToTheStamp() throws {
+        let c = commands()
+        let name = "garden-sample"
+        let catalog = datelessCatalog(name, dateless: 3).replacingOccurrences(of: #""status": "open", "due": "2027-01-16""#,
+                                                                              with: #""status": "open", "priority": "low", "due": "2027-01-16""#)
+        let (folder, listed) = try adoptCatalog(c, name: name, catalog)
+        #expect(listed.count == 1)
+        #expect(try approve(c, folder, try #require(listed.first))["ok"] == .bool(true))
+        let stamp = try #require(try cards(c, folder).first { $0["title"] == .str("Stamp this binder as binder v0") })
+        #expect(try approve(c, folder, stamp)["ok"] == .bool(true))
+        #expect(Teka.read(folder).state == .ready, "\(Teka.read(folder).reasons)")
+    }
+
+    // A waiting to-do with no date was refused its follow-up date at adoption, since that alone did not make it valid.
+    // It lacks only a date all the same, so it joins the shared card, which gives it both.
+    @Test func aWaitingToDoWithNoDateJoinsTheSharedCard() throws {
+        let c = commands()
+        let name = "shed-sample"
+        let catalog = """
+        {"meta": {"schema_version": 2, "name": "\(name)"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "\(name)-2026-001", "title": "Invented chore", "status": "open", "priority": "normal"},
+                        {"id": "\(name)-2026-002", "title": "Invented wait", "status": "waiting", "priority": "normal", "waiting_on": "an invented office"},
+                        {"id": "\(name)-2026-003", "title": "Invented repeat", "status": "open", "priority": "normal", "recurrence": {"freq": "monthly", "day": 5}},
+                        {"id": "\(name)-2026-004", "title": "Invented wait with an unreadable follow-up", "status": "waiting", "priority": "normal",
+                         "waiting_on": "an invented office", "follow_up_at": "tomorrow"}]}
+        """
+        let (folder, listed) = try adoptCatalog(c, name: name, catalog)
+        let shared = try #require(listed.first { $0["title"] == .str("Keep these 2 to-dos with no deadline, or give any of them a date") })
+        // A repeat needs a real date, and a follow-up date that cannot be read is the person's to settle: each keeps
+        // a card of its own, so the shared card can be approved as offered.
+        #expect(listed.count == 3 && listed.filter { $0["title"] == .str("Fill in what this item is missing") }.count == 2)
+        #expect(try approve(c, folder, shared)["ok"] == .bool(true))
+        let wait = try #require(Teka.read(folder).items.first { $0.idText == "\(name)-2026-002" }?.object)
+        #expect(wait["no_deadline"] == .bool(true) && wait["follow_up_at"]?.stringValue != nil)
+        #expect(wait["derived"] == .array([.str("follow_up_at")]))
+        // Only the repeat still breaks a rule.
+        #expect(Set(Teka.read(folder).findings.map(\.location)) == ["open_items[2]", "open_items[3]"])
+    }
+
+    // Found in the dry run: a to-do already marked done that has no date was on the shared card and on the card that
+    // closes the done ones. Once it was closed, the shared card could not be approved as offered. It is now asked for
+    // no date, so the two cards can be approved in either order.
+    @Test(arguments: [true, false]) func aDoneToDoWithNoDateIsOnlyOnTheClosingCard(closingFirst: Bool) throws {
+        let c = commands()
+        let name = "attic-sample"
+        let catalog = """
+        {"meta": {"schema_version": 2, "name": "\(name)"}, "documents": [], "processing_log": [],
+         "open_items": [{"id": "\(name)-2026-001", "title": "Invented chore", "status": "open", "priority": "normal"},
+                        {"id": "\(name)-2026-002", "title": "Invented finished chore", "status": "done", "priority": "normal"},
+                        {"id": "\(name)-2026-003", "title": "Invented second chore", "status": "open", "priority": "normal"}]}
+        """
+        let (folder, listed) = try adoptCatalog(c, name: name, catalog)
+        let shared = try #require(listed.first { $0["title"] == .str("Keep these 2 to-dos with no deadline, or give any of them a date") })
+        let closing = try #require(listed.first { $0["title"] == .str("Close 1 item(s) already marked done") })
+        #expect(listed.count == 2)
+        for card in closingFirst ? [closing, shared] : [shared, closing] {
+            let r = try approve(c, folder, card)
+            #expect(r["ok"] == .bool(true), "\(r)")
+        }
+        #expect(Teka.read(folder).findings.isEmpty)
+        #expect(try cards(c, folder).contains { $0["title"] == .str("Stamp this binder as binder v0") })
+    }
+
+    // A card holds at most a hundred of them, so a binder with hundreds still lists its cards.
+    @Test func hundredsOfDatelessToDosAreSplitAcrossCardsThatCanBeListed() throws {
+        let c = commands()
+        let (_, listed) = try adoptCatalog(c, name: "attic-sample", datelessCatalog("attic-sample", dateless: 250))
+        let titles = listed.compactMap { $0["title"]?.stringValue }.filter { $0.hasPrefix("Keep these") }
+        #expect(titles == ["Keep these 100 to-dos with no deadline, or give any of them a date (part 1 of 3)",
+                           "Keep these 100 to-dos with no deadline, or give any of them a date (part 2 of 3)",
+                           "Keep these 50 to-dos with no deadline, or give any of them a date (part 3 of 3)"])
+        #expect(listed.count == 4)
     }
 
     @Test func aLifeprojV1CatalogIsOfferedTheStamp() throws {   // qJwVl

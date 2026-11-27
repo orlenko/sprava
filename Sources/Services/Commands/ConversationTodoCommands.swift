@@ -18,13 +18,16 @@ extension Commands {
         if let expect { extra.append(("expect", .obj([("record", .str(expect))]))) }
         let store = TekaStore(folder: f, client: client)
         let body = TekaStore.OpBody(op: op, args: args, actor: actor, extra: extra)
-        let applied = op == "add_item" ? try store.applyMinting([body], now: now) : try store.apply([body], now: now)
+        // A new to-do and a newly filed document get their ids here.
+        let applied = ["add_item", "file_document"].contains(op) ? try store.applyMinting([body], now: now) : try store.apply([body], now: now)
         try recordDigests(store.createdProposals, in: f)
         return applied
     }
 
     /// Reverses one op of a turn. True when it is reversed, this time or before; false when it changed since and stays.
-    func undoTurnOp(_ opID: String, folder f: URL, now: Date = Date()) throws -> Bool {
+    /// With `leavingRefused`, a refusal by the store counts as staying too: a move back whose file is gone or changed, or
+    /// whose old place is taken, is the person's to settle, and must not stop the rest of the turn's Undo.
+    func undoTurnOp(_ opID: String, folder f: URL, leavingRefused: Bool = false, now: Date = Date()) throws -> Bool {
         try refuseUnwritable(f)
         let store = TekaStore(folder: f, client: client)
         do {
@@ -34,6 +37,10 @@ extension Commands {
         } catch let refused as TekaStore.Refused where refused.reason == "already undone" {
             return true
         } catch is Undo.Unsupported {
+            return false
+        } catch is TekaStore.Refused where leavingRefused {
+            return false
+        } catch is TransactionGuard.Rejection where leavingRefused {
             return false
         }
     }

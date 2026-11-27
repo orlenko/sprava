@@ -1,5 +1,6 @@
 import BinderFormat
 import BinderStore
+import Clerk
 import Foundation
 @testable import Services
 import SpravaKit
@@ -77,6 +78,20 @@ import Testing
         let again = try accept(f, c, made)
         #expect(again["ok"] == .bool(false))
         #expect(try text(f) == "Bills go in bills.\n")
+    }
+
+    // Done when (plan Track L): the next dropped notice is filed by the rule. The reader of new documents is given the
+    // accepted text with the rule in it, and no longer once Undo last save took it out.
+    @Test func theReaderOfNewDocumentsIsGivenAnAcceptedRule() throws {
+        let (f, c) = try binder()
+        try save(f, c, "Bills go in bills.\n")
+        #expect(FilingGuidance.of(f, catalog: Teka.read(f).catalog).guidance?.text.contains(line) == false)
+        #expect(try accept(f, c, try card(f, c))["ok"] == .bool(true))
+        let given = FilingGuidance.of(f, catalog: Teka.read(f).catalog)
+        #expect(given.note == nil && given.guidance?.cut == false)
+        #expect(given.guidance?.text == "Bills go in bills.\n\n## Learned rules\n\n\(line)")
+        #expect(try req(c, [("command", .str("undo_instructions")), ("binder", .string(f.path))])["ok"] == .bool(true))
+        #expect(FilingGuidance.of(f, catalog: Teka.read(f).catalog).guidance?.text == "Bills go in bills.")
     }
 
     /// A rewrite card as its tool writes it, against the section as it is now.
