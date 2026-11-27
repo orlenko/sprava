@@ -5,9 +5,7 @@ import Foundation
 import SpravaKit
 
 /// Reads a binder's documents for the index through the sandboxed helper (architecture 2.1), from the binder
-/// folder down with no link anywhere on the way. The helper gives a document's text as one block, so its passages
-/// carry no page number and the coverage says so, unless the document has one page; a page-by-page reading is
-/// the helper's to add.
+/// folder down with no link anywhere on the way. Paged readings retain their physical page numbers.
 public struct HelperDocumentReader: DocumentReader {
     public let binder: URL
     public let reader: ExtractHelper.Reader
@@ -37,6 +35,15 @@ public struct HelperDocumentReader: DocumentReader {
             return DocumentText(revision: "", language: "und", pages: [], problem: "\(error)")
         }
         if let problem = result.problem { return DocumentText(revision: data.sha256Hex, language: "und", pages: [], problem: problem) }
+        if !result.pageReadings.isEmpty {
+            var reading = DocumentText(revision: data.sha256Hex, language: IntakeReading.language(of: result.text), pages: [])
+            for (index, page) in result.pageReadings.enumerated() {
+                let number = index + 1
+                reading.pages.append((number, page.text.isEmpty ? .illegible : .read(page.text, from: page.method.rawValue)))
+                if page.grade == .poor { reading.poorPages.append(number) }
+            }
+            return reading
+        }
         var text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let number: Int? = (result.pages ?? 1) == 1 ? 1 : nil
         var notes: [String] = []
