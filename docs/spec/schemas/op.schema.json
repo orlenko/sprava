@@ -283,12 +283,12 @@
       }
     },
     {
-      "$comment": "Returns a filed file to intake/, held, and removes its record, which args.document keeps (sections 6.3, 6.9).",
+      "$comment": "Returns a filed file to intake/, held, and removes its record, which args.document keeps; without to, removes the record and leaves the file where it is (sections 6.3, 6.9).",
       "if": { "properties": { "op": { "const": "unfile_document" } } },
       "then": {
         "properties": {
           "args": {
-            "required": ["id", "from", "to", "sha256", "document"],
+            "required": ["id", "from", "sha256", "document"],
             "properties": {
               "id": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "not": { "const": 0 } }], "$comment": "A v0 id is a non-empty string or a non-zero integer, compared by JSON type and value (section 5.6). Ids are copied with their type." },
               "from": { "$ref": "#/$defs/safe_path" },

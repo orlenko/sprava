@@ -574,6 +574,10 @@ Each line names what replaced the entry; its old text is in git history.
   the turn as the to-do tools are (D32) and undone with it; this amends D3's classes for these ops. A log
   entry stays when its turn is undone, and the turn's line says so (the author, 2026-11-26: "logs are for traceability"). `catalog.json` stays closed to its file tools. Not chosen: leaving
   every catalog change to a drop or the person's own hand (`docs/plan-2026-11-25.md`, Track D).
+  As built (2026-11-26): the file the conversation catalogues is filed where it sits, so its undo is `unfile_document`
+  without `to`, which removes the record and leaves the file; binder-v0 6.3 and 6.10 gained that form. Returning a file
+  to `intake/`, the undo of a filing by drop, still waits for the intake hold (binder-v0 6.9) and binder admission
+  (7.2.2), neither built.
 - **D46 decided (2026-11-25, the author: "Why can't we learn? We should be able to learn"; "2a" twice).** A binder
   learns from its work. Its Claude proposes a rule with a tool; the proposal is a card (Accept, Edit, Dismiss), never
   applied in the turn. Accept appends the rule, dated, under a `## Learned rules` heading in the person's part of

@@ -112,6 +112,11 @@ struct NowView: View {
                     Button("Adopt…") { actions.adopt(row.folder, inRegistry: row.source == .registry, reload: refresh) }
                         .disabled(actions.busy)
                 }
+                if teka.isAdopted, teka.nameDiffersFromFolder, !teka.writesBlocked {
+                    Button("Use the folder\u{2019}s name…") { actions.useFolderName(row.folder, catalogName: teka.name, reload: refresh) }
+                        .disabled(actions.busy)
+                        .help("The catalog and the folder give this binder different names. Until one name is settled, nothing is shared and the binder is not stamped.")
+                }
             }
             if let message = actions.message { Text(message).foregroundStyle(.orange) }
             MovedLine(actions: actions, folder: row.folder, reload: refresh)
