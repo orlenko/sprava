@@ -248,7 +248,10 @@ public enum Adoption {
         let findings = towardV0 ? ItemRules.check(items: repairItems, log: fixed["processing_log"]?.arrayValue ?? [], v0: true)
                                 : afterFixes.findings
         proposals += repairCards(findings.map { ($0.code, $0.location, $0.field) }, items: repairItems, today: today,
-                                 actor: importActor, now: now, closures: heldBack)
+                                 actor: importActor, now: now, closures: heldBack,
+                                 closing: Set(closeOps.compactMap { $0["args"]?["id"] }))
+        // Document records the fixes could not settle go on one card, by their place in the list.
+        if let card = documentCard(fixed["documents"]?.arrayValue ?? [], actor: importActor, now: now) { proposals.append(card) }
 
         // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4) under
         // the next free legacy name (§9.5); with none free, no migration is offered. A core key that is not an array
@@ -302,18 +305,20 @@ public enum Adoption {
     static func itemIndex(_ location: String) -> Int? { TransactionGuard.itemIndex(location) }
 
     /// One repair card per item that breaks its level's rules: a migration cannot invent a date or a party, so the
-    /// person fills them in on the card (binder-v0 §9.4 step 4). Closures and shared ids are handled elsewhere, and a
+    /// person fills them in on the card (binder-v0 §9.4 step 4). The items that lack only a date share cards. Closures and shared ids are handled elsewhere, and a
     /// finding about anything but an open item makes no card here.
     /// `closures` are closures held back until their item is repaired: each goes on its item's card, after the repair,
     /// and one whose item has no other finding gets a card of its own asking for the title.
     static func repairCards(_ findings: [(code: RuleFinding.Code, location: String, field: String?)], items: [JSONValue],
                             today: CalendarDate, actor: JSONObject, now: Date,
-                            closures: [JSONValue: JSONObject] = [:]) -> [Proposal] {
+                            closures: [JSONValue: JSONObject] = [:], closing: Set<JSONValue> = []) -> [Proposal] {
         let handled: Set<RuleFinding.Code> = [.doneInOpenItems, .reusedID, .duplicateID]
         var ids: [JSONValue: Int] = [:]
         for item in items { if let id = item["id"] { ids[id, default: 0] += 1 } }
         var repaired = Set<String>()
         var cards: [Proposal] = []
+        // Items that lack nothing but a date share cards (`datelessCards`): an old binder holds dozens of them.
+        var dateless: [JSONObject] = []
         for finding in findings where !handled.contains(finding.code) {
             guard let index = itemIndex(finding.location), items.indices.contains(index),
                   case .object(let o) = items[index], let id = o["id"], ids[id] == 1,
@@ -341,14 +346,32 @@ public enum Adoption {
                let aside = try? keepAside("title", in: &titled, becoming: nil), set[aside.key] == nil {
                 set.set(aside.key, aside.value)
             }
+            let close = closures[id]
+            // An item that lacks only a date, or a date and the follow-up date code derives for a waiting item (the
+            // mechanical fix was refused while the item had no date), goes on the shared card with that follow-up.
+            // Judged by the findings' codes: a follow-up date that is there but unreadable is another finding, which
+            // the person settles on the item's own card. The follow-up must be one this card supplies.
+            let codes = Set(findings.filter { $0.location == finding.location && !handled.contains($0.code) }.map(\.code))
+            let followUpSupplied = !codes.contains(.waitingWithoutFollowUp) || set["follow_up_at"] != nil
+            if codes.contains(.dateless), codes.isSubset(of: [.dateless, .waitingWithoutFollowUp]), followUpSupplied, close == nil {
+                // An item the closing card closes (`closing`) is asked for no date: closing it takes it off the list,
+                // and a card that still named it could no longer be approved as offered once it was closed.
+                if closing.contains(id) { continue }
+                set.set("no_deadline", .bool(true))
+                var op = JSONObject([(key: "op", value: .str("update_item")),
+                                     (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
+                op.set("card", .obj([("flags", .array([.str("it has no date: approving keeps it with no deadline, unless you give it one")]))]))
+                dateless.append(op)
+                continue
+            }
             var op = JSONObject([(key: "op", value: .str("update_item")),
                                  (key: "args", value: .obj([("id", id), ("set", .object(set))]))])
             op.set("card", .obj([("flags", .array([.string("fill in what is missing: " + missing.joined(separator: ", "))]))]))
-            let close = closures[id]
             cards.append(Proposal.make(title: close == nil ? "Fill in what this item is missing" : "Fill in what this item is missing, then close it",
                                        actor: actor, ops: [op] + (close.map { [$0] } ?? []),
                                        provenance: JSONObject([(key: "repair", value: .array(missing.map(JSONValue.string)))]), now: now))
         }
+        cards += datelessCards(dateless, actor: actor, now: now)
         let placed = Set(cards.flatMap { $0.ops.filter { $0["op"] == .str("complete") }.compactMap { $0["args"]?["id"] } })
         for (id, close) in closures.sorted(by: { JSONWriter.compact($0.key) < JSONWriter.compact($1.key) }) where !placed.contains(id) {
             var set = JSONObject()
@@ -361,6 +384,24 @@ public enum Adoption {
                                        provenance: JSONObject([(key: "repair", value: .array([.str("title")]))]), now: now))
         }
         return cards
+    }
+
+    /// The cards for the items that lack nothing but a date: each op keeps its item with no deadline, so approving the
+    /// card settles all of them, and the person may give any of them a date on the card first. An old binder holds
+    /// dozens of such items, and a card for each made dozens of cards. A card holds at most `perCard` items, well
+    /// inside what one card may hold (each op also carries its item's fingerprint); past that the cards are numbered.
+    static func datelessCards(_ ops: [JSONObject], actor: JSONObject, now: Date, perCard: Int = 100) -> [Proposal] {
+        let parts = (ops.count + perCard - 1) / perCard
+        return stride(from: 0, to: ops.count, by: perCard).map { start in
+            let group = Array(ops[start..<min(start + perCard, ops.count)])
+            let title = (group.count == 1 ? "Keep this to-do with no deadline, or give it a date"
+                                          : "Keep these \(group.count) to-dos with no deadline, or give any of them a date")
+                + (parts > 1 ? " (part \(start / perCard + 1) of \(parts))" : "")
+            // What approval checks the items no longer lack: the date, and a waiting item's follow-up date.
+            return Proposal.make(title: title, actor: actor, ops: group,
+                                 provenance: JSONObject([(key: "repair", value: .array([.string(RuleFinding.Code.dateless.rawValue), .str("follow_up_at")]))]),
+                                 now: now)
+        }
     }
 
     /// The derived follow-up date of a waiting or blocked item (binder-v0 §5.3): the day after `expected_by`, else a
@@ -376,7 +417,8 @@ public enum Adoption {
 
     struct NothingToFix: Error {}
 
-    /// Applies the mechanical fix of every item in `ids` that needs one, in one write. The fixes are built from the items
+    /// Applies the mechanical fix of every item in `ids` that needs one, and of every document record that needs one
+    /// (`documentFix`), in one write. The fixes are built from the items
     /// as read under the lock, after outside edits were absorbed, so a value someone wrote after the survey (a follow-up
     /// date, say) is seen and never overwritten, and an id two items came to share is left alone. Each fix is judged by
     /// the guard on its own first, so one the guard refuses never blocks the others or the proposals; its item gets a
@@ -386,8 +428,8 @@ public enum Adoption {
     static func applyMechanicalFixes(store: TekaStore, ids: [JSONValue], today: CalendarDate, actor: JSONObject,
                                      now: Date) throws -> [JSONObject] {
         let wanted = Set(ids)
-        do {
-            return try store.apply(building: { catalog, log in
+        func attempt(documents: Bool) throws -> [JSONObject] {
+            try store.apply(building: { catalog, log in
                 let items = catalog["open_items"]?.arrayValue ?? []
                 var holders: [JSONValue: Int] = [:]
                 for item in items { if let id = item["id"] { holders[id, default: 0] += 1 } }
@@ -395,15 +437,19 @@ public enum Adoption {
                     guard case .object(let o) = item, let id = o["id"], wanted.contains(id), holders[id] == 1 else { return nil }
                     return mechanicalFix(o, today: today, actor: actor)
                 }
-                let taken = store.eachAccepted(fixes, on: catalog, log: log, now: now)
+                let taken = store.eachAccepted(fixes, on: catalog, log: log, now: now) + (documents ? documentFixes(catalog, actor: actor) : [])
                 guard !taken.isEmpty else { throw NothingToFix() }
                 return taken
             }, now: now)
+        }
+        do {
+            return try attempt(documents: true)
         } catch is NothingToFix {
             return []
         } catch is TransactionGuard.Rejection {
-            // Fixes the guard took one by one and refuses together: none is applied, and the items get repair cards.
-            return []
+            // The item fixes were taken one by one, so what the guard refuses is the document fixes, or the fixes
+            // together. The item fixes are tried again alone; the records left unfixed go to the person on cards.
+            do { return try attempt(documents: false) } catch is NothingToFix { return [] } catch is TransactionGuard.Rejection { return [] }
         }
     }
 
