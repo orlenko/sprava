@@ -64,6 +64,23 @@ import Testing
         #expect(PersonEnvironment(shell: path, timeout: 1).forCommands().isEmpty)
     }
 
+    // The whole cost of a profile that hangs is the limit and the kill: a shell that ignores SIGTERM is not waited for,
+    // and what the profile started goes with it.
+    @Test func theLimitHoldsForAShellThatIgnoresBeingAskedToStop() throws {
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pidFile = root.appendingPathComponent("child.pid")
+        let path = try shell("trap '' TERM HUP INT\nsleep 600 &\necho $! > '\(pidFile.path)'\nsleep 600")
+        let clock = ContinuousClock()
+        var result: [String: String]? = [:]
+        let took = clock.measure { result = PersonEnvironment(shell: path, timeout: 0.25).read() }
+        #expect(result == nil)
+        #expect(took < .milliseconds(800))
+        let child = try #require(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        var gone = false
+        for _ in 0..<100 where !gone { gone = kill(child, 0) != 0 && errno == ESRCH; if !gone { usleep(10_000) } }
+        #expect(gone)
+    }
+
     // A program the profile leaves running holds the pipe open; the answer is taken at the second mark.
     @Test func aProgramTheProfileLeftRunningIsNotWaitedFor() throws {
         defer { try? FileManager.default.removeItem(at: root) }

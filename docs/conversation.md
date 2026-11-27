@@ -1268,8 +1268,9 @@ the values were read in (`PWD`, `TERM…`, `LC_…`, and the like), and any valu
 conversation starts, Sprava starts the person's login shell, the one in their account record, as a login and interactive
 shell from a login's few variables (`HOME`, `USER`, `LOGNAME`, `SHELL`, a system `PATH`), so it reads the profile files a
 new terminal window reads. It prints its environment between two marks and is stopped; what the profile itself prints
-stays outside the marks. Ten seconds at most, and 1 MiB. A profile that hangs or answers something else gives the
-environment read last in this run of the runtime, or none; the session then says which variable it lacks. No name and no
+stays outside the marks. The answer has ten seconds and 1 MiB; at the end, in time or not, the shell and what its
+profile started are killed outright, which takes a quarter second at most. A profile that hangs or answers something
+else gives the environment read last in this run of the runtime, or none; the session then says which variable it lacks. No name and no
 value is logged.
 
 **How they arrive.** The CLI removes names that look like a credential from what its commands inherit
