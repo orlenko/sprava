@@ -248,6 +248,45 @@ import Testing
         #expect(try turn.history.documentChanges(forTurn: turn.record.turnID) == nil)
     }
 
+    // A tool call runs inside the turn's loop, which takes no Stop while one is busy, so a file of any size is never
+    // read to its end there. A sparse file takes no room and no time to make; filing or moving one is refused at once.
+    @Test func aFileTooLargeForATurnIsRefusedWithoutBeingRead() throws {
+        let s = try filed(), turn = try Turn(s)
+        func sparse(_ path: String, bytes: UInt64) throws {
+            let url = s.folder.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            #expect(FileManager.default.createFile(atPath: url.path, contents: nil))
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: bytes)
+            try handle.close()
+        }
+        try sparse("recordings/long.bin", bytes: 1 << 40)
+        try sparse("recordings/just-over.bin", bytes: UInt64(ClaudeDocumentTools.maximumFileBytes) + 1)
+        let before = Teka.read(s.folder).catalog?["documents"], count = turn.ops.count
+        let clock = ContinuousClock()
+        let took = clock.measure {
+            for path in ["recordings/long.bin", "recordings/just-over.bin"] {
+                let answer = turn.call("file_document", [("path", .str(path)), ("title", .str("Invented recording"))])
+                #expect(answer.refused && answer.content["error"] == .str("invalid"), "\(answer.content)")
+                #expect("\(answer.content)".contains("larger than 1 GB"))
+            }
+        }
+        #expect(took < .seconds(5))
+        #expect(Teka.read(s.folder).catalog?["documents"] == before && turn.ops.count == count)
+        // A filed document whose file has since grown past the limit is not moved either.
+        try sparse("documents/letter.pdf", bytes: 1 << 40)
+        let moved = clock.measure {
+            let answer = turn.call("move_document", [("document", Self.doc), ("path", .str("letters/letter.pdf"))])
+            #expect(answer.refused && "\(answer.content)".contains("larger than 1 GB"))
+        }
+        #expect(moved < .seconds(5) && exists(s, "documents/letter.pdf") && !exists(s, "letters/letter.pdf"))
+        // The digest itself gives up at its limit, whatever the caller checked first.
+        #expect(DocumentPaths.sha256(of: s.folder.appendingPathComponent("recordings/just-over.bin"), limit: ClaudeDocumentTools.maximumFileBytes) == nil)
+        try write(s, "notes/small.md", "Invented notes")
+        #expect(DocumentPaths.sha256(of: s.folder.appendingPathComponent("notes/small.md"), limit: 14) == DocumentPaths.sha256(of: s.folder.appendingPathComponent("notes/small.md")))
+        #expect(DocumentPaths.sha256(of: s.folder.appendingPathComponent("notes/small.md"), limit: 13) == nil)
+    }
+
     @Test func aFiledFileChangedAfterwardsKeepsItsRecordWhenTheTurnIsUndone() throws {
         let s = try filed(), turn = try Turn(s)
         try write(s, "summaries/summary.md", "An invented summary")

@@ -67,7 +67,10 @@ final class ClaudeDocumentTools: @unchecked Sendable {
         guard !Self.documents(folder).contains(where: { $0["path"]?.stringValue.map(DocumentPaths.fold) == DocumentPaths.fold(path) }) else {
             throw Refusal.invalid("That file is already filed. Use edit_document to correct its record. Nothing was filed.")
         }
-        guard DocumentPaths.plainFile(path, in: folder), let sha = DocumentPaths.sha256(of: folder.appendingPathComponent(path)) else {
+        guard !Self.tooLarge(path, in: folder) else {
+            throw Refusal.invalid("That file is larger than 1 GB, more than a conversation files. Nothing was filed; the person can file it by dropping it on the binder.")
+        }
+        guard DocumentPaths.plainFile(path, in: folder), let sha = DocumentPaths.sha256(of: folder.appendingPathComponent(path), limit: Self.maximumFileBytes) else {
             throw Refusal.invalid("No file Sprava can read is at that path. Write the file first, then file it. Nothing was filed.")
         }
         fields += [("sha256", .string(sha)), ("sensitivity", .str("private"))]
@@ -112,7 +115,10 @@ final class ClaudeDocumentTools: @unchecked Sendable {
         }
         guard DocumentPaths.isSafe(from) else { throw Refusal.invalid("This document sits where Sprava moves nothing (\(from)). Nothing moved; tell the person.") }
         guard DocumentPaths.fold(from) != DocumentPaths.fold(path) else { throw Refusal.invalid("The new path is the old one, or differs only in letter case. Nothing moved.") }
-        guard DocumentPaths.plainFile(from, in: folder), let sha = DocumentPaths.sha256(of: folder.appendingPathComponent(from)) else {
+        guard !Self.tooLarge(from, in: folder) else {
+            throw Refusal.invalid("This document's file is larger than 1 GB, more than a conversation moves. Nothing moved; tell the person.")
+        }
+        guard DocumentPaths.plainFile(from, in: folder), let sha = DocumentPaths.sha256(of: folder.appendingPathComponent(from), limit: Self.maximumFileBytes) else {
             throw Refusal.invalid("The document's file is not at \(from), where its record says. Nothing moved; tell the person.")
         }
         guard DocumentPaths.isFreeDestination(path, in: folder) else { throw Refusal.invalid("A file is already at that path, or the way there is not a plain folder. Nothing moved.") }
@@ -206,6 +212,20 @@ final class ClaudeDocumentTools: @unchecked Sendable {
 
     private static func title(_ document: JSONObject) -> String {
         document["title"]?.stringValue ?? document["path"]?.stringValue ?? "untitled"
+    }
+
+    /// The largest file a tool files or moves: what a turn's history keeps for Undo (`TurnHistory.maximumFileBytes`).
+    /// A tool call runs inside the turn's own loop, which takes no Stop and no deadline while a call is busy, and both
+    /// the tool and the store read the whole file for its digest. So a larger file is refused before a byte is read:
+    /// a sparse file of any size costs nothing to make.
+    static let maximumFileBytes: Int64 = 1 << 30
+
+    /// Whether the plain file at `path` is past `maximumFileBytes`, by its size alone. False for anything that is not a
+    /// file there, which the checks after this one refuse in their own words.
+    static func tooLarge(_ path: String, in folder: URL) -> Bool {
+        var info = stat()
+        guard lstat(folder.appendingPathComponent(path).path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return false }
+        return info.st_size > maximumFileBytes
     }
 
     private static func line(_ value: JSONValue, _ what: String, bytes: Int) throws -> String {
