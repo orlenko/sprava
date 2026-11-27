@@ -90,18 +90,24 @@ public enum DocumentPaths {
 
     /// `sha256:`-less lowercase hex of a file, read without following a symbolic link or blocking on a FIFO: the
     /// open never waits for a writer, and anything but a regular file is refused before a byte is read.
-    public static func sha256(of url: URL) -> String? {
+    public static func sha256(of url: URL, limit: Int64? = nil) -> String? {
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
         var st = stat()
         guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
+        // With a limit, a file past it is not read at all, and one that grows past it while it is read is given up:
+        // a caller that must answer soon never reads to the end of a file of any size (a sparse one costs nothing to make).
+        if let limit, st.st_size > limit { return nil }
         var hasher = SHA256()
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
+        var total: Int64 = 0
         while true {
             let n = read(fd, &buffer, buffer.count)
             if n < 0 { if errno == EINTR { continue }; return nil }
             if n == 0 { break }
+            total += Int64(n)
+            if let limit, total > limit { return nil }
             hasher.update(data: buffer[0..<n])
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
