@@ -133,6 +133,9 @@ Do not report:
   or reading what other programs show in their environment, which no sandbox rule stops. The author accepted this
   (decisions.md D36). A way past those walls still counts: reading outside the binder, writing outside it, the
   network beyond the proxy, the person's other apps, clipboard or Keychain, or running a program from a writable folder;
+- that a binder's commands, and so its Claude, can read the person's shell environment and send a value from it to a
+  site that binder allows for commands: the author chose that (decisions.md D50). A value in a log, a notification or
+  an argument, one written into the binder by Sprava itself, or one reaching a site the binder does not allow still counts;
 - a hang or delay from a slow, stalled, network or removable volume: binders are ordinary local folders, offloaded
   when not in use and restored when needed (decisions.md A15);
 - wording in a doc that differs from the code, unless the code breaks a rule the doc states;

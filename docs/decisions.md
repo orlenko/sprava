@@ -636,6 +636,19 @@ Each line names what replaced the entry; its old text is in git history.
   read, and the person can mark a page as read by them or type what it says; every search result names the documents
   it could not read; a folder marked "keep as is" is never carded. Not chosen: leaving out the person's typed
   reading of a page, the largest part (Track E).
+- **D50 decided (2026-11-27, the author: "I think we want the lowest friction workflow. Like, this is mostly personal
+  use application. We can tighten security later if we have to. But for now, let it just pull in the environment.").**
+  A binder's commands run with the person's shell environment: what their login shell exports, read when a
+  conversation starts, without the names Sprava sets itself for the session (the path, the home, the proxy, the
+  agent's own account) and without what describes the terminal it was read in. Why: the first binder started in Sprava
+  needed a transcription service's key for a script, and the session's empty environment blocked it. The person
+  installs the programs a binder needs and keeps keys where they already do; Sprava does not stand between a script
+  and them. How: the values go in a file in the session's home that the CLI runs before each command, because the
+  CLI's own scrub takes key-like names out of what commands inherit; they are in no process's environment or
+  arguments, and the agent process itself does not get them. The cost, accepted: the binder's Claude can read every
+  value, and a steered command can send one to any site that binder allows for commands. Not chosen now: the
+  placeholder of conversation.md §18.3.2, where a value never reaches the session, kept as the way to tighten this;
+  naming the variables binder by binder, which asks for setup in every binder.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
