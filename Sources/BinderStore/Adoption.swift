@@ -250,6 +250,8 @@ public enum Adoption {
         proposals += repairCards(findings.map { ($0.code, $0.location, $0.field) }, items: repairItems, today: today,
                                  actor: importActor, now: now, closures: heldBack,
                                  closing: Set(closeOps.compactMap { $0["args"]?["id"] }))
+        // Document records the fixes could not settle go on one card, by their place in the list.
+        if let card = documentCard(fixed["documents"]?.arrayValue ?? [], actor: importActor, now: now) { proposals.append(card) }
 
         // A pre-lifeproj catalog first gets `meta.schema_version: 1`, keeping a value below 1 aside (§9.4 step 4) under
         // the next free legacy name (§9.5); with none free, no migration is offered. A core key that is not an array
@@ -415,7 +417,8 @@ public enum Adoption {
 
     struct NothingToFix: Error {}
 
-    /// Applies the mechanical fix of every item in `ids` that needs one, in one write. The fixes are built from the items
+    /// Applies the mechanical fix of every item in `ids` that needs one, and of every document record that needs one
+    /// (`documentFix`), in one write. The fixes are built from the items
     /// as read under the lock, after outside edits were absorbed, so a value someone wrote after the survey (a follow-up
     /// date, say) is seen and never overwritten, and an id two items came to share is left alone. Each fix is judged by
     /// the guard on its own first, so one the guard refuses never blocks the others or the proposals; its item gets a
@@ -425,8 +428,8 @@ public enum Adoption {
     static func applyMechanicalFixes(store: TekaStore, ids: [JSONValue], today: CalendarDate, actor: JSONObject,
                                      now: Date) throws -> [JSONObject] {
         let wanted = Set(ids)
-        do {
-            return try store.apply(building: { catalog, log in
+        func attempt(documents: Bool) throws -> [JSONObject] {
+            try store.apply(building: { catalog, log in
                 let items = catalog["open_items"]?.arrayValue ?? []
                 var holders: [JSONValue: Int] = [:]
                 for item in items { if let id = item["id"] { holders[id, default: 0] += 1 } }
@@ -434,15 +437,19 @@ public enum Adoption {
                     guard case .object(let o) = item, let id = o["id"], wanted.contains(id), holders[id] == 1 else { return nil }
                     return mechanicalFix(o, today: today, actor: actor)
                 }
-                let taken = store.eachAccepted(fixes, on: catalog, log: log, now: now)
+                let taken = store.eachAccepted(fixes, on: catalog, log: log, now: now) + (documents ? documentFixes(catalog, actor: actor) : [])
                 guard !taken.isEmpty else { throw NothingToFix() }
                 return taken
             }, now: now)
+        }
+        do {
+            return try attempt(documents: true)
         } catch is NothingToFix {
             return []
         } catch is TransactionGuard.Rejection {
-            // Fixes the guard took one by one and refuses together: none is applied, and the items get repair cards.
-            return []
+            // The item fixes were taken one by one, so what the guard refuses is the document fixes, or the fixes
+            // together. The item fixes are tried again alone; the records left unfixed go to the person on cards.
+            do { return try attempt(documents: false) } catch is NothingToFix { return [] } catch is TransactionGuard.Rejection { return [] }
         }
     }
 
