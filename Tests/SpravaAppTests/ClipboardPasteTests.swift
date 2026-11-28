@@ -144,6 +144,27 @@ import Testing
         #expect(model.report == "Added to intake: Pasted text 2026-11-28 10.32.11.rtf. Each becomes a card to file within a minute." && !model.problem)
     }
 
+    // Text has one bound in every form it is kept in: rich text kept as RTF is text, not an image.
+    @Test func richTextKeptAsRTFHasTheBoundOfText() async throws {
+        var counted: [Int] = []
+        let model = IntakeDropModel(send: { _, name, file in
+            counted.append(try file.readToEnd()?.count ?? 0)
+            return JSONObject([(key: "path", value: .str("intake/" + name))])
+        })
+        func rtf(_ bytes: Int) -> NSPasteboard {
+            let lead = Data("{\\rtf1 ".utf8), body = lead + Data(repeating: UInt8(ascii: "a"), count: bytes - lead.count - 1) + Data("}".utf8)
+            return board { $0.declareTypes([.rtf, .string], owner: nil); $0.setData(body, forType: .rtf); $0.setString("Invented", forType: .string) }
+        }
+        let over = try #require(ClipboardPaste.content(of: rtf(IntakeDropModel.maxTextBytes + 1)))
+        #expect(!model.paste(over, into: Self.binder))
+        #expect(model.report == "Nothing was added: the pasted text is over 16 MB." && model.problem && counted.isEmpty)
+        let exact = try #require(ClipboardPaste.content(of: rtf(IntakeDropModel.maxTextBytes)))
+        #expect(model.paste(exact, into: Self.binder, now: Self.noon))
+        try await settle(model)
+        #expect(counted == [IntakeDropModel.maxTextBytes])
+        #expect(model.report == "Added to intake: Pasted text 2026-11-28 10.32.11.rtf. Each becomes a card to file within a minute.")
+    }
+
     @Test func aPasteOverItsBoundAddsNothingAndSaysSo() {
         let runtime = Runtime(), model = IntakeDropModel(send: runtime.send)
         #expect(!model.paste(.data(Data(count: IntakeDropModel.maxPastedBytes + 1), ext: "png", noun: "image"), into: Self.binder))

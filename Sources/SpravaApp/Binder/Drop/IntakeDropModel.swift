@@ -82,7 +82,9 @@ final class IntakeDropModel: ObservableObject {
             return text(html: html, plain: plain, verb: "Pasted", what: "the pasted text", note: note, into: binder, now: now)
         case .data(let data, let ext, let noun):
             guard !data.isEmpty else { return false }
-            return keep(data, named: "Pasted \(noun) \(Self.stamp(now)).\(ext)", limit: Self.maxPastedBytes, what: "the pasted \(noun)", note: note, into: binder)
+            // Text kept as the bytes it came in (RTF) has the bound of text in any form.
+            return keep(data, named: "Pasted \(noun) \(Self.stamp(now)).\(ext)", limit: noun == "text" ? Self.maxTextBytes : Self.maxPastedBytes,
+                        what: "the pasted \(noun)", note: note, into: binder)
         }
     }
 
