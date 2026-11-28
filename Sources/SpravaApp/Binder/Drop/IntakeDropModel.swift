@@ -65,22 +65,56 @@ final class IntakeDropModel: ObservableObject {
     /// the plain text. Named for when it arrived; the intake reads it like any document.
     @discardableResult
     func dropText(html: String?, plain: String?, into binder: URL, now: Date = Date()) -> Bool {
+        text(html: html, plain: plain, verb: "Dropped", what: "the dragged text", into: binder, now: now)
+    }
+
+    /// What ⌘V took from the clipboard (`ClipboardPaste`). Copied files go the way dropped files go. Anything that
+    /// is not a file yet (a screenshot, a PDF, text) is kept as one file named for what it is and when it arrived.
+    @discardableResult
+    func paste(_ content: ClipboardPaste.Content, into binder: URL, now: Date = Date()) -> Bool {
+        switch content {
+        case .files(let urls):
+            return drop(urls, promises: [], into: binder)
+        case .text(let html, let plain):
+            return text(html: html, plain: plain, verb: "Pasted", what: "the pasted text", into: binder, now: now)
+        case .data(let data, let ext, let noun):
+            guard !data.isEmpty else { return false }
+            return keep(data, named: "Pasted \(noun) \(Self.stamp(now)).\(ext)", limit: Self.maxPastedBytes, what: "the pasted \(noun)", into: binder)
+        }
+    }
+
+    /// The most text one drag or paste brings, and the most a pasted image or PDF holds: what the intake reader opens.
+    static let maxTextBytes = 16 * 1024 * 1024
+    static let maxPastedBytes = 200 * 1024 * 1024
+
+    private func text(html: String?, plain: String?, verb: String, what: String, into binder: URL, now: Date) -> Bool {
         let body: (data: Data, ext: String)? = html.flatMap { $0.isEmpty ? nil : (Data(("<!doctype html><meta charset=\"utf-8\">\n" + $0).utf8), "html") }
             ?? plain.flatMap { $0.isEmpty ? nil : (Data($0.utf8), "txt") }
-        guard !busy, let body else { return false }
-        guard body.data.count <= 16 * 1024 * 1024 else { report = "Nothing was added: the dragged text is over 16 MB."; problem = true; return false }
+        guard let body else { return false }
+        return keep(body.data, named: "\(verb) text \(Self.stamp(now)).\(body.ext)", limit: Self.maxTextBytes, what: what, into: binder)
+    }
+
+    static func stamp(_ now: Date) -> String {
+        now.formatted(.verbatim("\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)).\(minute: .twoDigits).\(second: .twoDigits)",
+                                timeZone: .current, calendar: Calendar(identifier: .gregorian)))
+    }
+
+    /// Writes what arrived without a file into a private folder of the app's, sends it like any file, and removes it.
+    private func keep(_ data: Data, named name: String, limit: Int, what: String, into binder: URL) -> Bool {
+        guard !busy else { return false }
+        guard data.count <= limit else {
+            report = "Nothing was added: \(what) is over \(limit / (1024 * 1024)) MB."; problem = true; return false
+        }
         busy = true
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("sprava-drop-" + UUID().uuidString)
-        let stamp = now.formatted(.verbatim("\(year: .defaultDigits)-\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)).\(minute: .twoDigits).\(second: .twoDigits)",
-                                            timeZone: .current, calendar: Calendar(identifier: .gregorian)))
-        let file = staging.appendingPathComponent("Dropped text \(stamp).\(body.ext)")
+        let file = staging.appendingPathComponent(name)
         Task {
             do {
                 try AtomicFile.makePrivateFolder(staging)
-                try AtomicFile.write(body.data, to: file)
+                try AtomicFile.write(data, to: file)
                 await add([file], into: binder)
             } catch {
-                report = "Nothing was added: Sprava could not keep the dragged text to send it."; problem = true
+                report = "Nothing was added: Sprava could not keep \(what) to send it."; problem = true
             }
             try? FileManager.default.removeItem(at: staging)
             busy = false

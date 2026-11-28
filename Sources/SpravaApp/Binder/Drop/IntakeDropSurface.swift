@@ -3,6 +3,7 @@ import SwiftUI
 
 /// A binder's whole page as a drop target: emails dragged from Outlook or Mail, attachments, and files from Finder go to the
 /// binder's `intake/`, where each becomes a card to file. Text dragged onto a text being edited stays that text's own.
+/// ⌘V on the page takes the clipboard the same way (`ClipboardPaste`): copied files, a screenshot, a PDF, text.
 struct IntakeDropSurface<Content: View>: View {
     let folder: URL
     let enabled: Bool
@@ -39,6 +40,7 @@ struct IntakeDropSurface<Content: View>: View {
                         switch drop {
                         case .files(let urls, let promises): model.drop(urls, promises: promises, into: folder)
                         case .text(let html, let plain): model.dropText(html: html, plain: plain, into: folder)
+                        case .pasted(let content): model.paste(content, into: folder)
                         }
                     }
                     if targeted {
@@ -85,7 +87,7 @@ private struct DropTarget: NSViewRepresentable {
 }
 
 final class DropTargetView: NSView {
-    enum Drop { case files([URL], [NSFilePromiseReceiver]), text(html: String?, plain: String?) }
+    enum Drop { case files([URL], [NSFilePromiseReceiver]), text(html: String?, plain: String?), pasted(ClipboardPaste.Content) }
     /// What a drag offers: files or promises; selected text; only a web page's private data (a message dragged out of
     /// a web app); or nothing Sprava can take.
     enum Offer: Equatable { case files, text, webOnly, nothing }
@@ -100,6 +102,25 @@ final class DropTargetView: NSView {
     var onDrop: (Drop) -> Bool = { _ in false }
     /// The text being edited that a text drag is over, which gets that drag instead of this view.
     private var editor: NSTextView?
+    /// The clipboard ⌘V reads; a test gives its own.
+    var clipboard: () -> NSPasteboard = { .general }
+
+    /// ⌘V anywhere on the page. A window offers a key press to every view in it before the menu gets it, so this
+    /// view sees the paste wherever the insertion point is. While a text is being edited, text on the clipboard is
+    /// that text's own and goes on to the Edit menu's Paste; files, a PDF and an image come to the binder even then.
+    /// With no text being edited, text comes to the binder too, as a dragged selection does. A press that brings
+    /// nothing the page takes goes on untouched.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard ClipboardPaste.isPaste(event), !isHiddenOrHasHiddenAncestor else { return super.performKeyEquivalent(with: event) }
+        let pasteboard = clipboard(), kind = ClipboardPaste.kind(of: pasteboard)
+        let editing = (window?.firstResponder as? NSTextView)?.isEditable == true
+        guard kind != .nothing, !(editing && ClipboardPaste.staysInEditor(kind)), let content = ClipboardPaste.content(of: pasteboard) else {
+            return super.performKeyEquivalent(with: event)
+        }
+        // The press was the binder's; when the page is still busy with the last one, it says so with the system's sound.
+        if !onDrop(.pasted(content)) { NSSound.beep() }
+        return true
+    }
 
     /// Clicks and scrolling go on to the page underneath; only drags stop here.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
