@@ -120,6 +120,30 @@ import Testing
         #expect(model.report?.contains("server.pem, a key or credential file") == true)
     }
 
+    // A selection copied with a picture or a file inside it: only its words can be taken, and the report says what was
+    // left, as a problem, never a plain "Added".
+    @Test func textCopiedWithAttachmentsIsTakenAsWordsAndThePageSaysWhatWasLeft() async throws {
+        let rich = board {
+            $0.declareTypes([.rtfd, .rtf, .string], owner: nil)
+            $0.setData(Data("invented flat rtfd with a picture".utf8), forType: .rtfd); $0.setData(Data("{\\rtf1 Invented}".utf8), forType: .rtf); $0.setString("Invented", forType: .string)
+        }
+        #expect(ClipboardPaste.leavesAttachments(rich))
+        #expect(ClipboardPaste.leavesAttachments(board { $0.declareTypes([.rtfd, .html, .string], owner: nil); $0.setString("<p>Invented</p>", forType: .html); $0.setString("Invented", forType: .string) }))
+        #expect(!ClipboardPaste.leavesAttachments(board { $0.declareTypes([.rtf, .string], owner: nil); $0.setString("Invented", forType: .string) }))
+        #expect(!ClipboardPaste.leavesAttachments(board { $0.setData(Self.picture, forType: .png) }))
+        let runtime = Runtime(), model = IntakeDropModel(send: runtime.send)
+        let content = try #require(ClipboardPaste.content(of: rich))
+        #expect(model.paste(content, withoutAttachments: ClipboardPaste.leavesAttachments(rich), into: Self.binder, now: Self.noon))
+        try await settle(model)
+        #expect(runtime.received.map(\.name) == ["Pasted text 2026-11-28 10.32.11.rtf"])
+        #expect(model.report == "Added to intake: Pasted text 2026-11-28 10.32.11.rtf. Each becomes a card to file within a minute.\n" + IntakeDropModel.attachmentsNote)
+        #expect(model.problem)
+        // The same words without attachments are reported plainly.
+        #expect(model.paste(content, into: Self.binder, now: Self.noon))
+        try await settle(model)
+        #expect(model.report == "Added to intake: Pasted text 2026-11-28 10.32.11.rtf. Each becomes a card to file within a minute." && !model.problem)
+    }
+
     @Test func aPasteOverItsBoundAddsNothingAndSaysSo() {
         let runtime = Runtime(), model = IntakeDropModel(send: runtime.send)
         #expect(!model.paste(.data(Data(count: IntakeDropModel.maxPastedBytes + 1), ext: "png", noun: "image"), into: Self.binder))
@@ -137,10 +161,10 @@ import Testing
         content.addSubview(editable); content.addSubview(overlay)
         window.contentView = content
         var held = board { _ in }
-        var taken: [ClipboardPaste.Content] = []
+        var taken: [ClipboardPaste.Content] = [], lacking: [Bool] = []
         overlay.clipboard = { held }
         overlay.onDrop = { drop in
-            if case .pasted(let content) = drop { taken.append(content) }
+            if case .pasted(let content, let without) = drop { taken.append(content); lacking.append(without) }
             return true
         }
         let paste = press(in: window)
@@ -153,6 +177,12 @@ import Testing
         #expect(window.performKeyEquivalent(with: paste) && taken.count == 2)
         held = board { $0.setString("Invented words", forType: .string) }
         #expect(window.performKeyEquivalent(with: paste) && taken.count == 3)
+        // Text copied with a picture inside it is taken as its words, and the page is told that something was left.
+        #expect(lacking == [false, false, false])
+        held = board { $0.declareTypes([.rtfd, .rtf, .string], owner: nil); $0.setData(Data("invented flat rtfd".utf8), forType: .rtfd); $0.setData(Data("{\\rtf1 Invented}".utf8), forType: .rtf); $0.setString("Invented", forType: .string) }
+        #expect(window.performKeyEquivalent(with: paste) && taken.count == 4 && lacking.last == true)
+        guard case .data(_, "rtf", "text")? = taken.last else { Issue.record("the words of a selection with a picture were not taken as RTF"); return }
+        taken.removeLast(); lacking.removeLast()
         // An empty clipboard, or a concealed secret, is no one's here.
         held = board { _ in }
         #expect(!window.performKeyEquivalent(with: paste))

@@ -80,6 +80,14 @@ enum ClipboardPaste {
         }
     }
 
+    /// Whether the text taken leaves something behind: a selection copied with pictures or attached files inside it
+    /// announces a form that carries them (RTFD), which no reader of Sprava's opens. The words are taken in the form
+    /// beside it, and the page says what was left, so the person never takes the file for the whole selection.
+    static func leavesAttachments(_ pasteboard: NSPasteboard) -> Bool {
+        let kind = kind(of: pasteboard)
+        return (kind == .richText || kind == .text) && (pasteboard.types ?? []).contains(.rtfd)
+    }
+
     /// ⌘V and nothing more. With Command held, a layout of another script reports the Latin letter in `characters`,
     /// which is how the menu's own shortcut finds it.
     static func isPaste(_ event: NSEvent) -> Bool {

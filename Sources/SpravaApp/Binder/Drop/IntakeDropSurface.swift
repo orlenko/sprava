@@ -40,7 +40,7 @@ struct IntakeDropSurface<Content: View>: View {
                         switch drop {
                         case .files(let urls, let promises): model.drop(urls, promises: promises, into: folder)
                         case .text(let html, let plain): model.dropText(html: html, plain: plain, into: folder)
-                        case .pasted(let content): model.paste(content, into: folder)
+                        case .pasted(let content, let withoutAttachments): model.paste(content, withoutAttachments: withoutAttachments, into: folder)
                         }
                     }
                     if targeted {
@@ -87,7 +87,7 @@ private struct DropTarget: NSViewRepresentable {
 }
 
 final class DropTargetView: NSView {
-    enum Drop { case files([URL], [NSFilePromiseReceiver]), text(html: String?, plain: String?), pasted(ClipboardPaste.Content) }
+    enum Drop { case files([URL], [NSFilePromiseReceiver]), text(html: String?, plain: String?), pasted(ClipboardPaste.Content, withoutAttachments: Bool) }
     /// What a drag offers: files or promises; selected text; only a web page's private data (a message dragged out of
     /// a web app); or nothing Sprava can take.
     enum Offer: Equatable { case files, text, webOnly, nothing }
@@ -118,7 +118,7 @@ final class DropTargetView: NSView {
             return super.performKeyEquivalent(with: event)
         }
         // The press was the binder's; when the page is still busy with the last one, it says so with the system's sound.
-        if !onDrop(.pasted(content)) { NSSound.beep() }
+        if !onDrop(.pasted(content, withoutAttachments: ClipboardPaste.leavesAttachments(pasteboard))) { NSSound.beep() }
         return true
     }
 

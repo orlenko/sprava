@@ -242,6 +242,8 @@ batch's copies are not built yet.
   adds a picture of it (office apps do); then a PDF; then an image; then text in one form;
 - while a text is being edited (the composer, a to-do, a note), text on the clipboard is that text's own, as
   everywhere on the Mac. Files, a PDF and an image come to the binder even then;
+- text copied with pictures or files inside it (it announces RTFD, which no reader here opens) is taken as its
+  words, and the page says, as a problem, that the pictures or files were not added;
 - a clipboard a password manager marked as concealed is never taken; pasted text is at most 16 MB, a pasted image or
   PDF at most 200 MB.
 

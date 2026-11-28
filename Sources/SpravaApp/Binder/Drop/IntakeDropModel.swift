@@ -70,28 +70,32 @@ final class IntakeDropModel: ObservableObject {
 
     /// What ⌘V took from the clipboard (`ClipboardPaste`). Copied files go the way dropped files go. Anything that
     /// is not a file yet (a screenshot, a PDF, text) is kept as one file named for what it is and when it arrived.
+    /// `withoutAttachments`: the copied text held pictures or files that the form taken does not carry; the report
+    /// says so, as a problem, so an incomplete file is never reported as the whole selection.
     @discardableResult
-    func paste(_ content: ClipboardPaste.Content, into binder: URL, now: Date = Date()) -> Bool {
+    func paste(_ content: ClipboardPaste.Content, withoutAttachments: Bool = false, into binder: URL, now: Date = Date()) -> Bool {
+        let note = withoutAttachments ? Self.attachmentsNote : nil
         switch content {
         case .files(let urls):
             return drop(urls, promises: [], into: binder)
         case .text(let html, let plain):
-            return text(html: html, plain: plain, verb: "Pasted", what: "the pasted text", into: binder, now: now)
+            return text(html: html, plain: plain, verb: "Pasted", what: "the pasted text", note: note, into: binder, now: now)
         case .data(let data, let ext, let noun):
             guard !data.isEmpty else { return false }
-            return keep(data, named: "Pasted \(noun) \(Self.stamp(now)).\(ext)", limit: Self.maxPastedBytes, what: "the pasted \(noun)", into: binder)
+            return keep(data, named: "Pasted \(noun) \(Self.stamp(now)).\(ext)", limit: Self.maxPastedBytes, what: "the pasted \(noun)", note: note, into: binder)
         }
     }
 
     /// The most text one drag or paste brings, and the most a pasted image or PDF holds: what the intake reader opens.
     static let maxTextBytes = 16 * 1024 * 1024
     static let maxPastedBytes = 200 * 1024 * 1024
+    static let attachmentsNote = "Not added: the pictures or files inside the copied text. Only its words were taken; to keep the rest, drop or paste the document's own file."
 
-    private func text(html: String?, plain: String?, verb: String, what: String, into binder: URL, now: Date) -> Bool {
+    private func text(html: String?, plain: String?, verb: String, what: String, note: String? = nil, into binder: URL, now: Date) -> Bool {
         let body: (data: Data, ext: String)? = html.flatMap { $0.isEmpty ? nil : (Data(("<!doctype html><meta charset=\"utf-8\">\n" + $0).utf8), "html") }
             ?? plain.flatMap { $0.isEmpty ? nil : (Data($0.utf8), "txt") }
         guard let body else { return false }
-        return keep(body.data, named: "\(verb) text \(Self.stamp(now)).\(body.ext)", limit: Self.maxTextBytes, what: what, into: binder)
+        return keep(body.data, named: "\(verb) text \(Self.stamp(now)).\(body.ext)", limit: Self.maxTextBytes, what: what, note: note, into: binder)
     }
 
     static func stamp(_ now: Date) -> String {
@@ -100,7 +104,7 @@ final class IntakeDropModel: ObservableObject {
     }
 
     /// Writes what arrived without a file into a private folder of the app's, sends it like any file, and removes it.
-    private func keep(_ data: Data, named name: String, limit: Int, what: String, into binder: URL) -> Bool {
+    private func keep(_ data: Data, named name: String, limit: Int, what: String, note: String? = nil, into binder: URL) -> Bool {
         guard !busy else { return false }
         guard data.count <= limit else {
             report = "Nothing was added: \(what) is over \(limit / (1024 * 1024)) MB."; problem = true; return false
@@ -113,6 +117,7 @@ final class IntakeDropModel: ObservableObject {
                 try AtomicFile.makePrivateFolder(staging)
                 try AtomicFile.write(data, to: file)
                 await add([file], into: binder)
+                if let note { report = [report, note].compactMap { $0 }.joined(separator: "\n"); problem = true }
             } catch {
                 report = "Nothing was added: Sprava could not keep \(what) to send it."; problem = true
             }
