@@ -231,6 +231,27 @@ saved `.eml` or PDF. The bar reports what was added and what was not. From `inta
 existing intake cards take over: step 3's filing at once, step 4's report with Undo, and removing a part-way
 batch's copies are not built yet.
 
+**Pasting (D51, built 2026-11-28).** ⌘V on a binder's page takes the clipboard the way the page takes a drop, into
+`intake/` through the same opener, bounds and runtime method:
+
+- files copied in Finder go as dropped files go, any number and any kind;
+- what only a clipboard holds becomes one file named for what it is and when it arrived: a screenshot or a copied
+  image is `Pasted image <time>.png` (or `.jpg`, `.heic`, `.tiff`, `.gif`, in the form the other app gave), a copied
+  PDF is `Pasted document <time>.pdf`, text is `Pasted text <time>.html`, `.rtf` or `.txt`;
+- one copy often carries several forms. Files come first; text that brings its formatting is text, even when the app
+  adds a picture of it (office apps do); then a PDF; then an image; then text in one form;
+- while a text is being edited (the composer, a to-do, a note), text on the clipboard is that text's own, as
+  everywhere on the Mac. Files, a PDF and an image come to the binder even then;
+- text copied with pictures or files inside it (it announces RTFD, which no reader here opens) is taken as its
+  words, and the page says, as a problem, that the pictures or files were not added;
+- a clipboard a password manager marked as concealed is never taken; pasted text is at most 16 MB, a pasted image or
+  PDF at most 200 MB.
+
+The app decodes none of it: the bytes go to `intake/` as the other app put them on the clipboard, and the sandboxed
+reader is the first to open them (adaptation-layer 4). What each file is, and where it belongs, is the intake's work,
+as for a drop. Not built: Paste in the Edit menu when no text is being edited (the key works; the menu item stays
+grey), and telling the conversation which file was just pasted.
+
 ### 5.2 Importing by path or description
 
 "Include `this-file.ext` from `/that/folder/over/there/`", "include the March statement from Downloads". A

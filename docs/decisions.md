@@ -653,6 +653,16 @@ Each line names what replaced the entry; its old text is in git history.
   value, and a steered command can send one to any site that binder allows for commands. Not chosen now: the
   placeholder of conversation.md §18.3.2, where a value never reaches the session, kept as the way to tighten this;
   naming the variables binder by binder, which asks for setup in every binder.
+- **D51 decided (2026-11-28, the author: "I think the app should accept Cmd+V (paste from clipboard) and
+  automatically figure out all kinds of content - files, images, rich text documents, plain text, media, whatever.").**
+  ⌘V on a binder's page takes what the clipboard holds into the binder's `intake/`, as a drop does: copied files as
+  files, and a screenshot, an image, a PDF or text as one file each (conversation.md 5.1, "Pasting"). Why: in a
+  terminal session the person pasted a screenshot with one key, and in Sprava only words could be pasted; dragging a
+  screenshot's thumbnail or saving it first is slower than the old way. How: the page's drop view answers the key
+  before the menu does, so it works wherever the insertion point is; a paste of words into a text being edited stays
+  that text's. The app decodes nothing: working out what a pasted thing is belongs to the intake reader, in its
+  sandbox, as for any file. Not chosen: a paste that goes into the message being written as an attachment, which
+  needs attachments in a conversation first.
 - **P6, P7, C4** (holos as the capture producer, and its mapping): replaced by P12; holos is one adapter among many.
 - **P21** (a manager agent, open): settled by D22 (an agent per binder) and D26 (no agent for the overall view).
 - **A6** (encryption through cmirror): replaced by A11 and A12.
