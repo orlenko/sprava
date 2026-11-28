@@ -174,7 +174,10 @@ import Testing
         #expect(runtime.received.isEmpty)
     }
 
-    @Test func thePressIsTheBindersUnlessWordsAreBeingPastedIntoAText() {
+    @Test func thePressIsTheBindersUnlessWordsAreBeingPastedIntoAText() async {
+        // A window that focuses a field takes the focus from another suite's row; one such test runs at a time.
+        let turn = await FocusedWindows.take()
+        defer { turn.release() }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: true)
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         let editable = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
@@ -236,6 +239,8 @@ import Testing
     // The press reaches the page as SwiftUI builds it: the real surface around a text field, hosted in a window, takes
     // a screenshot from the clipboard through the model to the runtime while the field is being edited.
     @Test func thePageAsBuiltTakesAScreenshotWhileItsFieldIsEdited() async throws {
+        let turn = await FocusedWindows.take()
+        defer { turn.release() }
         let runtime = Runtime(), model = IntakeDropModel(send: runtime.send)
         let page = IntakeDropSurface(folder: Self.binder, enabled: true, model: model) {
             VStack { TextField("Message", text: .constant("")); List { Text("Invented row") } }
